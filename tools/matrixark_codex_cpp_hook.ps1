@@ -3,8 +3,8 @@ param(
   [string[]]$HookArgs
 )
 
-$Distro = if ($env:MATRIXARK_WSL_DISTRO) { $env:MATRIXARK_WSL_DISTRO } else { "Ubuntu2204Deeproute" }
-$Repo = if ($env:MATRIXARK_REPO_ROOT) { $env:MATRIXARK_REPO_ROOT } else { "/root/src/github-services/TemporalStore" }
+$Distro = if ($env:MATRIXARK_WSL_DISTRO) { $env:MATRIXARK_WSL_DISTRO } else { "Ubuntu2204LocalUser" }
+$Repo = if ($env:MATRIXARK_REPO_ROOT) { $env:MATRIXARK_REPO_ROOT } else { "<repo>" }
 
 $stdin = [Console]::In.ReadToEnd()
 $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($stdin))

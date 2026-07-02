@@ -31,12 +31,12 @@ Important: MCP by itself does not automatically ingest every message. Codex must
 
 ### Recommended local C++ TemporalStore MCP config
 
-Add this to `C:\Users\Deeproute\.codex\config.toml`:
+Add this to `<workspace>\.codex\config.toml`:
 
 ```toml
 [mcp_servers.matrixark]
 command = "wsl.exe"
-args = ["--cd", "/root/src/github-services/TemporalStore", "-e", "bash", "-lc", "exec tools/matrixark_mcp_cpp_server.sh"]
+args = ["--cd", "<repo>", "-e", "bash", "-lc", "exec tools/matrixark_mcp_cpp_server.sh"]
 startup_timeout_sec = 180
 ```
 
@@ -55,7 +55,7 @@ Use this when validating Rust parity:
 ```toml
 [mcp_servers.matrixark]
 command = "wsl.exe"
-args = ["--cd", "/root/src/github-services/TemporalStore", "-e", "bash", "-lc", "exec tools/matrixark_mcp_rust_server.sh"]
+args = ["--cd", "<repo>", "-e", "bash", "-lc", "exec tools/matrixark_mcp_rust_server.sh"]
 startup_timeout_sec = 180
 ```
 
@@ -64,7 +64,7 @@ If a Rust-specific launcher is not present in a checkout, use the generic MCP se
 ```toml
 [mcp_servers.matrixark]
 command = "wsl.exe"
-args = ["--cd", "/root/src/github-services/TemporalStore", "-e", "bash", "-lc", "MATRIXARK_MCP_BACKEND=temporalstore-rust exec python3 tools/matrixark_mcp_server.py --line-json"]
+args = ["--cd", "<repo>", "-e", "bash", "-lc", "MATRIXARK_MCP_BACKEND=temporalstore-rust exec python3 tools/matrixark_mcp_server.py --line-json"]
 startup_timeout_sec = 180
 ```
 
@@ -75,7 +75,7 @@ Use this only for API debugging without C++/Rust storage:
 ```toml
 [mcp_servers.matrixark]
 command = "wsl.exe"
-args = ["--cd", "/root/src/github-services/TemporalStore", "-e", "bash", "-lc", "MATRIXARK_MCP_BACKEND=local exec python3 tools/matrixark_mcp_server.py --line-json"]
+args = ["--cd", "<repo>", "-e", "bash", "-lc", "MATRIXARK_MCP_BACKEND=local exec python3 tools/matrixark_mcp_server.py --line-json"]
 startup_timeout_sec = 60
 ```
 
@@ -91,7 +91,7 @@ MATRIXARK_TEMPORALSTORE_METASERVER=127.0.0.1:18000
 MATRIXARK_TEMPORALSTORE_NAMESPACE=deploy_ns
 MATRIXARK_TEMPORALSTORE_TABLE=deploy_table
 MATRIXARK_TEMPORALSTORE_PREFIX=matrixark:codex-hook
-TEMPORALSTORE_LIB=/root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so
+TEMPORALSTORE_LIB=<repo>/output-ubuntu22/release/sdk/lib/libbcache2.so
 MATRIXARK_HOOK_FAIL_OPEN=1
 MATRIXARK_HOOK_AUTOSTART_CPP=1
 ```
@@ -101,7 +101,7 @@ The Rust hook launcher `tools/matrixark_codex_rust_hook.sh` defaults to:
 ```bash
 MATRIXARK_MCP_BACKEND=temporalstore-rust
 MATRIXARK_TEMPORALSTORE_PREFIX=matrixark:codex-hook:rust
-MATRIXARK_TEMPORALSTORE_RUST_CLI=/root/src/github-services/TemporalStore/sdk/rust/temporalstore/target/release/matrixark_record_log
+MATRIXARK_TEMPORALSTORE_RUST_CLI=<repo>/sdk/rust/temporalstore/target/release/matrixark_record_log
 MATRIXARK_HOOK_FAIL_OPEN=1
 ```
 
@@ -145,25 +145,25 @@ Codex hook availability depends on the Codex surface/version. If hooks are not v
   "hooks": {
     "UserPromptSubmit": [
       {
-        "command": "/root/src/github-services/TemporalStore/tools/matrixark_codex_cpp_hook.sh --event UserPromptSubmit",
+        "command": "<repo>/tools/matrixark_codex_cpp_hook.sh --event UserPromptSubmit",
         "timeout_ms": 60000
       }
     ],
     "PostToolUse": [
       {
-        "command": "/root/src/github-services/TemporalStore/tools/matrixark_codex_cpp_hook.sh --event PostToolUse",
+        "command": "<repo>/tools/matrixark_codex_cpp_hook.sh --event PostToolUse",
         "timeout_ms": 60000
       }
     ],
     "Stop": [
       {
-        "command": "/root/src/github-services/TemporalStore/tools/matrixark_codex_cpp_hook.sh --event Stop",
+        "command": "<repo>/tools/matrixark_codex_cpp_hook.sh --event Stop",
         "timeout_ms": 60000
       }
     ],
     "PostCompact": [
       {
-        "command": "/root/src/github-services/TemporalStore/tools/matrixark_codex_cpp_hook.sh --event PostCompact",
+        "command": "<repo>/tools/matrixark_codex_cpp_hook.sh --event PostCompact",
         "timeout_ms": 60000
       }
     ]
@@ -178,13 +178,13 @@ Use the Rust hook launcher for Rust parity:
   "hooks": {
     "UserPromptSubmit": [
       {
-        "command": "/root/src/github-services/TemporalStore/tools/matrixark_codex_rust_hook.sh --event UserPromptSubmit",
+        "command": "<repo>/tools/matrixark_codex_rust_hook.sh --event UserPromptSubmit",
         "timeout_ms": 60000
       }
     ],
     "Stop": [
       {
-        "command": "/root/src/github-services/TemporalStore/tools/matrixark_codex_rust_hook.sh --event Stop",
+        "command": "<repo>/tools/matrixark_codex_rust_hook.sh --event Stop",
         "timeout_ms": 60000
       }
     ]
@@ -668,8 +668,8 @@ Retrieval selects only relevant skill sections, never the full skill bundle by d
 ### Local backend hook smoke
 
 ```bash
-cd /root/src/github-services/TemporalStore
-printf '%s\n' '{"prompt":"Alice approved the GPU request.","thread_id":"manual-hook-demo","cwd":"/root/src/github-services/TemporalStore"}' \
+cd <repo>
+printf '%s\n' '{"prompt":"Alice approved the GPU request.","thread_id":"manual-hook-demo","cwd":"<repo>"}' \
   | MATRIXARK_MCP_BACKEND=local \
     python3 tools/matrixark_codex_hook.py \
       --event UserPromptSubmit \
@@ -693,8 +693,8 @@ Expected output includes:
 ### C++ TemporalStore hook smoke
 
 ```bash
-cd /root/src/github-services/TemporalStore
-printf '%s\n' '{"prompt":"Alice approved the GPU request.","thread_id":"manual-hook-cpp","cwd":"/root/src/github-services/TemporalStore"}' \
+cd <repo>
+printf '%s\n' '{"prompt":"Alice approved the GPU request.","thread_id":"manual-hook-cpp","cwd":"<repo>"}' \
   | MATRIXARK_ACCOUNT_ID=acct_local \
     MATRIXARK_TENANT_ID=tenant_codex \
     MATRIXARK_USER_ID="${USER:-deeproute}" \
@@ -704,8 +704,8 @@ printf '%s\n' '{"prompt":"Alice approved the GPU request.","thread_id":"manual-h
 ### Rust TemporalStore hook smoke
 
 ```bash
-cd /root/src/github-services/TemporalStore
-printf '%s\n' '{"prompt":"Alice approved the GPU request.","thread_id":"manual-hook-rust","cwd":"/root/src/github-services/TemporalStore"}' \
+cd <repo>
+printf '%s\n' '{"prompt":"Alice approved the GPU request.","thread_id":"manual-hook-rust","cwd":"<repo>"}' \
   | MATRIXARK_ACCOUNT_ID=acct_local \
     MATRIXARK_TENANT_ID=tenant_codex \
     MATRIXARK_USER_ID="${USER:-deeproute}" \
@@ -719,13 +719,13 @@ List tools through the configured C++ MCP launcher:
 ```powershell
 $req = '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' + "`n"
 Set-Content -NoNewline -Encoding ascii "$env:TEMP\matrixark-mcp-smoke.jsonl" $req
-wsl --cd /root/src/github-services/TemporalStore -e bash -lc 'timeout 30s tools/matrixark_mcp_cpp_server.sh --line-json < /mnt/c/Users/Deeproute/AppData/Local/Temp/matrixark-mcp-smoke.jsonl | head -c 1000'
+wsl --cd <repo> -e bash -lc 'timeout 30s tools/matrixark_mcp_cpp_server.sh --line-json < <workspace>/AppData/Local/Temp/matrixark-mcp-smoke.jsonl | head -c 1000'
 ```
 
 Call a tool directly over line JSON:
 
 ```bash
-cd /root/src/github-services/TemporalStore
+cd <repo>
 cat > /tmp/matrixark-ingest-call.jsonl <<'JSON'
 {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"matrixark_ingest","arguments":{"messages":[{"role":"user","content":"Alice approved the GPU request."}],"scope":{"account_id":"acct_local","tenant_id":"tenant_codex","user_id":"deeproute","session_id":"manual-mcp-demo"}}}}
 JSON

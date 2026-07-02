@@ -12,12 +12,12 @@
 ## Storage Boundary
 
 - backend: `temporalstore-direct`
-- temporalstore: `{&quot;metaserver&quot;: &quot;127.0.0.1:18000&quot;, &quot;namespace&quot;: &quot;deploy_ns&quot;, &quot;storage_prefix&quot;: &quot;matrixark:cpp:query:index:oss-understanding:1782232028871&quot;, &quot;table&quot;: &quot;deploy_table&quot;, &quot;temporalstore_lib&quot;: &quot;/root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so&quot;}`
+- temporalstore: `{&quot;metaserver&quot;: &quot;127.0.0.1:18000&quot;, &quot;namespace&quot;: &quot;deploy_ns&quot;, &quot;storage_prefix&quot;: &quot;matrixark:cpp:query:index:oss-understanding:1782232028871&quot;, &quot;table&quot;: &quot;deploy_table&quot;, &quot;temporalstore_lib&quot;: &quot;<repo>/output-ubuntu22/release/sdk/lib/libbcache2.so&quot;}`
 
 ## Model Boundary
 
 - embedding_provider: `oss`
-- embedding_model: `/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2`
+- embedding_model: `<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2`
 - understanding_provider: `oss_encoder`
 - note: This debug run requires real OSS embeddings and OSS-encoder extraction/query understanding. Deterministic extraction, segmentation, and query-understanding are disabled for this run.
 
@@ -3528,7 +3528,7 @@ Prefilter candidate sample:
   {
     &quot;dim&quot;: 384,
     &quot;embedding_type&quot;: &quot;event_text&quot;,
-    &quot;model&quot;: &quot;/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2&quot;,
+    &quot;model&quot;: &quot;<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2&quot;,
     &quot;node_hash&quot;: 8525532004486225381,
     &quot;node_path&quot;: [
       &quot;personal_memory&quot;,
@@ -3562,7 +3562,7 @@ Prefilter candidate sample:
   {
     &quot;dim&quot;: 384,
     &quot;embedding_type&quot;: &quot;event_text&quot;,
-    &quot;model&quot;: &quot;/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2&quot;,
+    &quot;model&quot;: &quot;<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2&quot;,
     &quot;node_hash&quot;: 8525532004486225381,
     &quot;node_path&quot;: [
       &quot;personal_memory&quot;,
@@ -3596,7 +3596,7 @@ Prefilter candidate sample:
   {
     &quot;dim&quot;: 384,
     &quot;embedding_type&quot;: &quot;event_text&quot;,
-    &quot;model&quot;: &quot;/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2&quot;,
+    &quot;model&quot;: &quot;<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2&quot;,
     &quot;node_hash&quot;: 8525532004486225381,
     &quot;node_path&quot;: [
       &quot;personal_memory&quot;,
@@ -3630,7 +3630,7 @@ Prefilter candidate sample:
   {
     &quot;dim&quot;: 384,
     &quot;embedding_type&quot;: &quot;event_text&quot;,
-    &quot;model&quot;: &quot;/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2&quot;,
+    &quot;model&quot;: &quot;<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2&quot;,
     &quot;node_hash&quot;: 8525532004486225381,
     &quot;node_path&quot;: [
       &quot;personal_memory&quot;,
@@ -3664,7 +3664,7 @@ Prefilter candidate sample:
   {
     &quot;dim&quot;: 384,
     &quot;embedding_type&quot;: &quot;event_text&quot;,
-    &quot;model&quot;: &quot;/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2&quot;,
+    &quot;model&quot;: &quot;<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2&quot;,
     &quot;node_hash&quot;: 8525532004486225381,
     &quot;node_path&quot;: [
       &quot;personal_memory&quot;,
@@ -3698,7 +3698,7 @@ Prefilter candidate sample:
   {
     &quot;dim&quot;: 384,
     &quot;embedding_type&quot;: &quot;event_text&quot;,
-    &quot;model&quot;: &quot;/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2&quot;,
+    &quot;model&quot;: &quot;<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2&quot;,
     &quot;node_hash&quot;: 8525532004486225381,
     &quot;node_path&quot;: [
       &quot;personal_memory&quot;,
@@ -3732,7 +3732,7 @@ Prefilter candidate sample:
   {
     &quot;dim&quot;: 384,
     &quot;embedding_type&quot;: &quot;event_text&quot;,
-    &quot;model&quot;: &quot;/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2&quot;,
+    &quot;model&quot;: &quot;<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2&quot;,
     &quot;node_hash&quot;: 8525532004486225381,
     &quot;node_path&quot;: [
       &quot;personal_memory&quot;,
@@ -3766,7 +3766,7 @@ Prefilter candidate sample:
   {
     &quot;dim&quot;: 384,
     &quot;embedding_type&quot;: &quot;event_text&quot;,
-    &quot;model&quot;: &quot;/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2&quot;,
+    &quot;model&quot;: &quot;<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2&quot;,
     &quot;node_hash&quot;: 8525532004486225381,
     &quot;node_path&quot;: [
       &quot;personal_memory&quot;,
@@ -3800,7 +3800,7 @@ Prefilter candidate sample:
   {
     &quot;dim&quot;: 384,
     &quot;embedding_type&quot;: &quot;event_text&quot;,
-    &quot;model&quot;: &quot;/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2&quot;,
+    &quot;model&quot;: &quot;<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2&quot;,
     &quot;node_hash&quot;: 8525532004486225381,
     &quot;node_path&quot;: [
       &quot;personal_memory&quot;,
@@ -3834,7 +3834,7 @@ Prefilter candidate sample:
   {
     &quot;dim&quot;: 384,
     &quot;embedding_type&quot;: &quot;event_text&quot;,
-    &quot;model&quot;: &quot;/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2&quot;,
+    &quot;model&quot;: &quot;<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2&quot;,
     &quot;node_hash&quot;: 8525532004486225381,
     &quot;node_path&quot;: [
       &quot;personal_memory&quot;,
@@ -3868,7 +3868,7 @@ Prefilter candidate sample:
   {
     &quot;dim&quot;: 384,
     &quot;embedding_type&quot;: &quot;event_text&quot;,
-    &quot;model&quot;: &quot;/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2&quot;,
+    &quot;model&quot;: &quot;<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2&quot;,
     &quot;node_hash&quot;: 8525532004486225381,
     &quot;node_path&quot;: [
       &quot;personal_memory&quot;,
@@ -3902,7 +3902,7 @@ Prefilter candidate sample:
   {
     &quot;dim&quot;: 384,
     &quot;embedding_type&quot;: &quot;event_text&quot;,
-    &quot;model&quot;: &quot;/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2&quot;,
+    &quot;model&quot;: &quot;<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2&quot;,
  
 ```
 ### context_entity

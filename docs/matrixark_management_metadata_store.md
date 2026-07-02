@@ -71,7 +71,7 @@ export MATRIXARK_REQUIRE_SQL_METADATA=1
 PYTHONPATH=tools python3 tools/check_matrixark_metadata_sql.py
 ```
 
-The current MatrixKV source tree is expected at `/root/src/github-services/MatrixKV`. Its SQL service exposes a MySQL-compatible protocol; MatrixArk stores only portal/control-plane metadata there, not raw context chunks, embeddings, or ContextPacks.
+The current MatrixKV source tree is expected at `<repo>/github-services/MatrixKV`. Its SQL service exposes a MySQL-compatible protocol; MatrixArk stores only portal/control-plane metadata there, not raw context chunks, embeddings, or ContextPacks.
 
 ## ByteKV SQL
 

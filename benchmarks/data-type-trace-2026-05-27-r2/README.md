@@ -4,7 +4,7 @@ Run date: 2026-05-27
 
 ## Cluster
 
-- Build: `/root/src/temporalstore/build-ubuntu22`
+- Build: `<repo>/build-ubuntu22`
 - Metaservers: 2
 - Data servers: 2
 - Replica count: 2

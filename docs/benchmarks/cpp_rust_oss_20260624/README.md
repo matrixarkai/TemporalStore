@@ -54,8 +54,8 @@ embedding claims.
 
 Artifact directories:
 
-- C++: `/root/src/github-services/TemporalStore/docs/benchmarks/cpp_rust_oss_20260624/locomo_cpp_oss_q5`
-- Rust: `/root/src/github-services/TemporalStore/docs/benchmarks/cpp_rust_oss_20260624/locomo_rust_oss_q5`
+- C++: `<repo>/docs/benchmarks/cpp_rust_oss_20260624/locomo_cpp_oss_q5`
+- Rust: `<repo>/docs/benchmarks/cpp_rust_oss_20260624/locomo_rust_oss_q5`
 
 ## LongMemEval_s q5 / sessions-per-item-limit 5
 
@@ -84,8 +84,8 @@ Artifact directories:
 
 Artifact directories:
 
-- C++: `/root/src/github-services/TemporalStore/docs/benchmarks/cpp_rust_oss_20260624/longmem_cpp_oss_q5_s5`
-- Rust: `/root/src/github-services/TemporalStore/docs/benchmarks/cpp_rust_oss_20260624/longmem_rust_oss_q5_s5`
+- C++: `<repo>/docs/benchmarks/cpp_rust_oss_20260624/longmem_cpp_oss_q5_s5`
+- Rust: `<repo>/docs/benchmarks/cpp_rust_oss_20260624/longmem_rust_oss_q5_s5`
 
 ## Takeaways
 
@@ -108,10 +108,10 @@ Artifact directories:
 The four runs used the shared benchmark runner:
 
 ```bash
-cd /root/src/github-services/TemporalStoreTestCorpus
-OSS_EMBEDDING_PATH=/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2
+cd <TemporalStoreTestCorpus>
+OSS_EMBEDDING_PATH=<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2
 OPENAI_API_KEY=dummy python3 tools/run_matrixark_dataset_benchmark.py \
-  --consumer-repo /root/src/github-services/TemporalStore \
+  --consumer-repo <repo> \
   --dataset locomo \
   --data-path /root/matrixark_benchmarks/data/locomo10.json \
   --backend temporalstore-direct \

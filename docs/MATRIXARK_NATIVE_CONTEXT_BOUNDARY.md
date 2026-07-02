@@ -84,12 +84,12 @@ Backend status:
 
 ```bash
 # C++ shared contract
-cd /root/src/github-services/TemporalStoreTestCorpus
+cd <TemporalStoreTestCorpus>
 bash runners/cpp/run_cpp_unified_context_contract.sh
 
 # Rust record envelope and batch command surface
-cd /root/src/github-services/TemporalStore/sdk/rust/temporalstore
-LD_LIBRARY_PATH=/root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib:$LD_LIBRARY_PATH \
+cd <repo>/sdk/rust/temporalstore
+LD_LIBRARY_PATH=<repo>/output-ubuntu22/release/sdk/lib:$LD_LIBRARY_PATH \
   cargo test --bin matrixark_record_log --no-default-features --features direct
 ```
 

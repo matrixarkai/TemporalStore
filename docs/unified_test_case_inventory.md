@@ -43,7 +43,7 @@ The repo-level Rust/C++ parity runner is:
 
 ```bash
 python3 tools/run_unified_cpp_rust_parity.py \
-  --cpp-repo wsl:/root/src/github-services/TemporalStore \
+  --cpp-repo wsl:<repo> \
   --output /tmp/temporalstore-unified-cpp-rust-parity.json
 ```
 
@@ -55,7 +55,7 @@ shape. When the C++ repo has a native corpus executor, run it through the same e
 ```bash
 TS_CPP_UNIFIED_TEST_CMD='/path/to/cpp_runner --corpus {corpus}' \
   python3 tools/run_unified_cpp_rust_parity.py \
-    --cpp-repo wsl:/root/src/github-services/TemporalStore \
+    --cpp-repo wsl:<repo> \
     --run-rust \
     --output /tmp/temporalstore-unified-cpp-rust-parity.json
 ```

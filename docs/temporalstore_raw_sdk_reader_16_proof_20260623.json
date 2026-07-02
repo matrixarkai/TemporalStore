@@ -22,7 +22,7 @@
   },
   "status": "passed",
   "table": "deploy_table",
-  "temporalstore_lib": "/root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so",
+  "temporalstore_lib": "<repo>/output-ubuntu22/release/sdk/lib/libbcache2.so",
   "write": {
     "elapsed_sec": 2.076,
     "errors": [],

@@ -25,7 +25,7 @@ python3 tools/run_temporalstore_unified_tests.py --validate-only
 Result:
 
 ```text
-validated temporalstore-unified-cpp-rust-corpus schema=1 cases=127 path=/root/src/github-services/TemporalStore/third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json
+validated temporalstore-unified-cpp-rust-corpus schema=1 cases=127 path=<repo>/third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json
 ```
 
 External corpus validation, using the newer corpus extracted from `origin/rust-main:compat/unified_temporalstore_cases.json`:

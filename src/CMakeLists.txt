@@ -6,8 +6,8 @@ include_directories(${PROJECT_SOURCE_DIR}
                     ${PROJECT_SOURCE_DIR}/thirdparty/byte/thirdparty/json/include
                     ${PROJECT_BINARY_DIR}/thirdparty/brpc/output/include
                     ${PROJECT_BINARY_DIR}/_open_source_brpc/output/include
-                    /root/src/open-source/brpc/src
-                    /root/src/cmake-glue/compat-include
+                    ${PROJECT_SOURCE_DIR}/.local/deps-src/brpc/src
+                    ${PROJECT_SOURCE_DIR}/.local/cmake-glue/compat-include
                     ${PROJECT_SOURCE_DIR}/thirdparty/byte/thirdparty/ev/include
                     ${PROJECT_SOURCE_DIR}/thirdparty/libfiu/libfiu
                     ${PROJECT_SOURCE_DIR}/thirdparty/byte/thirdparty/gtest/googletest/include

@@ -73,7 +73,7 @@ bash tools/run_cpp_unified_context_contract.sh \
   third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json
 
 cd sdk/rust/temporalstore && \
-  TEMPORALSTORE_UNIFIED_CORPUS=/root/src/github-services/TemporalStore/third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json \
+  TEMPORALSTORE_UNIFIED_CORPUS=<repo>/third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json \
   cargo test --no-default-features --features proxy --test unified_corpus
 ```
 

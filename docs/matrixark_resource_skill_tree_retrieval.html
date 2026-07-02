@@ -131,7 +131,7 @@ These filters prune candidates before embedding similarity. The layer scan then 
 The shared parity runner validates both backends from ingestion through retrieval:
 
 ```bash
-cd /root/src/github-services/TemporalStoreTestCorpus
+cd <TemporalStoreTestCorpus>
 TEMPORALSTORE_CONSUMER_REPO=/tmp/temporalstore-mcp-scale-failover \
   python3 tools/run_matrixark_resource_skill_backend_parity.py --backends cpp rust
 ```

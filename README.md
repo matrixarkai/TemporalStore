@@ -14,6 +14,7 @@ must be backed by readiness reports, shared corpus runs, or harness evidence.
 ## Current Status
 
 - License: Apache-2.0.
+- Primary Rust branch marker: rust-main.
 - Rust workspace crates:
   - `crates/temporalstore-rust`
   - `crates/temporalstore-snapshot`

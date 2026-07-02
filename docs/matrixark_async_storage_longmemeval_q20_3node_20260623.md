@@ -29,7 +29,7 @@ Result root: `/tmp/matrixark-async-storage-longmem-q20-3node-`
 ## Reproduce
 
 ```bash
-cd /root/src/github-services/TemporalStore
+cd <repo>
 BUILD_TYPE=Release \
 DATASET=longmemeval_s \
 DATA_PATH=/root/matrixark_benchmarks/data/longmemeval_s_cleaned_official_hf.json \

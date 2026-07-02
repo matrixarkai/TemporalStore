@@ -63,6 +63,24 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         server_lines = (TOOLS_DIR / "matrixark_mcp_server.py").read_text(encoding="utf-8").splitlines()
         self.assertLessEqual(len(server_lines), 750)
 
+    def test_public_mcp_modules_avoid_wildcard_imports(self) -> None:
+        module_names = [
+            "matrixark_mcp_server.py",
+            "matrixark_mcp_backends.py",
+            "matrixark_mcp_dispatch.py",
+            "matrixark_mcp_requests.py",
+            "matrixark_mcp_ingestion.py",
+            "matrixark_mcp_retrieval.py",
+            "matrixark_mcp_admin.py",
+        ]
+        offenders: list[str] = []
+        for module_name in module_names:
+            tree = ast.parse((TOOLS_DIR / module_name).read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and any(alias.name == "*" for alias in node.names):
+                    offenders.append(f"{module_name}:{node.lineno}")
+        self.assertEqual([], offenders)
+
     def test_pyproject_exposes_matrixark_console_scripts(self) -> None:
         pyproject_text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
         self.assertIn('matrixark-mcp-server = "tools.matrixark_mcp_server:main"', pyproject_text)

@@ -65,7 +65,7 @@ C++ direct SDK:
 
 ```bash
 export PYTHONPATH=.
-export TEMPORALSTORE_LIB=/root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so
+export TEMPORALSTORE_LIB=<repo>/output-ubuntu22/release/sdk/lib/libbcache2.so
 export MATRIXARK_EMBEDDING_PROVIDER=hash
 export MATRIXARK_UNDERSTANDING_PROVIDER=rules
 python3 tools/run_matrixark_locomo_debug_flow.py \
@@ -78,9 +78,9 @@ Rust direct SDK:
 
 ```bash
 export PYTHONPATH=.
-export TEMPORALSTORE_LIB=/root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so
-export LD_LIBRARY_PATH=/root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib:$LD_LIBRARY_PATH
-export MATRIXARK_TEMPORALSTORE_RUST_CLI=/root/src/github-services/TemporalStore/sdk/rust/temporalstore/target/release/matrixark_record_log
+export TEMPORALSTORE_LIB=<repo>/output-ubuntu22/release/sdk/lib/libbcache2.so
+export LD_LIBRARY_PATH=<repo>/output-ubuntu22/release/sdk/lib:$LD_LIBRARY_PATH
+export MATRIXARK_TEMPORALSTORE_RUST_CLI=<repo>/sdk/rust/temporalstore/target/release/matrixark_record_log
 export MATRIXARK_EMBEDDING_PROVIDER=hash
 export MATRIXARK_UNDERSTANDING_PROVIDER=rules
 python3 tools/run_matrixark_locomo_debug_flow.py \

@@ -73,7 +73,7 @@
     {
       "artifact_dir": "/tmp/matrixark-async-storage-matrix-20260623_161434/raft_storage_gate",
       "name": "raft_storage_gate",
-      "note": "missing executable: /root/src/github-services/TemporalStore/build-ubuntu22/release/src/client/example/replication_smoke_example",
+      "note": "missing executable: <repo>/build-ubuntu22/release/src/client/example/replication_smoke_example",
       "status": "not_run_missing_binary"
     }
   ]

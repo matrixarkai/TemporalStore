@@ -5,7 +5,7 @@ This document records the MatrixArk MCP pipeline parity test for the C++ and Rus
 ## Test Command
 
 ```bash
-cd /root/src/github-services/TemporalStore
+cd <repo>
 python3 tools/run_matrixark_mcp_feature_parity.py --backends cpp rust
 ```
 

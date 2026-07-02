@@ -69,7 +69,7 @@ Use a fresh local deployment for C++-backed pipeline and benchmark validation:
 
 ```bash
 BUILD_TYPE=Release \
-OUT_DIR=/mnt/c/Users/Deeproute/Documents/Codex/2026-06-07/what-s-the-topology-for-all/temporalstore-service-fix/output-ubuntu22/release \
+OUT_DIR=<workspace>/Codex/2026-06-07/what-s-the-topology-for-all/temporalstore-service-fix/output-ubuntu22/release \
 DEPLOY_DIR=/tmp/matrixark-cpp-fix-18300 \
 CLUSTER_NAME=matrixarkfix18300 \
 NAMESPACE_NAME=deploy_ns \

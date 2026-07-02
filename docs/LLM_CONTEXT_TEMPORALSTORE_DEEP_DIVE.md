@@ -576,7 +576,7 @@ hashes, and source refs must wrap inside their containers on desktop and mobile.
 Run from:
 
 ```bash
-cd /mnt/c/Users/Deeproute/Documents/Codex/2026-06-07/what-s-the-topology-for-all/temporalstore-service-fix
+cd <workspace>/Codex/2026-06-07/what-s-the-topology-for-all/temporalstore-service-fix
 ```
 
 Schema and corpus:

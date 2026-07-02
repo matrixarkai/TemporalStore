@@ -47,7 +47,7 @@
         "rust_client": {
           "backpressure_rejections_total": 0,
           "backpressure_timeout_ms": 60000,
-          "cli_path": "/mnt/c/Users/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore/sdk/rust/temporalstore/target/release/matrixark_record_log",
+          "cli_path": "<workspace>/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore/sdk/rust/temporalstore/target/release/matrixark_record_log",
           "commands_failed_total": 3,
           "commands_total": 112,
           "direct_sdk_bridge": true,

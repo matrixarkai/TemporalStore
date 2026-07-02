@@ -32,8 +32,8 @@ The stronger evidence points elsewhere: MatrixArk retrieval still includes query
 ## Reproduce
 
 ```bash
-cd /root/src/github-services/TemporalStore
-LIB=/root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so
+cd <repo>
+LIB=<repo>/output-ubuntu22/release/sdk/lib/libbcache2.so
 PYTHONPATH=. TEMPORALSTORE_LIB="$LIB" python3 tools/run_temporalstore_raw_sdk_microbench.py \
   --ops 1000 \
   --write-workers 2 \

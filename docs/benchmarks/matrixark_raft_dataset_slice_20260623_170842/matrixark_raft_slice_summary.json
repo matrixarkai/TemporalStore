@@ -1,15 +1,15 @@
 {
-  "artifact_dir": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842",
+  "artifact_dir": "<repo>/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842",
   "runs": {
     "locomo_q5": {
       "artifacts": {
-        "context_pack_jsonl": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/locomo_q5/locomo_q5_20260623_170846.context_packs.jsonl",
-        "hypotheses_jsonl": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/locomo_q5/locomo_q5_20260623_170846.hypotheses.jsonl",
-        "judge_jsonl": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/locomo_q5/locomo_q5_20260623_170846.judge.jsonl",
-        "progress_json": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/locomo_q5/locomo_q5_20260623_170846.progress.json",
-        "report_json": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/locomo_q5/locomo_q5_20260623_170846.report.json",
-        "report_markdown": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/locomo_q5/locomo_q5_20260623_170846.report.md",
-        "result_json": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/locomo_q5/locomo_q5_20260623_170846.result.json"
+        "context_pack_jsonl": "<repo>/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/locomo_q5/locomo_q5_20260623_170846.context_packs.jsonl",
+        "hypotheses_jsonl": "<repo>/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/locomo_q5/locomo_q5_20260623_170846.hypotheses.jsonl",
+        "judge_jsonl": "<repo>/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/locomo_q5/locomo_q5_20260623_170846.judge.jsonl",
+        "progress_json": "<repo>/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/locomo_q5/locomo_q5_20260623_170846.progress.json",
+        "report_json": "<repo>/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/locomo_q5/locomo_q5_20260623_170846.report.json",
+        "report_markdown": "<repo>/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/locomo_q5/locomo_q5_20260623_170846.report.md",
+        "result_json": "<repo>/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/locomo_q5/locomo_q5_20260623_170846.result.json"
       },
       "dataset": {
         "answerable_questions_run": 5,
@@ -29,7 +29,7 @@
         "p50_latency_ms": 206.39262199983932,
         "p95_latency_ms": 221.170931996312
       },
-      "report": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/locomo_q5/locomo_q5_20260623_170846.report.json",
+      "report": "<repo>/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/locomo_q5/locomo_q5_20260623_170846.report.json",
       "scores": {
         "answer_bearing_token_density": 0.013347,
         "answer_hit": 0.2,
@@ -46,13 +46,13 @@
     },
     "longmemeval_q5_s5": {
       "artifacts": {
-        "context_pack_jsonl": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/longmemeval_q5_s5/longmemeval_q5_s5_20260623_170857.context_packs.jsonl",
-        "hypotheses_jsonl": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/longmemeval_q5_s5/longmemeval_q5_s5_20260623_170857.hypotheses.jsonl",
-        "judge_jsonl": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/longmemeval_q5_s5/longmemeval_q5_s5_20260623_170857.judge.jsonl",
-        "progress_json": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/longmemeval_q5_s5/longmemeval_q5_s5_20260623_170857.progress.json",
-        "report_json": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/longmemeval_q5_s5/longmemeval_q5_s5_20260623_170857.report.json",
-        "report_markdown": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/longmemeval_q5_s5/longmemeval_q5_s5_20260623_170857.report.md",
-        "result_json": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/longmemeval_q5_s5/longmemeval_q5_s5_20260623_170857.result.json"
+        "context_pack_jsonl": "<repo>/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/longmemeval_q5_s5/longmemeval_q5_s5_20260623_170857.context_packs.jsonl",
+        "hypotheses_jsonl": "<repo>/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/longmemeval_q5_s5/longmemeval_q5_s5_20260623_170857.hypotheses.jsonl",
+        "judge_jsonl": "<repo>/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/longmemeval_q5_s5/longmemeval_q5_s5_20260623_170857.judge.jsonl",
+        "progress_json": "<repo>/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/longmemeval_q5_s5/longmemeval_q5_s5_20260623_170857.progress.json",
+        "report_json": "<repo>/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/longmemeval_q5_s5/longmemeval_q5_s5_20260623_170857.report.json",
+        "report_markdown": "<repo>/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/longmemeval_q5_s5/longmemeval_q5_s5_20260623_170857.report.md",
+        "result_json": "<repo>/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/longmemeval_q5_s5/longmemeval_q5_s5_20260623_170857.result.json"
       },
       "dataset": {
         "answerable_questions_run": 1,
@@ -72,7 +72,7 @@
         "p50_latency_ms": 69.26837598439306,
         "p95_latency_ms": 69.26837598439306
       },
-      "report": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/longmemeval_q5_s5/longmemeval_q5_s5_20260623_170857.report.json",
+      "report": "<repo>/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/longmemeval_q5_s5/longmemeval_q5_s5_20260623_170857.report.json",
       "scores": {
         "answer_bearing_token_density": 0.005838,
         "answer_hit": 0.0,

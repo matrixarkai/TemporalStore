@@ -5,7 +5,7 @@
 This report runs MatrixArk local-backend scale checks for concurrent retrieval workers and larger resource imports. It is intended to expose MatrixArk MCP pipeline behavior without C++/Rust topology noise.
 
 - backend: `local-jsonl`
-- event log: `/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_import_batch20_resource_scale_20260626/matrixark_retrieve_resource_scale.jsonl`
+- event log: `<repo>/docs/benchmarks/matrixark_import_batch20_resource_scale_20260626/matrixark_retrieve_resource_scale.jsonl`
 - status: `passed`
 - seed events: `400`
 - resource fixtures: large text-PDF fallback, large CSV, repo directory

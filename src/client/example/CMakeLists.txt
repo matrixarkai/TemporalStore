@@ -116,7 +116,7 @@ set(BCACHE2_CLIENT_EXAMPLE_BRPC_THRIFT_COMPAT_SOURCES
 foreach(_BRPC_SOURCE_CANDIDATE
         "${BRPC_SOURCE_DIR}"
         "${CMAKE_SOURCE_DIR}/.local/deps-src/brpc"
-        "/root/src/open-source/brpc"
+        "${CMAKE_SOURCE_DIR}/.local/deps-src/brpc"
         "/tmp/brpc-src")
     if(NOT BCACHE2_CLIENT_EXAMPLE_BRPC_THRIFT_PROTOCOL_SOURCE AND
        EXISTS "${_BRPC_SOURCE_CANDIDATE}/src/brpc/policy/thrift_protocol.cpp")

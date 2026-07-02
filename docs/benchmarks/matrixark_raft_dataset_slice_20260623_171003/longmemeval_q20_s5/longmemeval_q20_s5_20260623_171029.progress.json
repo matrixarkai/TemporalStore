@@ -1,7 +1,7 @@
 {
   "partial": false,
   "questions_completed": 1,
-  "report_json": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_raft_dataset_slice_20260623_171003/longmemeval_q20_s5/longmemeval_q20_s5_20260623_171029.report.json",
-  "result_json": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_raft_dataset_slice_20260623_171003/longmemeval_q20_s5/longmemeval_q20_s5_20260623_171029.result.json",
+  "report_json": "<repo>/docs/benchmarks/matrixark_raft_dataset_slice_20260623_171003/longmemeval_q20_s5/longmemeval_q20_s5_20260623_171029.report.json",
+  "result_json": "<repo>/docs/benchmarks/matrixark_raft_dataset_slice_20260623_171003/longmemeval_q20_s5/longmemeval_q20_s5_20260623_171029.result.json",
   "updated_at_ms": 1782259844347
 }

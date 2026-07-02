@@ -2,7 +2,7 @@ set(name noodle-v20210325)
 set(source_dir ${CMAKE_CURRENT_BINARY_DIR}/${name}/source)
 ExternalProject_Add(
     ${name}
-    URL "/mnt/c/Users/Vincent Jiang/Downloads/noodle.zip"
+    URL "<local-downloads>/noodle.zip"
     DOWNLOAD_NAME noodle-v20210325.zip
     PREFIX ${CMAKE_CURRENT_BINARY_DIR}/${name}
     TMP_DIR ${BUILD_INFO_DIR}

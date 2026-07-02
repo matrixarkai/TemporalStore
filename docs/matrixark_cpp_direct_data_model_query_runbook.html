@@ -10,8 +10,8 @@ metaserver: 127.0.0.1:18000
 namespace: deploy_ns
 table: deploy_table
 storage_prefix: matrixark:cpp:query:index:debug:1782231394422
-temporalstore_lib: /root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so
-embedding_model: /root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2
+temporalstore_lib: <repo>/output-ubuntu22/release/sdk/lib/libbcache2.so
+embedding_model: <repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2
 embedding_dim: 384
 ```
 
@@ -25,8 +25,8 @@ first_record: ContextEvent payload read from hget(prefix + ':records:000000', '0
 ## Re-run The Full C++ Flow
 
 ```bash
-cd /root/src/github-services/TemporalStore
-MATRIXARK_EMBEDDING_PROVIDER=oss MATRIXARK_REQUIRE_OSS_EMBEDDINGS=1 MATRIXARK_EMBEDDING_MODEL_PATH=/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2 PYTHONPATH=. TEMPORALSTORE_LIB=/root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so python3 tools/run_matrixark_query_index_debug_flow.py   --backend temporalstore-direct   --metaserver 127.0.0.1:18000   --namespace deploy_ns   --table deploy_table   --temporalstore-lib /root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so   --storage-prefix matrixark:cpp:query:index:debug:$(date +%s%3N)   --artifact-dir .local/context-debug/query-index-cpp-direct-debug
+cd <repo>
+MATRIXARK_EMBEDDING_PROVIDER=oss MATRIXARK_REQUIRE_OSS_EMBEDDINGS=1 MATRIXARK_EMBEDDING_MODEL_PATH=<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2 PYTHONPATH=. TEMPORALSTORE_LIB=<repo>/output-ubuntu22/release/sdk/lib/libbcache2.so python3 tools/run_matrixark_query_index_debug_flow.py   --backend temporalstore-direct   --metaserver 127.0.0.1:18000   --namespace deploy_ns   --table deploy_table   --temporalstore-lib <repo>/output-ubuntu22/release/sdk/lib/libbcache2.so   --storage-prefix matrixark:cpp:query:index:debug:$(date +%s%3N)   --artifact-dir .local/context-debug/query-index-cpp-direct-debug
 ```
 
 ## How Records Are Stored In C++ TemporalStore
@@ -45,7 +45,7 @@ Each hash field is a zero-padded sequence id. The field value is one JSON Matrix
 ## Query All Records By Data Model
 
 ```bash
-cd /root/src/github-services/TemporalStore
+cd <repo>
 PYTHONPATH=sdk/python python3 - &lt;&lt;'PY'
 import json
 from collections import Counter

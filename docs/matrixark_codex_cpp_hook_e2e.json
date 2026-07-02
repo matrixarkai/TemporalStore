@@ -289,7 +289,7 @@
             "segment_provider": {
               "execution_mode": "oss_embedding_model",
               "fallback_used": false,
-              "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+              "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
               "provider": "oss_encoder",
               "segment_count": 4
             },
@@ -679,7 +679,7 @@
     {
       "dim": 384,
       "embedding_type": "session_l0",
-      "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+      "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
       "node_hash": 5902252967796870925,
       "node_path": [
         "account:acct_codex",
@@ -1094,7 +1094,7 @@
     {
       "dim": 384,
       "embedding_type": "event_text",
-      "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+      "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
       "node_hash": 5902252967796870925,
       "node_path": [
         "account:acct_codex",
@@ -2410,7 +2410,7 @@
     {
       "dim": 384,
       "embedding_type": "session_l0",
-      "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+      "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
       "node_hash": 5902252967796870925,
       "node_path": [
         "account:acct_codex",
@@ -2825,7 +2825,7 @@
     {
       "dim": 384,
       "embedding_type": "event_text",
-      "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+      "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
       "node_hash": 5902252967796870925,
       "node_path": [
         "account:acct_codex",

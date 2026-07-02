@@ -24,7 +24,7 @@
 <h2>Why</h2>
 <p>Distributed TemporalStore still uses metaserver for table discovery, placement, partition ownership, multi-node operation, and Raft. Local MatrixArk development should not need that full cluster, so no-metaserver mode persists the same MatrixArk context records into a local record log.</p>
 <h2>Run It</h2>
-<pre>cd /root/src/github-services/TemporalStore
+<pre>cd <repo>
 
 MATRIXARK_LOCAL_MODE=no-metaserver \
 MATRIXARK_TEMPORALSTORE_LOCAL_STORE=/tmp/matrixark-local-cpp.jsonl \

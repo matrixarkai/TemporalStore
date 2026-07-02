@@ -1,4 +1,4 @@
-build_dir=/root/src/temporalstore/build-ubuntu22
+build_dir=<repo>/build-ubuntu22
 runtime_dir=/tmp/temporalstore-data-type-trace-2026-05-27-r2
 meta_count=2
 server_count=2

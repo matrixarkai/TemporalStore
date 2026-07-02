@@ -2346,7 +2346,7 @@ Top selected refs:
 ## 7. How To Reproduce
 
 ```bash
-cd /root/src/github-services/TemporalStore
+cd <repo>
 PYTHONPATH=. python3 tools/run_matrixark_locomo_debug_flow.py > /tmp/matrixark_locomo_debug_flow.json
 ```
 

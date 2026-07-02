@@ -103,7 +103,7 @@ The remaining distinction is intentional: 100K ingest-only validates MatrixArk P
 20K ingest-only sanity run:
 
 ```bash
-TEMPORALSTORE_CONSUMER_REPO=/root/src/github-services/TemporalStore \
+TEMPORALSTORE_CONSUMER_REPO=<repo> \
 python3 third_party/TemporalStoreTestCorpus/tools/run_matrixark_context_storage_benchmark.py \
   --backend local \
   --events 20000 \
@@ -121,7 +121,7 @@ python3 third_party/TemporalStoreTestCorpus/tools/run_matrixark_context_storage_
 100K ingest-only run:
 
 ```bash
-TEMPORALSTORE_CONSUMER_REPO=/root/src/github-services/TemporalStore \
+TEMPORALSTORE_CONSUMER_REPO=<repo> \
 timeout 900 python3 third_party/TemporalStoreTestCorpus/tools/run_matrixark_context_storage_benchmark.py \
   --backend local \
   --events 100000 \

@@ -5,12 +5,12 @@ project hook approval UI.
 
 ## Local Codex Config
 
-Add this server to `C:\Users\Deeproute\.codex\config.toml`:
+Add this server to `<workspace>\.codex\config.toml`:
 
 ```toml
 [mcp_servers.matrixark]
 command = 'wsl.exe'
-args = [ '--cd', '/root/src/github-services/TemporalStore', '-e', 'bash', '-lc', 'exec tools/matrixark_mcp_cpp_server.sh' ]
+args = [ '--cd', '<repo>', '-e', 'bash', '-lc', 'exec tools/matrixark_mcp_cpp_server.sh' ]
 startup_timeout_sec = 120
 ```
 
@@ -18,7 +18,7 @@ The local config on this machine has already been updated and a backup was
 saved at:
 
 ```text
-C:\Users\Deeproute\.codex\config.toml.bak-matrixark-mcp
+<workspace>\.codex\config.toml.bak-matrixark-mcp
 ```
 
 Restart Codex Desktop after editing `config.toml` so it reloads MCP servers.
@@ -33,7 +33,7 @@ MATRIXARK_TEMPORALSTORE_METASERVER=127.0.0.1:18000
 MATRIXARK_TEMPORALSTORE_NAMESPACE=deploy_ns
 MATRIXARK_TEMPORALSTORE_TABLE=deploy_table
 MATRIXARK_TEMPORALSTORE_PREFIX=matrixark:mcp:codex
-TEMPORALSTORE_LIB=/root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so
+TEMPORALSTORE_LIB=<repo>/output-ubuntu22/release/sdk/lib/libbcache2.so
 MATRIXARK_EMBEDDING_PROVIDER=oss
 MATRIXARK_REQUIRE_OSS_EMBEDDINGS=1
 MATRIXARK_UNDERSTANDING_PROVIDER=oss_encoder
@@ -71,7 +71,7 @@ From PowerShell:
 ```powershell
 $req = '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' + "`n"
 Set-Content -NoNewline -Encoding ascii "$env:TEMP\matrixark-mcp-smoke.jsonl" $req
-wsl --cd /root/src/github-services/TemporalStore -e bash -lc 'timeout 30s tools/matrixark_mcp_cpp_server.sh --line-json < /mnt/c/Users/Deeproute/AppData/Local/Temp/matrixark-mcp-smoke.jsonl | head -c 500'
+wsl --cd <repo> -e bash -lc 'timeout 30s tools/matrixark_mcp_cpp_server.sh --line-json < <workspace>/AppData/Local/Temp/matrixark-mcp-smoke.jsonl | head -c 500'
 ```
 
 Expected output starts with:

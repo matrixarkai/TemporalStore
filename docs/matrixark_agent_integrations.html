@@ -205,19 +205,19 @@ same-session threshold / stop / compact / idle / manual commit
 Generate config snippets:
 
 ```bash
-cd /root/src/github-services/TemporalStore
+cd <repo>
 python3 tools/matrixark_agent_config.py --client all
 python3 tools/matrixark_agent_config.py --client policy
 ```
 
 ### Codex Desktop
 
-Add to `C:\Users\&lt;you&gt;\.codex\config.toml`:
+Add to `%USERPROFILE%\.codex\config.toml`:
 
 ```toml
 [mcp_servers.matrixark]
 command = &#39;wsl.exe&#39;
-args = [ &#39;--cd&#39;, &#39;/root/src/github-services/TemporalStore&#39;, &#39;-e&#39;, &#39;bash&#39;, &#39;-lc&#39;, &#39;exec tools/matrixark_mcp_cpp_server.sh&#39; ]
+args = [ &#39;--cd&#39;, &#39;<repo>&#39;, &#39;-e&#39;, &#39;bash&#39;, &#39;-lc&#39;, &#39;exec tools/matrixark_mcp_cpp_server.sh&#39; ]
 startup_timeout_sec = 120
 ```
 
@@ -234,7 +234,7 @@ Add to Claude Desktop&#39;s MCP config file:
     &quot;matrixark&quot;: {
       &quot;args&quot;: [
         &quot;--cd&quot;,
-        &quot;/root/src/github-services/TemporalStore&quot;,
+        &quot;<repo>&quot;,
         &quot;-e&quot;,
         &quot;bash&quot;,
         &quot;-lc&quot;,
@@ -293,7 +293,7 @@ Use the same MCP server shape:
       &quot;command&quot;: &quot;wsl.exe&quot;,
       &quot;args&quot;: [
         &quot;--cd&quot;,
-        &quot;/root/src/github-services/TemporalStore&quot;,
+        &quot;<repo>&quot;,
         &quot;-e&quot;,
         &quot;bash&quot;,
         &quot;-lc&quot;,

@@ -42,7 +42,7 @@ MATRIXARK_EMBEDDING_PROVIDER=oss MATRIXARK_EMBEDDING_MODEL=sentence-transformers
 
 ## Configuration
 
-- Event log: `C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\debug\matrixark_message_resource_trace_oss_20260628_final\matrixark_message_resource_debug_trace.jsonl`
+- Event log: `<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\debug\matrixark_message_resource_trace_oss_20260628_final\matrixark_message_resource_debug_trace.jsonl`
 - Embedding model: `sentence-transformers/all-MiniLM-L6-v2`
 - Embedding execution mode: `oss_embedding_model`
 - Query: `What is the current Project Aurora GPU approval, owner, budget cap, deadline, and runbook blocker?`
@@ -111,41 +111,41 @@ MATRIXARK_EMBEDDING_PROVIDER=oss MATRIXARK_EMBEDDING_MODEL=sentence-transformers
 
 |raw_uri|title|line_count|
 |---|---|---|
-|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|Project Aurora GPU Approval Packet|5|
-|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|GPU Procurement Runbook|4|
-|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|Budget Update Memo|4|
-|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|Project Aurora GPU Policy|6|
-|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|Project Aurora GPU Troubleshooting|4|
+|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|Project Aurora GPU Approval Packet|5|
+|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|GPU Procurement Runbook|4|
+|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|Budget Update Memo|4|
+|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|Project Aurora GPU Policy|6|
+|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|Project Aurora GPU Troubleshooting|4|
 
 ## Resource Import Tasks
 
 |status|raw_uri|resource_type|chunk_count|resource_fact_count|resource_entity_count|metrics|
 |---|---|---|---|---|---|---|
-|queued|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|pdf|||||
-|running|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|pdf|||||
-|completed|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|pdf|1|7|7|{"chunk_count": 1, "cloud_bucket": "", "cloud_key": "", "dedupe_count": 0, "duration_ms": 570.235, "embedding_count":...|
-|queued|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|pdf|||||
-|running|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|pdf|||||
-|completed|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|pdf|1|3|3|{"chunk_count": 1, "cloud_bucket": "", "cloud_key": "", "dedupe_count": 0, "duration_ms": 285.585, "embedding_count":...|
-|queued|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|pdf|||||
-|running|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|pdf|||||
-|completed|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|pdf|1|5|5|{"chunk_count": 1, "cloud_bucket": "", "cloud_key": "", "dedupe_count": 0, "duration_ms": 511.115, "embedding_count":...|
-|queued|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|md|||||
-|running|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|md|||||
-|completed|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|md|1|7|7|{"chunk_count": 1, "cloud_bucket": "", "cloud_key": "", "dedupe_count": 0, "duration_ms": 410.167, "embedding_count":...|
-|queued|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|md|||||
-|running|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|md|||||
-|completed|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|md|1|4|4|{"chunk_count": 1, "cloud_bucket": "", "cloud_key": "", "dedupe_count": 0, "duration_ms": 288.481, "embedding_count":...|
+|queued|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|pdf|||||
+|running|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|pdf|||||
+|completed|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|pdf|1|7|7|{"chunk_count": 1, "cloud_bucket": "", "cloud_key": "", "dedupe_count": 0, "duration_ms": 570.235, "embedding_count":...|
+|queued|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|pdf|||||
+|running|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|pdf|||||
+|completed|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|pdf|1|3|3|{"chunk_count": 1, "cloud_bucket": "", "cloud_key": "", "dedupe_count": 0, "duration_ms": 285.585, "embedding_count":...|
+|queued|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|pdf|||||
+|running|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|pdf|||||
+|completed|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|pdf|1|5|5|{"chunk_count": 1, "cloud_bucket": "", "cloud_key": "", "dedupe_count": 0, "duration_ms": 511.115, "embedding_count":...|
+|queued|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|md|||||
+|running|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|md|||||
+|completed|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|md|1|7|7|{"chunk_count": 1, "cloud_bucket": "", "cloud_key": "", "dedupe_count": 0, "duration_ms": 410.167, "embedding_count":...|
+|queued|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|md|||||
+|running|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|md|||||
+|completed|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|md|1|4|4|{"chunk_count": 1, "cloud_bucket": "", "cloud_key": "", "dedupe_count": 0, "duration_ms": 288.481, "embedding_count":...|
 
 ## Resource Chunks
 
 |chunk_hash|raw_uri|source_ref|token_estimate|metadata.unit_kind|metadata.content_hash|text|
 |---|---|---|---|---|---|---|
-|3750474927497957967|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|51|pdf_page|49199ad5bd94964c|Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Own...|
-|6301162950114605128|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|43|pdf_page|7aaae94b56b51807|GPU Procurement Runbook Procedure: Attach finance approval before vendor selection. Procedure: Compare primary and ba...|
-|6163736819091212152|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|48|pdf_page|87731a0bb7829d5c|Budget Update Memo Update: The backup GPU quote increased the cap from 42000 dollars to 45000 dollars. Current state:...|
-|4282638256385582682|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|47|markdown_section|08cc296494df3867|# Project Aurora GPU Policy Decision: Alice from finance approved the GPU purchase. Owner: Bob owns procurement and v...|
-|7984327653702107605|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|39|markdown_section|5d8de2f72f13fbb0|# Troubleshooting If vendor selection fails, first verify the finance approval attachment. If the backup quote is use...|
+|3750474927497957967|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|51|pdf_page|49199ad5bd94964c|Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Own...|
+|6301162950114605128|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|43|pdf_page|7aaae94b56b51807|GPU Procurement Runbook Procedure: Attach finance approval before vendor selection. Procedure: Compare primary and ba...|
+|6163736819091212152|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|48|pdf_page|87731a0bb7829d5c|Budget Update Memo Update: The backup GPU quote increased the cap from 42000 dollars to 45000 dollars. Current state:...|
+|4282638256385582682|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|47|markdown_section|08cc296494df3867|# Project Aurora GPU Policy Decision: Alice from finance approved the GPU purchase. Owner: Bob owns procurement and v...|
+|7984327653702107605|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|39|markdown_section|5d8de2f72f13fbb0|# Troubleshooting If vendor selection fails, first verify the finance approval attachment. If the backup quote is use...|
 
 ## Extracted Events
 
@@ -159,36 +159,36 @@ MATRIXARK_EMBEDDING_PROVIDER=oss MATRIXARK_EMBEDDING_MODEL=sentence-transformers
 |8834770380780120646||||assistant: The active deadline is July 15, 2026. Vendor selection requires the finance approval attachment.||
 |8302553526848360430||||user: Correction: Alice raised the cap to 45000 dollars after the backup GPU quote came in.||
 |563907202553087797||||assistant: Updated: the current Project Aurora GPU budget cap is 45000 dollars.||
-|6777842484043795488||||resource_decision: Alice approved the Project Aurora GPU purchase after finance review|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|2851569980115057861||||resource_owner: Bob owns procurement and vendor coordination|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|8868504277450003874||||resource_cost: Current approved cap is 45000 dollars|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|2805366902134763703||||resource_deadline: Purchase order must be ready by July 15, 2026|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|9126288920168708725||||resource_policy: be ready by July 15, 2026|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|6126907253617751783||||resource_approval: Packet|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|8379901460722616416||||resource_risk: Vendor selection is blocked if finance approval is not attached|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|6777842484043795488||||resource_decision: Alice approved the Project Aurora GPU purchase after finance review|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|2851569980115057861||||resource_owner: Bob owns procurement and vendor coordination|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|8868504277450003874||||resource_cost: Current approved cap is 45000 dollars|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|2805366902134763703||||resource_deadline: Purchase order must be ready by July 15, 2026|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|9126288920168708725||||resource_policy: be ready by July 15, 2026|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|6126907253617751783||||resource_approval: Packet|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|8379901460722616416||||resource_risk: Vendor selection is blocked if finance approval is not attached|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |1223074302848556039||||tool: Import PDF resource for MatrixArk parsing: Project Aurora GPU Approval Packet||
-|8491964783980545514||||resource_troubleshooting_step: Procedure: Attach finance approval before vendor selection|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|1869664875747613230||||resource_approval: before vendor selection|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|4113952420644695874||||resource_procedure: Attach finance approval before vendor selection|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|8491964783980545514||||resource_troubleshooting_step: Procedure: Attach finance approval before vendor selection|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|1869664875747613230||||resource_approval: before vendor selection|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|4113952420644695874||||resource_procedure: Attach finance approval before vendor selection|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |6348236857717333149||||tool: Import PDF resource for MatrixArk parsing: GPU Procurement Runbook||
-|5300838132172955992||||resource_cost: Update Memo|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|943575872141984970||||resource_policy: not be used for current-state answers|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|4339776539578185279||||resource_approval: r: Alice confirmed the updated cap|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|8256455490456818829||||resource_risk: 42000 dollars is historical and should not be used for current-state answers|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|5609674049059368910||||resource_procedure: ed the updated cap|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|5300838132172955992||||resource_cost: Update Memo|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|943575872141984970||||resource_policy: not be used for current-state answers|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|4339776539578185279||||resource_approval: r: Alice confirmed the updated cap|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|8256455490456818829||||resource_risk: 42000 dollars is historical and should not be used for current-state answers|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|5609674049059368910||||resource_procedure: ed the updated cap|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |7807306534490412577||||tool: Import PDF resource for MatrixArk parsing: Budget Update Memo||
-|6646553404659991554||||resource_decision: Alice from finance approved the GPU purchase|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|888219254457740353||||resource_owner: Bob owns procurement and vendor coordination|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|7574275614791456210||||resource_cost: The current cap is 45000 dollars|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|5347224513344327521||||resource_deadline: The purchase order must be ready by July 15, 2026|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|5147935230019537673||||resource_policy: Decision: Alice from finance approved the GPU purchase|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|4917084085215386630||||resource_approval: the GPU purchase|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|8075343161373804078||||resource_risk: Vendor selection must stop if finance approval is missing|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|6646553404659991554||||resource_decision: Alice from finance approved the GPU purchase|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|888219254457740353||||resource_owner: Bob owns procurement and vendor coordination|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|7574275614791456210||||resource_cost: The current cap is 45000 dollars|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|5347224513344327521||||resource_deadline: The purchase order must be ready by July 15, 2026|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|5147935230019537673||||resource_policy: Decision: Alice from finance approved the GPU purchase|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|4917084085215386630||||resource_approval: the GPU purchase|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|8075343161373804078||||resource_risk: Vendor selection must stop if finance approval is missing|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |7493566275012183912||||tool: Import Markdown resource for MatrixArk parsing: Project Aurora GPU Policy||
-|4790451760624608033||||resource_owner: missing, assign Bob before creating a purchase order|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|2969439737818155172||||resource_troubleshooting_step: ing|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|5113149353029032617||||resource_approval: attachment|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|899353241953556654||||resource_procedure: the finance approval attachment|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|4790451760624608033||||resource_owner: missing, assign Bob before creating a purchase order|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|2969439737818155172||||resource_troubleshooting_step: ing|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|5113149353029032617||||resource_approval: attachment|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|899353241953556654||||resource_procedure: the finance approval attachment|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 |597910544463915411||||tool: Import Markdown resource for MatrixArk parsing: Project Aurora GPU Troubleshooting||
 
 ## Extracted Entities
@@ -200,32 +200,32 @@ MATRIXARK_EMBEDDING_PROVIDER=oss MATRIXARK_EMBEDDING_MODEL=sentence-transformers
 |5708414255151575681||approval_state|by Alice in finance, pending procurement owner assignment|LLM_MERGE|by Alice in finance, pending procurement owner assignment||
 |8967060400784335657||approval_state|must be attached before vendor selection|LLM_MERGE|must be attached before vendor selection||
 |1722827731307680407||approval_state|attachment|LLM_MERGE|attachment||
-|3068246658486096319||resource_decision|decision:C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-:Alice approved the Project ...|LATEST|resource_decision: Alice approved the Project Aurora GPU purchase after finance review. Source: Project Aurora GPU Ap...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|4941739850541248980||resource_owner|owner:C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-:Bob owns procurement and vendo...|LATEST|resource_owner: Bob owns procurement and vendor coordination. Source: Project Aurora GPU Approval Packet Decision: Al...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|3271993776460714999||resource_cost|cost:C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-:Current approved cap is 45000 d...|LATEST|resource_cost: Current approved cap is 45000 dollars. Source: Project Aurora GPU Approval Packet Decision: Alice appr...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|2084188055938458822||resource_deadline|deadline:C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-:Purchase order must be read...|LATEST|resource_deadline: Purchase order must be ready by July 15, 2026. Source: Project Aurora GPU Approval Packet Decision...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|757728581620685626||resource_policy|policy:C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-:be ready by July 15, 2026|LATEST|resource_policy: be ready by July 15, 2026. Source: Project Aurora GPU Approval Packet Decision: Alice approved the P...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|7360235789622462288||resource_approval|approval:C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-:Packet|LATEST|resource_approval: Packet. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|5625682257466382736||resource_risk|risk:C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-:Vendor selection is blocked if ...|LATEST|resource_risk: Vendor selection is blocked if finance approval is not attached. Source: Project Aurora GPU Approval P...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|7335292191008545134||resource_troubleshooting|troubleshooting:C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-:Procedure: Attach fi...|LATEST|resource_troubleshooting_step: Procedure: Attach finance approval before vendor selection. Source: GPU Procurement Ru...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|5749492756472815569||resource_approval|approval:C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-:before vendor selection|LATEST|resource_approval: before vendor selection. Source: GPU Procurement Runbook Procedure: Attach finance approval before...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|4371870130263697717||resource_procedure|procedure:C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-:Attach finance approval be...|LATEST|resource_procedure: Attach finance approval before vendor selection. Source: GPU Procurement Runbook Procedure: Attac...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|3570688520692967835||resource_cost|cost:C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-:Update Memo|LATEST|resource_cost: Update Memo. Source: Budget Update Memo Update: The backup GPU quote increased the cap from 42000 doll...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|1475629264707668433||resource_policy|policy:C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-:not be used for current-state...|LATEST|resource_policy: not be used for current-state answers. Source: Budget Update Memo Update: The backup GPU quote incre...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|1819713890940081580||resource_approval|approval:C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-:r: Alice confirmed the upda...|LATEST|resource_approval: r: Alice confirmed the updated cap. Source: Budget Update Memo Update: The backup GPU quote increa...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|9203286277593589047||resource_risk|risk:C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-:42000 dollars is historical and...|LATEST|resource_risk: 42000 dollars is historical and should not be used for current-state answers. Source: Budget Update Me...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|3796840776690925669||resource_procedure|procedure:C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-:ed the updated cap|LATEST|resource_procedure: ed the updated cap. Source: Budget Update Memo Update: The backup GPU quote increased the cap fro...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|1790632716293740327||resource_decision|decision:Project Aurora GPU Policy:Alice from finance approved the GPU purchase|LATEST|resource_decision: Alice from finance approved the GPU purchase. Source: # Project Aurora GPU Policy Decision: Alice ...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|6499229581658240168||resource_owner|owner:Project Aurora GPU Policy:Bob owns procurement and vendor coordination|LATEST|resource_owner: Bob owns procurement and vendor coordination. Source: # Project Aurora GPU Policy Decision: Alice fro...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|3678389917035337176||resource_cost|cost:Project Aurora GPU Policy:The current cap is 45000 dollars|LATEST|resource_cost: The current cap is 45000 dollars. Source: # Project Aurora GPU Policy Decision: Alice from finance app...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|5594237035078441302||resource_deadline|deadline:Project Aurora GPU Policy:The purchase order must be ready by July 15, 2026|LATEST|resource_deadline: The purchase order must be ready by July 15, 2026. Source: # Project Aurora GPU Policy Decision: A...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|2601958072599404984||resource_policy|policy:Project Aurora GPU Policy:Decision: Alice from finance approved the GPU purchase|LATEST|resource_policy: Decision: Alice from finance approved the GPU purchase. Source: # Project Aurora GPU Policy Decision...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|6356636754220848834||resource_approval|approval:Project Aurora GPU Policy:the GPU purchase|LATEST|resource_approval: the GPU purchase. Source: # Project Aurora GPU Policy Decision: Alice from finance approved the GP...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|1513792870765019410||resource_risk|risk:Project Aurora GPU Policy:Vendor selection must stop if finance approval is missing|LATEST|resource_risk: Vendor selection must stop if finance approval is missing. Source: # Project Aurora GPU Policy Decisio...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|3575076914436296206||resource_owner|owner:Troubleshooting:missing, assign Bob before creating a purchase order|LATEST|resource_owner: missing, assign Bob before creating a purchase order. Source: # Troubleshooting If vendor selection f...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|7511407509864819253||resource_troubleshooting|troubleshooting:Troubleshooting:ing|LATEST|resource_troubleshooting_step: ing. Source: # Troubleshooting If vendor selection fails, first verify the finance app...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|1522391842502911337||resource_approval|approval:Troubleshooting:attachment|LATEST|resource_approval: attachment. Source: # Troubleshooting If vendor selection fails, first verify the finance approval...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
-|5797362848733353677||resource_procedure|procedure:Troubleshooting:the finance approval attachment|LATEST|resource_procedure: the finance approval attachment. Source: # Troubleshooting If vendor selection fails, first verif...|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|3068246658486096319||resource_decision|decision:<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-:Alice approved the Project ...|LATEST|resource_decision: Alice approved the Project Aurora GPU purchase after finance review. Source: Project Aurora GPU Ap...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|4941739850541248980||resource_owner|owner:<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-:Bob owns procurement and vendo...|LATEST|resource_owner: Bob owns procurement and vendor coordination. Source: Project Aurora GPU Approval Packet Decision: Al...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|3271993776460714999||resource_cost|cost:<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-:Current approved cap is 45000 d...|LATEST|resource_cost: Current approved cap is 45000 dollars. Source: Project Aurora GPU Approval Packet Decision: Alice appr...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|2084188055938458822||resource_deadline|deadline:<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-:Purchase order must be read...|LATEST|resource_deadline: Purchase order must be ready by July 15, 2026. Source: Project Aurora GPU Approval Packet Decision...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|757728581620685626||resource_policy|policy:<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-:be ready by July 15, 2026|LATEST|resource_policy: be ready by July 15, 2026. Source: Project Aurora GPU Approval Packet Decision: Alice approved the P...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|7360235789622462288||resource_approval|approval:<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-:Packet|LATEST|resource_approval: Packet. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|5625682257466382736||resource_risk|risk:<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-:Vendor selection is blocked if ...|LATEST|resource_risk: Vendor selection is blocked if finance approval is not attached. Source: Project Aurora GPU Approval P...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|7335292191008545134||resource_troubleshooting|troubleshooting:<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-:Procedure: Attach fi...|LATEST|resource_troubleshooting_step: Procedure: Attach finance approval before vendor selection. Source: GPU Procurement Ru...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|5749492756472815569||resource_approval|approval:<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-:before vendor selection|LATEST|resource_approval: before vendor selection. Source: GPU Procurement Runbook Procedure: Attach finance approval before...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|4371870130263697717||resource_procedure|procedure:<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-:Attach finance approval be...|LATEST|resource_procedure: Attach finance approval before vendor selection. Source: GPU Procurement Runbook Procedure: Attac...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|3570688520692967835||resource_cost|cost:<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-:Update Memo|LATEST|resource_cost: Update Memo. Source: Budget Update Memo Update: The backup GPU quote increased the cap from 42000 doll...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|1475629264707668433||resource_policy|policy:<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-:not be used for current-state...|LATEST|resource_policy: not be used for current-state answers. Source: Budget Update Memo Update: The backup GPU quote incre...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|1819713890940081580||resource_approval|approval:<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-:r: Alice confirmed the upda...|LATEST|resource_approval: r: Alice confirmed the updated cap. Source: Budget Update Memo Update: The backup GPU quote increa...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|9203286277593589047||resource_risk|risk:<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-:42000 dollars is historical and...|LATEST|resource_risk: 42000 dollars is historical and should not be used for current-state answers. Source: Budget Update Me...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|3796840776690925669||resource_procedure|procedure:<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-:ed the updated cap|LATEST|resource_procedure: ed the updated cap. Source: Budget Update Memo Update: The backup GPU quote increased the cap fro...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|1790632716293740327||resource_decision|decision:Project Aurora GPU Policy:Alice from finance approved the GPU purchase|LATEST|resource_decision: Alice from finance approved the GPU purchase. Source: # Project Aurora GPU Policy Decision: Alice ...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|6499229581658240168||resource_owner|owner:Project Aurora GPU Policy:Bob owns procurement and vendor coordination|LATEST|resource_owner: Bob owns procurement and vendor coordination. Source: # Project Aurora GPU Policy Decision: Alice fro...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|3678389917035337176||resource_cost|cost:Project Aurora GPU Policy:The current cap is 45000 dollars|LATEST|resource_cost: The current cap is 45000 dollars. Source: # Project Aurora GPU Policy Decision: Alice from finance app...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|5594237035078441302||resource_deadline|deadline:Project Aurora GPU Policy:The purchase order must be ready by July 15, 2026|LATEST|resource_deadline: The purchase order must be ready by July 15, 2026. Source: # Project Aurora GPU Policy Decision: A...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|2601958072599404984||resource_policy|policy:Project Aurora GPU Policy:Decision: Alice from finance approved the GPU purchase|LATEST|resource_policy: Decision: Alice from finance approved the GPU purchase. Source: # Project Aurora GPU Policy Decision...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|6356636754220848834||resource_approval|approval:Project Aurora GPU Policy:the GPU purchase|LATEST|resource_approval: the GPU purchase. Source: # Project Aurora GPU Policy Decision: Alice from finance approved the GP...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|1513792870765019410||resource_risk|risk:Project Aurora GPU Policy:Vendor selection must stop if finance approval is missing|LATEST|resource_risk: Vendor selection must stop if finance approval is missing. Source: # Project Aurora GPU Policy Decisio...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|3575076914436296206||resource_owner|owner:Troubleshooting:missing, assign Bob before creating a purchase order|LATEST|resource_owner: missing, assign Bob before creating a purchase order. Source: # Troubleshooting If vendor selection f...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|7511407509864819253||resource_troubleshooting|troubleshooting:Troubleshooting:ing|LATEST|resource_troubleshooting_step: ing. Source: # Troubleshooting If vendor selection fails, first verify the finance app...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|1522391842502911337||resource_approval|approval:Troubleshooting:attachment|LATEST|resource_approval: attachment. Source: # Troubleshooting If vendor selection fails, first verify the finance approval...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
+|5797362848733353677||resource_procedure|procedure:Troubleshooting:the finance approval attachment|LATEST|resource_procedure: the finance approval attachment. Source: # Troubleshooting If vendor selection fails, first verif...|<workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|
 
 ## Summaries
 
@@ -248,9 +248,9 @@ MATRIXARK_EMBEDDING_PROVIDER=oss MATRIXARK_EMBEDDING_MODEL=sentence-transformers
 |node_l0||["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|event_count_threshold|tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session / conversation:project_aurora :: user: Alice...||
 |node_l1||["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|event_count_threshold|Context node tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session / conversation:project_aurora. ...||
 |batch_l0|8702327639111135591|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistan...||
-|resource_l0|3827738995311746422|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||resource: C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalSt...|[3750474927497957967]|
+|resource_l0|3827738995311746422|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||resource: <workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalSt...|[3750474927497957967]|
 |session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
-|resource_l0|2921352368275358123|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||resource: C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalSt...|[6301162950114605128]|
+|resource_l0|2921352368275358123|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||resource: <workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalSt...|[6301162950114605128]|
 |node_l0||["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session"]|has_child_summaries|tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session :: user: Alice from finance approved the GPU...||
 |node_l1||["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session. Rich overview: user: Alice fro...||
 |node_l0||["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|event_count_threshold|tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session / conversation:project_aurora :: user: Alice...||
@@ -262,15 +262,15 @@ MATRIXARK_EMBEDDING_PROVIDER=oss MATRIXARK_EMBEDDING_MODEL=sentence-transformers
 |node_l1||["tenant:tenant_codex", "user:deeproute"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute. Rich overview: user: Alice from finance approved the GPU purchase ...||
 |node_l0||["tenant:tenant_codex", "user:deeproute", "resources"]|has_child_summaries|tenant:tenant_codex / user:deeproute / resources :: user: Alice from finance approved the GPU purchase request for Pr...||
 |node_l1||["tenant:tenant_codex", "user:deeproute", "resources"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute / resources. Rich overview: user: Alice from finance approved the G...||
-|resource_l0|275814558557117773|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||resource: C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalSt...|[6163736819091212152]|
+|resource_l0|275814558557117773|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||resource: <workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalSt...|[6163736819091212152]|
 |node_l0||["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora"]|has_child_summaries|tenant:tenant_codex / user:deeproute / resources / project_aurora :: user: Alice from finance approved the GPU purcha...||
 |node_l1||["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute / resources / project_aurora. Rich overview: user: Alice from finan...||
 |node_l0||["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|event_count_threshold|tenant:tenant_codex / user:deeproute / resources / project_aurora / gpu_procurement :: Project Aurora GPU Approval Pa...||
 |node_l1||["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|event_count_threshold|Context node tenant:tenant_codex / user:deeproute / resources / project_aurora / gpu_procurement. Rich overview: Proj...||
 |session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
-|resource_l0|4343814698335980889|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||resource: C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalSt...|[4282638256385582682]|
+|resource_l0|4343814698335980889|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||resource: <workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalSt...|[4282638256385582682]|
 |session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
-|resource_l0|5732956182573060322|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||resource: C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalSt...|[7984327653702107605]|
+|resource_l0|5732956182573060322|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||resource: <workspace>\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalSt...|[7984327653702107605]|
 |node_l0||["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session"]|has_child_summaries|tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session :: user: Alice from finance approved the GPU...||
 |node_l1||["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session. Rich overview: user: Alice fro...||
 |node_l0||["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|event_count_threshold|tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session / conversation:project_aurora :: user: Alice...||
@@ -620,7 +620,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
     "refs": [
       {
         "access_decision": "allowed_by_scope",
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -675,7 +675,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "resource_version": "",
         "score": 0.855877,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
+        "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
         "stale_or_superseded": false,
         "token_cost": 47,
         "token_estimate": 47,
@@ -683,7 +683,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -738,7 +738,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "resource_version": "",
         "score": 0.854578,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
+        "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
         "stale_or_superseded": false,
         "token_cost": 47,
         "token_estimate": 47,
@@ -746,7 +746,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -801,7 +801,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "resource_version": "",
         "score": 0.853552,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
+        "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
         "stale_or_superseded": false,
         "token_cost": 47,
         "token_estimate": 47,
@@ -809,7 +809,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -864,7 +864,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "resource_version": "",
         "score": 0.853508,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
+        "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
         "stale_or_superseded": false,
         "token_cost": 47,
         "token_estimate": 47,
@@ -872,7 +872,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -927,7 +927,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "resource_version": "",
         "score": 0.845036,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
+        "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
         "stale_or_superseded": false,
         "token_cost": 47,
         "token_estimate": 47,
@@ -935,7 +935,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -990,7 +990,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "resource_version": "",
         "score": 0.842818,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
+        "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
         "stale_or_superseded": false,
         "token_cost": 47,
         "token_estimate": 47,
@@ -998,7 +998,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -1053,7 +1053,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "resource_version": "",
         "score": 0.843941,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
+        "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 51,
         "token_estimate": 51,
@@ -1061,7 +1061,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -1116,7 +1116,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "resource_version": "",
         "score": 0.837403,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
+        "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 51,
         "token_estimate": 51,
@@ -1124,7 +1124,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -1179,7 +1179,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "resource_version": "",
         "score": 0.835875,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
+        "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 51,
         "token_estimate": 51,
@@ -1187,7 +1187,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -1242,7 +1242,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "resource_version": "",
         "score": 0.835667,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
+        "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 51,
         "token_estimate": 51,
@@ -1250,7 +1250,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -1305,7 +1305,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "resource_version": "",
         "score": 0.824074,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
+        "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 51,
         "token_estimate": 51,
@@ -1313,7 +1313,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -1368,7 +1368,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "resource_version": "",
         "score": 0.822802,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
+        "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 51,
         "token_estimate": 51,
@@ -1376,7 +1376,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_budget_update.pdf#page=1",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_budget_update.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -1431,7 +1431,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "resource_version": "",
         "score": 0.713947,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_budget_update.pdf#page=1",
+        "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_budget_update.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 48,
         "token_estimate": 48,
@@ -1439,7 +1439,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_budget_update.pdf#page=1",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_budget_update.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -1494,7 +1494,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "resource_version": "",
         "score": 0.711763,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_budget_update.pdf#page=1",
+        "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_budget_update.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 48,
         "token_estimate": 48,
@@ -1502,7 +1502,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_budget_update.pdf#page=1",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_budget_update.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -1557,7 +1557,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "resource_version": "",
         "score": 0.711048,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_budget_update.pdf#page=1",
+        "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_budget_update.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 48,
         "token_estimate": 48,
@@ -1565,7 +1565,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_budget_update.pdf#page=1",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_budget_update.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -1620,7 +1620,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "resource_version": "",
         "score": 0.706887,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_budget_update.pdf#page=1",
+        "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_budget_update.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 48,
         "token_estimate": 48,
@@ -1628,7 +1628,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_runbook.pdf#page=1",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_runbook.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -1683,7 +1683,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "resource_version": "",
         "score": 0.660742,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_runbook.pdf#page=1",
+        "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_runbook.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 43,
         "token_estimate": 43,
@@ -1691,7 +1691,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_runbook.pdf#page=1",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_runbook.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -1746,7 +1746,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "resource_version": "",
         "score": 0.660084,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_runbook.pdf#page=1",
+        "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_runbook.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 43,
         "token_estimate": 43,
@@ -1754,7 +1754,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_troubleshooting.md#heading=troubleshooting",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_troubleshooting.md#heading=troubleshooting",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -1809,7 +1809,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "resource_version": "",
         "score": 0.642647,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_troubleshooting.md#heading=troubleshooting",
+        "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_troubleshooting.md#heading=troubleshooting",
         "stale_or_superseded": false,
         "token_cost": 39,
         "token_estimate": 39,
@@ -1817,7 +1817,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_troubleshooting.md#heading=troubleshooting",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_troubleshooting.md#heading=troubleshooting",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -1872,7 +1872,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "resource_version": "",
         "score": 0.636332,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_troubleshooting.md#heading=troubleshooting",
+        "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_troubleshooting.md#heading=troubleshooting",
         "stale_or_superseded": false,
         "token_cost": 39,
         "token_estimate": 39,
@@ -1880,7 +1880,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_troubleshooting.md#heading=troubleshooting",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_troubleshooting.md#heading=troubleshooting",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -1935,7 +1935,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "resource_version": "",
         "score": 0.626121,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_troubleshooting.md#heading=troubleshooting",
+        "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_troubleshooting.md#heading=troubleshooting",
         "stale_or_superseded": false,
         "token_cost": 39,
         "token_estimate": 39,
@@ -2303,7 +2303,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "score": 0.905064,
       "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
       "source_chunk_hash": 4282638256385582682,
-      "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
+      "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
       "sparse_score": 0.8571428571428571,
       "text": "# Project Aurora GPU Policy\nDecision: Alice from finance approved the GPU purchase.\nOwner: Bob owns procurement and vendor coordination.\nBudget: The current cap is 45000 dollars.\nDeadline: The purchase order must be ready by July 15, 2026.\nBlocker: Vendor selection must stop if finance approval is missing.",
       "time_score": 1.0,
@@ -2374,7 +2374,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "score": 0.882824,
       "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
       "source_chunk_hash": 3750474927497957967,
-      "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
+      "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
       "sparse_score": 0.7857142857142857,
       "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
       "time_score": 1.0,
@@ -2396,7 +2396,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "user_id": "deeproute"
       },
       "business_score": 0.5,
-      "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
+      "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
       "context_class": "resource_chunk",
       "deployment_scope": "local",
       "embedding_score": 0.64833,
@@ -2417,7 +2417,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "unit_kind:markdown_section"
       ],
       "metadata": {
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
         "content_hash": "08cc296494df3867",
         "heading": "Project Aurora GPU Policy",
         "heading_path": [
@@ -2437,7 +2437,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "packing_policy": "current_state",
       "packing_score": 0.996271,
       "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
-      "raw_uri": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md",
+      "raw_uri": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md",
       "recall_path": "primary_resource_skill",
       "ref_hash": 4282638256385582682,
       "ref_type": "resource_chunk",
@@ -2446,11 +2446,11 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "scope": {},
       "score": 0.896271,
       "selection_reason": "selected by tree path, secondary indexes, and resource/skill hybrid score",
-      "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
+      "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
       "sparse_score": 0.8571428571428571,
       "stale_or_superseded": false,
       "supersedes_chunk_hash": null,
-      "text": "resource C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy: # Project Aurora GPU Policy\nDecision: Alice from finance approved the GPU purchase.\nOwner: Bob owns procurement and vendor coordination.\nBudget: The current cap is 45000 dollars.\nDeadline: The purchase order must be ready by July 15, 2026.\nBlocker: Vendor selection must stop if finance approval is missing.",
+      "text": "resource C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy: # Project Aurora GPU Policy\nDecision: Alice from finance approved the GPU purchase.\nOwner: Bob owns procurement and vendor coordination.\nBudget: The current cap is 45000 dollars.\nDeadline: The purchase order must be ready by July 15, 2026.\nBlocker: Vendor selection must stop if finance approval is missing.",
       "time_score": 1.0,
       "token_estimate": 97,
       "updated_at_ms": 1782689965721,
@@ -2471,7 +2471,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "user_id": "deeproute"
       },
       "business_score": 0.5,
-      "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
+      "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
       "context_class": "resource_chunk",
       "deployment_scope": "local",
       "embedding_score": 0.650842,
@@ -2491,7 +2491,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "unit_kind:pdf_page"
       ],
       "metadata": {
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
         "content_hash": "49199ad5bd94964c",
         "page": 1,
         "raw_bytes_stored": false,
@@ -2507,7 +2507,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "packing_policy": "current_state",
       "packing_score": 0.978039,
       "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
-      "raw_uri": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf",
+      "raw_uri": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf",
       "recall_path": "primary_resource_skill",
       "ref_hash": 3750474927497957967,
       "ref_type": "resource_chunk",
@@ -2516,11 +2516,11 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "scope": {},
       "score": 0.878039,
       "selection_reason": "selected by tree path, secondary indexes, and resource/skill hybrid score",
-      "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
+      "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
       "sparse_score": 0.7857142857142857,
       "stale_or_superseded": false,
       "supersedes_chunk_hash": null,
-      "text": "resource C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1: Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+      "text": "resource C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1: Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
       "time_score": 1.0,
       "token_estimate": 98,
       "updated_at_ms": 1782689963978,
@@ -2656,7 +2656,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "score": 0.769954,
       "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
       "source_chunk_hash": 6163736819091212152,
-      "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_budget_update.pdf#page=1",
+      "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_budget_update.pdf#page=1",
       "sparse_score": 0.5,
       "text": "Budget Update Memo\nUpdate: The backup GPU quote increased the cap from 42000 dollars to 45000 dollars.\nCurrent state: 45000 dollars is the valid active budget cap.\nStale blocker: 42000 dollars is historical and should not be used for current-state answers.\nApprover: Alice confirmed the updated cap.",
       "time_score": 1.0,
@@ -2771,7 +2771,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "score": 0.713171,
       "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
       "source_chunk_hash": 6301162950114605128,
-      "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_runbook.pdf#page=1",
+      "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_runbook.pdf#page=1",
       "sparse_score": 0.35714285714285715,
       "text": "GPU Procurement Runbook\nProcedure: Attach finance approval before vendor selection.\nProcedure: Compare primary and backup GPU quotes before purchase order creation.\nTroubleshooting: If approval attachment is missing, notify Alice and stop vendor selection.\nAudit: Store final vendor selection evidence with the purchase order.",
       "time_score": 1.0,
@@ -2793,7 +2793,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "user_id": "deeproute"
       },
       "business_score": 0.5,
-      "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_budget_update.pdf#page=1",
+      "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_budget_update.pdf#page=1",
       "context_class": "resource_chunk",
       "deployment_scope": "local",
       "embedding_score": 0.509445,
@@ -2813,7 +2813,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "unit_kind:pdf_page"
       ],
       "metadata": {
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_budget_update.pdf#page=1",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_budget_update.pdf#page=1",
         "content_hash": "87731a0bb7829d5c",
         "page": 1,
         "raw_bytes_stored": false,
@@ -2829,7 +2829,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "packing_policy": "current_state",
       "packing_score": 0.873876,
       "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
-      "raw_uri": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_budget_update.pdf",
+      "raw_uri": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_budget_update.pdf",
       "recall_path": "primary_resource_skill",
       "ref_hash": 6163736819091212152,
       "ref_type": "resource_chunk",
@@ -2838,11 +2838,11 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "scope": {},
       "score": 0.773876,
       "selection_reason": "selected by tree path, secondary indexes, and resource/skill hybrid score",
-      "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_budget_update.pdf#page=1",
+      "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_budget_update.pdf#page=1",
       "sparse_score": 0.5,
       "stale_or_superseded": false,
       "supersedes_chunk_hash": null,
-      "text": "resource C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_budget_update.pdf C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_budget_update.pdf#page=1: Budget Update Memo\nUpdate: The backup GPU quote increased the cap from 42000 dollars to 45000 dollars.\nCurrent state: 45000 dollars is the valid active budget cap.\nStale blocker: 42000 dollars is historical and should not be used for current-state answers.\nApprover: Alice confirmed the updated cap.",
+      "text": "resource C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_budget_update.pdf C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_budget_update.pdf#page=1: Budget Update Memo\nUpdate: The backup GPU quote increased the cap from 42000 dollars to 45000 dollars.\nCurrent state: 45000 dollars is the valid active budget cap.\nStale blocker: 42000 dollars is historical and should not be used for current-state answers.\nApprover: Alice confirmed the updated cap.",
       "time_score": 1.0,
       "token_estimate": 95,
       "updated_at_ms": 1782689965087,
@@ -2912,7 +2912,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "score": 0.683719,
       "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
       "source_chunk_hash": 7984327653702107605,
-      "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_troubleshooting.md#heading=troubleshooting",
+      "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_troubleshooting.md#heading=troubleshooting",
       "sparse_score": 0.35714285714285715,
       "text": "# Troubleshooting\nIf vendor selection fails, first verify the finance approval attachment.\nIf the backup quote is used, keep the 45000 dollar cap and cite Alice's approval.\nIf procurement owner is missing, assign Bob before creating a purchase order.",
       "time_score": 1.0,
@@ -2934,7 +2934,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "user_id": "deeproute"
       },
       "business_score": 0.5,
-      "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_runbook.pdf#page=1",
+      "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_runbook.pdf#page=1",
       "context_class": "resource_chunk",
       "deployment_scope": "local",
       "embedding_score": 0.494582,
@@ -2954,7 +2954,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "unit_kind:pdf_page"
       ],
       "metadata": {
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_runbook.pdf#page=1",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_runbook.pdf#page=1",
         "content_hash": "7aaae94b56b51807",
         "page": 1,
         "raw_bytes_stored": false,
@@ -2970,7 +2970,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "packing_policy": "current_state",
       "packing_score": 0.833311,
       "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
-      "raw_uri": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_runbook.pdf",
+      "raw_uri": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_runbook.pdf",
       "recall_path": "primary_resource_skill",
       "ref_hash": 6301162950114605128,
       "ref_type": "resource_chunk",
@@ -2979,11 +2979,11 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "scope": {},
       "score": 0.733311,
       "selection_reason": "selected by tree path, secondary indexes, and resource/skill hybrid score",
-      "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_runbook.pdf#page=1",
+      "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_runbook.pdf#page=1",
       "sparse_score": 0.35714285714285715,
       "stale_or_superseded": false,
       "supersedes_chunk_hash": null,
-      "text": "resource C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_runbook.pdf C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_runbook.pdf#page=1: GPU Procurement Runbook\nProcedure: Attach finance approval before vendor selection.\nProcedure: Compare primary and backup GPU quotes before purchase order creation.\nTroubleshooting: If approval attachment is missing, notify Alice and stop vendor selection.\nAudit: Store final vendor selection evidence with the purchase order.",
+      "text": "resource C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_runbook.pdf C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_runbook.pdf#page=1: GPU Procurement Runbook\nProcedure: Attach finance approval before vendor selection.\nProcedure: Compare primary and backup GPU quotes before purchase order creation.\nTroubleshooting: If approval attachment is missing, notify Alice and stop vendor selection.\nAudit: Store final vendor selection evidence with the purchase order.",
       "time_score": 1.0,
       "token_estimate": 90,
       "updated_at_ms": 1782689964648,
@@ -3004,7 +3004,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "user_id": "deeproute"
       },
       "business_score": 0.5,
-      "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_troubleshooting.md#heading=troubleshooting",
+      "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_troubleshooting.md#heading=troubleshooting",
       "context_class": "resource_chunk",
       "deployment_scope": "local",
       "embedding_score": 0.401375,
@@ -3025,7 +3025,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "unit_kind:markdown_section"
       ],
       "metadata": {
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_troubleshooting.md#heading=troubleshooting",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_troubleshooting.md#heading=troubleshooting",
         "content_hash": "5d8de2f72f13fbb0",
         "heading": "Troubleshooting",
         "heading_path": [
@@ -3045,7 +3045,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "packing_policy": "current_state",
       "packing_score": 0.814087,
       "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
-      "raw_uri": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_troubleshooting.md",
+      "raw_uri": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_troubleshooting.md",
       "recall_path": "primary_resource_skill",
       "ref_hash": 7984327653702107605,
       "ref_type": "resource_chunk",
@@ -3054,11 +3054,11 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "scope": {},
       "score": 0.714087,
       "selection_reason": "selected by tree path, secondary indexes, and resource/skill hybrid score",
-      "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_troubleshooting.md#heading=troubleshooting",
+      "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_troubleshooting.md#heading=troubleshooting",
       "sparse_score": 0.35714285714285715,
       "stale_or_superseded": false,
       "supersedes_chunk_hash": null,
-      "text": "resource C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_troubleshooting.md C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_troubleshooting.md#heading=troubleshooting: # Troubleshooting\nIf vendor selection fails, first verify the finance approval attachment.\nIf the backup quote is used, keep the 45000 dollar cap and cite Alice's approval.\nIf procurement owner is missing, assign Bob before creating a purchase order.",
+      "text": "resource C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_troubleshooting.md C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_troubleshooting.md#heading=troubleshooting: # Troubleshooting\nIf vendor selection fails, first verify the finance approval attachment.\nIf the backup quote is used, keep the 45000 dollar cap and cite Alice's approval.\nIf procurement owner is missing, assign Bob before creating a purchase order.",
       "time_score": 1.0,
       "token_estimate": 86,
       "updated_at_ms": 1782689966250,
@@ -4095,7 +4095,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
     "refs": [
       {
         "access_decision": "allowed_by_scope",
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -4150,7 +4150,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "resource_version": "",
         "score": 0.855877,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
+        "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
         "stale_or_superseded": false,
         "token_cost": 47,
         "token_estimate": 47,
@@ -4158,7 +4158,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -4213,7 +4213,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "resource_version": "",
         "score": 0.854578,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
+        "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
         "stale_or_superseded": false,
         "token_cost": 47,
         "token_estimate": 47,
@@ -4221,7 +4221,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -4276,7 +4276,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "resource_version": "",
         "score": 0.853552,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
+        "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
         "stale_or_superseded": false,
         "token_cost": 47,
         "token_estimate": 47,
@@ -4284,7 +4284,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -4339,7 +4339,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "resource_version": "",
         "score": 0.853508,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
+        "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
         "stale_or_superseded": false,
         "token_cost": 47,
         "token_estimate": 47,
@@ -4347,7 +4347,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -4402,7 +4402,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "resource_version": "",
         "score": 0.845036,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
+        "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
         "stale_or_superseded": false,
         "token_cost": 47,
         "token_estimate": 47,
@@ -4410,7 +4410,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -4465,7 +4465,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "resource_version": "",
         "score": 0.842818,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
+        "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_policy.md#heading=project-aurora-gpu-policy",
         "stale_or_superseded": false,
         "token_cost": 47,
         "token_estimate": 47,
@@ -4473,7 +4473,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -4528,7 +4528,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "resource_version": "",
         "score": 0.843941,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
+        "source_ref": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_resource_trace_oss_20260628_final\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 51,
         "token_estimate": 51,
@@ -4536,7 +4536,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "C:\\Users\\Deeproute\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_reso
+        "citation": "C:\\Users\\LocalUser\\Documents\\Codex\\2026-06-10\\pull-rust-temporalstore-code-from-matrixarkai\\work\\TemporalStore\\docs\\debug\\matrixark_message_reso
 ```
 
 ## Replay

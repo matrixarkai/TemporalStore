@@ -33,7 +33,7 @@ agent / Codex / MCP
 C++ wrapper in no-metaserver mode:
 
 ```bash
-cd /root/src/github-services/TemporalStore
+cd <repo>
 
 MATRIXARK_LOCAL_MODE=no-metaserver \
 MATRIXARK_TEMPORALSTORE_LOCAL_STORE=/tmp/matrixark-local-cpp.jsonl \
@@ -43,7 +43,7 @@ bash tools/matrixark_mcp_cpp_server.sh --line-json
 Rust wrapper in no-metaserver mode:
 
 ```bash
-cd /root/src/github-services/TemporalStore
+cd <repo>
 
 MATRIXARK_LOCAL_MODE=no-metaserver \
 MATRIXARK_TEMPORALSTORE_LOCAL_STORE=/tmp/matrixark-local-rust.jsonl \
@@ -109,7 +109,7 @@ The next native-storage step is a true C++ embedded/single-node backend that boo
 Run the no-metaserver backend through the same parity harness:
 
 ```bash
-cd /root/src/github-services/TemporalStore
+cd <repo>
 PYTHONPATH=. python3 tools/run_matrixark_mcp_backend_parity.py \
   --backends local-nometa \
   --run-id local-nometa-$(date +%Y%m%d_%H%M%S)

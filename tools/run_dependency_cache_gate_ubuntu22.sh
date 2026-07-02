@@ -104,9 +104,9 @@ done
 optional_paths=(
   "/usr/include/isa-l/erasure_code.h"
   "/usr/lib/x86_64-linux-gnu/libthrift.so"
-  "/root/src/github-services/TemporalStore-main-no-deps/build-ubuntu22/release/_open_source_brpc/output/lib/libbrpc.a"
-  "/root/src/cmake-glue/lib/libco.a"
-  "/root/src/cmake-glue/lib/libfiu.a"
+  "<repo>-main-no-deps/build-ubuntu22/release/_open_source_brpc/output/lib/libbrpc.a"
+  "<repo>/cmake-glue/lib/libco.a"
+  "<repo>/cmake-glue/lib/libfiu.a"
 )
 
 for path in "${optional_paths[@]}"; do

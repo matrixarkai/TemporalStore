@@ -16,9 +16,9 @@ The official cleaned LongMemEval_s file is locally available and parity-eligible
 
 This run was intentionally built and executed from a native WSL/Linux filesystem:
 
-- Native repo: `/root/src/github-services/TemporalStore`
+- Native repo: `<repo>`
 - Git commit: `d067854`
-- Build output: `/root/src/github-services/TemporalStore/output-ubuntu22/release`
+- Build output: `<repo>/output-ubuntu22/release`
 - C++ binaries used:
   - `bcache2-metaserver`
   - `bcache2-server`
@@ -42,7 +42,7 @@ python3 tools/run_matrixark_temporalstore_direct_e2e.py \
   --metaserver 127.0.0.1:19700 \
   --namespace matrixark_ns \
   --table matrixark_table \
-  --temporalstore-lib /root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so \
+  --temporalstore-lib <repo>/output-ubuntu22/release/sdk/lib/libbcache2.so \
   --storage-prefix matrixark:cpp:native_async:e2e:run1 \
   --report-json /root/matrixark_cpp_native_async_e2e_run1.json
 ```

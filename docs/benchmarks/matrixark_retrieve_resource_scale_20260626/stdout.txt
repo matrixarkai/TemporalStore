@@ -18,7 +18,7 @@
     "seed_events": 100,
     "understanding_provider": "rules"
   },
-  "event_log": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_retrieve_resource_scale_20260626/matrixark_retrieve_resource_scale.jsonl",
+  "event_log": "<repo>/docs/benchmarks/matrixark_retrieve_resource_scale_20260626/matrixark_retrieve_resource_scale.jsonl",
   "record_counts": {
     "context_child_ref": 9,
     "context_embedding": 1198,
@@ -48,7 +48,7 @@
         "scale",
         "csv"
       ],
-      "path": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_retrieve_resource_scale_20260626/fixtures/large_approvals.csv",
+      "path": "<repo>/docs/benchmarks/matrixark_retrieve_resource_scale_20260626/fixtures/large_approvals.csv",
       "resource_type": "csv",
       "size_bytes": 14727
     },
@@ -58,7 +58,7 @@
         "scale",
         "pdf"
       ],
-      "path": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_retrieve_resource_scale_20260626/fixtures/large_budget_policy.pdf",
+      "path": "<repo>/docs/benchmarks/matrixark_retrieve_resource_scale_20260626/fixtures/large_budget_policy.pdf",
       "resource_type": "pdf",
       "size_bytes": 8688
     },
@@ -69,7 +69,7 @@
         "scale",
         "repo"
       ],
-      "path": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_retrieve_resource_scale_20260626/fixtures/sample_repo",
+      "path": "<repo>/docs/benchmarks/matrixark_retrieve_resource_scale_20260626/fixtures/sample_repo",
       "resource_type": "directory"
     }
   },

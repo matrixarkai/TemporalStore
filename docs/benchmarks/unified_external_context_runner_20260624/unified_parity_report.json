@@ -75,7 +75,7 @@
       "string_set"
     ],
     "context_step_count": 14,
-    "corpus": "/root/src/github-services/TemporalStore/third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json",
+    "corpus": "<repo>/third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json",
     "name": "temporalstore-unified-cpp-rust-corpus",
     "schema_version": 1
   },
@@ -85,24 +85,24 @@
         "/usr/bin/python3",
         "tools/run_temporalstore_unified_tests.py",
         "--corpus",
-        "/root/src/github-services/TemporalStore/third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json",
+        "<repo>/third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json",
         "--validate-only"
       ],
-      "cwd": "/root/src/github-services/TemporalStore",
+      "cwd": "<repo>",
       "duration_s": 0.05,
       "name": "python_schema",
       "returncode": 0,
       "status": "passed",
       "stderr_tail": "",
-      "stdout_tail": "validated temporalstore-unified-cpp-rust-corpus schema=1 cases=127 path=/root/src/github-services/TemporalStore/third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json\n"
+      "stdout_tail": "validated temporalstore-unified-cpp-rust-corpus schema=1 cases=127 path=<repo>/third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json\n"
     },
     {
       "command": [
         "bash",
         "tools/run_cpp_unified_context_contract.sh",
-        "/root/src/github-services/TemporalStore/third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json"
+        "<repo>/third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json"
       ],
-      "cwd": "/root/src/github-services/TemporalStore",
+      "cwd": "<repo>",
       "duration_s": 2.594,
       "name": "cpp_context_contract",
       "returncode": 0,
@@ -120,7 +120,7 @@
         "--test",
         "unified_corpus"
       ],
-      "cwd": "/root/src/github-services/TemporalStore/sdk/rust/temporalstore",
+      "cwd": "<repo>/sdk/rust/temporalstore",
       "duration_s": 0.0,
       "name": "rust_unified_corpus",
       "returncode": null,

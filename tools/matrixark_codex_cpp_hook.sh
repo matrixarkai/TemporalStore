@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="${MATRIXARK_REPO_ROOT:-/root/src/github-services/TemporalStore}"
+ROOT="${MATRIXARK_REPO_ROOT:-<repo>}"
 cd "$ROOT"
 
 export MATRIXARK_MCP_BACKEND="${MATRIXARK_MCP_BACKEND:-temporalstore-direct}"
