@@ -138,6 +138,13 @@ class _CHashEntry(ctypes.Structure):
     ]
 
 
+class _CHashEntryArray(ctypes.Structure):
+    _fields_ = [
+        ("count", ctypes.c_size_t),
+        ("entries", ctypes.POINTER(_CHashEntry)),
+    ]
+
+
 class _CFeaturePoint(ctypes.Structure):
     _fields_ = [
         ("timestamp", ctypes.c_uint64),
@@ -254,6 +261,9 @@ class _Native:
         lib.temporalstore_free_string.restype = None
         lib.temporalstore_string_array_free.argtypes = [ctypes.POINTER(_CStringArray)]
         lib.temporalstore_string_array_free.restype = None
+        if hasattr(lib, "temporalstore_hash_entry_array_free"):
+            lib.temporalstore_hash_entry_array_free.argtypes = [ctypes.POINTER(_CHashEntryArray)]
+            lib.temporalstore_hash_entry_array_free.restype = None
         lib.temporalstore_feature_point_array_free.argtypes = [ctypes.POINTER(_CFeaturePointArray)]
         lib.temporalstore_feature_point_array_free.restype = None
         lib.temporalstore_sequence_feature_row_array_free.argtypes = [
@@ -329,6 +339,15 @@ class _Native:
             ctypes.POINTER(ctypes.c_void_p),
         ]
         lib.temporalstore_hget.restype = ctypes.c_int
+        self.has_hgetall = hasattr(lib, "temporalstore_hgetall")
+        if self.has_hgetall:
+            lib.temporalstore_hgetall.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_char_p,
+                ctypes.POINTER(_CHashEntryArray),
+                ctypes.POINTER(ctypes.c_void_p),
+            ]
+            lib.temporalstore_hgetall.restype = ctypes.c_int
         lib.temporalstore_hdel.argtypes = [
             ctypes.c_void_p,
             ctypes.c_char_p,
@@ -714,6 +733,33 @@ class Client:
             return ctypes.cast(value, ctypes.c_char_p).value.decode("utf-8", errors="replace")
         finally:
             self._native.lib.temporalstore_free_string(value)
+
+    def hgetall(self, key: str) -> List[dict]:
+        if not self._native.has_hgetall:
+            raise NotImplementedError("native hgetall/scan_hash is not available in this TemporalStore library")
+        out = _CHashEntryArray()
+        error = ctypes.c_void_p()
+        code = self._native.lib.temporalstore_hgetall(
+            self._handle, _encode(key), ctypes.byref(out), ctypes.byref(error)
+        )
+        self._native.check(code, error)
+        try:
+            records = []
+            for i in range(out.count):
+                entry = out.entries[i]
+                records.append({
+                    "key": (entry.key or b"").decode("utf-8", errors="replace"),
+                    "field": (entry.field or b"").decode("utf-8", errors="replace"),
+                    "value": (entry.value or b"").decode("utf-8", errors="replace"),
+                    "route_json": (entry.route_json or b"").decode("utf-8", errors="replace"),
+                })
+            return records
+        finally:
+            self._native.lib.temporalstore_hash_entry_array_free(ctypes.byref(out))
+
+    def scan_hash(self, key: str) -> dict:
+        records = self.hgetall(key)
+        return {"ok": True, "count": len(records), "records": records}
 
     def hdel(self, key: str, field: str) -> None:
         error = ctypes.c_void_p()

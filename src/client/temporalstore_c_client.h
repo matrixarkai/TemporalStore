@@ -65,6 +65,11 @@ typedef struct temporalstore_hash_entry {
     const char* route_json;
 } temporalstore_hash_entry_t;
 
+typedef struct temporalstore_hash_entry_array {
+    size_t count;
+    temporalstore_hash_entry_t* entries;
+} temporalstore_hash_entry_array_t;
+
 typedef struct temporalstore_string_array {
     size_t count;
     char** values;
@@ -116,6 +121,7 @@ typedef struct temporalstore_ips_feature_array {
 void temporalstore_options_init(temporalstore_options_t* options);
 void temporalstore_free_string(char* value);
 void temporalstore_string_array_free(temporalstore_string_array_t* array);
+void temporalstore_hash_entry_array_free(temporalstore_hash_entry_array_t* array);
 void temporalstore_feature_point_array_free(temporalstore_feature_point_array_t* array);
 void temporalstore_sequence_feature_row_array_free(
     temporalstore_sequence_feature_row_array_t* array);
@@ -142,6 +148,9 @@ int temporalstore_hset(temporalstore_client_t* client, const char* key, const ch
                        const char* value, char** error_message);
 int temporalstore_hget(temporalstore_client_t* client, const char* key, const char* field,
                        char** value, char** error_message);
+int temporalstore_hgetall(temporalstore_client_t* client, const char* key,
+                          temporalstore_hash_entry_array_t* entries,
+                          char** error_message);
 int temporalstore_hdel(temporalstore_client_t* client, const char* key, const char* field,
                        char** error_message);
 int temporalstore_sadd(temporalstore_client_t* client, const char* key, const char* member,

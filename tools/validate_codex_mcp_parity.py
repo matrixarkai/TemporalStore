@@ -29,8 +29,21 @@ CPP_SERVER = (
 
 REQUIRED_RUST_FILES = [
     ROOT / "crates" / "temporalstore-rust" / "src" / "bin" / "matrixark_record_log.rs",
+    ROOT / "sdk" / "rust" / "temporalstore" / "src" / "bin" / "matrixark_record_log.rs",
+    ROOT / "sdk" / "rust" / "temporalstore" / "src" / "lib.rs",
     ROOT / "tools" / "run_matrixark_mcp_server.sh",
     ROOT / "docs" / "rust_cpp_codex_mcp_integration.md",
+]
+
+REQUIRED_C_ABI_TOKENS = [
+    "temporalstore_hgetall",
+    "temporalstore_hash_entry_array_t",
+    "temporalstore_matrixark_batch_append_records",
+]
+
+REQUIRED_CPP_DIRECT_TOKENS = [
+    "HGetAll",
+    "MatrixArkBatchAppendRecords",
 ]
 
 REQUIRED_BACKEND_TOKENS = [
@@ -96,6 +109,7 @@ def validate_rust_cli_smoke() -> dict[str, object]:
     root = Path(os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_ROOT", "/tmp/temporalstore-mcp-parity-smoke"))
     env = os.environ.copy()
     env["MATRIXARK_TEMPORALSTORE_RUST_ROOT"] = str(root)
+    env["MATRIXARK_RUST_RECORD_LOG_SINGLE_SHOT_DEBUG"] = "1"
     env.setdefault("CARGO_TARGET_DIR", "/tmp/temporalstore-mcp-parity-target")
     request = {
         "op": "put_string",
@@ -154,22 +168,41 @@ def main() -> int:
 
     require_contains(ROOT / "tools" / "run_matrixark_mcp_server.sh", REQUIRED_BACKEND_TOKENS)
     require_contains(ROOT / "docs" / "rust_cpp_codex_mcp_integration.md", REQUIRED_BACKEND_TOKENS + REQUIRED_TOOL_NAMES)
+    rust_engine_tokens = [
+        "health",
+        "put_string",
+        "get_string",
+        "delete",
+        "hset",
+        "hget",
+        "hdel",
+        "hgetall",
+        "scan_hash",
+    ]
+    direct_sdk_tokens = [
+        "health",
+        "hset",
+        "hget",
+        "hgetall",
+        "scan_hash",
+    ]
     require_contains(
         ROOT / "crates" / "temporalstore-rust" / "src" / "bin" / "matrixark_record_log.rs",
-        [
-            "health",
-            "put_string",
-            "get_string",
-            "delete",
-            "hset",
-            "hget",
-            "hdel",
-            "hgetall",
-            "scan_hash",
-            "TemporalEngine",
-            "HashGetAll",
-        ],
+        rust_engine_tokens + ["TemporalEngine", "HashGetAll"],
     )
+    require_contains(
+        ROOT / "sdk" / "rust" / "temporalstore" / "src" / "bin" / "matrixark_record_log.rs",
+        direct_sdk_tokens + ["batch_hget", "matrixark_batch_append_records"],
+    )
+    require_contains(
+        ROOT / "sdk" / "rust" / "temporalstore" / "src" / "lib.rs",
+        ["temporalstore_hgetall", "temporalstore_hash_entry_array_free", "scan_hash", "matrixark_batch_append_records"],
+    )
+    require_contains(ROOT / "src" / "client" / "temporalstore_c_client.h", REQUIRED_C_ABI_TOKENS)
+    require_contains(ROOT / "src" / "client" / "temporalstore_c_client.cc", REQUIRED_C_ABI_TOKENS + ["HGetAll"])
+    require_contains(ROOT / "src" / "client" / "temporalstore_client.h", ["HGetAll", "MatrixArkBatchAppendRecords"])
+    require_contains(ROOT / "src" / "client" / "temporalstore_client.cc", ["HGetAll", "GETALL", "MatrixArkBatchAppendRecords"])
+    require_contains(ROOT / "sdk" / "python" / "temporalstore" / "client.py", ["temporalstore_hgetall", "scan_hash", "matrixark_batch_append_records"])
 
     report = {
         "status": "ok",
