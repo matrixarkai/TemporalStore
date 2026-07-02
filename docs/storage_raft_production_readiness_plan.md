@@ -274,6 +274,29 @@ TS_RAFT_PARITY_TIMEOUT=180s \
 tools/run_raft_distributed_parity.sh
 ```
 
+Focused read-safety evidence:
+
+```bash
+CARGO_TARGET_DIR=/tmp/temporalstore-rust-test-target \
+cargo test -p temporalstore-rust \
+  byteraft_read_safety_fault_matrix_records_partition_and_catchup_evidence \
+  --lib -- --nocapture
+CARGO_TARGET_DIR=/tmp/temporalstore-rust-test-target \
+cargo test -p temporalstore-rust \
+  raft_leader_lease_expiry_blocks_linearizable_reads_and_writes_until_heartbeat \
+  --lib -- --nocapture
+CARGO_TARGET_DIR=/tmp/temporalstore-rust-test-target \
+cargo test -p temporalstore-rust \
+  raft_read_index_and_transfer_reject_lagging_replica \
+  --lib -- --nocapture
+```
+
+Latest local result: all three focused TemporalStore Raft read-safety tests passed. The initial
+180-second local timeout was caused by cold test compilation/setup, not by these read-safety cases
+hanging. With the warmed `/tmp/temporalstore-rust-test-target`, the comprehensive ByteRaft-style
+fault matrix completed in `0.25s`, the stale leader lease test in `0.19s`, and the lagging replica
+read-index/transfer test in `0.11s`.
+
 Strict readiness mode:
 
 ```bash
