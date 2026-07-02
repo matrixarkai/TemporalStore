@@ -157,6 +157,8 @@ class _NativeContextPackClient:
                 "index_postings_read": 9,
                 "compact_index_bucket_used": True,
                 "compact_index_bucket_count": 3,
+                "timeout_count": 0,
+                "fallback_flags": ["native_context_pack"],
                 "correctness_evidence": {
                     "scope_filtering": True,
                     "placement_filtering": True,
@@ -566,6 +568,11 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                     "candidate_cache_hit": True,
                     "index_postings_read": 3,
                     "placement_partitions_touched": 1,
+                    "timeout_count": 2,
+                    "fallback_flags": [
+                        "native_context_pack",
+                        "native_prefilter_no_match_broad_scan_blocked",
+                    ],
                     "correctness_evidence": dict(_SHARED_CORRECTNESS_EVIDENCE),
                 }
             ]
@@ -584,7 +591,13 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(stage_metrics["stage_p95_ms"]["append_queue_wait_ms"], 0.25)
         self.assertEqual(stage_metrics["stage_p95_ms"]["append_engine_ms"], 0.75)
         self.assertEqual(stage_metrics["index_postings_read_avg"], 3.0)
+        self.assertEqual(stage_metrics["timeout_count"], 2)
+        self.assertEqual(
+            stage_metrics["fallback_flags_total"]["native_prefilter_no_match_broad_scan_blocked"],
+            1,
+        )
         self.assertTrue(any(row["metric"] == "pack_p95_ms" for row in result["rows"]))
+        self.assertTrue(any(row["metric"] == "native_timeout_count" for row in result["rows"]))
         self.assertTrue(any(row["metric"] == "append_engine_p95_ms" for row in result["rows"]))
         self.assertTrue(any(row["metric"] == "cache_hit_rate" for row in result["rows"]))
         self.assertTrue(result["status_labels"]["feature_correct"])
@@ -1245,6 +1258,8 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertTrue(result["retrieval_metrics"]["candidate_cache_hit"])
         self.assertEqual(result["retrieval_metrics"]["append_queue_wait_ms"], 0.25)
         self.assertEqual(result["retrieval_metrics"]["append_engine_ms"], 0.75)
+        self.assertEqual(result["retrieval_metrics"]["timeout_count"], 0)
+        self.assertEqual(result["retrieval_metrics"]["fallback_flags"], ["native_context_pack"])
         self.assertEqual(result["retrieval_metrics"]["dropped_refs"], 21)
         self.assertTrue(result["retrieval_metrics"]["native_pack_assembly"])
         self.assertFalse(result["retrieval_metrics"]["python_pack_fallback"])

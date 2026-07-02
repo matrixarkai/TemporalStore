@@ -1834,6 +1834,11 @@ Status RetrieveContextPack(ExecuteEnv* env, const RetrieveContextPackRequest& re
     telemetry->set_broad_scan_used(false);
     telemetry->set_broad_scan_blocked(!request.allow_broad_scan_fallback());
     telemetry->set_candidate_cache_hit(false);
+    telemetry->set_timeout_count(0);
+    telemetry->add_fallback_flags("native_context_pack");
+    if (request.allow_broad_scan_fallback()) {
+        telemetry->add_fallback_flags("broad_scan_fallback_allowed");
+    }
 
     std::set<uint64_t> selected_node_hashes;
     status = CollectCandidateNodes(env, request, &selected_node_hashes, telemetry);
@@ -1938,6 +1943,10 @@ Status RetrieveContextPack(ExecuteEnv* env, const RetrieveContextPackRequest& re
     telemetry->set_audit_ms(0);
     if (response->selected_refs_size() == 0) {
         response->add_warnings("native_context_pack_selected_refs_empty");
+        telemetry->add_fallback_flags(
+            request.allow_broad_scan_fallback()
+                ? "native_prefilter_no_match_broad_scan_fallback_available"
+                : "native_prefilter_no_match_broad_scan_blocked");
     }
     return Status::OK();
 }
