@@ -1,67 +1,205 @@
-# MatrixArk Context Backfill From MatrixKV Raw Logs
+# MatrixArk Context Backfill Manual
 
-## Purpose
+## Overview
 
-This backfill path replays MatrixArk raw/serving records stored in MatrixKV or TemporalStore by the direct adapter into a new context-serving prefix. It is designed for safe backfills of LLM context management data without mutating the source ingestion log.
+MatrixArk context backfill replays the MatrixArk raw ingestion log stored in MatrixKV or TemporalStore into a context-serving prefix. It is built for LLM context management recovery and migration work where the source raw log must remain immutable while serving indexes, summaries, entities, embeddings, and audit records are rebuilt or repaired.
 
-The default mode is shadow-first. Backfill writes to `matrixark:context_backfill:<job_id>` unless a target prefix is provided. In-place writes are guarded by `--mode=in_place --confirm-in-place=YES`.
+The default workflow is shadow-first:
 
-## Source Layout
+1. Read raw records from a source prefix such as `matrixark:mcp`.
+2. Materialize serving records with the same MatrixArk canonicalization path used by live ingestion.
+3. Write those serving records into a separate target prefix.
+4. Validate the target prefix.
+5. Either activate the whole shadow prefix or promote only a bounded repair slice into the active prefix.
 
-The preferred source is the sharded MatrixArk direct-adapter log:
+The runner is intentionally conservative. It does not delete source records, it does not mutate source records, and it requires explicit confirmation for in-place writes, activation, and incremental repair promotion.
+
+## When To Use It
+
+Use this backfill path for:
+
+- rebuilding a new context-serving prefix from the raw MatrixArk ingestion log
+- repairing a bounded sequence gap after a partition restore
+- replaying tenant, user, or session-specific slices
+- validating a shadow context prefix before production cutover
+- promoting a partial repair into the active prefix without switching the whole active pointer
+- auditing the exact source range and filters used for a recovery job
+
+Avoid it for arbitrary MatrixKV keyspace scans. The source is the MatrixArk direct-adapter raw record log format, not a generic key discovery tool.
+
+## Mental Model
+
+```mermaid
+flowchart LR
+    A["MatrixKV raw ingestion log"] --> B["Backfill runner"]
+    B --> C["MatrixArk canonicalization"]
+    C --> D["Shadow context prefix"]
+    D --> E["Validate shadow"]
+    E --> F{"Recovery type"}
+    F -->|"Full rebuild"| G["Activate shadow pointer"]
+    F -->|"Partial repair"| H["Promote bounded slice into active prefix"]
+    G --> I["Readers use new active prefix"]
+    H --> J["Readers keep same active prefix"]
+```
+
+The raw log is the durable source of truth. The context-serving prefix is derived state. Shadow backfills and partial repairs are ways to rebuild derived state safely.
+
+## Source Log Layout
+
+The preferred source layout is the sharded direct-adapter log:
 
 ```text
 <prefix>:record_count
 <prefix>:records:<000000 shard> field <00000000000000000000 offset> -> JSON record
 ```
 
-The runner also supports the older legacy layout:
+Example:
+
+```text
+matrixark:mcp:record_count = 2500000
+matrixark:mcp:records:000012 field 00000000000000012345 -> { ... raw record ... }
+```
+
+The runner also supports the legacy index layout:
 
 ```text
 <prefix>:record_index
 <prefix>:records field <record_id> -> JSON record
 ```
 
-If both metadata keys are missing, the runner falls back to bounded MatrixKV hash scanning over `<prefix>:records:<shard>`. The scan starts at `--start-seq`, respects `--end-seq`, and stops after `--source-scan-max-empty-shards` consecutive empty shards when no explicit end sequence is supplied. This makes repair jobs tolerant of missing or stale source metadata without unbounded keyspace scans.
+If both metadata keys are missing, the runner can fall back to bounded hash scanning over:
 
-The source prefix defaults to `matrixark:mcp`.
+```text
+<prefix>:records:<shard>
+```
 
-## Running A Shadow Backfill
+The scan starts at `--start-seq`, respects `--end-seq`, and stops after `--source-scan-max-empty-shards` consecutive empty shards when no explicit end sequence is supplied.
+
+## Target Layout
+
+A target prefix stores materialized serving records in the same sharded format:
+
+```text
+<target-prefix>:record_count
+<target-prefix>:records:<000000 shard> field <00000000000000000000 offset> -> JSON serving record
+<target-prefix>:idempotency field <idempotency_key> -> target sequence
+<target-prefix>:dead_letter field <sequence> -> failed source record preview
+<target-prefix>:dead_letter_count
+<target-prefix>:backfill_manifest field <job_id> -> JSON manifest
+```
+
+The manifest records the source prefix, target prefix, mode, source range, partial filters, checkpoint key, and final summary. This is the main audit artifact for production recovery.
+
+## Modes
+
+| Mode | Purpose | Mutates source | Mutates target | Confirmation required |
+| --- | --- | --- | --- | --- |
+| `shadow` | Build a separate derived context prefix | No | Yes | No |
+| `validate_shadow` | Dry-run source scan and compare expected count to target | No | No | No |
+| `activate_shadow` | Flip active prefix pointer to a validated shadow prefix | No | Metadata only | `--confirm-activate=YES` |
+| `incremental_repair` | Promote a bounded shadow repair slice into active prefix | No | Yes | `--confirm-incremental-repair=YES` |
+| `in_place` | Write derived records into source prefix | No source deletion, but same prefix is target | Yes | `--confirm-in-place=YES` |
+
+Production use should prefer `shadow`, `validate_shadow`, `activate_shadow`, and `incremental_repair`. `in_place` is intentionally guarded and should be rare.
+
+## Quick Start: Full Shadow Backfill
+
+Use the wrapper for Ubuntu 22 local or server-style operation:
 
 ```bash
 JOB_ID=context-backfill-001 \
 SOURCE_PREFIX=matrixark:mcp \
 TARGET_PREFIX=matrixark:context_backfill:context-backfill-001 \
 DRY_RUN=0 \
-BATCH_SIZE=256 \
+BATCH_SIZE=1024 \
 bash tools/run_matrixark_context_backfill_ubuntu22.sh
 ```
 
-The runner processes source records in `BATCH_SIZE` chunks. It uses backend batch reads (`batch_hget`) and batch appends (`matrixark_append_records` or `batch_hset`) when available, falling back to single-record operations only when the backend does not expose a batch API. Source discovery can use record-count, legacy index, or bounded `scan_hash`; Prometheus metrics include source, target, and scan-hash batch counts. The runner prints a JSON summary and writes Prometheus-compatible metrics to `/tmp/matrixark_context_backfill_<job_id>.prom` unless `PROM_OUTPUT` is set.
+Equivalent direct Python invocation:
 
-## Resume And Dead Letters
+```bash
+python3 tools/matrixark_context_backfill.py \
+  --metaserver=127.0.0.1:65000 \
+  --namespace=matrixark \
+  --table=context \
+  --source-prefix=matrixark:mcp \
+  --target-prefix=matrixark:context_backfill:context-backfill-001 \
+  --job-id=context-backfill-001 \
+  --batch-size=1024 \
+  --dry-run=0 \
+  --resume=1
+```
 
-The checkpoint key is:
+The command prints a JSON summary. It also writes Prometheus-compatible metrics when `--prometheus-output` is set, or when the wrapper uses its default `/tmp/matrixark_context_backfill_<job_id>.prom` path.
+
+## Dry Run First
+
+The default is `--dry-run=1`. A dry run scans and materializes in memory, but does not write target records, checkpoint state, manifests, or dead letters.
+
+```bash
+python3 tools/matrixark_context_backfill.py \
+  --source-prefix=matrixark:mcp \
+  --target-prefix=matrixark:context_backfill:trial \
+  --job-id=trial \
+  --batch-size=1024 \
+  --dry-run=1
+```
+
+Use dry runs to estimate source volume, verify source readability, and inspect expected serving-record counts before writing anything.
+
+## Resume And Checkpoints
+
+The checkpoint key is scoped to the job, source, target, and partial spec:
 
 ```text
 matrixark:backfill:<job_id>:checkpoint:<hash(source_prefix,target_prefix,partial_spec)>
 ```
 
-With `--resume=1`, the next run starts after the last successfully processed source sequence for that exact source, target, and partial filter. This prevents a partial repair from accidentally resuming from a previous full backfill checkpoint. Checkpoints are advanced after the pending target batch has been flushed, so a restart replays at most the last uncommitted batch. Bad or corrupt records are written to the target dead-letter hash and do not block later records unless `--fail-fast` is set.
+This prevents a partial repair from accidentally resuming from a full-backfill checkpoint. With `--resume=1`, the next run starts after the last successfully processed source sequence for the exact same source, target, and partial filter.
+
+Checkpoints advance after the pending target batch is flushed. After a restart, the runner may replay at most the last uncommitted batch. Target-side idempotency keys prevent duplicate appends for already written records.
+
+Use `--resume=0` when intentionally rerunning a job from `--start-seq`.
+
+## Dead Letters
+
+A corrupt, missing, or unreadable source record increments `failed` and `dead_letter`. The runner writes a bounded preview to:
+
+```text
+<target-prefix>:dead_letter
+<target-prefix>:dead_letter_count
+```
+
+By default, a bad record does not stop the job. Use `--fail-fast` for debugging or for strict migration gates where any bad source record should stop the run.
 
 ## Partial Backfills
 
-Use partial backfills when only a slice of raw ingestion data needs repair, for example after a primary partition restore, tenant/session-specific corruption, or a bounded raw-log gap. Partial jobs still default to shadow-first and never mutate the source raw log.
+Partial backfills repair only a slice of raw ingestion data. They are useful after partition restore, tenant/session-specific recovery, or a known raw-log sequence gap.
 
-A partial job is explicit with `--partial=1`. It must include either a bounded sequence range (`--start-seq` plus `--end-seq`) or at least one filter unless `--partial-require-bounded=0` is supplied. Supported filters are:
+A partial job is explicit:
 
-- `--partial-record-types=context_event,context_summary`
-- `--partial-tenant-ids=<tenant-id>[,...]`
-- `--partial-user-ids=<user-id>[,...]`
-- `--partial-session-ids=<session-id>[,...]`
-- `--partial-filter-json='{"kind":"message"}'` for exact top-level matches; `{"scope":{"team":"x"}}` matches scope fields
+```bash
+--partial=1
+```
 
-Example tenant/session slice:
+By default, a partial job must include either a bounded sequence range or at least one filter. This guard prevents an accidental unbounded job that only looks partial by name.
+
+### Partial Filters
+
+Supported filters:
+
+```text
+--partial-record-types=context_event,context_summary
+--partial-tenant-ids=tenant-a,tenant-b
+--partial-user-ids=user-1,user-2
+--partial-session-ids=session-1,session-2
+--partial-filter-json='{"kind":"message"}'
+--partial-filter-json='{"scope":{"team":"infra"}}'
+```
+
+Record type matches the raw record's top-level `record_type`. Tenant, user, and session filters check top-level fields and `scope` fields. JSON filters are exact-match filters for top-level fields; the special `scope` object matches individual scope keys.
+
+### Partial Backfill Example
 
 ```bash
 python3 tools/matrixark_context_backfill.py \
@@ -74,14 +212,35 @@ python3 tools/matrixark_context_backfill.py \
   --start-seq=400000 \
   --end-seq=450000 \
   --batch-size=1024 \
-  --dry-run=0
+  --dry-run=0 \
+  --resume=1
 ```
 
-The JSON summary, Prometheus metrics, and target manifest include a `filtered` count plus the exact partial spec. The manifest is written under `<target-prefix>:backfill_manifest` keyed by `job_id`, making partial repair audits repeatable and inspectable.
+The summary includes:
+
+```json
+{
+  "partial": {
+    "enabled": true,
+    "record_types": [],
+    "tenant_ids": ["tenant-a"],
+    "user_ids": [],
+    "session_ids": ["session-42"],
+    "filter_json": {}
+  },
+  "metrics": {
+    "scanned": 50000,
+    "filtered": 49120,
+    "written": 880
+  }
+}
+```
+
+`filtered` means the source record was readable but did not match the partial spec.
 
 ## Validate Shadow
 
-Before any cutover, validate the candidate prefix against the same source range. Validation performs a dry-run source scan, compares expected materialized records with the target prefix record count, checks dead letters, and returns JSON status.
+Before cutover or repair promotion, validate the candidate prefix:
 
 ```bash
 python3 tools/matrixark_context_backfill.py \
@@ -92,11 +251,27 @@ python3 tools/matrixark_context_backfill.py \
   --batch-size=1024
 ```
 
-Strict validation is enabled by default. Use `--validation-strict=0` only when a target prefix is expected to contain validated extra records from an earlier compatible run.
+Validation performs a dry-run source scan using the same range and partial filters. It compares expected materialized records to target record count and checks dead letters.
 
-## Activate Or Roll Back
+Strict validation is enabled by default. Use `--validation-strict=0` only when the target prefix is expected to contain validated extra records from a compatible previous run.
 
-For a full rebuild, activation is a guarded metadata flip. It does not rewrite the source raw log and does not copy records. The active prefix pointer defaults to `matrixark:context:active_prefix`; the previous pointer and an audit record are retained.
+For partial validation, repeat the same partial flags used for the shadow job:
+
+```bash
+python3 tools/matrixark_context_backfill.py \
+  --mode=validate_shadow \
+  --partial=1 \
+  --partial-session-ids=session-42 \
+  --source-prefix=matrixark:mcp \
+  --target-prefix=matrixark:context_repair:tenant-a-session-42 \
+  --job-id=repair-tenant-a-session-42 \
+  --start-seq=400000 \
+  --end-seq=450000
+```
+
+## Full Activation
+
+For a full rebuild, activation is a metadata flip. It does not copy records and does not rewrite source data.
 
 ```bash
 python3 tools/matrixark_context_backfill.py \
@@ -108,59 +283,432 @@ python3 tools/matrixark_context_backfill.py \
   --dry-run=0
 ```
 
-Rollback for a full rebuild is another guarded metadata flip back to the value stored at `matrixark:context:active_prefix:previous:<job_id>`. Never rewrite or delete the source raw log during rollback.
+The active prefix key defaults to:
+
+```text
+matrixark:context:active_prefix
+```
+
+Activation writes:
+
+```text
+matrixark:context:active_prefix = <target-prefix>
+matrixark:context:active_prefix:previous:<job_id> = <previous-prefix>
+matrixark:context:active_prefix:audit field <job_id> -> JSON audit
+```
+
+## Rollback After Full Activation
+
+Rollback is another active-prefix metadata update to the previous prefix stored at:
+
+```text
+matrixark:context:active_prefix:previous:<job_id>
+```
+
+Do not delete source raw records during rollback. Do not rewrite source raw records. If the shadow prefix is bad, switch the active pointer back and keep the bad shadow prefix for audit until the incident review is complete.
 
 ## Incremental Repair Promotion
 
-For incremental repair, do not switch the whole active prefix. Use a bounded source sequence window, backfill that window into a shadow repair prefix, then run `incremental_repair`. The repair mode validates the shadow prefix, resolves the active prefix pointer, replays the same bounded range into the active prefix, writes an audit record, and keeps the active prefix pointer unchanged.
+Incremental repair promotes a bounded shadow repair into the active prefix without changing the active pointer.
 
-`incremental_repair` is intentionally guarded:
+Use it when:
 
-- requires `--start-seq` and `--end-seq`; open-ended repair is rejected
-- requires `--target-prefix` for the shadow repair prefix
-- requires `--confirm-incremental-repair=YES`
-- uses `--repair-active-prefix` when supplied, otherwise reads `--active-prefix-key`
-- uses target-side idempotency keys so retrying the same repair does not append duplicate active records
+- only a source sequence range was missed
+- only one tenant, user, or session needs repair
+- a primary partition restore left derived serving data incomplete
+- the existing active prefix should remain live
+
+### Step 1: Build Shadow Repair Prefix
 
 ```bash
 python3 tools/matrixark_context_backfill.py \
+  --partial=1 \
+  --partial-session-ids=session-42 \
   --source-prefix=matrixark:mcp \
-  --target-prefix=matrixark:context_repair:partition-123 \
-  --job-id=repair-partition-123 \
+  --target-prefix=matrixark:context_repair:session-42 \
+  --job-id=repair-session-42 \
   --start-seq=1200000 \
   --end-seq=1255000 \
   --batch-size=1024 \
-  --dry-run=0
+  --dry-run=0 \
+  --resume=1
+```
 
+### Step 2: Validate Shadow Repair Prefix
+
+```bash
+python3 tools/matrixark_context_backfill.py \
+  --mode=validate_shadow \
+  --partial=1 \
+  --partial-session-ids=session-42 \
+  --source-prefix=matrixark:mcp \
+  --target-prefix=matrixark:context_repair:session-42 \
+  --job-id=repair-session-42 \
+  --start-seq=1200000 \
+  --end-seq=1255000
+```
+
+### Step 3: Promote Into Active Prefix
+
+```bash
 python3 tools/matrixark_context_backfill.py \
   --mode=incremental_repair \
   --confirm-incremental-repair=YES \
+  --partial=1 \
+  --partial-session-ids=session-42 \
   --source-prefix=matrixark:mcp \
-  --target-prefix=matrixark:context_repair:partition-123 \
-  --job-id=repair-partition-123 \
+  --target-prefix=matrixark:context_repair:session-42 \
+  --job-id=repair-session-42 \
   --start-seq=1200000 \
   --end-seq=1255000 \
   --batch-size=1024 \
   --dry-run=0
 ```
 
-If the active prefix pointer is not available in the target store, pass it explicitly:
+`incremental_repair` resolves the active prefix from `--active-prefix-key`. If that pointer is unavailable, pass the target explicitly:
+
+```bash
+--repair-active-prefix=matrixark:context:active
+```
+
+Promotion writes an audit entry to:
+
+```text
+matrixark:context:active_prefix:incremental_repair_audit field <job_id>
+```
+
+The active prefix pointer remains unchanged.
+
+## In-Place Mode
+
+In-place mode uses the source prefix as the target prefix:
 
 ```bash
 python3 tools/matrixark_context_backfill.py \
-  --mode=incremental_repair \
-  --confirm-incremental-repair=YES \
-  --repair-active-prefix=matrixark:context:active \
+  --mode=in_place \
+  --confirm-in-place=YES \
   --source-prefix=matrixark:mcp \
-  --target-prefix=matrixark:context_repair:partition-123 \
-  --job-id=repair-partition-123 \
-  --start-seq=1200000 \
-  --end-seq=1255000 \
+  --job-id=in-place-job \
   --dry-run=0
 ```
 
-## Local Unit Test
+This mode is guarded because it mixes source and target namespaces. Prefer shadow or incremental repair for production recovery.
+
+## Wrapper Environment Variables
+
+`tools/run_matrixark_context_backfill_ubuntu22.sh` maps environment variables to CLI flags:
+
+| Environment variable | CLI flag | Default |
+| --- | --- | --- |
+| `JOB_ID` | `--job-id` | timestamp |
+| `SOURCE_PREFIX` | `--source-prefix` | `matrixark:mcp` |
+| `TARGET_PREFIX` | `--target-prefix` | `matrixark:context_backfill:<job_id>` |
+| `MODE` | `--mode` | `shadow` |
+| `DRY_RUN` | `--dry-run` | `1` |
+| `RESUME` | `--resume` | `1` |
+| `BATCH_SIZE` | `--batch-size` | `256` |
+| `PARTIAL` | `--partial` | `0` |
+| `PARTIAL_RECORD_TYPES` | `--partial-record-types` | empty |
+| `PARTIAL_TENANT_IDS` | `--partial-tenant-ids` | empty |
+| `PARTIAL_USER_IDS` | `--partial-user-ids` | empty |
+| `PARTIAL_SESSION_IDS` | `--partial-session-ids` | empty |
+| `PARTIAL_FILTER_JSON` | `--partial-filter-json` | empty |
+| `PARTIAL_REQUIRE_BOUNDED` | `--partial-require-bounded` | `1` |
+| `METASERVER` | `--metaserver` | `MATRIXARK_METASERVER` or `127.0.0.1:65000` |
+| `NAMESPACE` | `--namespace` | `MATRIXARK_NAMESPACE` or `matrixark` |
+| `TABLE` | `--table` | `MATRIXARK_TABLE` or `context` |
+| `PROM_OUTPUT` | `--prometheus-output` | `/tmp/matrixark_context_backfill_<job_id>.prom` |
+
+Example wrapper partial repair:
 
 ```bash
-python3 tools/test_matrixark_context_backfill.py
+JOB_ID=repair-session-42 \
+MODE=shadow \
+SOURCE_PREFIX=matrixark:mcp \
+TARGET_PREFIX=matrixark:context_repair:session-42 \
+PARTIAL=1 \
+PARTIAL_SESSION_IDS=session-42 \
+DRY_RUN=0 \
+BATCH_SIZE=1024 \
+bash tools/run_matrixark_context_backfill_ubuntu22.sh \
+  --start-seq=1200000 \
+  --end-seq=1255000
+```
+
+## Output Summary
+
+Typical summary fields:
+
+```json
+{
+  "status": "ok",
+  "job_id": "repair-session-42",
+  "source_prefix": "matrixark:mcp",
+  "target_prefix": "matrixark:context_repair:session-42",
+  "mode": "shadow",
+  "partial": { "enabled": true },
+  "elapsed_ms": 12345,
+  "scan_qps": 5000.0,
+  "manifest_key": "matrixark:context_repair:session-42:backfill_manifest",
+  "metrics": {
+    "scanned": 55000,
+    "filtered": 54000,
+    "skipped": 0,
+    "written": 1000,
+    "duplicate": 0,
+    "failed": 0,
+    "dead_letter": 0,
+    "context_events": 700,
+    "context_entities": 100,
+    "context_summaries": 100,
+    "context_embeddings": 50,
+    "context_indexes": 50,
+    "context_audits": 0,
+    "source_batches": 54,
+    "target_batches": 1,
+    "scan_hash_batches": 0
+  }
+}
+```
+
+Important metrics:
+
+- `scanned`: source records read or attempted
+- `filtered`: source records excluded by partial filters
+- `skipped`: readable source records that do not materialize into serving records
+- `written`: materialized serving records appended to target
+- `duplicate`: records skipped by idempotency
+- `failed`: source records that failed read or materialization
+- `dead_letter`: failed records written to dead-letter output
+- `source_batches`: read batches
+- `target_batches`: target append batches
+- `scan_hash_batches`: source batches discovered through hash scan fallback
+
+## Prometheus Metrics
+
+The runner emits Prometheus text format. The main metric families are:
+
+```text
+matrixark_context_backfill_records_total{job_id="...",status="scanned"}
+matrixark_context_backfill_records_total{job_id="...",status="filtered"}
+matrixark_context_backfill_records_total{job_id="...",status="written"}
+matrixark_context_backfill_serving_records_total{job_id="...",type="context_event"}
+matrixark_context_backfill_batches_total{job_id="...",phase="source"}
+matrixark_context_backfill_batches_total{job_id="...",phase="target"}
+matrixark_context_backfill_batches_total{job_id="...",phase="scan_hash"}
+```
+
+Recommended production alerts:
+
+- `failed > 0` for strict migrations
+- `dead_letter > 0` for any production repair
+- `written == 0` when a non-empty repair was expected
+- high `duplicate` on first run, which can indicate an unintended rerun or reused target prefix
+- high `filtered / scanned` when partial filters may be too narrow
+
+## Performance And Batch Tuning
+
+Start with `--batch-size=1024` for larger jobs. Use `256` for small repairs or when target latency is unstable.
+
+The runner uses:
+
+- `batch_hget` for source reads when available
+- `matrixark_append_records` for target writes when available
+- `batch_hset` fallback when append is unavailable
+- single-record fallback only when no batch API exists
+
+For very large jobs:
+
+1. Run a dry run against the exact range or partial filters.
+2. Start with `--batch-size=1024`.
+3. Watch `source_batches`, `target_batches`, scan QPS, and target service latency.
+4. Increase batch size only if target write latency and memory remain stable.
+5. Keep `--resume=1` so restarts do not begin from zero.
+
+## Production Runbooks
+
+### Full Rebuild Runbook
+
+1. Choose a unique `JOB_ID`.
+2. Run shadow backfill with `--dry-run=1`.
+3. Run shadow backfill with `--dry-run=0`.
+4. Run `validate_shadow`.
+5. Inspect metrics and dead letters.
+6. Run `activate_shadow --confirm-activate=YES --dry-run=0`.
+7. Monitor readers and context quality.
+8. Keep previous prefix for rollback until validation is complete.
+
+### Partial Repair Runbook
+
+1. Identify the source range and filters.
+2. Run partial shadow backfill with `--dry-run=1`.
+3. Run partial shadow backfill with `--dry-run=0`.
+4. Run `validate_shadow` with the same partial flags.
+5. Run `incremental_repair --confirm-incremental-repair=YES --dry-run=0`.
+6. Inspect incremental repair audit.
+7. Retry the same command if needed; idempotency prevents duplicate active appends.
+
+### Partition Restore Runbook
+
+1. Determine the raw-log sequence range affected by the restored partition.
+2. If the impact is tenant/session-specific, add partial filters.
+3. Build a shadow repair prefix named after the incident or partition.
+4. Validate the shadow repair prefix.
+5. Promote with `incremental_repair`.
+6. Compare active context retrieval before and after repair.
+7. Preserve manifests and audit records for incident review.
+
+## Troubleshooting
+
+### `partial backfill requires --end-seq or at least one partial filter`
+
+The job used `--partial=1` without a bounded range or filter. Add `--end-seq`, a partial filter, or explicitly set `--partial-require-bounded=0` for controlled internal testing.
+
+### Validation reports `actual_records` lower than `expected_records`
+
+The shadow prefix is incomplete. Check whether the original backfill used the same `start_seq`, `end_seq`, and partial flags. Re-run the shadow backfill with `--resume=1`.
+
+### Validation reports dead letters
+
+Inspect:
+
+```text
+<target-prefix>:dead_letter
+<target-prefix>:dead_letter_count
+```
+
+Fix source corruption or accept the loss only through an explicit incident decision. Do not activate a full rebuild with unexpected dead letters.
+
+### High duplicate count
+
+This usually means the target prefix already has idempotency markers for the same source records. Confirm that the target prefix and job id are intentional. For retrying the same job, duplicates are expected and safe.
+
+### No records written
+
+Check:
+
+- source prefix is correct
+- `record_count` or `record_index` exists, or bounded `scan_hash` can discover shards
+- `--start-seq` and `--end-seq` cover the intended range
+- partial filters are not too narrow
+- source raw records are valid MatrixArk records
+
+### Hash scan stops too early
+
+When source metadata is missing, increase:
+
+```bash
+--source-scan-max-empty-shards=<N>
+```
+
+Prefer setting `--end-seq` whenever possible so scans are bounded by an explicit range.
+
+### Active prefix is missing during incremental repair
+
+Pass it explicitly:
+
+```bash
+--repair-active-prefix=matrixark:context:active
+```
+
+Or set the active pointer under `--active-prefix-key` before promotion.
+
+## Safety Rules
+
+- Never delete or rewrite the source raw log as part of backfill.
+- Use shadow mode by default.
+- Validate before activation or repair promotion.
+- Keep full rebuild activation separate from incremental repair promotion.
+- Use bounded ranges for incident repairs.
+- Preserve target manifests, audit records, and dead letters until the recovery review is complete.
+- Reuse the exact same partial flags for shadow, validation, and incremental repair.
+- Prefer retrying with `--resume=1`; idempotency handles already written records.
+
+## Local Test Commands
+
+Run unit tests:
+
+```bash
+PYTHONPATH=tools python3 tools/test_matrixark_context_backfill.py
+```
+
+Run a local JSON KV smoke with partial filters:
+
+```bash
+python3 tools/matrixark_context_backfill.py \
+  --local-kv=/tmp/matrixark_backfill_kv.json \
+  --source-prefix=matrixark:mcp \
+  --target-prefix=shadow:partial-cli \
+  --job-id=cli-partial \
+  --partial=1 \
+  --partial-session-ids=s2 \
+  --start-seq=0 \
+  --end-seq=3 \
+  --dry-run=0 \
+  --resume=0 \
+  --batch-size=2
+```
+
+Validate repository readiness:
+
+```bash
+python3 tools/validate_open_source_readiness.py
+python3 tools/validate_codex_mcp_parity.py
+```
+
+## CLI Reference
+
+Core flags:
+
+```text
+--metaserver
+--namespace
+--table
+--library-path
+--source-prefix
+--target-prefix
+--mode
+--job-id
+--start-seq
+--end-seq
+--batch-size
+--dry-run
+--resume
+--fail-fast
+--prometheus-output
+```
+
+Safety flags:
+
+```text
+--confirm-in-place=YES
+--confirm-activate=YES
+--confirm-incremental-repair=YES
+--skip-validation=0|1
+--validation-strict=0|1
+```
+
+Partial flags:
+
+```text
+--partial=0|1
+--partial-record-types
+--partial-tenant-ids
+--partial-user-ids
+--partial-session-ids
+--partial-filter-json
+--partial-require-bounded=0|1
+```
+
+Repair and activation flags:
+
+```text
+--active-prefix-key
+--repair-active-prefix
+```
+
+Source discovery flag:
+
+```text
+--source-scan-max-empty-shards
 ```
