@@ -128,6 +128,11 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         self._record_hash_key = f"{self._storage_prefix}:records"
         self._index_key = f"{self._storage_prefix}:record_index"
         self._count_key = f"{self._storage_prefix}:record_count"
+        configured_raw_prefix = os.environ.get("MATRIXARK_DIRECT_RAW_STORAGE_PREFIX", "").strip().rstrip(":")
+        self._raw_ingestion_prefix = configured_raw_prefix or f"{self._storage_prefix}:raw_ingestion"
+        self._raw_record_hash_key = f"{self._raw_ingestion_prefix}:records"
+        self._raw_count_key = f"{self._raw_ingestion_prefix}:record_count"
+        self._raw_entry_count_cache: int | None = None
         self._shard_size = DIRECT_RECORD_LOG_SHARD_SIZE
         self._index_cache: list[str] | None = None
         self._records_cache: list[Json] | None = None
@@ -562,14 +567,16 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         return max(0, value)
 
     def append(self, record: Json) -> None:
+        self._append_raw_ingestion_records([record])
         records = materialize_serving_records(record)
         if self._queue_batched_records(records):
             return
         self._append_many_materialized(records)
 
     def append_many(self, records: list[Json]) -> None:
-        records = materialize_serving_record_batch(records)
-        self._append_many_materialized(records)
+        self._append_raw_ingestion_records(records)
+        materialized = materialize_serving_record_batch(records)
+        self._append_many_materialized(materialized)
 
     def _storage_route_for_bundle(self, bundle: list[Json]) -> Json:
         fallback: Json = {}
@@ -593,6 +600,84 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             "audit_hot_path": "inline_counters_only",
             "full_context_pack_audit": "sample_or_enqueue_async_policy_enabled",
         }
+
+    def _raw_ingestion_append_options(self) -> Json:
+        return {
+            "append_path": "matrixark_raw_ingestion_log",
+            "coalesce_writes": True,
+            "route_by": "raw_ingestion_prefix",
+            "persist_from_storage_options": True,
+            "hset_lowering": "forbidden_for_parity",
+            "count_update": "same_batch",
+            "source": "matrixark_live_ingestion_dual_write",
+        }
+
+    def _ensure_raw_ingestion_fields(self) -> None:
+        if not hasattr(self, "_raw_ingestion_prefix"):
+            storage_prefix = str(getattr(self, "_storage_prefix", "matrixark:mcp")).rstrip(":")
+            configured_raw_prefix = os.environ.get("MATRIXARK_DIRECT_RAW_STORAGE_PREFIX", "").strip().rstrip(":")
+            self._raw_ingestion_prefix = configured_raw_prefix or f"{storage_prefix}:raw_ingestion"
+        if not hasattr(self, "_raw_record_hash_key"):
+            self._raw_record_hash_key = f"{self._raw_ingestion_prefix}:records"
+        if not hasattr(self, "_raw_count_key"):
+            self._raw_count_key = f"{self._raw_ingestion_prefix}:record_count"
+        if not hasattr(self, "_raw_entry_count_cache"):
+            self._raw_entry_count_cache = None
+
+    def _raw_record_location(self, sequence: int) -> tuple[str, str]:
+        self._ensure_raw_ingestion_fields()
+        shard = sequence // self._shard_size
+        offset = sequence % self._shard_size
+        return f"{self._raw_record_hash_key}:{shard:06d}", f"{offset:020d}"
+
+    def _get_raw_count(self) -> int:
+        self._ensure_raw_ingestion_fields()
+        try:
+            raw = self._client.get_string(self._raw_count_key)
+        except Exception:
+            return 0
+        if not raw:
+            return 0
+        try:
+            value = int(raw)
+        except ValueError:
+            return 0
+        return max(0, value)
+
+    def _append_raw_ingestion_records(self, records: list[Json]) -> None:
+        if not records:
+            return
+        self._ensure_raw_ingestion_fields()
+        if self._raw_ingestion_prefix == self._storage_prefix:
+            raise MatrixArkError("MATRIXARK_DIRECT_RAW_STORAGE_PREFIX must differ from the serving storage prefix")
+        started_perf = time.perf_counter()
+        with self._records_lock:
+            count = self._raw_entry_count_cache if self._raw_entry_count_cache is not None else self._get_raw_count()
+            sequence = count
+            entries: list[Json] = []
+            for record in records:
+                record_key, record_id = self._raw_record_location(sequence)
+                payload = json.dumps(record, sort_keys=True, separators=(",", ":"))
+                route = record.get("storage_route") if isinstance(record.get("storage_route"), dict) else {}
+                entries.append({"key": record_key, "field": record_id, "value": payload, "storage_route": route})
+                sequence += 1
+            append_records = getattr(self._client, "matrixark_batch_append_records", None)
+            if callable(append_records):
+                self._write_with_backoff(
+                    lambda: append_records(
+                        entries,
+                        count_key=self._raw_count_key,
+                        count_value=str(sequence),
+                        append_options=self._raw_ingestion_append_options(),
+                    ),
+                    op="matrixark_batch_append_raw_ingestion_records",
+                )
+            else:
+                self._hset_many_with_backoff(entries)
+                self._put_string_with_backoff(self._raw_count_key, str(sequence))
+            self._raw_entry_count_cache = sequence
+            elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
+            self._observe_backend_command(elapsed_ms, records_written=len(records))
 
     def _context_index_lookup_key(self, scope_key: str) -> str:
         scope_hash = stable_hash(scope_key) if scope_key else 0

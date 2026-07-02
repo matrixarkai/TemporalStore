@@ -6,7 +6,7 @@ MatrixArk context backfill replays the MatrixArk raw ingestion log stored in Mat
 
 The default workflow is shadow-first:
 
-1. Read raw records from a source prefix such as `matrixark:mcp`.
+1. Read raw records from the live dual-write source prefix such as `matrixark:mcp:raw_ingestion`. Older deployments that used a different raw prefix can still pass it explicitly with `--source-prefix`.
 2. Materialize serving records with the same MatrixArk canonicalization path used by live ingestion.
 3. Write those serving records into a separate target prefix.
 4. Validate the target prefix.
@@ -56,9 +56,11 @@ The preferred source layout is the sharded direct-adapter log:
 Example:
 
 ```text
-matrixark:mcp:record_count = 2500000
-matrixark:mcp:records:000012 field 00000000000000012345 -> { ... raw record ... }
+matrixark:mcp:raw_ingestion:record_count = 2500000
+matrixark:mcp:raw_ingestion:records:000012 field 00000000000000012345 -> { ... raw record ... }
 ```
+
+Live ingestion writes raw API, batch, stream, resource, and feedback envelopes to this raw prefix before writing materialized serving records to the active TemporalStore context prefix. That dual-write contract keeps the raw MatrixKV log immutable and keeps serving scans free of raw envelopes.
 
 The runner also supports the legacy index layout:
 
@@ -108,7 +110,7 @@ Use the wrapper for Ubuntu 22 local or server-style operation:
 
 ```bash
 JOB_ID=context-backfill-001 \
-SOURCE_PREFIX=matrixark:mcp \
+SOURCE_PREFIX=matrixark:mcp:raw_ingestion \
 TARGET_PREFIX=matrixark:context_backfill:context-backfill-001 \
 DRY_RUN=0 \
 BATCH_SIZE=1024 \
@@ -122,7 +124,7 @@ python3 tools/matrixark_context_backfill.py \
   --metaserver=127.0.0.1:65000 \
   --namespace=matrixark \
   --table=context \
-  --source-prefix=matrixark:mcp \
+  --source-prefix=matrixark:mcp:raw_ingestion \
   --target-prefix=matrixark:context_backfill:context-backfill-001 \
   --job-id=context-backfill-001 \
   --batch-size=1024 \
@@ -138,7 +140,7 @@ The default is `--dry-run=1`. A dry run scans and materializes in memory, but do
 
 ```bash
 python3 tools/matrixark_context_backfill.py \
-  --source-prefix=matrixark:mcp \
+  --source-prefix=matrixark:mcp:raw_ingestion \
   --target-prefix=matrixark:context_backfill:trial \
   --job-id=trial \
   --batch-size=1024 \
@@ -200,7 +202,7 @@ A larger batch improves throughput only when target append latency remains stabl
 
 ```bash
 python3 tools/matrixark_context_backfill.py \
-  --source-prefix=matrixark:mcp \
+  --source-prefix=matrixark:mcp:raw_ingestion \
   --target-prefix=matrixark:context_backfill:full-20260702 \
   --job-id=full-20260702 \
   --start-seq=0 \
@@ -214,7 +216,7 @@ For a bounded batch replay, always set both range endpoints:
 
 ```bash
 python3 tools/matrixark_context_backfill.py \
-  --source-prefix=matrixark:mcp \
+  --source-prefix=matrixark:mcp:raw_ingestion \
   --target-prefix=matrixark:context_backfill:range-40m-45m \
   --job-id=range-40m-45m \
   --start-seq=40000000 \
@@ -280,7 +282,7 @@ python3 tools/matrixark_context_backfill.py \
   --partial=1 \
   --partial-tenant-ids=tenant-a \
   --partial-session-ids=session-42 \
-  --source-prefix=matrixark:mcp \
+  --source-prefix=matrixark:mcp:raw_ingestion \
   --target-prefix=matrixark:context_repair:tenant-a-session-42 \
   --job-id=repair-tenant-a-session-42 \
   --start-seq=400000 \
@@ -319,7 +321,7 @@ Before cutover or repair promotion, validate the candidate prefix:
 ```bash
 python3 tools/matrixark_context_backfill.py \
   --mode=validate_shadow \
-  --source-prefix=matrixark:mcp \
+  --source-prefix=matrixark:mcp:raw_ingestion \
   --target-prefix=matrixark:context_backfill:context-backfill-001 \
   --job-id=context-backfill-001 \
   --batch-size=1024
@@ -336,7 +338,7 @@ python3 tools/matrixark_context_backfill.py \
   --mode=validate_shadow \
   --partial=1 \
   --partial-session-ids=session-42 \
-  --source-prefix=matrixark:mcp \
+  --source-prefix=matrixark:mcp:raw_ingestion \
   --target-prefix=matrixark:context_repair:tenant-a-session-42 \
   --job-id=repair-tenant-a-session-42 \
   --start-seq=400000 \
@@ -351,7 +353,7 @@ For a full rebuild, activation is a metadata flip. It does not copy records and 
 python3 tools/matrixark_context_backfill.py \
   --mode=activate_shadow \
   --confirm-activate=YES \
-  --source-prefix=matrixark:mcp \
+  --source-prefix=matrixark:mcp:raw_ingestion \
   --target-prefix=matrixark:context_backfill:context-backfill-001 \
   --job-id=context-backfill-001 \
   --dry-run=0
@@ -420,7 +422,7 @@ Before promoting a repair slice:
 python3 tools/matrixark_context_backfill.py \
   --partial=1 \
   --partial-session-ids=session-42 \
-  --source-prefix=matrixark:mcp \
+  --source-prefix=matrixark:mcp:raw_ingestion \
   --target-prefix=matrixark:context_repair:session-42 \
   --job-id=repair-session-42 \
   --start-seq=1200000 \
@@ -437,7 +439,7 @@ python3 tools/matrixark_context_backfill.py \
   --mode=validate_shadow \
   --partial=1 \
   --partial-session-ids=session-42 \
-  --source-prefix=matrixark:mcp \
+  --source-prefix=matrixark:mcp:raw_ingestion \
   --target-prefix=matrixark:context_repair:session-42 \
   --job-id=repair-session-42 \
   --start-seq=1200000 \
@@ -452,7 +454,7 @@ python3 tools/matrixark_context_backfill.py \
   --confirm-incremental-repair=YES \
   --partial=1 \
   --partial-session-ids=session-42 \
-  --source-prefix=matrixark:mcp \
+  --source-prefix=matrixark:mcp:raw_ingestion \
   --target-prefix=matrixark:context_repair:session-42 \
   --job-id=repair-session-42 \
   --start-seq=1200000 \
@@ -488,18 +490,14 @@ After promotion:
 
 ## In-Place Mode
 
-In-place mode uses the source prefix as the target prefix:
+In-place mode is for legacy or isolated maintenance prefixes where the same prefix is intentionally used as both source and target. Do not run in-place mode against the live dual-write raw prefix (`matrixark:mcp:raw_ingestion`), because that prefix must stay an immutable MatrixKV ingestion log.
 
 ```bash
-python3 tools/matrixark_context_backfill.py \
-  --mode=in_place \
-  --confirm-in-place=YES \
-  --source-prefix=matrixark:mcp \
-  --job-id=in-place-job \
-  --dry-run=0
+python3 tools/matrixark_context_backfill.py   --mode=in_place   --confirm-in-place=YES   --source-prefix=matrixark:legacy-context   --job-id=in-place-job   --dry-run=0
 ```
 
 This mode is guarded because it mixes source and target namespaces. Prefer shadow or incremental repair for production recovery.
+
 
 ## Wrapper Environment Variables
 
@@ -508,7 +506,7 @@ This mode is guarded because it mixes source and target namespaces. Prefer shado
 | Environment variable | CLI flag | Default |
 | --- | --- | --- |
 | `JOB_ID` | `--job-id` | timestamp |
-| `SOURCE_PREFIX` | `--source-prefix` | `matrixark:mcp` |
+| `SOURCE_PREFIX` | `--source-prefix` | `matrixark:mcp:raw_ingestion` |
 | `TARGET_PREFIX` | `--target-prefix` | `matrixark:context_backfill:<job_id>` |
 | `MODE` | `--mode` | `shadow` |
 | `DRY_RUN` | `--dry-run` | `1` |
@@ -531,7 +529,7 @@ Example wrapper partial repair:
 ```bash
 JOB_ID=repair-session-42 \
 MODE=shadow \
-SOURCE_PREFIX=matrixark:mcp \
+SOURCE_PREFIX=matrixark:mcp:raw_ingestion \
 TARGET_PREFIX=matrixark:context_repair:session-42 \
 PARTIAL=1 \
 PARTIAL_SESSION_IDS=session-42 \
@@ -550,7 +548,7 @@ Typical summary fields:
 {
   "status": "ok",
   "job_id": "repair-session-42",
-  "source_prefix": "matrixark:mcp",
+  "source_prefix": "matrixark:mcp:raw_ingestion",
   "target_prefix": "matrixark:context_repair:session-42",
   "mode": "shadow",
   "partial": { "enabled": true },
@@ -746,7 +744,7 @@ Run a local JSON KV smoke with partial filters:
 ```bash
 python3 tools/matrixark_context_backfill.py \
   --local-kv=/tmp/matrixark_backfill_kv.json \
-  --source-prefix=matrixark:mcp \
+  --source-prefix=matrixark:mcp:raw_ingestion \
   --target-prefix=shadow:partial-cli \
   --job-id=cli-partial \
   --partial=1 \

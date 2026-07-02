@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 JOB_ID="${JOB_ID:-$(date +%Y%m%d%H%M%S)}"
-SOURCE_PREFIX="${SOURCE_PREFIX:-matrixark:mcp}"
+SOURCE_PREFIX="${SOURCE_PREFIX:-matrixark:mcp:raw_ingestion}"
 TARGET_PREFIX="${TARGET_PREFIX:-matrixark:context_backfill:${JOB_ID}}"
 MODE="${MODE:-shadow}"
 DRY_RUN="${DRY_RUN:-1}"
