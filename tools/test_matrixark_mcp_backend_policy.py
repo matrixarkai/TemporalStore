@@ -570,6 +570,37 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         failures = validate_report_pair(cpp_bad_scope, corpus["rust"])
         self.assertTrue(any("cpp storage_reclaim_scope drift" in failure for failure in failures))
 
+    def test_storage_lifecycle_gap_fill_metrics_are_required(self) -> None:
+        corpus = _load_json(REPORT_PAIR_CORPUS)
+        self.assertEqual(validate_report_pair(corpus["cpp"], corpus["rust"]), [])
+
+        lifecycle_gap_metrics = {
+            "StorageManager": [
+                "storage_manager_prepare_count",
+                "storage_manager_reclaim_count",
+                "storage_manager_watermark_progress_count",
+            ],
+            "PageGc": ["storage_manager_page_gc_count"],
+            "eviction": ["storage_manager_evict_count", "cache_evictions"],
+            "expiration": ["storage_manager_expire_count"],
+            "page_compaction": ["storage_manager_compaction_count", "compaction_reclaimed_bytes"],
+            "stream_blob_rollover": ["stream_rollover_count", "segment_open_count", "segment_sealed_count"],
+            "zones": ["storage_zone_total_bytes", "storage_zone_used_bytes", "storage_zone_stale_bytes"],
+            "index_reclaim": [
+                "storage_manager_index_gc_count",
+                "page_index_rebuild_count",
+                "block_index_rebuild_count",
+                "object_index_rebuild_count",
+            ],
+        }
+
+        for metrics in lifecycle_gap_metrics.values():
+            for metric in metrics:
+                cpp_missing = json.loads(json.dumps(corpus["cpp"]))
+                del cpp_missing["storage_lifecycle_metrics"][metric]
+                failures = validate_report_pair(cpp_missing, corpus["rust"])
+                self.assertIn(f"cpp metrics missing `{metric}`", failures)
+
     def test_production_policy_gate_blocks_perf_claims_before_correct_refs(self) -> None:
         report = {
             "config": {
