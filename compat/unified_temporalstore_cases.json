@@ -5497,16 +5497,16 @@
       ]
     },
     {
-      "description": "Shared C++/Rust storage stream case: random-size string values survive reopen and page stream scan exposes persisted bytes plus PageIndex-like page/block entries with compact extent address fields.",
+      "description": "Shared C++/Rust storage stream case: random-size string values survive reopen and page stream scan exposes persisted bytes plus block-index entries with compact segment address fields.",
       "family": "storage/cache",
       "name": "storage_stream_random_size_reopen_scan",
       "shard_id": 92,
       "steps": [
         {
           "command": {
-            "description": "Writes deterministic random-size values, reopens storage, verifies logical reads, page stream bytes, stream scan records, PageIndex-like block entry fields, and compact extent address metadata.",
-            "expect_compact_extent_address": true,
-            "expect_page_index_entries": true,
+            "description": "Writes deterministic random-size values, reopens storage, verifies logical reads, page stream bytes, stream scan records, block-index fields, and compact segment address metadata.",
+            "expect_compact_segment_address": true,
+            "expect_block_index_entries": true,
             "kind": "storage_stream_reopen_scan",
             "scenario": "random_size_reopen_scan"
           },
@@ -5516,7 +5516,7 @@
       ]
     },
     {
-      "description": "Shared C++/Rust storage stream case: stream-backed zones roll, read logical ranges, persist manifests, expose extent used-byte stats, and track delayed destroy lifecycle.",
+      "description": "Shared C++/Rust storage stream case: stream-backed zones roll, read logical ranges, persist manifests, expose block-segment used-byte stats, and track delayed destroy lifecycle.",
       "family": "storage/cache",
       "name": "storage_stream_backed_extent_runtime",
       "shard_id": 92,

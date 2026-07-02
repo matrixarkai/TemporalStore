@@ -4,7 +4,7 @@ use std::io::Cursor;
 use sha2::{Digest, Sha256};
 
 use super::{
-    BlockAddress, BlockStoreError, BlockStoreOptions, BlockStorePageIndexReport,
+    BlockAddress, BlockStoreBlockIndexReport, BlockStoreError, BlockStoreOptions,
     BlockStoreSegmentReport,
 };
 
@@ -641,26 +641,26 @@ pub(super) fn inspect_segment(segment: &[u8], page_segment_id: u64) -> BlockStor
                 report.logical_bytes = report
                     .logical_bytes
                     .saturating_add(decoded.logical_len as u64);
-                report.page_index_entries.push(BlockStorePageIndexReport {
-                    page_segment_id,
+                report.block_index_entries.push(BlockStoreBlockIndexReport {
+                    block_segment_id: page_segment_id,
                     offset: address.offset,
                     length: address.length,
-                    compact_extent_address: address.compact_extent_address(),
-                    compact_extent_id: address.compact_extent_id(),
-                    compact_extent_offset: address.compact_extent_offset(),
-                    extent_id: header.extent_id,
+                    compact_segment_address: address.compact_segment_address(),
+                    compact_segment_id: address.compact_segment_id(),
+                    compact_segment_offset: address.compact_segment_offset(),
+                    storage_segment_id: header.extent_id,
                     object_id: header.object_id,
                     model_id: None,
-                    page_id: header.page_id,
-                    page_size: decoded.logical_len as u64,
+                    block_id: header.page_id,
+                    block_size: decoded.logical_len as u64,
                     stored_size: header.stored_len as u64,
                     dirty: false,
                     deleted: decoded.logical_len == 0,
-                    page_in_log: false,
+                    block_in_log: false,
                     routing_slot: header.routing_slot,
                     checksum: Some(sha256_hex(&decoded.payload)),
                 });
-                report.page_index_count = report.page_index_entries.len() as u64;
+                report.block_index_count = report.block_index_entries.len() as u64;
                 if decoded.compression == PageRecordCompression::Zstd {
                     report.compressed_records = report.compressed_records.saturating_add(1);
                 }

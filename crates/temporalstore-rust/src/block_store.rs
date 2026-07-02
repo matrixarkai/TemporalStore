@@ -32,7 +32,7 @@ pub enum BlockStoreError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error(
-        "page checksum mismatch for segment {page_segment_id} offset {offset} length {length}: expected {expected}, got {actual}"
+        "block checksum mismatch for segment {page_segment_id} offset {offset} length {length}: expected {expected}, got {actual}"
     )]
     ChecksumMismatch {
         page_segment_id: u64,
@@ -41,7 +41,7 @@ pub enum BlockStoreError {
         expected: String,
         actual: String,
     },
-    #[error("corrupt page envelope for segment {page_segment_id} offset {offset}: {reason}")]
+    #[error("corrupt block envelope for segment {page_segment_id} offset {offset}: {reason}")]
     CorruptPageEnvelope {
         page_segment_id: u64,
         offset: u64,
@@ -67,22 +67,22 @@ pub struct BlockAddress {
 }
 
 impl BlockAddress {
-    pub fn compact_extent_id(&self) -> Option<u32> {
+    pub fn compact_segment_id(&self) -> Option<u32> {
         u32::try_from(self.page_segment_id).ok()
     }
 
-    pub fn compact_extent_offset(&self) -> Option<u32> {
+    pub fn compact_segment_offset(&self) -> Option<u32> {
         u32::try_from(self.offset).ok()
     }
 
-    pub fn compact_extent_address(&self) -> Option<u64> {
-        compact_extent_address_from_parts(self.page_segment_id, self.offset)
+    pub fn compact_segment_address(&self) -> Option<u64> {
+        compact_segment_address_from_parts(self.page_segment_id, self.offset)
     }
 
-    pub fn from_compact_extent_address(compact_extent_address: u64, length: u64) -> Self {
+    pub fn from_compact_segment_address(compact_segment_address: u64, length: u64) -> Self {
         Self {
-            page_segment_id: compact_extract_extent_id(compact_extent_address) as u64,
-            offset: compact_extract_extent_offset(compact_extent_address) as u64,
+            page_segment_id: compact_extract_extent_id(compact_segment_address) as u64,
+            offset: compact_extract_extent_offset(compact_segment_address) as u64,
             length,
             page_id: None,
             object_id: None,
@@ -430,38 +430,46 @@ pub struct BlockStoreSegmentReport {
     pub first_routing_slot: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_routing_slot: Option<u32>,
-    #[serde(default)]
-    pub page_index_count: u64,
-    #[serde(default)]
-    pub page_index_entries: Vec<BlockStorePageIndexReport>,
+    #[serde(default, alias = "page_index_count")]
+    pub block_index_count: u64,
+    #[serde(default, alias = "page_index_entries")]
+    pub block_index_entries: Vec<BlockStoreBlockIndexReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BlockStorePageIndexReport {
-    pub page_segment_id: u64,
+pub struct BlockStoreBlockIndexReport {
+    #[serde(alias = "page_segment_id")]
+    pub block_segment_id: u64,
     pub offset: u64,
     pub length: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compact_extent_address: Option<u64>,
+    pub compact_segment_address: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compact_extent_id: Option<u32>,
+    pub compact_segment_id: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compact_extent_offset: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extent_id: Option<u64>,
+    pub compact_segment_offset: Option<u32>,
+    #[serde(
+        default,
+        alias = "extent_id",
+        alias = "zone_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub storage_segment_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_id: Option<u8>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub page_id: Option<u64>,
-    pub page_size: u64,
+    #[serde(default, alias = "page_id", skip_serializing_if = "Option::is_none")]
+    pub block_id: Option<u64>,
+    #[serde(alias = "page_size")]
+    pub block_size: u64,
     pub stored_size: u64,
     pub dirty: bool,
     pub deleted: bool,
-    pub page_in_log: bool,
+    #[serde(alias = "page_in_log")]
+    pub block_in_log: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing_slot: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1713,9 +1721,9 @@ pub type PageStoreSegmentReport = BlockStoreSegmentReport;
 
 #[deprecated(
     since = "0.1.0",
-    note = "use BlockStorePageIndexReport; page naming remains only for legacy compatibility"
+    note = "use BlockStoreBlockIndexReport; page naming remains only for legacy compatibility"
 )]
-pub type PageStorePageIndexReport = BlockStorePageIndexReport;
+pub type PageStorePageIndexReport = BlockStoreBlockIndexReport;
 
 #[deprecated(
     since = "0.1.0",
@@ -2243,7 +2251,7 @@ fn extent_id_for_segment(page_segment_id: u64) -> u64 {
     page_segment_id
 }
 
-fn compact_extent_address_from_parts(page_segment_id: u64, offset: u64) -> Option<u64> {
+fn compact_segment_address_from_parts(page_segment_id: u64, offset: u64) -> Option<u64> {
     let extent_id = u32::try_from(page_segment_id).ok()?;
     let extent_offset = u32::try_from(offset).ok()?;
     Some(((extent_id as u64) << 32) | extent_offset as u64)
@@ -2445,22 +2453,22 @@ mod tests {
 
         assert_eq!(next.page_segment_id, 3);
         assert_eq!(next.offset, b"restored-segment".len() as u64);
-        assert_eq!(next.compact_extent_id(), Some(3));
+        assert_eq!(next.compact_segment_id(), Some(3));
         assert_eq!(
-            next.compact_extent_offset(),
+            next.compact_segment_offset(),
             Some(b"restored-segment".len() as u32)
         );
         assert_eq!(
-            next.compact_extent_address(),
+            next.compact_segment_address(),
             Some((3_u64 << 32) | b"restored-segment".len() as u64)
         );
-        let from_compact_extent = BlockAddress::from_compact_extent_address(
-            next.compact_extent_address().unwrap(),
+        let from_compact_segment = BlockAddress::from_compact_segment_address(
+            next.compact_segment_address().unwrap(),
             next.length,
         );
-        assert_eq!(from_compact_extent.page_segment_id, next.page_segment_id);
-        assert_eq!(from_compact_extent.offset, next.offset);
-        assert_eq!(from_compact_extent.length, next.length);
+        assert_eq!(from_compact_segment.page_segment_id, next.page_segment_id);
+        assert_eq!(from_compact_segment.offset, next.offset);
+        assert_eq!(from_compact_segment.length, next.length);
         assert_eq!(store.read(&next).unwrap(), b"after-restore");
     }
 
@@ -2482,7 +2490,7 @@ mod tests {
 
     // shared-corpus: storage_object_page_slot_parity_surfaces;
     #[test]
-    fn page_address_matches_compact_extent_metadata_contract_and_checksum_alias() {
+    fn page_address_matches_compact_segment_metadata_contract_and_checksum_alias() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
         let address = store
@@ -2497,16 +2505,19 @@ mod tests {
         assert_eq!(address.routing_slot, Some(17));
         assert_eq!(address.extent_id, Some(0));
         assert_eq!(address.sha256, Some(sha256_hex(b"address-contract")));
-        assert_eq!(address.compact_extent_id(), Some(0));
-        assert_eq!(address.compact_extent_offset(), Some(0));
-        assert_eq!(address.compact_extent_address(), Some(0));
-        let from_compact_extent = BlockAddress::from_compact_extent_address(
-            address.compact_extent_address().unwrap(),
+        assert_eq!(address.compact_segment_id(), Some(0));
+        assert_eq!(address.compact_segment_offset(), Some(0));
+        assert_eq!(address.compact_segment_address(), Some(0));
+        let from_compact_segment = BlockAddress::from_compact_segment_address(
+            address.compact_segment_address().unwrap(),
             address.length,
         );
-        assert_eq!(from_compact_extent.page_segment_id, address.page_segment_id);
-        assert_eq!(from_compact_extent.offset, address.offset);
-        assert_eq!(from_compact_extent.length, address.length);
+        assert_eq!(
+            from_compact_segment.page_segment_id,
+            address.page_segment_id
+        );
+        assert_eq!(from_compact_segment.offset, address.offset);
+        assert_eq!(from_compact_segment.length, address.length);
         assert_eq!(store.read(&address).unwrap(), b"address-contract");
 
         let legacy_alias_json = serde_json::json!({
@@ -3119,39 +3130,39 @@ mod tests {
         assert_eq!(reports[0].first_error_offset, None);
         assert_eq!(reports[0].first_page_id, first.page_id);
         assert_eq!(reports[0].last_page_id, second.page_id);
-        assert_eq!(reports[0].page_index_count, 2);
-        assert_eq!(reports[0].page_index_entries.len(), 2);
+        assert_eq!(reports[0].block_index_count, 2);
+        assert_eq!(reports[0].block_index_entries.len(), 2);
         assert_eq!(
-            reports[0].page_index_entries[0].page_segment_id,
+            reports[0].block_index_entries[0].block_segment_id,
             first.page_segment_id
         );
-        assert_eq!(reports[0].page_index_entries[0].offset, first.offset);
-        assert_eq!(reports[0].page_index_entries[0].length, first.length);
+        assert_eq!(reports[0].block_index_entries[0].offset, first.offset);
+        assert_eq!(reports[0].block_index_entries[0].length, first.length);
         assert_eq!(
-            reports[0].page_index_entries[0].compact_extent_address,
-            first.compact_extent_address()
+            reports[0].block_index_entries[0].compact_segment_address,
+            first.compact_segment_address()
         );
         assert_eq!(
-            reports[0].page_index_entries[0].compact_extent_id,
-            first.compact_extent_id()
+            reports[0].block_index_entries[0].compact_segment_id,
+            first.compact_segment_id()
         );
         assert_eq!(
-            reports[0].page_index_entries[0].compact_extent_offset,
-            first.compact_extent_offset()
+            reports[0].block_index_entries[0].compact_segment_offset,
+            first.compact_segment_offset()
         );
-        assert_eq!(reports[0].page_index_entries[0].page_id, first.page_id);
+        assert_eq!(reports[0].block_index_entries[0].block_id, first.page_id);
         assert_eq!(
-            reports[0].page_index_entries[0].page_size,
+            reports[0].block_index_entries[0].block_size,
             first_payload.len() as u64
         );
-        assert!(reports[0].page_index_entries[0].stored_size < first_payload.len() as u64);
-        assert!(!reports[0].page_index_entries[0].dirty);
-        assert!(!reports[0].page_index_entries[0].deleted);
-        assert!(!reports[0].page_index_entries[0].page_in_log);
-        assert_eq!(reports[0].page_index_entries[0].checksum, first.sha256);
-        assert_eq!(reports[0].page_index_entries[1].offset, second.offset);
-        assert_eq!(reports[0].page_index_entries[1].length, second.length);
-        assert_eq!(reports[0].page_index_entries[1].page_id, second.page_id);
+        assert!(reports[0].block_index_entries[0].stored_size < first_payload.len() as u64);
+        assert!(!reports[0].block_index_entries[0].dirty);
+        assert!(!reports[0].block_index_entries[0].deleted);
+        assert!(!reports[0].block_index_entries[0].block_in_log);
+        assert_eq!(reports[0].block_index_entries[0].checksum, first.sha256);
+        assert_eq!(reports[0].block_index_entries[1].offset, second.offset);
+        assert_eq!(reports[0].block_index_entries[1].length, second.length);
+        assert_eq!(reports[0].block_index_entries[1].block_id, second.page_id);
         assert_eq!(reports[0].first_error, None);
     }
 
@@ -3177,10 +3188,10 @@ mod tests {
         assert_eq!(reports[0].routing_slot_count, 2);
         assert_eq!(reports[0].first_routing_slot, Some(7));
         assert_eq!(reports[0].last_routing_slot, Some(11));
-        assert_eq!(reports[0].page_index_count, 3);
+        assert_eq!(reports[0].block_index_count, 3);
         assert_eq!(
             reports[0]
-                .page_index_entries
+                .block_index_entries
                 .iter()
                 .filter_map(|entry| entry.object_id)
                 .collect::<Vec<_>>(),
@@ -3188,16 +3199,16 @@ mod tests {
         );
         assert_eq!(
             reports[0]
-                .page_index_entries
+                .block_index_entries
                 .iter()
                 .filter_map(|entry| entry.routing_slot)
                 .collect::<Vec<_>>(),
             vec![7, 11, 7]
         );
         assert!(reports[0]
-            .page_index_entries
+            .block_index_entries
             .iter()
-            .all(|entry| !entry.dirty && !entry.deleted && !entry.page_in_log));
+            .all(|entry| !entry.dirty && !entry.deleted && !entry.block_in_log));
         assert_eq!(
             reports[0].readable_prefix_physical_bytes,
             reports[0].physical_bytes
