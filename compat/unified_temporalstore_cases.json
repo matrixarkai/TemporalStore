@@ -10613,6 +10613,749 @@
           "restart_before": true
         }
       ]
+    },
+    {
+      "name": "all_data_model_cpp_rust_parity_sweep",
+      "family": "all data models",
+      "description": "Executable shared C++/Rust sweep across TemporalStore product data models: common TTL/existence, string, hash, set, Feature, Sequence, IPS, Risk, and Context node/event/entity/child/embedding/summary/compression/index sidecars.",
+      "shard_id": 7,
+      "steps": [
+        {
+          "name": "common_string_setex",
+          "command": {
+            "kind": "string_set_ex",
+            "key": "parity:string",
+            "value": [
+              118,
+              97,
+              108,
+              117,
+              101
+            ],
+            "ttl_ms": 60000
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "common_exists_string",
+          "command": {
+            "kind": "common_exists",
+            "key": "parity:string"
+          },
+          "expect": {
+            "kind": "integer",
+            "value": 1
+          }
+        },
+        {
+          "name": "string_get_roundtrip",
+          "command": {
+            "kind": "string_get",
+            "key": "parity:string"
+          },
+          "expect": {
+            "kind": "bytes",
+            "value": [
+              118,
+              97,
+              108,
+              117,
+              101
+            ]
+          }
+        },
+        {
+          "name": "hash_multi_set",
+          "command": {
+            "kind": "hash_multi_set",
+            "key": "parity:hash",
+            "entries": [
+              [
+                "field_a",
+                [
+                  104,
+                  97
+                ]
+              ],
+              [
+                "field_b",
+                [
+                  104,
+                  98
+                ]
+              ]
+            ]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "hash_get_all",
+          "command": {
+            "kind": "hash_get_all",
+            "key": "parity:hash"
+          },
+          "expect": {
+            "kind": "hash_entries",
+            "entries": [
+              [
+                "field_a",
+                [
+                  104,
+                  97
+                ]
+              ],
+              [
+                "field_b",
+                [
+                  104,
+                  98
+                ]
+              ]
+            ]
+          }
+        },
+        {
+          "name": "set_add_a",
+          "command": {
+            "kind": "set_add",
+            "key": "parity:set",
+            "member": [
+              115,
+              97
+            ]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "set_add_b",
+          "command": {
+            "kind": "set_add",
+            "key": "parity:set",
+            "member": [
+              115,
+              98
+            ]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "set_members_roundtrip",
+          "command": {
+            "kind": "set_members",
+            "key": "parity:set"
+          },
+          "expect": {
+            "kind": "members",
+            "members": [
+              [
+                115,
+                97
+              ],
+              [
+                115,
+                98
+              ]
+            ]
+          }
+        },
+        {
+          "name": "feature_append",
+          "command": {
+            "kind": "feature_append",
+            "key": "parity:feature",
+            "points": [
+              {
+                "timestamp_ms": 100,
+                "value": [
+                  49,
+                  48
+                ]
+              },
+              {
+                "timestamp_ms": 110,
+                "value": [
+                  50,
+                  48
+                ]
+              }
+            ]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "feature_sum",
+          "command": {
+            "kind": "feature_agg_query",
+            "key": "parity:feature",
+            "start_ms": 90,
+            "end_ms": 120,
+            "aggregator": "sum",
+            "count": null
+          },
+          "expect": {
+            "kind": "aggregate",
+            "value": 30
+          }
+        },
+        {
+          "name": "sequence_add",
+          "command": {
+            "kind": "sequence_add",
+            "key": "parity:sequence",
+            "rows": [
+              {
+                "timestamp_ms": 200,
+                "gid": 21,
+                "action_type": 1,
+                "duration": 5,
+                "author_id": 9
+              },
+              {
+                "timestamp_ms": 210,
+                "gid": 22,
+                "action_type": 2,
+                "duration": 7,
+                "author_id": 9
+              }
+            ]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "sequence_filter",
+          "command": {
+            "kind": "sequence_query",
+            "key": "parity:sequence",
+            "start_ms": 190,
+            "end_ms": 220,
+            "count": 10,
+            "filters": [
+              {
+                "field": "action_type",
+                "op": "equal",
+                "value": 2
+              }
+            ]
+          },
+          "expect": {
+            "kind": "sequence_rows",
+            "rows": [
+              {
+                "timestamp_ms": 210,
+                "gid": 22,
+                "action_type": 2,
+                "duration": 7,
+                "author_id": 9
+              }
+            ]
+          }
+        },
+        {
+          "name": "ips_add_a",
+          "command": {
+            "kind": "ips_add_with_options",
+            "key": "parity:ips",
+            "timestamp_ms": 300,
+            "instance": [
+              105,
+              112,
+              115,
+              45,
+              97
+            ],
+            "action_type": 7,
+            "table_id": 42,
+            "request_id": "req-a"
+          },
+          "expect": {
+            "kind": "integer",
+            "value": 1
+          }
+        },
+        {
+          "name": "ips_add_b",
+          "command": {
+            "kind": "ips_add_with_options",
+            "key": "parity:ips",
+            "timestamp_ms": 310,
+            "instance": [
+              105,
+              112,
+              115,
+              45,
+              98
+            ],
+            "action_type": 8,
+            "table_id": 42,
+            "request_id": "req-b"
+          },
+          "expect": {
+            "kind": "integer",
+            "value": 1
+          }
+        },
+        {
+          "name": "ips_filter",
+          "command": {
+            "kind": "ips_filter",
+            "key": "parity:ips",
+            "start_ms": 290,
+            "end_ms": 320,
+            "count": null,
+            "action_type": 8,
+            "table_id": 42
+          },
+          "expect": {
+            "kind": "feature_points",
+            "points": [
+              {
+                "timestamp_ms": 310,
+                "value": [
+                  105,
+                  112,
+                  115,
+                  45,
+                  98
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "ips_stat",
+          "command": {
+            "kind": "ips_stat",
+            "key": "parity:ips",
+            "start_ms": 290,
+            "end_ms": 320
+          },
+          "expect": {
+            "kind": "ips_stats",
+            "stats": {
+              "total": 2,
+              "first_timestamp_ms": 300,
+              "last_timestamp_ms": 310,
+              "action_type_counts": [
+                [
+                  7,
+                  1
+                ],
+                [
+                  8,
+                  1
+                ]
+              ],
+              "table_id_counts": [
+                [
+                  42,
+                  2
+                ]
+              ]
+            }
+          }
+        },
+        {
+          "name": "risk_h_set",
+          "command": {
+            "kind": "risk_set",
+            "family": "h",
+            "key": "parity:risk",
+            "timestamp_ms": 400,
+            "amount": 5
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "risk_cpc_set",
+          "command": {
+            "kind": "risk_set",
+            "family": "cpc",
+            "key": "parity:risk",
+            "timestamp_ms": 410,
+            "amount": 3
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "risk_query_h_sum",
+          "command": {
+            "kind": "risk_family_query",
+            "family": "h",
+            "key": "parity:risk",
+            "start_ms": 390,
+            "end_ms": 420,
+            "aggregator": "sum"
+          },
+          "expect": {
+            "kind": "integer",
+            "value": 5
+          }
+        },
+        {
+          "name": "risk_fol_first",
+          "command": {
+            "kind": "risk_fol_set",
+            "key": "parity:risk:fol",
+            "value": [
+              102,
+              105,
+              114,
+              115,
+              116
+            ],
+            "occur_time_ms": 420,
+            "ttl_ms": 60000,
+            "fol_type": "first"
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "risk_fol_query",
+          "command": {
+            "kind": "risk_fol_query",
+            "key": "parity:risk:fol"
+          },
+          "expect": {
+            "kind": "bytes",
+            "value": [
+              102,
+              105,
+              114,
+              115,
+              116
+            ]
+          }
+        },
+        {
+          "name": "context_upsert_node",
+          "command": {
+            "kind": "context_upsert_node",
+            "tenant_hash": 99,
+            "node": {
+              "node_hash": 700,
+              "parent_hash": 0,
+              "kind": 2,
+              "canonical_name": "parity-node",
+              "l0": "root",
+              "last_event_time_ms": 500
+            }
+          },
+          "expect": {
+            "kind": "context_object_key",
+            "object_key": "ctx:node:99:700"
+          }
+        },
+        {
+          "name": "context_write_extracted_event",
+          "command": {
+            "kind": "context_write_extracted_event",
+            "tenant_hash": 99,
+            "node_hash": 700,
+            "event": {
+              "event_id_hash": 701,
+              "event_time_ms": 510,
+              "ingestion_time_ms": 515,
+              "type": 4,
+              "confidence": 0.9,
+              "importance": 0.8,
+              "text": "parity event"
+            },
+            "indexes": {
+              "entity_hashes": [
+                9001
+              ],
+              "status_hash": 77,
+              "source_hash": 88,
+              "event_time_bucket_ms": 500
+            }
+          },
+          "expect": {
+            "kind": "context_extracted_event_write",
+            "event_object_key": "ctx:event:99:700",
+            "index_object_keys": [
+              "ctxidx:99:event_kind:4:0",
+              "ctxidx:99:status:77:0",
+              "ctxidx:99:source:88:0",
+              "ctxidx:99:event_time_bucket:500:0",
+              "ctxidx:99:entity:9001:0"
+            ],
+            "written_index_count": 5
+          }
+        },
+        {
+          "name": "context_query_events",
+          "command": {
+            "kind": "context_query_events",
+            "tenant_hash": 99,
+            "node_hash": 700,
+            "start_time_ms": 500,
+            "end_time_ms": 520,
+            "limit": null
+          },
+          "expect": {
+            "kind": "context_events",
+            "object_key": "ctx:event:99:700",
+            "events": [
+              {
+                "event_id_hash": 701,
+                "event_time_ms": 510,
+                "ingestion_time_ms": 515,
+                "type": 4,
+                "confidence": 0.9,
+                "importance": 0.8,
+                "text": "parity event"
+              }
+            ]
+          }
+        },
+        {
+          "name": "context_upsert_entity",
+          "command": {
+            "kind": "context_upsert_entity",
+            "tenant_hash": 99,
+            "entity": {
+              "entity_hash": 9001,
+              "node_hash": 700,
+              "type": 1,
+              "name": "entity",
+              "value": "value",
+              "updated_at_ms": 520,
+              "valid_from_ms": 510,
+              "confidence": 0.95,
+              "source_event_hashes": [
+                701
+              ]
+            }
+          },
+          "expect": {
+            "kind": "context_object_key",
+            "object_key": "ctx:entity:99:700:9001"
+          }
+        },
+        {
+          "name": "context_query_entity",
+          "command": {
+            "kind": "context_query_entities",
+            "tenant_hash": 99,
+            "node_hash": 700,
+            "entity_hashes": [
+              9001
+            ],
+            "limit": null
+          },
+          "expect": {
+            "kind": "context_entities",
+            "object_key": "ctx:entity:99:700",
+            "entities": [
+              {
+                "entity_hash": 9001,
+                "node_hash": 700,
+                "type": 1,
+                "name": "entity",
+                "value": "value",
+                "updated_at_ms": 520,
+                "valid_from_ms": 510,
+                "confidence": 0.95,
+                "source_event_hashes": [
+                  701
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "context_child_ref",
+          "command": {
+            "kind": "context_upsert_child_ref",
+            "tenant_hash": 99,
+            "child_ref": {
+              "parent_hash": 700,
+              "child_hash": 701,
+              "updated_at_ms": 530
+            }
+          },
+          "expect": {
+            "kind": "context_child_refs",
+            "object_key": "ctx:child:99:700",
+            "refs": [],
+            "created": true,
+            "parent_child_count": 1
+          }
+        },
+        {
+          "name": "context_query_children",
+          "command": {
+            "kind": "context_query_children",
+            "tenant_hash": 99,
+            "parent_hash": 700,
+            "limit": null
+          },
+          "expect": {
+            "kind": "context_child_refs",
+            "object_key": "ctx:child:99:700",
+            "refs": [
+              {
+                "parent_hash": 700,
+                "child_hash": 701,
+                "updated_at_ms": 530
+              }
+            ]
+          }
+        },
+        {
+          "name": "context_embedding",
+          "command": {
+            "kind": "context_upsert_embedding",
+            "tenant_hash": 99,
+            "embedding": {
+              "ref_hash": 700,
+              "level": 1,
+              "model_hash": 123,
+              "vector": [
+                0.1,
+                0.2,
+                0.3
+              ],
+              "updated_at_ms": 540
+            }
+          },
+          "expect": {
+            "kind": "context_object_key",
+            "object_key": "ctx:embedding:99:700"
+          }
+        },
+        {
+          "name": "context_query_embedding",
+          "command": {
+            "kind": "context_query_embeddings",
+            "tenant_hash": 99,
+            "ref_hashes": [
+              700
+            ],
+            "limit": null
+          },
+          "expect": {
+            "kind": "context_embeddings",
+            "embeddings": [
+              {
+                "ref_hash": 700,
+                "level": 1,
+                "model_hash": 123,
+                "vector": [
+                  0.1,
+                  0.2,
+                  0.3
+                ],
+                "updated_at_ms": 540
+              }
+            ]
+          }
+        },
+        {
+          "name": "context_summary",
+          "command": {
+            "kind": "context_upsert_summary",
+            "tenant_hash": 99,
+            "summary": {
+              "node_hash": 700,
+              "level": 1,
+              "text": "summary",
+              "valid_from_ms": 550
+            }
+          },
+          "expect": {
+            "kind": "context_object_key",
+            "object_key": "ctx:summary:99:700:1"
+          }
+        },
+        {
+          "name": "context_query_summary",
+          "command": {
+            "kind": "context_query_summaries",
+            "tenant_hash": 99,
+            "node_hash": 700,
+            "level": 1,
+            "as_of_ms": 560,
+            "limit": null
+          },
+          "expect": {
+            "kind": "context_summaries",
+            "object_key": "ctx:summary:99:700:1",
+            "summaries": [
+              {
+                "node_hash": 700,
+                "level": 1,
+                "text": "summary",
+                "valid_from_ms": 550
+              }
+            ]
+          }
+        },
+        {
+          "name": "context_compression",
+          "command": {
+            "kind": "context_write_compression_event",
+            "tenant_hash": 99,
+            "event": {
+              "compression_id_hash": 42,
+              "node_hash": 700,
+              "source_start_ms": 500,
+              "source_end_ms": 520,
+              "compressed_time_ms": 560,
+              "summary": "compressed"
+            }
+          },
+          "expect": {
+            "kind": "context_object_key",
+            "object_key": "ctx:compress:99:700"
+          }
+        },
+        {
+          "name": "context_query_compression",
+          "command": {
+            "kind": "context_query_compression_events",
+            "tenant_hash": 99,
+            "node_hashes": [
+              700
+            ],
+            "start_time_ms": 500,
+            "end_time_ms": 570,
+            "limit": null
+          },
+          "expect": {
+            "kind": "context_compression_events",
+            "object_key": "ctx:compress:99:700",
+            "events": [
+              {
+                "compression_id_hash": 42,
+                "node_hash": 700,
+                "source_start_ms": 500,
+                "source_end_ms": 520,
+                "compressed_time_ms": 560,
+                "summary": "compressed"
+              }
+            ]
+          }
+        }
+      ]
     }
   ],
   "coverage": {
