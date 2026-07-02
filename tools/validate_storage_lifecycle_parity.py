@@ -194,11 +194,17 @@ CANONICAL_PUBLIC_FIELDS = [
     "BlockAddress",
     "PageIndexEntry",
     "BlockIndexEntry",
+    "ObjectIndexEntry",
     "StorageZone",
+    "Stream",
     "Segment",
     "Extent",
+    "Slot",
     "AppendWatermark",
     "CompactionWatermark",
+    "Tombstone",
+    "GcEligibility",
+    "FollowerCursorSafety",
 ]
 
 CANONICAL_JSON_FIELDS = [
@@ -206,11 +212,17 @@ CANONICAL_JSON_FIELDS = [
     "block_address",
     "page_index_entry",
     "block_index_entry",
+    "object_index_entry",
     "storage_zone",
+    "stream",
     "segment",
     "extent",
+    "slot",
     "append_watermark",
     "compaction_watermark",
+    "tombstone",
+    "gc_eligibility",
+    "follower_cursor_safety",
 ]
 
 LEGACY_ALIAS_MAP = {
@@ -218,6 +230,7 @@ LEGACY_ALIAS_MAP = {
     "block_store": "storage_zone",
     "page_segment": "segment",
     "page_segment_id": "segment_id",
+    "object_index": "object_index_entry",
     "stream_blob": "segment",
     "stream_blob_id": "segment_id",
     "oplog": "append_watermark",

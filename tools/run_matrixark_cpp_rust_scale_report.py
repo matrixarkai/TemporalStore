@@ -184,11 +184,17 @@ PUBLIC_STORAGE_CONTRACT: Json = {
     "block_address": "BlockAddress",
     "page_index_entry": "PageIndexEntry",
     "block_index_entry": "BlockIndexEntry",
+    "object_index_entry": "ObjectIndexEntry",
     "storage_zone": "StorageZone",
+    "stream": "Stream",
     "segment": "Segment",
     "extent": "Extent",
+    "slot": "Slot",
     "append_watermark": "AppendWatermark",
     "compaction_watermark": "CompactionWatermark",
+    "tombstone": "Tombstone",
+    "gc_eligibility": "GcEligibility",
+    "follower_cursor_safety": "FollowerCursorSafety",
     "compatibility_aliases": {},
 }
 

@@ -140,10 +140,11 @@ Expected use:
 - Public reports should expose `BlockIndex`, not backend-specific names such as
   local page segment internals.
 
-### ObjectIndex
+### ObjectIndexEntry
 
-`ObjectIndex` maps `{model/table/object_key}` to the current page chain or segment
-list.
+`ObjectIndexEntry` maps `{model/table/object_key}` to the current page chain or
+segment list. Internal code may still call this an object index, but public
+reports use `ObjectIndexEntry`.
 
 Required value:
 
@@ -161,15 +162,32 @@ Required value:
 
 Expected use:
 
-- The hot read path should use `ObjectIndex -> PageIndex -> PageAddress`.
-- Recovery should rebuild or validate `ObjectIndex` from page/block manifests and
+- The hot read path should use `ObjectIndexEntry -> PageIndexEntry -> PageAddress`.
+- Recovery should rebuild or validate `ObjectIndexEntry` from page/block manifests and
   append logs.
 - C++ and Rust should report the same object-index shape even if their internal
   slot map or shard map implementation differs.
 
-### Tombstone/GC Metadata
+### Stream, Segment, Extent, And Slot
 
-`TombstoneGcMetadata` records logical delete and physical reclaim eligibility.
+`Stream` is the public append-log or blob-stream concept used for durable record
+ordering and replay. Backend terms such as `oplog` or `stream_blob` are private
+implementation names and must be emitted only under `compatibility_aliases`.
+
+`Segment` is the public sealed or writable storage segment concept. A segment may
+map to a local file, shared-store blob, stream blob, or page segment internally.
+
+`Extent` is a contiguous physical byte range inside a durable block or segment.
+
+`Slot` is the public ownership/routing unit that binds logical records, page
+references, tombstones, and dirty generations to a shard-owned lifecycle lane.
+
+### Tombstone, GcEligibility, And FollowerCursorSafety
+
+`Tombstone` records logical delete evidence. `GcEligibility` records whether a
+record or page/block is safe to compact or reclaim. `FollowerCursorSafety`
+records whether Raft/shared-store followers, snapshots, or replay cursors still
+need stale pages or blocks.
 
 Required value:
 
@@ -188,9 +206,10 @@ Required value:
 Required safety gates before physical reclaim:
 
 - logical tombstone is durable;
-- no live `ObjectIndex` or `PageIndex` points to the page address;
+- no live `ObjectIndexEntry` or `PageIndexEntry` points to the page address;
 - no snapshot/replay/audit retention needs the raw record;
-- no Raft/shared-store follower cursor still needs the page/block;
+- `FollowerCursorSafety` proves no Raft/shared-store follower cursor still needs
+  the page/block;
 - compaction generation is newer than the stale page generation.
 
 ## Read/Write Behavior Parity
@@ -321,7 +340,7 @@ Required read sequence step names:
 
 Required behavior:
 
-- Point reads may use `ObjectIndex` to resolve the current logical object chain,
+- Point reads may use `ObjectIndexEntry` to resolve the current logical object chain,
   then must use `PageIndex -> BlockIndex` for durable page lookup.
 - Timestamp range reads must use `PageIndex` range lookup before reading blocks.
 - `PageIndex` returns ordered `PageAddress` values for the logical key or
@@ -432,13 +451,17 @@ Canonical names:
 - `BlockAddress`
 - `PageIndexEntry`
 - `BlockIndexEntry`
-- `ObjectIndex`
-- `TombstoneGcMetadata`
+- `ObjectIndexEntry`
 - `StorageZone`
+- `Stream`
 - `Segment`
 - `Extent`
+- `Slot`
 - `AppendWatermark`
 - `CompactionWatermark`
+- `Tombstone`
+- `GcEligibility`
+- `FollowerCursorSafety`
 
 Canonical field names:
 
@@ -446,12 +469,17 @@ Canonical field names:
 - `block_address`
 - `page_index_entry`
 - `block_index_entry`
-- `object_index`
+- `object_index_entry`
 - `storage_zone`
+- `stream`
 - `segment`
 - `extent`
+- `slot`
 - `append_watermark`
 - `compaction_watermark`
+- `tombstone`
+- `gc_eligibility`
+- `follower_cursor_safety`
 
 Avoid drifting pairs in public output:
 
@@ -459,7 +487,8 @@ Avoid drifting pairs in public output:
 |---|---|---|
 | `page_store` vs `block_store` | `StorageZone`, `PageIndexEntry`, `BlockIndexEntry` | Use implementation-specific store names only in private logs or migration notes. |
 | `zone` vs `extent` | `StorageZone` for placement, `Extent` for contiguous physical byte ranges | Do not use one backend's private name as the public contract. |
-| `stream blob` vs `page segment` | `Segment` | A segment may map to a local file, shared blob, or stream blob. |
+| `stream blob` vs `page segment` | `Stream`, `Segment` | A segment may map to a local file, shared blob, or stream blob. |
+| `oplog` vs `wal` | `Stream`, `AppendWatermark` | Public reports should describe append-log order through shared stream/watermark terms. |
 | `ShardStats.page_store` vs `ShardStats.block_store` | `ShardStats.storage_zone`, `ShardStats.page_index`, `ShardStats.block_index` | Shard stats must be comparable between C++ and Rust. |
 
 Compatibility aliases are allowed only when all three conditions are true:
@@ -489,8 +518,9 @@ payloads.
 Required Phase 1 outputs:
 
 - canonical schema for `PageAddress`, `BlockAddress`, `PageIndexEntry`,
-  `BlockIndexEntry`, `ObjectIndex`, `TombstoneGcMetadata`, watermarks, and
-  page/block metrics;
+  `BlockIndexEntry`, `ObjectIndexEntry`, `StorageZone`, `Stream`, `Segment`,
+  `Extent`, `Slot`, `AppendWatermark`, `CompactionWatermark`, `Tombstone`,
+  `GcEligibility`, `FollowerCursorSafety`, and page/block metrics;
 - explicit alias map for old names such as `page_store`, `block_store`,
   `page_segment_id`, `zone_id`, `extent_id`, `stream_blob`, `oplog`,
   `oplog_id`, and `oplog_sequence`;
@@ -595,8 +625,9 @@ Removal gate:
 | `BlockAddress` | page-store stream/blob location | `BlockAddress` in block/page segment layer | `BlockAddress` |
 | `PageIndexEntry` | partition index slot pages | core/shard index page refs | `PageIndexEntry` |
 | `BlockIndexEntry` | page-store zone/stream manifest | block-store extent/segment manifest | `BlockIndexEntry` |
-| `ObjectIndex` | model/object slot layout | shard model maps/core index | `ObjectIndex` |
-| `TombstoneGcMetadata` | deleted/dirty page and delayed destroy state | tombstone/GC report state | `TombstoneGcMetadata` |
+| `ObjectIndexEntry` | model/object slot layout | shard model maps/core index | `ObjectIndexEntry` |
+| `Tombstone` / `GcEligibility` | deleted/dirty page and delayed destroy state | tombstone/GC report state | `Tombstone` / `GcEligibility` |
+| `FollowerCursorSafety` | follower cursor and snapshot retention state | raft/shared-store cursor safety state | `FollowerCursorSafety` |
 
 ## Required Parity Tests
 
@@ -606,12 +637,12 @@ Shared C++/Rust parity cases must cover:
 - encode/decode `BlockAddress`;
 - stable address ordering;
 - timestamp range lookup through `PageIndex`;
-- object lookup through `ObjectIndex`;
+- object lookup through `ObjectIndexEntry`;
 - page split and page-chain update;
 - compaction rewrite preserving logical records;
 - stale generation rejection;
 - tombstone creation before physical reclaim;
-- restart/recovery rebuilding `PageIndex`, `BlockIndex`, and `ObjectIndex`;
+- restart/recovery rebuilding `PageIndex`, `BlockIndex`, and `ObjectIndexEntry`;
 - cold scan using no-cache/no-promote reads.
 
 The shared `compat/page_address_compatibility_corpus.json` corpus covers the
@@ -626,7 +657,7 @@ PageAddress and BlockAddress subset that both C++ and Rust must consume:
 - page compaction rewrite preserving logical records;
 - tombstone filtering that skips stale records on normal reads;
 - cold scan reads that do not warm the serving cache;
-- crash/restart rebuild of `PageIndex`, `BlockIndex`, and `ObjectIndex`.
+- crash/restart rebuild of `PageIndex`, `BlockIndex`, and `ObjectIndexEntry`.
 
 `tools/validate_page_address_compatibility_corpus.py` is the lightweight
 fail-closed validator for this shared corpus. Native C++ and Rust tests should
@@ -856,7 +887,7 @@ Shared proof requirements:
 - tombstones survive compaction and remain available to debug/replay policy;
 - stale page/block generations are ignored by normal reads after compaction;
 - cold scans use no-cache/no-promote reads and do not warm the serving cache;
-- crash/restart rebuilds `PageIndex`, `BlockIndex`, and `ObjectIndex`;
+- crash/restart rebuilds `PageIndex`, `BlockIndex`, and `ObjectIndexEntry`;
 - physical reclaim is only complete when stale pages/blocks are tombstoned,
   rewritten or skipped safely, and reclaimed bytes are reported.
 
@@ -902,7 +933,7 @@ This contract is satisfied when C++ and Rust:
 - expose the same storage lifecycle metrics;
 - reject public report changes that reintroduce backend-specific naming drift;
 - encode the same logical `PageAddress`;
-- rebuild `PageIndex`, `BlockIndex`, and `ObjectIndex` after restart;
+- rebuild `PageIndex`, `BlockIndex`, and `ObjectIndexEntry` after restart;
 - preserve tombstone metadata through compaction and ignore stale generations
   during normal reads;
 - expose the same page/block config;
