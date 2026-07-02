@@ -98,13 +98,72 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "Full replay/debug audit is opt-in",
             "Cloud mode requires an API key or trusted SSO gateway identity",
             "Local/dev mode may use generated local scope defaults",
+            "Codex, Claude, Cursor, OpenClaw, OpenCode, Aider, Continue, Cline/Roo",
+            "visible local context only",
+            "before LLM: `matrixark_retrieve`",
+            "after answer/tool: `matrixark_ingest`",
+            "resource added: import resource or skill",
+            "feedback: `matrixark_feedback`",
+            "session boundary: `matrixark_session_commit`",
+            "ingest/retrieve QPS",
+            "p50/p95/p99 latency",
+            "partial ContextPack count",
+            "audit write failures",
+            "dirty summary lag",
+            "resource import lag",
+            "model fallback flags",
+            "backend readiness",
+            "messages;",
+            "resources;",
+            "skills;",
+            "events/entities;",
+            "ContextPacks;",
+            "users;",
+            "API keys;",
+            "audit logs.",
+            "scoped, redacted, paged tables",
             "no private checkout paths",
             "no local credentials or secrets",
             "no vendored build outputs",
             "reproducible local validation commands",
+            "C++/Rust scale matrix gate",
         ]
         for snippet in required_snippets:
             self.assertIn(snippet, defaults_doc)
+
+    def test_metrics_prometheus_contract_includes_production_signals(self) -> None:
+        metrics_mod = importlib.import_module("tools.matrixark_mcp_metrics")
+        metrics = metrics_mod.MatrixArkServiceMetrics()
+        metrics.observe_operation("ingest", "ok", 12.5)
+        metrics.observe_operation("retrieve", "ok", 25.0, timeout=True)
+        metrics.observe_retrieve_result({"partial": True, "tokens": {"remote_budget": 100, "remote": 80}})
+        metrics.observe_model_latency("embedding", 8.0)
+        metrics.update_gauges(dirty_summary_lag_ms=10, resource_import_lag_ms=20, queue_depth=3, audit_write_failures=1)
+        metrics.observe_backend_ready(True, "ready")
+        metrics.update_model_fallback_flags(embedding=True, reader=False, judge=True)
+
+        prometheus = metrics.render_prometheus(backend="temporalstore-direct", storage_mode="shared_store")
+        required_metrics = [
+            'matrixark_backend_info{backend="temporalstore-direct",storage_mode="shared_store"} 1',
+            "matrixark_backend_ready",
+            'matrixark_service_qps{backend="temporalstore-direct",storage_mode="shared_store",operation="ingest"}',
+            'matrixark_service_qps{backend="temporalstore-direct",storage_mode="shared_store",operation="retrieve"}',
+            'matrixark_service_latency_ms{backend="temporalstore-direct",storage_mode="shared_store",operation="retrieve",quantile="0.5"}',
+            'matrixark_service_latency_ms{backend="temporalstore-direct",storage_mode="shared_store",operation="retrieve",quantile="0.95"}',
+            'matrixark_service_latency_ms{backend="temporalstore-direct",storage_mode="shared_store",operation="retrieve",quantile="0.99"}',
+            "matrixark_timeouts_total",
+            "matrixark_partial_context_pack_total",
+            "matrixark_resource_import_queue_depth",
+            "matrixark_audit_write_failures_total",
+            "matrixark_dirty_summary_lag_ms",
+            "matrixark_resource_import_lag_ms",
+            "matrixark_token_pressure_ratio",
+            'matrixark_model_fallback_flag{backend="temporalstore-direct",storage_mode="shared_store",flag="embedding"} 1',
+            'matrixark_model_fallback_flag{backend="temporalstore-direct",storage_mode="shared_store",flag="judge"} 1',
+            "matrixark_model_latency_ms",
+        ]
+        for metric in required_metrics:
+            self.assertIn(metric, prometheus)
 
     def test_request_boundary_generates_idempotency_and_validates_storage(self) -> None:
         requests_mod = importlib.import_module("tools.matrixark_mcp_requests")
