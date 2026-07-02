@@ -860,6 +860,38 @@ Shared proof requirements:
 - physical reclaim is only complete when stale pages/blocks are tombstoned,
   rewritten or skipped safely, and reclaimed bytes are reported.
 
+## Nine-Phase Parity Gate
+
+`tools/validate_storage_engine_9_phase_parity.py` is the umbrella gate for the
+storage-engine parity loop. It runs the focused validators in the same phase
+order used by the C++/Rust parity plan:
+
+1. canonical public contract;
+2. read/write/cold-scan sequences;
+3. `StorageManager`/`StoreManager` lifecycle;
+4. page/block/slot/index behavior;
+5. multi-layer cache behavior;
+6. eviction, GC, compaction, and reclaim;
+7. public config parity;
+8. metrics/report parity;
+9. shared storage/proxy/Raft evidence.
+
+The gate should be used after every storage lifecycle change:
+
+```bash
+python tools/validate_storage_engine_9_phase_parity.py
+```
+
+To repeat the full phase sequence for soak-style proof:
+
+```bash
+python tools/validate_storage_engine_9_phase_parity.py --loops 9
+```
+
+The umbrella gate does not replace native C++ or Rust tests. It composes the
+shared validators so CI and local development fail at a named phase boundary
+instead of relying on a manual checklist.
+
 ## Acceptance
 
 This contract is satisfied when C++ and Rust:
