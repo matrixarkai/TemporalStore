@@ -275,6 +275,51 @@ Required behavior:
   replay/debug policy asks for retained historical data.
 - Cold scans must use no-cache/no-promote reads by default.
 
+## Public Config Parity
+
+C++ and Rust must expose the same public storage tuning knobs. The names below
+are the public contract; each backend may map them into private gflags, typed
+configs, or environment readers internally.
+
+| knob | meaning | default |
+|---|---|---:|
+| `TS_CONTEXT_PAGE_TARGET_BYTES` | Target packed context timestamp page size. | `65536` |
+| `TS_BLOCK_SEGMENT_TARGET_BYTES` | Target durable block/segment size before rolling. | `1073741824` |
+| `TS_STORAGE_ZONE_SIZE` | Storage zone target used by lifecycle and placement. | `10485760` |
+| `TS_STREAM_MAX_BLOB_SIZE` | Stream/blob cap; effective segment target is the lower of this and block segment target. | `10485760` |
+| `TS_COMPACTION_WATERMARK_BYTES` | Compaction scheduling/reclaim watermark. | `268435456` |
+| `TS_COLD_SCAN_NO_CACHE_FILL` | Default no-cache/no-promote behavior for cold lifecycle scans. | `true` |
+| `TS_PAGE_INDEX_CACHE_BYTES` | Page-index cache budget for object/range lookup metadata. | `67108864` |
+| `TS_BLOCK_INDEX_CACHE_BYTES` | Block-index cache budget for physical address metadata. | `67108864` |
+
+Required report shape:
+
+```json
+{
+  "effective_storage_tuning": {
+    "TS_CONTEXT_PAGE_TARGET_BYTES": 65536,
+    "TS_BLOCK_SEGMENT_TARGET_BYTES": 1073741824,
+    "TS_STORAGE_ZONE_SIZE": 10485760,
+    "TS_STREAM_MAX_BLOB_SIZE": 10485760,
+    "TS_COMPACTION_WATERMARK_BYTES": 268435456,
+    "TS_COLD_SCAN_NO_CACHE_FILL": true,
+    "TS_PAGE_INDEX_CACHE_BYTES": 67108864,
+    "TS_BLOCK_INDEX_CACHE_BYTES": 67108864
+  }
+}
+```
+
+Parity rules:
+
+- C++ launchers must map `TS_STORAGE_ZONE_SIZE` to `--storage_zone_size` and
+  `TS_STREAM_MAX_BLOB_SIZE` to `--stream_max_blob_size` until native gflags use
+  the public names directly.
+- Rust must read all eight names through its typed storage tuning config.
+- Benchmark and scale reports must include `effective_storage_tuning` at the
+  top-level config and per backend.
+- A parity gate should fail if one backend reports a missing knob or a different
+  effective value under the same run config.
+
 ## Normalize Naming
 
 Public APIs, reports, metrics, docs, parity tests, and externally visible JSON

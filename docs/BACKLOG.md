@@ -921,9 +921,13 @@ Completed since the last backlog update:
     - `TS_STORAGE_ZONE_SIZE`;
     - `TS_STREAM_MAX_BLOB_SIZE`;
     - `TS_COMPACTION_WATERMARK_BYTES`;
-    - `TS_COLD_SCAN_NO_CACHE_FILL`.
+    - `TS_COLD_SCAN_NO_CACHE_FILL`;
+    - `TS_PAGE_INDEX_CACHE_BYTES`;
+    - `TS_BLOCK_INDEX_CACHE_BYTES`.
   - C++ may map the storage-facing subset into existing gflags; Rust should
     consume the same names through a typed config surface.
+  - Scale and parity reports must include `effective_storage_tuning` for each
+    backend so C++ and Rust runs are comparable before QPS/latency claims.
   - Add parity validation to CI so one side cannot add a production knob without
     the other side seeing it.
 
