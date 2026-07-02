@@ -668,10 +668,17 @@ Canonical StorageManager/StoreManager lifecycle phases:
 - `cold_scan_no_cache_reads`
 - `hot_cache_promotions`
 - `tombstone_records`
+- `stale_page_tombstones`
+- `stale_block_tombstones`
+- `stale_pages_rewritten`
+- `stale_pages_skipped`
+- `stale_blocks_rewritten`
+- `stale_blocks_skipped`
 - `delayed_destroy_backlog`
 - `follower_cursor_retention_floor`
 - `reclaimable_bytes`
 - `compaction_reclaimed_bytes`
+- `physical_reclaimed_bytes`
 - `physical_reclaim_errors`
 - `append_watermark`
 - `compaction_watermark`
@@ -694,6 +701,22 @@ Lifecycle parity is intentionally stricter than cache eviction parity:
 - physical reclaim is complete only when reclaimable bytes and reclaimed bytes
   are reported with zero physical reclaim errors;
 - cold scan parity requires no-cache/no-promote reads and no hot-cache admission.
+
+Canonical reclaim semantics:
+
+- `cache_eviction_memory_only`: `cache_evictions` may be non-zero without any
+  physical reclaim; this only proves memory was relieved.
+- `logical_tombstone_required`: physical reclaim must have durable tombstone
+  evidence such as `tombstone_records`, `stale_page_tombstones`, or
+  `stale_block_tombstones`.
+- `stale_pages_blocks_rewritten_or_skipped`: physical reclaim must prove stale
+  pages/blocks were either rewritten into live generations or safely skipped via
+  `stale_pages_rewritten`, `stale_pages_skipped`, `stale_blocks_rewritten`, or
+  `stale_blocks_skipped`.
+- `reclaimed_bytes_reported`: physical reclaim must report
+  `physical_reclaimed_bytes` and `compaction_reclaimed_bytes`.
+- `physical_reclaim_errors_zero`: physical reclaim is not complete unless
+  `physical_reclaim_errors` is zero.
 
 ## Acceptance
 

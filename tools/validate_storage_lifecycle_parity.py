@@ -45,10 +45,17 @@ REQUIRED_STORAGE_LIFECYCLE_METRICS = [
     "cold_scan_no_cache_reads",
     "hot_cache_promotions",
     "tombstone_records",
+    "stale_page_tombstones",
+    "stale_block_tombstones",
+    "stale_pages_rewritten",
+    "stale_pages_skipped",
+    "stale_blocks_rewritten",
+    "stale_blocks_skipped",
     "delayed_destroy_backlog",
     "follower_cursor_retention_floor",
     "reclaimable_bytes",
     "compaction_reclaimed_bytes",
+    "physical_reclaimed_bytes",
     "physical_reclaim_errors",
     "append_watermark",
     "compaction_watermark",
@@ -82,6 +89,14 @@ REQUIRED_STORAGE_LIFECYCLE_PHASES = [
     "delayed_destroy",
     "follower_cursor_safety",
     "watermark_progress",
+]
+
+REQUIRED_STORAGE_RECLAIM_SEMANTICS = [
+    "cache_eviction_memory_only",
+    "logical_tombstone_required",
+    "stale_pages_blocks_rewritten_or_skipped",
+    "reclaimed_bytes_reported",
+    "physical_reclaim_errors_zero",
 ]
 
 REQUIRED_CONFIG_FIELDS = [
@@ -196,6 +211,17 @@ def _dig_lifecycle_phases(report: dict[str, Any]) -> list[str]:
     return []
 
 
+def _dig_reclaim_semantics(report: dict[str, Any]) -> list[str]:
+    candidates = [
+        report.get("storage_reclaim_semantics"),
+        report.get("storage_lifecycle", {}).get("reclaim_semantics") if isinstance(report.get("storage_lifecycle"), dict) else None,
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, list) and all(isinstance(item, str) for item in candidate):
+            return candidate
+    return []
+
+
 def _as_number(value: Any) -> float | None:
     if isinstance(value, bool):
         return None
@@ -248,6 +274,45 @@ def _normalize_public_storage_shape(report: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _metric_number(metrics: dict[str, Any], name: str) -> float:
+    value = _as_number(metrics.get(name))
+    return 0.0 if value is None else value
+
+
+def _validate_physical_reclaim_evidence(backend: str, metrics: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    cache_evictions = _metric_number(metrics, "cache_evictions")
+    physical_reclaimed = _metric_number(metrics, "physical_reclaimed_bytes")
+    compaction_reclaimed = _metric_number(metrics, "compaction_reclaimed_bytes")
+    physical_errors = _metric_number(metrics, "physical_reclaim_errors")
+    tombstone_evidence = (
+        _metric_number(metrics, "tombstone_records")
+        + _metric_number(metrics, "stale_page_tombstones")
+        + _metric_number(metrics, "stale_block_tombstones")
+    )
+    rewrite_or_skip_evidence = (
+        _metric_number(metrics, "stale_pages_rewritten")
+        + _metric_number(metrics, "stale_pages_skipped")
+        + _metric_number(metrics, "stale_blocks_rewritten")
+        + _metric_number(metrics, "stale_blocks_skipped")
+    )
+
+    if cache_evictions > 0 and physical_reclaimed == 0 and compaction_reclaimed == 0:
+        # This is valid and intentional: cache eviction frees memory only.
+        return failures
+
+    if physical_reclaimed > 0:
+        if physical_errors != 0:
+            failures.append(f"{backend} physical reclaim reported bytes with errors={physical_errors}")
+        if tombstone_evidence <= 0:
+            failures.append(f"{backend} physical reclaim reported bytes without tombstone evidence")
+        if rewrite_or_skip_evidence <= 0:
+            failures.append(f"{backend} physical reclaim reported bytes without stale page/block rewrite-or-skip evidence")
+        if compaction_reclaimed <= 0:
+            failures.append(f"{backend} physical reclaim reported bytes without compaction_reclaimed_bytes")
+    return failures
+
+
 def validate_contract_and_runner() -> list[str]:
     failures: list[str] = []
     contract_text = CONTRACT.read_text(encoding="utf-8")
@@ -255,6 +320,7 @@ def validate_contract_and_runner() -> list[str]:
     runner_read_sequence = _extract_runner_list("STORAGE_READ_SEQUENCE_STEPS")
     runner_cold_scan_sequence = _extract_runner_list("STORAGE_COLD_SCAN_SEQUENCE_STEPS")
     runner_lifecycle_phases = _extract_runner_list("STORAGE_LIFECYCLE_PHASE_NAMES")
+    runner_reclaim_semantics = _extract_runner_list("STORAGE_RECLAIM_SEMANTICS")
     for name in CANONICAL_PUBLIC_FIELDS + CANONICAL_JSON_FIELDS:
         if f"`{name}`" not in contract_text:
             failures.append(f"contract missing canonical public field `{name}`")
@@ -266,6 +332,8 @@ def validate_contract_and_runner() -> list[str]:
         failures.append("runner:STORAGE_COLD_SCAN_SEQUENCE_STEPS does not match the canonical cold scan sequence")
     if runner_lifecycle_phases != REQUIRED_STORAGE_LIFECYCLE_PHASES:
         failures.append("runner:STORAGE_LIFECYCLE_PHASE_NAMES does not match the canonical lifecycle phase order")
+    if runner_reclaim_semantics != REQUIRED_STORAGE_RECLAIM_SEMANTICS:
+        failures.append("runner:STORAGE_RECLAIM_SEMANTICS does not match the canonical reclaim semantics")
     for metric in REQUIRED_STORAGE_LIFECYCLE_METRICS:
         if f"`{metric}`" not in contract_text:
             failures.append(f"contract missing lifecycle metric `{metric}`")
@@ -277,6 +345,9 @@ def validate_contract_and_runner() -> list[str]:
     for phase in REQUIRED_STORAGE_LIFECYCLE_PHASES:
         if f"`{phase}`" not in contract_text:
             failures.append(f"contract missing lifecycle phase `{phase}`")
+    for semantic in REQUIRED_STORAGE_RECLAIM_SEMANTICS:
+        if f"`{semantic}`" not in contract_text:
+            failures.append(f"contract missing reclaim semantic `{semantic}`")
     return failures
 
 
@@ -294,6 +365,8 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
     rust_cold_scan_sequence = _dig_sequence(rust_report, "storage_cold_scan_sequence")
     cpp_lifecycle_phases = _dig_lifecycle_phases(cpp_report)
     rust_lifecycle_phases = _dig_lifecycle_phases(rust_report)
+    cpp_reclaim_semantics = _dig_reclaim_semantics(cpp_report)
+    rust_reclaim_semantics = _dig_reclaim_semantics(rust_report)
 
     for field in REQUIRED_CONFIG_FIELDS:
         if field not in cpp_config:
@@ -321,6 +394,10 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
         failures.append(f"cpp storage_lifecycle_phases drift: {cpp_lifecycle_phases!r}")
     if rust_lifecycle_phases != REQUIRED_STORAGE_LIFECYCLE_PHASES:
         failures.append(f"rust storage_lifecycle_phases drift: {rust_lifecycle_phases!r}")
+    if cpp_reclaim_semantics != REQUIRED_STORAGE_RECLAIM_SEMANTICS:
+        failures.append(f"cpp storage_reclaim_semantics drift: {cpp_reclaim_semantics!r}")
+    if rust_reclaim_semantics != REQUIRED_STORAGE_RECLAIM_SEMANTICS:
+        failures.append(f"rust storage_reclaim_semantics drift: {rust_reclaim_semantics!r}")
 
     for backend, report in [("cpp", cpp_report), ("rust", rust_report)]:
         for path, key in _walk_public_keys(report):
@@ -346,6 +423,7 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
         "cold_scan_no_cache_reads",
         "hot_cache_promotions",
         "compaction_reclaimed_bytes",
+        "physical_reclaimed_bytes",
         "physical_reclaim_errors",
         "append_watermark",
         "compaction_watermark",
@@ -358,6 +436,8 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
             failures.append(f"physical reclaim errors must be zero: cpp={cpp_value} rust={rust_value}")
         if metric.endswith("_watermark") and (cpp_value < 0 or rust_value < 0):
             failures.append(f"watermark must be non-negative for `{metric}`")
+    failures.extend(_validate_physical_reclaim_evidence("cpp", cpp_metrics))
+    failures.extend(_validate_physical_reclaim_evidence("rust", rust_metrics))
     return failures
 
 
@@ -393,6 +473,7 @@ def main() -> int:
     print("- storage_read_sequence=" + " -> ".join(REQUIRED_STORAGE_READ_SEQUENCE))
     print("- storage_cold_scan_sequence=" + " -> ".join(REQUIRED_STORAGE_COLD_SCAN_SEQUENCE))
     print("- storage_lifecycle_phases=" + ", ".join(REQUIRED_STORAGE_LIFECYCLE_PHASES))
+    print("- storage_reclaim_semantics=" + ", ".join(REQUIRED_STORAGE_RECLAIM_SEMANTICS))
     for metric in REQUIRED_STORAGE_LIFECYCLE_METRICS:
         print(f"- {metric}")
     if validated_pair:

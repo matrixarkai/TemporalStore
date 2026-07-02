@@ -55,6 +55,13 @@
       "follower_cursor_safety",
       "watermark_progress"
     ],
+    "storage_reclaim_semantics": [
+      "cache_eviction_memory_only",
+      "logical_tombstone_required",
+      "stale_pages_blocks_rewritten_or_skipped",
+      "reclaimed_bytes_reported",
+      "physical_reclaim_errors_zero"
+    ],
     "storage_lifecycle_metrics": {
       "storage_manager_prepare_count": 1,
       "storage_manager_reclaim_count": 1,
@@ -78,10 +85,17 @@
       "cold_scan_no_cache_reads": 3,
       "hot_cache_promotions": 0,
       "tombstone_records": 1,
+      "stale_page_tombstones": 1,
+      "stale_block_tombstones": 1,
+      "stale_pages_rewritten": 1,
+      "stale_pages_skipped": 1,
+      "stale_blocks_rewritten": 1,
+      "stale_blocks_skipped": 1,
       "delayed_destroy_backlog": 0,
       "follower_cursor_retention_floor": 0,
       "reclaimable_bytes": 1024,
       "compaction_reclaimed_bytes": 512,
+      "physical_reclaimed_bytes": 512,
       "physical_reclaim_errors": 0,
       "append_watermark": 7,
       "compaction_watermark": 6
@@ -140,6 +154,13 @@
       "follower_cursor_safety",
       "watermark_progress"
     ],
+    "storage_reclaim_semantics": [
+      "cache_eviction_memory_only",
+      "logical_tombstone_required",
+      "stale_pages_blocks_rewritten_or_skipped",
+      "reclaimed_bytes_reported",
+      "physical_reclaim_errors_zero"
+    ],
     "storage_lifecycle_metrics": {
       "storage_manager_prepare_count": 1,
       "storage_manager_reclaim_count": 1,
@@ -163,10 +184,17 @@
       "cold_scan_no_cache_reads": 3,
       "hot_cache_promotions": 0,
       "tombstone_records": 1,
+      "stale_page_tombstones": 1,
+      "stale_block_tombstones": 1,
+      "stale_pages_rewritten": 1,
+      "stale_pages_skipped": 1,
+      "stale_blocks_rewritten": 1,
+      "stale_blocks_skipped": 1,
       "delayed_destroy_backlog": 0,
       "follower_cursor_retention_floor": 0,
       "reclaimable_bytes": 1024,
       "compaction_reclaimed_bytes": 512,
+      "physical_reclaimed_bytes": 512,
       "physical_reclaim_errors": 0,
       "append_watermark": 7,
       "compaction_watermark": 6
