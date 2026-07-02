@@ -589,4 +589,9 @@ This contract is satisfied when C++ and Rust:
 - can convert private storage metadata into the canonical report shape;
 - pass the shared page/block/index parity cases;
 - expose the same storage lifecycle metrics;
-- reject public report changes that reintroduce backend-specific naming drift.
+- reject public report changes that reintroduce backend-specific naming drift;
+- encode the same logical `PageAddress`;
+- rebuild `PageIndex` and `BlockIndex` after restart;
+- expose the same page/block config;
+- produce equivalent page/block index summaries from the same corpus;
+- measure cold scans, cache admission, compaction, and GC identically.
