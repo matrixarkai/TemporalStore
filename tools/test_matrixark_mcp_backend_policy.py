@@ -1056,8 +1056,18 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             ]
         )
 
-        self.assertEqual(len(client.calls), 1)
-        call = client.calls[0]
+        self.assertEqual(len(client.calls), 2)
+        raw_call = client.calls[0]
+        self.assertEqual(raw_call["count_key"], "matrixark:test:native-append:raw_ingestion:record_count")
+        self.assertEqual(raw_call["count_value"], "2")
+        self.assertEqual(raw_call["append_options"]["append_path"], "matrixark_raw_ingestion_log")
+        self.assertEqual(raw_call["append_options"]["source"], "matrixark_live_ingestion_dual_write")
+        self.assertEqual({entry["key"] for entry in raw_call["entries"]}, {"matrixark:test:native-append:raw_ingestion:records:000000"})
+        raw_payloads = [json.loads(entry["value"]) for entry in raw_call["entries"]]
+        self.assertEqual([payload["text"] for payload in raw_payloads], ["native batch append works", "same millisecond collision slot"])
+        self.assertTrue(all("placement_key" not in payload for payload in raw_payloads))
+
+        call = client.calls[1]
         self.assertEqual(call["count_key"], "matrixark:test:native-append:record_count")
         self.assertEqual(call["count_value"], "1")
         self.assertEqual(call["append_options"]["append_path"], "native_append_queue")
@@ -1086,6 +1096,56 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual({payload["timestamp_key_ms"] for payload in time_index_payloads}, {1780000000000})
         self.assertEqual(len({payload["context_event_key"] for payload in time_index_payloads}), 2)
         self.assertTrue(all("text" not in payload for payload in time_index_payloads))
+
+    def test_direct_append_dual_writes_raw_and_serving_records(self) -> None:
+        client = _NativeAppendClient()
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._client = client
+        adapter._storage_prefix = "matrixark:test:dual-write"
+        adapter._record_hash_key = f"{adapter._storage_prefix}:records"
+        adapter._index_key = f"{adapter._storage_prefix}:record_index"
+        adapter._count_key = f"{adapter._storage_prefix}:record_count"
+        adapter._shard_size = 1024
+        adapter._index_cache = None
+        adapter._records_cache = None
+        adapter._retrieval_candidate_cache = {}
+        adapter._retrieval_candidate_cache_lock = threading.RLock()
+        adapter._entry_count_cache = None
+        adapter._legacy_index_mode = False
+        adapter._records_lock = threading.RLock()
+        adapter._write_retries = 0
+        adapter._write_backoff_s = 0.0
+        adapter._write_throttle_s = 0.0
+
+        raw_record = {
+            "record_type": "context_event",
+            "event_id_hash": 991,
+            "tenant_hash": 7,
+            "scope_key": "tenant=7",
+            "node_hash": 9,
+            "updated_at_ms": 1780000001000,
+            "text": "raw must stay canonical",
+            "internal_extraction": {"classification": "memory", "status": "observed"},
+        }
+        adapter.append(raw_record)
+
+        self.assertEqual(len(client.calls), 2)
+        raw_call, serving_call = client.calls
+        self.assertEqual(raw_call["count_key"], "matrixark:test:dual-write:raw_ingestion:record_count")
+        self.assertEqual(raw_call["count_value"], "1")
+        self.assertEqual(raw_call["append_options"]["append_path"], "matrixark_raw_ingestion_log")
+        self.assertEqual(raw_call["entries"][0]["key"], "matrixark:test:dual-write:raw_ingestion:records:000000")
+        raw_payload = json.loads(raw_call["entries"][0]["value"])
+        self.assertEqual(raw_payload["text"], "raw must stay canonical")
+        self.assertIn("internal_extraction", raw_payload)
+        self.assertNotIn("placement_key", raw_payload)
+
+        self.assertEqual(serving_call["count_key"], "matrixark:test:dual-write:record_count")
+        self.assertEqual(serving_call["count_value"], "1")
+        serving_payloads = [json.loads(entry["value"]) for entry in serving_call["entries"] if entry["key"].endswith(":records:000000")]
+        self.assertEqual(len(serving_payloads), 1)
+        self.assertEqual(serving_payloads[0]["record_type"], "context_event")
+        self.assertEqual(serving_payloads[0]["placement_key"], "context:tenant=7:node=9")
 
     def test_direct_retrieval_records_reuses_candidate_cache_by_count_and_scope(self) -> None:
         records = [

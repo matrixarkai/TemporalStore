@@ -994,7 +994,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--namespace', default=os.environ.get('MATRIXARK_NAMESPACE', 'matrixark'))
     parser.add_argument('--table', default=os.environ.get('MATRIXARK_TABLE', 'context'))
     parser.add_argument('--library-path', default=os.environ.get('TEMPORALSTORE_LIBRARY_PATH', ''))
-    parser.add_argument('--source-prefix', default='matrixark:mcp')
+    parser.add_argument('--source-prefix', default='matrixark:mcp:raw_ingestion')
     parser.add_argument('--target-prefix', default='')
     parser.add_argument('--mode', choices=['shadow', 'in_place', 'validate_shadow', 'activate_shadow', 'incremental_repair'], default='shadow')
     parser.add_argument('--confirm-in-place', default='')
