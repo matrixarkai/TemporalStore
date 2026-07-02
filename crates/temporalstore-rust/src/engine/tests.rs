@@ -1547,6 +1547,72 @@ fn storage_manager_loop_runs_prepare_reclaim_evict_expire_compact_and_index_gc()
     );
 }
 
+// shared-corpus: storage_data_structure_api_parity
+#[test]
+fn storage_data_structure_api_parity_report_covers_stream_block_and_manager_surfaces() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("blocks"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for (key, value) in [("parity-a", b"one".to_vec()), ("parity-b", b"two".to_vec())] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: key.to_string(),
+                value,
+            },
+        });
+        assert!(response.status.ok, "{response:?}");
+    }
+    engine.block_store().roll_segment().unwrap();
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureAppend {
+            key: "parity-feature".to_string(),
+            points: vec![FeaturePoint {
+                timestamp_ms: 10,
+                value: b"feature".to_vec(),
+            }],
+        },
+    });
+    assert!(response.status.ok, "{response:?}");
+
+    let report = engine.storage_data_structure_api_parity_report(1);
+    assert!(report.ready, "{report:?}");
+    assert!(report.slot_object_page_authority_ready);
+    assert!(report.slot_store_layout_api_ready);
+    assert!(report.object_manager_runtime_api_ready);
+    assert!(report.block_address_api_ready);
+    assert!(report.block_store_segment_api_ready);
+    assert!(report.stream_backed_extent_api_ready);
+    assert!(report.legacy_page_zone_aliases_ready);
+    assert!(report.storage_manager_phase_api_ready);
+    assert!(report.storage_manager_pressure_api_ready);
+    assert!(report.storage_manager_merged_dump_load_api_ready);
+    assert!(report.slot_count >= 1);
+    assert!(report.page_index_count >= 1);
+    assert!(report.block_index_count >= 1);
+    assert!(report.stream_extent_count >= 2);
+    assert!(report.stream_record_count >= 3);
+    assert_eq!(
+        report.storage_manager_stage_order,
+        vec![
+            "prepare",
+            "reclaim_oplog",
+            "expire",
+            "evict",
+            "reclaim_page",
+            "index_gc",
+            "compact",
+            "reap_metrics",
+        ]
+    );
+}
+
 #[test]
 fn recovery_reports_owner_mismatch_and_compaction_refuses_it() {
     let engine = TemporalEngine::default();

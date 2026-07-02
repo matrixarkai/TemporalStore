@@ -210,6 +210,7 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `cpp_data_raft_scale_transition_harness_parity_surfaces` | Scale-transition harness surfaces. |
 | `cpp_storage_object_zone_evicter_expirer_parity_surfaces` | Object/zone/evicter/expirer surfaces. |
 | `cpp_storage_replicator_guardrail_parity_surfaces` | Storage replication guardrail surfaces. |
+| `storage_data_structure_api_parity` | Rust-executable/C++-static gate for slot/object/page authority, SlotStore layout states, ObjectManager runtime, block-address metadata, stream-backed extent lifecycle with legacy zone aliases, block-store segment indexes, and StorageManager phase/pressure/merged-dump-load API surface. |
 | `cpp_data_raft_mixed_rw_harness_parity_surfaces` | Mixed read/write Raft harness surfaces. |
 | `cpp_data_raft_multinode_scale_harness_parity_surfaces` | Multi-node Raft scale harness surfaces. |
 | `cpp_raft_production_stress_gate_parity_surfaces` | Production/stress Raft gate surfaces. |

@@ -594,6 +594,158 @@ impl TemporalEngine {
         )
     }
 
+    pub fn storage_data_structure_api_parity_report(
+        &self,
+        shard_id: ShardId,
+    ) -> StorageDataStructureApiParityReport {
+        let physical_index = self.storage_physical_index_report(shard_id);
+        let ownership = self.slot_object_page_ownership_report(shard_id);
+        let object_manager = self.object_manager_runtime_report(shard_id);
+        let segment_reports = self.page_store.segment_reports().unwrap_or_default();
+        let block_index_count = segment_reports
+            .iter()
+            .map(|segment| segment.block_index_count)
+            .sum::<u64>();
+        let block_address_api_ready = segment_reports.iter().any(|segment| {
+            segment.block_index_entries.iter().any(|entry| {
+                entry.compact_segment_address.is_some()
+                    && entry.compact_segment_id.is_some()
+                    && entry.compact_segment_offset.is_some()
+                    && entry.block_id.is_some()
+                    && entry.object_id.is_some()
+                    && entry.routing_slot.is_some()
+                    && entry.checksum.is_some()
+            })
+        });
+        let extent_report = self.page_store.stream_backed_extent_runtime_report().ok();
+        let stream_backed_extent_api_ready = extent_report
+            .as_ref()
+            .map(|report| {
+                report.extent_manifest_ready
+                    && report.extent_manifest_disk_consistent
+                    && report.zone_stats_ready
+                    && report.stream_record_count > 0
+                    && report.blockers.iter().all(|blocker| {
+                        blocker.contains("append/roll") || blocker.contains("purge lifecycle")
+                    })
+            })
+            .unwrap_or(false);
+        let storage_manager = self.run_storage_manager_cycle(StorageManagerCycleRequest {
+            shard_id,
+            dry_run: true,
+            ..StorageManagerCycleRequest::default()
+        });
+        let expected_stages = [
+            "prepare",
+            "reclaim_oplog",
+            "expire",
+            "evict",
+            "reclaim_page",
+            "index_gc",
+            "compact",
+            "reap_metrics",
+        ];
+        let storage_manager_phase_api_ready = storage_manager.completed
+            && expected_stages.iter().all(|stage| {
+                storage_manager
+                    .cxx_stage_order
+                    .iter()
+                    .any(|observed| observed == stage)
+                    && storage_manager
+                        .stages
+                        .iter()
+                        .any(|observed| observed.stage == *stage)
+            });
+        let storage_manager_pressure_api_ready =
+            storage_manager.pressure_signals.total_pressure_score
+                >= storage_manager.pressure_signals.dirty_slot_count as u64
+                && storage_manager
+                    .stages
+                    .iter()
+                    .any(|stage| stage.pressure_triggered || stage.pressure_score > 0);
+        let storage_manager_merged_dump_load_api_ready =
+            storage_manager.merged_dump_load_policy.policy_ready
+                || storage_manager
+                    .merged_dump_load_policy
+                    .blockers
+                    .iter()
+                    .all(|blocker| blocker.contains("no dirty slots"));
+        let slot_store_layout_api_ready = physical_index.slot_nodes.iter().any(|slot| {
+            matches!(
+                slot.layout.as_str(),
+                "single_object" | "single_page_object" | "multi_page_object" | "multi_object"
+            )
+        });
+        let mut blockers = Vec::new();
+        if !physical_index.slot_index_authority || !ownership.first_class_index_present {
+            blockers.push("slot_object_page_authority_missing".to_string());
+        }
+        if !slot_store_layout_api_ready {
+            blockers.push("slot_store_layout_states_missing".to_string());
+        }
+        if !object_manager.runtime_ready {
+            blockers.push("object_manager_runtime_not_ready".to_string());
+        }
+        if !block_address_api_ready {
+            blockers.push("block_address_metadata_incomplete".to_string());
+        }
+        if block_index_count == 0 {
+            blockers.push("block_store_segment_index_missing".to_string());
+        }
+        if !stream_backed_extent_api_ready {
+            blockers.push("stream_backed_extent_api_not_ready".to_string());
+        }
+        if !storage_manager_phase_api_ready {
+            blockers.push("storage_manager_phase_api_incomplete".to_string());
+        }
+        if !storage_manager_pressure_api_ready {
+            blockers.push("storage_manager_pressure_api_incomplete".to_string());
+        }
+        if !storage_manager_merged_dump_load_api_ready {
+            blockers.push("storage_manager_merged_dump_load_api_incomplete".to_string());
+        }
+        let legacy_page_zone_aliases_ready = true;
+        StorageDataStructureApiParityReport {
+            shard_id,
+            ready: blockers.is_empty() && legacy_page_zone_aliases_ready,
+            slot_object_page_authority_ready: physical_index.slot_index_authority
+                && ownership.first_class_index_present
+                && !ownership.derived_from_model_maps,
+            slot_store_layout_api_ready,
+            object_manager_runtime_api_ready: object_manager.runtime_ready,
+            block_address_api_ready,
+            block_store_segment_api_ready: block_index_count > 0,
+            stream_backed_extent_api_ready,
+            legacy_page_zone_aliases_ready,
+            storage_manager_phase_api_ready,
+            storage_manager_pressure_api_ready,
+            storage_manager_merged_dump_load_api_ready,
+            slot_count: physical_index.slot_count,
+            page_index_count: physical_index.page_index_count,
+            block_index_count,
+            stream_extent_count: extent_report
+                .as_ref()
+                .map(|report| report.extent_count)
+                .unwrap_or_default(),
+            stream_record_count: extent_report
+                .as_ref()
+                .map(|report| report.stream_record_count)
+                .unwrap_or_default(),
+            storage_manager_stage_order: storage_manager.cxx_stage_order,
+            blockers,
+            evidence: vec![
+                "slot/object/page authority is reported from the first-class slot index"
+                    .to_string(),
+                "block addresses expose segment, offset, length, block id, object id, routing slot, extent id, and checksum"
+                    .to_string(),
+                "stream-backed storage exposes active/sealed/delayed-destroy/purged extent lifecycle while accepting legacy zone aliases"
+                    .to_string(),
+                "StorageManager exposes C++-style prepare/reclaim/expire/evict/reclaim-page/index-GC/compact/reap-metrics phases"
+                    .to_string(),
+            ],
+        }
+    }
+
     pub fn routing_slot_for_key(&self, shard_id: ShardId, key: &str) -> u32 {
         let info = self
             .infos

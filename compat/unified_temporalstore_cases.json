@@ -11441,6 +11441,46 @@
           }
         }
       ]
+    },
+    {
+      "name": "storage_data_structure_api_parity",
+      "shard_id": 41,
+      "steps": [
+        {
+          "name": "stream_zone_block_store_manager_api_parity_contract",
+          "skip_client": true,
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_storage_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Shared C++/Rust storage API and data-structure case for slot/object/page-first authority, SlotStore layout states, ObjectManager runtime, block-address metadata, stream-backed extent lifecycle with legacy zone aliases, block-store segment indexes, and StorageManager phase/pressure/merged-dump-load surfaces.",
+            "cpp_runner_contract": "C++ emits comparable Index -> SlotMap -> SlotNode -> PageIndex/Object, Stream/Zone, PageStore/BlockStore, and StorageManager API fields for case-by-case comparison.",
+            "rust_runner": "cargo test -p temporalstore-rust storage_data_structure_api_parity_report_covers_stream_block_and_manager_surfaces --lib -- --test-threads=1",
+            "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
+            "required_paths": [
+              "docs/storage_data_structure_api_parity.md"
+            ],
+            "acceptance": {
+              "index": [
+                "slot_object_page_authority",
+                "slot_layout_states",
+                "object_manager_runtime"
+              ],
+              "stream_store": [
+                "block_address_metadata",
+                "segment_block_index",
+                "stream_backed_extent_lifecycle",
+                "legacy_zone_aliases"
+              ],
+              "storage_manager": [
+                "phase_order",
+                "pressure_signals",
+                "merged_dump_load_surface"
+              ]
+            }
+          }
+        }
+      ]
     }
   ],
   "coverage": {
@@ -11788,7 +11828,8 @@
       "raft_process_path_log_inspection_shared",
       "client_proxy_route_churn_shared",
       "context_resource_skill_secondary_index_shared",
-      "ingestion_streaming_batch_parity"
+      "ingestion_streaming_batch_parity",
+      "storage_data_structure_api_parity"
     ],
     "required_command_kinds": [
       "string_set",

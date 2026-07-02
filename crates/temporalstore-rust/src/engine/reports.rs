@@ -1248,6 +1248,30 @@ pub struct StorageManagerCycleReport {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageDataStructureApiParityReport {
+    pub shard_id: ShardId,
+    pub ready: bool,
+    pub slot_object_page_authority_ready: bool,
+    pub slot_store_layout_api_ready: bool,
+    pub object_manager_runtime_api_ready: bool,
+    pub block_address_api_ready: bool,
+    pub block_store_segment_api_ready: bool,
+    pub stream_backed_extent_api_ready: bool,
+    pub legacy_page_zone_aliases_ready: bool,
+    pub storage_manager_phase_api_ready: bool,
+    pub storage_manager_pressure_api_ready: bool,
+    pub storage_manager_merged_dump_load_api_ready: bool,
+    pub slot_count: usize,
+    pub page_index_count: usize,
+    pub block_index_count: u64,
+    pub stream_extent_count: u64,
+    pub stream_record_count: u64,
+    pub storage_manager_stage_order: Vec<String>,
+    pub blockers: Vec<String>,
+    pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageMergedDumpLoadPolicyReport {
     pub shard_id: ShardId,
     pub dry_run: bool,
