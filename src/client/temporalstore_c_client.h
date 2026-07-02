@@ -154,6 +154,12 @@ int temporalstore_matrixark_batch_append_records(temporalstore_client_t* client,
                                                  size_t entry_count, const char* count_key,
                                                  const char* count_value,
                                                  char** error_message);
+int temporalstore_matrixark_batch_append_records_v2(temporalstore_client_t* client,
+                                                    const temporalstore_hash_entry_t* entries,
+                                                    size_t entry_count, const char* count_key,
+                                                    const char* count_value,
+                                                    const char* append_options_json,
+                                                    char** error_message);
 int temporalstore_matrixark_retrieve_context_pack(temporalstore_client_t* client,
                                                   const char* request_json,
                                                   char** response_json,

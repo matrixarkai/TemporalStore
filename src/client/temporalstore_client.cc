@@ -210,6 +210,99 @@ bool ParseJsonString(const std::string& json, const std::string& field, std::str
     return false;
 }
 
+struct MatrixArkNativeAppendPolicy {
+    bool coalesce_writes = true;
+    bool persist_from_storage_options = true;
+    bool async_write = false;
+    bool route_by_placement_key = true;
+    std::string write_mode = "sync";
+    std::string storage_family;
+    std::string storage_route;
+    std::string audit_hot_path = "inline_counters_only";
+    std::string full_context_pack_audit = "sample_or_enqueue_async_policy_enabled";
+};
+
+MatrixArkNativeAppendPolicy ParseMatrixArkNativeAppendPolicy(const std::string& json) {
+    MatrixArkNativeAppendPolicy policy;
+    bool bool_value = false;
+    std::string string_value;
+    if (ParseJsonBool(json, "coalesce_writes", &bool_value)) {
+        policy.coalesce_writes = bool_value;
+    }
+    if (ParseJsonBool(json, "persist_from_storage_options", &bool_value)) {
+        policy.persist_from_storage_options = bool_value;
+    }
+    if (ParseJsonBool(json, "background_write", &bool_value)) {
+        policy.async_write = bool_value;
+    }
+    if (ParseJsonString(json, "write_mode", &string_value) && !string_value.empty()) {
+        policy.write_mode = string_value;
+        if (string_value == "async") {
+            policy.async_write = true;
+        }
+    }
+    if (ParseJsonString(json, "storage_family", &string_value)) {
+        policy.storage_family = string_value;
+    }
+    if (ParseJsonString(json, "route", &string_value)) {
+        policy.storage_route = string_value;
+    }
+    if (ParseJsonString(json, "route_by", &string_value) && !string_value.empty()) {
+        policy.route_by_placement_key = string_value == "placement_key";
+    }
+    if (ParseJsonString(json, "audit_hot_path", &string_value) && !string_value.empty()) {
+        policy.audit_hot_path = string_value;
+    }
+    if (ParseJsonString(json, "full_context_pack_audit", &string_value) &&
+        !string_value.empty()) {
+        policy.full_context_pack_audit = string_value;
+    }
+    return policy;
+}
+
+std::string EntryPlacementRoute(const HashEntry& entry,
+                                const MatrixArkNativeAppendPolicy& policy) {
+    if (!policy.route_by_placement_key || entry.route_json.empty()) {
+        return "";
+    }
+    std::string placement_key;
+    if (ParseJsonString(entry.route_json, "placement_key", &placement_key) &&
+        !placement_key.empty()) {
+        return placement_key;
+    }
+    std::string routing_key;
+    if (ParseJsonString(entry.route_json, "routing_key", &routing_key) &&
+        !routing_key.empty()) {
+        return routing_key;
+    }
+    return entry.route_json;
+}
+
+std::string EntryNativeBatchGroupKey(const HashEntry& entry,
+                                     const MatrixArkNativeAppendPolicy& policy) {
+    std::string write_mode = policy.write_mode;
+    std::string storage_family = policy.storage_family;
+    std::string route = policy.storage_route;
+    bool background_write = policy.async_write;
+    std::string value;
+    bool bool_value = false;
+    if (ParseJsonString(entry.route_json, "write_mode", &value) && !value.empty()) {
+        write_mode = value;
+    }
+    if (ParseJsonString(entry.route_json, "storage_family", &value) && !value.empty()) {
+        storage_family = value;
+    }
+    if (ParseJsonString(entry.route_json, "route", &value) && !value.empty()) {
+        route = value;
+    }
+    if (ParseJsonBool(entry.route_json, "background_write", &bool_value)) {
+        background_write = bool_value;
+    }
+    return EntryPlacementRoute(entry, policy) + "|family=" + storage_family +
+           "|mode=" + write_mode + "|route=" + route +
+           "|background=" + (background_write ? "1" : "0");
+}
+
 uint64_t StableHash64(const std::string& value) {
     uint64_t hash = 1469598103934665603ULL;
     for (unsigned char c : value) {
@@ -949,11 +1042,17 @@ Status TemporalStoreClient::HDel(const std::string& key, const std::string& fiel
 
 Status TemporalStoreClient::MatrixArkBatchAppendRecords(const std::vector<HashEntry>& entries,
                                                         const std::string& count_key,
-                                                        const std::string& count_value) {
+                                                        const std::string& count_value,
+                                                        const MatrixArkBatchAppendOptions& options) {
     RETURN_IF_STATUS_ERROR(CheckInitialized());
     if (entries.empty() && count_key.empty()) {
         return Status::InvalidArgument("entries is empty");
     }
+    RETURN_IF_STATUS_ERROR(ValidateSize(options.append_options_json.size(),
+                                        impl_->options.max_value_bytes,
+                                        "append_options_json"));
+    const MatrixArkNativeAppendPolicy policy =
+        ParseMatrixArkNativeAppendPolicy(options.append_options_json);
     for (const auto& entry : entries) {
         RETURN_IF_STATUS_ERROR(ValidateNotEmpty(entry.key, "entry.key"));
         RETURN_IF_STATUS_ERROR(ValidateNotEmpty(entry.field, "entry.field"));
@@ -987,26 +1086,49 @@ Status TemporalStoreClient::MatrixArkBatchAppendRecords(const std::vector<HashEn
             coalesced[iter->second].entry = entry;
         }
     }
-    std::stable_sort(coalesced.begin(), coalesced.end(), [](const CoalescedEntry& left, const CoalescedEntry& right) {
-        if (left.entry.route_json == right.entry.route_json) {
+    std::stable_sort(coalesced.begin(), coalesced.end(), [&](const CoalescedEntry& left, const CoalescedEntry& right) {
+        const std::string left_route = EntryNativeBatchGroupKey(left.entry, policy);
+        const std::string right_route = EntryNativeBatchGroupKey(right.entry, policy);
+        if (left_route == right_route) {
             return left.order < right.order;
         }
-        return left.entry.route_json < right.entry.route_json;
+        return left_route < right_route;
     });
     return impl_->WithRetry(true, [&]() {
-        std::unique_ptr<Pipeline> pipeline;
-        Pipeline* raw_pipeline = nullptr;
-        RETURN_IF_STATUS_ERROR(impl_->table->OpenPipeline(&raw_pipeline));
-        pipeline.reset(raw_pipeline);
-        for (const auto& item : coalesced) {
-            RETURN_IF_STATUS_ERROR(pipeline->HSet(item.entry.key, item.entry.field, item.entry.value));
+        size_t index = 0;
+        bool wrote_count = false;
+        while (index < coalesced.size()) {
+            const std::string route = EntryNativeBatchGroupKey(coalesced[index].entry, policy);
+            std::unique_ptr<Pipeline> pipeline;
+            Pipeline* raw_pipeline = nullptr;
+            RETURN_IF_STATUS_ERROR(impl_->table->OpenPipeline(&raw_pipeline));
+            pipeline.reset(raw_pipeline);
+            while (index < coalesced.size() &&
+                   EntryNativeBatchGroupKey(coalesced[index].entry, policy) == route) {
+                RETURN_IF_STATUS_ERROR(pipeline->HSet(coalesced[index].entry.key,
+                                                      coalesced[index].entry.field,
+                                                      coalesced[index].entry.value));
+                ++index;
+            }
+            if (index == coalesced.size() && !count_key.empty()) {
+                RETURN_IF_STATUS_ERROR(pipeline->Set(count_key, count_value));
+                wrote_count = true;
+            }
+            const std::vector<Status> statuses = pipeline->Sync();
+            for (const auto& status : statuses) {
+                RETURN_IF_STATUS_ERROR(status);
+            }
         }
-        if (!count_key.empty()) {
+        if (!count_key.empty() && !wrote_count) {
+            std::unique_ptr<Pipeline> pipeline;
+            Pipeline* raw_pipeline = nullptr;
+            RETURN_IF_STATUS_ERROR(impl_->table->OpenPipeline(&raw_pipeline));
+            pipeline.reset(raw_pipeline);
             RETURN_IF_STATUS_ERROR(pipeline->Set(count_key, count_value));
-        }
-        const std::vector<Status> statuses = pipeline->Sync();
-        for (const auto& status : statuses) {
-            RETURN_IF_STATUS_ERROR(status);
+            const std::vector<Status> statuses = pipeline->Sync();
+            for (const auto& status : statuses) {
+                RETURN_IF_STATUS_ERROR(status);
+            }
         }
         return Status::OK();
     });

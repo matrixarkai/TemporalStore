@@ -210,6 +210,15 @@ extern "C" {
         count_value: *const c_char,
         error_message: *mut *mut c_char,
     ) -> c_int;
+    fn temporalstore_matrixark_batch_append_records_v2(
+        client: *mut TemporalStoreClientOpaque,
+        entries: *const CHashEntry,
+        entry_count: usize,
+        count_key: *const c_char,
+        count_value: *const c_char,
+        append_options_json: *const c_char,
+        error_message: *mut *mut c_char,
+    ) -> c_int;
     fn temporalstore_add_sequence_feature_rows(
         client: *mut TemporalStoreClientOpaque,
         key: *const c_char,
@@ -457,10 +466,20 @@ impl Client {
         count_key: Option<&str>,
         count_value: Option<&str>,
     ) -> Result<()> {
+        self.matrixark_batch_append_records_with_options(entries, count_key, count_value, "{}")
+    }
+
+    pub fn matrixark_batch_append_records_with_options(
+        &self,
+        entries: &[(&str, &str, &str)],
+        count_key: Option<&str>,
+        count_value: Option<&str>,
+        append_options_json: &str,
+    ) -> Result<()> {
         if entries.is_empty() && count_key.unwrap_or("").is_empty() {
             return Ok(());
         }
-        let mut strings: Vec<CString> = Vec::with_capacity(entries.len() * 4 + 2);
+        let mut strings: Vec<CString> = Vec::with_capacity(entries.len() * 4 + 3);
         let mut c_entries: Vec<CHashEntry> = Vec::with_capacity(entries.len());
         for (key, field, value) in entries {
             let key_index = strings.len();
@@ -486,6 +505,7 @@ impl Client {
             Some(value) => Some(cstring(value)?),
             None => None,
         };
+        let append_options_c = cstring(append_options_json)?;
         let mut error: *mut c_char = ptr::null_mut();
         let entries_ptr = if c_entries.is_empty() {
             ptr::null()
@@ -493,7 +513,7 @@ impl Client {
             c_entries.as_ptr()
         };
         let code = unsafe {
-            temporalstore_matrixark_batch_append_records(
+            temporalstore_matrixark_batch_append_records_v2(
                 self.raw,
                 entries_ptr,
                 c_entries.len(),
@@ -503,6 +523,7 @@ impl Client {
                 count_value_c
                     .as_ref()
                     .map_or(ptr::null(), |value| value.as_ptr()),
+                append_options_c.as_ptr(),
                 &mut error,
             )
         };

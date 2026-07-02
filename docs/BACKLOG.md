@@ -101,6 +101,7 @@ Latest AWS/test state:
     - add `matrixark_scan_candidates` that accepts scope, node ids, data model set, time range, compact secondary filters, and a candidate limit;
     - make `matrixark_retrieve_context_pack` call this native scan before scoring and packing;
     - C++ native retrieve now caches parsed placement-event candidates by `scope_key + node_hash + record_type + append_watermark + resource_version_watermark + skill_status_watermark + index_posting_watermark`;
+    - C++ SDK now exposes a `temporalstore_matrixark_batch_append_records_v2` native append boundary that accepts append policy JSON, coalesces by key/field, groups writes by placement/storage route, and keeps full audit/debug out of the synchronous hot path;
     - keep old `ContextIndexRef` writes as a compatibility/debug path until native candidate scan is fully used by both C++ and Rust;
     - hide `ContextIndexRef` rows from serving ContextPack output by default and expose them only through debug/audit sampling.
   - Acceptance gates:

@@ -354,6 +354,9 @@ class _Native:
         self.has_matrixark_batch_append_records = hasattr(
             lib, "temporalstore_matrixark_batch_append_records"
         )
+        self.has_matrixark_batch_append_records_v2 = hasattr(
+            lib, "temporalstore_matrixark_batch_append_records_v2"
+        )
         if self.has_matrixark_batch_append_records:
             lib.temporalstore_matrixark_batch_append_records.argtypes = [
                 ctypes.c_void_p,
@@ -364,6 +367,17 @@ class _Native:
                 ctypes.POINTER(ctypes.c_void_p),
             ]
             lib.temporalstore_matrixark_batch_append_records.restype = ctypes.c_int
+        if self.has_matrixark_batch_append_records_v2:
+            lib.temporalstore_matrixark_batch_append_records_v2.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(_CHashEntry),
+                ctypes.c_size_t,
+                ctypes.c_char_p,
+                ctypes.c_char_p,
+                ctypes.c_char_p,
+                ctypes.POINTER(ctypes.c_void_p),
+            ]
+            lib.temporalstore_matrixark_batch_append_records_v2.restype = ctypes.c_int
         self.has_matrixark_retrieve_context_pack = hasattr(
             lib, "temporalstore_matrixark_retrieve_context_pack"
         )
@@ -605,7 +619,7 @@ class Client:
         append_options: Optional[dict] = None,
     ) -> None:
         values = list(entries)
-        if not self._native.has_matrixark_batch_append_records:
+        if not self._native.has_matrixark_batch_append_records and not self._native.has_matrixark_batch_append_records_v2:
             self.batch_hset(values)
             if count_key is not None and count_value is not None:
                 self.put_string(count_key, count_value)
@@ -627,15 +641,29 @@ class Client:
         )
         count_key_bytes = _encode(count_key) if count_key is not None else None
         count_value_bytes = _encode(count_value) if count_value is not None else None
-        error = ctypes.c_void_p()
-        code = self._native.lib.temporalstore_matrixark_batch_append_records(
-            self._handle,
-            _optional_pointer(c_entries, _CHashEntry),
-            len(values),
-            count_key_bytes,
-            count_value_bytes,
-            ctypes.byref(error),
+        append_options_bytes = _encode(
+            json.dumps(append_options or {}, sort_keys=True, separators=(",", ":"))
         )
+        error = ctypes.c_void_p()
+        if self._native.has_matrixark_batch_append_records_v2:
+            code = self._native.lib.temporalstore_matrixark_batch_append_records_v2(
+                self._handle,
+                _optional_pointer(c_entries, _CHashEntry),
+                len(values),
+                count_key_bytes,
+                count_value_bytes,
+                append_options_bytes,
+                ctypes.byref(error),
+            )
+        else:
+            code = self._native.lib.temporalstore_matrixark_batch_append_records(
+                self._handle,
+                _optional_pointer(c_entries, _CHashEntry),
+                len(values),
+                count_key_bytes,
+                count_value_bytes,
+                ctypes.byref(error),
+            )
         self._native.check(code, error)
 
     def matrixark_append_records(

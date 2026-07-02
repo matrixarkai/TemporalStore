@@ -411,6 +411,16 @@ int temporalstore_matrixark_batch_append_records(temporalstore_client_t* client,
                                                  size_t entry_count, const char* count_key,
                                                  const char* count_value,
                                                  char** error_message) {
+    return temporalstore_matrixark_batch_append_records_v2(
+        client, entries, entry_count, count_key, count_value, nullptr, error_message);
+}
+
+int temporalstore_matrixark_batch_append_records_v2(temporalstore_client_t* client,
+                                                    const temporalstore_hash_entry_t* entries,
+                                                    size_t entry_count, const char* count_key,
+                                                    const char* count_value,
+                                                    const char* append_options_json,
+                                                    char** error_message) {
     if (entries == nullptr && entry_count != 0) {
         return Finish(NullError("entries"), error_message);
     }
@@ -427,10 +437,13 @@ int temporalstore_matrixark_batch_append_records(temporalstore_client_t* client,
                 entry.route_json ? entry.route_json : "",
             });
         }
+        bcache2::client::MatrixArkBatchAppendOptions options;
+        options.append_options_json = append_options_json ? append_options_json : "";
         status = client->impl->MatrixArkBatchAppendRecords(
             batch,
             (count_key != nullptr && count_key[0] != '\0') ? count_key : "",
-            count_value != nullptr ? count_value : "");
+            count_value != nullptr ? count_value : "",
+            options);
     }
     return Finish(status, error_message);
 }
