@@ -39,6 +39,10 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             "target_prefix": "matrixark:context_backfill:test",
             "mode": "shadow",
             "confirm_in_place": "",
+            "confirm_activate": "",
+            "active_prefix_key": "matrixark:context:active_prefix",
+            "validation_strict": True,
+            "skip_validation": False,
             "job_id": "unit",
             "start_seq": 0,
             "end_seq": None,
@@ -103,6 +107,40 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             target.append_many([{ "record_type": "context_event", "event_id_hash": 3 }])
             self.assertEqual(kv.matrixark_append_records_calls, 1)
             self.assertEqual(kv.get_string("shadow:batch:record_count"), "1")
+
+
+    def test_validate_and_activate_shadow_prefix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            write_sharded(kv, "matrixark:mcp", 0, {"record_type": "context_event", "event_id_hash": 1})
+            write_sharded(kv, "matrixark:mcp", 1, {"record_type": "context_event", "event_id_hash": 2})
+            kv.put_string("matrixark:mcp:record_count", "2")
+            kv.put_string("matrixark:context:active_prefix", "matrixark:context:old")
+
+            summary = backfill.run_backfill(self.make_args(path, target_prefix="matrixark:context_backfill:candidate"))
+            self.assertEqual(summary["metrics"]["written"], 2)
+
+            validation = backfill.run_validate_shadow(self.make_args(path, mode="validate_shadow", target_prefix="matrixark:context_backfill:candidate"))
+            self.assertEqual(validation["status"], "ok")
+            self.assertEqual(validation["expected_records"], 2)
+            self.assertEqual(validation["actual_records"], 2)
+
+            with self.assertRaises(backfill.BackfillError):
+                backfill.run_activate_shadow(self.make_args(path, mode="activate_shadow", target_prefix="matrixark:context_backfill:candidate"))
+
+            activated = backfill.run_activate_shadow(self.make_args(
+                path,
+                mode="activate_shadow",
+                target_prefix="matrixark:context_backfill:candidate",
+                confirm_activate="YES",
+                dry_run=False,
+            ))
+            self.assertEqual(activated["status"], "ok")
+            kv_after = backfill.LocalJsonKV(path)
+            self.assertEqual(kv_after.get_string("matrixark:context:active_prefix"), "matrixark:context_backfill:candidate")
+            self.assertEqual(kv_after.get_string("matrixark:context:active_prefix:previous:unit"), "matrixark:context:old")
+            self.assertIn("matrixark:context_backfill:candidate", kv_after.hget("matrixark:context:active_prefix:audit", "unit"))
 
     def test_missing_record_dead_letters_and_in_place_guard(self):
         with tempfile.TemporaryDirectory() as tmp:

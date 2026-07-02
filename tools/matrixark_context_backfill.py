@@ -19,6 +19,7 @@ import json
 import os
 import sys
 import time
+from argparse import Namespace
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
@@ -450,6 +451,21 @@ def default_target_prefix(job_id: str) -> str:
     return f'matrixark:context_backfill:{job_id}'
 
 
+def make_kv(args: argparse.Namespace) -> Any:
+    if args.local_kv:
+        return LocalJsonKV(Path(args.local_kv))
+    return TemporalStoreKV(
+        metaserver=args.metaserver,
+        namespace=args.namespace,
+        table=args.table,
+        library_path=args.library_path,
+    )
+
+
+def resolve_target_prefix(args: argparse.Namespace) -> str:
+    return args.source_prefix if args.mode == 'in_place' else (args.target_prefix or default_target_prefix(args.job_id))
+
+
 def derive_backfill_record(source_prefix: str, sequence: int, raw_record: Json) -> Json:
     record = dict(raw_record)
     backfill = dict(record.get('backfill') or {})
@@ -487,17 +503,9 @@ def run_backfill(args: argparse.Namespace) -> Json:
     if args.mode == 'shadow' and args.target_prefix == args.source_prefix:
         raise BackfillError('shadow mode requires target-prefix different from source-prefix')
 
-    if args.local_kv:
-        kv = LocalJsonKV(Path(args.local_kv))
-    else:
-        kv = TemporalStoreKV(
-            metaserver=args.metaserver,
-            namespace=args.namespace,
-            table=args.table,
-            library_path=args.library_path,
-        )
+    kv = make_kv(args)
 
-    target_prefix = args.source_prefix if args.mode == 'in_place' else (args.target_prefix or default_target_prefix(args.job_id))
+    target_prefix = resolve_target_prefix(args)
     source = MatrixKVRecordLog(kv, prefix=args.source_prefix)
     target = MatrixKVBackfillTarget(kv, prefix=target_prefix)
     metrics = BackfillMetrics()
@@ -620,6 +628,97 @@ def run_backfill(args: argparse.Namespace) -> Json:
     return summary
 
 
+def run_validate_shadow(args: argparse.Namespace) -> Json:
+    if not args.target_prefix:
+        raise BackfillError('validate_shadow requires --target-prefix')
+    if args.target_prefix == args.source_prefix:
+        raise BackfillError('validate_shadow target-prefix must differ from source-prefix')
+    validation_args = Namespace(**vars(args))
+    validation_args.mode = 'shadow'
+    validation_args.dry_run = True
+    validation_args.resume = False
+    validation_args.prometheus_output = ''
+    expected_summary = run_backfill(validation_args)
+    kv = make_kv(args)
+    target = MatrixKVBackfillTarget(kv, prefix=args.target_prefix)
+    actual_count = target.count()
+    dead_letters = target.count_dead_letters()
+    expected_count = int(expected_summary['metrics']['written'])
+    exact_match = actual_count == expected_count
+    enough_records = actual_count >= expected_count
+    passed = (exact_match if args.validation_strict else enough_records) and dead_letters == 0 and int(expected_summary['metrics']['failed']) == 0
+    return {
+        'status': 'ok' if passed else 'failed',
+        'job_id': args.job_id,
+        'mode': 'validate_shadow',
+        'source_prefix': args.source_prefix,
+        'target_prefix': args.target_prefix,
+        'start_seq': args.start_seq,
+        'end_seq': args.end_seq,
+        'validation_strict': bool(args.validation_strict),
+        'expected_records': expected_count,
+        'actual_records': actual_count,
+        'dead_letters': dead_letters,
+        'expected_scan': expected_summary['metrics'],
+        'checks': {
+            'exact_record_count_match': exact_match,
+            'actual_records_at_least_expected': enough_records,
+            'no_shadow_dead_letters': dead_letters == 0,
+            'source_scan_had_no_failures': int(expected_summary['metrics']['failed']) == 0,
+        },
+    }
+
+
+def run_activate_shadow(args: argparse.Namespace) -> Json:
+    if not args.target_prefix:
+        raise BackfillError('activate_shadow requires --target-prefix')
+    if args.target_prefix == args.source_prefix:
+        raise BackfillError('activate_shadow target-prefix must differ from source-prefix')
+    if args.confirm_activate != 'YES':
+        raise BackfillError('activate_shadow requires --confirm-activate=YES')
+    validation: Json | None = None
+    if not args.skip_validation:
+        validation = run_validate_shadow(args)
+        if validation.get('status') != 'ok':
+            raise BackfillError(f'shadow validation failed: {json.dumps(validation, sort_keys=True)}')
+    if args.dry_run:
+        return {
+            'status': 'ok',
+            'mode': 'activate_shadow',
+            'dry_run': True,
+            'active_prefix_key': args.active_prefix_key,
+            'target_prefix': args.target_prefix,
+            'validation': validation,
+        }
+    kv = make_kv(args)
+    previous = kv.get_string(args.active_prefix_key)
+    activated_at_ms = int(time.time() * 1000)
+    audit = {
+        'job_id': args.job_id,
+        'activated_at_ms': activated_at_ms,
+        'active_prefix_key': args.active_prefix_key,
+        'previous_prefix': previous,
+        'new_prefix': args.target_prefix,
+        'source_prefix': args.source_prefix,
+        'start_seq': args.start_seq,
+        'end_seq': args.end_seq,
+        'validation': validation,
+    }
+    kv.put_string(f'{args.active_prefix_key}:previous:{args.job_id}', previous)
+    kv.hset(f'{args.active_prefix_key}:audit', args.job_id, json.dumps(audit, sort_keys=True, separators=(',', ':')))
+    kv.put_string(args.active_prefix_key, args.target_prefix)
+    return {
+        'status': 'ok',
+        'mode': 'activate_shadow',
+        'active_prefix_key': args.active_prefix_key,
+        'previous_prefix': previous,
+        'new_prefix': args.target_prefix,
+        'audit_key': f'{args.active_prefix_key}:audit',
+        'job_id': args.job_id,
+        'validation': validation,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description='Backfill MatrixArk context records from MatrixKV raw ingestion logs.')
     parser.add_argument('--metaserver', default=os.environ.get('MATRIXARK_METASERVER', '127.0.0.1:65000'))
@@ -628,8 +727,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--library-path', default=os.environ.get('TEMPORALSTORE_LIBRARY_PATH', ''))
     parser.add_argument('--source-prefix', default='matrixark:mcp')
     parser.add_argument('--target-prefix', default='')
-    parser.add_argument('--mode', choices=['shadow', 'in_place'], default='shadow')
+    parser.add_argument('--mode', choices=['shadow', 'in_place', 'validate_shadow', 'activate_shadow'], default='shadow')
     parser.add_argument('--confirm-in-place', default='')
+    parser.add_argument('--confirm-activate', default='')
+    parser.add_argument('--active-prefix-key', default='matrixark:context:active_prefix')
+    parser.add_argument('--validation-strict', type=int, choices=[0, 1], default=1)
+    parser.add_argument('--skip-validation', type=int, choices=[0, 1], default=0)
     parser.add_argument('--job-id', default=f'local-{int(time.time())}')
     parser.add_argument('--start-seq', type=int, default=0)
     parser.add_argument('--end-seq', type=int)
@@ -647,10 +750,17 @@ def main() -> int:
     args = parser.parse_args()
     args.dry_run = bool(args.dry_run)
     args.resume = bool(args.resume)
+    args.validation_strict = bool(args.validation_strict)
+    args.skip_validation = bool(args.skip_validation)
     if args.batch_size <= 0:
         parser.error('--batch-size must be positive')
     try:
-        summary = run_backfill(args)
+        if args.mode == 'validate_shadow':
+            summary = run_validate_shadow(args)
+        elif args.mode == 'activate_shadow':
+            summary = run_activate_shadow(args)
+        else:
+            summary = run_backfill(args)
     except Exception as exc:
         print(json.dumps({'status': 'failed', 'error': str(exc)}, sort_keys=True), file=sys.stderr)
         return 1
