@@ -62,6 +62,11 @@
       "reclaimed_bytes_reported",
       "physical_reclaim_errors_zero"
     ],
+    "storage_reclaim_scope": {
+      "owner": "temporalstore_storage_lifecycle",
+      "matrixark_context_gc_role": "marks_logical_raw_event_eligibility_only",
+      "physical_reclaim_context_specific": false
+    },
     "storage_lifecycle_metrics": {
       "storage_manager_prepare_count": 1,
       "storage_manager_reclaim_count": 1,
@@ -161,6 +166,11 @@
       "reclaimed_bytes_reported",
       "physical_reclaim_errors_zero"
     ],
+    "storage_reclaim_scope": {
+      "owner": "temporalstore_storage_lifecycle",
+      "matrixark_context_gc_role": "marks_logical_raw_event_eligibility_only",
+      "physical_reclaim_context_specific": false
+    },
     "storage_lifecycle_metrics": {
       "storage_manager_prepare_count": 1,
       "storage_manager_reclaim_count": 1,

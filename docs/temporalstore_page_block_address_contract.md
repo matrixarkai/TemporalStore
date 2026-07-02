@@ -718,6 +718,33 @@ Canonical reclaim semantics:
 - `physical_reclaim_errors_zero`: physical reclaim is not complete unless
   `physical_reclaim_errors` is zero.
 
+Canonical reclaim ownership:
+
+```json
+{
+  "storage_reclaim_scope": {
+    "owner": "temporalstore_storage_lifecycle",
+    "matrixark_context_gc_role": "marks_logical_raw_event_eligibility_only",
+    "physical_reclaim_context_specific": false
+  }
+}
+```
+
+General storage-level page/block reclaim is not MatrixArk-context-specific.
+MatrixArk context GC may mark raw context events as logically eligible for
+eviction or compression, but TemporalStore's storage lifecycle owns physical
+page/block tombstone handling, compaction, delayed destroy, and reclaimed-byte
+accounting for every data model.
+
+Shared proof requirements:
+
+- tombstones survive compaction and remain available to debug/replay policy;
+- stale page/block generations are ignored by normal reads after compaction;
+- cold scans use no-cache/no-promote reads and do not warm the serving cache;
+- crash/restart rebuilds `PageIndex`, `BlockIndex`, and `ObjectIndex`;
+- physical reclaim is only complete when stale pages/blocks are tombstoned,
+  rewritten or skipped safely, and reclaimed bytes are reported.
+
 ## Acceptance
 
 This contract is satisfied when C++ and Rust:
@@ -729,6 +756,8 @@ This contract is satisfied when C++ and Rust:
 - reject public report changes that reintroduce backend-specific naming drift;
 - encode the same logical `PageAddress`;
 - rebuild `PageIndex`, `BlockIndex`, and `ObjectIndex` after restart;
+- preserve tombstone metadata through compaction and ignore stale generations
+  during normal reads;
 - expose the same page/block config;
 - produce equivalent page/block index summaries from the same corpus;
 - measure cold scans, cache admission, eviction, compaction, GC, and physical

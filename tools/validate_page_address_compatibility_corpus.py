@@ -207,6 +207,58 @@ def validate_tombstone_filtering(corpus: dict[str, Any]) -> None:
         )
 
 
+def validate_tombstones_survive_compaction(corpus: dict[str, Any]) -> None:
+    case = corpus["tombstone_compaction_case"]
+    before_tombstones = {
+        int(record["timestamp_ms"]): record["tombstone"]
+        for record in case["before"]
+        if "tombstone" in record
+    }
+    after = case["after_compaction"]
+    after_tombstones = {
+        int(tombstone["timestamp_ms"]): tombstone
+        for tombstone in after["tombstones"]
+    }
+    if set(before_tombstones) != set(after_tombstones):
+        raise AssertionError(
+            f"compaction must preserve tombstone timestamps: before={sorted(before_tombstones)} "
+            f"after={sorted(after_tombstones)}"
+        )
+    for timestamp_ms, before in before_tombstones.items():
+        after_tombstone = after_tombstones[timestamp_ms]
+        if int(after_tombstone["deleted_at_ms"]) != int(before["deleted_at_ms"]):
+            raise AssertionError(f"compaction changed tombstone deleted_at_ms for {timestamp_ms}")
+        if after_tombstone["reason"] != before["reason"]:
+            raise AssertionError(f"compaction changed tombstone reason for {timestamp_ms}")
+
+    normal_values = [str(record["value"]) for record in after["records"]]
+    if normal_values != case["normal_query_expected_values"]:
+        raise AssertionError(
+            f"post-compaction normal query values mismatch: got {normal_values}, "
+            f"expected {case['normal_query_expected_values']}"
+        )
+    debug_tombstones = sorted(after_tombstones)
+    if debug_tombstones != case["debug_replay_expected_tombstones"]:
+        raise AssertionError(
+            f"debug replay tombstone list mismatch: got {debug_tombstones}, "
+            f"expected {case['debug_replay_expected_tombstones']}"
+        )
+
+
+def validate_stale_generation_ignored(corpus: dict[str, Any]) -> None:
+    case = corpus["stale_generation_case"]
+    live_generation = int(case["live_generation"])
+    stale_generation = int(case["stale_generation"])
+    if stale_generation >= live_generation:
+        raise AssertionError("stale_generation must be lower than live_generation")
+    ignored = sorted(set(case["stale_address_ids"]) - set(case["live_address_ids"]))
+    expected = sorted(case["normal_read_expected_ignored_address_ids"])
+    if ignored != expected:
+        raise AssertionError(f"normal read stale-generation ignored ids mismatch: got {ignored}, expected {expected}")
+    if not case.get("debug_replay_can_request_stale_generations"):
+        raise AssertionError("debug/replay policy must explicitly gate stale-generation reads")
+
+
 def validate_cold_scan_no_cache_promotion(corpus: dict[str, Any]) -> None:
     case = corpus["cold_scan_case"]
     if not case["read_options"].get("no_cache_fill") or not case["read_options"].get("no_promote"):
@@ -304,6 +356,8 @@ def main() -> int:
     validate_page_split(corpus)
     validate_compaction_rewrite(corpus)
     validate_tombstone_filtering(corpus)
+    validate_tombstones_survive_compaction(corpus)
+    validate_stale_generation_ignored(corpus)
     validate_cold_scan_no_cache_promotion(corpus)
     validate_restart_rebuild_indexes(corpus)
 
@@ -316,6 +370,8 @@ def main() -> int:
     print("- page split behavior")
     print("- compaction rewrite preserves logical records")
     print("- tombstone skips stale records")
+    print("- tombstones survive compaction")
+    print("- stale generations are ignored on normal reads")
     print("- cold scan does not warm serving cache")
     print("- crash/restart rebuilds page/block/object index")
     return 0

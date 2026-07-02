@@ -99,6 +99,12 @@ REQUIRED_STORAGE_RECLAIM_SEMANTICS = [
     "physical_reclaim_errors_zero",
 ]
 
+REQUIRED_STORAGE_RECLAIM_SCOPE = {
+    "owner": "temporalstore_storage_lifecycle",
+    "matrixark_context_gc_role": "marks_logical_raw_event_eligibility_only",
+    "physical_reclaim_context_specific": False,
+}
+
 REQUIRED_CONFIG_FIELDS = [
     "TS_CONTEXT_PAGE_TARGET_BYTES",
     "TS_BLOCK_SEGMENT_TARGET_BYTES",
@@ -220,6 +226,17 @@ def _dig_reclaim_semantics(report: dict[str, Any]) -> list[str]:
         if isinstance(candidate, list) and all(isinstance(item, str) for item in candidate):
             return candidate
     return []
+
+
+def _dig_reclaim_scope(report: dict[str, Any]) -> dict[str, Any]:
+    candidates = [
+        report.get("storage_reclaim_scope"),
+        report.get("storage_lifecycle", {}).get("reclaim_scope") if isinstance(report.get("storage_lifecycle"), dict) else None,
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            return candidate
+    return {}
 
 
 def _as_number(value: Any) -> float | None:
@@ -348,6 +365,9 @@ def validate_contract_and_runner() -> list[str]:
     for semantic in REQUIRED_STORAGE_RECLAIM_SEMANTICS:
         if f"`{semantic}`" not in contract_text:
             failures.append(f"contract missing reclaim semantic `{semantic}`")
+    for value in REQUIRED_STORAGE_RECLAIM_SCOPE.values():
+        if isinstance(value, str) and f"`{value}`" not in contract_text and f'"{value}"' not in contract_text:
+            failures.append(f"contract missing reclaim scope value `{value}`")
     return failures
 
 
@@ -367,6 +387,8 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
     rust_lifecycle_phases = _dig_lifecycle_phases(rust_report)
     cpp_reclaim_semantics = _dig_reclaim_semantics(cpp_report)
     rust_reclaim_semantics = _dig_reclaim_semantics(rust_report)
+    cpp_reclaim_scope = _dig_reclaim_scope(cpp_report)
+    rust_reclaim_scope = _dig_reclaim_scope(rust_report)
 
     for field in REQUIRED_CONFIG_FIELDS:
         if field not in cpp_config:
@@ -398,6 +420,10 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
         failures.append(f"cpp storage_reclaim_semantics drift: {cpp_reclaim_semantics!r}")
     if rust_reclaim_semantics != REQUIRED_STORAGE_RECLAIM_SEMANTICS:
         failures.append(f"rust storage_reclaim_semantics drift: {rust_reclaim_semantics!r}")
+    if cpp_reclaim_scope != REQUIRED_STORAGE_RECLAIM_SCOPE:
+        failures.append(f"cpp storage_reclaim_scope drift: {cpp_reclaim_scope!r}")
+    if rust_reclaim_scope != REQUIRED_STORAGE_RECLAIM_SCOPE:
+        failures.append(f"rust storage_reclaim_scope drift: {rust_reclaim_scope!r}")
 
     for backend, report in [("cpp", cpp_report), ("rust", rust_report)]:
         for path, key in _walk_public_keys(report):
@@ -474,6 +500,12 @@ def main() -> int:
     print("- storage_cold_scan_sequence=" + " -> ".join(REQUIRED_STORAGE_COLD_SCAN_SEQUENCE))
     print("- storage_lifecycle_phases=" + ", ".join(REQUIRED_STORAGE_LIFECYCLE_PHASES))
     print("- storage_reclaim_semantics=" + ", ".join(REQUIRED_STORAGE_RECLAIM_SEMANTICS))
+    print(
+        "- storage_reclaim_scope="
+        + REQUIRED_STORAGE_RECLAIM_SCOPE["owner"]
+        + " / context_gc="
+        + REQUIRED_STORAGE_RECLAIM_SCOPE["matrixark_context_gc_role"]
+    )
     for metric in REQUIRED_STORAGE_LIFECYCLE_METRICS:
         print(f"- {metric}")
     if validated_pair:
