@@ -80,6 +80,7 @@ Rust behavior-parity surfaces:
 | Extracted event fanout | `WRITE_EXTRACTED_EVENT` writes events plus internal indexes for entity/status/source/time bucket | Implemented as Rust `ContextWriteExtractedEvent` with default `event_kind`, `entity`, `status`, `source`, and `event_time_bucket` fanout plus disabled-index support. |
 | Timestamp-keyed event storage | recent C++ changesets `dbab966b`/`e86e26eb` add parent-aware `context_event_key` and `event_time_key` | Implemented in Rust `ContextEvent` and normalized on `ContextWriteEvent` / `ContextWriteExtractedEvent`; node-parent and segment-parent cases are asserted in `context_models_match_cpp_keys_timeline_pages_and_filters`. |
 | Compact embedding metadata | C++ changeset `df54f71d` replaces repeated embedding model strings with `model_hash` when possible | Implemented in Rust `ContextEmbedding` and resource/context embedding producers; C++ wire round-trip preserves `model_hash`. |
+| Descriptor alias lookup | C++ callers and shared docs use model names, key families, and aliases such as `ContextSegment` for `ContextEventModel` | Implemented in Rust `context_model_descriptor()` with lookup by model name, key family, alias, or numeric model id; covered by `context_cpp_wire_model_descriptor_roundtrip`. |
 
 So the honest current state is: Rust is benchmark-compatible for recent Context ingestion/retrieval
 evidence and shared corpus validation, and the newest C++ Context storage/debug models now have
