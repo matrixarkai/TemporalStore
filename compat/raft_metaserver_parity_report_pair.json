@@ -377,7 +377,12 @@
         "replication_p95_ms": 11.0
       },
       "errors": [],
-      "open_blockers": []
+      "open_blockers": [],
+      "status_labels": {
+        "feature_correct": true,
+        "performance_candidate": true,
+        "production_performance_parity": false
+      }
     }
   },
   "rust": {
@@ -755,7 +760,12 @@
         "replication_p95_ms": 11.0
       },
       "errors": [],
-      "open_blockers": []
+      "open_blockers": [],
+      "status_labels": {
+        "feature_correct": true,
+        "performance_candidate": true,
+        "production_performance_parity": false
+      }
     }
   }
 }
