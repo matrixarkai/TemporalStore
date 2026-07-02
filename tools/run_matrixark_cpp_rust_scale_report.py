@@ -179,6 +179,39 @@ STORAGE_TUNING_DEFAULTS: Json = {
 
 STORAGE_TUNING_FIELD_NAMES = list(STORAGE_TUNING_DEFAULTS.keys())
 
+PUBLIC_STORAGE_CONTRACT: Json = {
+    "page_address": "PageAddress",
+    "block_address": "BlockAddress",
+    "page_index_entry": "PageIndexEntry",
+    "block_index_entry": "BlockIndexEntry",
+    "storage_zone": "StorageZone",
+    "segment": "Segment",
+    "extent": "Extent",
+    "append_watermark": "AppendWatermark",
+    "compaction_watermark": "CompactionWatermark",
+    "compatibility_aliases": {},
+}
+
+STORAGE_RECLAIM_SCOPE: Json = {
+    "owner": "temporalstore_storage_lifecycle",
+    "matrixark_context_gc_role": "marks_logical_raw_event_eligibility_only",
+    "physical_reclaim_context_specific": False,
+}
+
+STORAGE_LIFECYCLE_TOP_LEVEL_KEYS = [
+    "effective_storage_tuning",
+    "public_storage_contract",
+    "storage_read_sequence",
+    "storage_cold_scan_sequence",
+    "storage_lifecycle_phases",
+    "storage_lifecycle_metrics",
+    "storage_cache_layers",
+    "storage_cache_semantics",
+    "storage_reclaim_semantics",
+    "storage_write_sequence",
+    "storage_reclaim_scope",
+]
+
 PAGE_BLOCK_METRIC_NAMES = [
     "page_index_lookup_count",
     "page_index_lookup_ms",
@@ -406,6 +439,55 @@ def effective_storage_tuning_from_env() -> Json:
         int(values["TS_STREAM_MAX_BLOB_SIZE"]),
     )
     return values
+
+
+def zero_storage_lifecycle_metrics() -> Json:
+    return {name: 0 for name in STORAGE_LIFECYCLE_METRIC_NAMES}
+
+
+def storage_lifecycle_report_shape(effective_storage_tuning: Json, metrics: Json | None = None) -> Json:
+    return {
+        "effective_storage_tuning": dict(effective_storage_tuning),
+        "public_storage_contract": {
+            key: (dict(value) if isinstance(value, dict) else value)
+            for key, value in PUBLIC_STORAGE_CONTRACT.items()
+        },
+        "storage_write_sequence": list(STORAGE_WRITE_SEQUENCE_STEPS),
+        "storage_read_sequence": list(STORAGE_READ_SEQUENCE_STEPS),
+        "storage_cold_scan_sequence": list(STORAGE_COLD_SCAN_SEQUENCE_STEPS),
+        "storage_lifecycle_phases": list(STORAGE_LIFECYCLE_PHASE_NAMES),
+        "storage_lifecycle_metrics": dict(metrics or zero_storage_lifecycle_metrics()),
+        "storage_cache_layers": list(STORAGE_CACHE_LAYER_NAMES),
+        "storage_cache_semantics": list(STORAGE_CACHE_SEMANTICS),
+        "storage_reclaim_semantics": list(STORAGE_RECLAIM_SEMANTICS),
+        "storage_reclaim_scope": dict(STORAGE_RECLAIM_SCOPE),
+    }
+
+
+def attach_storage_lifecycle_shape(result: Json, effective_storage_tuning: Json | None = None) -> Json:
+    tuning = effective_storage_tuning
+    if tuning is None:
+        existing = result.get("effective_storage_tuning")
+        tuning = existing if isinstance(existing, dict) else effective_storage_tuning_from_env()
+    metrics = result.get("storage_lifecycle_metrics")
+    if not isinstance(metrics, dict):
+        metrics = None
+    shaped = storage_lifecycle_report_shape(tuning, metrics=metrics)
+    shaped.update(result)
+    # Keep canonical top-level shape authoritative even if callers passed only
+    # nested/legacy lifecycle fields.
+    shaped["effective_storage_tuning"] = dict(tuning)
+    shaped["public_storage_contract"] = shaped.get("public_storage_contract") or storage_lifecycle_report_shape(tuning)["public_storage_contract"]
+    shaped["storage_write_sequence"] = list(STORAGE_WRITE_SEQUENCE_STEPS)
+    shaped["storage_read_sequence"] = list(STORAGE_READ_SEQUENCE_STEPS)
+    shaped["storage_cold_scan_sequence"] = list(STORAGE_COLD_SCAN_SEQUENCE_STEPS)
+    shaped["storage_lifecycle_phases"] = list(STORAGE_LIFECYCLE_PHASE_NAMES)
+    shaped["storage_lifecycle_metrics"] = metrics or zero_storage_lifecycle_metrics()
+    shaped["storage_cache_layers"] = list(STORAGE_CACHE_LAYER_NAMES)
+    shaped["storage_cache_semantics"] = list(STORAGE_CACHE_SEMANTICS)
+    shaped["storage_reclaim_semantics"] = list(STORAGE_RECLAIM_SEMANTICS)
+    shaped["storage_reclaim_scope"] = dict(STORAGE_RECLAIM_SCOPE)
+    return shaped
 
 
 def storage_tuning_failures(report: Json) -> list[str]:
@@ -1222,6 +1304,7 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
                     "stage_metrics": summarize_retrieval_metrics([]),
                 },
             }
+            result = attach_storage_lifecycle_shape(result, effective_storage_tuning)
             result["fallback_flags"] = fallback_flags_from_backend(result)
             return result
         if backend == "python_ref":
@@ -1256,6 +1339,7 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
                 "backend_metrics": {"skipped": True},
                 "errors": raw_storage.get("errors", {}),
             }
+            result = attach_storage_lifecycle_shape(result, effective_storage_tuning)
             result["fallback_flags"] = fallback_flags_from_backend(result)
             return result
 
@@ -1401,6 +1485,7 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
                 "retrieve": retrieve_errors[:10],
             },
         }
+        result = attach_storage_lifecycle_shape(result, effective_storage_tuning)
         result["fallback_flags"] = fallback_flags_from_backend(result)
         return result
     finally:
@@ -1505,25 +1590,26 @@ def run_backend_isolated(backend: str, args: argparse.Namespace, run_id: str, ar
             if worker_log.get("returncode") not in (0, None) and result.get("status") == "passed":
                 result["status"] = "backend_process_failed"
             result["worker"] = worker_log
+            result = attach_storage_lifecycle_shape(result)
             output_path.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
             return result
         except Exception as exc:
-            return {
+            return attach_storage_lifecycle_shape({
                 "backend": backend,
                 "status": "backend_artifact_read_failed",
                 "error": str(exc),
                 "worker": worker_log,
                 "retrieve": {"stage_metrics": summarize_retrieval_metrics([])},
-            }
+            })
     status = "blocked_timeout" if worker_log.get("timed_out") else "backend_process_failed"
-    return {
+    return attach_storage_lifecycle_shape({
         "backend": backend,
         "status": status,
         "error": "backend worker did not write result artifact",
         "worker": worker_log,
         "retrieve": {"stage_metrics": summarize_retrieval_metrics([])},
         "fallback_flags": {"backend_startup_failed": True},
-    }
+    })
 
 
 def comparison(cpp: Json | None, rust: Json | None, args: argparse.Namespace | None = None) -> Json:
