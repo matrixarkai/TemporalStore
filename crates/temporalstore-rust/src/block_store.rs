@@ -334,6 +334,14 @@ pub struct StreamBackedExtentRuntimeReport {
     #[serde(default)]
     pub extent_manifest_rebuild_ready: bool,
     #[serde(default)]
+    pub extent_manifest_reconciled_on_open: bool,
+    #[serde(default)]
+    pub extent_manifest_disk_consistent: bool,
+    #[serde(default)]
+    pub manifest_missing_stream_extents: u64,
+    #[serde(default)]
+    pub manifest_extra_stream_extents: u64,
+    #[serde(default)]
     pub corrupt_extent_count: u64,
     #[serde(default)]
     pub partial_extent_count: u64,
@@ -405,6 +413,7 @@ struct BlockStoreInner {
     next_page_id: u64,
     options: BlockStoreOptions,
     extents: BTreeMap<u64, BlockStoreExtentDescriptor>,
+    extent_manifest_reconciled_on_open: bool,
     stats: BlockStoreStats,
 }
 
@@ -432,8 +441,9 @@ impl LocalBlockStore {
         } else {
             (rebuild_extent_manifest_at(&root).unwrap_or_default(), true)
         };
-        manifest_rebuilt |=
+        let extent_manifest_reconciled_on_open =
             reconcile_extent_manifest_with_disk(&root, &mut extents).unwrap_or_default();
+        manifest_rebuilt |= extent_manifest_reconciled_on_open;
         ensure_extent_descriptor(
             &mut extents,
             &root,
@@ -451,6 +461,7 @@ impl LocalBlockStore {
                 next_page_id,
                 options,
                 extents,
+                extent_manifest_reconciled_on_open,
                 stats: BlockStoreStats::default(),
             })),
         }
@@ -1173,6 +1184,7 @@ impl LocalBlockStore {
         let root = inner.root.clone();
         let options = inner.options;
         let stats = inner.stats;
+        let extent_manifest_reconciled_on_open = inner.extent_manifest_reconciled_on_open;
         drop(inner);
 
         let summary = summarize_extents(&extents);
@@ -1187,6 +1199,28 @@ impl LocalBlockStore {
             .iter()
             .filter(|report| report.page_count > 0 || report.physical_bytes > 0)
             .count() as u64;
+        let live_segment_ids = segment_reports
+            .iter()
+            .map(|report| report.page_segment_id)
+            .collect::<BTreeSet<_>>();
+        let delayed_segment_ids = delayed_destroy_segment_reports_at(&root)?
+            .into_iter()
+            .map(|report| report.page_segment_id)
+            .collect::<BTreeSet<_>>();
+        let manifest_missing_stream_extents = extents
+            .values()
+            .filter(|extent| {
+                !matches!(extent.state, BlockStoreExtentState::Purged)
+                    && !live_segment_ids.contains(&extent.page_segment_id)
+                    && !delayed_segment_ids.contains(&extent.page_segment_id)
+            })
+            .count() as u64;
+        let manifest_extra_stream_extents = live_segment_ids
+            .iter()
+            .filter(|page_segment_id| !extents.contains_key(page_segment_id))
+            .count() as u64;
+        let extent_manifest_disk_consistent =
+            manifest_missing_stream_extents == 0 && manifest_extra_stream_extents == 0;
         let physical_bytes = segment_reports
             .iter()
             .map(|report| report.physical_bytes)
@@ -1312,6 +1346,11 @@ impl LocalBlockStore {
         if !extent_manifest_rebuild_ready {
             blockers.push("extent manifest does not match stream page-id boundaries".to_string());
         }
+        if !extent_manifest_disk_consistent {
+            blockers.push(
+                "extent manifest still diverges from live/delayed-destroy stream files".to_string(),
+            );
+        }
         if !envelope_checksum_ready {
             blockers.push("stream record envelope/checksum inspection is not clean".to_string());
         }
@@ -1347,6 +1386,10 @@ impl LocalBlockStore {
             append_roll_ready,
             extent_manifest_ready,
             extent_manifest_rebuild_ready,
+            extent_manifest_reconciled_on_open,
+            extent_manifest_disk_consistent,
+            manifest_missing_stream_extents,
+            manifest_extra_stream_extents,
             corrupt_extent_count,
             partial_extent_count,
             readable_prefix_physical_bytes,
@@ -1366,6 +1409,8 @@ impl LocalBlockStore {
                 "stream runtime reports page-id continuity and logical read byte evidence"
                     .to_string(),
                 "extent manifest descriptors are validated against inspected stream boundaries"
+                    .to_string(),
+                "open-time reconciliation repairs manifest/live stream divergence like C++ zone updates"
                     .to_string(),
             ],
         })
@@ -1659,13 +1704,27 @@ fn reconcile_extent_manifest_with_disk(
         match extents.get_mut(page_segment_id) {
             Some(extent) => {
                 let old = extent.clone();
+                let content_changed = extent.extent_id != extent_id_for_segment(*page_segment_id)
+                    || extent.page_segment_id != *page_segment_id
+                    || extent.state != desired_state
+                    || extent.physical_bytes != bytes.len() as u64
+                    || extent.logical_bytes != report.logical_bytes
+                    || extent.first_page_id != report.first_page_id
+                    || extent.last_page_id != report.last_page_id
+                    || extent.readable_prefix_physical_bytes
+                        != report.readable_prefix_physical_bytes
+                    || extent.has_corruption != report.has_corruption
+                    || extent.first_error_offset != report.first_error_offset
+                    || extent.first_error != report.first_error;
                 extent.extent_id = extent_id_for_segment(*page_segment_id);
                 extent.page_segment_id = *page_segment_id;
                 extent.state = desired_state;
                 extent.physical_bytes = bytes.len() as u64;
                 extent.logical_bytes = report.logical_bytes;
                 extent.created_unix_ms = extent.created_unix_ms.or(created_unix_ms);
-                extent.updated_unix_ms = updated_unix_ms;
+                if content_changed {
+                    extent.updated_unix_ms = updated_unix_ms;
+                }
                 extent.first_page_id = report.first_page_id;
                 extent.last_page_id = report.last_page_id;
                 extent.readable_prefix_physical_bytes = report.readable_prefix_physical_bytes;
@@ -2141,6 +2200,7 @@ mod tests {
         assert_eq!(reopened.read(&third).unwrap(), b"third");
     }
 
+    // shared-corpus: storage_stream_manifest_disk_reconciliation;
     #[test]
     fn reopen_reconciles_manifest_missing_existing_stream_extent() {
         let dir = tempfile::tempdir().unwrap();
@@ -2177,10 +2237,16 @@ mod tests {
             .iter()
             .any(|extent| extent.page_segment_id == second.page_segment_id
                 && extent.state == BlockStoreExtentState::Active));
+        let report = reopened.stream_backed_extent_runtime_report().unwrap();
+        assert!(report.extent_manifest_reconciled_on_open);
+        assert!(report.extent_manifest_disk_consistent);
+        assert_eq!(report.manifest_extra_stream_extents, 0);
+        assert_eq!(report.manifest_missing_stream_extents, 0);
         assert_eq!(reopened.read(&first).unwrap(), b"first");
         assert_eq!(reopened.read(&second).unwrap(), b"second");
     }
 
+    // shared-corpus: storage_stream_manifest_disk_reconciliation;
     #[test]
     fn reopen_marks_manifest_extent_without_stream_file_as_purged() {
         let dir = tempfile::tempdir().unwrap();
@@ -2203,6 +2269,11 @@ mod tests {
             .iter()
             .any(|extent| extent.page_segment_id == second.page_segment_id
                 && extent.state == BlockStoreExtentState::Active));
+        let report = reopened.stream_backed_extent_runtime_report().unwrap();
+        assert!(report.extent_manifest_reconciled_on_open);
+        assert!(report.extent_manifest_disk_consistent);
+        assert_eq!(report.manifest_extra_stream_extents, 0);
+        assert_eq!(report.manifest_missing_stream_extents, 0);
         assert_eq!(reopened.read(&second).unwrap(), b"second");
     }
 
@@ -2529,6 +2600,10 @@ mod tests {
         assert_eq!(report.extent_lifecycle_states, vec!["active", "sealed"]);
         assert!(report.extent_manifest_ready);
         assert!(report.extent_manifest_rebuild_ready);
+        assert!(!report.extent_manifest_reconciled_on_open);
+        assert!(report.extent_manifest_disk_consistent);
+        assert_eq!(report.manifest_missing_stream_extents, 0);
+        assert_eq!(report.manifest_extra_stream_extents, 0);
         assert_eq!(report.corrupt_extent_count, 0);
         assert_eq!(report.partial_extent_count, 0);
         assert!(report.partial_extent_recovery_ready);
@@ -2581,6 +2656,10 @@ mod tests {
         assert!(!report.runtime_ready, "{report:?}");
         assert!(report.extent_manifest_ready);
         assert!(report.extent_manifest_rebuild_ready);
+        assert!(!report.extent_manifest_reconciled_on_open);
+        assert!(report.extent_manifest_disk_consistent);
+        assert_eq!(report.manifest_missing_stream_extents, 0);
+        assert_eq!(report.manifest_extra_stream_extents, 0);
         assert_eq!(report.extent_lifecycle_states, vec!["active", "sealed"]);
         assert_eq!(report.corrupt_extent_count, 1);
         assert_eq!(report.partial_extent_count, 1);
