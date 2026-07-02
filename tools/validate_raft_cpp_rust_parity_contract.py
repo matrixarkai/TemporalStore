@@ -13,6 +13,8 @@ from typing import Any
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / "docs" / "raft_cpp_rust_shared_contract.md"
 REPORT_PAIR_CORPUS = ROOT / "compat" / "raft_parity_report_pair_corpus.json"
+METASERVER_REPORT_PAIR_CORPUS = ROOT / "compat" / "raft_metaserver_parity_report_pair.json"
+DATA_NODE_REPORT_PAIR_CORPUS = ROOT / "compat" / "raft_data_node_parity_report_pair.json"
 
 CANONICAL_RAFT_TYPES = [
     "RaftNodeId",
@@ -59,6 +61,9 @@ REQUIRED_RAFT_TOP_LEVEL_KEYS = [
     "snapshot_restore_metrics",
     "readiness",
     "parity_status",
+    "test_matrix",
+    "fail_closed_gates",
+    "report_summary",
 ]
 
 REQUIRED_RAFT_OPERATIONAL_TOP_LEVEL_KEYS = [
@@ -72,6 +77,9 @@ REQUIRED_RAFT_OPERATIONAL_TOP_LEVEL_KEYS = [
     "snapshot_restore_metrics",
     "readiness",
     "parity_status",
+    "test_matrix",
+    "fail_closed_gates",
+    "report_summary",
 ]
 
 REQUIRED_RAFT_SUBSYSTEM_KEYS = [
@@ -125,6 +133,60 @@ REQUIRED_RAFT_METRICS = [
     "stale_leader_observed",
 ]
 
+REQUIRED_DATA_NODE_RAFT_METRICS = [
+    "append_qps",
+    "replication_p50_ms",
+    "replication_p95_ms",
+    "replication_p99_ms",
+    "apply_lag_max",
+    "commit_lag_max",
+    "follower_visible_lag_ms",
+    "failover_recovery_ms",
+    "snapshot_install_ms",
+    "quorum_write_failures",
+    "stale_read_count",
+]
+
+REQUIRED_RAFT_TEST_MATRIX_CASES = [
+    "three_node_metaserver_raft",
+    "three_node_data_node_raft",
+    "combined_metaserver_data_node_raft",
+    "leader_kill_restart",
+    "follower_kill_restart",
+    "add_replica",
+    "remove_replica",
+    "learner_catch_up",
+    "snapshot_restore",
+    "network_delay_simulation",
+    "disk_restart_recovery",
+    "stale_follower_cursor_blocks_unsafe_reclaim",
+]
+
+REQUIRED_RAFT_FAIL_CLOSED_GATES = [
+    "same_quorum_rule",
+    "commit_applied_index_no_unexpected_drift",
+    "no_stale_follower_reads_when_ready",
+    "membership_change_result_match",
+    "snapshot_restore_record_count_checksum_match",
+    "metaserver_ready_after_slot_primary_assignment",
+    "data_node_unhealthy_when_apply_lag_exceeds_threshold",
+]
+
+REQUIRED_RAFT_REPORT_SUMMARY_KEYS = [
+    "command",
+    "backend",
+    "storage_mode",
+    "metaserver_status",
+    "data_node_status",
+    "leader_election_result",
+    "membership_result",
+    "failover_result",
+    "snapshot_result",
+    "latency_qps",
+    "errors",
+    "open_blockers",
+]
+
 
 def _load_json(path: pathlib.Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8-sig"))
@@ -138,6 +200,12 @@ def _validate_contract_doc() -> list[str]:
         + REQUIRED_RAFT_TOP_LEVEL_KEYS
         + REQUIRED_RAFT_SUBSYSTEM_KEYS
         + REQUIRED_METASERVER_RAFT_BEHAVIORS
+        + REQUIRED_DATA_NODE_RAFT_BEHAVIORS
+        + REQUIRED_RAFT_METRICS
+        + REQUIRED_DATA_NODE_RAFT_METRICS
+        + REQUIRED_RAFT_TEST_MATRIX_CASES
+        + REQUIRED_RAFT_FAIL_CLOSED_GATES
+        + REQUIRED_RAFT_REPORT_SUMMARY_KEYS
     ):
         if f"`{name}`" not in text:
             failures.append(f"contract missing `{name}`")
@@ -182,6 +250,41 @@ def _validate_raft_metrics(backend: str, section: str, subsystem: dict[str, Any]
     for metric in REQUIRED_RAFT_METRICS:
         if metric not in metrics:
             failures.append(f"{backend} {section}.metrics missing `{metric}`")
+    if section == "data_node_raft":
+        for metric in REQUIRED_DATA_NODE_RAFT_METRICS:
+            if metric not in metrics:
+                failures.append(f"{backend} {section}.metrics missing `{metric}`")
+    return failures
+
+
+def _validate_named_passed_map(backend: str, section: str, value: Any, required: list[str]) -> list[str]:
+    failures: list[str] = []
+    if not isinstance(value, dict):
+        return [f"{backend} report missing object `{section}`"]
+    for name in required:
+        item = value.get(name)
+        if not isinstance(item, dict):
+            failures.append(f"{backend} {section} missing `{name}`")
+            continue
+        if item.get("status") != "passed":
+            failures.append(f"{backend} {section}.{name} status drift: {item.get('status')!r}")
+    return failures
+
+
+def _validate_report_summary(backend: str, value: Any) -> list[str]:
+    failures: list[str] = []
+    if not isinstance(value, dict):
+        return [f"{backend} report missing object `report_summary`"]
+    for key in REQUIRED_RAFT_REPORT_SUMMARY_KEYS:
+        if key not in value:
+            failures.append(f"{backend} report_summary missing `{key}`")
+    if value.get("backend") != backend:
+        failures.append(f"{backend} report_summary.backend drift: {value.get('backend')!r}")
+    if value.get("storage_mode") not in {"raft async", "raft sync"}:
+        failures.append(f"{backend} report_summary.storage_mode drift: {value.get('storage_mode')!r}")
+    latency_qps = value.get("latency_qps")
+    if not isinstance(latency_qps, dict):
+        failures.append(f"{backend} report_summary.latency_qps missing object")
     return failures
 
 
@@ -232,6 +335,25 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
         parity_status = report.get("parity_status")
         if not isinstance(parity_status, dict) or "feature_correct" not in parity_status:
             failures.append(f"{backend} parity_status missing feature_correct")
+        elif not {"feature_correct", "performance_candidate", "production_performance_parity"}.issubset(parity_status):
+            failures.append(f"{backend} parity_status missing required status labels")
+        failures.extend(
+            _validate_named_passed_map(
+                backend,
+                "test_matrix",
+                report.get("test_matrix"),
+                REQUIRED_RAFT_TEST_MATRIX_CASES,
+            )
+        )
+        failures.extend(
+            _validate_named_passed_map(
+                backend,
+                "fail_closed_gates",
+                report.get("fail_closed_gates"),
+                REQUIRED_RAFT_FAIL_CLOSED_GATES,
+            )
+        )
+        failures.extend(_validate_report_summary(backend, report.get("report_summary")))
 
     cpp_contract = cpp_report.get("raft_public_contract")
     rust_contract = rust_report.get("raft_public_contract")
@@ -280,6 +402,9 @@ def main() -> int:
     print("- metaserver_behaviors=" + ", ".join(REQUIRED_METASERVER_RAFT_BEHAVIORS))
     print("- data_node_behaviors=" + ", ".join(REQUIRED_DATA_NODE_RAFT_BEHAVIORS))
     print("- required_metrics=" + ", ".join(REQUIRED_RAFT_METRICS))
+    print("- data_node_required_metrics=" + ", ".join(REQUIRED_DATA_NODE_RAFT_METRICS))
+    print("- test_matrix=" + ", ".join(REQUIRED_RAFT_TEST_MATRIX_CASES))
+    print("- fail_closed_gates=" + ", ".join(REQUIRED_RAFT_FAIL_CLOSED_GATES))
     return 0
 
 

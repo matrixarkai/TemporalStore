@@ -39,6 +39,9 @@ C++ and Rust reports must expose the same operational top-level keys:
 - `snapshot_restore_metrics`
 - `readiness`
 - `parity_status`
+- `test_matrix`
+- `fail_closed_gates`
+- `report_summary`
 
 Reports also include metadata top-level keys:
 
@@ -75,6 +78,21 @@ Raft reports:
 - `snapshot_restore_ms`
 - `failed_ready_checks`
 - `stale_leader_observed`
+
+`data_node_raft.metrics` must also include these replicated read/write
+performance and correctness fields:
+
+- `append_qps`
+- `replication_p50_ms`
+- `replication_p95_ms`
+- `replication_p99_ms`
+- `apply_lag_max`
+- `commit_lag_max`
+- `follower_visible_lag_ms`
+- `failover_recovery_ms`
+- `snapshot_install_ms`
+- `quorum_write_failures`
+- `stale_read_count`
 
 ## Required Evidence
 
@@ -114,6 +132,59 @@ semantics. `leader_election_events` use `Term`, `LeaderId`, `CommitIndex`, and
 - `snapshot_install`
 - `apply_lag_recovery`
 - `read_after_write_under_leader_change`
+
+## Phase 3 Unified Test Matrix
+
+`test_matrix` must include these cases, each with `status: passed`, for C++
+and Rust before unified Raft parity can be marked feature-correct:
+
+- `three_node_metaserver_raft`
+- `three_node_data_node_raft`
+- `combined_metaserver_data_node_raft`
+- `leader_kill_restart`
+- `follower_kill_restart`
+- `add_replica`
+- `remove_replica`
+- `learner_catch_up`
+- `snapshot_restore`
+- `network_delay_simulation`
+- `disk_restart_recovery`
+- `stale_follower_cursor_blocks_unsafe_reclaim`
+
+## Phase 4 Fail-Closed Gates
+
+`fail_closed_gates` must include these gates, each with `status: passed`:
+
+- `same_quorum_rule`
+- `commit_applied_index_no_unexpected_drift`
+- `no_stale_follower_reads_when_ready`
+- `membership_change_result_match`
+- `snapshot_restore_record_count_checksum_match`
+- `metaserver_ready_after_slot_primary_assignment`
+- `data_node_unhealthy_when_apply_lag_exceeds_threshold`
+
+## Phase 5 Shared Report Summary
+
+`report_summary` must include these fields:
+
+- `command`
+- `backend`
+- `storage_mode`
+- `metaserver_status`
+- `data_node_status`
+- `leader_election_result`
+- `membership_result`
+- `failover_result`
+- `snapshot_result`
+- `latency_qps`
+- `errors`
+- `open_blockers`
+
+`parity_status` uses these labels:
+
+- `feature_correct`
+- `performance_candidate`
+- `production_performance_parity`
 
 `tools/validate_raft_cpp_rust_parity_contract.py` validates this contract and
 the synthetic C++/Rust report pair in

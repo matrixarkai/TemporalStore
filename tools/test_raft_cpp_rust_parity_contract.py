@@ -63,6 +63,14 @@ class RaftCppRustParityContractTest(unittest.TestCase):
             failures,
         )
 
+        rust_missing_data_metric = json.loads(json.dumps(corpus["rust"]))
+        del rust_missing_data_metric["data_node_raft"]["metrics"]["append_qps"]
+        failures = validate_report_pair(corpus["cpp"], rust_missing_data_metric)
+        self.assertIn(
+            "rust data_node_raft.metrics missing `append_qps`",
+            failures,
+        )
+
     def test_data_node_raft_phase2_behaviors_are_required(self) -> None:
         corpus = _load_json(REPORT_PAIR_CORPUS)
         self.assertEqual(validate_report_pair(corpus["cpp"], corpus["rust"]), [])
@@ -82,6 +90,34 @@ class RaftCppRustParityContractTest(unittest.TestCase):
             "cpp data_node_raft.behavior_evidence.read_after_write_under_leader_change status drift: 'failed'",
             failures,
         )
+
+    def test_unified_matrix_and_fail_closed_gates_are_required(self) -> None:
+        corpus = _load_json(REPORT_PAIR_CORPUS)
+        self.assertEqual(validate_report_pair(corpus["cpp"], corpus["rust"]), [])
+
+        cpp_missing_case = json.loads(json.dumps(corpus["cpp"]))
+        del cpp_missing_case["test_matrix"]["leader_kill_restart"]
+        failures = validate_report_pair(cpp_missing_case, corpus["rust"])
+        self.assertIn("cpp test_matrix missing `leader_kill_restart`", failures)
+
+        rust_failed_gate = json.loads(json.dumps(corpus["rust"]))
+        rust_failed_gate["fail_closed_gates"]["same_quorum_rule"]["status"] = "failed"
+        failures = validate_report_pair(corpus["cpp"], rust_failed_gate)
+        self.assertIn("rust fail_closed_gates.same_quorum_rule status drift: 'failed'", failures)
+
+    def test_shared_report_summary_is_required(self) -> None:
+        corpus = _load_json(REPORT_PAIR_CORPUS)
+        self.assertEqual(validate_report_pair(corpus["cpp"], corpus["rust"]), [])
+
+        cpp_missing_summary = json.loads(json.dumps(corpus["cpp"]))
+        del cpp_missing_summary["report_summary"]["storage_mode"]
+        failures = validate_report_pair(cpp_missing_summary, corpus["rust"])
+        self.assertIn("cpp report_summary missing `storage_mode`", failures)
+
+        rust_bad_backend = json.loads(json.dumps(corpus["rust"]))
+        rust_bad_backend["report_summary"]["backend"] = "cpp"
+        failures = validate_report_pair(corpus["cpp"], rust_bad_backend)
+        self.assertIn("rust report_summary.backend drift: 'cpp'", failures)
 
 
 if __name__ == "__main__":
