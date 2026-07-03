@@ -57,6 +57,48 @@ _SHARED_CORRECTNESS_EVIDENCE = {
 }
 
 
+class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
+    def test_rust_bridge_defaults_to_separate_read_write_pack_lanes(self) -> None:
+        old_env = {
+            key: os.environ.get(key)
+            for key in (
+                "MATRIXARK_RUST_PROXY_WRITE_LANES",
+                "MATRIXARK_RUST_PROXY_READ_LANES",
+                "MATRIXARK_RUST_PROXY_PACK_LANES",
+                "MATRIXARK_RUST_PROXY_CONTROL_LANES",
+            )
+        }
+        for key in old_env:
+            os.environ.pop(key, None)
+        try:
+            client = mcp.MatrixArkRustCliClient(
+                cli_path="matrixark_record_log",
+                metaserver="127.0.0.1:18000",
+                namespace="ns",
+                table="table",
+                request_timeout_ms=10000,
+                io_timeout_ms=10000,
+            )
+            snapshot = client.metrics_snapshot()
+        finally:
+            for key, value in old_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.assertEqual(snapshot["lane_pool"], {"write": 4, "read": 4, "pack": 2, "control": 1})
+        self.assertEqual(snapshot["max_inflight"], 11)
+        self.assertTrue(snapshot["write_pool_enabled"])
+        self.assertTrue(snapshot["read_pool_enabled"])
+        self.assertTrue(snapshot["pack_pool_enabled"])
+        self.assertEqual(client._lane_group_for_op("matrixark_batch_append_records"), "write")
+        self.assertEqual(client._lane_group_for_op("matrixark_batch_append_raw_ingestion_records"), "write")
+        self.assertEqual(client._lane_group_for_op("batch_hget"), "read")
+        self.assertEqual(client._lane_group_for_op("matrixark_retrieve_context_pack"), "pack")
+        self.assertEqual(client._lane_group_for_op("readiness"), "control")
+
+
 class _NativeAppendClient:
     def __init__(self) -> None:
         self.calls = []

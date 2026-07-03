@@ -2645,12 +2645,24 @@ class MatrixArkRustCliClient:
         self.table = table
         self.request_timeout_ms = request_timeout_ms
         self.io_timeout_ms = io_timeout_ms
-        self._lock = threading.Lock()
-        self._semaphore = threading.BoundedSemaphore(1)
+        self._legacy_lock = threading.Lock()
+        self._legacy_semaphore = threading.BoundedSemaphore(1)
         self._backpressure_timeout_s = max(
             0.05,
             int(os.environ.get("MATRIXARK_RUST_GATEWAY_BACKPRESSURE_TIMEOUT_MS", str(request_timeout_ms))) / 1000.0,
         )
+        self._write_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_WRITE_LANES", "4")))
+        self._read_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_READ_LANES", "4")))
+        self._pack_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_PACK_LANES", "2")))
+        self._control_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_CONTROL_LANES", "1")))
+        self._lanes: dict[str, list[Json]] = {
+            "write": self._make_lanes(self._write_lane_count),
+            "read": self._make_lanes(self._read_lane_count),
+            "pack": self._make_lanes(self._pack_lane_count),
+            "control": self._make_lanes(self._control_lane_count),
+        }
+        self._lane_cursors = {name: 0 for name in self._lanes}
+        self._lane_select_lock = threading.Lock()
         self._metrics_lock = threading.Lock()
         self._commands_total = 0
         self._commands_failed_total = 0
@@ -2665,11 +2677,34 @@ class MatrixArkRustCliClient:
         self._started_at = time.time()
         self._proc: subprocess.Popen[str] | None = None
 
+    @staticmethod
+    def _make_lanes(count: int) -> list[Json]:
+        return [
+            {
+                "proc": None,
+                "lock": threading.Lock(),
+                "semaphore": threading.BoundedSemaphore(1),
+            }
+            for _ in range(count)
+        ]
+
     def close(self) -> None:
+        seen: set[int] = set()
+        for lanes in getattr(self, "_lanes", {}).values():
+            for lane in lanes:
+                proc = lane.get("proc")
+                lane["proc"] = None
+                if proc is None or id(proc) in seen:
+                    continue
+                seen.add(id(proc))
+                self._close_proc(proc)
         proc = self._proc
         self._proc = None
-        if proc is None:
-            return
+        if proc is not None and id(proc) not in seen:
+            self._close_proc(proc)
+
+    @staticmethod
+    def _close_proc(proc: subprocess.Popen[str]) -> None:
         if proc.poll() is None:
             try:
                 proc.terminate()
@@ -2686,11 +2721,13 @@ class MatrixArkRustCliClient:
             except Exception:
                 pass
 
-    def _ensure_proc(self) -> subprocess.Popen[str]:
-        if self._proc is not None and self._proc.poll() is None:
-            return self._proc
-        self.close()
-        self._proc = subprocess.Popen(
+    def _ensure_lane_proc(self, lane: Json) -> subprocess.Popen[str]:
+        proc = lane.get("proc")
+        if proc is not None and proc.poll() is None:
+            return proc
+        if proc is not None:
+            self._close_proc(proc)
+        lane["proc"] = subprocess.Popen(
             [self.cli_path, "--serve"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -2698,7 +2735,33 @@ class MatrixArkRustCliClient:
             text=True,
             bufsize=1,
         )
-        return self._proc
+        return lane["proc"]
+
+    def _lane_group_for_op(self, op: str) -> str:
+        if op in {
+            "batch_hset",
+            "matrixark_append_records",
+            "matrixark_batch_append_records",
+            "matrixark_batch_append_raw_ingestion_records",
+            "hset",
+            "put_string",
+            "write_matrixark_record",
+            "write_matrixark_records",
+        }:
+            return "write"
+        if op in {"matrixark_retrieve_context_pack"}:
+            return "pack"
+        if op in {"batch_hget", "hgetall", "scan_hash", "hget", "get_string", "read_matrixark_record", "read_matrixark_records"}:
+            return "read"
+        return "control"
+
+    def _choose_lane(self, op: str) -> tuple[str, Json]:
+        group = self._lane_group_for_op(op)
+        lanes = self._lanes.get(group) or self._lanes["control"]
+        with self._lane_select_lock:
+            index = self._lane_cursors.get(group, 0) % len(lanes)
+            self._lane_cursors[group] = index + 1
+        return group, lanes[index]
 
     def _read_json_line(self, proc: subprocess.Popen[str], op: str) -> Json:
         assert proc.stdout is not None
@@ -2736,7 +2799,9 @@ class MatrixArkRustCliClient:
         }
         payload = json.dumps(command, separators=(",", ":")) + "\n"
         started = time.perf_counter()
-        acquired = self._semaphore.acquire(timeout=self._backpressure_timeout_s)
+        _group, lane = self._choose_lane(op)
+        semaphore: threading.BoundedSemaphore = lane["semaphore"]
+        acquired = semaphore.acquire(timeout=self._backpressure_timeout_s)
         if not acquired:
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             self._record_call_metrics(op, kwargs, None, elapsed_ms, failed=True, backpressure=True)
@@ -2745,14 +2810,16 @@ class MatrixArkRustCliClient:
                 f"{self._backpressure_timeout_s:.3f}s"
             )
         try:
-            with self._lock:
-                proc = self._ensure_proc()
+            lock: threading.Lock = lane["lock"]
+            with lock:
+                proc = self._ensure_lane_proc(lane)
                 assert proc.stdin is not None
                 try:
                     proc.stdin.write(payload)
                     proc.stdin.flush()
                 except BrokenPipeError as exc:
-                    self.close()
+                    lane["proc"] = None
+                    self._close_proc(proc)
                     raise MatrixArkError(f"Rust TemporalStore {op} pipe closed") from exc
                 response = self._read_json_line(proc, op)
         except Exception:
@@ -2760,7 +2827,7 @@ class MatrixArkRustCliClient:
             self._record_call_metrics(op, kwargs, None, elapsed_ms, failed=True)
             raise
         finally:
-            self._semaphore.release()
+            semaphore.release()
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         if not response.get("ok"):
             self._record_call_metrics(op, kwargs, response, elapsed_ms, failed=True)
@@ -2841,7 +2908,20 @@ class MatrixArkRustCliClient:
                 "sdk_mode": "rust_direct_sdk_via_long_lived_bridge",
                 "transport": "stdio",
                 "cli_path": self.cli_path,
-                "max_inflight": 1,
+                "max_inflight": self._write_lane_count + self._read_lane_count + self._pack_lane_count + self._control_lane_count,
+                "lane_pool": {
+                    "write": self._write_lane_count,
+                    "read": self._read_lane_count,
+                    "pack": self._pack_lane_count,
+                    "control": self._control_lane_count,
+                },
+                "write_pool_size": self._write_lane_count,
+                "read_pool_size": self._read_lane_count,
+                "pack_pool_size": self._pack_lane_count,
+                "control_pool_size": self._control_lane_count,
+                "write_pool_enabled": self._write_lane_count > 1,
+                "read_pool_enabled": self._read_lane_count > 1,
+                "pack_pool_enabled": self._pack_lane_count > 1,
                 "backpressure_timeout_ms": int(self._backpressure_timeout_s * 1000),
                 "commands_total": self._commands_total,
                 "commands_failed_total": self._commands_failed_total,
