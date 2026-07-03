@@ -459,6 +459,8 @@ python3 tools/matrixark_context_backfill.py \
 
 The command is read-only. Its JSON summary includes `dead_letter_total`, `exported_count`, `has_more`, `next_start`, and a stable `dead_letter_fingerprint`. Use `next_start` to page through large dead-letter sets and archive the JSONL with the run evidence.
 
+When `plan` sees existing dead letters on the target prefix, `target_state.dead_letter_export_recommended=true` and `target_state.dead_letter_export_command_args` contains a ready-to-run export command. Add `--prometheus-output=<path>` to `export_dead_letters` to archive `matrixark_context_backfill_dead_letter_export_*` metrics with the same evidence bundle.
+
 
 ## Dual-Write Ingestion Performance Benchmark
 

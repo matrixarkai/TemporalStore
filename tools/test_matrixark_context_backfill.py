@@ -81,6 +81,9 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             "resume": True,
             "confirm_resume_range_change": "",
             "fail_fast": False,
+            "dead_letter_start": 0,
+            "dead_letter_limit": 100,
+            "dead_letter_output": "",
             "prometheus_output": "",
             "local_kv": str(path),
         }
@@ -1552,6 +1555,7 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertTrue(summary["has_failures"])
             self.assertEqual(backfill.LocalJsonKV(path).get_string("matrixark:context_backfill:test:dead_letter_count"), "1")
             export_path = Path(tmp) / "dead_letters.jsonl"
+            prom_path = Path(tmp) / "dead_letters.prom"
             exported = backfill.run_export_dead_letters(self.make_args(
                 path,
                 mode="export_dead_letters",
@@ -1559,6 +1563,7 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
                 dead_letter_start=0,
                 dead_letter_limit=1,
                 dead_letter_output=str(export_path),
+                prometheus_output=str(prom_path),
             ))
             self.assertEqual(exported["status"], "ok")
             self.assertEqual(exported["dead_letter_total"], 1)
@@ -1569,6 +1574,15 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertIn("missing sharded record", exported["dead_letters"][0]["error"])
             exported_rows = [json.loads(line) for line in export_path.read_text(encoding="utf-8").splitlines()]
             self.assertEqual(exported_rows, exported["dead_letters"])
+            prom_text = prom_path.read_text(encoding="utf-8")
+            self.assertIn("matrixark_context_backfill_dead_letter_export_status", prom_text)
+            self.assertIn('kind="total"} 1', prom_text)
+            self.assertIn('kind="exported"} 1', prom_text)
+            self.assertIn("matrixark_context_backfill_dead_letter_export_fingerprint_info", prom_text)
+            plan = backfill.run_plan(self.make_args(path, mode="plan", target_prefix="matrixark:context_backfill:test"))
+            self.assertTrue(plan["target_state"]["dead_letter_export_recommended"])
+            self.assertIn("--mode=export_dead_letters", plan["target_state"]["dead_letter_export_command_args"])
+            self.assertIn("--target-prefix=matrixark:context_backfill:test", plan["target_state"]["dead_letter_export_command_args"])
 
             with self.assertRaises(backfill.BackfillError):
                 backfill.run_backfill(self.make_args(path, mode="in_place"))
