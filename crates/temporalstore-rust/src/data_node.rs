@@ -15,16 +15,20 @@ use crate::control::{
     UnloadShardResponse,
 };
 use crate::engine::reports::{
-    default_storage_cache_layers, default_storage_cache_semantics,
-    default_storage_cold_scan_sequence, default_storage_lifecycle_metrics,
-    default_storage_lifecycle_phases, default_storage_read_sequence,
+    default_storage_cache_contract_empty, default_storage_cache_layers,
+    default_storage_cache_semantics, default_storage_cold_scan_contract_empty,
+    default_storage_cold_scan_sequence, default_storage_index_contract_empty,
+    default_storage_lifecycle_metrics, default_storage_lifecycle_phases,
+    default_storage_manager_contract_empty, default_storage_read_contract_empty,
+    default_storage_read_sequence, default_storage_reclaim_contract_empty,
     default_storage_reclaim_scope, default_storage_reclaim_semantics,
-    default_storage_write_sequence,
+    default_storage_write_contract_empty, default_storage_write_sequence,
+    effective_storage_tuning_from_env,
     PublicStorageContract, PublicStorageFeatureShapes, ShardCompactionModelLayoutReport,
     ShardCompactionUtilityReport, SlotDumpManifest, StorageLifecyclePlan, StorageLifecycleReport,
     StorageLifecycleRequest, StorageManagerCycleReport, StorageManagerCycleRequest,
     StorageManagerStageReport, StorageProductionReadinessPolicy, StorageProductionReadinessReport,
-    StorageReclaimScope,
+    StorageContractValue, StorageReclaimScope,
 };
 use crate::engine::TemporalEngine;
 use crate::meta::{
@@ -193,6 +197,24 @@ pub struct DataNodeLifecycleReport {
     pub public_storage_contract: PublicStorageContract,
     #[serde(default)]
     pub public_storage_feature_shapes: PublicStorageFeatureShapes,
+    #[serde(default = "effective_storage_tuning_from_env")]
+    pub effective_storage_tuning: BTreeMap<String, StorageContractValue>,
+    #[serde(default = "default_storage_lifecycle_metrics")]
+    pub storage_lifecycle_metrics: BTreeMap<String, u64>,
+    #[serde(default = "default_storage_write_contract_empty")]
+    pub storage_write_contract: BTreeMap<String, StorageContractValue>,
+    #[serde(default = "default_storage_read_contract_empty")]
+    pub storage_read_contract: BTreeMap<String, StorageContractValue>,
+    #[serde(default = "default_storage_cold_scan_contract_empty")]
+    pub storage_cold_scan_contract: BTreeMap<String, StorageContractValue>,
+    #[serde(default = "default_storage_manager_contract_empty")]
+    pub storage_manager_contract: BTreeMap<String, StorageContractValue>,
+    #[serde(default = "default_storage_index_contract_empty")]
+    pub storage_index_contract: BTreeMap<String, StorageContractValue>,
+    #[serde(default = "default_storage_cache_contract_empty")]
+    pub storage_cache_contract: BTreeMap<String, StorageContractValue>,
+    #[serde(default = "default_storage_reclaim_contract_empty")]
+    pub storage_reclaim_contract: BTreeMap<String, StorageContractValue>,
     #[serde(default = "default_storage_write_sequence")]
     pub storage_write_sequence: Vec<String>,
     #[serde(default = "default_storage_read_sequence")]
@@ -209,8 +231,6 @@ pub struct DataNodeLifecycleReport {
     pub storage_reclaim_semantics: Vec<String>,
     #[serde(default = "default_storage_reclaim_scope")]
     pub storage_reclaim_scope: StorageReclaimScope,
-    #[serde(default = "default_storage_lifecycle_metrics")]
-    pub storage_lifecycle_metrics: BTreeMap<String, u64>,
     pub loaded_shard_count: usize,
     pub serving_count: usize,
     pub readonly_count: usize,
@@ -229,6 +249,15 @@ impl Default for DataNodeLifecycleReport {
         Self {
             public_storage_contract: PublicStorageContract::default(),
             public_storage_feature_shapes: PublicStorageFeatureShapes::default(),
+            effective_storage_tuning: effective_storage_tuning_from_env(),
+            storage_lifecycle_metrics: default_storage_lifecycle_metrics(),
+            storage_write_contract: default_storage_write_contract_empty(),
+            storage_read_contract: default_storage_read_contract_empty(),
+            storage_cold_scan_contract: default_storage_cold_scan_contract_empty(),
+            storage_manager_contract: default_storage_manager_contract_empty(),
+            storage_index_contract: default_storage_index_contract_empty(),
+            storage_cache_contract: default_storage_cache_contract_empty(),
+            storage_reclaim_contract: default_storage_reclaim_contract_empty(),
             storage_write_sequence: default_storage_write_sequence(),
             storage_read_sequence: default_storage_read_sequence(),
             storage_cold_scan_sequence: default_storage_cold_scan_sequence(),
@@ -237,7 +266,6 @@ impl Default for DataNodeLifecycleReport {
             storage_cache_semantics: default_storage_cache_semantics(),
             storage_reclaim_semantics: default_storage_reclaim_semantics(),
             storage_reclaim_scope: default_storage_reclaim_scope(),
-            storage_lifecycle_metrics: default_storage_lifecycle_metrics(),
             loaded_shard_count: 0,
             serving_count: 0,
             readonly_count: 0,
@@ -2733,6 +2761,15 @@ impl DataNodeRuntime {
         DataNodeLifecycleReport {
             public_storage_contract: PublicStorageContract::default(),
             public_storage_feature_shapes: PublicStorageFeatureShapes::default(),
+            effective_storage_tuning: effective_storage_tuning_from_env(),
+            storage_lifecycle_metrics: default_storage_lifecycle_metrics(),
+            storage_write_contract: default_storage_write_contract_empty(),
+            storage_read_contract: default_storage_read_contract_empty(),
+            storage_cold_scan_contract: default_storage_cold_scan_contract_empty(),
+            storage_manager_contract: default_storage_manager_contract_empty(),
+            storage_index_contract: default_storage_index_contract_empty(),
+            storage_cache_contract: default_storage_cache_contract_empty(),
+            storage_reclaim_contract: default_storage_reclaim_contract_empty(),
             storage_write_sequence: default_storage_write_sequence(),
             storage_read_sequence: default_storage_read_sequence(),
             storage_cold_scan_sequence: default_storage_cold_scan_sequence(),
@@ -2741,7 +2778,6 @@ impl DataNodeRuntime {
             storage_cache_semantics: default_storage_cache_semantics(),
             storage_reclaim_semantics: default_storage_reclaim_semantics(),
             storage_reclaim_scope: default_storage_reclaim_scope(),
-            storage_lifecycle_metrics: default_storage_lifecycle_metrics(),
             loaded_shard_count,
             serving_count,
             readonly_count,
