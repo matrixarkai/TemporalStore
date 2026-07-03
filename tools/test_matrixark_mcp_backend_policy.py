@@ -455,6 +455,25 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         failures = validate_report_pair(corpus["cpp"], rust_missing)
         self.assertIn("rust report missing required top-level `storage_read_sequence`", failures)
 
+    def test_storage_lifecycle_write_sequence_is_required_top_level(self) -> None:
+        corpus = _load_json(REPORT_PAIR_CORPUS)
+        self.assertEqual(validate_report_pair(corpus["cpp"], corpus["rust"]), [])
+
+        cpp_drift = json.loads(json.dumps(corpus["cpp"]))
+        cpp_drift["storage_write_sequence"] = [
+            "append_record",
+            "route_shard_slot",
+            "flush_page_block_segment",
+            "publish_append_watermark",
+        ]
+        failures = validate_report_pair(cpp_drift, corpus["rust"])
+        self.assertTrue(any("cpp storage_write_sequence drift" in failure for failure in failures))
+
+        rust_missing = json.loads(json.dumps(corpus["rust"]))
+        del rust_missing["storage_write_sequence"]
+        failures = validate_report_pair(corpus["cpp"], rust_missing)
+        self.assertIn("rust report missing required top-level `storage_write_sequence`", failures)
+
     def test_storage_lifecycle_cold_scan_sequence_is_exact_and_top_level(self) -> None:
         corpus = _load_json(REPORT_PAIR_CORPUS)
         self.assertEqual(validate_report_pair(corpus["cpp"], corpus["rust"]), [])
@@ -571,6 +590,11 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         }
         failures = validate_report_pair(cpp_bad_scope, corpus["rust"])
         self.assertTrue(any("cpp storage_reclaim_scope drift" in failure for failure in failures))
+
+        rust_missing_scope = json.loads(json.dumps(corpus["rust"]))
+        del rust_missing_scope["storage_reclaim_scope"]
+        failures = validate_report_pair(corpus["cpp"], rust_missing_scope)
+        self.assertIn("rust report missing required top-level `storage_reclaim_scope`", failures)
 
     def test_storage_lifecycle_gap_fill_metrics_are_required(self) -> None:
         corpus = _load_json(REPORT_PAIR_CORPUS)
