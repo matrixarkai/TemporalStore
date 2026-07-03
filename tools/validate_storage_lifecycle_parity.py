@@ -276,9 +276,6 @@ REQUIRED_LIFECYCLE_TOP_LEVEL_KEYS = [
     "storage_cache_layers",
     "storage_cache_semantics",
     "storage_reclaim_semantics",
-]
-
-OPTIONAL_CANONICAL_TOP_LEVEL_KEYS = [
     "storage_write_sequence",
     "storage_reclaim_scope",
 ]
@@ -829,8 +826,7 @@ def validate_contract_and_runner() -> list[str]:
         failures.append("runner:STORAGE_CACHE_METRIC_NAMES does not match the canonical cache metrics")
     if runner_cache_contract_fields != REQUIRED_STORAGE_CACHE_CONTRACT_FIELDS:
         failures.append("runner:STORAGE_CACHE_CONTRACT_FIELDS does not match the canonical cache contract fields")
-    expected_top_level = REQUIRED_LIFECYCLE_TOP_LEVEL_KEYS + OPTIONAL_CANONICAL_TOP_LEVEL_KEYS
-    if runner_top_level_keys != expected_top_level:
+    if runner_top_level_keys != REQUIRED_LIFECYCLE_TOP_LEVEL_KEYS:
         failures.append("runner:STORAGE_LIFECYCLE_TOP_LEVEL_KEYS does not match the canonical report shape")
     for metric in REQUIRED_STORAGE_LIFECYCLE_METRICS:
         if f"`{metric}`" not in contract_text:
@@ -942,9 +938,6 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
         for key in REQUIRED_LIFECYCLE_TOP_LEVEL_KEYS:
             if key not in report:
                 failures.append(f"{backend} report missing required top-level `{key}`")
-        for key in OPTIONAL_CANONICAL_TOP_LEVEL_KEYS:
-            if key not in report:
-                failures.append(f"{backend} report missing canonical top-level `{key}`")
 
     for field in REQUIRED_CONFIG_FIELDS:
         if field not in cpp_config:
