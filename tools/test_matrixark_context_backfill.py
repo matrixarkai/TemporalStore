@@ -337,13 +337,17 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             kv.hset("shadow:dedupe:idempotency", "already", "0")
             target = backfill.MatrixKVBackfillTarget(kv, prefix="shadow:dedupe")
 
-            target.append_many([
+            append_stats = target.append_many([
                 {"record_type": "context_event", "event_id_hash": 1, "idempotency_key": "already"},
                 {"record_type": "context_event", "event_id_hash": 2, "idempotency_key": "new"},
                 {"record_type": "context_debug_record", "ref_hash": 2, "idempotency_key": "new"},
                 {"record_type": "context_event", "event_id_hash": 4, "idempotency_key": "other"},
             ])
 
+            self.assertEqual(append_stats["attempted"], 4)
+            self.assertEqual(append_stats["written"], 3)
+            self.assertEqual(append_stats["duplicate"], 1)
+            self.assertEqual([record["event_id_hash"] for record in append_stats["appended_records"] if "event_id_hash" in record], [2, 4])
             self.assertEqual(kv.batch_hget_calls, 1)
             self.assertEqual(kv.get_string("shadow:dedupe:record_count"), "3")
             records = read_target_records(backfill.LocalJsonKV(path), "shadow:dedupe")
@@ -351,6 +355,32 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             kv_after = backfill.LocalJsonKV(path)
             self.assertEqual(kv_after.hget("shadow:dedupe:idempotency", "new"), "1")
             self.assertEqual(kv_after.hget("shadow:dedupe:idempotency", "other"), "2")
+
+    def test_run_backfill_uses_append_stats_for_write_metrics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            write_sharded(kv, "matrixark:mcp", 0, {"record_type": "context_event", "event_id_hash": 1})
+            write_sharded(kv, "matrixark:mcp", 1, {"record_type": "context_event", "event_id_hash": 2})
+            kv.put_string("matrixark:mcp:record_count", "2")
+
+            original_append_many = backfill.MatrixKVBackfillTarget.append_many
+
+            def append_one_and_skip_one(target, records):
+                self.assertEqual(len(records), 2)
+                stats = original_append_many(target, [records[0]])
+                stats["attempted"] = len(records)
+                stats["duplicate"] += 1
+                return stats
+
+            with patch.object(backfill.MatrixKVBackfillTarget, "append_many", append_one_and_skip_one):
+                summary = backfill.run_backfill(self.make_args(path, batch_size=2, resume=False))
+
+            self.assertEqual(summary["metrics"]["scanned"], 2)
+            self.assertEqual(summary["metrics"]["written"], 1)
+            self.assertEqual(summary["metrics"]["duplicate"], 1)
+            self.assertEqual(summary["metrics"]["context_events"], 1)
+            self.assertEqual(backfill.LocalJsonKV(path).get_string("matrixark:context_backfill:test:record_count"), "1")
 
 
     def test_validate_and_activate_shadow_prefix(self):

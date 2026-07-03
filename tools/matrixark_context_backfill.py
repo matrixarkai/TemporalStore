@@ -652,9 +652,15 @@ class MatrixKVBackfillTarget:
                 existing.add(key)
         return existing
 
-    def append_many(self, records: list[Json]) -> None:
+    def append_many(self, records: list[Json]) -> Json:
+        stats: Json = {
+            'attempted': len(records),
+            'written': 0,
+            'duplicate': 0,
+            'appended_records': [],
+        }
         if not records:
-            return
+            return stats
         if self._next_sequence is None:
             self._next_sequence = self.count()
         sequence = self._next_sequence
@@ -669,12 +675,15 @@ class MatrixKVBackfillTarget:
                 shard = sequence // self.shard_size
                 offset = sequence % self.shard_size
                 if dedupe_key and dedupe_key in existing_keys:
+                    stats['duplicate'] += 1
                     continue
                 payload = json.dumps(record, sort_keys=True, separators=(',', ':'))
                 entries.append({'key': f'{self.prefix}:records:{shard:06d}', 'field': f'{offset:020d}', 'value': payload})
                 if dedupe_key:
                     idempotency_entries.append({'key': f'{self.prefix}:idempotency', 'field': dedupe_key, 'value': str(sequence)})
                 sequence += 1
+                stats['written'] += 1
+                stats['appended_records'].append(record)
             append_records = getattr(self.kv, 'matrixark_append_records', None)
             all_entries = entries + idempotency_entries
             if callable(append_records):
@@ -697,6 +706,7 @@ class MatrixKVBackfillTarget:
                         self.kv.hset(str(entry['key']), str(entry['field']), str(entry['value']))
                 self.kv.put_string(f'{self.prefix}:record_count', str(sequence))
             self._next_sequence = sequence
+            return stats
         finally:
             if hasattr(self.kv, 'end_bulk'):
                 self.kv.end_bulk()
@@ -1132,11 +1142,25 @@ def run_backfill(args: argparse.Namespace) -> Json:
             return
         if not args.dry_run:
             if pending:
-                target.append_many(pending)
+                append_stats = target.append_many(pending)
+            else:
+                append_stats = {'written': 0, 'duplicate': 0, 'appended_records': []}
+        else:
+            append_stats = {
+                'written': len(pending),
+                'duplicate': 0,
+                'appended_records': list(pending),
+            }
         if pending:
             metrics.target_batches += 1
-            metrics.written += len(pending)
-            metrics.observe_records(pending)
+            append_written = int(append_stats.get('written', 0) or 0)
+            append_duplicate = int(append_stats.get('duplicate', 0) or 0)
+            appended_records = append_stats.get('appended_records')
+            if not isinstance(appended_records, list):
+                appended_records = pending[:append_written]
+            metrics.written += append_written
+            metrics.duplicate += append_duplicate
+            metrics.observe_records(appended_records)
         if not args.dry_run:
             if checkpoint_pending_seq is not None:
                 checkpoint = build_checkpoint_metadata(

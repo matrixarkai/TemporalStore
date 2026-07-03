@@ -36,6 +36,7 @@ REQUIRED_DOC_MARKERS = [
     "matrixark_context_backfill_validation_check",
     "matrixark_context_backfill_incremental_repair_status",
     "--baseline-json",
+    "append-time idempotency",
 ]
 
 
@@ -71,6 +72,15 @@ def docs_checks() -> list[Json]:
     checks = [check("manual_exists", doc_path.exists(), str(doc_path))]
     checks.extend(check(f"manual_mentions_{marker}", marker in text) for marker in REQUIRED_DOC_MARKERS)
     return checks
+
+
+def append_accounting_checks() -> list[Json]:
+    source_path = ROOT / "tools" / "matrixark_context_backfill.py"
+    text = source_path.read_text(encoding="utf-8") if source_path.exists() else ""
+    return [
+        check("append_many_reports_attempted_written_duplicate", all(token in text for token in ["'attempted'", "'written'", "'duplicate'", "'appended_records'"])),
+        check("run_backfill_uses_append_stats_for_written_metrics", all(token in text for token in ["append_stats = target.append_many(pending)", "metrics.written += append_written", "metrics.duplicate += append_duplicate", "metrics.observe_records(appended_records)"])),
+    ]
 
 
 def run_local_gate(args: argparse.Namespace) -> Json:
@@ -877,7 +887,7 @@ def prometheus_checks(summary: Json) -> list[Json]:
 
 
 def run_readiness(args: argparse.Namespace) -> Json:
-    checks = parser_support_checks() + docs_checks()
+    checks = parser_support_checks() + docs_checks() + append_accounting_checks()
     benchmark_summary: Json = {}
     baseline_summary: Json = {}
     cutover_summary: Json = {}
