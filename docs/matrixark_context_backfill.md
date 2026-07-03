@@ -164,7 +164,7 @@ python3 tools/matrixark_context_backfill.py \
 
 ## Dry Run First
 
-The default is `--dry-run=1`. A dry run scans and materializes in memory, but does not write target records, checkpoint state, manifests, or dead letters.
+The default is `--dry-run=1`. A dry run scans and materializes in memory, but does not write target records, checkpoint state, manifests, or dead letters. It also checks target idempotency by default with `--dry-run-check-target=1`, so `written` and `duplicate` estimate what a real run would append to the selected target prefix.
 
 ```bash
 python3 tools/matrixark_context_backfill.py \
@@ -175,7 +175,7 @@ python3 tools/matrixark_context_backfill.py \
   --dry-run=1
 ```
 
-Use dry runs to estimate source volume, verify source readability, and inspect expected serving-record counts before writing anything.
+Use dry runs to estimate source volume, verify source readability, and inspect expected serving-record counts before writing anything. For a faster source-only sizing pass that intentionally avoids target duplicate lookups, set `--dry-run-check-target=0`; do not use that mode as the final preflight before promotion or incremental repair.
 
 ## Prometheus Metrics
 
@@ -1150,6 +1150,7 @@ Core flags:
 --end-seq
 --batch-size
 --dry-run
+--dry-run-check-target
 --resume
 --confirm-resume-range-change=YES
 --fail-fast
