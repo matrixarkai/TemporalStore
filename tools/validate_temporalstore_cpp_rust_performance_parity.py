@@ -241,10 +241,11 @@ def _validate_ratios(row: dict[str, Any], thresholds: dict[str, Any], failures: 
     min_qps = float(thresholds.get("min_rust_cpp_qps_ratio") or 0.8)
     max_latency = float(thresholds.get("max_rust_cpp_latency_ratio") or 2.0)
     for qps_ratio in ["message_qps_ratio", "retrieve_qps_ratio"]:
-        if qps_ratio in ratios:
-            value = _as_number(ratios.get(qps_ratio))
-            if value is None or value < min_qps:
-                failures.append(f"{row.get('workload')} {qps_ratio} below {min_qps}")
+        value = _as_number(ratios.get(qps_ratio))
+        if value is None:
+            failures.append(f"{row.get('workload')} {qps_ratio} missing")
+        elif value < min_qps:
+            failures.append(f"{row.get('workload')} {qps_ratio} below {min_qps}")
     for latency_ratio in ["p50_ratio", "p95_ratio", "p99_ratio"]:
         value = _as_number(ratios.get(latency_ratio))
         if value is None or value > max_latency:
