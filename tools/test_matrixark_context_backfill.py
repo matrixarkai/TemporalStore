@@ -44,6 +44,7 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             "confirm_activate": "",
             "confirm_rollback": "",
             "confirm_incremental_repair": "",
+            "confirm_active_target": "",
             "confirm_skip_validation": "",
             "confirm_non_strict_validation": "",
             "active_prefix_key": "matrixark:context:active_prefix",
@@ -160,6 +161,32 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(source_only["metrics"]["duplicate"], 0)
             self.assertEqual(source_only["metrics"]["written"], 2)
             self.assertEqual(len(read_target_records(backfill.LocalJsonKV(path), "matrixark:context_backfill:test")), 2)
+
+    def test_shadow_write_to_active_prefix_requires_confirmation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            write_sharded(kv, "matrixark:mcp", 0, {"record_type": "context_event", "event_id_hash": 1})
+            kv.put_string("matrixark:mcp:record_count", "1")
+            kv.put_string("matrixark:context:active_prefix", "matrixark:context:active")
+
+            args = self.make_args(path, target_prefix="matrixark:context:active", dry_run=False, resume=False)
+            with self.assertRaisesRegex(backfill.BackfillError, "confirm-active-target=YES"):
+                backfill.run_backfill(args)
+
+            dry = backfill.run_backfill(self.make_args(path, target_prefix="matrixark:context:active", dry_run=True, resume=False))
+            self.assertEqual(dry["metrics"]["written"], 1)
+            self.assertEqual(backfill.LocalJsonKV(path).get_string("matrixark:context:active:record_count"), "")
+
+            confirmed = backfill.run_backfill(self.make_args(
+                path,
+                target_prefix="matrixark:context:active",
+                dry_run=False,
+                resume=False,
+                confirm_active_target="YES",
+            ))
+            self.assertEqual(confirmed["metrics"]["written"], 1)
+            self.assertEqual(backfill.LocalJsonKV(path).get_string("matrixark:context:active:record_count"), "1")
 
     def test_target_serving_type_counts_use_batched_reads(self):
         with tempfile.TemporaryDirectory() as tmp:
