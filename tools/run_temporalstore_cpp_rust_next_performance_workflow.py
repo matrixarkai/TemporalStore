@@ -146,6 +146,24 @@ def _backend_artifact_blockers(argv: list[str]) -> list[str]:
     return blockers
 
 
+COMMAND_METADATA_KEYS = [
+    "artifact_dir",
+    "comparison_path",
+    "recommended_execution_output",
+    "required_same_config_fields",
+    "required_result",
+    "next_run_hint_source",
+]
+
+
+def _command_metadata(command: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: command[key]
+        for key in COMMAND_METADATA_KEYS
+        if key in command and command[key] is not None
+    }
+
+
 def build_execution_plan(audit: dict[str, Any], max_workloads: int | None = None, *, wsl_distro: str = DEFAULT_WSL_DISTRO) -> dict[str, Any]:
     workflow = audit.get("next_required_workflow") if isinstance(audit.get("next_required_workflow"), dict) else {}
     commands = workflow.get("commands") if isinstance(workflow.get("commands"), list) else []
@@ -178,8 +196,8 @@ def build_execution_plan(audit: dict[str, Any], max_workloads: int | None = None
                 "workload": command.get("workload"),
                 "reason": command.get("reason"),
                 "argv": command.get("argv"),
-                "recommended_execution_output": command.get("recommended_execution_output"),
             }
+            | _command_metadata(command)
             | (
                 {
                     "wsl_argv": _wslize(
@@ -238,7 +256,14 @@ def run_plan(
             execution["execution_output"] = str(execution_output)
         return execution
 
-    def run_one(step: str, argv: list[str], *, workload: str | None = None, reason: str | None = None) -> None:
+    def run_one(
+        step: str,
+        argv: list[str],
+        *,
+        workload: str | None = None,
+        reason: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
         blockers = _backend_artifact_blockers(argv) if require_backend_artifacts else []
         if blockers:
             row = {
@@ -250,6 +275,8 @@ def run_plan(
                 "status": "preflight_failed",
                 "preflight_blockers": blockers,
             }
+            if metadata:
+                row.update(metadata)
             results.append(row)
             if not continue_on_error:
                 raise SystemExit(json.dumps(finish(), indent=2))
@@ -270,6 +297,8 @@ def run_plan(
             "returncode": returncode,
             "status": status,
         }
+        if metadata:
+            row.update(metadata)
         if status == "timeout":
             row["timeout_sec"] = timeout
         results.append(row)
@@ -294,6 +323,7 @@ def run_plan(
                     "returncode": 0,
                     "status": "skipped",
                     "skip_reason": "upstream_workload_failed",
+                    **_command_metadata(command),
                 }
             )
             continue
@@ -308,6 +338,7 @@ def run_plan(
             argv,
             workload=workload,
             reason=str(command.get("reason")) if command.get("reason") is not None else None,
+            metadata=_command_metadata(command),
         )
         if command.get("step") == "run_workload" and len(results) > before and results[-1]["status"] != "passed" and workload:
             failed_workloads.add(workload)

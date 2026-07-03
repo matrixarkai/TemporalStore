@@ -38,7 +38,12 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
                         "workload": "10K_event_ingestion",
                         "reason": "missing_candidate",
                         "argv": ["python", "tools/run_matrixark_cpp_rust_scale_report.py"],
+                        "artifact_dir": "docs/benchmarks/parity_10K_event_ingestion",
+                        "comparison_path": "docs/benchmarks/parity_10K_event_ingestion/comparison.json",
                         "recommended_execution_output": "docs/benchmarks/parity_10K_event_ingestion/execution.json",
+                        "required_same_config_fields": ["dataset", "storage_mode"],
+                        "required_result": ["selected_ref_parity=true"],
+                        "next_run_hint_source": "matrix",
                     },
                     {
                         "step": "import_evidence",
@@ -72,6 +77,11 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
             plan["commands"][0]["recommended_execution_output"],
             "docs/benchmarks/parity_10K_event_ingestion/execution.json",
         )
+        self.assertEqual(plan["commands"][0]["artifact_dir"], "docs/benchmarks/parity_10K_event_ingestion")
+        self.assertEqual(plan["commands"][0]["comparison_path"], "docs/benchmarks/parity_10K_event_ingestion/comparison.json")
+        self.assertEqual(plan["commands"][0]["required_same_config_fields"], ["dataset", "storage_mode"])
+        self.assertEqual(plan["commands"][0]["required_result"], ["selected_ref_parity=true"])
+        self.assertEqual(plan["commands"][0]["next_run_hint_source"], "matrix")
         self.assertEqual(plan["commands"][0]["wsl_argv"][:3], ["wsl", "-d", DEFAULT_WSL_DISTRO])
         self.assertIn("python3", plan["commands"][0]["wsl_argv"])
         self.assertNotIn("wsl_argv", plan["commands"][1])
@@ -190,7 +200,14 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
         plan = {
             "commands": [
                 {"step": "run_workload", "workload": "10K", "reason": "missing", "argv": ["python", "first.py"]},
-                {"step": "import_evidence", "workload": "10K", "reason": "missing", "argv": ["python", "second.py"]},
+                {
+                    "step": "import_evidence",
+                    "workload": "10K",
+                    "reason": "missing",
+                    "argv": ["python", "second.py"],
+                    "comparison_path": "docs/benchmarks/parity_10K/comparison.json",
+                    "required_result": ["selected_ref_parity=true"],
+                },
             ],
             "post_import_validation": [["python", "validator.py"]],
         }
@@ -217,6 +234,8 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["failed_count"], 1)
         self.assertEqual([row["status"] for row in result["results"]], ["failed", "skipped", "passed"])
+        self.assertEqual(result["results"][1]["comparison_path"], "docs/benchmarks/parity_10K/comparison.json")
+        self.assertEqual(result["results"][1]["required_result"], ["selected_ref_parity=true"])
         self.assertEqual(result["execution_output"], str(output))
         self.assertEqual(persisted["status"], "failed")
         self.assertEqual(persisted["failed_count"], 1)
@@ -285,6 +304,10 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
                     "workload": "10K",
                     "reason": "missing",
                     "argv": ["python", "tools/run_matrixark_cpp_rust_scale_report.py"],
+                    "artifact_dir": "docs/benchmarks/parity_10K",
+                    "comparison_path": "docs/benchmarks/parity_10K/comparison.json",
+                    "required_same_config_fields": ["dataset"],
+                    "required_result": ["selected_ref_parity=true"],
                 },
                 {"step": "import_evidence", "workload": "10K", "reason": "missing", "argv": ["python", "second.py"]},
             ],
@@ -312,6 +335,10 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
         self.assertEqual(result["failed_count"], 1)
         self.assertEqual(result["results"][0]["status"], "preflight_failed")
         self.assertEqual(result["results"][0]["returncode"], 125)
+        self.assertEqual(result["results"][0]["artifact_dir"], "docs/benchmarks/parity_10K")
+        self.assertEqual(result["results"][0]["comparison_path"], "docs/benchmarks/parity_10K/comparison.json")
+        self.assertEqual(result["results"][0]["required_same_config_fields"], ["dataset"])
+        self.assertEqual(result["results"][0]["required_result"], ["selected_ref_parity=true"])
         self.assertIn("missing_cpp_lib", result["results"][0]["preflight_blockers"][0])
         self.assertIn("missing_rust_cli", result["results"][0]["preflight_blockers"][1])
         self.assertEqual(result["results"][1]["status"], "skipped")
