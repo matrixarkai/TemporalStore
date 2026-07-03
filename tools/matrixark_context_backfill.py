@@ -1577,6 +1577,45 @@ def run_rollback_activation(args: argparse.Namespace) -> Json:
     }
 
 
+def incremental_promotion_consistency(validation: Json | None, promotion: Json, partial: Json, *, skip_validation: bool = False) -> Json:
+    metrics = promotion.get('metrics') if isinstance(promotion.get('metrics'), dict) else {}
+    checks: Json = {
+        'promotion_had_no_failures': int(metrics.get('failed', 0) or 0) == 0,
+        'promotion_had_no_dead_letters': int(metrics.get('dead_letter', 0) or 0) == 0,
+        'promotion_source_scan_had_no_failures': int(metrics.get('failed', 0) or 0) == 0,
+    }
+    if isinstance(validation, dict):
+        validation_source_range = validation.get('source_range') if isinstance(validation.get('source_range'), dict) else {}
+        promotion_source_range = promotion.get('source_range') if isinstance(promotion.get('source_range'), dict) else {}
+        range_keys = [
+            'effective_start_seq',
+            'effective_end_seq',
+            'source_high_watermark_seq',
+            'source_record_count',
+            'scan_mode',
+            'user_bounded_end',
+        ]
+        checks['promotion_source_range_matches_validation'] = all(
+            validation_source_range.get(key) == promotion_source_range.get(key)
+            for key in range_keys
+        )
+        checks['promotion_partial_matches_validation'] = validation.get('partial', {}) == partial == promotion.get('partial', {})
+        expected_records = int(validation.get('expected_records', 0) or 0)
+        promoted_or_duplicate = int(metrics.get('written', 0) or 0) + int(metrics.get('duplicate', 0) or 0)
+        checks['promotion_covered_expected_records'] = promoted_or_duplicate >= expected_records
+    else:
+        checks['promotion_source_range_matches_validation'] = bool(skip_validation)
+        checks['promotion_partial_matches_validation'] = promotion.get('partial', {}) == partial
+        checks['promotion_covered_expected_records'] = True
+    passed = all(bool(value) for value in checks.values())
+    return {
+        'status': 'ok' if passed else 'failed',
+        'checks': checks,
+        'promotion_source_range': promotion.get('source_range', {}),
+        'promotion_metrics': metrics,
+    }
+
+
 def run_incremental_repair(args: argparse.Namespace) -> Json:
     if not args.target_prefix:
         raise BackfillError('incremental_repair requires --target-prefix for the shadow repair prefix')
@@ -1608,6 +1647,15 @@ def run_incremental_repair(args: argparse.Namespace) -> Json:
         job_id=f'{args.job_id}:active',
     )
     promotion = run_backfill(promote_args)
+    partial = build_partial_spec(args)
+    promotion_consistency = incremental_promotion_consistency(
+        validation,
+        promotion,
+        partial,
+        skip_validation=args.skip_validation,
+    )
+    if promotion_consistency.get('status') != 'ok':
+        raise BackfillError(f'incremental repair promotion consistency failed: {json.dumps(promotion_consistency, sort_keys=True)}')
 
     if not args.dry_run:
         kv = make_kv(args)
@@ -1621,9 +1669,10 @@ def run_incremental_repair(args: argparse.Namespace) -> Json:
             'active_prefix': active_prefix,
             'start_seq': args.start_seq,
             'end_seq': args.end_seq,
-            'partial': build_partial_spec(args),
+            'partial': partial,
             'validation': validation,
             **validation_audit,
+            'promotion_consistency': promotion_consistency,
             'promotion_metrics': promotion.get('metrics', {}),
         }
         kv.hset(f'{args.active_prefix_key}:incremental_repair_audit', args.job_id, json.dumps(audit, sort_keys=True, separators=(',', ':')))
@@ -1638,10 +1687,11 @@ def run_incremental_repair(args: argparse.Namespace) -> Json:
         'active_prefix': active_prefix,
         'start_seq': args.start_seq,
         'end_seq': args.end_seq,
-        'partial': build_partial_spec(args),
+        'partial': partial,
         'validation': validation,
         **validation_audit,
         'promotion': promotion,
+        'promotion_consistency': promotion_consistency,
         'audit_key': f'{args.active_prefix_key}:incremental_repair_audit',
     }
 
