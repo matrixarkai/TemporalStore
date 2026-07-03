@@ -23,6 +23,9 @@ REQUIRED_DOC_MARKERS = [
     "--raw-backend=temporalstore",
     "--raw-backend=matrixkv",
     "--batch-sizes",
+    "record_count",
+    "record_index",
+    "scan_hash",
     "incremental_repair",
     "serving_record_fingerprint_match",
     "matrixark_context_backfill_validation_check",
@@ -220,6 +223,106 @@ def run_cutover_gate(args: argparse.Namespace) -> Json:
         and item["rollback_status"] == "ok"
         and item["rollback_to_prefix"] == item["active_after_rollback"]
         and item["rollback_audit_written"]
+        for item in results
+    ) else "failed"
+    return {"status": status, "results": results}
+
+
+def seed_legacy_raw_log(kv: backfill.LocalJsonKV, *, prefix: str, records: int, payload_bytes: int) -> None:
+    record_ids = []
+    kv.begin_bulk()
+    try:
+        for sequence in range(records):
+            record_id = f"legacy-{sequence:020d}"
+            record_ids.append(record_id)
+            kv.hset(
+                f"{prefix}:records",
+                record_id,
+                json.dumps(bench.make_raw_record(sequence, payload_bytes=payload_bytes), sort_keys=True),
+            )
+        kv.put_string(f"{prefix}:record_index", json.dumps(record_ids, separators=(",", ":")))
+    finally:
+        kv.end_bulk()
+
+
+def seed_scan_hash_raw_log(kv: backfill.LocalJsonKV, *, prefix: str, records: int, payload_bytes: int) -> None:
+    kv.begin_bulk()
+    try:
+        for sequence in range(records):
+            shard = sequence // backfill.DIRECT_RECORD_LOG_SHARD_SIZE
+            offset = sequence % backfill.DIRECT_RECORD_LOG_SHARD_SIZE
+            kv.hset(
+                f"{prefix}:records:{shard:06d}",
+                f"{offset:020d}",
+                json.dumps(bench.make_raw_record(sequence, payload_bytes=payload_bytes), sort_keys=True),
+            )
+    finally:
+        kv.end_bulk()
+
+
+def run_source_scan_gate(args: argparse.Namespace) -> Json:
+    results: list[Json] = []
+    records = max(4, int(args.records))
+    scenarios = [
+        ("record_count", bench.seed_raw_log, None),
+        ("record_index", seed_legacy_raw_log, None),
+        ("scan_hash", seed_scan_hash_raw_log, records),
+    ]
+    for raw_backend in ["temporalstore", "matrixkv"]:
+        for expected_scan_mode, seed_fn, end_seq in scenarios:
+            with tempfile.TemporaryDirectory(prefix=f"matrixark_backfill_scan_{raw_backend}_{expected_scan_mode}_") as tmp:
+                kv_path = Path(tmp) / "kv.json"
+                kv = backfill.LocalJsonKV(kv_path)
+                source_prefix = f"matrixark:mcp:readiness_scan:{expected_scan_mode}"
+                seed_fn(kv, prefix=source_prefix, records=records, payload_bytes=args.payload_bytes)
+                target_prefix = f"matrixark:context_backfill:readiness_scan:{raw_backend}:{expected_scan_mode}"
+                job_id = f"readiness-scan-{raw_backend}-{expected_scan_mode}"
+                run_args = bench.make_backfill_args(
+                    kv_path=kv_path,
+                    source_prefix=source_prefix,
+                    target_prefix=target_prefix,
+                    raw_backend=raw_backend,
+                    job_id=job_id,
+                    batch_size=args.batch_size,
+                    end_seq=end_seq,
+                )
+                summary = backfill.run_backfill(run_args)
+                validation = backfill.run_validate_shadow(bench.make_backfill_args(
+                    kv_path=kv_path,
+                    source_prefix=source_prefix,
+                    target_prefix=target_prefix,
+                    raw_backend=raw_backend,
+                    job_id=job_id,
+                    batch_size=args.batch_size,
+                    mode="validate_shadow",
+                    end_seq=end_seq,
+                ))
+                source_range = summary.get("source_range") if isinstance(summary.get("source_range"), dict) else {}
+                metrics = summary.get("metrics") if isinstance(summary.get("metrics"), dict) else {}
+                results.append({
+                    "raw_backend": raw_backend,
+                    "expected_scan_mode": expected_scan_mode,
+                    "scan_mode": source_range.get("scan_mode"),
+                    "status": summary.get("status"),
+                    "records": records,
+                    "scanned": int(metrics.get("scanned", 0) or 0),
+                    "written": int(metrics.get("written", 0) or 0),
+                    "failed": int(metrics.get("failed", 0) or 0),
+                    "validation_status": validation.get("status"),
+                    "validation_fingerprint_match": validation.get("checks", {}).get("serving_record_fingerprint_match"),
+                    "source_record_count_estimated": bool(source_range.get("source_record_count_estimated")),
+                    "source_high_watermark_seq": source_range.get("source_high_watermark_seq"),
+                })
+    status = "ok" if all(
+        item["status"] == "ok"
+        and item["validation_status"] == "ok"
+        and item["validation_fingerprint_match"] is True
+        and item["scan_mode"] == item["expected_scan_mode"]
+        and item["scanned"] == item["records"]
+        and item["written"] == item["records"]
+        and item["failed"] == 0
+        and item["source_high_watermark_seq"] == item["records"] - 1
+        and (item["source_record_count_estimated"] is (item["expected_scan_mode"] == "scan_hash"))
         for item in results
     ) else "failed"
     return {"status": status, "results": results}
@@ -511,6 +614,21 @@ def dead_letter_checks(summary: Json) -> list[Json]:
     ]
 
 
+def source_scan_checks(summary: Json) -> list[Json]:
+    results = summary.get("results") if isinstance(summary.get("results"), list) else []
+    scan_modes = {item.get("scan_mode") for item in results}
+    backends = {item.get("raw_backend") for item in results}
+    return [
+        check("source_scan_gate_status_ok", summary.get("status") == "ok"),
+        check("source_scan_gate_covers_temporalstore_and_matrixkv", backends == {"temporalstore", "matrixkv"}),
+        check("source_scan_gate_covers_record_count_record_index_scan_hash", scan_modes == {"record_count", "record_index", "scan_hash"}),
+        check("source_scan_gate_validates_shadow", all(item.get("validation_status") == "ok" and bool(item.get("validation_fingerprint_match")) for item in results)),
+        check("source_scan_gate_writes_all_records", all(int(item.get("written", 0) or 0) == int(item.get("records", -1) or -1) for item in results)),
+        check("source_scan_gate_has_no_failures", all(int(item.get("failed", 0) or 0) == 0 for item in results)),
+        check("source_scan_gate_marks_scan_hash_estimated", all(bool(item.get("source_record_count_estimated")) is (item.get("expected_scan_mode") == "scan_hash") for item in results)),
+    ]
+
+
 def resume_checks(summary: Json) -> list[Json]:
     results = summary.get("results") if isinstance(summary.get("results"), list) else []
     return [
@@ -540,6 +658,7 @@ def run_readiness(args: argparse.Namespace) -> Json:
     baseline_summary: Json = {}
     cutover_summary: Json = {}
     dead_letter_summary: Json = {}
+    source_scan_summary: Json = {}
     resume_summary: Json = {}
     prometheus_summary: Json = {}
     if not args.skip_local_benchmark:
@@ -554,6 +673,9 @@ def run_readiness(args: argparse.Namespace) -> Json:
     if not args.skip_dead_letter_gate:
         dead_letter_summary = run_dead_letter_gate(args)
         checks.extend(dead_letter_checks(dead_letter_summary))
+    if not args.skip_source_scan_gate:
+        source_scan_summary = run_source_scan_gate(args)
+        checks.extend(source_scan_checks(source_scan_summary))
     if not args.skip_resume_gate:
         resume_summary = run_resume_gate(args)
         checks.extend(resume_checks(resume_summary))
@@ -568,6 +690,7 @@ def run_readiness(args: argparse.Namespace) -> Json:
         "baseline_gate": baseline_summary,
         "cutover_gate": cutover_summary,
         "dead_letter_gate": dead_letter_summary,
+        "source_scan_gate": source_scan_summary,
         "resume_gate": resume_summary,
         "prometheus_gate": prometheus_summary,
     }
@@ -585,6 +708,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-baseline-gate", action="store_true")
     parser.add_argument("--skip-cutover-gate", action="store_true")
     parser.add_argument("--skip-dead-letter-gate", action="store_true")
+    parser.add_argument("--skip-source-scan-gate", action="store_true")
     parser.add_argument("--skip-resume-gate", action="store_true")
     parser.add_argument("--skip-prometheus-gate", action="store_true")
     parser.add_argument("--json-output", default="")
