@@ -71,8 +71,24 @@ def run_plan(
     *,
     include_post_validation: bool,
     continue_on_error: bool = False,
+    execution_output: Path | None = None,
 ) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
+
+    def finish(status: str | None = None) -> dict[str, Any]:
+        failed = sum(1 for row in results if row["status"] != "passed")
+        execution = {
+            "schema": "temporalstore_cpp_rust_next_performance_execution_v1",
+            "continue_on_error": continue_on_error,
+            "status": status or ("passed" if failed == 0 else "failed"),
+            "failed_count": failed,
+            "results": results,
+        }
+        if execution_output is not None:
+            execution_output.parent.mkdir(parents=True, exist_ok=True)
+            execution_output.write_text(json.dumps(execution, indent=2) + "\n", encoding="utf-8")
+            execution["execution_output"] = str(execution_output)
+        return execution
 
     def run_one(step: str, argv: list[str], *, workload: str | None = None, reason: str | None = None) -> None:
         completed = subprocess.run(_pythonize(argv), cwd=ROOT, check=False)
@@ -86,7 +102,7 @@ def run_plan(
         }
         results.append(row)
         if completed.returncode != 0 and not continue_on_error:
-            raise SystemExit(json.dumps({"schema": "temporalstore_cpp_rust_next_performance_execution_v1", "results": results}, indent=2))
+            raise SystemExit(json.dumps(finish(), indent=2))
 
     commands = plan.get("commands") if isinstance(plan.get("commands"), list) else []
     for command in commands:
@@ -107,14 +123,7 @@ def run_plan(
             if not isinstance(argv, list) or not all(isinstance(item, str) for item in argv):
                 raise SystemExit(f"invalid validation command: {argv!r}")
             run_one("post_import_validation", argv)
-    failed = sum(1 for row in results if row["status"] != "passed")
-    return {
-        "schema": "temporalstore_cpp_rust_next_performance_execution_v1",
-        "continue_on_error": continue_on_error,
-        "status": "passed" if failed == 0 else "failed",
-        "failed_count": failed,
-        "results": results,
-    }
+    return finish()
 
 
 def main() -> int:
@@ -124,6 +133,7 @@ def main() -> int:
     parser.add_argument("--max-workloads", type=int, default=1)
     parser.add_argument("--execute", action="store_true", help="Run the generated commands. Default is dry-run JSON output.")
     parser.add_argument("--continue-on-error", action="store_true", help="With --execute, keep running later commands after a failure.")
+    parser.add_argument("--execution-output", type=Path, help="With --execute, write the execution summary JSON here.")
     parser.add_argument(
         "--skip-post-validation",
         action="store_true",
@@ -141,6 +151,7 @@ def main() -> int:
         plan,
         include_post_validation=not args.skip_post_validation,
         continue_on_error=args.continue_on_error,
+        execution_output=args.execution_output,
     )
     print(json.dumps(execution, indent=2) + "\n", end="")
     return 0 if execution["status"] == "passed" else 1
