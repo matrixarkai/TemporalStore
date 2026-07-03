@@ -198,6 +198,7 @@ python3 tools/matrixark_context_backfill_benchmark.py \
   --raw-backends=both \
   --min-full-shadow-qps=5000 \
   --min-incremental-repair-qps=1500 \
+  --min-backend-qps-ratio=0.50 \
   --json-output=/tmp/matrixark_context_backfill_bench_gate.json
 ```
 
@@ -208,10 +209,12 @@ Key output:
 | `results[].full_shadow.qps` | Materialized serving records written per second for a full shadow rebuild. |
 | `results[].incremental_shadow.qps` | Serving records written per second while creating a bounded repair shadow. |
 | `results[].incremental_repair.qps` | Active-prefix promotion throughput, including validation and bounded replay. |
-| `qps_summary` | Average full and incremental QPS across the selected raw backends. |
-| `performance_gate` | Optional per-backend pass/fail checks for `--min-full-shadow-qps` and `--min-incremental-repair-qps`. |
+| `qps_summary` | Average, min, max, and min/max ratio for full shadow, incremental shadow, and incremental repair QPS across the selected raw backends. |
+| `performance_gate` | Optional per-backend pass/fail checks for `--min-full-shadow-qps`, `--min-incremental-repair-qps`, and `--min-backend-qps-ratio`. |
 
 Local mode is an in-process correctness and regression signal. For production capacity numbers, run the same batch sizes through `tools/matrixark_context_backfill.py` against a real TemporalStore/MatrixKV deployment and compare the resulting JSON summaries and Prometheus output.
+
+Use `--min-backend-qps-ratio` when both raw-message storage options are selected. It fails the gate when the slowest selected backend falls below the configured fraction of the fastest selected backend for full shadow, incremental shadow, or incremental repair. This catches asymmetric regressions that average QPS can hide.
 
 ## Resume And Checkpoints
 
