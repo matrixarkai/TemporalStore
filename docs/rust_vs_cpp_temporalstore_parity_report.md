@@ -70,6 +70,13 @@ shared corpus and keeps C++ static surface gates explicit by family. A family
 may only move to complete status when it has native C++ execution or an approved
 native adapter contract, no blocker, and comparable shared-case output.
 
+`tools/audit_temporalstore_cpp_rust_performance_artifacts.py` scans existing
+`docs/benchmarks/**/comparison.json` files with the same fail-closed importer
+policy. Use it before importing old benchmark artifacts: the audit reports
+candidate workloads, importable workloads, and exact blockers such as missing
+same-config fields, backend failures, selected-ref parity gaps, fallback flags,
+or QPS/latency threshold misses.
+
 This goal-level validator is also part of
 `tools/validate_storage_engine_9_phase_parity.py`, so the 9-phase loop now
 checks both storage contract parity and honest goal status.
