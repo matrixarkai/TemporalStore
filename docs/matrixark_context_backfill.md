@@ -332,6 +332,8 @@ Use batch backfills when:
 
 The runner batches source references first, then uses `batch_hget` when the backend exposes it. Materialized target records are accumulated up to `--batch-size` and written with `matrixark_append_records` when available, then `batch_hset`, then single-record fallback.
 
+Every summary includes `source_range`, which records `scan_mode`, requested start/end, effective start/end, whether the end was user-bounded, source record count when available, and `source_high_watermark_seq` when the raw log exposes a count or legacy index. For live ingestion, treat this as the batch snapshot boundary: run the full shadow backfill up to the reported high watermark, then use incremental repair for records written after that boundary.
+
 ### Batch Size Guide
 
 | Workload | Suggested `--batch-size` | Notes |
