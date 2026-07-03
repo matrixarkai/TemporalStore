@@ -21,13 +21,14 @@ class MatrixArkContextBackfillReadinessTest(unittest.TestCase):
             "payload_bytes": 8,
             "repeat": 1,
             "skip_local_benchmark": False,
+            "skip_resume_gate": False,
             "json_output": "",
         }
         values.update(overrides)
         return argparse.Namespace(**values)
 
     def test_static_readiness_checks_cover_public_surface(self) -> None:
-        summary = readiness.run_readiness(self.make_args(skip_local_benchmark=True))
+        summary = readiness.run_readiness(self.make_args(skip_local_benchmark=True, skip_resume_gate=True))
         self.assertEqual(summary["status"], "ok")
         names = {item["name"]: item["passed"] for item in summary["checks"]}
         self.assertTrue(names["backfill_modes_cover_batch_and_incremental"])
@@ -36,6 +37,7 @@ class MatrixArkContextBackfillReadinessTest(unittest.TestCase):
         self.assertTrue(names["benchmark_has_latency_gate_options"])
         self.assertTrue(names["manual_mentions_--batch-sizes"])
         self.assertEqual(summary["benchmark"], {})
+        self.assertEqual(summary["resume_gate"], {})
 
     def test_local_readiness_gate_runs_batch_sweep_for_both_raw_backends(self) -> None:
         summary = readiness.run_readiness(self.make_args())
@@ -47,6 +49,13 @@ class MatrixArkContextBackfillReadinessTest(unittest.TestCase):
         self.assertTrue(names["local_benchmark_exercised_batch_sweep"])
         self.assertEqual(summary["benchmark"]["batch_sizes"], [8, 16])
         self.assertEqual(set(summary["benchmark"]["raw_backends"]), {"temporalstore", "matrixkv"})
+        self.assertTrue(names["resume_gate_status_ok"])
+        self.assertTrue(names["resume_gate_covers_temporalstore_and_matrixkv"])
+        self.assertTrue(names["resume_gate_checkpoint_found_on_second_run"])
+        self.assertTrue(names["resume_gate_second_run_started_after_first_window"])
+        self.assertTrue(names["resume_gate_completed_expected_records"])
+        self.assertTrue(names["resume_gate_fingerprint_match"])
+        self.assertEqual({item["raw_backend"] for item in summary["resume_gate"]["results"]}, {"temporalstore", "matrixkv"})
 
     def test_main_writes_json_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -62,6 +71,7 @@ class MatrixArkContextBackfillReadinessTest(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertTrue(output.exists())
             self.assertIn("local_benchmark_gate_passed", output.read_text(encoding="utf-8"))
+            self.assertIn("resume_gate_checkpoint_found_on_second_run", output.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
