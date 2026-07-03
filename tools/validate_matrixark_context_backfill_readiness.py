@@ -198,7 +198,9 @@ def run_cutover_gate(args: argparse.Namespace) -> Json:
             active_key = "matrixark:context:active_prefix"
             old_prefix = f"matrixark:context:active:old:{raw_backend}"
             target_prefix = f"matrixark:context_backfill:readiness_cutover:{raw_backend}"
+            bypass_target_prefix = f"matrixark:context_backfill:readiness_cutover:{raw_backend}:bypass"
             job_id = f"readiness-cutover-{raw_backend}"
+            bypass_job_id = f"{job_id}:bypass"
             kv.put_string(active_key, old_prefix)
 
             shadow_args = bench.make_backfill_args(
@@ -211,6 +213,46 @@ def run_cutover_gate(args: argparse.Namespace) -> Json:
                 end_seq=records,
             )
             shadow = backfill.run_backfill(shadow_args)
+            bypass_shadow_args = bench.make_backfill_args(
+                kv_path=kv_path,
+                source_prefix=source_prefix,
+                target_prefix=bypass_target_prefix,
+                raw_backend=raw_backend,
+                job_id=bypass_job_id,
+                batch_size=args.batch_size,
+                end_seq=records,
+            )
+            bypass_shadow = backfill.run_backfill(bypass_shadow_args)
+            missing_precondition_blocked = False
+            try:
+                missing_precondition_args = bench.make_backfill_args(
+                    kv_path=kv_path,
+                    source_prefix=source_prefix,
+                    target_prefix=bypass_target_prefix,
+                    raw_backend=raw_backend,
+                    job_id=f"{bypass_job_id}:blocked",
+                    batch_size=args.batch_size,
+                    mode="activate_shadow",
+                )
+                missing_precondition_args.confirm_activate = "YES"
+                backfill.run_activate_shadow(missing_precondition_args)
+            except backfill.BackfillError as exc:
+                missing_precondition_blocked = "requires --expect-active-prefix" in str(exc)
+            bypass_args = bench.make_backfill_args(
+                kv_path=kv_path,
+                source_prefix=source_prefix,
+                target_prefix=bypass_target_prefix,
+                raw_backend=raw_backend,
+                job_id=bypass_job_id,
+                batch_size=args.batch_size,
+                mode="activate_shadow",
+            )
+            bypass_args.confirm_activate = "YES"
+            bypass_args.confirm_no_active_prefix_precondition = "YES"
+            bypass_activation = backfill.run_activate_shadow(bypass_args)
+            kv_after_bypass = backfill.LocalJsonKV(kv_path)
+            bypass_audit = kv_after_bypass.hget(f"{active_key}:audit", bypass_job_id)
+            kv_after_bypass.put_string(active_key, old_prefix)
             activate_args = bench.make_backfill_args(
                 kv_path=kv_path,
                 source_prefix=source_prefix,
@@ -246,6 +288,11 @@ def run_cutover_gate(args: argparse.Namespace) -> Json:
                 "raw_backend": raw_backend,
                 "shadow_status": shadow.get("status"),
                 "shadow_written": int(shadow.get("metrics", {}).get("written", 0) or 0),
+                "missing_active_precondition_blocked": missing_precondition_blocked,
+                "bypass_shadow_status": bypass_shadow.get("status"),
+                "bypass_activation_status": bypass_activation.get("status"),
+                "bypass_audit_written": bool(bypass_audit),
+                "bypass_audited": bool(bypass_activation.get("active_prefix_precondition_bypassed")) and "active_prefix_precondition_bypassed" in str(bypass_audit),
                 "activation_status": activated.get("status"),
                 "activation_validation_status": activated.get("validation_status"),
                 "activation_validation_skipped": bool(activated.get("validation_skipped")),
@@ -260,6 +307,11 @@ def run_cutover_gate(args: argparse.Namespace) -> Json:
     status = "ok" if all(
         item["shadow_status"] == "ok"
         and item["shadow_written"] == records
+        and item["missing_active_precondition_blocked"]
+        and item["bypass_shadow_status"] == "ok"
+        and item["bypass_activation_status"] == "ok"
+        and item["bypass_audit_written"]
+        and item["bypass_audited"]
         and item["activation_status"] == "ok"
         and item["activation_validation_status"] == "ok"
         and not item["activation_validation_skipped"]
@@ -877,6 +929,8 @@ def cutover_checks(summary: Json) -> list[Json]:
         check("cutover_gate_status_ok", summary.get("status") == "ok"),
         check("cutover_gate_covers_temporalstore_and_matrixkv", {item.get("raw_backend") for item in results} == {"temporalstore", "matrixkv"}),
         check("cutover_gate_shadow_wrote_records", all(int(item.get("shadow_written", 0) or 0) > 0 for item in results)),
+        check("cutover_gate_blocks_missing_active_precondition", all(bool(item.get("missing_active_precondition_blocked")) for item in results)),
+        check("cutover_gate_bypass_is_explicitly_audited", all(bool(item.get("bypass_audited")) for item in results)),
         check("cutover_gate_activation_validated_shadow", all(item.get("activation_validation_status") == "ok" and not item.get("activation_validation_skipped") for item in results)),
         check("cutover_gate_activation_updates_active_pointer", all(item.get("active_after_activation") == item.get("activation_new_prefix") for item in results)),
         check("cutover_gate_activation_audit_written", all(bool(item.get("activation_audit_written")) for item in results)),
