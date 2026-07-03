@@ -127,15 +127,11 @@ pub fn raft_process_path_readiness_report_from_reports(
     data_node_report: &TemporalRaftDataNodeProcessRolloutReport,
     metaserver_report: &TemporalRaftMetaProcessRolloutReport,
 ) -> RaftProcessPathReadinessReport {
-    let rustraft_report = ::rustraft::rustraft_cross_plane_process_readiness_report(
+    let rustraft_report = ::rustraft::rustraft_cross_plane_process_readiness_blocker_report(
         data_node_report,
         metaserver_report,
     );
-    let mut remaining_blockers: Vec<_> = rustraft_report
-        .remaining_blockers
-        .iter()
-        .map(|field| raft_readiness_blocker_from_rustraft_process_field(field))
-        .collect();
+    let mut remaining_blockers = rustraft_report.remaining_blockers;
     remaining_blockers.sort_by(|left, right| {
         left.evidence_field
             .cmp(&right.evidence_field)
@@ -154,13 +150,6 @@ pub fn raft_process_path_readiness_report_from_reports(
         snapshot_restart_after_compaction: rustraft_report.snapshot_restart_after_compaction,
         remaining_blockers,
     }
-}
-
-fn raft_readiness_blocker_from_rustraft_process_field(
-    evidence_field: &str,
-) -> RaftReadinessEvidenceBlocker {
-    let blocker = ::rustraft::rustraft_process_readiness_blocker(evidence_field);
-    raft_readiness_blocker_from_rustraft_blocker(blocker)
 }
 
 fn raft_readiness_blocker_from_rustraft_blocker(
