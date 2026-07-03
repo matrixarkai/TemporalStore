@@ -56,6 +56,26 @@ SAME_CONFIG_KEYS = [
     "storage_tuning",
 ]
 
+WORKLOAD_RUN_ARGS = {
+    "1K_event_ingestion": ["--events", "1000"],
+    "10K_event_ingestion": ["--events", "10000"],
+    "100K_event_ingestion": ["--events", "100000"],
+    "retrieve_workers_4": ["--retrieve-workers", "4"],
+    "retrieve_workers_8": ["--retrieve-workers", "8"],
+    "retrieve_workers_16": ["--retrieve-workers", "16"],
+    "retrieve_workers_32": ["--retrieve-workers", "32"],
+}
+
+REQUIRED_MISSING_EVIDENCE_HINT_FIELDS = [
+    "artifact_dir",
+    "comparison_path",
+    "recommended_execution_output",
+    "command",
+    "import_command",
+    "required_same_config_fields",
+    "required_result",
+]
+
 VALID_ROW_STATUSES = {
     "missing_live_evidence",
     "performance_candidate",
@@ -78,6 +98,62 @@ def _as_list(value: Any) -> list[Any]:
 def _require(condition: bool, message: str, failures: list[str]) -> None:
     if not condition:
         failures.append(message)
+
+
+def _expected_artifact_dir(workload: str) -> str:
+    return f"docs/benchmarks/parity_{workload}"
+
+
+def _validate_missing_evidence_hint(row: dict[str, Any], failures: list[str]) -> None:
+    workload = str(row.get("workload") or "")
+    hint = row.get("next_run_hint")
+    if not isinstance(hint, dict):
+        failures.append(f"{workload} missing_live_evidence requires next_run_hint")
+        return
+    for field in REQUIRED_MISSING_EVIDENCE_HINT_FIELDS:
+        if field not in hint:
+            failures.append(f"{workload} next_run_hint missing `{field}`")
+    artifact_dir = _expected_artifact_dir(workload)
+    if hint.get("artifact_dir") != artifact_dir:
+        failures.append(f"{workload} next_run_hint.artifact_dir must be {artifact_dir}")
+    if hint.get("comparison_path") != f"{artifact_dir}/comparison.json":
+        failures.append(f"{workload} next_run_hint.comparison_path must be {artifact_dir}/comparison.json")
+    if hint.get("recommended_execution_output") != f"{artifact_dir}/execution.json":
+        failures.append(f"{workload} next_run_hint.recommended_execution_output must be {artifact_dir}/execution.json")
+    command = hint.get("command")
+    if not isinstance(command, list):
+        failures.append(f"{workload} next_run_hint.command must be a list")
+    else:
+        required = ["python", "tools/run_matrixark_cpp_rust_scale_report.py", *WORKLOAD_RUN_ARGS.get(workload, [])]
+        for item in required:
+            if item not in command:
+                failures.append(f"{workload} next_run_hint.command missing `{item}`")
+        for item in ["--backends", "cpp", "rust", "--artifact-dir", artifact_dir, "--require-perf-parity"]:
+            if item not in command:
+                failures.append(f"{workload} next_run_hint.command missing `{item}`")
+    import_command = hint.get("import_command")
+    expected_import = [
+        "python",
+        "tools/import_temporalstore_cpp_rust_performance_evidence.py",
+        "--report",
+        f"{artifact_dir}/comparison.json",
+        "--validate",
+    ]
+    if import_command != expected_import:
+        failures.append(f"{workload} next_run_hint.import_command drift")
+    required_same_config_fields = _as_list(hint.get("required_same_config_fields"))
+    for key in SAME_CONFIG_KEYS:
+        if key not in required_same_config_fields:
+            failures.append(f"{workload} next_run_hint.required_same_config_fields missing `{key}`")
+    required_result = _as_list(hint.get("required_result"))
+    for expected in [
+        "same-config C++ and Rust comparison.json with passed backends",
+        "zero timeouts/errors/fallback flags",
+        "selected_ref_parity=true",
+        "ratios within configured thresholds",
+    ]:
+        if expected not in required_result:
+            failures.append(f"{workload} next_run_hint.required_result missing `{expected}`")
 
 
 def _validate_metric_block(row: dict[str, Any], side: str, failures: list[str]) -> dict[str, Any]:
@@ -206,6 +282,7 @@ def main() -> int:
                 failures.append(f"{workload} missing_live_evidence requires open_blockers")
             if row.get("same_config_match") is True:
                 failures.append(f"{workload} missing_live_evidence cannot claim same_config_match")
+            _validate_missing_evidence_hint(row, failures)
             continue
 
         if blockers:

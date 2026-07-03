@@ -82,7 +82,48 @@
       "open_blockers": [
         "cpp_backend_not_passed",
         "rust_backend_not_passed"
-      ]
+      ],
+      "next_run_hint": {
+        "artifact_dir": "docs/benchmarks/parity_1K_event_ingestion",
+        "comparison_path": "docs/benchmarks/parity_1K_event_ingestion/comparison.json",
+        "recommended_execution_output": "docs/benchmarks/parity_1K_event_ingestion/execution.json",
+        "command": [
+          "python",
+          "tools/run_matrixark_cpp_rust_scale_report.py",
+          "--events",
+          "1000",
+          "--backends",
+          "cpp",
+          "rust",
+          "--artifact-dir",
+          "docs/benchmarks/parity_1K_event_ingestion",
+          "--require-perf-parity"
+        ],
+        "import_command": [
+          "python",
+          "tools/import_temporalstore_cpp_rust_performance_evidence.py",
+          "--report",
+          "docs/benchmarks/parity_1K_event_ingestion/comparison.json",
+          "--validate"
+        ],
+        "required_same_config_fields": [
+          "dataset",
+          "storage_mode",
+          "topology",
+          "batch_size",
+          "token_budget",
+          "embedding_model",
+          "reader_model",
+          "judge_model",
+          "storage_tuning"
+        ],
+        "required_result": [
+          "same-config C++ and Rust comparison.json with passed backends",
+          "zero timeouts/errors/fallback flags",
+          "selected_ref_parity=true",
+          "ratios within configured thresholds"
+        ]
+      }
     },
     {
       "workload": "10K_event_ingestion",
@@ -103,7 +144,48 @@
       "open_blockers": [
         "cpp_backend_not_passed",
         "rust_backend_not_passed"
-      ]
+      ],
+      "next_run_hint": {
+        "artifact_dir": "docs/benchmarks/parity_10K_event_ingestion",
+        "comparison_path": "docs/benchmarks/parity_10K_event_ingestion/comparison.json",
+        "recommended_execution_output": "docs/benchmarks/parity_10K_event_ingestion/execution.json",
+        "command": [
+          "python",
+          "tools/run_matrixark_cpp_rust_scale_report.py",
+          "--events",
+          "10000",
+          "--backends",
+          "cpp",
+          "rust",
+          "--artifact-dir",
+          "docs/benchmarks/parity_10K_event_ingestion",
+          "--require-perf-parity"
+        ],
+        "import_command": [
+          "python",
+          "tools/import_temporalstore_cpp_rust_performance_evidence.py",
+          "--report",
+          "docs/benchmarks/parity_10K_event_ingestion/comparison.json",
+          "--validate"
+        ],
+        "required_same_config_fields": [
+          "dataset",
+          "storage_mode",
+          "topology",
+          "batch_size",
+          "token_budget",
+          "embedding_model",
+          "reader_model",
+          "judge_model",
+          "storage_tuning"
+        ],
+        "required_result": [
+          "same-config C++ and Rust comparison.json with passed backends",
+          "zero timeouts/errors/fallback flags",
+          "selected_ref_parity=true",
+          "ratios within configured thresholds"
+        ]
+      }
     },
     {
       "workload": "100K_event_ingestion",
@@ -124,7 +206,48 @@
       "open_blockers": [
         "cpp_backend_not_passed",
         "rust_backend_not_passed"
-      ]
+      ],
+      "next_run_hint": {
+        "artifact_dir": "docs/benchmarks/parity_100K_event_ingestion",
+        "comparison_path": "docs/benchmarks/parity_100K_event_ingestion/comparison.json",
+        "recommended_execution_output": "docs/benchmarks/parity_100K_event_ingestion/execution.json",
+        "command": [
+          "python",
+          "tools/run_matrixark_cpp_rust_scale_report.py",
+          "--events",
+          "100000",
+          "--backends",
+          "cpp",
+          "rust",
+          "--artifact-dir",
+          "docs/benchmarks/parity_100K_event_ingestion",
+          "--require-perf-parity"
+        ],
+        "import_command": [
+          "python",
+          "tools/import_temporalstore_cpp_rust_performance_evidence.py",
+          "--report",
+          "docs/benchmarks/parity_100K_event_ingestion/comparison.json",
+          "--validate"
+        ],
+        "required_same_config_fields": [
+          "dataset",
+          "storage_mode",
+          "topology",
+          "batch_size",
+          "token_budget",
+          "embedding_model",
+          "reader_model",
+          "judge_model",
+          "storage_tuning"
+        ],
+        "required_result": [
+          "same-config C++ and Rust comparison.json with passed backends",
+          "zero timeouts/errors/fallback flags",
+          "selected_ref_parity=true",
+          "ratios within configured thresholds"
+        ]
+      }
     },
     {
       "workload": "retrieve_workers_4",
@@ -144,7 +267,48 @@
       "ratios": {},
       "open_blockers": [
         "same-config live C++ and Rust 4-worker retrieval evidence missing"
-      ]
+      ],
+      "next_run_hint": {
+        "artifact_dir": "docs/benchmarks/parity_retrieve_workers_4",
+        "comparison_path": "docs/benchmarks/parity_retrieve_workers_4/comparison.json",
+        "recommended_execution_output": "docs/benchmarks/parity_retrieve_workers_4/execution.json",
+        "command": [
+          "python",
+          "tools/run_matrixark_cpp_rust_scale_report.py",
+          "--retrieve-workers",
+          "4",
+          "--backends",
+          "cpp",
+          "rust",
+          "--artifact-dir",
+          "docs/benchmarks/parity_retrieve_workers_4",
+          "--require-perf-parity"
+        ],
+        "import_command": [
+          "python",
+          "tools/import_temporalstore_cpp_rust_performance_evidence.py",
+          "--report",
+          "docs/benchmarks/parity_retrieve_workers_4/comparison.json",
+          "--validate"
+        ],
+        "required_same_config_fields": [
+          "dataset",
+          "storage_mode",
+          "topology",
+          "batch_size",
+          "token_budget",
+          "embedding_model",
+          "reader_model",
+          "judge_model",
+          "storage_tuning"
+        ],
+        "required_result": [
+          "same-config C++ and Rust comparison.json with passed backends",
+          "zero timeouts/errors/fallback flags",
+          "selected_ref_parity=true",
+          "ratios within configured thresholds"
+        ]
+      }
     },
     {
       "workload": "retrieve_workers_8",
@@ -164,7 +328,48 @@
       "ratios": {},
       "open_blockers": [
         "same-config live C++ and Rust 8-worker retrieval evidence missing"
-      ]
+      ],
+      "next_run_hint": {
+        "artifact_dir": "docs/benchmarks/parity_retrieve_workers_8",
+        "comparison_path": "docs/benchmarks/parity_retrieve_workers_8/comparison.json",
+        "recommended_execution_output": "docs/benchmarks/parity_retrieve_workers_8/execution.json",
+        "command": [
+          "python",
+          "tools/run_matrixark_cpp_rust_scale_report.py",
+          "--retrieve-workers",
+          "8",
+          "--backends",
+          "cpp",
+          "rust",
+          "--artifact-dir",
+          "docs/benchmarks/parity_retrieve_workers_8",
+          "--require-perf-parity"
+        ],
+        "import_command": [
+          "python",
+          "tools/import_temporalstore_cpp_rust_performance_evidence.py",
+          "--report",
+          "docs/benchmarks/parity_retrieve_workers_8/comparison.json",
+          "--validate"
+        ],
+        "required_same_config_fields": [
+          "dataset",
+          "storage_mode",
+          "topology",
+          "batch_size",
+          "token_budget",
+          "embedding_model",
+          "reader_model",
+          "judge_model",
+          "storage_tuning"
+        ],
+        "required_result": [
+          "same-config C++ and Rust comparison.json with passed backends",
+          "zero timeouts/errors/fallback flags",
+          "selected_ref_parity=true",
+          "ratios within configured thresholds"
+        ]
+      }
     },
     {
       "workload": "retrieve_workers_16",
@@ -185,7 +390,48 @@
       "open_blockers": [
         "cpp_backend_not_passed",
         "rust_backend_not_passed"
-      ]
+      ],
+      "next_run_hint": {
+        "artifact_dir": "docs/benchmarks/parity_retrieve_workers_16",
+        "comparison_path": "docs/benchmarks/parity_retrieve_workers_16/comparison.json",
+        "recommended_execution_output": "docs/benchmarks/parity_retrieve_workers_16/execution.json",
+        "command": [
+          "python",
+          "tools/run_matrixark_cpp_rust_scale_report.py",
+          "--retrieve-workers",
+          "16",
+          "--backends",
+          "cpp",
+          "rust",
+          "--artifact-dir",
+          "docs/benchmarks/parity_retrieve_workers_16",
+          "--require-perf-parity"
+        ],
+        "import_command": [
+          "python",
+          "tools/import_temporalstore_cpp_rust_performance_evidence.py",
+          "--report",
+          "docs/benchmarks/parity_retrieve_workers_16/comparison.json",
+          "--validate"
+        ],
+        "required_same_config_fields": [
+          "dataset",
+          "storage_mode",
+          "topology",
+          "batch_size",
+          "token_budget",
+          "embedding_model",
+          "reader_model",
+          "judge_model",
+          "storage_tuning"
+        ],
+        "required_result": [
+          "same-config C++ and Rust comparison.json with passed backends",
+          "zero timeouts/errors/fallback flags",
+          "selected_ref_parity=true",
+          "ratios within configured thresholds"
+        ]
+      }
     },
     {
       "workload": "retrieve_workers_32",
@@ -206,7 +452,48 @@
       "open_blockers": [
         "cpp_backend_not_passed",
         "rust_backend_not_passed"
-      ]
+      ],
+      "next_run_hint": {
+        "artifact_dir": "docs/benchmarks/parity_retrieve_workers_32",
+        "comparison_path": "docs/benchmarks/parity_retrieve_workers_32/comparison.json",
+        "recommended_execution_output": "docs/benchmarks/parity_retrieve_workers_32/execution.json",
+        "command": [
+          "python",
+          "tools/run_matrixark_cpp_rust_scale_report.py",
+          "--retrieve-workers",
+          "32",
+          "--backends",
+          "cpp",
+          "rust",
+          "--artifact-dir",
+          "docs/benchmarks/parity_retrieve_workers_32",
+          "--require-perf-parity"
+        ],
+        "import_command": [
+          "python",
+          "tools/import_temporalstore_cpp_rust_performance_evidence.py",
+          "--report",
+          "docs/benchmarks/parity_retrieve_workers_32/comparison.json",
+          "--validate"
+        ],
+        "required_same_config_fields": [
+          "dataset",
+          "storage_mode",
+          "topology",
+          "batch_size",
+          "token_budget",
+          "embedding_model",
+          "reader_model",
+          "judge_model",
+          "storage_tuning"
+        ],
+        "required_result": [
+          "same-config C++ and Rust comparison.json with passed backends",
+          "zero timeouts/errors/fallback flags",
+          "selected_ref_parity=true",
+          "ratios within configured thresholds"
+        ]
+      }
     }
   ]
 }

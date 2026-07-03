@@ -16,11 +16,18 @@ from validate_temporalstore_cpp_rust_goal_parity import (  # noqa: E402
     STATUS,
     validate_status,
 )
+from validate_temporalstore_cpp_rust_performance_parity import (  # noqa: E402
+    MATRIX,
+    _validate_missing_evidence_hint,
+)
 
 
 class TemporalStoreGoalParityStatusTest(unittest.TestCase):
     def _status(self) -> dict:
         return json.loads(STATUS.read_text(encoding="utf-8"))
+
+    def _performance_matrix(self) -> dict:
+        return json.loads(MATRIX.read_text(encoding="utf-8"))
 
     def test_current_goal_status_is_valid_but_not_complete(self) -> None:
         data = self._status()
@@ -93,6 +100,31 @@ class TemporalStoreGoalParityStatusTest(unittest.TestCase):
 
         self.assertIn(
             "zone_stream_segment_slot_parity.evidence missing: slot_owner_mismatch_count",
+            failures,
+        )
+
+    def test_missing_live_performance_rows_require_actionable_next_run_hint(self) -> None:
+        data = self._performance_matrix()
+        row = next(row for row in data["rows"] if row["workload"] == "10K_event_ingestion")
+        row = json.loads(json.dumps(row))
+        del row["next_run_hint"]
+        failures: list[str] = []
+
+        _validate_missing_evidence_hint(row, failures)
+
+        self.assertIn("10K_event_ingestion missing_live_evidence requires next_run_hint", failures)
+
+    def test_next_run_hint_command_is_validated(self) -> None:
+        data = self._performance_matrix()
+        row = next(row for row in data["rows"] if row["workload"] == "retrieve_workers_16")
+        row = json.loads(json.dumps(row))
+        row["next_run_hint"]["command"].remove("--require-perf-parity")
+        failures: list[str] = []
+
+        _validate_missing_evidence_hint(row, failures)
+
+        self.assertIn(
+            "retrieve_workers_16 next_run_hint.command missing `--require-perf-parity`",
             failures,
         )
 
