@@ -14,7 +14,7 @@ prost = "0.13"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-rustraft = { git = "https://github.com/bjmeetsfo/RustRaft.git", rev = "27927e9eda7d4ed531dc21370a7cd895c1d0f815" }
+rustraft = { git = "https://github.com/bjmeetsfo/RustRaft.git", rev = "1863d091c44e8a3a93fed351119a7e89408a862a" }
 temporalstore-snapshot = { path = "../temporalstore-snapshot" }
 thiserror = "1"
 tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread"] }

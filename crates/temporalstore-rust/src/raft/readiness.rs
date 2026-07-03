@@ -164,80 +164,11 @@ pub fn raft_process_path_readiness_report_from_reports(
 fn raft_readiness_blocker_from_rustraft_process_field(
     evidence_field: &str,
 ) -> RaftReadinessEvidenceBlocker {
+    let blocker = ::rustraft::rustraft_process_readiness_blocker(evidence_field);
     RaftReadinessEvidenceBlocker {
-        blocker: format!(
-            "{}_missing",
-            evidence_field.replace(['.', '*', '{', '}', '[', ']', ','], "_")
-        ),
-        evidence_field: evidence_field.to_string(),
-        detail: rustraft_process_field_detail(evidence_field).to_string(),
-    }
-}
-
-fn rustraft_process_field_detail(evidence_field: &str) -> &'static str {
-    match evidence_field {
-        "final_raft_readiness.multi_process_data_node_and_metaserver_raft" => {
-            "both data-node and metaserver Raft evidence must come from spawned process paths with independent WAL/snapshot dirs, observed process requests, read-index responses, restart recovery, and per-node log-store inspection"
-        }
-        "final_raft_readiness.failover_on_both_planes" => {
-            "data-node and metaserver failover must both be validated"
-        }
-        "final_raft_readiness.membership_add_remove_under_load" => {
-            "membership add/remove must be observed on both planes while the Raft runtime proves leader transfer under active write load"
-        }
-        "final_raft_readiness.secondary_lag_and_catchup" => {
-            "secondary replica lag, read rejection while lagging, catch-up, and read eligibility must be observed on both planes"
-        }
-        "final_raft_readiness.snapshot_restart_after_compaction" => {
-            "snapshot install, restart recovery, and follower rejoin after compacted logs must be observed on both planes"
-        }
-        field if field.contains(".operational_semantics.") => {
-            "RustRaft/ByteRaft-derived operational semantics evidence is incomplete"
-        }
-        field if field.ends_with(".ready") => "process rollout report must be ready",
-        field if field.ends_with(".spawned_process_count") => {
-            "multi-process data-node/metaserver Raft evidence requires at least three spawned nodes"
-        }
-        field if field.ends_with(".independent_wal_dirs") => {
-            "each process must use an independent WAL directory"
-        }
-        field if field.ends_with(".independent_snapshot_dirs") => {
-            "each process must use an independent snapshot directory"
-        }
-        field if field.ends_with(".observed_process_requests") => {
-            "harness must observe real process API traffic rather than in-memory fixture calls"
-        }
-        field if field.ends_with(".read_index_responses_observed") => {
-            "process harness must observe read-index responses"
-        }
-        field if field.ends_with(".restart_recovery_validated") => {
-            "restart recovery must be validated after persisted WAL/snapshot state"
-        }
-        field if field.ends_with(".nodes[*].restarted_log_store_applied_index") => {
-            "every node must restart, pass log-store inspection, and converge applied index to commit index"
-        }
-        field if field.ends_with(".process_api_observed") => {
-            "writes/mutations must be proposed through process APIs"
-        }
-        field if field.ends_with(".multi_process_log_store_validated") => {
-            "independent process log stores must be inspected and validated"
-        }
-        field if field.ends_with(".failover_validated") => {
-            "failover must be validated on this plane"
-        }
-        field if field.ends_with(".membership_change_validated") => {
-            "membership add/remove under load must be validated"
-        }
-        field if field.ends_with(".follower_lag_validated") => {
-            "secondary lag and catch-up must be observed"
-        }
-        field if field.ends_with(".secondary_read_validated") => {
-            "secondary read eligibility after catch-up must be validated"
-        }
-        field if field.ends_with(".snapshot_install_validated") => {
-            "snapshot install/restart after compaction must be validated"
-        }
-        _ => "RustRaft process-path readiness evidence is incomplete",
+        blocker: blocker.blocker,
+        evidence_field: blocker.evidence_field,
+        detail: blocker.detail,
     }
 }
 
