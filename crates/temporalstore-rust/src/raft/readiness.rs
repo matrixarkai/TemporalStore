@@ -498,37 +498,45 @@ fn distributed_raft_readiness_from_rollout(
     let mut missing_evidence_fields = temporal_raft_rollout.missing_evidence_fields.clone();
     missing.extend(temporal_raft_rollout.missing.clone());
     missing.extend(metaserver_membership.missing.clone());
-    for item in &metaserver_membership.missing {
-        missing_evidence_fields.push(RaftReadinessEvidenceBlocker {
-            blocker: "metaserver_owned_membership_workflow_missing".to_string(),
-            evidence_field: "raft_metaserver_membership_readiness.{networked_scheduler_transport_present,persisted_scheduler_task_state_present,real_data_node_group_execution_present}".to_string(),
-            detail: item.clone(),
-        });
-    }
+    missing_evidence_fields.extend(
+        ::rustraft::rustraft_named_readiness_blockers(
+            "metaserver_owned_membership_workflow_missing",
+            "raft_metaserver_membership_readiness.{networked_scheduler_transport_present,persisted_scheduler_task_state_present,real_data_node_group_execution_present}",
+            metaserver_membership.missing.iter().map(String::as_str),
+        )
+        .into_iter()
+        .map(raft_readiness_blocker_from_rustraft_blocker),
+    );
     missing.extend(atomic_apply.missing.clone());
-    for item in &atomic_apply.missing {
-        missing_evidence_fields.push(RaftReadinessEvidenceBlocker {
-            blocker: "raft_atomic_apply_evidence_missing".to_string(),
-            evidence_field: "raft_atomic_apply_readiness.{storage_apply_fence_present,wal_fence_recovery_validation_present,snapshot_lifecycle_report_present,storage_mutation_atomic_commit_present,snapshot_install_atomic_commit_present,real_data_node_process_integration_present}".to_string(),
-            detail: item.clone(),
-        });
-    }
+    missing_evidence_fields.extend(
+        ::rustraft::rustraft_named_readiness_blockers(
+            "raft_atomic_apply_evidence_missing",
+            "raft_atomic_apply_readiness.{storage_apply_fence_present,wal_fence_recovery_validation_present,snapshot_lifecycle_report_present,storage_mutation_atomic_commit_present,snapshot_install_atomic_commit_present,real_data_node_process_integration_present}",
+            atomic_apply.missing.iter().map(String::as_str),
+        )
+        .into_iter()
+        .map(raft_readiness_blocker_from_rustraft_blocker),
+    );
     missing.extend(transport_security.missing.clone());
-    for item in &transport_security.missing {
-        missing_evidence_fields.push(RaftReadinessEvidenceBlocker {
-            blocker: "raft_transport_security_evidence_missing".to_string(),
-            evidence_field: "raft_transport_security_readiness.{auth_token_validation_present,mtls_cert_key_ca_validation_present,authenticated_http_transport_present,plaintext_local_chaos_guard_present,service_process_mtls_enforcement_present}".to_string(),
-            detail: item.clone(),
-        });
-    }
+    missing_evidence_fields.extend(
+        ::rustraft::rustraft_named_readiness_blockers(
+            "raft_transport_security_evidence_missing",
+            "raft_transport_security_readiness.{auth_token_validation_present,mtls_cert_key_ca_validation_present,authenticated_http_transport_present,plaintext_local_chaos_guard_present,service_process_mtls_enforcement_present}",
+            transport_security.missing.iter().map(String::as_str),
+        )
+        .into_iter()
+        .map(raft_readiness_blocker_from_rustraft_blocker),
+    );
     missing.extend(external_chaos.missing.clone());
-    for item in &external_chaos.missing {
-        missing_evidence_fields.push(RaftReadinessEvidenceBlocker {
-            blocker: "raft_external_chaos_evidence_missing".to_string(),
-            evidence_field: "raft_external_chaos_readiness.{local_os_process_restart_failover_present,stale_read_partition_heal_present,lagging_follower_catchup_present,networked_membership_snapshot_present,storage_replay_gate_present,external_packet_loss_present,external_disk_pressure_present,external_process_chaos_present}".to_string(),
-            detail: item.clone(),
-        });
-    }
+    missing_evidence_fields.extend(
+        ::rustraft::rustraft_named_readiness_blockers(
+            "raft_external_chaos_evidence_missing",
+            "raft_external_chaos_readiness.{local_os_process_restart_failover_present,stale_read_partition_heal_present,lagging_follower_catchup_present,networked_membership_snapshot_present,storage_replay_gate_present,external_packet_loss_present,external_disk_pressure_present,external_process_chaos_present}",
+            external_chaos.missing.iter().map(String::as_str),
+        )
+        .into_iter()
+        .map(raft_readiness_blocker_from_rustraft_blocker),
+    );
     if missing.is_empty() {
         missing_evidence_fields.clear();
     }
