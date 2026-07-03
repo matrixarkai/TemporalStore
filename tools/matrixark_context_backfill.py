@@ -727,6 +727,8 @@ def read_checkpoint_state(kv: Any, key: str) -> Json:
         'checkpoint_found': bool(raw_checkpoint),
         'checkpoint_format': 'missing',
         'checkpoint_last_sequence': None,
+        'checkpoint_source_range': None,
+        'checkpoint_updated_at_ms': None,
     }
     if not raw_checkpoint:
         return state
@@ -745,6 +747,10 @@ def read_checkpoint_state(kv: Any, key: str) -> Json:
         state['checkpoint_format'] = 'invalid_type'
         return state
     state['checkpoint_format'] = 'json'
+    if isinstance(checkpoint.get('source_range'), dict):
+        state['checkpoint_source_range'] = checkpoint.get('source_range')
+    if checkpoint.get('updated_at_ms') is not None:
+        state['checkpoint_updated_at_ms'] = checkpoint.get('updated_at_ms')
     value = checkpoint.get('last_sequence')
     try:
         state['checkpoint_last_sequence'] = int(value)
@@ -761,6 +767,7 @@ def build_checkpoint_metadata(
     raw_backend: str,
     mode: str,
     partial: Json,
+    source_range: Json | None,
     batch_size: int,
     last_sequence: int,
     metrics: 'BackfillMetrics',
@@ -773,6 +780,7 @@ def build_checkpoint_metadata(
         'raw_backend': normalize_raw_backend(raw_backend),
         'mode': mode,
         'partial': partial,
+        'source_range': source_range or {},
         'batch_size': batch_size,
         'last_sequence': last_sequence,
         'updated_at_ms': int(time.time() * 1000),
@@ -998,6 +1006,7 @@ def run_backfill(args: argparse.Namespace) -> Json:
                     raw_backend=raw_backend,
                     mode=args.mode,
                     partial=partial,
+                    source_range=source_range,
                     batch_size=args.batch_size,
                     last_sequence=checkpoint_pending_seq,
                     metrics=metrics,
