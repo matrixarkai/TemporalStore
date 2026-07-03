@@ -297,6 +297,10 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(validation["source_range"]["scan_mode"], "record_count")
             self.assertEqual(validation["source_range"]["source_high_watermark_seq"], 1)
             self.assertEqual(validation["source_range"]["effective_end_seq"], 2)
+            self.assertEqual(validation["target_state"]["target_prefix"], "matrixark:context_backfill:candidate")
+            self.assertEqual(validation["target_state"]["record_count"], 2)
+            self.assertEqual(validation["target_state"]["dead_letter_count"], 0)
+            self.assertEqual(validation["target_state"]["serving_type_counts"], {"context_event": 2})
             self.assertTrue(validation["checks"]["exact_serving_type_counts_match"])
 
             with self.assertRaises(backfill.BackfillError):
@@ -361,6 +365,8 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(validation["expected_type_counts"], {"context_event": 1})
             self.assertEqual(validation["actual_type_counts"], {"context_summary": 1})
             self.assertEqual(validation["source_range"]["source_high_watermark_seq"], 0)
+            self.assertEqual(validation["target_state"]["record_count"], 1)
+            self.assertEqual(validation["target_state"]["serving_type_counts"], {"context_summary": 1})
             self.assertFalse(validation["checks"]["exact_serving_type_counts_match"])
 
 

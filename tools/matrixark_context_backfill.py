@@ -1192,6 +1192,13 @@ def run_validate_shadow(args: argparse.Namespace) -> Json:
     expected_count = int(expected_summary['metrics']['written'])
     expected_type_counts = expected_serving_type_counts(expected_summary['metrics'])
     actual_type_counts = target.serving_type_counts()
+    target_state: Json = {
+        'target_prefix': args.target_prefix,
+        'raw_backend': raw_backend,
+        'record_count': actual_count,
+        'dead_letter_count': dead_letters,
+        'serving_type_counts': actual_type_counts,
+    }
     exact_match = actual_count == expected_count
     enough_records = actual_count >= expected_count
     exact_type_match = actual_type_counts == expected_type_counts
@@ -1216,6 +1223,7 @@ def run_validate_shadow(args: argparse.Namespace) -> Json:
         'dead_letters': dead_letters,
         'expected_scan': expected_summary['metrics'],
         'source_range': expected_summary.get('source_range', {}),
+        'target_state': target_state,
         'checks': {
             'exact_record_count_match': exact_match,
             'actual_records_at_least_expected': enough_records,
