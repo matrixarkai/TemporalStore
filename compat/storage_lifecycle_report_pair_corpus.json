@@ -402,6 +402,20 @@
       "follower_cursor_blocked_reclaim_count": 2,
       "follower_cursor_safe_to_reclaim": false,
       "physical_reclaim_errors": 0
+    },
+    "storage_index_snapshot": {
+      "page_index_entry_count": 2,
+      "block_index_entry_count": 2,
+      "object_index_entry_count": 2,
+      "slot_index_entry_count": 1,
+      "slot_object_ref_count": 2,
+      "slot_page_ref_count": 2,
+      "page_address_count": 2,
+      "unreadable_page_refs": 0,
+      "checksum_mismatches": 0,
+      "missing_owner_ref_count": 0,
+      "owner_mismatch_count": 0,
+      "restart_rebuild_verified": true
     }
   },
   "rust": {
@@ -803,6 +817,20 @@
       "follower_cursor_blocked_reclaim_count": 2,
       "follower_cursor_safe_to_reclaim": false,
       "physical_reclaim_errors": 0
+    },
+    "storage_index_snapshot": {
+      "page_index_entry_count": 2,
+      "block_index_entry_count": 2,
+      "object_index_entry_count": 2,
+      "slot_index_entry_count": 1,
+      "slot_object_ref_count": 2,
+      "slot_page_ref_count": 2,
+      "page_address_count": 2,
+      "unreadable_page_refs": 0,
+      "checksum_mismatches": 0,
+      "missing_owner_ref_count": 0,
+      "owner_mismatch_count": 0,
+      "restart_rebuild_verified": true
     }
   }
 }

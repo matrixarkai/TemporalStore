@@ -1039,6 +1039,8 @@ pub struct StorageLifecycleReport {
     pub storage_reclaim_contract: BTreeMap<String, StorageContractValue>,
     #[serde(default = "default_storage_safety_snapshot")]
     pub storage_safety_snapshot: StorageSafetySnapshot,
+    #[serde(default = "default_storage_index_snapshot")]
+    pub storage_index_snapshot: StorageIndexSnapshot,
     #[serde(default = "default_storage_write_sequence")]
     pub storage_write_sequence: Vec<String>,
     #[serde(default = "default_storage_read_sequence")]
@@ -1092,6 +1094,7 @@ impl Default for StorageLifecycleReport {
             storage_cache_contract: default_storage_cache_contract_empty(),
             storage_reclaim_contract: default_storage_reclaim_contract_empty(),
             storage_safety_snapshot: default_storage_safety_snapshot(),
+            storage_index_snapshot: default_storage_index_snapshot(),
             storage_write_sequence: default_storage_write_sequence(),
             storage_read_sequence: default_storage_read_sequence(),
             storage_cold_scan_sequence: default_storage_cold_scan_sequence(),
@@ -1205,6 +1208,53 @@ impl StorageLifecycleReport {
         put(
             &mut metrics,
             "slot_owner_mismatch_count",
+            object_lifecycle.owner_mismatch_page_refs,
+        );
+        put(
+            &mut metrics,
+            "slot_index_entry_count",
+            plan.slot_summaries
+                .len()
+                .max(plan.selected_dump_slots.len()) as u64,
+        );
+        put(
+            &mut metrics,
+            "slot_object_ref_count",
+            object_lifecycle.live_object_ids,
+        );
+        put(
+            &mut metrics,
+            "slot_page_ref_count",
+            object_lifecycle.live_page_refs,
+        );
+        put(
+            &mut metrics,
+            "object_index_entry_count",
+            object_lifecycle.live_object_ids,
+        );
+        put(
+            &mut metrics,
+            "page_index_entry_count",
+            object_lifecycle.live_page_refs,
+        );
+        put(
+            &mut metrics,
+            "block_index_entry_count",
+            object_lifecycle.live_page_refs,
+        );
+        put(
+            &mut metrics,
+            "page_address_count",
+            object_lifecycle.live_page_refs,
+        );
+        put(
+            &mut metrics,
+            "missing_owner_ref_count",
+            object_lifecycle.missing_owner_page_refs,
+        );
+        put(
+            &mut metrics,
+            "owner_mismatch_count",
             object_lifecycle.owner_mismatch_page_refs,
         );
         put(
@@ -1323,6 +1373,8 @@ impl StorageLifecycleReport {
             default_storage_reclaim_contract(&self.storage_lifecycle_metrics);
         self.storage_safety_snapshot =
             storage_safety_snapshot_from_metrics(&self.storage_lifecycle_metrics);
+        self.storage_index_snapshot =
+            storage_index_snapshot_from_metrics(&self.storage_lifecycle_metrics);
         self.storage_reclaim_scope = default_storage_reclaim_scope();
     }
 }
@@ -1468,6 +1520,47 @@ pub fn default_storage_safety_snapshot() -> StorageSafetySnapshot {
     storage_safety_snapshot_from_metrics(&default_storage_lifecycle_metrics())
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageIndexSnapshot {
+    pub page_index_entry_count: u64,
+    pub block_index_entry_count: u64,
+    pub object_index_entry_count: u64,
+    pub slot_index_entry_count: u64,
+    pub slot_object_ref_count: u64,
+    pub slot_page_ref_count: u64,
+    pub page_address_count: u64,
+    pub unreadable_page_refs: u64,
+    pub checksum_mismatches: u64,
+    pub missing_owner_ref_count: u64,
+    pub owner_mismatch_count: u64,
+    pub restart_rebuild_verified: bool,
+}
+
+pub fn storage_index_snapshot_from_metrics(
+    metrics: &BTreeMap<String, u64>,
+) -> StorageIndexSnapshot {
+    StorageIndexSnapshot {
+        page_index_entry_count: metric(metrics, "page_index_entry_count"),
+        block_index_entry_count: metric(metrics, "block_index_entry_count"),
+        object_index_entry_count: metric(metrics, "object_index_entry_count"),
+        slot_index_entry_count: metric(metrics, "slot_index_entry_count"),
+        slot_object_ref_count: metric(metrics, "slot_object_ref_count"),
+        slot_page_ref_count: metric(metrics, "slot_page_ref_count"),
+        page_address_count: metric(metrics, "page_address_count"),
+        unreadable_page_refs: metric(metrics, "unreadable_page_refs"),
+        checksum_mismatches: metric(metrics, "checksum_mismatches"),
+        missing_owner_ref_count: metric(metrics, "missing_owner_ref_count"),
+        owner_mismatch_count: metric(metrics, "owner_mismatch_count"),
+        restart_rebuild_verified: metric(metrics, "page_index_rebuild_count") > 0
+            || metric(metrics, "block_index_rebuild_count") > 0
+            || metric(metrics, "object_index_rebuild_count") > 0,
+    }
+}
+
+pub fn default_storage_index_snapshot() -> StorageIndexSnapshot {
+    storage_index_snapshot_from_metrics(&default_storage_lifecycle_metrics())
+}
+
 pub fn default_storage_lifecycle_metrics() -> BTreeMap<String, u64> {
     let mut metrics = BTreeMap::new();
     for name in [
@@ -1495,6 +1588,17 @@ pub fn default_storage_lifecycle_metrics() -> BTreeMap<String, u64> {
         "slot_tombstone_count",
         "slot_stale_ref_count",
         "slot_owner_mismatch_count",
+        "slot_index_entry_count",
+        "slot_object_ref_count",
+        "slot_page_ref_count",
+        "object_index_entry_count",
+        "page_index_entry_count",
+        "block_index_entry_count",
+        "page_address_count",
+        "unreadable_page_refs",
+        "checksum_mismatches",
+        "missing_owner_ref_count",
+        "owner_mismatch_count",
         "page_index_rebuild_count",
         "block_index_rebuild_count",
         "object_index_rebuild_count",

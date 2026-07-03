@@ -261,6 +261,7 @@ STORAGE_LIFECYCLE_TOP_LEVEL_KEYS = [
     "storage_cache_contract",
     "storage_reclaim_contract",
     "storage_safety_snapshot",
+    "storage_index_snapshot",
     "storage_read_sequence",
     "storage_cold_scan_sequence",
     "storage_lifecycle_phases",
@@ -853,6 +854,28 @@ def default_storage_safety_snapshot(metrics: Json | None = None) -> Json:
     }
 
 
+def default_storage_index_snapshot(metrics: Json | None = None) -> Json:
+    source = metrics if isinstance(metrics, dict) else {}
+    return {
+        "page_index_entry_count": int(source.get("page_index_entry_count") or 0),
+        "block_index_entry_count": int(source.get("block_index_entry_count") or 0),
+        "object_index_entry_count": int(source.get("object_index_entry_count") or 0),
+        "slot_index_entry_count": int(source.get("slot_index_entry_count") or 0),
+        "slot_object_ref_count": int(source.get("slot_object_ref_count") or 0),
+        "slot_page_ref_count": int(source.get("slot_page_ref_count") or 0),
+        "page_address_count": int(source.get("page_address_count") or 0),
+        "unreadable_page_refs": int(source.get("unreadable_page_refs") or 0),
+        "checksum_mismatches": int(source.get("checksum_mismatches") or 0),
+        "missing_owner_ref_count": int(source.get("missing_owner_ref_count") or 0),
+        "owner_mismatch_count": int(source.get("owner_mismatch_count") or 0),
+        "restart_rebuild_verified": bool(
+            source.get("page_index_rebuild_count")
+            or source.get("block_index_rebuild_count")
+            or source.get("object_index_rebuild_count")
+        ),
+    }
+
+
 def storage_lifecycle_report_shape(effective_storage_tuning: Json, metrics: Json | None = None) -> Json:
     return {
         "effective_storage_tuning": dict(effective_storage_tuning),
@@ -872,6 +895,7 @@ def storage_lifecycle_report_shape(effective_storage_tuning: Json, metrics: Json
         "storage_cache_contract": default_storage_cache_contract(metrics),
         "storage_reclaim_contract": default_storage_reclaim_contract(metrics),
         "storage_safety_snapshot": default_storage_safety_snapshot(metrics),
+        "storage_index_snapshot": default_storage_index_snapshot(metrics),
         "storage_write_sequence": list(STORAGE_WRITE_SEQUENCE_STEPS),
         "storage_read_sequence": list(STORAGE_READ_SEQUENCE_STEPS),
         "storage_cold_scan_sequence": list(STORAGE_COLD_SCAN_SEQUENCE_STEPS),
@@ -954,6 +978,12 @@ def attach_storage_lifecycle_shape(result: Json, effective_storage_tuning: Json 
     normalized_safety_snapshot = default_storage_safety_snapshot(metrics)
     normalized_safety_snapshot.update(safety_snapshot)
     shaped["storage_safety_snapshot"] = normalized_safety_snapshot
+    index_snapshot = shaped.get("storage_index_snapshot")
+    if not isinstance(index_snapshot, dict):
+        index_snapshot = {}
+    normalized_index_snapshot = default_storage_index_snapshot(metrics)
+    normalized_index_snapshot.update(index_snapshot)
+    shaped["storage_index_snapshot"] = normalized_index_snapshot
     shaped["storage_write_sequence"] = list(STORAGE_WRITE_SEQUENCE_STEPS)
     shaped["storage_read_sequence"] = list(STORAGE_READ_SEQUENCE_STEPS)
     shaped["storage_cold_scan_sequence"] = list(STORAGE_COLD_SCAN_SEQUENCE_STEPS)
