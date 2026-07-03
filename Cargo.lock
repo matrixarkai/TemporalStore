@@ -986,7 +986,7 @@ dependencies = [
 [[package]]
 name = "rustraft"
 version = "0.1.0"
-source = "git+https://github.com/bjmeetsfo/RustRaft.git?rev=fc78f929d7d057ab0bbdca59b9508ac9cd346b97#fc78f929d7d057ab0bbdca59b9508ac9cd346b97"
+source = "git+https://github.com/bjmeetsfo/RustRaft.git?rev=27927e9eda7d4ed531dc21370a7cd895c1d0f815#27927e9eda7d4ed531dc21370a7cd895c1d0f815"
 dependencies = [
  "serde",
  "serde_json",
@@ -1135,7 +1135,7 @@ dependencies = [
  "hex",
  "prost",
  "protoc-bin-vendored",
- "rustraft 0.1.0 (git+https://github.com/bjmeetsfo/RustRaft.git?rev=fc78f929d7d057ab0bbdca59b9508ac9cd346b97)",
+ "rustraft 0.1.0 (git+https://github.com/bjmeetsfo/RustRaft.git?rev=27927e9eda7d4ed531dc21370a7cd895c1d0f815)",
  "serde",
  "serde_json",
  "sha2",
