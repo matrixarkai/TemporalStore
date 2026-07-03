@@ -239,6 +239,13 @@ def _row_status(
         cpp.get("selected_ref_parity") is not True or rust.get("selected_ref_parity") is not True
     ):
         blockers.append("selected_ref_parity_missing")
+    for side, metrics in (("cpp", cpp), ("rust", rust)):
+        append_watermark = _num(metrics.get("append_watermark"))
+        compaction_watermark = _num(metrics.get("compaction_watermark"))
+        if append_watermark <= 0:
+            blockers.append(f"{side}_append_watermark_not_advanced")
+        if compaction_watermark > append_watermark:
+            blockers.append(f"{side}_compaction_watermark_ahead_of_append")
     for key in ("message_qps_ratio", "retrieve_qps_ratio"):
         if _num(ratios.get(key)) < min_qps:
             blockers.append(f"{key}_below_{min_qps}")

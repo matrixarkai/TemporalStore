@@ -206,6 +206,18 @@ class PerformanceEvidenceImportTest(unittest.TestCase):
         self.assertEqual(row["status"], "missing_live_evidence")
         self.assertIn("rust_storage_tuning_missing", row["open_blockers"])
 
+    def test_watermark_regression_blocks_otherwise_good_report(self) -> None:
+        report = _report_with_good_parity()
+        report["backends"]["cpp"]["storage_lifecycle_metrics"]["append_watermark"] = 0
+        report["backends"]["rust"]["storage_lifecycle_metrics"]["compaction_watermark"] = 11
+
+        updated = import_report(_matrix(), report)
+
+        row = next(row for row in updated["rows"] if row["workload"] == "1K_event_ingestion")
+        self.assertEqual(row["status"], "missing_live_evidence")
+        self.assertIn("cpp_append_watermark_not_advanced", row["open_blockers"])
+        self.assertIn("rust_compaction_watermark_ahead_of_append", row["open_blockers"])
+
     def test_phase_scale_gate_must_be_required_and_passed(self) -> None:
         report = _report_with_good_parity()
         report["phase_scale_matrix"] = {
