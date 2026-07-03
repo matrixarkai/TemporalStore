@@ -54,6 +54,8 @@ def _static_matrix(blockers: list[str]) -> dict:
     return {
         "schema": "temporalstore_cpp_rust_feature_execution_matrix_v1",
         "status": {"feature_correct": False, "open_blockers": blockers},
+        "allowed_statuses": sorted(validator.ALLOWED_STATUSES),
+        "completion_statuses": sorted(validator.COMPLETION_STATUSES),
         "rows": [
             {
                 "family": "storage/cache",
@@ -135,6 +137,28 @@ class FeatureExecutionValidatorTest(unittest.TestCase):
         message = str(raised.exception)
         self.assertIn("storage/cache static gate blocker must match corpus coverage blocker", message)
         self.assertIn("storage/cache static gate expected_runner_command must match corpus coverage", message)
+
+    def test_matrix_status_policy_must_match_validator_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            matrix = root / "matrix.json"
+            corpus = root / "corpus.json"
+            payload = _static_matrix(["storage/cache native C++ runner is still pending"])
+            payload["allowed_statuses"] = ["temporary_static_surface_gate"]
+            payload["completion_statuses"] = ["temporary_static_surface_gate"]
+            _write_json(matrix, payload)
+            _write_json(corpus, _static_corpus())
+            old_matrix, old_corpus = validator.MATRIX, validator.CORPUS
+            try:
+                validator.MATRIX, validator.CORPUS = matrix, corpus
+                with self.assertRaises(SystemExit) as raised:
+                    validator.main()
+            finally:
+                validator.MATRIX, validator.CORPUS = old_matrix, old_corpus
+
+        message = str(raised.exception)
+        self.assertIn("allowed_statuses drift", message)
+        self.assertIn("completion_statuses drift", message)
 
 
 if __name__ == "__main__":
