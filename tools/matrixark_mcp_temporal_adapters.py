@@ -78,6 +78,37 @@ def _latency_quantile_from_bucket_map(buckets: dict[str, Any], total: int, quant
             previous = bound
     return previous
 
+
+def _native_scope_with_hashes(scope: Json) -> Json:
+    if not isinstance(scope, dict):
+        return {}
+    if int(scope.get("tenant_hash") or 0) and canonical_scope_key(scope):
+        return dict(scope)
+    defaults = local_identity_defaults({}, scope)
+    account_id = str(scope.get("account_id") or defaults.get("account_id") or "acct_local")
+    tenant_id = str(scope.get("tenant_id") or defaults.get("tenant_id") or "tenant_local_agent")
+    user_id = str(scope.get("user_id") or defaults.get("user_id") or "")
+    session_id = str(scope.get("session_id") or defaults.get("session_id") or "")
+    hashes = identity_hashes(account_id, tenant_id, user_id, session_id)
+    explicit_scope_keys = {str(key) for key in scope.get("_explicit_scope_keys", []) if isinstance(key, str)}
+    explicit_scope_keys.update(str(key) for key in scope.keys())
+    enriched = {
+        **scope,
+        "account_id": account_id,
+        "tenant_id": tenant_id,
+        "tenant_hash": hashes["tenant_hash"],
+        "scope_key": hashes["scope_key"],
+        "_explicit_scope_keys": sorted(explicit_scope_keys),
+    }
+    if user_id:
+        enriched["user_id"] = user_id
+        enriched["user_hash"] = hashes["user_hash"]
+    if session_id:
+        enriched["session_id"] = session_id
+        enriched["session_hash"] = hashes["session_hash"]
+    return enriched
+
+
 class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
     """MatrixArk storage adapter backed by the native C++ TemporalStore SDK.
 
@@ -1938,7 +1969,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         native_retrieve = getattr(self._client, "matrixark_retrieve_context_pack", None)
         if not callable(native_retrieve):
             return None
-        scope = optional_object(args, "scope")
+        scope = _native_scope_with_hashes(optional_object(args, "scope"))
         query = require_string(args, "query")
         ranking = optional_object(args, "ranking")
         scope_key = canonical_scope_key(scope)
