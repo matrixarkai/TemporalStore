@@ -38,6 +38,7 @@ from matrixark_mcp_core import (  # noqa: E402
 from matrixark_mcp_local_adapter import MatrixArkLocalAdapter  # noqa: E402
 
 Json = dict[str, Any]
+SourceRef = tuple[int, str | None] | tuple[int, str | None, str | None]
 
 VOLATILE_SERVING_FINGERPRINT_FIELDS = {
     'context_event_key',
@@ -426,32 +427,32 @@ class MatrixKVRecordLog:
             raise BackfillError(f'missing legacy record {record_id}')
         return json.loads(payload)
 
-    def read_many(self, refs: list[tuple[int, str | None]]) -> list[tuple[int, Json | None, Exception | None]]:
+    def read_many(self, refs: list[SourceRef]) -> list[tuple[int, Json | None, Exception | None]]:
         batch_hget = getattr(self.kv, 'batch_hget', None)
         if not callable(batch_hget):
-            return [self._read_one_ref(sequence, legacy_record_id) for sequence, legacy_record_id in refs]
+            return [self._read_one_ref(*self._normalize_ref(ref)) for ref in refs]
         entries: list[Json] = []
-        for sequence, legacy_record_id in refs:
+        normalized_refs = [self._normalize_ref(ref) for ref in refs]
+        for sequence, legacy_record_id, scan_field in normalized_refs:
             if legacy_record_id is None:
                 shard = sequence // self.shard_size
-                offset = sequence % self.shard_size
-                entries.append({'key': f'{self.prefix}:records:{shard:06d}', 'field': f'{offset:020d}', 'sequence': sequence})
+                field = scan_field or f'{sequence % self.shard_size:020d}'
+                entries.append({'key': f'{self.prefix}:records:{shard:06d}', 'field': field, 'sequence': sequence})
             else:
                 entries.append({'key': f'{self.prefix}:records', 'field': legacy_record_id, 'sequence': sequence})
         try:
             rows = list(batch_hget(entries))
         except Exception:
-            return [self._read_one_ref(sequence, legacy_record_id) for sequence, legacy_record_id in refs]
+            return [self._read_one_ref(*ref) for ref in normalized_refs]
         rows_by_ref: dict[tuple[str, str], Json] = {}
         for row in rows:
             if isinstance(row, dict) and ('key' in row or 'field' in row):
                 rows_by_ref[(str(row.get('key') or ''), str(row.get('field') or ''))] = row
         results: list[tuple[int, Json | None, Exception | None]] = []
-        for index, (sequence, legacy_record_id) in enumerate(refs):
+        for index, (sequence, legacy_record_id, scan_field) in enumerate(normalized_refs):
             if legacy_record_id is None:
                 shard = sequence // self.shard_size
-                offset = sequence % self.shard_size
-                ref_key = (f'{self.prefix}:records:{shard:06d}', f'{offset:020d}')
+                ref_key = (f'{self.prefix}:records:{shard:06d}', scan_field or f'{sequence % self.shard_size:020d}')
             else:
                 ref_key = (f'{self.prefix}:records', legacy_record_id)
             row = rows_by_ref.get(ref_key, rows[index] if index < len(rows) else {})
@@ -468,9 +469,25 @@ class MatrixKVRecordLog:
             results.append((sequence, decoded, None))
         return results
 
-    def _read_one_ref(self, sequence: int, legacy_record_id: str | None) -> tuple[int, Json | None, Exception | None]:
+    @staticmethod
+    def _normalize_ref(ref: SourceRef) -> tuple[int, str | None, str | None]:
+        sequence = int(ref[0])
+        legacy_record_id = ref[1] if len(ref) > 1 else None
+        scan_field = ref[2] if len(ref) > 2 else None
+        return sequence, legacy_record_id, scan_field
+
+    def _read_one_ref(self, sequence: int, legacy_record_id: str | None, scan_field: str | None = None) -> tuple[int, Json | None, Exception | None]:
         try:
-            record = self.read_at(sequence) if legacy_record_id is None else self.read_legacy(legacy_record_id)
+            if legacy_record_id is not None:
+                record = self.read_legacy(legacy_record_id)
+            elif scan_field:
+                shard = sequence // self.shard_size
+                payload = self.kv.hget(f'{self.prefix}:records:{shard:06d}', scan_field)
+                if not payload:
+                    raise BackfillError(f'missing sharded record at sequence {sequence}')
+                record = json.loads(payload)
+            else:
+                record = self.read_at(sequence)
             return sequence, record, None
         except Exception as exc:
             return sequence, None, exc
@@ -536,7 +553,7 @@ class MatrixKVRecordLog:
         end_seq: int | None,
         max_empty_scan_shards: int,
         source_range: Json | None = None,
-    ) -> tuple[Iterable[tuple[int, str | None]], str]:
+    ) -> tuple[Iterable[SourceRef], str]:
         range_info = source_range or self.source_range(start_seq=start_seq, end_seq=end_seq)
         scan_mode = str(range_info.get('scan_mode') or 'empty')
         effective_start = int(range_info.get('effective_start_seq') or 0)
@@ -552,7 +569,7 @@ class MatrixKVRecordLog:
             return self._scan_sharded_refs(start_seq=effective_start, end_seq=end_seq, max_empty_scan_shards=max_empty_scan_shards), scan_mode
         return iter(()), scan_mode
 
-    def _scan_sharded_refs(self, *, start_seq: int, end_seq: int | None, max_empty_scan_shards: int) -> Iterable[tuple[int, str | None]]:
+    def _scan_sharded_refs(self, *, start_seq: int, end_seq: int | None, max_empty_scan_shards: int) -> Iterable[SourceRef]:
         first_shard = start_seq // self.shard_size
         last_shard = (end_seq - 1) // self.shard_size if end_seq is not None and end_seq > 0 else None
         empty_seen = 0
@@ -578,7 +595,7 @@ class MatrixKVRecordLog:
                         continue
                     if end_seq is not None and sequence >= end_seq:
                         continue
-                    yield sequence, None
+                    yield sequence, None, field
             shard += 1
 
     @staticmethod
@@ -586,9 +603,9 @@ class MatrixKVRecordLog:
         if not payload:
             return []
         if isinstance(payload.get('fields'), dict):
-            return sorted(str(field) for field in payload['fields'].keys())
+            return MatrixKVRecordLog._sort_scan_hash_fields(str(field) for field in payload['fields'].keys())
         if isinstance(payload.get('records'), dict):
-            return sorted(str(field) for field in payload['records'].keys())
+            return MatrixKVRecordLog._sort_scan_hash_fields(str(field) for field in payload['records'].keys())
         if isinstance(payload.get('items'), list):
             fields = []
             for item in payload['items']:
@@ -596,13 +613,29 @@ class MatrixKVRecordLog:
                     fields.append(str(item.get('field') or ''))
                 elif isinstance(item, (list, tuple)) and item:
                     fields.append(str(item[0]))
-            return sorted(field for field in fields if field)
-        return sorted(str(field) for field in payload.keys())
+            return MatrixKVRecordLog._sort_scan_hash_fields(field for field in fields if field)
+        return MatrixKVRecordLog._sort_scan_hash_fields(str(field) for field in payload.keys())
+
+    @staticmethod
+    def _sort_scan_hash_fields(fields: Iterable[str]) -> list[str]:
+        values = [str(field) for field in fields if str(field)]
+
+        def sort_key(field: str) -> tuple[int, int, str]:
+            try:
+                return (0, int(field), field)
+            except ValueError:
+                return (1, 0, field)
+
+        return sorted(values, key=sort_key)
 
     def iter_records(self, *, start_seq: int, end_seq: int | None) -> Iterable[tuple[int, Json]]:
         refs, _ = self.source_refs(start_seq=start_seq, end_seq=end_seq, max_empty_scan_shards=1)
-        for sequence, legacy_record_id in refs:
-            yield sequence, self.read_at(sequence) if legacy_record_id is None else self.read_legacy(legacy_record_id)
+        for ref in refs:
+            sequence, legacy_record_id, scan_field = self._normalize_ref(ref)
+            _, record, read_error = self._read_one_ref(sequence, legacy_record_id, scan_field)
+            if read_error is not None:
+                raise read_error
+            yield sequence, record or {}
 
 
 class MatrixKVBackfillTarget:
@@ -1340,7 +1373,8 @@ def run_backfill(args: argparse.Namespace) -> Json:
         metrics.source_batches += 1
         if scan_mode == 'scan_hash':
             metrics.scan_hash_batches += 1
-        for sequence, _ in batch:
+        for ref in batch:
+            sequence, _, _ = source._normalize_ref(ref)
             discovered_min_sequence = sequence if discovered_min_sequence is None else min(discovered_min_sequence, sequence)
             discovered_max_sequence = sequence if discovered_max_sequence is None else max(discovered_max_sequence, sequence)
         rows = source.read_many(batch)
