@@ -165,8 +165,20 @@ def _phase_scale_blockers(report: dict[str, Any]) -> list[str]:
 def _fallback_flags(backend: dict[str, Any]) -> list[str]:
     flags: list[str] = []
     flags.extend(_list(backend.get("fallback_flags")))
-    flags.extend(_list(_dig(backend, "retrieve", "fallback_flags_total", default=[])))
-    flags.extend(_list(_dig(backend, "retrieve", "stage_metrics", "fallback_flags_total", default=[])))
+    retrieve = backend.get("retrieve") if isinstance(backend.get("retrieve"), dict) else {}
+    stage = retrieve.get("stage_metrics") if isinstance(retrieve.get("stage_metrics"), dict) else {}
+    flags.extend(_list(retrieve.get("fallback_flags_total")))
+    flags.extend(_list(stage.get("fallback_flags_total")))
+    if _int(stage.get("broad_scan_used_count")) > 0:
+        flags.append("broad_scan_used")
+    if _int(stage.get("python_pack_fallback_count")) > 0:
+        flags.append("python_pack_fallback")
+    if _int(stage.get("native_pack_fallback_count")) > 0:
+        flags.append("native_pack_fallback")
+    if _int(stage.get("timeout_partial_count")) > 0 or _int(retrieve.get("partial_context_packs")) > 0:
+        flags.append("timeout_partial")
+    if backend.get("partial_context_pack") is True:
+        flags.append("partial_context_pack")
     return sorted(set(flags))
 
 
