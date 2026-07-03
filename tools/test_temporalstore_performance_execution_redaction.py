@@ -8,7 +8,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from validate_temporalstore_performance_execution_redaction import validate_artifact
+from validate_temporalstore_performance_execution_redaction import (
+    REQUIRED_PHASE_SCALE_COVERAGE,
+    validate_artifact,
+)
 
 
 class PerformanceExecutionRedactionTest(unittest.TestCase):
@@ -22,6 +25,7 @@ class PerformanceExecutionRedactionTest(unittest.TestCase):
                         "results": [
                             {
                                 "step": "run_workload",
+                                "phase_scale_coverage_required": REQUIRED_PHASE_SCALE_COVERAGE,
                                 "argv": [
                                     "wsl",
                                     "-d",
@@ -81,6 +85,7 @@ class PerformanceExecutionRedactionTest(unittest.TestCase):
         self.assertTrue(any("unredacted local path marker" in failure for failure in failures))
         self.assertTrue(any("--cpp-lib value is not redacted" in failure for failure in failures))
         self.assertTrue(any("missing --require-phase-scale-matrix" in failure for failure in failures))
+        self.assertTrue(any("missing phase_scale_coverage_required" in failure for failure in failures))
 
 
 if __name__ == "__main__":

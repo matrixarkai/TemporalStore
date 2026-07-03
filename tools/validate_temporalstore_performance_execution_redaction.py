@@ -36,6 +36,18 @@ REQUIRED_RUN_WORKLOAD_FLAGS = (
     "--require-perf-parity",
     "--require-phase-scale-matrix",
 )
+REQUIRED_PHASE_SCALE_COVERAGE = {
+    "events": [1000, 10000, 100000],
+    "retrieve_workers": [4, 8, 16, 32],
+    "resource_imports": ["large_pdf", "large_csv", "repo_directory"],
+    "contextmemory_features": [
+        "resources",
+        "skills",
+        "cross_session_retrieval",
+        "compact_indexes",
+        "audit_light_telemetry",
+    ],
+}
 
 
 def _walk_json(value: Any, path: str = "$") -> list[tuple[str, str]]:
@@ -92,6 +104,23 @@ def _validate_run_workload_flags(path: Path, data: dict[str, Any]) -> list[str]:
     return failures
 
 
+def _validate_phase_scale_coverage(path: Path, data: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    for row_index, row in enumerate(data.get("results") or []):
+        if not isinstance(row, dict) or row.get("step") != "run_workload":
+            continue
+        coverage = row.get("phase_scale_coverage_required")
+        if not isinstance(coverage, dict):
+            failures.append(f"{path}: results[{row_index}] missing phase_scale_coverage_required")
+            continue
+        for key, expected in REQUIRED_PHASE_SCALE_COVERAGE.items():
+            if coverage.get(key) != expected:
+                failures.append(
+                    f"{path}: results[{row_index}].phase_scale_coverage_required.{key} drift"
+                )
+    return failures
+
+
 def validate_artifact(path: Path) -> list[str]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -106,6 +135,7 @@ def validate_artifact(path: Path) -> list[str]:
     ]
     failures.extend(_validate_sensitive_flag_placeholders(path, data))
     failures.extend(_validate_run_workload_flags(path, data))
+    failures.extend(_validate_phase_scale_coverage(path, data))
     return failures
 
 

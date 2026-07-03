@@ -210,6 +210,7 @@ COMMAND_METADATA_KEYS = [
     "artifact_dir",
     "comparison_path",
     "recommended_execution_output",
+    "phase_scale_coverage_required",
     "required_same_config_fields",
     "required_result",
     "next_run_hint_source",
