@@ -123,6 +123,7 @@ Backfill summaries and validation scans also include an ordered `serving_record_
 
 | Mode | Purpose | Mutates source | Mutates target | Confirmation required |
 | --- | --- | --- | --- | --- |
+| `plan` | Inspect source range, resume state, target state, active-prefix safety, and required confirmations before a batch or incremental run | No | No | No |
 | `shadow` | Build a separate derived context prefix | No | Yes | No |
 | `validate_shadow` | Dry-run source scan and compare expected count, type counts, and ordered serving-record fingerprint to target | No | No | No |
 | `activate_shadow` | Flip active prefix pointer to a validated shadow prefix | No | Metadata only | `--confirm-activate=YES` |
@@ -137,6 +138,26 @@ Direct non-dry-run `shadow` writes to the current active prefix are guarded too.
 For activation, rollback, and incremental repair, pass `--expect-active-prefix=<prefix>` from the reviewed active pointer. Non-dry-run live mutations now reject missing active-prefix preconditions unless `--confirm-no-active-prefix-precondition=YES` is supplied. The command fails if the current value under `--active-prefix-key` has changed, preventing stale runbooks from switching or repairing the wrong live context prefix.
 
 Rollback also rejects no-op restores where the recorded previous prefix already equals the current active prefix. Use `--confirm-rollback-noop=YES` only when intentionally writing an audit record for a reviewed no-op rollback.
+
+## Plan Before Running
+
+Use `plan` before a production batch backfill, bounded incremental repair, raw-backend migration, or incident recovery. It is a read-only inspection mode: it resolves the effective source range, selected raw-message backend, target prefix, checkpoint key, resume behavior, active-prefix preconditions, partial filters, target record count, dead-letter count, and required confirmations.
+
+```bash
+python3 tools/matrixark_context_backfill.py \
+  --mode=plan \
+  --source-prefix=matrixark:mcp:raw_ingestion \
+  --raw-backend=temporalstore \
+  --target-prefix=matrixark:context_backfill:repair-20260704 \
+  --job-id=repair-20260704 \
+  --start-seq=120000 \
+  --end-seq=121000 \
+  --partial=1 \
+  --partial-session-ids=session-123 \
+  --batch-size=1024
+```
+
+The returned JSON includes `status`, `source_range`, `planned_source_records`, `resume_state`, `target_state`, `safety_checks`, `required_confirmations`, and `readiness_blockers`. `status="ok"` means the plan inspection itself is consistent. `status="needs_confirmation"` means the planned write path would need an explicit guardrail such as `--confirm-in-place=YES`, `--confirm-active-target=YES`, or an active-prefix precondition before mutation.
 
 ## Quick Start: Full Shadow Backfill
 
