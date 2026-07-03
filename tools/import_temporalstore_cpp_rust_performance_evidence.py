@@ -98,6 +98,24 @@ def _selected_ref_parity(report: dict[str, Any]) -> bool:
     return bool(isinstance(evidence, dict) and evidence.get("selected_ref_parity") is True)
 
 
+def _phase_scale_blockers(report: dict[str, Any]) -> list[str]:
+    phase_scale = report.get("phase_scale_matrix")
+    if not isinstance(phase_scale, dict):
+        return ["phase_scale_matrix_missing"]
+    blockers: list[str] = []
+    if phase_scale.get("require_gate") is not True:
+        blockers.append("phase_scale_matrix_not_required")
+    if phase_scale.get("status") != "passed":
+        blockers.append(f"phase_scale_matrix_{phase_scale.get('status') or 'unknown'}")
+    open_cases = phase_scale.get("open_required_cases")
+    if isinstance(open_cases, list) and open_cases:
+        blockers.append("phase_scale_matrix_open_required_cases")
+    full_pipeline = phase_scale.get("full_contextmemory_pipeline")
+    if isinstance(full_pipeline, dict) and full_pipeline.get("status") != "passed":
+        blockers.append("phase_scale_contextmemory_pipeline_incomplete")
+    return blockers
+
+
 def _fallback_flags(backend: dict[str, Any]) -> list[str]:
     flags: list[str] = []
     flags.extend(_list(backend.get("fallback_flags")))
@@ -199,6 +217,7 @@ def import_report(matrix: dict[str, Any], report: dict[str, Any]) -> dict[str, A
     same_config = _same_config(report)
     missing_config = [key for key in SAME_CONFIG_KEYS if same_config.get(key) in (None, "", "required_per_row")]
     selected_ref_parity = _selected_ref_parity(report)
+    phase_scale_blockers = _phase_scale_blockers(report)
     thresholds = out.get("thresholds") if isinstance(out.get("thresholds"), dict) else {}
     rows = out.get("rows") if isinstance(out.get("rows"), list) else []
     by_workload = {row.get("workload"): row for row in rows if isinstance(row, dict)}
@@ -213,6 +232,7 @@ def import_report(matrix: dict[str, Any], report: dict[str, Any]) -> dict[str, A
             blockers.append("rust_backend_not_passed")
         if missing_config:
             blockers.append("missing_same_config:" + ",".join(missing_config))
+        blockers.extend(phase_scale_blockers)
         if blockers:
             row.update(
                 {

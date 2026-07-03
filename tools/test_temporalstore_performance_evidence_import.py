@@ -116,8 +116,24 @@ def _report_with_bad_qps_ratio() -> dict:
     return {
         "config": config,
         "comparison": {"phase0_correctness": {"evidence": {"selected_ref_parity": True}}},
+        "phase_scale_matrix": _passed_phase_scale_matrix(),
         "backends": {"cpp": cpp, "rust": rust},
     }
+
+
+def _passed_phase_scale_matrix() -> dict:
+    return {
+        "status": "passed",
+        "require_gate": True,
+        "open_required_cases": [],
+        "full_contextmemory_pipeline": {"status": "passed"},
+    }
+
+
+def _report_with_good_parity() -> dict:
+    report = _report_with_bad_qps_ratio()
+    report["backends"]["rust"]["ingest_messages"]["message_qps"] = 90
+    return report
 
 
 class PerformanceEvidenceImportTest(unittest.TestCase):
@@ -129,6 +145,43 @@ class PerformanceEvidenceImportTest(unittest.TestCase):
         self.assertIn("message_qps_ratio_below_0.8", row["open_blockers"])
         self.assertFalse(updated["status"]["performance_candidate"])
         self.assertFalse(updated["status"]["production_performance_parity"])
+
+    def test_missing_phase_scale_gate_blocks_otherwise_good_report(self) -> None:
+        report = _report_with_good_parity()
+        report.pop("phase_scale_matrix")
+
+        updated = import_report(_matrix(), report)
+
+        row = next(row for row in updated["rows"] if row["workload"] == "1K_event_ingestion")
+        self.assertEqual(row["status"], "missing_live_evidence")
+        self.assertIn("phase_scale_matrix_missing", row["open_blockers"])
+        self.assertFalse(updated["status"]["performance_candidate"])
+
+    def test_phase_scale_gate_must_be_required_and_passed(self) -> None:
+        report = _report_with_good_parity()
+        report["phase_scale_matrix"] = {
+            "status": "incomplete",
+            "require_gate": False,
+            "open_required_cases": [{"group": "event_ingestion", "case": 100000}],
+            "full_contextmemory_pipeline": {"status": "incomplete"},
+        }
+
+        updated = import_report(_matrix(), report)
+
+        row = next(row for row in updated["rows"] if row["workload"] == "1K_event_ingestion")
+        self.assertEqual(row["status"], "missing_live_evidence")
+        self.assertIn("phase_scale_matrix_not_required", row["open_blockers"])
+        self.assertIn("phase_scale_matrix_incomplete", row["open_blockers"])
+        self.assertIn("phase_scale_matrix_open_required_cases", row["open_blockers"])
+        self.assertIn("phase_scale_contextmemory_pipeline_incomplete", row["open_blockers"])
+
+    def test_passed_phase_scale_gate_allows_clean_report(self) -> None:
+        updated = import_report(_matrix(), _report_with_good_parity())
+
+        row = next(row for row in updated["rows"] if row["workload"] == "1K_event_ingestion")
+        self.assertEqual(row["status"], "production_performance_parity")
+        self.assertTrue(row["same_config_match"])
+        self.assertEqual(row["open_blockers"], [])
 
 
 if __name__ == "__main__":
