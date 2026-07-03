@@ -112,12 +112,16 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(checkpoint["source_prefix"], "matrixark:mcp")
             self.assertEqual(checkpoint["target_prefix"], "matrixark:context_backfill:test")
             self.assertEqual(checkpoint["raw_backend"], "temporalstore")
+            self.assertEqual(checkpoint["source_range"]["scan_mode"], "record_count")
+            self.assertEqual(checkpoint["source_range"]["source_high_watermark_seq"], 1)
+            self.assertEqual(checkpoint["source_range"]["effective_end_seq"], 2)
             self.assertEqual(checkpoint["metrics"]["written"], 2)
 
             resumed = backfill.run_backfill(self.make_args(path, prometheus_output=str(prom)))
             self.assertEqual(resumed["metrics"]["scanned"], 0)
             self.assertEqual(resumed["resume_state"]["checkpoint_format"], "json")
             self.assertEqual(resumed["resume_state"]["checkpoint_last_sequence"], 1)
+            self.assertEqual(resumed["resume_state"]["checkpoint_source_range"]["source_high_watermark_seq"], 1)
             self.assertEqual(resumed["resume_state"]["effective_start_seq"], 2)
 
     def test_resume_accepts_legacy_integer_checkpoint(self):
