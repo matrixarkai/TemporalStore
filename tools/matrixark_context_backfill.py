@@ -364,9 +364,19 @@ class MatrixKVRecordLog:
             rows = list(batch_hget(entries))
         except Exception:
             return [self._read_one_ref(sequence, legacy_record_id) for sequence, legacy_record_id in refs]
+        rows_by_ref: dict[tuple[str, str], Json] = {}
+        for row in rows:
+            if isinstance(row, dict) and ('key' in row or 'field' in row):
+                rows_by_ref[(str(row.get('key') or ''), str(row.get('field') or ''))] = row
         results: list[tuple[int, Json | None, Exception | None]] = []
         for index, (sequence, legacy_record_id) in enumerate(refs):
-            row = rows[index] if index < len(rows) else {}
+            if legacy_record_id is None:
+                shard = sequence // self.shard_size
+                offset = sequence % self.shard_size
+                ref_key = (f'{self.prefix}:records:{shard:06d}', f'{offset:020d}')
+            else:
+                ref_key = (f'{self.prefix}:records', legacy_record_id)
+            row = rows_by_ref.get(ref_key, rows[index] if index < len(rows) else {})
             payload = row if isinstance(row, str) else str((row or {}).get('value') or '')
             if not payload:
                 error = BackfillError(f'missing legacy record {legacy_record_id}' if legacy_record_id is not None else f'missing sharded record at sequence {sequence}')
@@ -520,17 +530,14 @@ class MatrixKVBackfillTarget:
         idempotency_entries: list[Json] = []
         dedupe_keys = [self._idempotency_key(record) for record in records]
         existing_keys = self.existing_idempotency_keys(dedupe_keys)
-        seen_keys: set[str] = set()
         if hasattr(self.kv, 'begin_bulk'):
             self.kv.begin_bulk()
         try:
             for record, dedupe_key in zip(records, dedupe_keys):
                 shard = sequence // self.shard_size
                 offset = sequence % self.shard_size
-                if dedupe_key and (dedupe_key in existing_keys or dedupe_key in seen_keys):
+                if dedupe_key and dedupe_key in existing_keys:
                     continue
-                if dedupe_key:
-                    seen_keys.add(dedupe_key)
                 payload = json.dumps(record, sort_keys=True, separators=(',', ':'))
                 entries.append({'key': f'{self.prefix}:records:{shard:06d}', 'field': f'{offset:020d}', 'value': payload})
                 if dedupe_key:
