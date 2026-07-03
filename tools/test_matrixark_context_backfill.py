@@ -124,6 +124,27 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(resumed["resume_state"]["checkpoint_source_range"]["source_high_watermark_seq"], 1)
             self.assertEqual(resumed["resume_state"]["effective_start_seq"], 2)
 
+    def test_target_serving_type_counts_use_batched_reads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            target = backfill.MatrixKVBackfillTarget(kv, prefix="matrixark:context_backfill:test")
+            target.append_many([
+                {"record_type": "context_event", "idempotency_key": "event-1"},
+                {"record_type": "context_summary", "idempotency_key": "summary-1"},
+                {"record_type": "context_event", "idempotency_key": "event-2"},
+            ])
+            kv.batch_hget_calls = 0
+
+            counts, stats = target.serving_type_counts_with_stats(batch_size=2)
+
+            self.assertEqual(counts, {"context_event": 2, "context_summary": 1})
+            self.assertEqual(stats["record_count"], 3)
+            self.assertEqual(stats["batch_size"], 2)
+            self.assertEqual(stats["batches"], 2)
+            self.assertEqual(stats["read_errors"], 0)
+            self.assertEqual(kv.batch_hget_calls, 2)
+
     def test_resume_accepts_legacy_integer_checkpoint(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "kv.json"
@@ -409,7 +430,29 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(validation["source_range"]["source_high_watermark_seq"], 0)
             self.assertEqual(validation["target_state"]["record_count"], 1)
             self.assertEqual(validation["target_state"]["serving_type_counts"], {"context_summary": 1})
+            self.assertEqual(validation["target_state"]["serving_type_count_scan"]["read_errors"], 0)
             self.assertFalse(validation["checks"]["exact_serving_type_counts_match"])
+
+    def test_validate_shadow_reports_unreadable_target_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            write_sharded(kv, "matrixark:mcp", 0, {"record_type": "context_event", "event_id_hash": 1})
+            write_sharded(kv, "matrixark:mcp", 1, {"record_type": "context_event", "event_id_hash": 2})
+            kv.put_string("matrixark:mcp:record_count", "2")
+            target = backfill.MatrixKVBackfillTarget(kv, prefix="matrixark:context_backfill:test")
+            target.append_many([{"record_type": "context_event", "event_id_hash": 1, "idempotency_key": "event-1"}])
+            kv.put_string("matrixark:context_backfill:test:record_count", "2")
+
+            validation = backfill.run_validate_shadow(self.make_args(path, mode="validate_shadow", batch_size=2))
+
+            self.assertEqual(validation["status"], "failed")
+            self.assertEqual(validation["expected_records"], 2)
+            self.assertEqual(validation["actual_records"], 2)
+            self.assertEqual(validation["actual_type_counts"], {"context_event": 1})
+            self.assertEqual(validation["target_state"]["serving_type_count_scan"]["read_errors"], 1)
+            self.assertEqual(validation["target_state"]["serving_type_count_scan"]["missing_records"], 1)
+            self.assertFalse(validation["checks"]["target_records_readable"])
 
 
     def test_incremental_repair_promotes_bounded_range_to_active_prefix(self):

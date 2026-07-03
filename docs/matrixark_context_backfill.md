@@ -517,7 +517,9 @@ python3 tools/matrixark_context_backfill.py \
   --batch-size=1024
 ```
 
-Validation performs a dry-run source scan using the same range and partial filters. It compares expected materialized records to target record count and checks dead letters. The validation summary includes `source_range`, so promotion reviews can confirm the candidate prefix was checked against the same raw-log high-watermark boundary as the backfill run. It also includes `target_state` with the target prefix, raw backend, target record count, dead-letter count, and serving type counts.
+Validation performs a dry-run source scan using the same range and partial filters. It compares expected materialized records to target record count and checks dead letters. The validation summary includes `source_range`, so promotion reviews can confirm the candidate prefix was checked against the same raw-log high-watermark boundary as the backfill run. It also includes `target_state` with the target prefix, raw backend, target record count, dead-letter count, serving type counts, and `serving_type_count_scan` details.
+
+The target serving-record type scan uses batched reads with `--batch-size`. If any target serving record is missing or unreadable, `validate_shadow` returns `status=failed` with `checks.target_records_readable=false` and `target_state.serving_type_count_scan.read_errors` instead of failing with an opaque exception.
 
 Strict validation is enabled by default. Use `--validation-strict=0` only when the target prefix is expected to contain validated extra records from a compatible previous run.
 

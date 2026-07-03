@@ -644,13 +644,76 @@ class MatrixKVBackfillTarget:
             raise BackfillError(f'missing target record at sequence {sequence}')
         return json.loads(payload)
 
+    def read_many(self, start_sequence: int, end_sequence: int) -> list[tuple[int, Json | None, Exception | None]]:
+        if end_sequence <= start_sequence:
+            return []
+        entries: list[Json] = []
+        for sequence in range(start_sequence, end_sequence):
+            shard = sequence // self.shard_size
+            offset = sequence % self.shard_size
+            entries.append({'key': f'{self.prefix}:records:{shard:06d}', 'field': f'{offset:020d}', 'sequence': sequence})
+        batch_hget = getattr(self.kv, 'batch_hget', None)
+        if not callable(batch_hget):
+            return [self._read_target_ref(sequence) for sequence in range(start_sequence, end_sequence)]
+        try:
+            rows = list(batch_hget(entries))
+        except Exception:
+            return [self._read_target_ref(sequence) for sequence in range(start_sequence, end_sequence)]
+        rows_by_ref: dict[tuple[str, str], Json] = {}
+        for row in rows:
+            if isinstance(row, dict) and ('key' in row or 'field' in row):
+                rows_by_ref[(str(row.get('key') or ''), str(row.get('field') or ''))] = row
+        results: list[tuple[int, Json | None, Exception | None]] = []
+        for index, sequence in enumerate(range(start_sequence, end_sequence)):
+            shard = sequence // self.shard_size
+            offset = sequence % self.shard_size
+            ref_key = (f'{self.prefix}:records:{shard:06d}', f'{offset:020d}')
+            row = rows_by_ref.get(ref_key, rows[index] if index < len(rows) else {})
+            payload = row if isinstance(row, str) else str((row or {}).get('value') or '')
+            if not payload:
+                results.append((sequence, None, BackfillError(f'missing target record at sequence {sequence}')))
+                continue
+            try:
+                results.append((sequence, json.loads(payload), None))
+            except Exception as exc:
+                results.append((sequence, None, exc))
+        return results
+
+    def _read_target_ref(self, sequence: int) -> tuple[int, Json | None, Exception | None]:
+        try:
+            return sequence, self.read_at(sequence), None
+        except Exception as exc:
+            return sequence, None, exc
+
     def serving_type_counts(self) -> Json:
+        counts, stats = self.serving_type_counts_with_stats()
+        if int(stats.get('read_errors', 0) or 0) > 0:
+            raise BackfillError(f'target serving type scan failed with {stats["read_errors"]} unreadable records')
+        return counts
+
+    def serving_type_counts_with_stats(self, *, batch_size: int = 1024) -> tuple[Json, Json]:
         counts: Json = {}
-        for sequence in range(self.count()):
-            record = self.read_at(sequence)
-            record_type = str(record.get('record_type') or 'unknown')
-            counts[record_type] = int(counts.get(record_type, 0)) + 1
-        return dict(sorted(counts.items()))
+        total = self.count()
+        stats: Json = {
+            'record_count': total,
+            'batch_size': max(1, batch_size),
+            'batches': 0,
+            'read_errors': 0,
+            'missing_records': 0,
+        }
+        step = max(1, batch_size)
+        for start in range(0, total, step):
+            stats['batches'] += 1
+            for sequence, record, read_error in self.read_many(start, min(total, start + step)):
+                if read_error is not None or record is None:
+                    stats['read_errors'] += 1
+                    if 'missing target record' in str(read_error):
+                        stats['missing_records'] += 1
+                    continue
+                record_type = str(record.get('record_type') or 'unknown')
+                counts[record_type] = int(counts.get(record_type, 0)) + 1
+        return dict(sorted(counts.items())), stats
+
 
     def append_dead_letter(self, item: Json) -> None:
         sequence = self.count_dead_letters()
@@ -1209,20 +1272,28 @@ def run_validate_shadow(args: argparse.Namespace) -> Json:
     dead_letters = target.count_dead_letters()
     expected_count = int(expected_summary['metrics']['written'])
     expected_type_counts = expected_serving_type_counts(expected_summary['metrics'])
-    actual_type_counts = target.serving_type_counts()
+    actual_type_counts, target_scan = target.serving_type_counts_with_stats(batch_size=max(1, int(args.batch_size)))
     target_state: Json = {
         'target_prefix': args.target_prefix,
         'raw_backend': raw_backend,
         'record_count': actual_count,
         'dead_letter_count': dead_letters,
         'serving_type_counts': actual_type_counts,
+        'serving_type_count_scan': target_scan,
     }
     exact_match = actual_count == expected_count
     enough_records = actual_count >= expected_count
     exact_type_match = actual_type_counts == expected_type_counts
     enough_type_records = all(int(actual_type_counts.get(record_type, 0)) >= int(count) for record_type, count in expected_type_counts.items())
     type_counts_passed = exact_type_match if args.validation_strict else enough_type_records
-    passed = (exact_match if args.validation_strict else enough_records) and type_counts_passed and dead_letters == 0 and int(expected_summary['metrics']['failed']) == 0
+    target_records_readable = int(target_scan.get('read_errors', 0) or 0) == 0
+    passed = (
+        (exact_match if args.validation_strict else enough_records)
+        and type_counts_passed
+        and target_records_readable
+        and dead_letters == 0
+        and int(expected_summary['metrics']['failed']) == 0
+    )
     return {
         'status': 'ok' if passed else 'failed',
         'job_id': args.job_id,
@@ -1247,6 +1318,7 @@ def run_validate_shadow(args: argparse.Namespace) -> Json:
             'actual_records_at_least_expected': enough_records,
             'exact_serving_type_counts_match': exact_type_match,
             'actual_serving_type_counts_at_least_expected': enough_type_records,
+            'target_records_readable': target_records_readable,
             'no_shadow_dead_letters': dead_letters == 0,
             'source_scan_had_no_failures': int(expected_summary['metrics']['failed']) == 0,
         },
