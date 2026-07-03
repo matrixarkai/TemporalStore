@@ -835,6 +835,8 @@ For very large jobs:
 7. Monitor readers and context quality.
 8. Keep previous prefix for rollback until validation is complete.
 
+Activation audit records include both the nested validation response and flattened `validation_status`, `validation_source_range`, and `validation_target_state` fields so operators can query the cutover boundary and target evidence without parsing the full validation object.
+
 ### Partial Repair Runbook
 
 1. Identify the source range and filters.
@@ -844,6 +846,8 @@ For very large jobs:
 5. Run `incremental_repair --confirm-incremental-repair=YES --dry-run=0`.
 6. Inspect incremental repair audit.
 7. Retry the same command if needed; idempotency prevents duplicate active appends.
+
+Incremental repair audit records also include `validation_status`, `validation_source_range`, and `validation_target_state` alongside promotion metrics. Use those fields to prove which shadow repair prefix was validated before replaying into the active prefix.
 
 ### Partition Restore Runbook
 

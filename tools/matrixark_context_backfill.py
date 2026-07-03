@@ -1173,6 +1173,20 @@ def expected_serving_type_counts(metrics: Json) -> Json:
     return dict(sorted(counts.items()))
 
 
+def validation_audit_fields(validation: Json | None) -> Json:
+    if not isinstance(validation, dict):
+        return {
+            'validation_status': 'skipped',
+            'validation_source_range': {},
+            'validation_target_state': {},
+        }
+    return {
+        'validation_status': validation.get('status', 'unknown'),
+        'validation_source_range': validation.get('source_range', {}),
+        'validation_target_state': validation.get('target_state', {}),
+    }
+
+
 def run_validate_shadow(args: argparse.Namespace) -> Json:
     if not args.target_prefix:
         raise BackfillError('validate_shadow requires --target-prefix')
@@ -1247,6 +1261,7 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
         validation = run_validate_shadow(args)
         if validation.get('status') != 'ok':
             raise BackfillError(f'shadow validation failed: {json.dumps(validation, sort_keys=True)}')
+    validation_audit = validation_audit_fields(validation)
     if args.dry_run:
         return {
             'status': 'ok',
@@ -1256,6 +1271,7 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
             'target_prefix': args.target_prefix,
             'raw_backend': normalize_raw_backend(args.raw_backend),
             'validation': validation,
+            **validation_audit,
         }
     kv = make_kv(args)
     previous = kv.get_string(args.active_prefix_key)
@@ -1272,6 +1288,7 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
         'end_seq': args.end_seq,
         'partial': build_partial_spec(args),
         'validation': validation,
+        **validation_audit,
     }
     kv.put_string(f'{args.active_prefix_key}:previous:{args.job_id}', previous)
     kv.hset(f'{args.active_prefix_key}:audit', args.job_id, json.dumps(audit, sort_keys=True, separators=(',', ':')))
@@ -1286,6 +1303,7 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
         'audit_key': f'{args.active_prefix_key}:audit',
         'job_id': args.job_id,
         'validation': validation,
+        **validation_audit,
     }
 
 
@@ -1353,6 +1371,7 @@ def run_incremental_repair(args: argparse.Namespace) -> Json:
         validation = run_validate_shadow(args)
         if validation.get('status') != 'ok':
             raise BackfillError(f'incremental repair shadow validation failed: {json.dumps(validation, sort_keys=True)}')
+    validation_audit = validation_audit_fields(validation)
 
     kv = make_kv(args)
     active_prefix = args.repair_active_prefix or kv.get_string(args.active_prefix_key)
@@ -1383,6 +1402,7 @@ def run_incremental_repair(args: argparse.Namespace) -> Json:
             'end_seq': args.end_seq,
             'partial': build_partial_spec(args),
             'validation': validation,
+            **validation_audit,
             'promotion_metrics': promotion.get('metrics', {}),
         }
         kv.hset(f'{args.active_prefix_key}:incremental_repair_audit', args.job_id, json.dumps(audit, sort_keys=True, separators=(',', ':')))
@@ -1399,6 +1419,7 @@ def run_incremental_repair(args: argparse.Namespace) -> Json:
         'end_seq': args.end_seq,
         'partial': build_partial_spec(args),
         'validation': validation,
+        **validation_audit,
         'promotion': promotion,
         'audit_key': f'{args.active_prefix_key}:incremental_repair_audit',
     }
