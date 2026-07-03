@@ -26,6 +26,8 @@ REQUIRED_DOC_MARKERS = [
     "record_count",
     "record_index",
     "scan_hash",
+    "--partial-session-ids",
+    "promotion_partial_matches_validation",
     "incremental_repair",
     "serving_record_fingerprint_match",
     "matrixark_context_backfill_validation_check",
@@ -166,6 +168,7 @@ def run_cutover_gate(args: argparse.Namespace) -> Json:
                 raw_backend=raw_backend,
                 job_id=job_id,
                 batch_size=args.batch_size,
+                end_seq=records,
             )
             shadow = backfill.run_backfill(shadow_args)
             activate_args = bench.make_backfill_args(
@@ -323,6 +326,170 @@ def run_source_scan_gate(args: argparse.Namespace) -> Json:
         and item["failed"] == 0
         and item["source_high_watermark_seq"] == item["records"] - 1
         and (item["source_record_count_estimated"] is (item["expected_scan_mode"] == "scan_hash"))
+        for item in results
+    ) else "failed"
+    return {"status": status, "results": results}
+
+
+def seed_partial_raw_log(kv: backfill.LocalJsonKV, *, prefix: str, records: int, payload_bytes: int) -> int:
+    expected = 0
+    kv.begin_bulk()
+    try:
+        for sequence in range(records):
+            record = bench.make_raw_record(sequence, payload_bytes=payload_bytes)
+            if sequence % 4 == 0:
+                record["scope"] = {
+                    "tenant_id": "tenant-partial",
+                    "user_id": f"user-partial-{sequence % 2}",
+                    "session_id": "session-hot",
+                    "team": "search",
+                }
+                record["kind"] = "message"
+                expected += 1
+            elif sequence % 4 == 1:
+                record["scope"] = {
+                    "tenant_id": "tenant-partial",
+                    "user_id": "user-other",
+                    "session_id": "session-cold",
+                    "team": "search",
+                }
+                record["kind"] = "message"
+            elif sequence % 4 == 2:
+                record["scope"] = {
+                    "tenant_id": "tenant-other",
+                    "user_id": "user-other",
+                    "session_id": "session-hot",
+                    "team": "search",
+                }
+                record["kind"] = "message"
+            else:
+                record["scope"] = {
+                    "tenant_id": "tenant-partial",
+                    "user_id": "user-other",
+                    "session_id": "session-hot",
+                    "team": "billing",
+                }
+                record["kind"] = "metric"
+            shard = sequence // backfill.DIRECT_RECORD_LOG_SHARD_SIZE
+            offset = sequence % backfill.DIRECT_RECORD_LOG_SHARD_SIZE
+            kv.hset(
+                f"{prefix}:records:{shard:06d}",
+                f"{offset:020d}",
+                json.dumps(record, sort_keys=True),
+            )
+        kv.put_string(f"{prefix}:record_count", str(records))
+    finally:
+        kv.end_bulk()
+    return expected
+
+
+def run_partial_repair_gate(args: argparse.Namespace) -> Json:
+    results: list[Json] = []
+    records = max(8, int(args.records))
+    partial_values = {
+        "partial": True,
+        "partial_record_types": "context_event",
+        "partial_tenant_ids": "tenant-partial",
+        "partial_session_ids": "session-hot",
+        "partial_filter_json": json.dumps({"kind": "message", "scope": {"team": "search"}}, sort_keys=True),
+    }
+    for raw_backend in ["temporalstore", "matrixkv"]:
+        with tempfile.TemporaryDirectory(prefix=f"matrixark_backfill_partial_{raw_backend}_") as tmp:
+            kv_path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(kv_path)
+            source_prefix = "matrixark:mcp:readiness_partial"
+            expected_matches = seed_partial_raw_log(kv, prefix=source_prefix, records=records, payload_bytes=args.payload_bytes)
+            active_key = "matrixark:context:active_prefix"
+            active_prefix = f"matrixark:context:active:partial:{raw_backend}"
+            repair_prefix = f"matrixark:context_repair:readiness_partial:{raw_backend}"
+            job_id = f"readiness-partial-{raw_backend}"
+            kv.put_string(active_key, active_prefix)
+            shadow_args = bench.make_backfill_args(
+                kv_path=kv_path,
+                source_prefix=source_prefix,
+                target_prefix=repair_prefix,
+                raw_backend=raw_backend,
+                job_id=job_id,
+                batch_size=args.batch_size,
+            )
+            for key, value in partial_values.items():
+                setattr(shadow_args, key, value)
+            shadow = backfill.run_backfill(shadow_args)
+            validation_args = bench.make_backfill_args(
+                kv_path=kv_path,
+                source_prefix=source_prefix,
+                target_prefix=repair_prefix,
+                raw_backend=raw_backend,
+                job_id=job_id,
+                batch_size=args.batch_size,
+                mode="validate_shadow",
+                end_seq=records,
+            )
+            for key, value in partial_values.items():
+                setattr(validation_args, key, value)
+            validation = backfill.run_validate_shadow(validation_args)
+            repair_args = bench.make_backfill_args(
+                kv_path=kv_path,
+                source_prefix=source_prefix,
+                target_prefix=repair_prefix,
+                raw_backend=raw_backend,
+                job_id=job_id,
+                batch_size=args.batch_size,
+                end_seq=records,
+                mode="incremental_repair",
+                confirm_incremental_repair="YES",
+            )
+            for key, value in partial_values.items():
+                setattr(repair_args, key, value)
+            repair = backfill.run_incremental_repair(repair_args)
+            retried = backfill.run_incremental_repair(repair_args)
+            kv_after = backfill.LocalJsonKV(kv_path)
+            audit = kv_after.hget(f"{active_key}:incremental_repair_audit", job_id)
+            consistency = repair.get("promotion_consistency") if isinstance(repair.get("promotion_consistency"), dict) else {}
+            shadow_metrics = shadow.get("metrics") if isinstance(shadow.get("metrics"), dict) else {}
+            promotion = repair.get("promotion") if isinstance(repair.get("promotion"), dict) else {}
+            retry_promotion = retried.get("promotion") if isinstance(retried.get("promotion"), dict) else {}
+            promotion_metrics = promotion.get("metrics") if isinstance(promotion.get("metrics"), dict) else {}
+            retry_metrics = retry_promotion.get("metrics") if isinstance(retry_promotion.get("metrics"), dict) else {}
+            target_count = int(kv_after.get_string(f"{active_prefix}:record_count") or 0)
+            results.append({
+                "raw_backend": raw_backend,
+                "records": records,
+                "expected_matches": expected_matches,
+                "shadow_status": shadow.get("status"),
+                "shadow_scanned": int(shadow_metrics.get("scanned", 0) or 0),
+                "shadow_filtered": int(shadow_metrics.get("filtered", 0) or 0),
+                "shadow_written": int(shadow_metrics.get("written", 0) or 0),
+                "validation_status": validation.get("status"),
+                "validation_expected_records": int(validation.get("expected_records", 0) or 0),
+                "validation_fingerprint_match": validation.get("checks", {}).get("serving_record_fingerprint_match"),
+                "repair_status": repair.get("status"),
+                "repair_written": int(promotion_metrics.get("written", 0) or 0),
+                "retry_duplicate": int(retry_metrics.get("duplicate", 0) or 0),
+                "target_count": target_count,
+                "partial_enabled": bool(shadow.get("partial", {}).get("enabled")),
+                "promotion_partial_matches_validation": bool(consistency.get("checks", {}).get("promotion_partial_matches_validation")),
+                "promotion_source_range_matches_validation": bool(consistency.get("checks", {}).get("promotion_source_range_matches_validation")),
+                "promotion_covered_expected_records": bool(consistency.get("checks", {}).get("promotion_covered_expected_records")),
+                "audit_written": bool(audit),
+            })
+    status = "ok" if all(
+        item["shadow_status"] == "ok"
+        and item["validation_status"] == "ok"
+        and item["repair_status"] == "ok"
+        and item["partial_enabled"]
+        and item["shadow_scanned"] == item["records"]
+        and item["shadow_written"] == item["expected_matches"]
+        and item["shadow_filtered"] == item["records"] - item["expected_matches"]
+        and item["validation_expected_records"] == item["expected_matches"]
+        and item["validation_fingerprint_match"] is True
+        and item["repair_written"] == item["expected_matches"]
+        and item["retry_duplicate"] == item["expected_matches"]
+        and item["target_count"] == item["expected_matches"]
+        and item["promotion_partial_matches_validation"]
+        and item["promotion_source_range_matches_validation"]
+        and item["promotion_covered_expected_records"]
+        and item["audit_written"]
         for item in results
     ) else "failed"
     return {"status": status, "results": results}
@@ -629,6 +796,21 @@ def source_scan_checks(summary: Json) -> list[Json]:
     ]
 
 
+def partial_repair_checks(summary: Json) -> list[Json]:
+    results = summary.get("results") if isinstance(summary.get("results"), list) else []
+    return [
+        check("partial_repair_gate_status_ok", summary.get("status") == "ok"),
+        check("partial_repair_gate_covers_temporalstore_and_matrixkv", {item.get("raw_backend") for item in results} == {"temporalstore", "matrixkv"}),
+        check("partial_repair_gate_filters_source_records", all(int(item.get("shadow_filtered", 0) or 0) > 0 for item in results)),
+        check("partial_repair_gate_writes_expected_slice", all(int(item.get("shadow_written", 0) or 0) == int(item.get("expected_matches", -1) or -1) for item in results)),
+        check("partial_repair_gate_validates_shadow", all(item.get("validation_status") == "ok" and bool(item.get("validation_fingerprint_match")) for item in results)),
+        check("partial_repair_gate_promotes_expected_slice", all(int(item.get("repair_written", 0) or 0) == int(item.get("expected_matches", -1) or -1) for item in results)),
+        check("partial_repair_gate_retry_is_idempotent", all(int(item.get("retry_duplicate", 0) or 0) == int(item.get("expected_matches", -1) or -1) for item in results)),
+        check("partial_repair_gate_partial_matches_validation", all(bool(item.get("promotion_partial_matches_validation")) for item in results)),
+        check("partial_repair_gate_audit_written", all(bool(item.get("audit_written")) for item in results)),
+    ]
+
+
 def resume_checks(summary: Json) -> list[Json]:
     results = summary.get("results") if isinstance(summary.get("results"), list) else []
     return [
@@ -659,6 +841,7 @@ def run_readiness(args: argparse.Namespace) -> Json:
     cutover_summary: Json = {}
     dead_letter_summary: Json = {}
     source_scan_summary: Json = {}
+    partial_repair_summary: Json = {}
     resume_summary: Json = {}
     prometheus_summary: Json = {}
     if not args.skip_local_benchmark:
@@ -676,6 +859,9 @@ def run_readiness(args: argparse.Namespace) -> Json:
     if not args.skip_source_scan_gate:
         source_scan_summary = run_source_scan_gate(args)
         checks.extend(source_scan_checks(source_scan_summary))
+    if not args.skip_partial_repair_gate:
+        partial_repair_summary = run_partial_repair_gate(args)
+        checks.extend(partial_repair_checks(partial_repair_summary))
     if not args.skip_resume_gate:
         resume_summary = run_resume_gate(args)
         checks.extend(resume_checks(resume_summary))
@@ -691,6 +877,7 @@ def run_readiness(args: argparse.Namespace) -> Json:
         "cutover_gate": cutover_summary,
         "dead_letter_gate": dead_letter_summary,
         "source_scan_gate": source_scan_summary,
+        "partial_repair_gate": partial_repair_summary,
         "resume_gate": resume_summary,
         "prometheus_gate": prometheus_summary,
     }
@@ -709,6 +896,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-cutover-gate", action="store_true")
     parser.add_argument("--skip-dead-letter-gate", action="store_true")
     parser.add_argument("--skip-source-scan-gate", action="store_true")
+    parser.add_argument("--skip-partial-repair-gate", action="store_true")
     parser.add_argument("--skip-resume-gate", action="store_true")
     parser.add_argument("--skip-prometheus-gate", action="store_true")
     parser.add_argument("--json-output", default="")
