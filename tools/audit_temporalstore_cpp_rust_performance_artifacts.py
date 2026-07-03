@@ -44,6 +44,7 @@ WORKLOAD_RUN_ARGS = {
     "retrieve_workers_16": ["--retrieve-workers", "16"],
     "retrieve_workers_32": ["--retrieve-workers", "32"],
 }
+EXECUTION_SCHEMA = "temporalstore_cpp_rust_next_performance_execution_v1"
 
 
 def _artifact_dir(workload: str) -> str:
@@ -93,6 +94,7 @@ def _next_required_workflow(next_required_runs: list[dict[str, Any]]) -> dict[st
                 "workload": item["workload"],
                 "reason": item["reason"],
                 "argv": item["command"],
+                "recommended_execution_output": item.get("recommended_execution_output"),
             }
         )
         commands.append(
@@ -151,6 +153,44 @@ def audit_report(base_matrix: dict[str, Any], report_path: Path) -> dict[str, An
     }
 
 
+def _load_execution_artifact(path: Path) -> dict[str, Any] | None:
+    try:
+        data = _load_json(path)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("schema") != EXECUTION_SCHEMA:
+        return None
+    results = data.get("results") if isinstance(data.get("results"), list) else []
+    workloads = sorted(
+        {
+            str(row.get("workload"))
+            for row in results
+            if isinstance(row, dict) and row.get("workload")
+        }
+    )
+    failed_steps = [
+        {
+            "step": row.get("step"),
+            "workload": row.get("workload"),
+            "reason": row.get("reason"),
+            "returncode": row.get("returncode"),
+            "argv": row.get("argv"),
+        }
+        for row in results
+        if isinstance(row, dict) and row.get("status") != "passed"
+    ]
+    return {
+        "path": str(path.relative_to(ROOT) if path.is_relative_to(ROOT) else path),
+        "status": data.get("status"),
+        "failed_count": data.get("failed_count"),
+        "continue_on_error": data.get("continue_on_error") is True,
+        "workloads": workloads,
+        "failed_steps": failed_steps,
+    }
+
+
 def audit_artifacts(artifact_root: Path, matrix_path: Path) -> dict[str, Any]:
     base_matrix = _load_json(matrix_path)
     required_workloads = [
@@ -159,6 +199,15 @@ def audit_artifacts(artifact_root: Path, matrix_path: Path) -> dict[str, Any]:
         if isinstance(workload, str) and workload
     ]
     reports = sorted(artifact_root.rglob("comparison.json"))
+    execution_artifacts = [
+        artifact
+        for artifact in (
+            _load_execution_artifact(path)
+            for path in sorted(artifact_root.rglob("*.json"))
+            if path.name != "comparison.json"
+        )
+        if artifact is not None
+    ]
     entries = [audit_report(base_matrix, report) for report in reports]
     with_workloads = [entry for entry in entries if entry["candidate_workloads"]]
     importable = [
@@ -203,6 +252,12 @@ def audit_artifacts(artifact_root: Path, matrix_path: Path) -> dict[str, Any]:
             for blocker in blocked.get("open_blockers") or []:
                 if blocker not in target["blockers"]:
                     target["blockers"].append(blocker)
+    execution_attempts_by_workload: dict[str, list[dict[str, Any]]] = {
+        workload: [] for workload in required_workloads
+    }
+    for artifact in execution_artifacts:
+        for workload in artifact["workloads"]:
+            execution_attempts_by_workload.setdefault(workload, []).append(artifact)
     missing_required_workloads = [
         workload
         for workload in required_workloads
@@ -228,6 +283,12 @@ def audit_artifacts(artifact_root: Path, matrix_path: Path) -> dict[str, Any]:
             "candidate_report_count": row.get("candidate_report_count", 0),
             "importable_report_count": row.get("importable_report_count", 0),
             "blocked_report_count": row.get("blocked_report_count", 0),
+            "execution_attempt_count": len(execution_attempts_by_workload.get(workload, [])),
+            "last_execution_attempt": (
+                execution_attempts_by_workload.get(workload, [])[-1]
+                if execution_attempts_by_workload.get(workload)
+                else None
+            ),
             "blockers": row.get("blockers", []),
             "next_run_hint": {
                 "workload": workload,
@@ -242,6 +303,7 @@ def audit_artifacts(artifact_root: Path, matrix_path: Path) -> dict[str, Any]:
                     "selected_ref_parity=true, zero errors/timeouts/fallbacks, "
                     "and QPS/latency ratios within policy"
                 ),
+                "recommended_execution_output": f"{_artifact_dir(workload)}/execution.json",
             },
         }
     next_required_runs = [
@@ -251,6 +313,7 @@ def audit_artifacts(artifact_root: Path, matrix_path: Path) -> dict[str, Any]:
             "blockers": details["blockers"],
             "artifact_dir": details["next_run_hint"]["artifact_dir"],
             "comparison_path": details["next_run_hint"]["comparison_path"],
+            "recommended_execution_output": details["next_run_hint"]["recommended_execution_output"],
             "command": details["next_run_hint"]["command"],
             "import_command": details["next_run_hint"]["import_command"],
             "phase_scale_coverage_required": details["next_run_hint"]["phase_scale_coverage_required"],
@@ -272,6 +335,7 @@ def audit_artifacts(artifact_root: Path, matrix_path: Path) -> dict[str, Any]:
         "matrix": str(matrix_path),
         "required_workloads": required_workloads,
         "reports_scanned": len(reports),
+        "execution_artifacts_scanned": len(execution_artifacts),
         "reports_with_candidate_workloads": len(with_workloads),
         "reports_with_importable_workloads": len(importable),
         "missing_required_workloads": missing_required_workloads,
@@ -280,6 +344,7 @@ def audit_artifacts(artifact_root: Path, matrix_path: Path) -> dict[str, Any]:
         "next_required_runs": next_required_runs,
         "next_required_workflow": _next_required_workflow(next_required_runs),
         "workload_coverage": coverage,
+        "execution_attempts_by_workload": execution_attempts_by_workload,
         "entries": with_workloads,
     }
 
