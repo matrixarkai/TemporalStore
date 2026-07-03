@@ -270,6 +270,7 @@ REQUIRED_LIFECYCLE_TOP_LEVEL_KEYS = [
     "storage_index_contract",
     "storage_cache_contract",
     "storage_reclaim_contract",
+    "storage_safety_snapshot",
     "storage_read_sequence",
     "storage_cold_scan_sequence",
     "storage_lifecycle_phases",
@@ -429,6 +430,18 @@ REQUIRED_PUBLIC_STORAGE_FEATURE_SHAPES = {
     "gc_eligibility_fields": ["ref", "eligible_after_ms", "has_tombstone", "follower_safe", "reclaimable_bytes"],
     "follower_cursor_safety_fields": ["min_follower_cursor", "blocked_reclaim_bytes", "safe_to_reclaim"],
 }
+
+REQUIRED_STORAGE_SAFETY_FIELDS = [
+    "append_watermark",
+    "compaction_watermark",
+    "tombstone_records",
+    "gc_eligible_record_count",
+    "reclaimable_bytes",
+    "follower_cursor_retention_floor",
+    "follower_cursor_blocked_reclaim_count",
+    "follower_cursor_safe_to_reclaim",
+    "physical_reclaim_errors",
+]
 
 LEGACY_ALIAS_MAP = {
     "page_store": "storage_zone",
@@ -647,6 +660,18 @@ def _dig_reclaim_contract(report: dict[str, Any]) -> dict[str, Any]:
         report.get("storage_reclaim_contract"),
         report.get("storage_lifecycle", {}).get("reclaim_contract") if isinstance(report.get("storage_lifecycle"), dict) else None,
         report.get("storage_reclaim", {}).get("contract") if isinstance(report.get("storage_reclaim"), dict) else None,
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            return candidate
+    return {}
+
+
+def _dig_safety_snapshot(report: dict[str, Any]) -> dict[str, Any]:
+    candidates = [
+        report.get("storage_safety_snapshot"),
+        report.get("storage_lifecycle", {}).get("safety_snapshot") if isinstance(report.get("storage_lifecycle"), dict) else None,
+        report.get("storage_safety", {}).get("snapshot") if isinstance(report.get("storage_safety"), dict) else None,
     ]
     for candidate in candidates:
         if isinstance(candidate, dict):
@@ -999,6 +1024,8 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
     rust_reclaim_scope = _dig_reclaim_scope(rust_report)
     cpp_reclaim_contract = _dig_reclaim_contract(cpp_report)
     rust_reclaim_contract = _dig_reclaim_contract(rust_report)
+    cpp_safety_snapshot = _dig_safety_snapshot(cpp_report)
+    rust_safety_snapshot = _dig_safety_snapshot(rust_report)
     cpp_cache_layers = _dig_cache_layers(cpp_report)
     rust_cache_layers = _dig_cache_layers(rust_report)
     cpp_cache_semantics = _dig_cache_semantics(cpp_report)
@@ -1222,6 +1249,22 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
             failures.append(f"cpp reclaim contract missing field `{field}`")
         if field not in rust_reclaim_contract:
             failures.append(f"rust reclaim contract missing field `{field}`")
+    for field in REQUIRED_STORAGE_SAFETY_FIELDS:
+        if field not in cpp_safety_snapshot:
+            failures.append(f"cpp safety snapshot missing field `{field}`")
+        if field not in rust_safety_snapshot:
+            failures.append(f"rust safety snapshot missing field `{field}`")
+    for backend, safety_snapshot in [("cpp", cpp_safety_snapshot), ("rust", rust_safety_snapshot)]:
+        for field in REQUIRED_STORAGE_SAFETY_FIELDS:
+            if field == "follower_cursor_safe_to_reclaim":
+                if not isinstance(safety_snapshot.get(field), bool):
+                    failures.append(f"{backend} safety snapshot `{field}` must be boolean")
+            else:
+                value = _as_number(safety_snapshot.get(field))
+                if value is None or value < 0:
+                    failures.append(f"{backend} safety snapshot `{field}` must be non-negative")
+        if _as_number(safety_snapshot.get("physical_reclaim_errors")) not in (0.0, None):
+            failures.append(f"{backend} safety snapshot physical_reclaim_errors must be zero")
     for backend, reclaim_contract in [("cpp", cpp_reclaim_contract), ("rust", rust_reclaim_contract)]:
         for flag in [
             "cache_eviction_frees_memory_only",

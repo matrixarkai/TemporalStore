@@ -260,6 +260,7 @@ STORAGE_LIFECYCLE_TOP_LEVEL_KEYS = [
     "storage_index_contract",
     "storage_cache_contract",
     "storage_reclaim_contract",
+    "storage_safety_snapshot",
     "storage_read_sequence",
     "storage_cold_scan_sequence",
     "storage_lifecycle_phases",
@@ -827,6 +828,31 @@ def default_storage_reclaim_contract(metrics: Json | None = None) -> Json:
     }
 
 
+def default_storage_safety_snapshot(metrics: Json | None = None) -> Json:
+    source = metrics if isinstance(metrics, dict) else {}
+    follower_block_count = int(source.get("stale_pages_skipped") or 0) + int(
+        source.get("stale_blocks_skipped") or 0
+    )
+    tombstone_count = (
+        int(source.get("tombstone_records") or 0)
+        + int(source.get("stale_page_tombstones") or 0)
+        + int(source.get("stale_block_tombstones") or 0)
+    )
+    return {
+        "append_watermark": int(source.get("append_watermark") or 0),
+        "compaction_watermark": int(source.get("compaction_watermark") or 0),
+        "tombstone_records": tombstone_count,
+        "gc_eligible_record_count": tombstone_count,
+        "reclaimable_bytes": int(source.get("reclaimable_bytes") or 0),
+        "follower_cursor_retention_floor": int(
+            source.get("follower_cursor_retention_floor") or 0
+        ),
+        "follower_cursor_blocked_reclaim_count": follower_block_count,
+        "follower_cursor_safe_to_reclaim": follower_block_count == 0,
+        "physical_reclaim_errors": int(source.get("physical_reclaim_errors") or 0),
+    }
+
+
 def storage_lifecycle_report_shape(effective_storage_tuning: Json, metrics: Json | None = None) -> Json:
     return {
         "effective_storage_tuning": dict(effective_storage_tuning),
@@ -845,6 +871,7 @@ def storage_lifecycle_report_shape(effective_storage_tuning: Json, metrics: Json
         "storage_index_contract": default_storage_index_contract(metrics),
         "storage_cache_contract": default_storage_cache_contract(metrics),
         "storage_reclaim_contract": default_storage_reclaim_contract(metrics),
+        "storage_safety_snapshot": default_storage_safety_snapshot(metrics),
         "storage_write_sequence": list(STORAGE_WRITE_SEQUENCE_STEPS),
         "storage_read_sequence": list(STORAGE_READ_SEQUENCE_STEPS),
         "storage_cold_scan_sequence": list(STORAGE_COLD_SCAN_SEQUENCE_STEPS),
@@ -921,6 +948,12 @@ def attach_storage_lifecycle_shape(result: Json, effective_storage_tuning: Json 
     normalized_reclaim_contract = default_storage_reclaim_contract(metrics)
     normalized_reclaim_contract.update(reclaim_contract)
     shaped["storage_reclaim_contract"] = normalized_reclaim_contract
+    safety_snapshot = shaped.get("storage_safety_snapshot")
+    if not isinstance(safety_snapshot, dict):
+        safety_snapshot = {}
+    normalized_safety_snapshot = default_storage_safety_snapshot(metrics)
+    normalized_safety_snapshot.update(safety_snapshot)
+    shaped["storage_safety_snapshot"] = normalized_safety_snapshot
     shaped["storage_write_sequence"] = list(STORAGE_WRITE_SEQUENCE_STEPS)
     shaped["storage_read_sequence"] = list(STORAGE_READ_SEQUENCE_STEPS)
     shaped["storage_cold_scan_sequence"] = list(STORAGE_COLD_SCAN_SEQUENCE_STEPS)
