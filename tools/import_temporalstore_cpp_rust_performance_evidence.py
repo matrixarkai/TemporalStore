@@ -162,6 +162,41 @@ def _phase_scale_blockers(report: dict[str, Any]) -> list[str]:
     return blockers
 
 
+def _as_repo_relative_path(value: Any) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    path = Path(value)
+    if path.is_absolute():
+        try:
+            path = path.relative_to(ROOT)
+        except ValueError:
+            return path.as_posix()
+    return path.as_posix()
+
+
+def _expected_source_report(workload: str) -> str:
+    return f"docs/benchmarks/parity_{workload}/comparison.json"
+
+
+def _source_report(report: dict[str, Any]) -> str | None:
+    report_path = _as_repo_relative_path(report.get("report_path"))
+    if report_path:
+        return report_path
+    artifact_dir = _as_repo_relative_path(report.get("artifact_dir"))
+    if artifact_dir:
+        return f"{artifact_dir}/comparison.json"
+    return None
+
+
+def _source_report_blockers(workload: str, source_report: str | None) -> list[str]:
+    expected = _expected_source_report(workload)
+    if not source_report:
+        return ["source_report_missing"]
+    if source_report != expected:
+        return [f"source_report_drift:{expected}"]
+    return []
+
+
 def _fallback_flags(backend: dict[str, Any]) -> list[str]:
     flags: list[str] = []
     flags.extend(_list(backend.get("fallback_flags")))
@@ -302,6 +337,7 @@ def import_report(matrix: dict[str, Any], report: dict[str, Any]) -> dict[str, A
         if not isinstance(row, dict):
             continue
         blockers: list[str] = []
+        source_report = _source_report(report)
         if not isinstance(cpp, dict) or cpp.get("status") != "passed":
             blockers.append("cpp_backend_not_passed")
         if not isinstance(rust, dict) or rust.get("status") != "passed":
@@ -312,11 +348,13 @@ def import_report(matrix: dict[str, Any], report: dict[str, Any]) -> dict[str, A
             blockers.extend(_backend_storage_tuning_blockers("rust", rust))
         blockers.extend(same_config_blockers)
         blockers.extend(phase_scale_blockers)
+        blockers.extend(_source_report_blockers(workload, source_report))
         if blockers:
             row.update(
                 {
                     "status": "missing_live_evidence",
                     "same_config_match": False,
+                    "source_report": source_report,
                     "open_blockers": blockers,
                 }
             )
@@ -334,7 +372,7 @@ def import_report(matrix: dict[str, Any], report: dict[str, Any]) -> dict[str, A
                     "cpp": cpp_metrics,
                     "rust": rust_metrics,
                     "ratios": ratios,
-                    "source_report": str(report.get("artifact_dir") or report.get("report_path") or "input_report"),
+                    "source_report": source_report,
                     "open_blockers": blockers,
                 }
             )
@@ -347,7 +385,7 @@ def import_report(matrix: dict[str, Any], report: dict[str, Any]) -> dict[str, A
                 "cpp": cpp_metrics,
                 "rust": rust_metrics,
                 "ratios": ratios,
-                "source_report": str(report.get("artifact_dir") or report.get("report_path") or "input_report"),
+                "source_report": source_report,
                 "open_blockers": blockers,
             }
         )
@@ -378,6 +416,7 @@ def main() -> int:
 
     matrix = json.loads(args.matrix.read_text(encoding="utf-8"))
     report = json.loads(args.report.read_text(encoding="utf-8"))
+    report.setdefault("report_path", args.report.as_posix())
     updated = import_report(matrix, report)
     output = args.output or args.matrix
     output.write_text(json.dumps(updated, indent=2) + "\n", encoding="utf-8")

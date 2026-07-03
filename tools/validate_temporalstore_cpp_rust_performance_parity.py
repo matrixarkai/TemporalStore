@@ -137,6 +137,10 @@ def _expected_artifact_dir(workload: str) -> str:
     return f"docs/benchmarks/parity_{workload}"
 
 
+def _expected_source_report(workload: str) -> str:
+    return f"{_expected_artifact_dir(workload)}/comparison.json"
+
+
 def _validate_missing_evidence_hint(row: dict[str, Any], failures: list[str]) -> None:
     workload = str(row.get("workload") or "")
     hint = row.get("next_run_hint")
@@ -200,6 +204,15 @@ def _validate_missing_evidence_hint(row: dict[str, Any], failures: list[str]) ->
     ]:
         if expected not in required_result:
             failures.append(f"{workload} next_run_hint.required_result missing `{expected}`")
+
+
+def _validate_source_report(row: dict[str, Any], failures: list[str]) -> None:
+    workload = str(row.get("workload") or "")
+    expected = _expected_source_report(workload)
+    if row.get("source_report") != expected:
+        failures.append(
+            f"{workload} source_report must be {expected}"
+        )
 
 
 def _validate_metric_block(
@@ -390,6 +403,7 @@ def main() -> int:
             failures.append(f"{workload} cannot be {row_status} while open_blockers remain")
         if row.get("same_config_match") is not True:
             failures.append(f"{workload} requires same_config_match=true")
+        _validate_source_report(row, failures)
         _validate_completed_same_config(row, failures)
         require_selected_ref_parity = thresholds.get("require_selected_ref_parity") is not False
         cpp = _validate_metric_block(

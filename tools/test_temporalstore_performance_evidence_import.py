@@ -122,6 +122,7 @@ def _report_with_bad_qps_ratio() -> dict:
         "ingest_messages": {"message_qps": 10},
     }
     return {
+        "report_path": "docs/benchmarks/parity_1K_event_ingestion/comparison.json",
         "config": config,
         "comparison": {"phase0_correctness": {"evidence": {"selected_ref_parity": True}}},
         "phase_scale_matrix": _passed_phase_scale_matrix(),
@@ -275,7 +276,23 @@ class PerformanceEvidenceImportTest(unittest.TestCase):
         row = next(row for row in updated["rows"] if row["workload"] == "1K_event_ingestion")
         self.assertEqual(row["status"], "production_performance_parity")
         self.assertTrue(row["same_config_match"])
+        self.assertEqual(row["source_report"], "docs/benchmarks/parity_1K_event_ingestion/comparison.json")
         self.assertEqual(row["open_blockers"], [])
+
+    def test_source_report_drift_blocks_otherwise_good_report(self) -> None:
+        report = _report_with_good_parity()
+        report["report_path"] = "docs/benchmarks/parity_10K_event_ingestion/comparison.json"
+
+        updated = import_report(_matrix(), report)
+
+        row = next(row for row in updated["rows"] if row["workload"] == "1K_event_ingestion")
+        self.assertEqual(row["status"], "missing_live_evidence")
+        self.assertFalse(row["same_config_match"])
+        self.assertEqual(row["source_report"], "docs/benchmarks/parity_10K_event_ingestion/comparison.json")
+        self.assertIn(
+            "source_report_drift:docs/benchmarks/parity_1K_event_ingestion/comparison.json",
+            row["open_blockers"],
+        )
 
     def test_threshold_config_controls_timeout_error_and_fallback_policy(self) -> None:
         matrix = _matrix()
