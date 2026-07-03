@@ -18,6 +18,7 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
             "batch_size": 16,
             "payload_bytes": 8,
             "incremental_records": 16,
+            "repeat": 1,
             "raw_backends": "both",
             "min_full_shadow_qps": 0.0,
             "min_incremental_repair_qps": 0.0,
@@ -31,6 +32,7 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
         summary = bench.run_benchmark(self.make_args())
         self.assertEqual(summary["status"], "ok")
         self.assertEqual(summary["raw_backends"], ["temporalstore", "matrixkv"])
+        self.assertEqual(summary["repeat"], 1)
         self.assertEqual(len(summary["results"]), 2)
         by_backend = {item["raw_backend"]: item for item in summary["results"]}
         self.assertEqual(set(by_backend), {"temporalstore", "matrixkv"})
@@ -41,6 +43,7 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
             self.assertEqual(result["incremental_shadow"]["summary"]["metrics"]["written"], 16)
             self.assertEqual(result["incremental_repair"]["summary"]["raw_backend"], backend)
             self.assertEqual(result["incremental_repair"]["summary"]["promotion"]["metrics"]["written"], 16)
+            self.assertEqual(result["repeat_index"], 1)
             self.assertGreater(result["full_shadow"]["qps"], 0)
             self.assertGreater(result["incremental_repair"]["qps"], 0)
         self.assertIn("full_shadow_qps", summary["qps_summary"])
@@ -56,6 +59,14 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
             self.assertEqual(summary["raw_backends"], ["temporalstore"])
             self.assertIn("full_shadow_qps_avg", summary["qps_summary"])
             self.assertIn("incremental_shadow_qps_avg", summary["qps_summary"])
+
+    def test_local_benchmark_can_repeat_samples(self) -> None:
+        summary = bench.run_benchmark(self.make_args(records=16, incremental_records=4, raw_backends="temporalstore", repeat=2))
+        self.assertEqual(summary["status"], "ok")
+        self.assertEqual(summary["repeat"], 2)
+        self.assertEqual(summary["raw_backends"], ["temporalstore"])
+        self.assertEqual([result["repeat_index"] for result in summary["results"]], [1, 2])
+        self.assertEqual(len(summary["performance_gate"]["checks"]), 4)
 
 
     def test_performance_gate_passes_and_fails_thresholds(self) -> None:
@@ -90,6 +101,10 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
     def test_rejects_invalid_record_count(self) -> None:
         with self.assertRaises(bench.BackfillBenchmarkError):
             bench.run_benchmark(self.make_args(records=0))
+
+    def test_rejects_invalid_repeat_count(self) -> None:
+        with self.assertRaises(bench.BackfillBenchmarkError):
+            bench.run_benchmark(self.make_args(repeat=0))
 
     def test_rejects_invalid_backend_ratio(self) -> None:
         with self.assertRaises(bench.BackfillBenchmarkError):
