@@ -1075,6 +1075,102 @@ def estimate_source_window_records(source_range: Json) -> int | None:
         return None
 
 
+def build_plan_windows(args: argparse.Namespace, *, source_range: Json, target_prefix: str) -> Json:
+    window_size = int(getattr(args, 'plan_window_size', 0) or 0)
+    max_windows = int(getattr(args, 'plan_max_windows', 0) or 0)
+    if window_size <= 0:
+        return {
+            'enabled': False,
+            'window_size': 0,
+            'windows': [],
+            'total_windows': 0,
+            'truncated': False,
+            'parallel_write_safety': 'not_applicable',
+        }
+    effective_start = source_range.get('effective_start_seq')
+    effective_end = source_range.get('effective_end_seq')
+    if effective_start is None or effective_end is None:
+        return {
+            'enabled': True,
+            'window_size': window_size,
+            'windows': [],
+            'total_windows': 0,
+            'truncated': False,
+            'parallel_write_safety': 'requires_bounded_effective_end_seq',
+            'reason': 'source range has no effective_end_seq; pass --end-seq or use record_count/index metadata',
+        }
+    start = int(effective_start)
+    end = int(effective_end)
+    if end <= start:
+        return {
+            'enabled': True,
+            'window_size': window_size,
+            'windows': [],
+            'total_windows': 0,
+            'truncated': False,
+            'parallel_write_safety': 'empty_window',
+        }
+    windows: list[Json] = []
+    sequence = start
+    index = 0
+    while sequence < end:
+        if max_windows > 0 and index >= max_windows:
+            break
+        window_end = min(end, sequence + window_size)
+        chunk_job_id = f'{args.job_id}:w{index:04d}'
+        chunk_shadow_prefix = f'{target_prefix}:chunk:{index:04d}'
+        base_args = [
+            f'--source-prefix={args.source_prefix}',
+            f'--raw-backend={normalize_raw_backend(args.raw_backend)}',
+            f'--start-seq={sequence}',
+            f'--end-seq={window_end}',
+            f'--batch-size={args.batch_size}',
+        ]
+        windows.append({
+            'index': index,
+            'start_seq': sequence,
+            'end_seq': window_end,
+            'record_count': window_end - sequence,
+            'job_id': chunk_job_id,
+            'shared_target_prefix': target_prefix,
+            'parallel_shadow_prefix': chunk_shadow_prefix,
+            'shadow_command_args': [
+                '--mode=shadow',
+                f'--job-id={chunk_job_id}',
+                f'--target-prefix={chunk_shadow_prefix}',
+                '--dry-run=0',
+                *base_args,
+            ],
+            'validate_command_args': [
+                '--mode=validate_shadow',
+                f'--job-id={chunk_job_id}',
+                f'--target-prefix={chunk_shadow_prefix}',
+                *base_args,
+            ],
+            'incremental_repair_command_args': [
+                '--mode=incremental_repair',
+                f'--job-id={chunk_job_id}',
+                f'--target-prefix={chunk_shadow_prefix}',
+                '--confirm-incremental-repair=YES',
+                *base_args,
+            ],
+        })
+        sequence = window_end
+        index += 1
+    total_windows = (end - start + window_size - 1) // window_size
+    return {
+        'enabled': True,
+        'window_size': window_size,
+        'windows': windows,
+        'total_windows': total_windows,
+        'emitted_windows': len(windows),
+        'truncated': len(windows) < total_windows,
+        'parallel_write_safety': 'do_not_parallel_write_same_target_prefix; use per-window shadow prefixes and serialize active-prefix promotion',
+        'shared_target_strategy': 'sequential_only',
+        'parallel_shadow_strategy': 'independent_chunk_prefixes_can_be_built_and_validated_concurrently; incremental_repair_promotion_should_be_serialized',
+    }
+
+
 def require_active_target_confirmation(args: argparse.Namespace, kv: Any, target_prefix: str) -> None:
     if args.dry_run or args.mode != 'shadow':
         return
@@ -2096,6 +2192,7 @@ def run_plan(args: argparse.Namespace) -> Json:
     target_count = target.count()
     dead_letter_count = target.count_dead_letters()
     planned_source_records = estimate_source_window_records(source_range)
+    chunk_plan = build_plan_windows(args, source_range=source_range, target_prefix=target_prefix)
     active_target = bool(current_active_prefix and current_active_prefix == target_prefix)
     incremental_window_bounded = args.end_seq is not None and args.end_seq > args.start_seq
     safety_checks: Json = {
@@ -2157,6 +2254,7 @@ def run_plan(args: argparse.Namespace) -> Json:
         'partial': partial,
         'batch_size': args.batch_size,
         'source_scan_max_empty_shards': args.source_scan_max_empty_shards,
+        'chunk_plan': chunk_plan,
         'resume_state': resume_state,
         'checkpoint_key': cp_key,
         'target_state': {
@@ -2444,6 +2542,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--partial-filter-json', default='', help='exact-match JSON object filter for partial backfill')
     parser.add_argument('--partial-require-bounded', type=int, choices=[0, 1], default=1, help='require bounded range or filters for partial backfill')
     parser.add_argument('--batch-size', type=int, default=256)
+    parser.add_argument('--plan-window-size', type=int, default=0, help='plan-only bounded source records per execution window; 0 disables chunk planning')
+    parser.add_argument('--plan-max-windows', type=int, default=128, help='plan-only maximum windows to emit; 0 emits all windows')
     parser.add_argument('--source-scan-max-empty-shards', type=int, default=2)
     parser.add_argument('--dry-run', type=int, choices=[0, 1], default=1)
     parser.add_argument('--dry-run-check-target', type=int, choices=[0, 1], default=1, help='during dry-run, check target idempotency so duplicate and would-write counts match a real run')
@@ -2468,6 +2568,10 @@ def main() -> int:
     args.raw_backend = normalize_raw_backend(args.raw_backend)
     if args.batch_size <= 0:
         parser.error('--batch-size must be positive')
+    if args.plan_window_size < 0:
+        parser.error('--plan-window-size must be non-negative')
+    if args.plan_max_windows < 0:
+        parser.error('--plan-max-windows must be non-negative')
     if args.source_scan_max_empty_shards <= 0:
         parser.error('--source-scan-max-empty-shards must be positive')
     try:
