@@ -1056,6 +1056,8 @@ python3 tools/validate_open_source_readiness.py
 python3 tools/validate_codex_mcp_parity.py
 ```
 
+The backfill readiness validator performs static surface checks, confirms the manual documents the production-critical flags, runs the local batch/incremental benchmark for both raw-message storage options, and verifies checkpoint resume for both `temporalstore` and `matrixkv` raw modes. A passing result means the local open-source gate exercised full shadow, bounded incremental repair, batch-size sweep, latency/QPS gates, raw-backend parity, serving-record fingerprints, and resumable checkpoints.
+
 ## CLI Reference
 
 Core flags:
