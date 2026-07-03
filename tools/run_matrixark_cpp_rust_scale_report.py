@@ -2809,6 +2809,11 @@ def main() -> int:
     parser.add_argument("--metaserver", default=os.environ.get("MATRIXARK_TEMPORALSTORE_METASERVER", "127.0.0.1:18000"))
     parser.add_argument("--namespace", default=os.environ.get("MATRIXARK_TEMPORALSTORE_NAMESPACE", "deploy_ns"))
     parser.add_argument("--table", default=os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "deploy_table"))
+    parser.add_argument("--storage-family", default=os.environ.get("MATRIXARK_STORAGE_FAMILY", "shared_store"))
+    parser.add_argument("--storage-mode", default=os.environ.get("MATRIXARK_STORAGE_MODE", "multi_node"))
+    parser.add_argument("--write-mode", default=os.environ.get("MATRIXARK_WRITE_MODE", "async"))
+    parser.add_argument("--oplog-mode", default=os.environ.get("MATRIXARK_OPLOG_MODE", "async"))
+    parser.add_argument("--replication-mode", default=os.environ.get("MATRIXARK_REPLICATION_MODE", "shared_store"))
     parser.add_argument("--storage-prefix", default="matrixark:scale")
     parser.add_argument("--cpp-lib", default=str(ROOT / "output-ubuntu22/release/sdk/lib/libbcache2.so"))
     parser.add_argument("--rust-cli", default=str(ROOT / "sdk/rust/temporalstore/target/release/matrixark_record_log"))
@@ -2848,11 +2853,11 @@ def main() -> int:
     parsed = parser.parse_args()
 
     parsed.storage_options = {
-        "storage_family": "shared_store",
-        "storage_mode": "multi_node",
-        "write_mode": "async",
-        "oplog_mode": "async",
-        "replication_mode": "shared_store",
+        "storage_family": parsed.storage_family,
+        "storage_mode": parsed.storage_mode,
+        "write_mode": parsed.write_mode,
+        "oplog_mode": parsed.oplog_mode,
+        "replication_mode": parsed.replication_mode,
     }
     run_id = parsed.run_id or str(int(time.time() * 1000))
     if parsed.backend_worker:
