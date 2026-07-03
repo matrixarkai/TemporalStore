@@ -177,6 +177,33 @@ python3 tools/matrixark_context_backfill.py \
 
 Use dry runs to estimate source volume, verify source readability, and inspect expected serving-record counts before writing anything.
 
+## Prometheus Metrics
+
+Set `--prometheus-output=<path>` on production runs and archive the emitted file with the JSON summary. Full shadow and bounded batch runs emit operator-facing metrics for elapsed time, scan QPS, source range boundaries, source scan mode, processed record counters, serving-record counters, and the ordered serving-record fingerprint:
+
+```text
+matrixark_context_backfill_run_elapsed_ms
+matrixark_context_backfill_scan_qps
+matrixark_context_backfill_records_total
+matrixark_context_backfill_serving_records_total
+matrixark_context_backfill_serving_record_fingerprint_info
+matrixark_context_backfill_source_range
+matrixark_context_backfill_source_scan_mode
+```
+
+Incremental repair emits a separate promotion-focused surface so on-call can prove the bounded shadow validated and the active-prefix replay stayed consistent:
+
+```text
+matrixark_context_backfill_incremental_repair_status
+matrixark_context_backfill_incremental_repair_promotion_consistency_status
+matrixark_context_backfill_incremental_repair_promotion_consistency_check
+matrixark_context_backfill_incremental_repair_promotion_records
+matrixark_context_backfill_incremental_repair_promotion_source_range
+matrixark_context_backfill_incremental_repair_validation_status
+```
+
+The readiness validator generates Prometheus output for both `temporalstore` and `matrixkv` raw modes and fails if these metric families disappear.
+
 ## Backfill Throughput Benchmark
 
 Use `tools/matrixark_context_backfill_benchmark.py` as the local repeatable speed gate for the backfill path itself. It seeds a local raw ingestion log, runs a full shadow backfill, builds a bounded incremental repair shadow, then promotes that repair into an active prefix. Run it for both raw-message store options before claiming a performance improvement.
@@ -1056,7 +1083,7 @@ python3 tools/validate_open_source_readiness.py
 python3 tools/validate_codex_mcp_parity.py
 ```
 
-The backfill readiness validator performs static surface checks, confirms the manual documents the production-critical flags, runs the local batch/incremental benchmark for both raw-message storage options, and verifies checkpoint resume for both `temporalstore` and `matrixkv` raw modes. A passing result means the local open-source gate exercised full shadow, bounded incremental repair, batch-size sweep, latency/QPS gates, raw-backend parity, serving-record fingerprints, and resumable checkpoints.
+The backfill readiness validator performs static surface checks, confirms the manual documents the production-critical flags, runs the local batch/incremental benchmark for both raw-message storage options, verifies checkpoint resume for both `temporalstore` and `matrixkv` raw modes, and generates Prometheus output for shadow and incremental repair runs. A passing result means the local open-source gate exercised full shadow, bounded incremental repair, batch-size sweep, latency/QPS gates, raw-backend parity, serving-record fingerprints, resumable checkpoints, and scrapeable operator metrics.
 
 ## CLI Reference
 
