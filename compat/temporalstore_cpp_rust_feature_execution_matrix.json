@@ -201,16 +201,6 @@
         "C++ and Rust reports pass tools/compare_unified_cpp_rust_case_reports.py with matching case/step names and required output evidence",
         "matrix row can move to native_executable only after no static surface gate remains for this family"
       ]
-    },
-    {
-      "family": "context_benchmark_report_contract",
-      "status": "native_adapter_contract",
-      "native_cpp_executable": true,
-      "blocker": "",
-      "expected_runner_command": "compat/cpp_context_benchmark_report_adapter.h emits matrixark_vikingmem_context_benchmark_report_v1; tools/compare_context_benchmark_reports.py validates the C++ and Rust report pair.",
-      "suites": [
-        "cpp_context_benchmark_parity"
-      ]
     }
   ]
 }

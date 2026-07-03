@@ -12138,12 +12138,13 @@
         ]
       },
       {
-        "blocker": "Native C++ context pipeline corpus runner is not wired yet; C++ context source/debug paths remain required while Rust executes the shared cases.",
+        "blocker": "Native C++ context pipeline corpus runner is not wired yet; C++ context source/debug paths remain required while Rust executes the shared cases. native C++ context query debug corpus adapter still needs to emit matrixark_context_query_debug_v1 case results",
         "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --family context --cpp --require-cpp-native",
         "family": "context",
         "status": "temporary_static_surface_gate",
         "suites": [
-          "cpp_context_pipeline_parity"
+          "cpp_context_pipeline_parity",
+          "cpp_context_query_debug_parity"
         ],
         "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
         "exit_criteria": [
@@ -12250,24 +12251,6 @@
         ]
       },
       {
-        "blocker": "native C++ context query debug corpus adapter still needs to emit matrixark_context_query_debug_v1 case results",
-        "description": "C++ Context query/index debug-flow surfaces are mapped through context_model/model_manager files until a native shared corpus runner emits matrixark_context_query_debug_v1.",
-        "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-query-debug-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --family context --cpp --require-cpp-native",
-        "family": "context",
-        "mode": "static_surface_gate",
-        "status": "temporary_static_surface_gate",
-        "suite": "cpp_context_query_debug_parity",
-        "suites": [
-          "cpp_context_query_debug_parity"
-        ],
-        "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
-        "exit_criteria": [
-          "native C++ runner emits temporalstore_unified_case_report_v1 for all selected shared cases in context",
-          "C++ and Rust reports pass tools/compare_unified_cpp_rust_case_reports.py with matching case/step names and required output evidence",
-          "matrix row can move to native_executable only after no static surface gate remains for this family"
-        ]
-      },
-      {
         "blocker": "C++ executable shared adapter for client/proxy/data-node/metaserver control-plane workflows is still pending.",
         "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-control-plane-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --family client_proxy_control_plane --cpp --require-cpp-native",
         "family": "client_proxy_control_plane",
@@ -12295,15 +12278,6 @@
           "native C++ runner emits temporalstore_unified_case_report_v1 for all selected shared cases in product_api_models",
           "C++ and Rust reports pass tools/compare_unified_cpp_rust_case_reports.py with matching case/step names and required output evidence",
           "matrix row can move to native_executable only after no static surface gate remains for this family"
-        ]
-      },
-      {
-        "comparison_command": "python3 tools/compare_context_benchmark_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json>",
-        "family": "context_benchmark_report_contract",
-        "runner_command": "compat/cpp_context_benchmark_report_adapter.h emits matrixark_vikingmem_context_benchmark_report_v1; tools/compare_context_benchmark_reports.py validates the C++ and Rust report pair.",
-        "status": "native_adapter_contract",
-        "suites": [
-          "cpp_context_benchmark_parity"
         ]
       }
     ],

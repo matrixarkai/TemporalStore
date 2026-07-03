@@ -107,6 +107,34 @@ def _coverage_by_family(corpus: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return out
 
 
+def _coverage_identity_failures(corpus: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    coverage = corpus.get("coverage") if isinstance(corpus.get("coverage"), dict) else {}
+    rows = coverage.get("cpp_adapter_coverage")
+    seen_families: set[str] = set()
+    suite_owner: dict[str, str] = {}
+    for index, row in enumerate(_as_list(rows)):
+        if not isinstance(row, dict):
+            continue
+        family = str(row.get("family") or "")
+        if not family:
+            continue
+        if family in seen_families:
+            failures.append(f"coverage.cpp_adapter_coverage has duplicate family `{family}`")
+        seen_families.add(family)
+        for suite in _as_strings(row.get("suites")):
+            previous = suite_owner.get(suite)
+            if previous and previous != family:
+                failures.append(
+                    f"coverage.cpp_adapter_coverage suite `{suite}` is owned by both "
+                    f"`{previous}` and `{family}`"
+                )
+            suite_owner[suite] = family
+        if not _as_strings(row.get("suites")):
+            failures.append(f"coverage.cpp_adapter_coverage[{index}] family `{family}` has no suites")
+    return failures
+
+
 def main() -> int:
     matrix = json.loads(MATRIX.read_text(encoding="utf-8"))
     corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
@@ -116,6 +144,7 @@ def main() -> int:
         failures.append("unexpected schema")
 
     coverage = _coverage_by_family(corpus)
+    failures.extend(_coverage_identity_failures(corpus))
     rows = matrix.get("rows")
     if not isinstance(rows, list):
         rows = []
