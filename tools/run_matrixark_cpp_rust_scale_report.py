@@ -2303,8 +2303,8 @@ def production_policy_gate(report: Json) -> Json:
         selected_max = float(metrics.get("selected_refs_max") or metrics.get("selected_refs_avg") or 0)
         add_check(
             f"{backend}_selected_refs_non_empty",
-            backend_status != "passed" or selected_max > 0,
-            f"{backend} selected_refs_max={selected_max}",
+            backend_status == "passed" and selected_max > 0,
+            f"{backend} status={backend_status}; selected_refs_max={selected_max}",
         )
         broad_scan_count = int(metrics.get("broad_scan_used_count") or 0)
         add_check(
