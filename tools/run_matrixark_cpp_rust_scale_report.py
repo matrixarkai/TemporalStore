@@ -225,6 +225,24 @@ PUBLIC_STORAGE_CONTRACT: Json = {
     "compatibility_aliases": {},
 }
 
+PUBLIC_STORAGE_FEATURE_SHAPES: Json = {
+    "page_address_fields": ["shard_id", "zone_id", "segment_id", "page_id", "offset", "length", "generation"],
+    "block_address_fields": ["shard_id", "zone_id", "block_id", "offset", "length", "checksum"],
+    "page_index_entry_fields": ["logical_key", "timestamp_range", "page_addresses", "append_watermark", "generation"],
+    "block_index_entry_fields": ["page_address", "block_address", "extent", "checksum", "generation"],
+    "object_index_entry_fields": ["model", "table", "object_key", "page_chain", "tombstone", "generation"],
+    "storage_zone_fields": ["zone_id", "total_bytes", "used_bytes", "stale_bytes", "segments"],
+    "stream_fields": ["stream_id", "segments", "rollover_count", "sealed_segment_count"],
+    "segment_fields": ["segment_id", "extent_id", "start_offset", "sealed", "generation"],
+    "extent_fields": ["extent_id", "block_range", "reclaim_state", "generation"],
+    "slot_fields": ["slot_id", "dirty_generation", "object_refs", "page_refs", "tombstones", "owner_mismatch_count"],
+    "append_watermark_fields": ["shard_id", "slot_id", "log_index", "timestamp_ms"],
+    "compaction_watermark_fields": ["shard_id", "safe_generation", "safe_timestamp_ms", "follower_floor"],
+    "tombstone_fields": ["ref", "generation", "deleted_at_ms", "reason"],
+    "gc_eligibility_fields": ["ref", "eligible_after_ms", "has_tombstone", "follower_safe", "reclaimable_bytes"],
+    "follower_cursor_safety_fields": ["min_follower_cursor", "blocked_reclaim_bytes", "safe_to_reclaim"],
+}
+
 STORAGE_RECLAIM_SCOPE: Json = {
     "owner": "temporalstore_storage_lifecycle",
     "matrixark_context_gc_role": "marks_logical_raw_event_eligibility_only",
@@ -234,6 +252,7 @@ STORAGE_RECLAIM_SCOPE: Json = {
 STORAGE_LIFECYCLE_TOP_LEVEL_KEYS = [
     "effective_storage_tuning",
     "public_storage_contract",
+    "public_storage_feature_shapes",
     "storage_write_contract",
     "storage_read_contract",
     "storage_cold_scan_contract",
@@ -815,6 +834,10 @@ def storage_lifecycle_report_shape(effective_storage_tuning: Json, metrics: Json
             key: (dict(value) if isinstance(value, dict) else value)
             for key, value in PUBLIC_STORAGE_CONTRACT.items()
         },
+        "public_storage_feature_shapes": {
+            key: list(value) if isinstance(value, list) else value
+            for key, value in PUBLIC_STORAGE_FEATURE_SHAPES.items()
+        },
         "storage_write_contract": default_storage_write_contract(metrics),
         "storage_read_contract": default_storage_read_contract(metrics),
         "storage_cold_scan_contract": default_storage_cold_scan_contract(metrics),
@@ -848,6 +871,14 @@ def attach_storage_lifecycle_shape(result: Json, effective_storage_tuning: Json 
     # nested/legacy lifecycle fields.
     shaped["effective_storage_tuning"] = dict(tuning)
     shaped["public_storage_contract"] = shaped.get("public_storage_contract") or storage_lifecycle_report_shape(tuning)["public_storage_contract"]
+    shaped["public_storage_feature_shapes"] = (
+        shaped.get("public_storage_feature_shapes")
+        if isinstance(shaped.get("public_storage_feature_shapes"), dict)
+        else {
+            key: list(value) if isinstance(value, list) else value
+            for key, value in PUBLIC_STORAGE_FEATURE_SHAPES.items()
+        }
+    )
     write_contract = shaped.get("storage_write_contract")
     if not isinstance(write_contract, dict):
         write_contract = {}
@@ -2944,6 +2975,7 @@ def main() -> int:
             "required_storage_cache_metrics": STORAGE_CACHE_METRIC_NAMES,
             "required_storage_cache_contract_fields": STORAGE_CACHE_CONTRACT_FIELDS,
             "required_storage_lifecycle_metrics": STORAGE_LIFECYCLE_METRIC_NAMES,
+            "required_public_storage_feature_shapes": PUBLIC_STORAGE_FEATURE_SHAPES,
             "rust_record_log_root": os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_ROOT", ""),
             "python_ref_store": parsed.python_ref_store,
             "skip_context_pipeline": parsed.skip_context_pipeline,

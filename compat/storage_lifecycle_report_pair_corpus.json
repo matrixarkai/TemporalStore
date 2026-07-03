@@ -36,6 +36,23 @@
         "oplog": "AppendWatermark"
       }
     },
+    "public_storage_feature_shapes": {
+      "page_address_fields": ["shard_id", "zone_id", "segment_id", "page_id", "offset", "length", "generation"],
+      "block_address_fields": ["shard_id", "zone_id", "block_id", "offset", "length", "checksum"],
+      "page_index_entry_fields": ["logical_key", "timestamp_range", "page_addresses", "append_watermark", "generation"],
+      "block_index_entry_fields": ["page_address", "block_address", "extent", "checksum", "generation"],
+      "object_index_entry_fields": ["model", "table", "object_key", "page_chain", "tombstone", "generation"],
+      "storage_zone_fields": ["zone_id", "total_bytes", "used_bytes", "stale_bytes", "segments"],
+      "stream_fields": ["stream_id", "segments", "rollover_count", "sealed_segment_count"],
+      "segment_fields": ["segment_id", "extent_id", "start_offset", "sealed", "generation"],
+      "extent_fields": ["extent_id", "block_range", "reclaim_state", "generation"],
+      "slot_fields": ["slot_id", "dirty_generation", "object_refs", "page_refs", "tombstones", "owner_mismatch_count"],
+      "append_watermark_fields": ["shard_id", "slot_id", "log_index", "timestamp_ms"],
+      "compaction_watermark_fields": ["shard_id", "safe_generation", "safe_timestamp_ms", "follower_floor"],
+      "tombstone_fields": ["ref", "generation", "deleted_at_ms", "reason"],
+      "gc_eligibility_fields": ["ref", "eligible_after_ms", "has_tombstone", "follower_safe", "reclaimable_bytes"],
+      "follower_cursor_safety_fields": ["min_follower_cursor", "blocked_reclaim_bytes", "safe_to_reclaim"]
+    },
     "storage_read_sequence": [
       "logical_key_timestamp_range",
       "object_page_index_lookup",
@@ -408,6 +425,23 @@
         "stream_blob": "Segment",
         "oplog_sequence": "AppendWatermark"
       }
+    },
+    "public_storage_feature_shapes": {
+      "page_address_fields": ["shard_id", "zone_id", "segment_id", "page_id", "offset", "length", "generation"],
+      "block_address_fields": ["shard_id", "zone_id", "block_id", "offset", "length", "checksum"],
+      "page_index_entry_fields": ["logical_key", "timestamp_range", "page_addresses", "append_watermark", "generation"],
+      "block_index_entry_fields": ["page_address", "block_address", "extent", "checksum", "generation"],
+      "object_index_entry_fields": ["model", "table", "object_key", "page_chain", "tombstone", "generation"],
+      "storage_zone_fields": ["zone_id", "total_bytes", "used_bytes", "stale_bytes", "segments"],
+      "stream_fields": ["stream_id", "segments", "rollover_count", "sealed_segment_count"],
+      "segment_fields": ["segment_id", "extent_id", "start_offset", "sealed", "generation"],
+      "extent_fields": ["extent_id", "block_range", "reclaim_state", "generation"],
+      "slot_fields": ["slot_id", "dirty_generation", "object_refs", "page_refs", "tombstones", "owner_mismatch_count"],
+      "append_watermark_fields": ["shard_id", "slot_id", "log_index", "timestamp_ms"],
+      "compaction_watermark_fields": ["shard_id", "safe_generation", "safe_timestamp_ms", "follower_floor"],
+      "tombstone_fields": ["ref", "generation", "deleted_at_ms", "reason"],
+      "gc_eligibility_fields": ["ref", "eligible_after_ms", "has_tombstone", "follower_safe", "reclaimable_bytes"],
+      "follower_cursor_safety_fields": ["min_follower_cursor", "blocked_reclaim_bytes", "safe_to_reclaim"]
     },
     "storage_read_sequence": [
       "logical_key_timestamp_range",
