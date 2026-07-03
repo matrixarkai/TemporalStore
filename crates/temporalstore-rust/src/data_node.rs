@@ -26,12 +26,13 @@ use crate::engine::reports::{
     default_storage_read_sequence, default_storage_reclaim_contract_empty,
     default_storage_reclaim_scope, default_storage_reclaim_semantics,
     default_storage_write_contract, default_storage_write_contract_empty,
-    default_storage_write_sequence, effective_storage_tuning_from_env,
+    default_storage_safety_snapshot, default_storage_write_sequence,
+    effective_storage_tuning_from_env, storage_safety_snapshot_from_metrics,
     PublicStorageContract, PublicStorageFeatureShapes, ShardCompactionModelLayoutReport,
     ShardCompactionUtilityReport, SlotDumpManifest, StorageLifecyclePlan, StorageLifecycleReport,
     StorageLifecycleRequest, StorageManagerCycleReport, StorageManagerCycleRequest,
     StorageManagerStageReport, StorageProductionReadinessPolicy, StorageProductionReadinessReport,
-    StorageContractValue, StorageReclaimScope,
+    StorageContractValue, StorageReclaimScope, StorageSafetySnapshot,
 };
 use crate::engine::TemporalEngine;
 use crate::meta::{
@@ -218,6 +219,8 @@ pub struct DataNodeLifecycleReport {
     pub storage_cache_contract: BTreeMap<String, StorageContractValue>,
     #[serde(default = "default_storage_reclaim_contract_empty")]
     pub storage_reclaim_contract: BTreeMap<String, StorageContractValue>,
+    #[serde(default = "default_storage_safety_snapshot")]
+    pub storage_safety_snapshot: StorageSafetySnapshot,
     #[serde(default = "default_storage_write_sequence")]
     pub storage_write_sequence: Vec<String>,
     #[serde(default = "default_storage_read_sequence")]
@@ -261,6 +264,7 @@ impl Default for DataNodeLifecycleReport {
             storage_index_contract: default_storage_index_contract_empty(),
             storage_cache_contract: default_storage_cache_contract_empty(),
             storage_reclaim_contract: default_storage_reclaim_contract_empty(),
+            storage_safety_snapshot: default_storage_safety_snapshot(),
             storage_write_sequence: default_storage_write_sequence(),
             storage_read_sequence: default_storage_read_sequence(),
             storage_cold_scan_sequence: default_storage_cold_scan_sequence(),
@@ -2903,6 +2907,9 @@ impl DataNodeRuntime {
             storage_index_contract,
             storage_cache_contract,
             storage_reclaim_contract,
+            storage_safety_snapshot: storage_safety_snapshot_from_metrics(
+                &storage_lifecycle_metrics,
+            ),
             storage_write_sequence: default_storage_write_sequence(),
             storage_read_sequence: default_storage_read_sequence(),
             storage_cold_scan_sequence: default_storage_cold_scan_sequence(),

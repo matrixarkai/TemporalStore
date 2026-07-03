@@ -391,6 +391,17 @@
       "compaction_reclaimed_bytes": 512,
       "physical_reclaimed_bytes": 512,
       "physical_reclaim_errors": 0
+    },
+    "storage_safety_snapshot": {
+      "append_watermark": 42,
+      "compaction_watermark": 7,
+      "tombstone_records": 3,
+      "gc_eligible_record_count": 3,
+      "reclaimable_bytes": 1024,
+      "follower_cursor_retention_floor": 0,
+      "follower_cursor_blocked_reclaim_count": 2,
+      "follower_cursor_safe_to_reclaim": false,
+      "physical_reclaim_errors": 0
     }
   },
   "rust": {
@@ -780,6 +791,17 @@
       "reclaimable_bytes": 1024,
       "compaction_reclaimed_bytes": 512,
       "physical_reclaimed_bytes": 512,
+      "physical_reclaim_errors": 0
+    },
+    "storage_safety_snapshot": {
+      "append_watermark": 42,
+      "compaction_watermark": 7,
+      "tombstone_records": 3,
+      "gc_eligible_record_count": 3,
+      "reclaimable_bytes": 1024,
+      "follower_cursor_retention_floor": 0,
+      "follower_cursor_blocked_reclaim_count": 2,
+      "follower_cursor_safe_to_reclaim": false,
       "physical_reclaim_errors": 0
     }
   }

@@ -1037,6 +1037,8 @@ pub struct StorageLifecycleReport {
     pub storage_cache_contract: BTreeMap<String, StorageContractValue>,
     #[serde(default = "default_storage_reclaim_contract_empty")]
     pub storage_reclaim_contract: BTreeMap<String, StorageContractValue>,
+    #[serde(default = "default_storage_safety_snapshot")]
+    pub storage_safety_snapshot: StorageSafetySnapshot,
     #[serde(default = "default_storage_write_sequence")]
     pub storage_write_sequence: Vec<String>,
     #[serde(default = "default_storage_read_sequence")]
@@ -1089,6 +1091,7 @@ impl Default for StorageLifecycleReport {
             storage_index_contract: default_storage_index_contract_empty(),
             storage_cache_contract: default_storage_cache_contract_empty(),
             storage_reclaim_contract: default_storage_reclaim_contract_empty(),
+            storage_safety_snapshot: default_storage_safety_snapshot(),
             storage_write_sequence: default_storage_write_sequence(),
             storage_read_sequence: default_storage_read_sequence(),
             storage_cold_scan_sequence: default_storage_cold_scan_sequence(),
@@ -1318,6 +1321,8 @@ impl StorageLifecycleReport {
         self.storage_cache_contract = default_storage_cache_contract(&self.storage_lifecycle_metrics);
         self.storage_reclaim_contract =
             default_storage_reclaim_contract(&self.storage_lifecycle_metrics);
+        self.storage_safety_snapshot =
+            storage_safety_snapshot_from_metrics(&self.storage_lifecycle_metrics);
         self.storage_reclaim_scope = default_storage_reclaim_scope();
     }
 }
@@ -1422,6 +1427,45 @@ impl Default for StorageReclaimScope {
 
 pub fn default_storage_reclaim_scope() -> StorageReclaimScope {
     StorageReclaimScope::default()
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageSafetySnapshot {
+    pub append_watermark: u64,
+    pub compaction_watermark: u64,
+    pub tombstone_records: u64,
+    pub gc_eligible_record_count: u64,
+    pub reclaimable_bytes: u64,
+    pub follower_cursor_retention_floor: u64,
+    pub follower_cursor_blocked_reclaim_count: u64,
+    pub follower_cursor_safe_to_reclaim: bool,
+    pub physical_reclaim_errors: u64,
+}
+
+pub fn storage_safety_snapshot_from_metrics(
+    metrics: &BTreeMap<String, u64>,
+) -> StorageSafetySnapshot {
+    let follower_cursor_blocked_reclaim_count = metric(metrics, "stale_pages_skipped")
+        .saturating_add(metric(metrics, "stale_blocks_skipped"));
+    StorageSafetySnapshot {
+        append_watermark: metric(metrics, "append_watermark"),
+        compaction_watermark: metric(metrics, "compaction_watermark"),
+        tombstone_records: metric(metrics, "tombstone_records")
+            .saturating_add(metric(metrics, "stale_page_tombstones"))
+            .saturating_add(metric(metrics, "stale_block_tombstones")),
+        gc_eligible_record_count: metric(metrics, "tombstone_records")
+            .saturating_add(metric(metrics, "stale_page_tombstones"))
+            .saturating_add(metric(metrics, "stale_block_tombstones")),
+        reclaimable_bytes: metric(metrics, "reclaimable_bytes"),
+        follower_cursor_retention_floor: metric(metrics, "follower_cursor_retention_floor"),
+        follower_cursor_blocked_reclaim_count,
+        follower_cursor_safe_to_reclaim: follower_cursor_blocked_reclaim_count == 0,
+        physical_reclaim_errors: metric(metrics, "physical_reclaim_errors"),
+    }
+}
+
+pub fn default_storage_safety_snapshot() -> StorageSafetySnapshot {
+    storage_safety_snapshot_from_metrics(&default_storage_lifecycle_metrics())
 }
 
 pub fn default_storage_lifecycle_metrics() -> BTreeMap<String, u64> {
