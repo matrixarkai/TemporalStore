@@ -181,7 +181,7 @@ python3 tools/matrixark_context_backfill.py \
 
 `chunk_plan.execution_plan` groups independent shadow and validation commands into waves of up to `--plan-parallelism` windows. Treat those waves as the fast preparation phase. The same plan also emits `promotion_sequence`, which should be run one command at a time in sequence because it updates the active serving prefix.
 
-When `--plan-output-dir` is set, the planner writes `plan.json`, `artifact_manifest.json`, `shadow_wave_*.sh`, `validate_wave_*.sh`, and `promote_serial.sh`. The wave scripts run independent chunk work in parallel inside each wave. The promotion script runs repairs sequentially. The manifest records SHA-256 and size for each generated file. The planner refuses to write into a non-empty output directory unless `--confirm-plan-output-overwrite=YES` is supplied, which prevents accidentally mixing evidence from different recovery runs. Review `plan.json` and the generated scripts before execution, then archive the directory with the recovery ticket or release evidence.
+When `--plan-output-dir` is set, the planner writes `plan.json`, `artifact_manifest.json`, `shadow_wave_*.sh`, `validate_wave_*.sh`, and `promote_serial.sh`. The wave scripts run independent chunk work in parallel inside each wave. The promotion script runs repairs sequentially. The manifest records bundle-relative paths, original paths, SHA-256, size, and executable bit for each generated file. The planner refuses to write into a non-empty output directory unless `--confirm-plan-output-overwrite=YES` is supplied, which prevents accidentally mixing evidence from different recovery runs. Review `plan.json` and the generated scripts before execution, then archive the whole directory with the recovery ticket or release evidence.
 
 Before executing or accepting an archived plan bundle, verify it:
 
@@ -192,7 +192,7 @@ python3 tools/matrixark_context_backfill.py \
   --job-id=full-20260704
 ```
 
-The verifier returns `status="ok"` only when `artifact_manifest.json` is present, uses the supported schema, matches `--job-id` when provided, and every listed artifact still has the same size, SHA-256, and executable bit.
+The verifier returns `status="ok"` only when `artifact_manifest.json` is present, uses the supported schema, matches `--job-id` when provided, and every listed artifact still has the same size, SHA-256, and executable bit. It resolves `relative_path` entries against `--plan-output-dir` first, so archived bundles can be restored to another directory and verified before execution. Relative entries that escape the bundle are rejected. Older absolute-path manifests still verify in place.
 
 ## Quick Start: Full Shadow Backfill
 

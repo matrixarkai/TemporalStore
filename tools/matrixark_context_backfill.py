@@ -1197,14 +1197,33 @@ def _write_plan_script(path: Path, commands: list[list[str]], *, parallel: bool)
     path.chmod(0o755)
 
 
-def _artifact_file_info(path: Path) -> Json:
+def _artifact_file_info(path: Path, *, output_dir: Path | None = None) -> Json:
     payload = path.read_bytes()
-    return {
+    info: Json = {
         'path': str(path),
         'size_bytes': len(payload),
         'sha256': hashlib.sha256(payload).hexdigest(),
         'executable': bool(path.stat().st_mode & 0o111),
     }
+    if output_dir is not None:
+        try:
+            info['relative_path'] = str(path.relative_to(output_dir))
+        except ValueError:
+            info['relative_path'] = path.name
+    return info
+
+
+def _resolve_artifact_manifest_path(item: Json, output_dir: Path) -> tuple[Path, str]:
+    relative_path = str(item.get('relative_path') or '')
+    if relative_path:
+        path = Path(relative_path)
+        if path.is_absolute() or '..' in path.parts:
+            return output_dir / path, 'unsafe_relative_path'
+        return output_dir / path, 'relative_path'
+    path = Path(str(item.get('path') or ''))
+    if not path.is_absolute():
+        return output_dir / path, 'path_relative_to_output_dir'
+    return path, 'absolute_path'
 
 
 def _require_plan_output_dir_writable(args: argparse.Namespace, output_dir: Path) -> None:
@@ -1275,7 +1294,7 @@ def write_plan_artifacts(args: argparse.Namespace, summary: Json) -> Json:
         'job_id': args.job_id,
         'generated_at_ms': int(time.time() * 1000),
         'output_dir': str(output_dir),
-        'files': [_artifact_file_info(path) for path in artifact_paths],
+        'files': [_artifact_file_info(path, output_dir=output_dir) for path in artifact_paths],
     }
     manifest_path.write_text(json.dumps(manifest, sort_keys=True, indent=2), encoding='utf-8')
     artifact_summary['artifact_manifest_sha256'] = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
@@ -1295,6 +1314,7 @@ def run_verify_plan_artifacts(args: argparse.Namespace) -> Json:
         'manifest_schema_supported': False,
         'manifest_job_id_matches': False,
         'all_files_exist': False,
+        'all_paths_safe': False,
         'all_file_sizes_match': False,
         'all_file_sha256_match': False,
         'all_executable_bits_match': False,
@@ -1329,8 +1349,9 @@ def run_verify_plan_artifacts(args: argparse.Namespace) -> Json:
         if not isinstance(item, dict):
             file_checks.append({'status': 'failed', 'error': 'file entry is not an object'})
             continue
-        path = Path(str(item.get('path') or ''))
-        exists = path.exists()
+        path, path_source = _resolve_artifact_manifest_path(item, output_dir)
+        path_safe = path_source != 'unsafe_relative_path'
+        exists = path.exists() if path_safe else False
         size_matches = False
         sha_matches = False
         executable_matches = False
@@ -1347,6 +1368,10 @@ def run_verify_plan_artifacts(args: argparse.Namespace) -> Json:
             executable_matches = actual_executable == bool(item.get('executable'))
         file_checks.append({
             'path': str(path),
+            'manifest_path': str(item.get('path') or ''),
+            'manifest_relative_path': str(item.get('relative_path') or ''),
+            'path_source': path_source,
+            'path_safe': path_safe,
             'exists': exists,
             'size_matches': size_matches,
             'sha256_matches': sha_matches,
@@ -1359,11 +1384,14 @@ def run_verify_plan_artifacts(args: argparse.Namespace) -> Json:
             'actual_executable': actual_executable,
         })
     checks['all_files_exist'] = bool(files) and all(bool(item.get('exists')) for item in file_checks)
+    checks['all_paths_safe'] = bool(files) and all(bool(item.get('path_safe')) for item in file_checks)
     checks['all_file_sizes_match'] = bool(files) and all(bool(item.get('size_matches')) for item in file_checks)
     checks['all_file_sha256_match'] = bool(files) and all(bool(item.get('sha256_matches')) for item in file_checks)
     checks['all_executable_bits_match'] = bool(files) and all(bool(item.get('executable_matches')) for item in file_checks)
     for item in file_checks:
-        if not item.get('exists'):
+        if not item.get('path_safe'):
+            errors.append(f'unsafe artifact relative path: {item.get("manifest_relative_path")}')
+        elif not item.get('exists'):
             errors.append(f'missing artifact file: {item.get("path")}')
         elif not item.get('size_matches') or not item.get('sha256_matches') or not item.get('executable_matches'):
             errors.append(f'artifact file mismatch: {item.get("path")}')
