@@ -66,7 +66,28 @@ def build_execution_plan(audit: dict[str, Any], max_workloads: int | None = None
     }
 
 
-def run_plan(plan: dict[str, Any], *, include_post_validation: bool) -> int:
+def run_plan(
+    plan: dict[str, Any],
+    *,
+    include_post_validation: bool,
+    continue_on_error: bool = False,
+) -> dict[str, Any]:
+    results: list[dict[str, Any]] = []
+
+    def run_one(step: str, argv: list[str], *, workload: str | None = None, reason: str | None = None) -> None:
+        completed = subprocess.run(_pythonize(argv), cwd=ROOT, check=False)
+        row = {
+            "step": step,
+            "workload": workload,
+            "reason": reason,
+            "argv": argv,
+            "returncode": completed.returncode,
+            "status": "passed" if completed.returncode == 0 else "failed",
+        }
+        results.append(row)
+        if completed.returncode != 0 and not continue_on_error:
+            raise SystemExit(json.dumps({"schema": "temporalstore_cpp_rust_next_performance_execution_v1", "results": results}, indent=2))
+
     commands = plan.get("commands") if isinstance(plan.get("commands"), list) else []
     for command in commands:
         if not isinstance(command, dict):
@@ -74,14 +95,26 @@ def run_plan(plan: dict[str, Any], *, include_post_validation: bool) -> int:
         argv = command.get("argv")
         if not isinstance(argv, list) or not all(isinstance(item, str) for item in argv):
             raise SystemExit(f"invalid workflow command: {command!r}")
-        subprocess.run(_pythonize(argv), cwd=ROOT, check=True)
+        run_one(
+            str(command.get("step") or "workflow"),
+            argv,
+            workload=str(command.get("workload")) if command.get("workload") is not None else None,
+            reason=str(command.get("reason")) if command.get("reason") is not None else None,
+        )
     if include_post_validation:
         validators = plan.get("post_import_validation") if isinstance(plan.get("post_import_validation"), list) else []
         for argv in validators:
             if not isinstance(argv, list) or not all(isinstance(item, str) for item in argv):
                 raise SystemExit(f"invalid validation command: {argv!r}")
-            subprocess.run(_pythonize(argv), cwd=ROOT, check=True)
-    return 0
+            run_one("post_import_validation", argv)
+    failed = sum(1 for row in results if row["status"] != "passed")
+    return {
+        "schema": "temporalstore_cpp_rust_next_performance_execution_v1",
+        "continue_on_error": continue_on_error,
+        "status": "passed" if failed == 0 else "failed",
+        "failed_count": failed,
+        "results": results,
+    }
 
 
 def main() -> int:
@@ -90,6 +123,7 @@ def main() -> int:
     parser.add_argument("--matrix", type=Path, default=DEFAULT_MATRIX)
     parser.add_argument("--max-workloads", type=int, default=1)
     parser.add_argument("--execute", action="store_true", help="Run the generated commands. Default is dry-run JSON output.")
+    parser.add_argument("--continue-on-error", action="store_true", help="With --execute, keep running later commands after a failure.")
     parser.add_argument(
         "--skip-post-validation",
         action="store_true",
@@ -103,7 +137,13 @@ def main() -> int:
     if not args.execute:
         print(json.dumps(plan, indent=2) + "\n", end="")
         return 0
-    return run_plan(plan, include_post_validation=not args.skip_post_validation)
+    execution = run_plan(
+        plan,
+        include_post_validation=not args.skip_post_validation,
+        continue_on_error=args.continue_on_error,
+    )
+    print(json.dumps(execution, indent=2) + "\n", end="")
+    return 0 if execution["status"] == "passed" else 1
 
 
 if __name__ == "__main__":
