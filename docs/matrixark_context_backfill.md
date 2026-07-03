@@ -421,7 +421,8 @@ python3 tools/matrixark_dual_write_ingestion_benchmark.py \
   --raw-backends=both \
   --min-backend-qps-ratio=0.50 \
   --require-dual-write-counts=1 \
-  --json-output=/tmp/matrixark_dual_write_both.json
+  --json-output=/tmp/matrixark_dual_write_both.json \
+  --prometheus-output=/tmp/matrixark_dual_write_both.prom
 ```
 
 Direct TemporalStore/MatrixKV measurement against a running local cluster:
@@ -462,6 +463,8 @@ Key output fields:
 | `performance_gate` | Optional pass/fail release gate for `--min-ingestion-qps`, `--max-batch-p95-ms`, and `--require-dual-write-counts`. The command exits with code `2` when the gate fails. |
 
 Use `--require-dual-write-counts=1` for local-mode CI smoke so the test proves both raw and serving append paths ran before return. Use `--min-ingestion-qps` and `--max-batch-p95-ms` for local or direct release gates. In sweep mode, add `--min-backend-qps-ratio` so a release fails if one raw-message storage option falls too far behind the other. Direct mode should normally gate on QPS/latency; local synthetic call counts are only available in `--mode=local`.
+
+Set `--prometheus-output=<path>` to archive scrapeable dual-write ingestion metrics next to the JSON summary. The output includes `matrixark_dual_write_ingestion_qps`, p95 batch latency, per-backend record counts, dual-write count validation status, performance gate status, and sweep-mode `matrixark_dual_write_ingestion_backend_qps_ratio`.
 
 Recommended scale matrix:
 

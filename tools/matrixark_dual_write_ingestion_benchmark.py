@@ -228,6 +228,71 @@ def summarize_sweep(results: list[Json]) -> Json:
     }
 
 
+def prometheus_escape(value: Any) -> str:
+    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def render_prometheus(summary: Json) -> str:
+    lines = [
+        "# HELP matrixark_dual_write_ingestion_status Dual-write ingestion benchmark status.",
+        "# TYPE matrixark_dual_write_ingestion_status gauge",
+    ]
+    status = str(summary.get("status") or "unknown")
+    raw_backend = str(summary.get("raw_backend") or "")
+    if isinstance(summary.get("results"), list):
+        lines.append(f'matrixark_dual_write_ingestion_status{{status="{prometheus_escape(status)}"}} {1 if status == "ok" else 0}')
+        lines.extend([
+            "# HELP matrixark_dual_write_ingestion_qps Caller-visible dual-write records per second.",
+            "# TYPE matrixark_dual_write_ingestion_qps gauge",
+            "# HELP matrixark_dual_write_ingestion_batch_latency_ms Caller-visible append_many batch latency.",
+            "# TYPE matrixark_dual_write_ingestion_batch_latency_ms gauge",
+            "# HELP matrixark_dual_write_ingestion_records_total Dual-write ingestion records processed.",
+            "# TYPE matrixark_dual_write_ingestion_records_total gauge",
+            "# HELP matrixark_dual_write_ingestion_counts_validated Local-mode proof that raw and serving append paths completed.",
+            "# TYPE matrixark_dual_write_ingestion_counts_validated gauge",
+        ])
+        for result in summary.get("results") or []:
+            backend = prometheus_escape(result.get("raw_backend") or "")
+            result_status = str(result.get("status") or "unknown")
+            labels = f'raw_backend="{backend}",status="{prometheus_escape(result_status)}"'
+            lines.append(f"matrixark_dual_write_ingestion_qps{{{labels}}} {float(result.get('ingestion_qps', 0.0) or 0.0)}")
+            p95 = float((result.get("caller_visible_batch_latency_ms") or {}).get("p95", 0.0) or 0.0)
+            lines.append(f'matrixark_dual_write_ingestion_batch_latency_ms{{raw_backend="{backend}",quantile="p95"}} {p95}')
+            lines.append(f'matrixark_dual_write_ingestion_records_total{{raw_backend="{backend}"}} {int(result.get("records", 0) or 0)}')
+            counts_validated = 1 if bool(result.get("dual_write_counts_validated")) else 0
+            lines.append(f'matrixark_dual_write_ingestion_counts_validated{{raw_backend="{backend}"}} {counts_validated}')
+        ratio = float(((summary.get("summary") or {}).get("ingestion_qps") or {}).get("min_max_ratio", 0.0) or 0.0)
+        lines.extend([
+            "# HELP matrixark_dual_write_ingestion_backend_qps_ratio Slowest selected raw backend QPS divided by fastest selected backend QPS.",
+            "# TYPE matrixark_dual_write_ingestion_backend_qps_ratio gauge",
+            f"matrixark_dual_write_ingestion_backend_qps_ratio {ratio}",
+        ])
+    else:
+        lines.append(f'matrixark_dual_write_ingestion_status{{raw_backend="{prometheus_escape(raw_backend)}",status="{prometheus_escape(status)}"}} {1 if status == "ok" else 0}')
+        lines.extend([
+            "# HELP matrixark_dual_write_ingestion_qps Caller-visible dual-write records per second.",
+            "# TYPE matrixark_dual_write_ingestion_qps gauge",
+            f'matrixark_dual_write_ingestion_qps{{raw_backend="{prometheus_escape(raw_backend)}",status="{prometheus_escape(status)}"}} {float(summary.get("ingestion_qps", 0.0) or 0.0)}',
+            "# HELP matrixark_dual_write_ingestion_batch_latency_ms Caller-visible append_many batch latency.",
+            "# TYPE matrixark_dual_write_ingestion_batch_latency_ms gauge",
+            f'matrixark_dual_write_ingestion_batch_latency_ms{{raw_backend="{prometheus_escape(raw_backend)}",quantile="p95"}} {float((summary.get("caller_visible_batch_latency_ms") or {}).get("p95", 0.0) or 0.0)}',
+            "# HELP matrixark_dual_write_ingestion_records_total Dual-write ingestion records processed.",
+            "# TYPE matrixark_dual_write_ingestion_records_total gauge",
+            f'matrixark_dual_write_ingestion_records_total{{raw_backend="{prometheus_escape(raw_backend)}"}} {int(summary.get("records", 0) or 0)}',
+            "# HELP matrixark_dual_write_ingestion_counts_validated Local-mode proof that raw and serving append paths completed.",
+            "# TYPE matrixark_dual_write_ingestion_counts_validated gauge",
+            f'matrixark_dual_write_ingestion_counts_validated{{raw_backend="{prometheus_escape(raw_backend)}"}} {1 if bool(summary.get("dual_write_counts_validated")) else 0}',
+        ])
+    gate = summary.get("performance_gate") if isinstance(summary.get("performance_gate"), dict) else {}
+    gate_status = "passed" if gate.get("passed", True) else "failed"
+    lines.extend([
+        "# HELP matrixark_dual_write_ingestion_performance_gate_status Dual-write ingestion performance gate status.",
+        "# TYPE matrixark_dual_write_ingestion_performance_gate_status gauge",
+        f'matrixark_dual_write_ingestion_performance_gate_status{{status="{gate_status}"}} {1 if gate.get("passed", True) else 0}',
+    ])
+    return "\n".join(lines) + "\n"
+
+
 def run_backend_sweep(args: argparse.Namespace) -> Json:
     backends = parse_raw_backends(getattr(args, "raw_backends", ""), args.raw_backend)
     min_backend_qps_ratio = float(getattr(args, "min_backend_qps_ratio", 0.0) or 0.0)
@@ -411,6 +476,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-backend-qps-ratio", type=float, default=float(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_MIN_BACKEND_QPS_RATIO", "0")), help="sweep-mode gate: slowest selected raw backend QPS must be at least this fraction of fastest selected backend QPS")
     parser.add_argument("--require-dual-write-counts", type=int, choices=[0, 1], default=int(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_REQUIRE_COUNTS", "0")), help="require local-mode proof that both raw and serving append paths completed before return")
     parser.add_argument("--json-output", default=os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_JSON", ""))
+    parser.add_argument("--prometheus-output", default=os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_PROMETHEUS", ""), help="optional Prometheus-compatible metrics output path")
     return parser
 
 
@@ -421,6 +487,8 @@ def main(argv: list[str] | None = None) -> int:
     print(text)
     if args.json_output:
         Path(args.json_output).write_text(text + "\n")
+    if args.prometheus_output:
+        Path(args.prometheus_output).write_text(render_prometheus(summary))
     return 0 if summary.get("status") == "ok" else 2
 
 
