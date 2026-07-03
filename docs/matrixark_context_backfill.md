@@ -901,8 +901,8 @@ Important metrics:
 - `scanned`: source records read or attempted
 - `filtered`: source records excluded by partial filters
 - `skipped`: readable source records that do not materialize into serving records
-- `written`: materialized serving records appended to target
-- `duplicate`: records skipped by idempotency
+- `written`: materialized serving records confirmed appended by the target
+- `duplicate`: records skipped by source-level or append-time idempotency
 - `failed`: source records that failed read or materialization
 - `dead_letter`: failed records written to dead-letter output
 - `source_batches`: read batches
@@ -1049,7 +1049,7 @@ Fix source corruption or accept the loss only through an explicit incident decis
 
 ### High duplicate count
 
-This usually means the target prefix already has idempotency markers for the same source records. Confirm that the target prefix and job id are intentional. For retrying the same job, duplicates are expected and safe.
+This usually means the target prefix already has idempotency markers for the same source records. Confirm that the target prefix and job id are intentional. For retrying the same job, duplicates are expected and safe. Append-time idempotency is counted after the target confirms what actually landed, so `written` should not include records skipped during the final target append.
 
 ### No records written
 
