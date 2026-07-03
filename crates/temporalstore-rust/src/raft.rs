@@ -11456,40 +11456,18 @@ fn rustraft_capability_report_from_byteraft_admin(
             source_reference: "temporalstore_byteraft_runtime_admin_report".to_string(),
         })
         .collect::<Vec<_>>();
-    let satisfied = capability_evidence
+    let mut product_blockers = report
+        .blockers
         .iter()
-        .filter(|capability| capability.present)
-        .map(|capability| capability.capability.clone())
+        .map(|blocker| format!("temporalstore:blocker:{blocker}"))
         .collect::<Vec<_>>();
-    let missing = capability_evidence
-        .iter()
-        .filter(|capability| !capability.present)
-        .map(|capability| capability.capability.clone())
-        .collect::<Vec<_>>();
-    let blockers = capability_evidence
-        .iter()
-        .filter(|capability| !capability.present)
-        .flat_map(|capability| {
-            capability
-                .evidence
-                .iter()
-                .filter(|field| field.starts_with("missing:"))
-                .map(move |field| format!("{}:{}", capability.capability, field))
-        })
-        .chain(
-            report
-                .blockers
-                .iter()
-                .map(|blocker| format!("temporalstore:blocker:{blocker}")),
-        )
-        .collect::<Vec<_>>();
-    ::rustraft::RustRaftByteRaftRuntimeCapabilityReport {
-        ready: report.ready && missing.is_empty() && blockers.is_empty(),
-        capability_evidence,
-        satisfied,
-        missing,
-        blockers,
+    if !report.ready {
+        product_blockers.push("temporalstore:blocker:byteraft_admin_report_not_ready".to_string());
     }
+    ::rustraft::rustraft_runtime_capability_report_from_evidence(
+        capability_evidence,
+        product_blockers,
+    )
 }
 
 fn push_raft_metric(out: &mut String, name: &str, labels: &[(&str, String)], value: u64) {
