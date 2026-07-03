@@ -74,6 +74,48 @@ def _first_existing(env_name: str, candidates: list[Path]) -> Path | None:
     return max(existing, key=lambda path: path.stat().st_mtime)
 
 
+def _resolve_artifact(env_name: str, candidates: list[Path]) -> dict[str, Any]:
+    override = os.environ.get(env_name)
+    if override:
+        path = Path(override)
+        return {
+            "env": env_name,
+            "path": str(path),
+            "wsl_path": _wsl_path(path),
+            "source": "env",
+            "exists": path.exists(),
+        }
+    existing = [path for path in candidates if path.exists()]
+    if existing:
+        path = max(existing, key=lambda candidate: candidate.stat().st_mtime)
+        return {
+            "env": env_name,
+            "path": str(path),
+            "wsl_path": _wsl_path(path),
+            "source": "repo_default",
+            "exists": True,
+        }
+    return {
+        "env": env_name,
+        "path": None,
+        "wsl_path": None,
+        "source": "missing",
+        "exists": False,
+        "candidates": [str(path) for path in candidates],
+    }
+
+
+def _backend_artifact_preflight() -> dict[str, Any]:
+    cpp_lib = _resolve_artifact(CPP_LIB_ENV, CPP_LIB_CANDIDATES)
+    rust_cli = _resolve_artifact(RUST_CLI_ENV, RUST_CLI_CANDIDATES)
+    return {
+        "cpp_lib": cpp_lib,
+        "rust_cli": rust_cli,
+        "ready": cpp_lib["exists"] and rust_cli["exists"],
+        "override_env": [CPP_LIB_ENV, RUST_CLI_ENV],
+    }
+
+
 def _with_backend_artifact_overrides(argv: list[str]) -> list[str]:
     patched = list(argv)
     if "--cpp-lib" not in patched:
@@ -107,6 +149,11 @@ def build_execution_plan(audit: dict[str, Any], max_workloads: int | None = None
     return {
         "schema": "temporalstore_cpp_rust_next_performance_workflow_v1",
         "dry_run_default": True,
+        "execution_environment": {
+            "wsl_distro": wsl_distro,
+            "wsl_distro_env": WSL_DISTRO_ENV,
+            "backend_artifacts": _backend_artifact_preflight(),
+        },
         "workload_count": len({command.get("workload") for command in commands if isinstance(command, dict)}),
         "commands": [
             ({
