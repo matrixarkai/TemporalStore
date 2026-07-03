@@ -167,6 +167,7 @@ REQUIRED_LIFECYCLE_TOP_LEVEL_KEYS = [
     "public_storage_contract",
     "storage_write_contract",
     "storage_read_contract",
+    "storage_cold_scan_contract",
     "storage_read_sequence",
     "storage_cold_scan_sequence",
     "storage_lifecycle_phases",
@@ -247,6 +248,33 @@ REQUIRED_STORAGE_READ_METRICS = [
     "records_returned",
     "tombstones_filtered",
     "stale_generations_filtered",
+]
+
+REQUIRED_STORAGE_COLD_SCAN_RESULT_FIELDS = [
+    "timestamp_range",
+    "page_index_scan",
+    "no_cache_page_reads",
+    "decode_batch_limit",
+    "decode_byte_limit",
+    "deadline_ms",
+    "records_decoded",
+    "records_returned",
+    "hot_cache_promotions",
+    "cache_fill",
+    "promotion_policy",
+]
+
+REQUIRED_STORAGE_COLD_SCAN_METRICS = [
+    "cold_scan_no_cache_reads",
+    "cold_scan_page_index_scan_count",
+    "cold_scan_page_index_scan_ms",
+    "cold_scan_page_reads",
+    "cold_scan_decode_records_ms",
+    "cold_scan_records_decoded",
+    "cold_scan_records_returned",
+    "cold_scan_decode_batch_limit",
+    "cold_scan_decode_byte_limit",
+    "hot_cache_promotions",
 ]
 
 CANONICAL_PUBLIC_FIELDS = [
@@ -372,6 +400,18 @@ def _dig_read_contract(report: dict[str, Any]) -> dict[str, Any]:
         report.get("storage_read_contract"),
         report.get("storage_lifecycle", {}).get("read_contract") if isinstance(report.get("storage_lifecycle"), dict) else None,
         report.get("read_path", {}).get("contract") if isinstance(report.get("read_path"), dict) else None,
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            return candidate
+    return {}
+
+
+def _dig_cold_scan_contract(report: dict[str, Any]) -> dict[str, Any]:
+    candidates = [
+        report.get("storage_cold_scan_contract"),
+        report.get("storage_lifecycle", {}).get("cold_scan_contract") if isinstance(report.get("storage_lifecycle"), dict) else None,
+        report.get("cold_scan_path", {}).get("contract") if isinstance(report.get("cold_scan_path"), dict) else None,
     ]
     for candidate in candidates:
         if isinstance(candidate, dict):
@@ -574,6 +614,8 @@ def validate_contract_and_runner() -> list[str]:
     runner_write_metrics = _extract_runner_list("STORAGE_WRITE_METRIC_NAMES")
     runner_read_result_fields = _extract_runner_list("STORAGE_READ_RESULT_FIELDS")
     runner_read_metrics = _extract_runner_list("STORAGE_READ_METRIC_NAMES")
+    runner_cold_scan_result_fields = _extract_runner_list("STORAGE_COLD_SCAN_RESULT_FIELDS")
+    runner_cold_scan_metrics = _extract_runner_list("STORAGE_COLD_SCAN_METRIC_NAMES")
     runner_lifecycle_phases = _extract_runner_list("STORAGE_LIFECYCLE_PHASE_NAMES")
     runner_reclaim_semantics = _extract_runner_list("STORAGE_RECLAIM_SEMANTICS")
     runner_cache_layers = _extract_runner_list("STORAGE_CACHE_LAYER_NAMES")
@@ -599,6 +641,10 @@ def validate_contract_and_runner() -> list[str]:
         failures.append("runner:STORAGE_READ_METRIC_NAMES does not match the canonical read metrics")
     if runner_cold_scan_sequence != REQUIRED_STORAGE_COLD_SCAN_SEQUENCE:
         failures.append("runner:STORAGE_COLD_SCAN_SEQUENCE_STEPS does not match the canonical cold scan sequence")
+    if runner_cold_scan_result_fields != REQUIRED_STORAGE_COLD_SCAN_RESULT_FIELDS:
+        failures.append("runner:STORAGE_COLD_SCAN_RESULT_FIELDS does not match the canonical cold scan result fields")
+    if runner_cold_scan_metrics != REQUIRED_STORAGE_COLD_SCAN_METRICS:
+        failures.append("runner:STORAGE_COLD_SCAN_METRIC_NAMES does not match the canonical cold scan metrics")
     if runner_lifecycle_phases != REQUIRED_STORAGE_LIFECYCLE_PHASES:
         failures.append("runner:STORAGE_LIFECYCLE_PHASE_NAMES does not match the canonical lifecycle phase order")
     if runner_reclaim_semantics != REQUIRED_STORAGE_RECLAIM_SEMANTICS:
@@ -632,6 +678,12 @@ def validate_contract_and_runner() -> list[str]:
     for metric in REQUIRED_STORAGE_READ_METRICS:
         if f"`{metric}`" not in contract_text:
             failures.append(f"contract missing read metric `{metric}`")
+    for field in REQUIRED_STORAGE_COLD_SCAN_RESULT_FIELDS:
+        if f"`{field}`" not in contract_text:
+            failures.append(f"contract missing cold scan result field `{field}`")
+    for metric in REQUIRED_STORAGE_COLD_SCAN_METRICS:
+        if f"`{metric}`" not in contract_text:
+            failures.append(f"contract missing cold scan metric `{metric}`")
     for phase in REQUIRED_STORAGE_LIFECYCLE_PHASES:
         if f"`{phase}`" not in contract_text:
             failures.append(f"contract missing lifecycle phase `{phase}`")
@@ -665,6 +717,8 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
     rust_write_contract = _dig_write_contract(rust_report)
     cpp_read_contract = _dig_read_contract(cpp_report)
     rust_read_contract = _dig_read_contract(rust_report)
+    cpp_cold_scan_contract = _dig_cold_scan_contract(cpp_report)
+    rust_cold_scan_contract = _dig_cold_scan_contract(rust_report)
     cpp_write_sequence = _dig_sequence(cpp_report, "storage_write_sequence")
     rust_write_sequence = _dig_sequence(rust_report, "storage_write_sequence")
     cpp_read_sequence = _dig_sequence(cpp_report, "storage_read_sequence")
@@ -759,6 +813,33 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
             failures.append(f"{backend} read contract records_returned cannot exceed records_decoded")
         if read_contract.get("filter_policy") not in {"normal", "debug_replay", "cold_scan"}:
             failures.append(f"{backend} read contract filter_policy must be normal/debug_replay/cold_scan")
+    for field in REQUIRED_STORAGE_COLD_SCAN_RESULT_FIELDS:
+        if field not in cpp_cold_scan_contract:
+            failures.append(f"cpp cold scan contract missing result field `{field}`")
+        if field not in rust_cold_scan_contract:
+            failures.append(f"rust cold scan contract missing result field `{field}`")
+    for metric in REQUIRED_STORAGE_COLD_SCAN_METRICS:
+        if metric not in cpp_cold_scan_contract:
+            failures.append(f"cpp cold scan contract missing metric `{metric}`")
+        if metric not in rust_cold_scan_contract:
+            failures.append(f"rust cold scan contract missing metric `{metric}`")
+    for backend, cold_scan_contract in [("cpp", cpp_cold_scan_contract), ("rust", rust_cold_scan_contract)]:
+        decoded = _as_number(cold_scan_contract.get("records_decoded"))
+        returned = _as_number(cold_scan_contract.get("records_returned"))
+        if decoded is not None and returned is not None and returned > decoded:
+            failures.append(f"{backend} cold scan contract records_returned cannot exceed records_decoded")
+        for field in ["no_cache_page_reads", "decode_batch_limit", "decode_byte_limit", "deadline_ms", "hot_cache_promotions"]:
+            value = _as_number(cold_scan_contract.get(field))
+            if value is not None and value < 0:
+                failures.append(f"{backend} cold scan contract `{field}` must be non-negative")
+        if cold_scan_contract.get("cache_fill") is not False:
+            failures.append(f"{backend} cold scan contract cache_fill must be false")
+        if cold_scan_contract.get("promotion_policy") != "no_promote":
+            failures.append(f"{backend} cold scan contract promotion_policy must be no_promote")
+        if _as_number(cold_scan_contract.get("hot_cache_promotions")) not in (0.0, None):
+            failures.append(f"{backend} cold scan contract hot_cache_promotions must be zero")
+        if _as_number(cold_scan_contract.get("cold_scan_no_cache_reads")) is not None and _as_number(cold_scan_contract.get("cold_scan_no_cache_reads")) < 0:
+            failures.append(f"{backend} cold scan contract cold_scan_no_cache_reads must be non-negative")
 
     if cpp_write_sequence != REQUIRED_STORAGE_WRITE_SEQUENCE:
         failures.append(f"cpp storage_write_sequence drift: {cpp_write_sequence!r}")
