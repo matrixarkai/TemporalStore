@@ -22,6 +22,7 @@ class MatrixArkContextBackfillReadinessTest(unittest.TestCase):
             "repeat": 1,
             "skip_local_benchmark": False,
             "skip_baseline_gate": False,
+            "skip_cutover_gate": False,
             "skip_resume_gate": False,
             "skip_prometheus_gate": False,
             "json_output": "",
@@ -30,7 +31,7 @@ class MatrixArkContextBackfillReadinessTest(unittest.TestCase):
         return argparse.Namespace(**values)
 
     def test_static_readiness_checks_cover_public_surface(self) -> None:
-        summary = readiness.run_readiness(self.make_args(skip_local_benchmark=True, skip_baseline_gate=True, skip_resume_gate=True, skip_prometheus_gate=True))
+        summary = readiness.run_readiness(self.make_args(skip_local_benchmark=True, skip_baseline_gate=True, skip_cutover_gate=True, skip_resume_gate=True, skip_prometheus_gate=True))
         self.assertEqual(summary["status"], "ok")
         names = {item["name"]: item["passed"] for item in summary["checks"]}
         self.assertTrue(names["backfill_modes_cover_batch_and_incremental"])
@@ -42,6 +43,7 @@ class MatrixArkContextBackfillReadinessTest(unittest.TestCase):
         self.assertTrue(names["manual_mentions_--baseline-json"])
         self.assertEqual(summary["benchmark"], {})
         self.assertEqual(summary["baseline_gate"], {})
+        self.assertEqual(summary["cutover_gate"], {})
         self.assertEqual(summary["resume_gate"], {})
         self.assertEqual(summary["prometheus_gate"], {})
 
@@ -64,6 +66,15 @@ class MatrixArkContextBackfillReadinessTest(unittest.TestCase):
         self.assertTrue(names["baseline_gate_compared_qps_and_latency"])
         self.assertTrue(names["baseline_gate_exercised_batch_sweep"])
         self.assertEqual(set(summary["baseline_gate"]["raw_backends"]), {"temporalstore", "matrixkv"})
+        self.assertTrue(names["cutover_gate_status_ok"])
+        self.assertTrue(names["cutover_gate_covers_temporalstore_and_matrixkv"])
+        self.assertTrue(names["cutover_gate_shadow_wrote_records"])
+        self.assertTrue(names["cutover_gate_activation_validated_shadow"])
+        self.assertTrue(names["cutover_gate_activation_updates_active_pointer"])
+        self.assertTrue(names["cutover_gate_activation_audit_written"])
+        self.assertTrue(names["cutover_gate_rollback_restores_previous_pointer"])
+        self.assertTrue(names["cutover_gate_rollback_audit_written"])
+        self.assertEqual({item["raw_backend"] for item in summary["cutover_gate"]["results"]}, {"temporalstore", "matrixkv"})
         self.assertTrue(names["resume_gate_status_ok"])
         self.assertTrue(names["resume_gate_covers_temporalstore_and_matrixkv"])
         self.assertTrue(names["resume_gate_checkpoint_found_on_second_run"])
@@ -96,6 +107,7 @@ class MatrixArkContextBackfillReadinessTest(unittest.TestCase):
             self.assertIn("prometheus_gate_incremental_repair_metrics_present", output.read_text(encoding="utf-8"))
             self.assertIn("local_benchmark_baseline_gate_available", output.read_text(encoding="utf-8"))
             self.assertIn("baseline_gate_candidate_passed", output.read_text(encoding="utf-8"))
+            self.assertIn("cutover_gate_rollback_restores_previous_pointer", output.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
