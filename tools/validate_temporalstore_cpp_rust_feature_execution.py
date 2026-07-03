@@ -135,6 +135,27 @@ def _coverage_identity_failures(corpus: dict[str, Any]) -> list[str]:
     return failures
 
 
+def _case_matches_family(case: dict[str, Any], family: str, family_suites: set[str]) -> bool:
+    if case.get("family") == family:
+        return True
+    for step in _as_list(case.get("steps")):
+        if not isinstance(step, dict):
+            continue
+        command = step.get("command") if isinstance(step.get("command"), dict) else {}
+        if command.get("suite") in family_suites:
+            return True
+    return False
+
+
+def _case_count_by_family(corpus: dict[str, Any], coverage: dict[str, dict[str, Any]]) -> dict[str, int]:
+    cases = [case for case in _as_list(corpus.get("cases")) if isinstance(case, dict)]
+    counts: dict[str, int] = {}
+    for family, source in coverage.items():
+        family_suites = {str(suite) for suite in source["suites"]}
+        counts[family] = sum(1 for case in cases if _case_matches_family(case, family, family_suites))
+    return counts
+
+
 def main() -> int:
     matrix = json.loads(MATRIX.read_text(encoding="utf-8"))
     corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
@@ -145,6 +166,7 @@ def main() -> int:
 
     coverage = _coverage_by_family(corpus)
     failures.extend(_coverage_identity_failures(corpus))
+    case_counts = _case_count_by_family(corpus, coverage)
     rows = matrix.get("rows")
     if not isinstance(rows, list):
         rows = []
@@ -167,6 +189,15 @@ def main() -> int:
         missing_suites = sorted(source["suites"] - matrix_suites)
         if missing_suites:
             failures.append(f"{family} missing suites from corpus coverage: {', '.join(missing_suites)}")
+        selected_case_count = case_counts.get(family, 0)
+        if selected_case_count <= 0:
+            failures.append(f"{family} --family filter selects no shared corpus cases")
+        declared_case_count = row.get("selected_case_count")
+        if declared_case_count != selected_case_count:
+            failures.append(
+                f"{family} selected_case_count mismatch: matrix={declared_case_count!r} "
+                f"computed={selected_case_count}"
+            )
         if status in STATIC_STATUSES:
             if source["static_rows_missing_comparison"]:
                 failures.append(
@@ -252,6 +283,7 @@ def main() -> int:
     print("TemporalStore C++/Rust feature execution matrix is explicit and fail-closed")
     print(f"- families={len(rows)}")
     print(f"- static_or_mixed_gates={static_count}")
+    print(f"- selected_case_count={sum(case_counts.values())}")
     print(f"- feature_correct={feature_correct}")
     return 0
 

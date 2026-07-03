@@ -24,6 +24,7 @@
       "family": "storage/cache",
       "status": "temporary_static_surface_gate",
       "native_cpp_executable": false,
+      "selected_case_count": 60,
       "blocker": "Native C++ storage/cache corpus runner is not wired yet; static C++ object/page/slot/storage harness paths remain required.",
       "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD=cpp-storage-corpus-runner python3 tools/run_temporalstore_unified_tests.py --family storage/cache --cpp --corpus {corpus} --require-cpp-native",
       "suites": [
@@ -41,6 +42,7 @@
       "family": "raft",
       "status": "mixed_native_and_static_surface_gate",
       "native_cpp_executable": false,
+      "selected_case_count": 58,
       "blocker": "Some legacy RustRaft/C++ source-surface gates remain static until a native C++ shared-case runner emits temporalstore_unified_case_report_v1 for every Raft case.",
       "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-raft-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --family raft --cpp --require-cpp-native",
       "suites": [
@@ -57,6 +59,7 @@
       "family": "context",
       "status": "temporary_static_surface_gate",
       "native_cpp_executable": false,
+      "selected_case_count": 21,
       "blocker": "Native C++ context pipeline corpus runner is not wired yet; C++ context source/debug paths remain required while Rust executes the shared cases.",
       "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --family context --cpp --require-cpp-native",
       "suites": [
@@ -74,6 +77,7 @@
       "family": "client/proxy/control-plane",
       "status": "temporary_static_surface_gate",
       "native_cpp_executable": false,
+      "selected_case_count": 27,
       "blocker": "Native C++ control-plane corpus runner is not wired yet; client/proxy/data-node/metaserver source and harness paths remain required.",
       "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-control-plane-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --family client/proxy/control-plane --cpp --require-cpp-native",
       "suites": [
@@ -94,6 +98,7 @@
       "family": "ingestion",
       "status": "temporary_static_surface_gate",
       "native_cpp_executable": false,
+      "selected_case_count": 11,
       "blocker": "Native C++ Kafka/Flink/dead-letter ingestion corpus runner is not wired yet; static ingestion source/harness paths remain required.",
       "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-ingestion-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --family ingestion --cpp --require-cpp-native",
       "suites": [
@@ -110,6 +115,7 @@
       "family": "benchmarks",
       "status": "mixed_native_and_static_surface_gate",
       "native_cpp_executable": false,
+      "selected_case_count": 6,
       "blocker": "Benchmark report adapter exists, but at least one shared benchmark corpus step still depends on a static C++ surface until a native C++ benchmark corpus runner emits comparable reports for the benchmarks family.",
       "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-benchmark-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --family benchmarks --cpp --require-cpp-native",
       "suites": [
@@ -126,6 +132,7 @@
       "family": "ops/scale",
       "status": "temporary_static_surface_gate",
       "native_cpp_executable": false,
+      "selected_case_count": 3,
       "blocker": "Native C++ ops/scale SLO corpus runner is not wired yet; static readiness, external chaos, rolling restart, and scale report paths remain required.",
       "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-ops-scale-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --family ops/scale --cpp --require-cpp-native",
       "suites": [
@@ -142,6 +149,7 @@
       "family": "codex/mcp",
       "status": "temporary_static_surface_gate",
       "native_cpp_executable": false,
+      "selected_case_count": 2,
       "blocker": "Native C++ Codex/MCP parity runner is not wired yet; static MCP integration paths remain required.",
       "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-codex-mcp-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --family codex/mcp --cpp --require-cpp-native",
       "suites": [
@@ -158,6 +166,7 @@
       "family": "Redis/admin",
       "status": "mixed_native_and_static_surface_gate",
       "native_cpp_executable": false,
+      "selected_case_count": 11,
       "blocker": "Native C++ Redis/admin product command corpus runner is not wired yet; Rust executes the broad Redis engine command flow while C++ parity remains tied to Redis/admin/API product surface evidence.",
       "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-redis-admin-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --family Redis/admin --cpp --require-cpp-native",
       "suites": [
@@ -174,6 +183,7 @@
       "family": "client_proxy_control_plane",
       "status": "temporary_static_surface_gate",
       "native_cpp_executable": false,
+      "selected_case_count": 2,
       "blocker": "C++ executable shared adapter for client/proxy/data-node/metaserver control-plane workflows is still pending.",
       "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-control-plane-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --family client_proxy_control_plane --cpp --require-cpp-native",
       "suites": [
@@ -190,6 +200,7 @@
       "family": "product_api_models",
       "status": "temporary_static_surface_gate",
       "native_cpp_executable": false,
+      "selected_case_count": 1,
       "blocker": "C++ executable shared adapter for Redis/admin/Feature/Sequence/IPS/Risk command corpus is still pending.",
       "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-product-api-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --family product_api_models --cpp --require-cpp-native",
       "suites": [
