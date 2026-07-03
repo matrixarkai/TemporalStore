@@ -16,7 +16,7 @@ Python was used only as the harness/orchestration layer. Rust context runs used 
 Full context comparison with C++ and Rust:
 
 ```bash
-LD_LIBRARY_PATH=/root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib \
+LD_LIBRARY_PATH=<repo>/output-ubuntu22/release/sdk/lib \
 python3 tools/run_matrixark_cpp_rust_scale_report.py \
   --events 200 \
   --raw-ops 200 \
@@ -32,8 +32,8 @@ python3 tools/run_matrixark_cpp_rust_scale_report.py \
   --io-timeout-ms 60000 \
   --ingest-deadline-ms 60000 \
   --retrieve-deadline-ms 10000 \
-  --cpp-lib /root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so \
-  --rust-cli /root/src/github-services/TemporalStore/sdk/rust/temporalstore/target/release/matrixark_record_log \
+  --cpp-lib <repo>/output-ubuntu22/release/sdk/lib/libbcache2.so \
+  --rust-cli <repo>/sdk/rust/temporalstore/target/release/matrixark_record_log \
   --artifact-dir docs/benchmarks/current_cpp_rust_context_scale_20260702_ldpath \
   --run-id current_cpp_rust_context_scale_ldpath \
   --require-perf-parity
@@ -42,7 +42,7 @@ python3 tools/run_matrixark_cpp_rust_scale_report.py \
 Rust-only context diagnostic:
 
 ```bash
-LD_LIBRARY_PATH=/root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib \
+LD_LIBRARY_PATH=<repo>/output-ubuntu22/release/sdk/lib \
 python3 tools/run_matrixark_cpp_rust_scale_report.py \
   --backends rust \
   --events 50 \
@@ -59,8 +59,8 @@ python3 tools/run_matrixark_cpp_rust_scale_report.py \
   --io-timeout-ms 60000 \
   --ingest-deadline-ms 60000 \
   --retrieve-deadline-ms 10000 \
-  --cpp-lib /root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so \
-  --rust-cli /root/src/github-services/TemporalStore/sdk/rust/temporalstore/target/release/matrixark_record_log \
+  --cpp-lib <repo>/output-ubuntu22/release/sdk/lib/libbcache2.so \
+  --rust-cli <repo>/sdk/rust/temporalstore/target/release/matrixark_record_log \
   --artifact-dir docs/benchmarks/current_rust_context_scale_diag_20260702 \
   --run-id current_rust_context_scale_diag
 ```
@@ -68,7 +68,7 @@ python3 tools/run_matrixark_cpp_rust_scale_report.py \
 Raw storage C++/Rust comparison:
 
 ```bash
-LD_LIBRARY_PATH=/root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib \
+LD_LIBRARY_PATH=<repo>/output-ubuntu22/release/sdk/lib \
 python3 tools/run_matrixark_cpp_rust_scale_report.py \
   --skip-context-pipeline \
   --events 10 \
@@ -82,8 +82,8 @@ python3 tools/run_matrixark_cpp_rust_scale_report.py \
   --backend-worker-timeout-sec 300 \
   --request-timeout-ms 60000 \
   --io-timeout-ms 60000 \
-  --cpp-lib /root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so \
-  --rust-cli /root/src/github-services/TemporalStore/sdk/rust/temporalstore/target/release/matrixark_record_log \
+  --cpp-lib <repo>/output-ubuntu22/release/sdk/lib/libbcache2.so \
+  --rust-cli <repo>/sdk/rust/temporalstore/target/release/matrixark_record_log \
   --artifact-dir docs/benchmarks/current_cpp_rust_raw_compare_20260702 \
   --run-id current_cpp_rust_raw_compare
 ```

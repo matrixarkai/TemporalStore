@@ -52,7 +52,7 @@
         "rust_client": {
           "backpressure_rejections_total": 0,
           "backpressure_timeout_ms": 60000,
-          "cli_path": "/root/src/github-services/TemporalStore/sdk/rust/temporalstore/target/release/matrixark_record_log",
+          "cli_path": "<repo>/sdk/rust/temporalstore/target/release/matrixark_record_log",
           "commands_failed_total": 75,
           "commands_total": 534,
           "direct_sdk_bridge": true,
@@ -1261,7 +1261,7 @@
   "worker": {
     "command": [
       "/usr/bin/python3",
-      "/mnt/c/Users/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/push-feature-parity-worktree/tools/run_matrixark_cpp_rust_scale_report.py",
+      "<codex-worktree>/tools/run_matrixark_cpp_rust_scale_report.py",
       "--backend-worker",
       "rust",
       "--backend-worker-output",
@@ -1299,9 +1299,9 @@
       "--storage-prefix",
       "matrixark:scale",
       "--cpp-lib",
-      "/root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so",
+      "<repo>/output-ubuntu22/release/sdk/lib/libbcache2.so",
       "--rust-cli",
-      "/root/src/github-services/TemporalStore/sdk/rust/temporalstore/target/release/matrixark_record_log",
+      "<repo>/sdk/rust/temporalstore/target/release/matrixark_record_log",
       "--python-ref-store",
       "",
       "--request-timeout-ms",
