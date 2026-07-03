@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from run_temporalstore_cpp_rust_next_performance_workflow import _pythonize, build_execution_plan, run_plan
+from run_temporalstore_cpp_rust_next_performance_workflow import _pythonize, build_execution_plan, default_execution_output, run_plan
 
 
 class NextPerformanceWorkflowTest(unittest.TestCase):
@@ -62,6 +62,25 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
         self.assertIn(
             ["python", "tools/validate_storage_engine_9_phase_parity.py", "--loops", "9"],
             plan["post_import_validation"],
+        )
+        self.assertEqual(
+            default_execution_output(plan),
+            Path(__file__).resolve().parents[1] / "docs/benchmarks/parity_10K_event_ingestion/execution.json",
+        )
+
+    def test_default_execution_output_ignores_import_only_plans(self) -> None:
+        self.assertIsNone(
+            default_execution_output(
+                {
+                    "commands": [
+                        {
+                            "step": "import_evidence",
+                            "workload": "10K_event_ingestion",
+                            "recommended_execution_output": "docs/benchmarks/parity_10K_event_ingestion/execution.json",
+                        }
+                    ]
+                }
+            )
         )
 
     def test_pythonize_uses_current_interpreter(self) -> None:
