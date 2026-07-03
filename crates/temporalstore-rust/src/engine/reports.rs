@@ -1001,6 +1001,10 @@ pub struct StorageLifecycleReport {
     pub storage_cache_semantics: Vec<String>,
     #[serde(default = "default_storage_reclaim_semantics")]
     pub storage_reclaim_semantics: Vec<String>,
+    #[serde(default = "default_storage_reclaim_scope")]
+    pub storage_reclaim_scope: StorageReclaimScope,
+    #[serde(default = "default_storage_lifecycle_metrics")]
+    pub storage_lifecycle_metrics: BTreeMap<String, u64>,
     pub plan: StorageLifecyclePlan,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dump_manifest: Option<SlotDumpManifest>,
@@ -1035,6 +1039,8 @@ impl Default for StorageLifecycleReport {
             storage_cache_layers: default_storage_cache_layers(),
             storage_cache_semantics: default_storage_cache_semantics(),
             storage_reclaim_semantics: default_storage_reclaim_semantics(),
+            storage_reclaim_scope: default_storage_reclaim_scope(),
+            storage_lifecycle_metrics: default_storage_lifecycle_metrics(),
             plan: StorageLifecyclePlan::default(),
             dump_manifest: None,
             cache_entries_removed: 0,
@@ -1048,6 +1054,204 @@ impl Default for StorageLifecycleReport {
             install_roll_forward_reports: Vec::new(),
             object_lifecycle: StorageObjectLifecycleReport::default(),
         }
+    }
+}
+
+impl StorageLifecycleReport {
+    pub fn refresh_public_lifecycle_metrics(&mut self) {
+        let mut metrics = default_storage_lifecycle_metrics();
+        let plan = &self.plan;
+        let object_lifecycle = &self.object_lifecycle;
+        let follower_retention_block_count = self.manifest_prune_plan.follower_blocks.len() as u64;
+
+        fn put(metrics: &mut BTreeMap<String, u64>, name: &str, value: u64) {
+            metrics.insert(name.to_string(), value);
+        }
+        fn flag(value: bool) -> u64 {
+            if value {
+                1
+            } else {
+                0
+            }
+        }
+
+        put(&mut metrics, "storage_manager_prepare_count", 1);
+        put(&mut metrics, "storage_manager_reclaim_count", 1);
+        put(
+            &mut metrics,
+            "storage_manager_evict_count",
+            flag(self.cache_entries_removed > 0),
+        );
+        put(
+            &mut metrics,
+            "storage_manager_expire_count",
+            flag(object_lifecycle.tombstoned_object_ids > 0),
+        );
+        put(
+            &mut metrics,
+            "storage_manager_page_gc_count",
+            flag(plan.reclaimable_physical_bytes > 0),
+        );
+        put(
+            &mut metrics,
+            "storage_manager_block_gc_count",
+            flag(plan.reclaimable_physical_bytes > 0),
+        );
+        put(
+            &mut metrics,
+            "storage_manager_compaction_count",
+            flag(!plan.reclaim_candidates.is_empty()),
+        );
+        put(
+            &mut metrics,
+            "storage_manager_index_gc_count",
+            flag(!self.manifest_prune_plan.prunable_manifest_ids.is_empty()
+                || !self.manifest_prune_plan.prunable_marker_manifest_ids.is_empty()),
+        );
+        put(
+            &mut metrics,
+            "storage_manager_delayed_destroy_count",
+            flag(!plan.delayed_destroy_page_segment_ids.is_empty()
+                || !self.delayed_destroy_purged_segments.is_empty()),
+        );
+        put(
+            &mut metrics,
+            "storage_manager_follower_cursor_safety_count",
+            flag(follower_retention_block_count > 0),
+        );
+        put(&mut metrics, "storage_manager_watermark_progress_count", 1);
+        put(&mut metrics, "segment_open_count", plan.selected_dump_slots.len() as u64);
+        put(
+            &mut metrics,
+            "segment_sealed_count",
+            self.delayed_destroy_purged_segments.len() as u64,
+        );
+        put(
+            &mut metrics,
+            "storage_zone_stale_bytes",
+            plan.reclaimable_physical_bytes,
+        );
+        put(
+            &mut metrics,
+            "slot_tombstone_count",
+            object_lifecycle.tombstoned_object_ids,
+        );
+        put(
+            &mut metrics,
+            "slot_stale_ref_count",
+            object_lifecycle.stale_object_ids
+                .saturating_add(object_lifecycle.missing_owner_page_refs)
+                .saturating_add(object_lifecycle.owner_mismatch_page_refs),
+        );
+        put(
+            &mut metrics,
+            "slot_owner_mismatch_count",
+            object_lifecycle.owner_mismatch_page_refs,
+        );
+        put(
+            &mut metrics,
+            "page_index_rebuild_count",
+            flag(!self.install_roll_forward_reports.is_empty()),
+        );
+        put(
+            &mut metrics,
+            "block_index_rebuild_count",
+            flag(!self.install_roll_forward_reports.is_empty()),
+        );
+        put(
+            &mut metrics,
+            "object_index_rebuild_count",
+            flag(!self.install_roll_forward_reports.is_empty()),
+        );
+        put(
+            &mut metrics,
+            "cache_evictions",
+            self.cache_entries_removed as u64,
+        );
+        put(
+            &mut metrics,
+            "cache_rehydrates",
+            self.cache_warmup_page_refs as u64,
+        );
+        put(
+            &mut metrics,
+            "cache_refills",
+            self.cache_warmup.warmed_page_refs as u64,
+        );
+        put(
+            &mut metrics,
+            "cache_invalidations",
+            flag(self.cache_entries_removed > 0 || self.cache_disk_bytes_removed > 0),
+        );
+        put(
+            &mut metrics,
+            "cold_scan_no_cache_reads",
+            self.cache_warmup.skipped_page_refs as u64,
+        );
+        put(
+            &mut metrics,
+            "tombstone_records",
+            object_lifecycle.tombstoned_object_ids,
+        );
+        put(
+            &mut metrics,
+            "stale_page_tombstones",
+            plan.reclaim_candidates
+                .iter()
+                .filter(|candidate| candidate.reason.contains("stale"))
+                .count() as u64,
+        );
+        put(
+            &mut metrics,
+            "stale_block_tombstones",
+            plan.reclaim_candidates
+                .iter()
+                .filter(|candidate| candidate.reason.contains("stale"))
+                .count() as u64,
+        );
+        put(
+            &mut metrics,
+            "stale_pages_skipped",
+            follower_retention_block_count,
+        );
+        put(
+            &mut metrics,
+            "stale_blocks_skipped",
+            follower_retention_block_count,
+        );
+        put(
+            &mut metrics,
+            "delayed_destroy_backlog",
+            plan.delayed_destroy_page_segment_ids.len() as u64,
+        );
+        put(
+            &mut metrics,
+            "follower_cursor_retention_floor",
+            self.manifest_prune_plan
+                .follower_blocks
+                .iter()
+                .map(|block| block.cursor_oplog_sequence)
+                .min()
+                .unwrap_or_default(),
+        );
+        put(
+            &mut metrics,
+            "reclaimable_bytes",
+            plan.reclaimable_physical_bytes,
+        );
+        put(
+            &mut metrics,
+            "compaction_reclaimed_bytes",
+            self.delayed_destroy_purged_bytes,
+        );
+        put(
+            &mut metrics,
+            "physical_reclaimed_bytes",
+            self.delayed_destroy_purged_bytes,
+        );
+
+        self.storage_lifecycle_metrics = metrics;
+        self.storage_reclaim_scope = default_storage_reclaim_scope();
     }
 }
 
@@ -1130,6 +1334,96 @@ pub fn default_storage_reclaim_semantics() -> Vec<String> {
         "reclaimed_bytes_reported",
         "physical_reclaim_errors_zero",
     ])
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageReclaimScope {
+    pub owner: String,
+    pub matrixark_context_gc_role: String,
+    pub physical_reclaim_context_specific: bool,
+}
+
+impl Default for StorageReclaimScope {
+    fn default() -> Self {
+        Self {
+            owner: "temporalstore_storage_lifecycle".to_string(),
+            matrixark_context_gc_role: "marks_logical_raw_event_eligibility_only".to_string(),
+            physical_reclaim_context_specific: false,
+        }
+    }
+}
+
+pub fn default_storage_reclaim_scope() -> StorageReclaimScope {
+    StorageReclaimScope::default()
+}
+
+pub fn default_storage_lifecycle_metrics() -> BTreeMap<String, u64> {
+    let mut metrics = BTreeMap::new();
+    for name in [
+        "storage_manager_prepare_count",
+        "storage_manager_reclaim_count",
+        "storage_manager_evict_count",
+        "storage_manager_expire_count",
+        "storage_manager_page_gc_count",
+        "storage_manager_block_gc_count",
+        "storage_manager_compaction_count",
+        "storage_manager_index_gc_count",
+        "storage_manager_delayed_destroy_count",
+        "storage_manager_follower_cursor_safety_count",
+        "storage_manager_watermark_progress_count",
+        "storage_manager_loop_ms",
+        "stream_rollover_count",
+        "segment_open_count",
+        "segment_sealed_count",
+        "storage_zone_total_bytes",
+        "storage_zone_used_bytes",
+        "storage_zone_stale_bytes",
+        "append_log_replay_records",
+        "append_log_reclaimed_records",
+        "slot_dirty_generation_count",
+        "slot_tombstone_count",
+        "slot_stale_ref_count",
+        "slot_owner_mismatch_count",
+        "page_index_rebuild_count",
+        "block_index_rebuild_count",
+        "object_index_rebuild_count",
+        "cache_admissions",
+        "cache_evictions",
+        "cache_rehydrates",
+        "memory_cache_hits",
+        "memory_cache_misses",
+        "page_index_cache_hits",
+        "page_index_cache_misses",
+        "block_index_cache_hits",
+        "block_index_cache_misses",
+        "disk_cache_hits",
+        "disk_cache_misses",
+        "shared_store_read_throughs",
+        "cache_refills",
+        "cache_invalidations",
+        "cache_writeback_queue_depth",
+        "cache_writeback_rejections",
+        "cold_scan_no_cache_reads",
+        "hot_cache_promotions",
+        "tombstone_records",
+        "stale_page_tombstones",
+        "stale_block_tombstones",
+        "stale_pages_rewritten",
+        "stale_pages_skipped",
+        "stale_blocks_rewritten",
+        "stale_blocks_skipped",
+        "delayed_destroy_backlog",
+        "follower_cursor_retention_floor",
+        "reclaimable_bytes",
+        "compaction_reclaimed_bytes",
+        "physical_reclaimed_bytes",
+        "physical_reclaim_errors",
+        "append_watermark",
+        "compaction_watermark",
+    ] {
+        metrics.insert(name.to_string(), 0);
+    }
+    metrics
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]

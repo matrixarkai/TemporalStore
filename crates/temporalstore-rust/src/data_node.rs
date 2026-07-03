@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 #[cfg(test)]
 use std::fs;
 use std::path::PathBuf;
@@ -16,13 +16,15 @@ use crate::control::{
 };
 use crate::engine::reports::{
     default_storage_cache_layers, default_storage_cache_semantics,
-    default_storage_cold_scan_sequence, default_storage_lifecycle_phases,
-    default_storage_read_sequence, default_storage_reclaim_semantics,
+    default_storage_cold_scan_sequence, default_storage_lifecycle_metrics,
+    default_storage_lifecycle_phases, default_storage_read_sequence,
+    default_storage_reclaim_scope, default_storage_reclaim_semantics,
     default_storage_write_sequence,
     PublicStorageContract, PublicStorageFeatureShapes, ShardCompactionModelLayoutReport,
     ShardCompactionUtilityReport, SlotDumpManifest, StorageLifecyclePlan, StorageLifecycleReport,
     StorageLifecycleRequest, StorageManagerCycleReport, StorageManagerCycleRequest,
     StorageManagerStageReport, StorageProductionReadinessPolicy, StorageProductionReadinessReport,
+    StorageReclaimScope,
 };
 use crate::engine::TemporalEngine;
 use crate::meta::{
@@ -205,6 +207,10 @@ pub struct DataNodeLifecycleReport {
     pub storage_cache_semantics: Vec<String>,
     #[serde(default = "default_storage_reclaim_semantics")]
     pub storage_reclaim_semantics: Vec<String>,
+    #[serde(default = "default_storage_reclaim_scope")]
+    pub storage_reclaim_scope: StorageReclaimScope,
+    #[serde(default = "default_storage_lifecycle_metrics")]
+    pub storage_lifecycle_metrics: BTreeMap<String, u64>,
     pub loaded_shard_count: usize,
     pub serving_count: usize,
     pub readonly_count: usize,
@@ -230,6 +236,8 @@ impl Default for DataNodeLifecycleReport {
             storage_cache_layers: default_storage_cache_layers(),
             storage_cache_semantics: default_storage_cache_semantics(),
             storage_reclaim_semantics: default_storage_reclaim_semantics(),
+            storage_reclaim_scope: default_storage_reclaim_scope(),
+            storage_lifecycle_metrics: default_storage_lifecycle_metrics(),
             loaded_shard_count: 0,
             serving_count: 0,
             readonly_count: 0,
@@ -2732,6 +2740,8 @@ impl DataNodeRuntime {
             storage_cache_layers: default_storage_cache_layers(),
             storage_cache_semantics: default_storage_cache_semantics(),
             storage_reclaim_semantics: default_storage_reclaim_semantics(),
+            storage_reclaim_scope: default_storage_reclaim_scope(),
+            storage_lifecycle_metrics: default_storage_lifecycle_metrics(),
             loaded_shard_count,
             serving_count,
             readonly_count,

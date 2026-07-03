@@ -2398,7 +2398,7 @@ impl TemporalEngine {
         let object_lifecycle = self
             .storage_recovery_report_without_boundary(request.shard_id)
             .object_lifecycle;
-        StorageLifecycleReport {
+        let mut report = StorageLifecycleReport {
             shard_id: request.shard_id,
             public_storage_contract: Default::default(),
             public_storage_feature_shapes: Default::default(),
@@ -2409,6 +2409,8 @@ impl TemporalEngine {
             storage_cache_layers: default_storage_cache_layers(),
             storage_cache_semantics: default_storage_cache_semantics(),
             storage_reclaim_semantics: default_storage_reclaim_semantics(),
+            storage_reclaim_scope: Default::default(),
+            storage_lifecycle_metrics: Default::default(),
             plan,
             dump_manifest,
             cache_entries_removed,
@@ -2421,7 +2423,9 @@ impl TemporalEngine {
             manifest_prune_report,
             install_roll_forward_reports,
             object_lifecycle,
-        }
+        };
+        report.refresh_public_lifecycle_metrics();
+        report
     }
 
     pub fn storage_wal_reclaim_plan(
