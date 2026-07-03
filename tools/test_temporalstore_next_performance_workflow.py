@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
+import json
+from pathlib import Path
 from unittest.mock import patch
 
 from run_temporalstore_cpp_rust_next_performance_workflow import _pythonize, build_execution_plan, run_plan
@@ -73,16 +76,27 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
             def __init__(self, returncode: int) -> None:
                 self.returncode = returncode
 
-        with patch(
-            "run_temporalstore_cpp_rust_next_performance_workflow.subprocess.run",
-            side_effect=[Result(1), Result(0), Result(0)],
-        ) as run:
-            result = run_plan(plan, include_post_validation=True, continue_on_error=True)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "execution.json"
+            with patch(
+                "run_temporalstore_cpp_rust_next_performance_workflow.subprocess.run",
+                side_effect=[Result(1), Result(0), Result(0)],
+            ) as run:
+                result = run_plan(
+                    plan,
+                    include_post_validation=True,
+                    continue_on_error=True,
+                    execution_output=output,
+                )
+            persisted = json.loads(output.read_text(encoding="utf-8"))
 
         self.assertEqual(run.call_count, 3)
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["failed_count"], 1)
         self.assertEqual([row["status"] for row in result["results"]], ["failed", "passed", "passed"])
+        self.assertEqual(result["execution_output"], str(output))
+        self.assertEqual(persisted["status"], "failed")
+        self.assertEqual(persisted["failed_count"], 1)
 
     def test_run_plan_fails_fast_by_default(self) -> None:
         plan = {
