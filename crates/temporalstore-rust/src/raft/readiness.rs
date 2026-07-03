@@ -434,24 +434,7 @@ pub fn raft_transport_security_readiness() -> RaftTransportSecurityReadiness {
 
 pub type RaftDeploymentMode = ::rustraft::RustRaftDeploymentMode;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RaftProductionReadinessError {
-    pub mode: RaftDeploymentMode,
-    pub message: String,
-    pub missing: Vec<String>,
-}
-
-impl std::fmt::Display for RaftProductionReadinessError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{}", self.message)?;
-        if !self.missing.is_empty() {
-            write!(formatter, ": {}", self.missing.join("; "))?;
-        }
-        Ok(())
-    }
-}
-
-impl std::error::Error for RaftProductionReadinessError {}
+pub type RaftProductionReadinessError = ::rustraft::RustRaftProductionReadinessError;
 
 pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
     let temporal_raft_rollout = raft_temporal_raft_rollout_readiness();
@@ -568,11 +551,7 @@ pub fn validate_raft_deployment_mode(
         readiness.missing.clone(),
     ) {
         Ok(()) => Ok(readiness),
-        Err(error) => Err(RaftProductionReadinessError {
-            mode,
-            message: error.message,
-            missing: error.missing,
-        }),
+        Err(error) => Err(error),
     }
 }
 
