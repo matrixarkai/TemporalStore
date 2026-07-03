@@ -208,6 +208,7 @@ STORAGE_LIFECYCLE_TOP_LEVEL_KEYS = [
     "effective_storage_tuning",
     "public_storage_contract",
     "storage_write_contract",
+    "storage_read_contract",
     "storage_read_sequence",
     "storage_cold_scan_sequence",
     "storage_lifecycle_phases",
@@ -288,11 +289,40 @@ STORAGE_WRITE_METRIC_NAMES = [
 
 STORAGE_READ_SEQUENCE_STEPS = [
     "logical_key_timestamp_range",
-    "page_index_lookup",
+    "object_page_index_lookup",
     "page_address_list",
     "block_index_lookup",
     "page_read",
     "decode_records",
+    "return_filtered_result",
+]
+
+STORAGE_READ_RESULT_FIELDS = [
+    "logical_key",
+    "timestamp_range",
+    "object_index_entry",
+    "page_index_entries",
+    "page_addresses",
+    "block_index_entries",
+    "records_decoded",
+    "records_returned",
+    "tombstones_filtered",
+    "stale_generations_filtered",
+    "filter_policy",
+]
+
+STORAGE_READ_METRIC_NAMES = [
+    "object_page_index_lookup_count",
+    "object_page_index_lookup_ms",
+    "page_address_count",
+    "block_index_lookup_count",
+    "block_index_lookup_ms",
+    "page_reads",
+    "decode_records_ms",
+    "records_decoded",
+    "records_returned",
+    "tombstones_filtered",
+    "stale_generations_filtered",
 ]
 
 STORAGE_COLD_SCAN_SEQUENCE_STEPS = [
@@ -516,6 +546,32 @@ def default_storage_write_contract(metrics: Json | None = None) -> Json:
     }
 
 
+def default_storage_read_contract(metrics: Json | None = None) -> Json:
+    source = metrics if isinstance(metrics, dict) else {}
+    records_decoded = int(source.get("records_decoded") or 0)
+    records_returned = int(source.get("records_returned") or records_decoded)
+    return {
+        "logical_key": "storage:parity",
+        "timestamp_range": "all",
+        "object_index_entry": "ObjectIndexEntry",
+        "page_index_entries": 1,
+        "page_addresses": 1,
+        "block_index_entries": 1,
+        "records_decoded": records_decoded,
+        "records_returned": min(records_returned, records_decoded) if records_decoded else records_returned,
+        "tombstones_filtered": int(source.get("tombstones_filtered") or 0),
+        "stale_generations_filtered": int(source.get("stale_generations_filtered") or 0),
+        "filter_policy": "normal",
+        "object_page_index_lookup_count": int(source.get("object_page_index_lookup_count") or 0),
+        "object_page_index_lookup_ms": float(source.get("object_page_index_lookup_ms") or 0),
+        "page_address_count": int(source.get("page_address_count") or 0),
+        "block_index_lookup_count": int(source.get("block_index_lookup_count") or 0),
+        "block_index_lookup_ms": float(source.get("block_index_lookup_ms") or 0),
+        "page_reads": int(source.get("page_reads") or 0),
+        "decode_records_ms": float(source.get("decode_records_ms") or 0),
+    }
+
+
 def storage_lifecycle_report_shape(effective_storage_tuning: Json, metrics: Json | None = None) -> Json:
     return {
         "effective_storage_tuning": dict(effective_storage_tuning),
@@ -524,6 +580,7 @@ def storage_lifecycle_report_shape(effective_storage_tuning: Json, metrics: Json
             for key, value in PUBLIC_STORAGE_CONTRACT.items()
         },
         "storage_write_contract": default_storage_write_contract(metrics),
+        "storage_read_contract": default_storage_read_contract(metrics),
         "storage_write_sequence": list(STORAGE_WRITE_SEQUENCE_STEPS),
         "storage_read_sequence": list(STORAGE_READ_SEQUENCE_STEPS),
         "storage_cold_scan_sequence": list(STORAGE_COLD_SCAN_SEQUENCE_STEPS),
@@ -556,6 +613,12 @@ def attach_storage_lifecycle_shape(result: Json, effective_storage_tuning: Json 
     normalized_write_contract = default_storage_write_contract(metrics)
     normalized_write_contract.update(write_contract)
     shaped["storage_write_contract"] = normalized_write_contract
+    read_contract = shaped.get("storage_read_contract")
+    if not isinstance(read_contract, dict):
+        read_contract = {}
+    normalized_read_contract = default_storage_read_contract(metrics)
+    normalized_read_contract.update(read_contract)
+    shaped["storage_read_contract"] = normalized_read_contract
     shaped["storage_write_sequence"] = list(STORAGE_WRITE_SEQUENCE_STEPS)
     shaped["storage_read_sequence"] = list(STORAGE_READ_SEQUENCE_STEPS)
     shaped["storage_cold_scan_sequence"] = list(STORAGE_COLD_SCAN_SEQUENCE_STEPS)

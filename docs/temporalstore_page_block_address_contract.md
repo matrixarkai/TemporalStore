@@ -347,12 +347,12 @@ Canonical read flow:
 
 ```text
 logical key/timestamp range
--> page index lookup
+-> object/page index lookup
 -> page address list
 -> block index lookup
 -> page read
 -> decode records
--> apply tombstone/generation filters
+-> return filtered result
 ```
 
 Canonical report sequence:
@@ -361,11 +361,12 @@ Canonical report sequence:
 {
   "storage_read_sequence": [
     "logical_key_timestamp_range",
-    "page_index_lookup",
+    "object_page_index_lookup",
     "page_address_list",
     "block_index_lookup",
     "page_read",
-    "decode_records"
+    "decode_records",
+    "return_filtered_result"
   ]
 }
 ```
@@ -373,11 +374,40 @@ Canonical report sequence:
 Required read sequence step names:
 
 - `logical_key_timestamp_range`
-- `page_index_lookup`
+- `object_page_index_lookup`
 - `page_address_list`
 - `block_index_lookup`
 - `page_read`
 - `decode_records`
+- `return_filtered_result`
+
+Required read result fields:
+
+- `logical_key`
+- `timestamp_range`
+- `object_index_entry`
+- `page_index_entries`
+- `page_addresses`
+- `block_index_entries`
+- `records_decoded`
+- `records_returned`
+- `tombstones_filtered`
+- `stale_generations_filtered`
+- `filter_policy`
+
+Required read-path metrics:
+
+- `object_page_index_lookup_count`
+- `object_page_index_lookup_ms`
+- `page_address_count`
+- `block_index_lookup_count`
+- `block_index_lookup_ms`
+- `page_reads`
+- `decode_records_ms`
+- `records_decoded`
+- `records_returned`
+- `tombstones_filtered`
+- `stale_generations_filtered`
 
 Required behavior:
 
@@ -389,6 +419,9 @@ Required behavior:
   before any record bytes are decoded.
 - Reads must reject stale generations and tombstoned records unless an explicit
   replay/debug policy asks for retained historical data.
+- `return_filtered_result` must report `records_decoded`, `records_returned`,
+  `tombstones_filtered`, and `stale_generations_filtered`; `records_returned`
+  must not exceed `records_decoded`.
 - Cold scans must use no-cache/no-promote reads by default.
 
 ### Cold Scan Path
@@ -863,6 +896,7 @@ Rust before comparison tools accept them:
 - `effective_storage_tuning`
 - `public_storage_contract`
 - `storage_write_contract`
+- `storage_read_contract`
 - `storage_read_sequence`
 - `storage_cold_scan_sequence`
 - `storage_lifecycle_phases`

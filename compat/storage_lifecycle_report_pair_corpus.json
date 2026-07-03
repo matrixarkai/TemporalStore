@@ -38,12 +38,33 @@
     },
     "storage_read_sequence": [
       "logical_key_timestamp_range",
-      "page_index_lookup",
+      "object_page_index_lookup",
       "page_address_list",
       "block_index_lookup",
       "page_read",
-      "decode_records"
+      "decode_records",
+      "return_filtered_result"
     ],
+    "storage_read_contract": {
+      "logical_key": "context:t=tenant|u=user|s=session|:node=42",
+      "timestamp_range": "0..7",
+      "object_index_entry": "ObjectIndexEntry",
+      "page_index_entries": 1,
+      "page_addresses": 2,
+      "block_index_entries": 2,
+      "records_decoded": 3,
+      "records_returned": 2,
+      "tombstones_filtered": 1,
+      "stale_generations_filtered": 0,
+      "filter_policy": "normal",
+      "object_page_index_lookup_count": 1,
+      "object_page_index_lookup_ms": 0.2,
+      "page_address_count": 2,
+      "block_index_lookup_count": 2,
+      "block_index_lookup_ms": 0.3,
+      "page_reads": 2,
+      "decode_records_ms": 0.4
+    },
     "storage_cold_scan_sequence": [
       "timestamp_page_index_scan",
       "no_cache_page_read",
@@ -222,12 +243,33 @@
     },
     "storage_read_sequence": [
       "logical_key_timestamp_range",
-      "page_index_lookup",
+      "object_page_index_lookup",
       "page_address_list",
       "block_index_lookup",
       "page_read",
-      "decode_records"
+      "decode_records",
+      "return_filtered_result"
     ],
+    "storage_read_contract": {
+      "logical_key": "context:t=tenant|u=user|s=session|:node=42",
+      "timestamp_range": "0..7",
+      "object_index_entry": "ObjectIndexEntry",
+      "page_index_entries": 1,
+      "page_addresses": 2,
+      "block_index_entries": 2,
+      "records_decoded": 3,
+      "records_returned": 2,
+      "tombstones_filtered": 1,
+      "stale_generations_filtered": 0,
+      "filter_policy": "normal",
+      "object_page_index_lookup_count": 1,
+      "object_page_index_lookup_ms": 0.25,
+      "page_address_count": 2,
+      "block_index_lookup_count": 2,
+      "block_index_lookup_ms": 0.35,
+      "page_reads": 2,
+      "decode_records_ms": 0.45
+    },
     "storage_cold_scan_sequence": [
       "timestamp_page_index_scan",
       "no_cache_page_read",
