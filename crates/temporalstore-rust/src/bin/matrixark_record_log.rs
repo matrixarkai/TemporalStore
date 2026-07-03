@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use temporalstore_rust::{Command, CommandResponse, ExecuteRequest, TemporalEngine};
 
 const DEFAULT_SHARD_ID: u64 = 1;
@@ -31,6 +31,8 @@ struct RecordLogRequest {
     value: String,
     #[serde(default)]
     entries: Vec<HashEntry>,
+    #[serde(default)]
+    append_options: Value,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -68,6 +70,10 @@ struct RecordLogResponse {
     #[serde(skip_serializing_if = "String::is_empty")]
     mode: String,
     #[serde(skip_serializing_if = "String::is_empty")]
+    append_path: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    raw_storage_backend: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
     prometheus: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     cached_clients: Option<usize>,
@@ -90,6 +96,8 @@ struct RecordLogOutput {
     root: PathBuf,
     status: String,
     mode: String,
+    append_path: String,
+    raw_storage_backend: String,
     prometheus: String,
     cached_clients: Option<usize>,
 }
@@ -140,6 +148,8 @@ fn response_from_result(
             root: output.root.display().to_string(),
             status: output.status,
             mode: output.mode,
+            append_path: output.append_path,
+            raw_storage_backend: output.raw_storage_backend,
             prometheus: output.prometheus,
             cached_clients: output.cached_clients,
             elapsed_ms: Some(elapsed_ms),
@@ -159,6 +169,8 @@ fn response_from_result(
                 root: String::new(),
                 status: String::new(),
                 mode: String::new(),
+                append_path: String::new(),
+                raw_storage_backend: String::new(),
                 prometheus: String::new(),
                 cached_clients: None,
                 elapsed_ms: Some(elapsed_ms),
@@ -574,6 +586,8 @@ fn execute_record_log_request(
             root,
             status: "ready".to_string(),
             mode: "single_shot".to_string(),
+            append_path: String::new(),
+            raw_storage_backend: String::new(),
             prometheus: String::new(),
             cached_clients: None,
         },
@@ -607,6 +621,18 @@ fn execute_record_log_request(
             empty_output(root)
         }
         "batch_hset" | "matrixark_append_records" | "matrixark_batch_append_records" => {
+            let append_path = request
+                .append_options
+                .get("append_path")
+                .and_then(Value::as_str)
+                .unwrap_or("native_batch_append_records")
+                .to_string();
+            let raw_storage_backend = request
+                .append_options
+                .get("raw_storage_backend")
+                .and_then(Value::as_str)
+                .unwrap_or("temporalstore")
+                .to_string();
             let mut count = request.entries.len();
             for entry in request.entries {
                 execute_empty(
@@ -630,6 +656,8 @@ fn execute_record_log_request(
             }
             RecordLogOutput {
                 count: Some(count),
+                append_path,
+                raw_storage_backend,
                 ..empty_output(root)
             }
         }
@@ -735,6 +763,8 @@ fn empty_output(root: PathBuf) -> RecordLogOutput {
         root,
         status: String::new(),
         mode: String::new(),
+        append_path: String::new(),
+        raw_storage_backend: String::new(),
         prometheus: String::new(),
         cached_clients: None,
     }
@@ -749,6 +779,8 @@ fn value_output(value: String, root: PathBuf) -> RecordLogOutput {
         root,
         status: String::new(),
         mode: String::new(),
+        append_path: String::new(),
+        raw_storage_backend: String::new(),
         prometheus: String::new(),
         cached_clients: None,
     }
@@ -786,6 +818,8 @@ fn hash_entries_output(
                 root,
                 status: String::new(),
                 mode: String::new(),
+                append_path: String::new(),
+                raw_storage_backend: String::new(),
                 prometheus: String::new(),
                 cached_clients: None,
             })

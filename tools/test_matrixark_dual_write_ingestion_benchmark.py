@@ -21,6 +21,7 @@ class MatrixArkDualWriteIngestionBenchmarkTest(unittest.TestCase):
             "local_write_delay_us": 0,
             "storage_prefix": "matrixark:mcp:bench-test",
             "raw_storage_prefix": "",
+            "raw_backend": "temporalstore",
             "shard_size": 4096,
             "metaserver": "unused",
             "namespace": "unused",
@@ -42,9 +43,21 @@ class MatrixArkDualWriteIngestionBenchmarkTest(unittest.TestCase):
         self.assertGreater(summary["serving_log_entries_observed"], 0)
         self.assertTrue(summary["dual_write_counts_validated"])
         calls = summary["local_native_call_counts"]["calls_by_append_path"]
-        self.assertGreater(calls["matrixark_raw_ingestion_log"], 0)
+        raw_backends = summary["local_native_call_counts"]["calls_by_raw_backend"]
+        self.assertEqual(summary["raw_backend"], "temporalstore")
+        self.assertGreater(calls["matrixark_raw_ingestion_temporalstore_log"], 0)
+        self.assertGreater(raw_backends["temporalstore"], 0)
         self.assertGreater(calls["native_append_queue"], 0)
         self.assertGreater(summary["caller_visible_batch_latency_ms"]["samples"], 0)
+
+    def test_local_benchmark_can_label_matrixkv_raw_backend(self) -> None:
+        summary = bench.run_benchmark(self.make_args(raw_backend="matrixkv"))
+        self.assertTrue(summary["dual_write_counts_validated"])
+        self.assertEqual(summary["raw_backend"], "matrixkv")
+        calls = summary["local_native_call_counts"]["calls_by_append_path"]
+        raw_backends = summary["local_native_call_counts"]["calls_by_raw_backend"]
+        self.assertGreater(calls["matrixark_raw_ingestion_matrixkv_log"], 0)
+        self.assertGreater(raw_backends["matrixkv"], 0)
 
     def test_rejects_invalid_record_count(self) -> None:
         with self.assertRaises(bench.BenchmarkError):

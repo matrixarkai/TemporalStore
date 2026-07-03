@@ -1060,7 +1060,8 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         raw_call = client.calls[0]
         self.assertEqual(raw_call["count_key"], "matrixark:test:native-append:raw_ingestion:record_count")
         self.assertEqual(raw_call["count_value"], "2")
-        self.assertEqual(raw_call["append_options"]["append_path"], "matrixark_raw_ingestion_log")
+        self.assertEqual(raw_call["append_options"]["append_path"], "matrixark_raw_ingestion_temporalstore_log")
+        self.assertEqual(raw_call["append_options"]["raw_storage_backend"], "temporalstore")
         self.assertEqual(raw_call["append_options"]["source"], "matrixark_live_ingestion_dual_write")
         self.assertEqual({entry["key"] for entry in raw_call["entries"]}, {"matrixark:test:native-append:raw_ingestion:records:000000"})
         raw_payloads = [json.loads(entry["value"]) for entry in raw_call["entries"]]
@@ -1133,7 +1134,8 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         raw_call, serving_call = client.calls
         self.assertEqual(raw_call["count_key"], "matrixark:test:dual-write:raw_ingestion:record_count")
         self.assertEqual(raw_call["count_value"], "1")
-        self.assertEqual(raw_call["append_options"]["append_path"], "matrixark_raw_ingestion_log")
+        self.assertEqual(raw_call["append_options"]["append_path"], "matrixark_raw_ingestion_temporalstore_log")
+        self.assertEqual(raw_call["append_options"]["raw_storage_backend"], "temporalstore")
         self.assertEqual(raw_call["entries"][0]["key"], "matrixark:test:dual-write:raw_ingestion:records:000000")
         raw_payload = json.loads(raw_call["entries"][0]["value"])
         self.assertEqual(raw_payload["text"], "raw must stay canonical")
@@ -1146,6 +1148,50 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(len(serving_payloads), 1)
         self.assertEqual(serving_payloads[0]["record_type"], "context_event")
         self.assertEqual(serving_payloads[0]["placement_key"], "context:tenant=7:node=9")
+
+    def test_direct_append_supports_matrixkv_raw_backend_option(self) -> None:
+        client = _NativeAppendClient()
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._client = client
+        adapter._storage_prefix = "matrixark:test:matrixkv-raw"
+        adapter._record_hash_key = f"{adapter._storage_prefix}:records"
+        adapter._index_key = f"{adapter._storage_prefix}:record_index"
+        adapter._count_key = f"{adapter._storage_prefix}:record_count"
+        adapter._raw_ingestion_prefix = "matrixkv:raw:messages"
+        adapter._raw_record_hash_key = f"{adapter._raw_ingestion_prefix}:records"
+        adapter._raw_count_key = f"{adapter._raw_ingestion_prefix}:record_count"
+        adapter._raw_storage_backend = "matrixkv"
+        adapter._raw_entry_count_cache = None
+        adapter._shard_size = 1024
+        adapter._index_cache = None
+        adapter._records_cache = None
+        adapter._retrieval_candidate_cache = {}
+        adapter._retrieval_candidate_cache_lock = threading.RLock()
+        adapter._entry_count_cache = None
+        adapter._legacy_index_mode = False
+        adapter._records_lock = threading.RLock()
+        adapter._write_retries = 0
+        adapter._write_backoff_s = 0.0
+        adapter._write_throttle_s = 0.0
+
+        adapter.append(
+            {
+                "record_type": "context_event",
+                "event_id_hash": 992,
+                "tenant_hash": 8,
+                "scope_key": "tenant=8",
+                "node_hash": 10,
+                "updated_at_ms": 1780000002000,
+                "text": "matrixkv raw option",
+            }
+        )
+
+        self.assertEqual(len(client.calls), 2)
+        raw_call = client.calls[0]
+        self.assertEqual(raw_call["count_key"], "matrixkv:raw:messages:record_count")
+        self.assertEqual(raw_call["append_options"]["append_path"], "matrixark_raw_ingestion_matrixkv_log")
+        self.assertEqual(raw_call["append_options"]["raw_storage_backend"], "matrixkv")
+        self.assertEqual(raw_call["entries"][0]["key"], "matrixkv:raw:messages:records:000000")
 
     def test_direct_retrieval_records_reuses_candidate_cache_by_count_and_scope(self) -> None:
         records = [
