@@ -230,12 +230,16 @@ def summarize_sweep(results: list[Json]) -> Json:
 
 def run_backend_sweep(args: argparse.Namespace) -> Json:
     backends = parse_raw_backends(getattr(args, "raw_backends", ""), args.raw_backend)
+    min_backend_qps_ratio = float(getattr(args, "min_backend_qps_ratio", 0.0) or 0.0)
+    if min_backend_qps_ratio < 0.0:
+        raise BenchmarkError("--min-backend-qps-ratio must be non-negative")
     results: list[Json] = []
     for backend in backends:
         one_args = argparse.Namespace(**vars(args))
         one_args.raw_backend = backend
         one_args.raw_backends = ""
         results.append(run_benchmark(one_args))
+    sweep_summary = summarize_sweep(results)
     gate_checks: list[Json] = []
     for result in results:
         gate = result.get("performance_gate") if isinstance(result.get("performance_gate"), dict) else {}
@@ -243,8 +247,17 @@ def run_backend_sweep(args: argparse.Namespace) -> Json:
             enriched = dict(check)
             enriched["raw_backend"] = result.get("raw_backend")
             gate_checks.append(enriched)
-    gate_enabled = any(bool((result.get("performance_gate") or {}).get("enabled")) for result in results)
+    if min_backend_qps_ratio > 0.0 and len(results) > 1:
+        observed_ratio = float((sweep_summary.get("ingestion_qps") or {}).get("min_max_ratio", 0.0) or 0.0)
+        gate_checks.append({
+            "metric": "backend_ingestion_qps_ratio",
+            "observed": round(observed_ratio, 6),
+            "minimum": min_backend_qps_ratio,
+            "passed": observed_ratio >= min_backend_qps_ratio,
+        })
+    gate_enabled = any(bool((result.get("performance_gate") or {}).get("enabled")) for result in results) or min_backend_qps_ratio > 0.0
     gate_passed = all(bool((result.get("performance_gate") or {}).get("passed", True)) for result in results)
+    gate_passed = gate_passed and all(bool(check.get("passed", True)) for check in gate_checks)
     status = "ok" if all(result.get("status") == "ok" for result in results) and gate_passed else "failed"
     return {
         "status": status,
@@ -257,10 +270,11 @@ def run_backend_sweep(args: argparse.Namespace) -> Json:
         "payload_bytes": args.payload_bytes,
         "dual_write_return_policy": "append_many returns after raw message append and serving TemporalStore append both finish",
         "results": results,
-        "summary": summarize_sweep(results),
+        "summary": sweep_summary,
         "performance_gate": {
             "enabled": gate_enabled,
             "passed": gate_passed,
+            "min_backend_qps_ratio": min_backend_qps_ratio,
             "checks": gate_checks,
         },
     }
@@ -394,6 +408,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--io-timeout-ms", type=int, default=int(os.environ.get("TEMPORALSTORE_IO_TIMEOUT_MS", "20000")))
     parser.add_argument("--min-ingestion-qps", type=float, default=float(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_MIN_INGESTION_QPS", "0")), help="optional release gate for minimum caller-visible records per second")
     parser.add_argument("--max-batch-p95-ms", type=float, default=float(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_MAX_BATCH_P95_MS", "0")), help="optional release gate for maximum p95 append_many latency in milliseconds, 0 disables")
+    parser.add_argument("--min-backend-qps-ratio", type=float, default=float(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_MIN_BACKEND_QPS_RATIO", "0")), help="sweep-mode gate: slowest selected raw backend QPS must be at least this fraction of fastest selected backend QPS")
     parser.add_argument("--require-dual-write-counts", type=int, choices=[0, 1], default=int(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_REQUIRE_COUNTS", "0")), help="require local-mode proof that both raw and serving append paths completed before return")
     parser.add_argument("--json-output", default=os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_JSON", ""))
     return parser
