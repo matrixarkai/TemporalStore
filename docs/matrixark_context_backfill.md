@@ -106,10 +106,11 @@ The manifest records the source prefix, target prefix, mode, source range, parti
 | `shadow` | Build a separate derived context prefix | No | Yes | No |
 | `validate_shadow` | Dry-run source scan and compare expected count to target | No | No | No |
 | `activate_shadow` | Flip active prefix pointer to a validated shadow prefix | No | Metadata only | `--confirm-activate=YES` |
+| `rollback_activation` | Restore the previous active prefix recorded by an activation job | No | Metadata only | `--confirm-rollback=YES` |
 | `incremental_repair` | Promote a bounded shadow repair slice into active prefix | No | Yes | `--confirm-incremental-repair=YES` |
 | `in_place` | Write derived records into source prefix | No source deletion, but same prefix is target | Yes | `--confirm-in-place=YES` |
 
-Production use should prefer `shadow`, `validate_shadow`, `activate_shadow`, and `incremental_repair`. `in_place` is intentionally guarded and should be rare.
+Production use should prefer `shadow`, `validate_shadow`, `activate_shadow`, `rollback_activation`, and `incremental_repair`. `in_place` is intentionally guarded and should be rare.
 
 ## Quick Start: Full Shadow Backfill
 
@@ -387,6 +388,46 @@ After the run:
 - run `validate_shadow` with the same source range and partial flags
 - preserve the manifest under `<target-prefix>:backfill_manifest`
 - activate only after validation and context-quality checks pass
+
+## Roll Back A Shadow Activation
+
+Every successful `activate_shadow` stores the old active prefix under:
+
+```text
+<active-prefix-key>:previous:<activation-job-id>
+```
+
+If a newly activated shadow needs to be backed out, use `rollback_activation` with the activation job id. The command is metadata-only: it restores the active prefix pointer and writes a rollback audit record. It does not delete the shadow prefix or rewrite source raw records.
+
+Dry run first:
+
+```bash
+python3 tools/matrixark_context_backfill.py \
+  --mode=rollback_activation \
+  --job-id=rollback-context-backfill-001-dry-run \
+  --rollback-job-id=context-backfill-001 \
+  --confirm-rollback=YES \
+  --dry-run=1
+```
+
+Apply the rollback:
+
+```bash
+python3 tools/matrixark_context_backfill.py \
+  --mode=rollback_activation \
+  --job-id=rollback-context-backfill-001 \
+  --rollback-job-id=context-backfill-001 \
+  --confirm-rollback=YES \
+  --dry-run=0
+```
+
+The rollback audit is stored at:
+
+```text
+<active-prefix-key>:rollback_audit field <rollback-job-id>
+```
+
+Keep the shadow prefix intact until readers and retrieval quality are confirmed after rollback.
 
 ## Partial Backfills
 

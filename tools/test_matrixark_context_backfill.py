@@ -41,8 +41,10 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             "mode": "shadow",
             "confirm_in_place": "",
             "confirm_activate": "",
+            "confirm_rollback": "",
             "confirm_incremental_repair": "",
             "active_prefix_key": "matrixark:context:active_prefix",
+            "rollback_job_id": "",
             "repair_active_prefix": "",
             "validation_strict": True,
             "skip_validation": False,
@@ -228,6 +230,34 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(kv_after.get_string("matrixark:context:active_prefix"), "matrixark:context_backfill:candidate")
             self.assertEqual(kv_after.get_string("matrixark:context:active_prefix:previous:unit"), "matrixark:context:old")
             self.assertIn("matrixark:context_backfill:candidate", kv_after.hget("matrixark:context:active_prefix:audit", "unit"))
+
+            with self.assertRaises(backfill.BackfillError):
+                backfill.run_rollback_activation(self.make_args(path, mode="rollback_activation", rollback_job_id="unit"))
+
+            dry_run = backfill.run_rollback_activation(self.make_args(
+                path,
+                mode="rollback_activation",
+                rollback_job_id="unit",
+                confirm_rollback="YES",
+                dry_run=True,
+            ))
+            self.assertEqual(dry_run["to_prefix"], "matrixark:context:old")
+            self.assertEqual(backfill.LocalJsonKV(path).get_string("matrixark:context:active_prefix"), "matrixark:context_backfill:candidate")
+
+            rollback = backfill.run_rollback_activation(self.make_args(
+                path,
+                mode="rollback_activation",
+                rollback_job_id="unit",
+                job_id="rollback-unit",
+                confirm_rollback="YES",
+                dry_run=False,
+            ))
+            self.assertEqual(rollback["status"], "ok")
+            self.assertEqual(rollback["from_prefix"], "matrixark:context_backfill:candidate")
+            self.assertEqual(rollback["to_prefix"], "matrixark:context:old")
+            kv_rolled_back = backfill.LocalJsonKV(path)
+            self.assertEqual(kv_rolled_back.get_string("matrixark:context:active_prefix"), "matrixark:context:old")
+            self.assertIn("matrixark:context_backfill:candidate", kv_rolled_back.hget("matrixark:context:active_prefix:rollback_audit", "rollback-unit"))
 
 
     def test_incremental_repair_promotes_bounded_range_to_active_prefix(self):

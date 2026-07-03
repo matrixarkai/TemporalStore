@@ -1050,6 +1050,55 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
     }
 
 
+def run_rollback_activation(args: argparse.Namespace) -> Json:
+    rollback_job_id = str(getattr(args, 'rollback_job_id', '') or args.job_id)
+    if not rollback_job_id:
+        raise BackfillError('rollback_activation requires --rollback-job-id or --job-id')
+    if args.confirm_rollback != 'YES':
+        raise BackfillError('rollback_activation requires --confirm-rollback=YES')
+    kv = make_kv(args)
+    previous_key = f'{args.active_prefix_key}:previous:{rollback_job_id}'
+    previous_prefix = kv.get_string(previous_key)
+    if not previous_prefix:
+        raise BackfillError(f'rollback_activation could not find previous prefix at {previous_key}')
+    current_prefix = kv.get_string(args.active_prefix_key)
+    rolled_back_at_ms = int(time.time() * 1000)
+    audit = {
+        'job_id': args.job_id,
+        'rollback_job_id': rollback_job_id,
+        'rolled_back_at_ms': rolled_back_at_ms,
+        'active_prefix_key': args.active_prefix_key,
+        'from_prefix': current_prefix,
+        'to_prefix': previous_prefix,
+        'previous_key': previous_key,
+        'raw_backend': normalize_raw_backend(args.raw_backend),
+    }
+    if args.dry_run:
+        return {
+            'status': 'ok',
+            'mode': 'rollback_activation',
+            'dry_run': True,
+            'active_prefix_key': args.active_prefix_key,
+            'from_prefix': current_prefix,
+            'to_prefix': previous_prefix,
+            'rollback_job_id': rollback_job_id,
+            'raw_backend': normalize_raw_backend(args.raw_backend),
+        }
+    kv.hset(f'{args.active_prefix_key}:rollback_audit', args.job_id, json.dumps(audit, sort_keys=True, separators=(',', ':')))
+    kv.put_string(args.active_prefix_key, previous_prefix)
+    return {
+        'status': 'ok',
+        'mode': 'rollback_activation',
+        'active_prefix_key': args.active_prefix_key,
+        'from_prefix': current_prefix,
+        'to_prefix': previous_prefix,
+        'rollback_job_id': rollback_job_id,
+        'raw_backend': normalize_raw_backend(args.raw_backend),
+        'audit_key': f'{args.active_prefix_key}:rollback_audit',
+        'job_id': args.job_id,
+    }
+
+
 def run_incremental_repair(args: argparse.Namespace) -> Json:
     if not args.target_prefix:
         raise BackfillError('incremental_repair requires --target-prefix for the shadow repair prefix')
@@ -1130,11 +1179,13 @@ def build_parser() -> argparse.ArgumentParser:
         help='raw ingestion message store that owns source-prefix; affects checkpoints, idempotency, manifests, and metrics',
     )
     parser.add_argument('--target-prefix', default='')
-    parser.add_argument('--mode', choices=['shadow', 'in_place', 'validate_shadow', 'activate_shadow', 'incremental_repair'], default='shadow')
+    parser.add_argument('--mode', choices=['shadow', 'in_place', 'validate_shadow', 'activate_shadow', 'rollback_activation', 'incremental_repair'], default='shadow')
     parser.add_argument('--confirm-in-place', default='')
     parser.add_argument('--confirm-activate', default='')
+    parser.add_argument('--confirm-rollback', default='')
     parser.add_argument('--confirm-incremental-repair', default='')
     parser.add_argument('--active-prefix-key', default='matrixark:context:active_prefix')
+    parser.add_argument('--rollback-job-id', default='', help='activation job id whose previous active prefix should be restored')
     parser.add_argument('--repair-active-prefix', default='')
     parser.add_argument('--validation-strict', type=int, choices=[0, 1], default=1)
     parser.add_argument('--skip-validation', type=int, choices=[0, 1], default=0)
@@ -1177,6 +1228,8 @@ def main() -> int:
             summary = run_validate_shadow(args)
         elif args.mode == 'activate_shadow':
             summary = run_activate_shadow(args)
+        elif args.mode == 'rollback_activation':
+            summary = run_rollback_activation(args)
         elif args.mode == 'incremental_repair':
             summary = run_incremental_repair(args)
         else:
