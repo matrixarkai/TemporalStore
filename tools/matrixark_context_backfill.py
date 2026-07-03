@@ -1366,7 +1366,7 @@ def run_backfill(args: argparse.Namespace) -> Json:
         except Exception as exc:
             handle_failure(sequence, raw_record, exc)
 
-    def process_source_batch(batch: list[tuple[int, str | None]]) -> None:
+    def process_source_batch(batch: list[SourceRef]) -> None:
         nonlocal discovered_min_sequence, discovered_max_sequence
         if not batch:
             return
@@ -1407,7 +1407,7 @@ def run_backfill(args: argparse.Namespace) -> Json:
     if outer_bulk:
         kv.begin_bulk()
     try:
-        source_batch: list[tuple[int, str | None]] = []
+        source_batch: list[SourceRef] = []
         for item in source_items:
             source_batch.append(item)
             if len(source_batch) >= args.batch_size:
