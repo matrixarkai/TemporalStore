@@ -137,6 +137,23 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(checkpoint["source_range"]["source_high_watermark_seq"], 1)
             self.assertEqual(checkpoint["source_range"]["effective_end_seq"], 2)
             self.assertEqual(checkpoint["metrics"]["written"], 2)
+            manifest = json.loads(backfill.LocalJsonKV(path).hget(summary["manifest_key"], "unit"))
+            manifest_payload_hash = manifest.pop("manifest_payload_sha256")
+            self.assertEqual(manifest["manifest_schema"], "matrixark_context_backfill_manifest_v1")
+            self.assertRegex(manifest_payload_hash, r"^[0-9a-f]{64}$")
+            self.assertEqual(summary["manifest_schema"], "matrixark_context_backfill_manifest_v1")
+            self.assertEqual(summary["manifest_payload_sha256"], manifest_payload_hash)
+            self.assertEqual(backfill.canonical_json_sha256(manifest), manifest_payload_hash)
+            verified = backfill.run_verify_manifest(self.make_args(
+                path,
+                mode="verify_manifest",
+                target_prefix="matrixark:context_backfill:test",
+                job_id="unit",
+                raw_backend="temporalstore",
+            ))
+            self.assertEqual(verified["status"], "ok")
+            self.assertTrue(verified["checks"]["manifest_payload_sha256_match"])
+            self.assertEqual(verified["manifest_payload_sha256"], manifest_payload_hash)
 
             resumed = backfill.run_backfill(self.make_args(path, prometheus_output=str(prom)))
             self.assertEqual(resumed["metrics"]["scanned"], 0)
@@ -1225,6 +1242,20 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
                     resume=False,
                 ))
 
+            with self.assertRaisesRegex(backfill.BackfillError, "confirm-unvalidated-target-state=YES"):
+                backfill.run_incremental_repair(self.make_args(
+                    path,
+                    mode="incremental_repair",
+                    target_prefix="matrixark:context_repair:skip",
+                    start_seq=0,
+                    end_seq=1,
+                    confirm_incremental_repair="YES",
+                    confirm_skip_validation="YES",
+                    skip_validation=True,
+                    expect_active_prefix="matrixark:context:active",
+                    resume=False,
+                ))
+
             repaired = backfill.run_incremental_repair(self.make_args(
                 path,
                 mode="incremental_repair",
@@ -1233,6 +1264,7 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
                 end_seq=1,
                 confirm_incremental_repair="YES",
                 confirm_skip_validation="YES",
+                confirm_unvalidated_target_state="YES",
                 skip_validation=True,
                 expect_active_prefix="matrixark:context:active",
                 resume=False,
@@ -1244,8 +1276,10 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertTrue(repaired["validation_skipped"])
             self.assertEqual(repaired["validation_skip_reason"], "skip_validation_flag")
             self.assertEqual(repaired["validation_source_range"], {})
-            self.assertEqual(repaired["validation_target_state"], {})
+            self.assertEqual(repaired["validation_target_state"]["record_count"], 0)
+            self.assertFalse(repaired["validation_target_state"]["healthy_for_unvalidated_activation"])
             self.assertEqual(repaired["promotion"]["metrics"]["written"], 1)
+            self.assertTrue(repaired["unvalidated_target_state_confirmed"])
             self.assertFalse(repaired["active_prefix_precondition_bypassed"])
 
             kv_after = backfill.LocalJsonKV(path)
@@ -1256,9 +1290,11 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(repair_audit["validation_skip_reason"], "skip_validation_flag")
             self.assertTrue(repair_audit["validation_strict"])
             self.assertFalse(repair_audit["non_strict_validation_confirmed"])
+            self.assertTrue(repair_audit["unvalidated_target_state_confirmed"])
             self.assertFalse(repair_audit["active_prefix_precondition_bypassed"])
             self.assertEqual(repair_audit["validation_source_range"], {})
-            self.assertEqual(repair_audit["validation_target_state"], {})
+            self.assertEqual(repair_audit["validation_target_state"]["record_count"], 0)
+            self.assertFalse(repair_audit["validation_target_state"]["healthy_for_unvalidated_activation"])
             active_records = read_target_records(kv_after, "matrixark:context:active")
             self.assertEqual([record["event_id_hash"] for record in active_records], [1])
 
@@ -1382,8 +1418,55 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             kv_after = backfill.LocalJsonKV(path)
             manifest = json.loads(kv_after.hget("shadow:matrixkv:backfill_manifest", "raw-mode"))
             self.assertEqual(manifest["raw_backend"], "matrixkv")
+            manifest_payload_hash = manifest.pop("manifest_payload_sha256")
+            self.assertEqual(manifest["manifest_schema"], "matrixark_context_backfill_manifest_v1")
+            self.assertRegex(manifest_payload_hash, r"^[0-9a-f]{64}$")
+            self.assertEqual(matrixkv["manifest_payload_sha256"], manifest_payload_hash)
+            self.assertEqual(backfill.canonical_json_sha256(manifest), manifest_payload_hash)
             record = read_target_records(kv_after, "shadow:matrixkv")[0]
             self.assertEqual(record["backfill"]["raw_backend"], "matrixkv")
+
+    def test_verify_manifest_rejects_tampered_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            write_sharded(kv, "matrixark:mcp", 0, {"record_type": "context_event", "event_id_hash": 17, "text": "manifest"})
+            kv.put_string("matrixark:mcp:record_count", "1")
+
+            summary = backfill.run_backfill(self.make_args(path, target_prefix="shadow:manifest", job_id="manifest-unit", resume=False))
+            verify_prom = Path(tmp) / "verify_manifest.prom"
+            verified = backfill.run_verify_manifest(self.make_args(
+                path,
+                mode="verify_manifest",
+                target_prefix="shadow:manifest",
+                job_id="manifest-unit",
+                prometheus_output=str(verify_prom),
+            ))
+            self.assertEqual(verified["status"], "ok")
+            self.assertEqual(verified["manifest_payload_sha256"], summary["manifest_payload_sha256"])
+            verify_prom_text = verify_prom.read_text(encoding="utf-8")
+            self.assertIn("matrixark_context_backfill_manifest_verification_status", verify_prom_text)
+            self.assertIn('status="ok"', verify_prom_text)
+            self.assertIn('check="manifest_payload_sha256_match"} 1', verify_prom_text)
+
+            kv_after = backfill.LocalJsonKV(path)
+            manifest = json.loads(kv_after.hget("shadow:manifest:backfill_manifest", "manifest-unit"))
+            manifest["source_range"]["source_record_count"] = 99
+            kv_after.hset("shadow:manifest:backfill_manifest", "manifest-unit", json.dumps(manifest, sort_keys=True, separators=(",", ":")))
+
+            tampered_prom = Path(tmp) / "verify_manifest_tampered.prom"
+            tampered = backfill.run_verify_manifest(self.make_args(
+                path,
+                mode="verify_manifest",
+                target_prefix="shadow:manifest",
+                job_id="manifest-unit",
+                prometheus_output=str(tampered_prom),
+            ))
+            self.assertEqual(tampered["status"], "failed")
+            self.assertFalse(tampered["checks"]["manifest_payload_sha256_match"])
+            tampered_prom_text = tampered_prom.read_text(encoding="utf-8")
+            self.assertIn('status="failed"', tampered_prom_text)
+            self.assertIn('check="manifest_payload_sha256_match"} 0', tampered_prom_text)
 
     def test_incremental_repair_honors_partial_filter(self):
         with tempfile.TemporaryDirectory() as tmp:

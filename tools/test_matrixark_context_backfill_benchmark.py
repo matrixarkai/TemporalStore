@@ -82,6 +82,12 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
         self.assertEqual(summary["batch_size_summary"]["by_batch_size"]["16"]["samples"], 2)
         self.assertIn("best_partial_repair_qps", summary["batch_size_summary"]["recommendations"])
         self.assertIn("best_balanced_min_qps", summary["batch_size_summary"]["recommendations"])
+        production_candidate = summary["batch_size_summary"]["production_candidate"]
+        self.assertEqual(production_candidate["selection"], "best_balanced_min_qps")
+        self.assertIn(production_candidate["batch_size"], summary["batch_sizes"])
+        self.assertGreater(production_candidate["balanced_min_qps"], 0)
+        self.assertGreater(production_candidate["max_phase_p95_ms"], 0)
+        self.assertGreater(production_candidate["backend_qps_min_max_ratio"], 0)
         self.assertFalse(summary["baseline_gate"]["enabled"])
         self.assertTrue(summary["baseline_gate"]["passed"])
 
@@ -124,6 +130,12 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
         recommendation = summary["batch_size_summary"]["recommendations"]["best_balanced_min_qps"]
         self.assertIn(recommendation["batch_size"], [8, 16])
         self.assertGreater(recommendation["observed"], 0)
+        production_candidate = summary["batch_size_summary"]["production_candidate"]
+        self.assertIn(production_candidate["batch_size"], [8, 16])
+        self.assertEqual(
+            production_candidate["balanced_min_qps"],
+            min(production_candidate["phase_qps_min"].values()),
+        )
 
     def test_local_benchmark_can_gate_each_sample(self) -> None:
         summary = bench.run_benchmark(self.make_args(

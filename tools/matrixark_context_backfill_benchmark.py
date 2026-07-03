@@ -433,6 +433,7 @@ def summarize_batch_size_performance(results: list[Json]) -> Json:
         grouped.setdefault(int(result["batch_size"]), []).append(result)
     by_batch_size: Json = {}
     recommendations: Json = {}
+    production_candidate: Json = {}
     for batch_size in sorted(grouped):
         batch_results = grouped[batch_size]
         qps_summary = summarize_backend_qps(batch_results)
@@ -441,12 +442,31 @@ def summarize_batch_size_performance(results: list[Json]) -> Json:
         repair_qps = float(qps_summary["incremental_repair_qps"]["min"])
         partial_repair_qps = float(qps_summary["partial_repair_qps"]["min"])
         balanced_qps = min(full_qps, repair_qps, partial_repair_qps)
+        phase_latency_p95_ms = {
+            "full_shadow": float(latency_summary["full_shadow_ms"]["p95"]),
+            "incremental_shadow": float(latency_summary["incremental_shadow_ms"]["p95"]),
+            "incremental_repair": float(latency_summary["incremental_repair_ms"]["p95"]),
+            "partial_shadow": float(latency_summary["partial_shadow_ms"]["p95"]),
+            "partial_repair": float(latency_summary["partial_repair_ms"]["p95"]),
+        }
+        backend_qps_min_max_ratio = min(
+            float(qps_summary[metric]["min_max_ratio"])
+            for metric in [
+                "full_shadow_qps",
+                "incremental_shadow_qps",
+                "incremental_repair_qps",
+                "partial_shadow_qps",
+                "partial_repair_qps",
+            ]
+        )
         by_batch_size[str(batch_size)] = {
             "samples": len(batch_results),
             "raw_backends": sorted({str(item["raw_backend"]) for item in batch_results}),
             "qps_summary": qps_summary,
             "latency_ms_summary": latency_summary,
             "balanced_min_qps": round(balanced_qps, 3),
+            "max_phase_p95_ms": round(max(phase_latency_p95_ms.values()), 3),
+            "backend_qps_min_max_ratio": round(backend_qps_min_max_ratio, 6),
         }
         for name, value in [
             ("best_full_shadow_qps", full_qps),
@@ -460,9 +480,30 @@ def summarize_batch_size_performance(results: list[Json]) -> Json:
                     "batch_size": batch_size,
                     "observed": round(value, 3),
                 }
+        current_candidate = production_candidate
+        if (
+            not isinstance(current_candidate, dict)
+            or not current_candidate
+            or balanced_qps > float(current_candidate.get("balanced_min_qps", -1.0))
+        ):
+            production_candidate = {
+                "batch_size": batch_size,
+                "selection": "best_balanced_min_qps",
+                "balanced_min_qps": round(balanced_qps, 3),
+                "phase_qps_min": {
+                    "full_shadow": round(full_qps, 3),
+                    "incremental_repair": round(repair_qps, 3),
+                    "partial_repair": round(partial_repair_qps, 3),
+                },
+                "phase_latency_p95_ms": {key: round(value, 3) for key, value in phase_latency_p95_ms.items()},
+                "max_phase_p95_ms": round(max(phase_latency_p95_ms.values()), 3),
+                "backend_qps_min_max_ratio": round(backend_qps_min_max_ratio, 6),
+                "reason": "highest minimum QPS across full shadow, incremental repair, and partial repair for the selected raw backends",
+            }
     return {
         "by_batch_size": by_batch_size,
         "recommendations": recommendations,
+        "production_candidate": production_candidate,
     }
 
 

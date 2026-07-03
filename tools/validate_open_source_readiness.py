@@ -22,6 +22,7 @@ REQUIRED_FILES = [
     ".gitignore",
     "docs/open_source_readiness.md",
     "tools/run_matrixark_context_backfill_ci_gate_ubuntu22.sh",
+    "tools/verify_matrixark_context_backfill_ci_evidence.py",
 ]
 
 README_TOKENS = [
@@ -60,15 +61,35 @@ BACKFILL_CI_GATE_TOKENS = [
     "MATRIXARK_BACKFILL_CI_RECORDS",
     "MATRIXARK_BACKFILL_CI_BATCH_SIZES",
     "MATRIXARK_BACKFILL_CI_INCREMENTAL_RECORDS",
+    "MATRIXARK_BACKFILL_CI_EVIDENCE_MANIFEST",
     "python3 -m py_compile",
     "python3 tools/test_matrixark_context_backfill.py",
     "python3 tools/test_matrixark_context_backfill_benchmark.py",
     "python3 tools/test_matrixark_dual_write_ingestion_benchmark.py",
+    "python3 tools/test_verify_matrixark_context_backfill_ci_evidence.py",
     "python3 tools/test_validate_matrixark_context_backfill_readiness.py",
     "python3 tools/test_validate_open_source_readiness.py",
     "python3 tools/validate_open_source_readiness.py",
     "python3 tools/validate_matrixark_context_backfill_readiness.py",
     "matrixark_context_backfill_readiness.json",
+    "matrixark_context_backfill_ci_evidence_manifest_v1",
+    "matrixark_context_backfill_evidence_manifest",
+    "verify_matrixark_context_backfill_ci_evidence.py",
+    "matrixark_context_backfill_ci_evidence_verification_status",
+    "os.path.relpath",
+    "--require-relative-paths=1",
+    "readiness_status_ok",
+    "readiness_checks_all_passed",
+    "readiness_required_sections_ok",
+    "dual_write_readiness_status_ok",
+    "dual_write_manifest_schema_supported",
+    "dual_write_manifest_status_ok",
+    "dual_write_manifest_required_artifacts_present",
+    "dual_write_manifest_artifact_paths_relative",
+    "dual_write_manifest_artifact_paths_within_dir",
+    "dual_write_manifest_artifact_paths_readable",
+    "dual_write_manifest_artifact_sizes_match",
+    "dual_write_manifest_artifact_sha256_match",
 ]
 
 PRIVATE_PATH_TOKENS = [

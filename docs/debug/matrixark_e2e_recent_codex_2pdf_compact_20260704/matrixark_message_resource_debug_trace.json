@@ -60,7 +60,7 @@
         "items": [
           {
             "resource_type": "pdf",
-            "source": "C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
+            "source": "<repo>\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
             "text": "resource page=1: Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
             "tokens": 54,
             "unit_kind": "pdf_page",
@@ -69,7 +69,7 @@
           },
           {
             "resource_type": "pdf",
-            "source": "C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_runbook.pdf#page=1",
+            "source": "<repo>\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_runbook.pdf#page=1",
             "text": "resource page=1: GPU Procurement Runbook\nProcedure: Attach finance approval before vendor selection.\nProcedure: Compare primary and backup GPU quotes before purchase order creation.\nTroubleshooting: If approval attachment is missing, notify Alice and stop vendor selection.\nAudit: Store final vendor selection evidence with the purchase order.",
             "tokens": 46,
             "unit_kind": "pdf_page",
@@ -803,7 +803,7 @@
       "type": "node_l1"
     }
   ],
-  "raw_event_log": "C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\matrixark_message_resource_debug_trace.jsonl",
+  "raw_event_log": "<repo>\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\matrixark_message_resource_debug_trace.jsonl",
   "record_counts": {
     "context_batch_commit": 1,
     "context_child_ref": 6,
@@ -2287,16 +2287,16 @@
         "path": "tenant:tenant_codex"
       },
       {
-        "name": "user:deeproute",
+        "name": "user:local-user",
         "node": 623184698193930698,
         "parent": 3263141514618168867,
-        "path": "tenant:tenant_codex/user:deeproute"
+        "path": "tenant:tenant_codex/user:local-user"
       },
       {
         "name": "session:debug-message-pdf-session",
         "node": 3084181658660614334,
         "parent": 623184698193930698,
-        "path": "user:deeproute/session:debug-message-pdf-session"
+        "path": "user:local-user/session:debug-message-pdf-session"
       },
       {
         "name": "conversation:project_aurora",
@@ -2308,7 +2308,7 @@
         "name": "resources",
         "node": 1257764480205296887,
         "parent": 623184698193930698,
-        "path": "user:deeproute/resources"
+        "path": "user:local-user/resources"
       },
       {
         "name": "project_aurora",
@@ -2342,7 +2342,7 @@
         "node": 1737304210274426578,
         "sources": 1,
         "summary": 5044606450940775875,
-        "text": "resource: C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_approval_packet.pdf section: pdf_page Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor selection is blocked if finance approval is not attached.",
+        "text": "resource: <repo>\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_approval_packet.pdf section: pdf_page Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor selection is blocked if finance approval is not attached.",
         "type": "resource_l0"
       },
       {
@@ -2356,35 +2356,35 @@
         "node": 1737304210274426578,
         "sources": 1,
         "summary": 3282433690769415239,
-        "text": "resource: C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_runbook.pdf section: pdf_page GPU Procurement Runbook Procedure: Attach finance approval before vendor selection. Procedure: Compare primary and backup GPU quotes before purchase order creation. Troubleshooting: If approval attachment is missing, notify Alice and stop vendor selection. Audit: Store final vendor selection evidence with the purchase order.",
+        "text": "resource: <repo>\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_runbook.pdf section: pdf_page GPU Procurement Runbook Procedure: Attach finance approval before vendor selection. Procedure: Compare primary and backup GPU quotes before purchase order creation. Troubleshooting: If approval attachment is missing, notify Alice and stop vendor selection. Audit: Store final vendor selection evidence with the purchase order.",
         "type": "resource_l0"
       },
       {
         "node": 3084181658660614334,
         "sources": 0,
         "summary": 1886266633781634111,
-        "text": "tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session :: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistant: Recorded: Project Aur...",
+        "text": "tenant:tenant_codex / user:local-user / session:debug-message-pdf-session :: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistant: Recorded: Project Aur...",
         "type": "node_l0"
       },
       {
         "node": 3084181658660614334,
         "sources": 0,
         "summary": 1616491761191208179,
-        "text": "Context node tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session. Rich overview: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment. user: Bob will own procurement, and the budget cap is 42000 dollars for the initial GPU batch. assistant: I will track Bob as procurement owner and the 42000 dollar cap for the initial batch. user: The deadline is July 15, 2026, and the runbook says finance approval must be attached before vendor selection. assistant: The active deadline is July 15, 2026. Vendor selection requires the finance approval attachment. user: Correction: Alice raised the cap to 45000 dol... tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session / conversation:project_aurora :: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. as... Context node tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session / conversation:project_aurora. Rich overview: user: Alice from finance approved the GPU...",
+        "text": "Context node tenant:tenant_codex / user:local-user / session:debug-message-pdf-session. Rich overview: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment. user: Bob will own procurement, and the budget cap is 42000 dollars for the initial GPU batch. assistant: I will track Bob as procurement owner and the 42000 dollar cap for the initial batch. user: The deadline is July 15, 2026, and the runbook says finance approval must be attached before vendor selection. assistant: The active deadline is July 15, 2026. Vendor selection requires the finance approval attachment. user: Correction: Alice raised the cap to 45000 dol... tenant:tenant_codex / user:local-user / session:debug-message-pdf-session / conversation:project_aurora :: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. as... Context node tenant:tenant_codex / user:local-user / session:debug-message-pdf-session / conversation:project_aurora. Rich overview: user: Alice from finance approved the GPU...",
         "type": "node_l1"
       },
       {
         "node": 2100209595829882121,
         "sources": 8,
         "summary": 7072998724969009401,
-        "text": "tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session / conversation:project_aurora :: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. as...",
+        "text": "tenant:tenant_codex / user:local-user / session:debug-message-pdf-session / conversation:project_aurora :: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. as...",
         "type": "node_l0"
       },
       {
         "node": 2100209595829882121,
         "sources": 8,
         "summary": 3186282447509310879,
-        "text": "Context node tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session / conversation:project_aurora. Rich overview: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment. user: Bob will own procurement, and the budget cap is 42000 dollars for the initial GPU batch. assistant: I will track Bob as procurement owner and the 42000 dollar cap for the initial batch. user: The deadline is July 15, 2026, and the runbook says finance approval must be attached before vendor selection. assistant: The active deadline is July 15, 2026. Vendor selection requires the finance approval attachment. user: Correction: Alice raised the cap to 45000 dollars after the backup GPU quote came in. assistant: Updated: the current Project Aurora GPU budget cap is 45000 dollars.. This node belongs to path tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session / conversation:project_aurora and should be used for tree-first retrieval before leaf event/entity recall.",
+        "text": "Context node tenant:tenant_codex / user:local-user / session:debug-message-pdf-session / conversation:project_aurora. Rich overview: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment. user: Bob will own procurement, and the budget cap is 42000 dollars for the initial GPU batch. assistant: I will track Bob as procurement owner and the 42000 dollar cap for the initial batch. user: The deadline is July 15, 2026, and the runbook says finance approval must be attached before vendor selection. assistant: The active deadline is July 15, 2026. Vendor selection requires the finance approval attachment. user: Correction: Alice raised the cap to 45000 dollars after the backup GPU quote came in. assistant: Updated: the current Project Aurora GPU budget cap is 45000 dollars.. This node belongs to path tenant:tenant_codex / user:local-user / session:debug-message-pdf-session / conversation:project_aurora and should be used for tree-first retrieval before leaf event/entity recall.",
         "type": "node_l1"
       },
       {
@@ -2405,56 +2405,56 @@
         "node": 623184698193930698,
         "sources": 0,
         "summary": 5451123137701072075,
-        "text": "tenant:tenant_codex / user:deeproute :: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase request for Proje...",
+        "text": "tenant:tenant_codex / user:local-user :: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase request for Proje...",
         "type": "node_l0"
       },
       {
         "node": 623184698193930698,
         "sources": 0,
         "summary": 7794448877417626891,
-        "text": "Context node tenant:tenant_codex / user:deeproute. Rich overview: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment. user: Alice from finance approved the GPU purchase request for... user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment. user: Bob will own procurement, and the budget cap is 42000 dollars for the initial GPU batch. assistant: I will track Bob as procurement owner and the 42000 dollar cap for the initial batch. user: The deadline is July 15, 2026, and the runbook says finance approval must be attached before vendor selection. assistant: The active deadline is July 15, 2026. Vendor selection requires the f...",
+        "text": "Context node tenant:tenant_codex / user:local-user. Rich overview: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment. user: Alice from finance approved the GPU purchase request for... user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment. user: Bob will own procurement, and the budget cap is 42000 dollars for the initial GPU batch. assistant: I will track Bob as procurement owner and the 42000 dollar cap for the initial batch. user: The deadline is July 15, 2026, and the runbook says finance approval must be attached before vendor selection. assistant: The active deadline is July 15, 2026. Vendor selection requires the f...",
         "type": "node_l1"
       },
       {
         "node": 1257764480205296887,
         "sources": 0,
         "summary": 2423087115552912795,
-        "text": "tenant:tenant_codex / user:deeproute / resources :: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase reque...",
+        "text": "tenant:tenant_codex / user:local-user / resources :: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase reque...",
         "type": "node_l0"
       },
       {
         "node": 1257764480205296887,
         "sources": 0,
         "summary": 8165358132187641623,
-        "text": "Context node tenant:tenant_codex / user:deeproute / resources. Rich overview: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment. user: Alice from finance approved the GPU purchase request for... resource: C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_runbook.pdf section: pdf_page GPU Procurement Runbook Procedure: Attach finance approval before vendor selection. Procedure: Compare primary and backup GPU quotes before purchase order creation. Troubleshooting: If approval attachment is missing, notify Alice and stop vendor selection. Audit: Store final vendor selection evidence with the purchase order.. This node belongs to path tenant:tenant_codex / user:deeproute / resources and should ...",
+        "text": "Context node tenant:tenant_codex / user:local-user / resources. Rich overview: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment. user: Alice from finance approved the GPU purchase request for... resource: <repo>\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_runbook.pdf section: pdf_page GPU Procurement Runbook Procedure: Attach finance approval before vendor selection. Procedure: Compare primary and backup GPU quotes before purchase order creation. Troubleshooting: If approval attachment is missing, notify Alice and stop vendor selection. Audit: Store final vendor selection evidence with the purchase order.. This node belongs to path tenant:tenant_codex / user:local-user / resources and should ...",
         "type": "node_l1"
       },
       {
         "node": 5984959491336829337,
         "sources": 0,
         "summary": 4443347079005396521,
-        "text": "tenant:tenant_codex / user:deeproute / resources / project_aurora :: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the G...",
+        "text": "tenant:tenant_codex / user:local-user / resources / project_aurora :: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the G...",
         "type": "node_l0"
       },
       {
         "node": 5984959491336829337,
         "sources": 0,
         "summary": 7129763152424808338,
-        "text": "Context node tenant:tenant_codex / user:deeproute / resources / project_aurora. Rich overview: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment. user: Alice from finance approved the GPU purchase request for... resource: C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_runbook.pdf section: pdf_page GPU Procurement Runbook Procedure: Attach finance approval before vendor selection. Procedure: Compare primary and backup GPU quotes before purchase order creation. Troubleshooting: If approval attachment is missing, notify Alice and stop vendor selection. Audit: Store final vendor selection evidence with the purchase order.. This node belongs to path tenant:tenant_codex / user:deeproute / reso...",
+        "text": "Context node tenant:tenant_codex / user:local-user / resources / project_aurora. Rich overview: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment. user: Alice from finance approved the GPU purchase request for... resource: <repo>\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_runbook.pdf section: pdf_page GPU Procurement Runbook Procedure: Attach finance approval before vendor selection. Procedure: Compare primary and backup GPU quotes before purchase order creation. Troubleshooting: If approval attachment is missing, notify Alice and stop vendor selection. Audit: Store final vendor selection evidence with the purchase order.. This node belongs to path tenant:tenant_codex / user:local-user / reso...",
         "type": "node_l1"
       },
       {
         "node": 1737304210274426578,
         "sources": 6,
         "summary": 9161093819732845678,
-        "text": "tenant:tenant_codex / user:deeproute / resources / project_aurora / gpu_procurement :: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns ...",
+        "text": "tenant:tenant_codex / user:local-user / resources / project_aurora / gpu_procurement :: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns ...",
         "type": "node_l0"
       },
       {
         "node": 1737304210274426578,
         "sources": 6,
         "summary": 1076018507551928025,
-        "text": "Context node tenant:tenant_codex / user:deeproute / resources / project_aurora / gpu_procurement. Rich overview: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor selection is blocked if finance approval is not attached. Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor selection is blocked if finance approval is not attached. tool: Import PDF resource for MatrixArk parsing: Project Aurora GPU Approval Packet GPU Procurement Runbook Procedure: Attach finance approval before vendor selection. Procedure: Compare primary and backup GPU quotes before purchase order creation. Troubleshooting: If approval attachment is missing, notify Alice and stop vendor selection. Audit: Store final vendor selection evidence with the purch...",
+        "text": "Context node tenant:tenant_codex / user:local-user / resources / project_aurora / gpu_procurement. Rich overview: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor selection is blocked if finance approval is not attached. Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor selection is blocked if finance approval is not attached. tool: Import PDF resource for MatrixArk parsing: Project Aurora GPU Approval Packet GPU Procurement Runbook Procedure: Attach finance approval before vendor selection. Procedure: Compare primary and backup GPU quotes before purchase order creation. Troubleshooting: If approval attachment is missing, notify Alice and stop vendor selection. Audit: Store final vendor selection evidence with the purch...",
         "type": "node_l1"
       }
     ],
@@ -2664,7 +2664,7 @@
       "agent_name": "codex",
       "session_id": "debug-message-pdf-session",
       "tenant_id": "tenant_codex",
-      "user_id": "deeproute"
+      "user_id": "local-user"
     },
     "summary_refresh_policy": {
       "background_interval_ms": 1000,
