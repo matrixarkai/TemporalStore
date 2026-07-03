@@ -43,11 +43,52 @@ RUST_CLI_CANDIDATES = [
 ]
 
 
+SENSITIVE_PATH_FLAGS = {
+    "--cpp-lib": "<MATRIXARK_PARITY_CPP_LIB>",
+    "--rust-cli": "<MATRIXARK_PARITY_RUST_CLI>",
+}
+
+
 def _wsl_path(path: Path | str) -> str:
     normalized = str(path).replace("\\", "/")
     if len(normalized) >= 3 and normalized[1] == ":" and normalized[2] == "/":
         return f"/mnt/{normalized[0].lower()}/{normalized[3:]}"
     return normalized
+
+
+def _redact_sensitive_argv(argv: list[str]) -> list[str]:
+    redacted: list[str] = []
+    skip_next = False
+    for index, item in enumerate(argv):
+        if skip_next:
+            skip_next = False
+            continue
+        if item in SENSITIVE_PATH_FLAGS:
+            redacted.append(item)
+            if index + 1 < len(argv):
+                redacted.append(SENSITIVE_PATH_FLAGS[item])
+                skip_next = True
+            continue
+        matched = False
+        for flag, placeholder in SENSITIVE_PATH_FLAGS.items():
+            prefix = f"{flag}="
+            if item.startswith(prefix):
+                redacted.append(f"{prefix}{placeholder}")
+                matched = True
+                break
+        if not matched:
+            redacted.append(item)
+    return redacted
+
+
+def _redact_backend_artifact_report(report: dict[str, Any]) -> dict[str, Any]:
+    redacted = dict(report)
+    if redacted.get("source") == "env" and redacted.get("path"):
+        env_name = str(redacted.get("env") or "BACKEND_ARTIFACT_ENV")
+        redacted["path"] = f"<{env_name}>"
+        redacted["wsl_path"] = f"<{env_name}_WSL>"
+        redacted["path_redacted"] = True
+    return redacted
 
 
 def _pythonize(argv: list[str]) -> list[str]:
@@ -114,6 +155,15 @@ def _backend_artifact_preflight() -> dict[str, Any]:
         "rust_cli": rust_cli,
         "ready": cpp_lib["exists"] and rust_cli["exists"],
         "override_env": [CPP_LIB_ENV, RUST_CLI_ENV],
+    }
+
+
+def _backend_artifact_preflight_for_report() -> dict[str, Any]:
+    preflight = _backend_artifact_preflight()
+    return {
+        **preflight,
+        "cpp_lib": _redact_backend_artifact_report(preflight["cpp_lib"]),
+        "rust_cli": _redact_backend_artifact_report(preflight["rust_cli"]),
     }
 
 
@@ -187,7 +237,7 @@ def build_execution_plan(audit: dict[str, Any], max_workloads: int | None = None
         "execution_environment": {
             "wsl_distro": wsl_distro,
             "wsl_distro_env": WSL_DISTRO_ENV,
-            "backend_artifacts": _backend_artifact_preflight(),
+            "backend_artifacts": _backend_artifact_preflight_for_report(),
         },
         "workload_count": len({command.get("workload") for command in commands if isinstance(command, dict)}),
         "commands": [
@@ -195,13 +245,13 @@ def build_execution_plan(audit: dict[str, Any], max_workloads: int | None = None
                 "step": command.get("step"),
                 "workload": command.get("workload"),
                 "reason": command.get("reason"),
-                "argv": command.get("argv"),
+                "argv": _redact_sensitive_argv(command.get("argv")),
             }
             | _command_metadata(command)
             | (
                 {
                     "wsl_argv": _wslize(
-                        _with_backend_artifact_overrides(command.get("argv")),
+                        _redact_sensitive_argv(_with_backend_artifact_overrides(command.get("argv"))),
                         distro=wsl_distro,
                     )
                 }
@@ -270,7 +320,7 @@ def run_plan(
                 "step": step,
                 "workload": workload,
                 "reason": reason,
-                "argv": argv,
+                "argv": _redact_sensitive_argv(argv),
                 "returncode": 125,
                 "status": "preflight_failed",
                 "preflight_blockers": blockers,
@@ -293,7 +343,7 @@ def run_plan(
             "step": step,
             "workload": workload,
             "reason": reason,
-            "argv": argv,
+            "argv": _redact_sensitive_argv(argv),
             "returncode": returncode,
             "status": status,
         }
@@ -319,7 +369,7 @@ def run_plan(
                     "step": "import_evidence",
                     "workload": workload,
                     "reason": str(command.get("reason")) if command.get("reason") is not None else None,
-                    "argv": argv,
+                    "argv": _redact_sensitive_argv(argv),
                     "returncode": 0,
                     "status": "skipped",
                     "skip_reason": "upstream_workload_failed",

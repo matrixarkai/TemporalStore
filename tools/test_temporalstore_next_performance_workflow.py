@@ -16,6 +16,7 @@ from run_temporalstore_cpp_rust_next_performance_workflow import (
     DEFAULT_WSL_DISTRO,
     _backend_artifact_preflight,
     _pythonize,
+    _redact_sensitive_argv,
     _with_backend_artifact_overrides,
     _wslize,
     build_execution_plan,
@@ -113,6 +114,26 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
         self.assertEqual(_pythonize(["python", "tool.py", "--x"]), [sys.executable, "tool.py", "--x"])
         self.assertEqual(_pythonize(["custom-python", "tool.py"]), ["custom-python", "tool.py"])
 
+    def test_redact_sensitive_backend_artifact_args(self) -> None:
+        self.assertEqual(
+            _redact_sensitive_argv(
+                [
+                    "python",
+                    "tool.py",
+                    "--cpp-lib",
+                    "/mnt/c/private/libbcache2.so",
+                    "--rust-cli=/mnt/c/private/matrixark_record_log",
+                ]
+            ),
+            [
+                "python",
+                "tool.py",
+                "--cpp-lib",
+                "<MATRIXARK_PARITY_CPP_LIB>",
+                "--rust-cli=<MATRIXARK_PARITY_RUST_CLI>",
+            ],
+        )
+
     def test_wslize_wraps_python_workload_command(self) -> None:
         command = _wslize(["python", "tools/run_matrixark_cpp_rust_scale_report.py"], distro="Ubuntu-22.04")
         self.assertEqual(command[:3], ["wsl", "-d", "Ubuntu-22.04"])
@@ -195,6 +216,48 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
         self.assertTrue(preflight["ready"])
         self.assertEqual(preflight["cpp_lib"]["source"], "env")
         self.assertEqual(preflight["rust_cli"]["source"], "env")
+
+    def test_plan_redacts_environment_backend_artifact_paths(self) -> None:
+        audit = {
+            "next_required_runs": [{"workload": "10K_event_ingestion"}],
+            "next_required_workflow": {
+                "commands": [
+                    {
+                        "step": "run_workload",
+                        "workload": "10K_event_ingestion",
+                        "argv": ["python", "tools/run_matrixark_cpp_rust_scale_report.py"],
+                    }
+                ]
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cpp_lib = root / "private" / "libbcache2.so"
+            rust_cli = root / "private" / "matrixark_record_log"
+            cpp_lib.parent.mkdir()
+            cpp_lib.write_text("", encoding="utf-8")
+            rust_cli.write_text("", encoding="utf-8")
+            with patch.dict(
+                os.environ,
+                {
+                    "MATRIXARK_PARITY_CPP_LIB": str(cpp_lib),
+                    "MATRIXARK_PARITY_RUST_CLI": str(rust_cli),
+                },
+            ):
+                plan = build_execution_plan(audit, max_workloads=1)
+
+        artifacts = plan["execution_environment"]["backend_artifacts"]
+        self.assertEqual(artifacts["cpp_lib"]["path"], "<MATRIXARK_PARITY_CPP_LIB>")
+        self.assertEqual(artifacts["rust_cli"]["path"], "<MATRIXARK_PARITY_RUST_CLI>")
+        self.assertEqual(
+            plan["commands"][0]["wsl_argv"][-4:],
+            [
+                "--cpp-lib",
+                "<MATRIXARK_PARITY_CPP_LIB>",
+                "--rust-cli",
+                "<MATRIXARK_PARITY_RUST_CLI>",
+            ],
+        )
 
     def test_run_plan_can_continue_after_failure(self) -> None:
         plan = {
@@ -295,6 +358,48 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
         self.assertEqual(result["results"][0]["status"], "timeout")
         self.assertEqual(result["results"][0]["returncode"], 124)
         self.assertEqual(result["results"][0]["timeout_sec"], 7)
+
+    def test_run_plan_records_redacted_paths_but_executes_real_paths(self) -> None:
+        plan = {
+            "commands": [
+                {
+                    "step": "run_workload",
+                    "workload": "10K",
+                    "reason": "missing",
+                    "argv": [
+                        "python",
+                        "tools/run_matrixark_cpp_rust_scale_report.py",
+                        "--cpp-lib",
+                        "/mnt/c/private/libbcache2.so",
+                        "--rust-cli",
+                        "/mnt/c/private/matrixark_record_log",
+                    ],
+                },
+            ],
+            "post_import_validation": [],
+        }
+
+        class Result:
+            returncode = 0
+
+        with patch(
+            "run_temporalstore_cpp_rust_next_performance_workflow.subprocess.run",
+            return_value=Result(),
+        ) as run:
+            result = run_plan(plan, include_post_validation=False)
+
+        self.assertIn("/mnt/c/private/libbcache2.so", run.call_args.args[0])
+        self.assertEqual(
+            result["results"][0]["argv"],
+            [
+                "python",
+                "tools/run_matrixark_cpp_rust_scale_report.py",
+                "--cpp-lib",
+                "<MATRIXARK_PARITY_CPP_LIB>",
+                "--rust-cli",
+                "<MATRIXARK_PARITY_RUST_CLI>",
+            ],
+        )
 
     def test_run_plan_fails_closed_when_backend_artifacts_missing(self) -> None:
         plan = {
