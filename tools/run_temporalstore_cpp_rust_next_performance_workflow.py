@@ -58,6 +58,7 @@ def build_execution_plan(audit: dict[str, Any], max_workloads: int | None = None
                 "workload": command.get("workload"),
                 "reason": command.get("reason"),
                 "argv": command.get("argv"),
+                "recommended_execution_output": command.get("recommended_execution_output"),
             }
             for command in commands
             if isinstance(command, dict)

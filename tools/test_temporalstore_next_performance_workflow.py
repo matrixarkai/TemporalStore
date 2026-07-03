@@ -27,6 +27,7 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
                         "workload": "10K_event_ingestion",
                         "reason": "missing_candidate",
                         "argv": ["python", "tools/run_matrixark_cpp_rust_scale_report.py"],
+                        "recommended_execution_output": "docs/benchmarks/parity_10K_event_ingestion/execution.json",
                     },
                     {
                         "step": "import_evidence",
@@ -54,6 +55,10 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
         self.assertTrue(plan["dry_run_default"])
         self.assertEqual(plan["workload_count"], 1)
         self.assertEqual([command["workload"] for command in plan["commands"]], ["10K_event_ingestion", "10K_event_ingestion"])
+        self.assertEqual(
+            plan["commands"][0]["recommended_execution_output"],
+            "docs/benchmarks/parity_10K_event_ingestion/execution.json",
+        )
         self.assertIn(
             ["python", "tools/validate_storage_engine_9_phase_parity.py", "--loops", "9"],
             plan["post_import_validation"],

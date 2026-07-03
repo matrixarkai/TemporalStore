@@ -20,12 +20,35 @@ class PerformanceArtifactAuditTest(unittest.TestCase):
             report_dir = root / "run"
             report_dir.mkdir()
             report = report_dir / "comparison.json"
+            execution = report_dir / "execution.json"
             matrix.write_text(json.dumps(_matrix()), encoding="utf-8")
             report.write_text(json.dumps(_report_with_bad_qps_ratio()), encoding="utf-8")
+            execution.write_text(
+                json.dumps(
+                    {
+                        "schema": "temporalstore_cpp_rust_next_performance_execution_v1",
+                        "continue_on_error": True,
+                        "status": "failed",
+                        "failed_count": 1,
+                        "results": [
+                            {
+                                "step": "run_workload",
+                                "workload": "1K_event_ingestion",
+                                "reason": "blocked_no_importable",
+                                "argv": ["python", "tools/run_matrixark_cpp_rust_scale_report.py"],
+                                "returncode": 124,
+                                "status": "failed",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
 
             audit = audit_artifacts(root, matrix)
 
         self.assertEqual(audit["reports_scanned"], 1)
+        self.assertEqual(audit["execution_artifacts_scanned"], 1)
         self.assertEqual(audit["reports_with_candidate_workloads"], 1)
         self.assertEqual(audit["reports_with_importable_workloads"], 0)
         self.assertIn("10K_event_ingestion", audit["missing_required_workloads"])
@@ -36,6 +59,12 @@ class PerformanceArtifactAuditTest(unittest.TestCase):
         self.assertIn("message_qps_ratio_below_0.8", coverage["blockers"])
         statuses = audit["required_workload_status"]
         self.assertEqual(statuses["1K_event_ingestion"]["status"], "blocked_no_importable")
+        self.assertEqual(statuses["1K_event_ingestion"]["execution_attempt_count"], 1)
+        self.assertEqual(statuses["1K_event_ingestion"]["last_execution_attempt"]["status"], "failed")
+        self.assertEqual(
+            statuses["1K_event_ingestion"]["last_execution_attempt"]["failed_steps"][0]["returncode"],
+            124,
+        )
         self.assertEqual(statuses["10K_event_ingestion"]["status"], "missing_candidate")
         self.assertIn("batch_size", statuses["1K_event_ingestion"]["next_run_hint"]["required_same_config_fields"])
         self.assertIn("selected_ref_parity=true", statuses["1K_event_ingestion"]["next_run_hint"]["required_result"])
@@ -44,6 +73,7 @@ class PerformanceArtifactAuditTest(unittest.TestCase):
         self.assertEqual(next_runs[0]["reason"], "missing_candidate")
         self.assertEqual(next_runs[0]["artifact_dir"], "docs/benchmarks/parity_10K_event_ingestion")
         self.assertEqual(next_runs[0]["comparison_path"], "docs/benchmarks/parity_10K_event_ingestion/comparison.json")
+        self.assertEqual(next_runs[0]["recommended_execution_output"], "docs/benchmarks/parity_10K_event_ingestion/execution.json")
         self.assertIn("--events", next_runs[0]["command"])
         self.assertIn("10000", next_runs[0]["command"])
         self.assertIn("--require-perf-parity", next_runs[0]["command"])
@@ -68,6 +98,10 @@ class PerformanceArtifactAuditTest(unittest.TestCase):
         workflow = audit["next_required_workflow"]
         self.assertEqual(workflow["commands"][0]["step"], "run_workload")
         self.assertEqual(workflow["commands"][0]["workload"], "10K_event_ingestion")
+        self.assertEqual(
+            workflow["commands"][0]["recommended_execution_output"],
+            "docs/benchmarks/parity_10K_event_ingestion/execution.json",
+        )
         self.assertEqual(workflow["commands"][1]["step"], "import_evidence")
         self.assertEqual(workflow["commands"][1]["workload"], "10K_event_ingestion")
         self.assertIn(
