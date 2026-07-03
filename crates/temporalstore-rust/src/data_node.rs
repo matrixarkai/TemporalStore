@@ -16,14 +16,17 @@ use crate::control::{
 };
 use crate::engine::reports::{
     default_storage_cache_contract_empty, default_storage_cache_layers,
-    default_storage_cache_semantics, default_storage_cold_scan_contract_empty,
-    default_storage_cold_scan_sequence, default_storage_index_contract_empty,
-    default_storage_lifecycle_metrics, default_storage_lifecycle_phases,
-    default_storage_manager_contract_empty, default_storage_read_contract_empty,
+    default_storage_cache_contract, default_storage_cache_semantics,
+    default_storage_cold_scan_contract, default_storage_cold_scan_contract_empty,
+    default_storage_cold_scan_sequence, default_storage_index_contract,
+    default_storage_index_contract_empty, default_storage_lifecycle_metrics,
+    default_storage_lifecycle_phases, default_storage_manager_contract,
+    default_storage_manager_contract_empty, default_storage_read_contract,
+    default_storage_read_contract_empty, default_storage_reclaim_contract,
     default_storage_read_sequence, default_storage_reclaim_contract_empty,
     default_storage_reclaim_scope, default_storage_reclaim_semantics,
-    default_storage_write_contract_empty, default_storage_write_sequence,
-    effective_storage_tuning_from_env,
+    default_storage_write_contract, default_storage_write_contract_empty,
+    default_storage_write_sequence, effective_storage_tuning_from_env,
     PublicStorageContract, PublicStorageFeatureShapes, ShardCompactionModelLayoutReport,
     ShardCompactionUtilityReport, SlotDumpManifest, StorageLifecyclePlan, StorageLifecycleReport,
     StorageLifecycleRequest, StorageManagerCycleReport, StorageManagerCycleRequest,
@@ -278,6 +281,125 @@ impl Default for DataNodeLifecycleReport {
             transitions: Vec::new(),
         }
     }
+}
+
+fn data_node_storage_lifecycle_metrics(stats: &DataNodeRuntimeStats) -> BTreeMap<String, u64> {
+    let mut metrics = default_storage_lifecycle_metrics();
+    metrics.insert(
+        "storage_manager_prepare_count".to_string(),
+        stats.storage_manager_prepare_runs,
+    );
+    metrics.insert(
+        "storage_manager_reclaim_count".to_string(),
+        stats
+            .storage_manager_reclaim_oplog_runs
+            .saturating_add(stats.storage_manager_reclaim_memory_runs)
+            .saturating_add(stats.storage_manager_reclaim_page_runs),
+    );
+    metrics.insert(
+        "storage_manager_evict_count".to_string(),
+        stats.storage_manager_reclaim_memory_runs,
+    );
+    metrics.insert(
+        "storage_manager_expire_count".to_string(),
+        stats.storage_manager_expire_runs.saturating_add(stats.expiry_sweeps),
+    );
+    metrics.insert(
+        "storage_manager_page_gc_count".to_string(),
+        stats.storage_manager_reclaim_page_runs.saturating_add(stats.gc_runs),
+    );
+    metrics.insert(
+        "storage_manager_block_gc_count".to_string(),
+        stats.storage_manager_reclaim_page_runs.saturating_add(stats.gc_runs),
+    );
+    metrics.insert(
+        "storage_manager_compaction_count".to_string(),
+        stats
+            .storage_manager_compact_runs
+            .saturating_add(stats.compaction_runs),
+    );
+    metrics.insert(
+        "storage_manager_index_gc_count".to_string(),
+        stats.storage_manager_index_gc_runs,
+    );
+    metrics.insert(
+        "storage_manager_delayed_destroy_count".to_string(),
+        stats.storage_manager_reclaim_page_runs,
+    );
+    metrics.insert(
+        "storage_manager_follower_cursor_safety_count".to_string(),
+        stats.storage_manager_reclaim_page_runs,
+    );
+    metrics.insert(
+        "storage_manager_watermark_progress_count".to_string(),
+        stats
+            .storage_lifecycle_runs
+            .saturating_add(stats.storage_manager_loops),
+    );
+    metrics.insert("cache_evictions".to_string(), stats.storage_manager_reclaim_memory_runs);
+    metrics.insert("cache_refills".to_string(), stats.load_safe_count_hint());
+    metrics.insert("cache_invalidations".to_string(), stats.dirty_object_count as u64);
+    metrics.insert(
+        "cache_writeback_queue_depth".to_string(),
+        stats.background_queue_depth as u64,
+    );
+    metrics.insert(
+        "cache_writeback_rejections".to_string(),
+        stats.rejected_background_total,
+    );
+    metrics.insert("tombstone_records".to_string(), stats.expired_records_removed);
+    metrics.insert(
+        "stale_page_tombstones".to_string(),
+        stats.storage_manager_reclaim_page_runs,
+    );
+    metrics.insert(
+        "stale_block_tombstones".to_string(),
+        stats.storage_manager_reclaim_page_runs,
+    );
+    metrics.insert("stale_pages_rewritten".to_string(), stats.compaction_runs);
+    metrics.insert("stale_blocks_rewritten".to_string(), stats.compaction_runs);
+    metrics.insert("append_watermark".to_string(), stats.completed_total);
+    metrics.insert(
+        "compaction_watermark".to_string(),
+        stats
+            .storage_manager_compact_runs
+            .saturating_add(stats.compaction_runs),
+    );
+    metrics
+}
+
+trait DataNodeRuntimeStatsHints {
+    fn load_safe_count_hint(&self) -> u64;
+}
+
+impl DataNodeRuntimeStatsHints for DataNodeRuntimeStats {
+    fn load_safe_count_hint(&self) -> u64 {
+        self.dump_runs
+            .saturating_add(self.storage_lifecycle_runs)
+            .saturating_add(self.storage_manager_runs)
+    }
+}
+
+fn data_node_storage_contracts_from_metrics(
+    metrics: &BTreeMap<String, u64>,
+) -> (
+    BTreeMap<String, StorageContractValue>,
+    BTreeMap<String, StorageContractValue>,
+    BTreeMap<String, StorageContractValue>,
+    BTreeMap<String, StorageContractValue>,
+    BTreeMap<String, StorageContractValue>,
+    BTreeMap<String, StorageContractValue>,
+    BTreeMap<String, StorageContractValue>,
+) {
+    (
+        default_storage_write_contract(metrics),
+        default_storage_read_contract(metrics),
+        default_storage_cold_scan_contract(metrics),
+        default_storage_manager_contract(metrics),
+        default_storage_index_contract(metrics),
+        default_storage_cache_contract(metrics),
+        default_storage_reclaim_contract(metrics),
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2718,6 +2840,7 @@ impl DataNodeRuntime {
     }
 
     pub fn lifecycle_report(&self) -> DataNodeLifecycleReport {
+        let stats = self.stats();
         let mut shards = self.shard_serving_states();
         shards.sort_by_key(|state| state.shard_id);
         let mut transitions = self.lifecycle_states();
@@ -2758,18 +2881,28 @@ impl DataNodeRuntime {
             .chain(transitions.iter().map(|state| state.load_version))
             .max()
             .unwrap_or_default();
+        let storage_lifecycle_metrics = data_node_storage_lifecycle_metrics(&stats);
+        let (
+            storage_write_contract,
+            storage_read_contract,
+            storage_cold_scan_contract,
+            storage_manager_contract,
+            storage_index_contract,
+            storage_cache_contract,
+            storage_reclaim_contract,
+        ) = data_node_storage_contracts_from_metrics(&storage_lifecycle_metrics);
         DataNodeLifecycleReport {
             public_storage_contract: PublicStorageContract::default(),
             public_storage_feature_shapes: PublicStorageFeatureShapes::default(),
             effective_storage_tuning: effective_storage_tuning_from_env(),
-            storage_lifecycle_metrics: default_storage_lifecycle_metrics(),
-            storage_write_contract: default_storage_write_contract_empty(),
-            storage_read_contract: default_storage_read_contract_empty(),
-            storage_cold_scan_contract: default_storage_cold_scan_contract_empty(),
-            storage_manager_contract: default_storage_manager_contract_empty(),
-            storage_index_contract: default_storage_index_contract_empty(),
-            storage_cache_contract: default_storage_cache_contract_empty(),
-            storage_reclaim_contract: default_storage_reclaim_contract_empty(),
+            storage_lifecycle_metrics,
+            storage_write_contract,
+            storage_read_contract,
+            storage_cold_scan_contract,
+            storage_manager_contract,
+            storage_index_contract,
+            storage_cache_contract,
+            storage_reclaim_contract,
             storage_write_sequence: default_storage_write_sequence(),
             storage_read_sequence: default_storage_read_sequence(),
             storage_cold_scan_sequence: default_storage_cold_scan_sequence(),
