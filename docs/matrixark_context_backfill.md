@@ -212,6 +212,25 @@ python3 tools/matrixark_context_backfill_benchmark.py \
   --json-output=/tmp/matrixark_context_backfill_bench_gate.json
 ```
 
+For batch tuning, sweep multiple candidate sizes in one run:
+
+```bash
+python3 tools/matrixark_context_backfill_benchmark.py \
+  --records=10000 \
+  --batch-sizes=256,512,1024,2048 \
+  --incremental-records=1000 \
+  --repeat=3 \
+  --payload-bytes=128 \
+  --raw-backends=both \
+  --min-full-shadow-qps=5000 \
+  --min-incremental-repair-qps=1500 \
+  --max-full-shadow-p95-ms=1000 \
+  --max-incremental-shadow-p95-ms=500 \
+  --max-incremental-repair-p95-ms=500 \
+  --gate-aggregation=min \
+  --json-output=/tmp/matrixark_context_backfill_batch_sweep.json
+```
+
 Key output:
 
 | Field | Meaning |
@@ -222,11 +241,12 @@ Key output:
 | `results[].repeat_index` | One-based sample index when `--repeat` is greater than `1`. |
 | `qps_summary` | Average, min, max, and min/max ratio for full shadow, incremental shadow, and incremental repair QPS across the selected raw backends. |
 | `latency_ms_summary` | Average, min, max, and p95 elapsed milliseconds for full shadow, incremental shadow, and incremental repair phases. |
+| `batch_size_summary` | Per-batch-size QPS/latency summaries plus recommended batch sizes for full shadow, incremental repair, and balanced throughput. |
 | `performance_gate` | Optional pass/fail checks for QPS floors, p95 latency ceilings, and backend QPS parity, using the selected `--gate-aggregation`. |
 
 Local mode is an in-process correctness and regression signal. For production capacity numbers, run the same batch sizes through `tools/matrixark_context_backfill.py` against a real TemporalStore/MatrixKV deployment and compare the resulting JSON summaries and Prometheus output.
 
-Use `--repeat` for release and CI runs where a single local sample is too noisy. The default `--gate-aggregation=min` gates the worst repeated QPS sample per backend and p95 latency per backend, which is conservative enough for release checks while keeping the output compact. Use `--gate-aggregation=avg` for trend dashboards, and `--gate-aggregation=sample` when every individual sample must pass. Use `--min-backend-qps-ratio` when both raw-message storage options are selected. It fails the gate when the slowest selected backend aggregate falls below the configured fraction of the fastest selected backend aggregate for full shadow, incremental shadow, or incremental repair. This catches asymmetric regressions that average QPS can hide.
+Use `--repeat` for release and CI runs where a single local sample is too noisy. The default `--gate-aggregation=min` gates the worst repeated QPS sample per backend and p95 latency per backend, which is conservative enough for release checks while keeping the output compact. Use `--gate-aggregation=avg` for trend dashboards, and `--gate-aggregation=sample` when every individual sample must pass. Use `--batch-sizes` when tuning throughput; pick from `batch_size_summary.recommendations`, then rerun the selected size against the real deployment before changing production defaults. Use `--min-backend-qps-ratio` when both raw-message storage options are selected. It fails the gate when the slowest selected backend aggregate falls below the configured fraction of the fastest selected backend aggregate for full shadow, incremental shadow, or incremental repair. This catches asymmetric regressions that average QPS can hide.
 
 Latency gates are optional and disabled by default:
 
@@ -867,6 +887,17 @@ Recommended production alerts:
 ## Performance And Batch Tuning
 
 Start with `--batch-size=1024` for larger jobs. Use `256` for small repairs or when target latency is unstable. Treat `4096` as an upper-end starting point only after a smaller batch has proven stable.
+
+Use benchmark sweeps before changing production batch defaults:
+
+```bash
+python3 tools/matrixark_context_backfill_benchmark.py \
+  --batch-sizes=256,512,1024,2048 \
+  --raw-backends=both \
+  --repeat=3
+```
+
+The `batch_size_summary.recommendations.best_balanced_min_qps` field is the safest first pick when full rebuilds and incremental repairs both matter. Prefer the repair-specific recommendation only for incident-recovery profiles where bounded active-prefix repair latency matters more than full rebuild throughput.
 
 The runner uses:
 
