@@ -36,6 +36,7 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             "table": "unused",
             "library_path": "",
             "source_prefix": "matrixark:mcp",
+            "raw_backend": "temporalstore",
             "target_prefix": "matrixark:context_backfill:test",
             "mode": "shadow",
             "confirm_in_place": "",
@@ -83,6 +84,8 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             prom_text = prom.read_text()
             self.assertIn("matrixark_context_backfill_records_total", prom_text)
             self.assertIn("matrixark_context_backfill_batches_total", prom_text)
+            self.assertIn('raw_backend="temporalstore"', prom_text)
+            self.assertEqual(summary["raw_backend"], "temporalstore")
             self.assertEqual(len(read_target_records(backfill.LocalJsonKV(path), "matrixark:context_backfill:test")), 2)
 
             resumed = backfill.run_backfill(self.make_args(path, prometheus_output=str(prom)))
@@ -143,6 +146,7 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             target = backfill.MatrixKVBackfillTarget(kv, prefix="shadow:batch")
             target.append_many([{ "record_type": "context_event", "event_id_hash": 3 }])
             self.assertEqual(kv.matrixark_append_records_calls, 1)
+            self.assertEqual(kv.matrixark_append_records_options[-1]["raw_storage_backend"], "temporalstore")
             self.assertEqual(kv.get_string("shadow:batch:record_count"), "1")
 
 
@@ -267,10 +271,45 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             manifest = kv_after.hget("shadow:partial:backfill_manifest", "same")
             self.assertIn('"partial"', manifest)
 
-            full_cp = backfill.checkpoint_key("shadow:full", "same", source_prefix="matrixark:mcp", partial=full["partial"])
-            partial_cp = backfill.checkpoint_key("shadow:partial", "same", source_prefix="matrixark:mcp", partial=partial["partial"])
+            full_cp = backfill.checkpoint_key("shadow:full", "same", source_prefix="matrixark:mcp", raw_backend="temporalstore", partial=full["partial"])
+            partial_cp = backfill.checkpoint_key("shadow:partial", "same", source_prefix="matrixark:mcp", raw_backend="temporalstore", partial=partial["partial"])
             self.assertNotEqual(full_cp, partial_cp)
             self.assertEqual(kv_after.get_string(partial_cp), "2")
+
+    def test_raw_backend_isolates_checkpoint_manifest_and_append_options(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            write_sharded(kv, "matrixark:mcp", 0, {"record_type": "context_event", "event_id_hash": 11, "text": "raw backend"})
+            kv.put_string("matrixark:mcp:record_count", "1")
+
+            temporal = backfill.run_backfill(self.make_args(
+                path,
+                target_prefix="shadow:temporal",
+                job_id="raw-mode",
+                raw_backend="temporalstore",
+                resume=True,
+            ))
+            matrixkv = backfill.run_backfill(self.make_args(
+                path,
+                target_prefix="shadow:matrixkv",
+                job_id="raw-mode",
+                raw_backend="matrixkv",
+                resume=True,
+            ))
+
+            self.assertEqual(temporal["raw_backend"], "temporalstore")
+            self.assertEqual(matrixkv["raw_backend"], "matrixkv")
+            self.assertNotEqual(
+                backfill.checkpoint_key("shadow:temporal", "raw-mode", source_prefix="matrixark:mcp", raw_backend="temporalstore", partial=temporal["partial"]),
+                backfill.checkpoint_key("shadow:temporal", "raw-mode", source_prefix="matrixark:mcp", raw_backend="matrixkv", partial=temporal["partial"]),
+            )
+
+            kv_after = backfill.LocalJsonKV(path)
+            manifest = json.loads(kv_after.hget("shadow:matrixkv:backfill_manifest", "raw-mode"))
+            self.assertEqual(manifest["raw_backend"], "matrixkv")
+            record = read_target_records(kv_after, "shadow:matrixkv")[0]
+            self.assertEqual(record["backfill"]["raw_backend"], "matrixkv")
 
     def test_incremental_repair_honors_partial_filter(self):
         with tempfile.TemporaryDirectory() as tmp:
