@@ -6,11 +6,13 @@ from __future__ import annotations
 import unittest
 
 from validate_temporalstore_cpp_rust_performance_parity import (
+    REQUIRED_STORAGE_MODE_MATRIX,
     _exceeds_limit,
     _validate_global_blocker_ledger,
     _validate_completed_same_config,
     _validate_metric_block,
     _validate_ratios,
+    _validate_storage_mode_matrix_hint,
     _validate_source_report,
 )
 from validate_storage_tuning_parity import EXPECTED_DEFAULTS as STORAGE_TUNING
@@ -226,6 +228,137 @@ class PerformanceParityValidatorTest(unittest.TestCase):
 
         self.assertIn("global open_blockers must be unique", failures)
         self.assertIn("1K_event_ingestion open_blockers must be unique", failures)
+
+    def test_missing_evidence_hint_requires_full_storage_mode_matrix(self) -> None:
+        failures: list[str] = []
+        row = {
+            "workload": "retrieve_workers_4",
+            "next_run_hint": {
+                "storage_mode_matrix": {
+                    "shared_store_async": {
+                        "storage_family": "shared_store",
+                        "write_mode": "async",
+                        "replication_mode": "shared_store",
+                        "comparison_path": "docs/benchmarks/parity_retrieve_workers_4/shared_store_async/comparison.json",
+                        "command": [
+                            "python",
+                            "tools/run_matrixark_cpp_rust_scale_report.py",
+                            "--retrieve-workers",
+                            "4",
+                            "--backends",
+                            "cpp",
+                            "rust",
+                            "--artifact-dir",
+                            "docs/benchmarks/parity_retrieve_workers_4/shared_store_async",
+                            "--dataset",
+                            "matrixark-scale-synthetic",
+                            "--messages-per-ingest",
+                            "20",
+                            "--max-context-tokens",
+                            "12000",
+                            "--embedding-model",
+                            "matrixark-local-token-hash-v1",
+                            "--reader-model",
+                            "matrixark-deterministic-reader",
+                            "--judge-model",
+                            "matrixark-deterministic-judge",
+                            "--metaserver",
+                            "127.0.0.1:18000",
+                            "--namespace",
+                            "deploy_ns",
+                            "--table",
+                            "deploy_table",
+                            "--storage-family",
+                            "shared_store",
+                            "--storage-mode",
+                            "multi_node",
+                            "--write-mode",
+                            "async",
+                            "--oplog-mode",
+                            "async",
+                            "--replication-mode",
+                            "shared_store",
+                            "--require-perf-parity",
+                            "--require-phase-scale-matrix",
+                        ],
+                    }
+                }
+            },
+        }
+
+        _validate_storage_mode_matrix_hint(row, failures)
+
+        for mode_name in REQUIRED_STORAGE_MODE_MATRIX:
+            if mode_name == "shared_store_async":
+                continue
+            self.assertIn(
+                f"retrieve_workers_4 next_run_hint.storage_mode_matrix missing `{mode_name}`",
+                failures,
+            )
+
+    def test_storage_mode_matrix_rejects_mode_command_drift(self) -> None:
+        failures: list[str] = []
+        row = {
+            "workload": "1K_event_ingestion",
+            "next_run_hint": {
+                "storage_mode_matrix": {
+                    "raft_sync": {
+                        "storage_family": "raft",
+                        "write_mode": "sync",
+                        "replication_mode": "raft",
+                        "comparison_path": "docs/benchmarks/parity_1K_event_ingestion/raft_sync/comparison.json",
+                        "command": [
+                            "python",
+                            "tools/run_matrixark_cpp_rust_scale_report.py",
+                            "--events",
+                            "1000",
+                            "--backends",
+                            "cpp",
+                            "rust",
+                            "--artifact-dir",
+                            "docs/benchmarks/parity_1K_event_ingestion/raft_sync",
+                            "--dataset",
+                            "matrixark-scale-synthetic",
+                            "--messages-per-ingest",
+                            "20",
+                            "--max-context-tokens",
+                            "12000",
+                            "--embedding-model",
+                            "matrixark-local-token-hash-v1",
+                            "--reader-model",
+                            "matrixark-deterministic-reader",
+                            "--judge-model",
+                            "matrixark-deterministic-judge",
+                            "--metaserver",
+                            "127.0.0.1:18000",
+                            "--namespace",
+                            "deploy_ns",
+                            "--table",
+                            "deploy_table",
+                            "--storage-family",
+                            "raft",
+                            "--storage-mode",
+                            "multi_node",
+                            "--write-mode",
+                            "async",
+                            "--oplog-mode",
+                            "sync",
+                            "--replication-mode",
+                            "raft",
+                            "--require-perf-parity",
+                            "--require-phase-scale-matrix",
+                        ],
+                    }
+                }
+            },
+        }
+
+        _validate_storage_mode_matrix_hint(row, failures)
+
+        self.assertIn(
+            "1K_event_ingestion next_run_hint.storage_mode_matrix.raft_sync.command --write-mode drift: expected 'sync' got 'async'",
+            failures,
+        )
 
 
 if __name__ == "__main__":
