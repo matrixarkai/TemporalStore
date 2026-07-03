@@ -69,6 +69,11 @@ def update_serving_fingerprint(hasher: Any, record: Json) -> None:
     hasher.update(payload)
 
 
+def canonical_json_sha256(value: Any) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    return hashlib.sha256(payload).hexdigest()
+
+
 @dataclass
 class BackfillMetrics:
     scanned: int = 0
@@ -1459,6 +1464,7 @@ def run_backfill(args: argparse.Namespace) -> Json:
     summary['dry_run'] = bool(args.dry_run)
     summary['dry_run_check_target'] = bool(getattr(args, 'dry_run_check_target', True))
     manifest = {
+        'manifest_schema': 'matrixark_context_backfill_manifest_v1',
         'job_id': args.job_id,
         'mode': args.mode,
         'source_prefix': args.source_prefix,
@@ -1473,8 +1479,12 @@ def run_backfill(args: argparse.Namespace) -> Json:
         'source_range': source_range,
         'dry_run': bool(args.dry_run),
         'dry_run_check_target': bool(getattr(args, 'dry_run_check_target', True)),
-        'summary': summary,
+        'summary': dict(summary),
     }
+    manifest_payload_sha256 = canonical_json_sha256(manifest)
+    manifest['manifest_payload_sha256'] = manifest_payload_sha256
+    summary['manifest_schema'] = manifest['manifest_schema']
+    summary['manifest_payload_sha256'] = manifest_payload_sha256
     summary['manifest_key'] = f'{target_prefix}:backfill_manifest'
     if not args.dry_run:
         kv.hset(summary['manifest_key'], args.job_id, json.dumps(manifest, sort_keys=True, separators=(',', ':')))
@@ -1666,7 +1676,7 @@ def inspect_activation_target_state(args: argparse.Namespace, kv: Any) -> Json:
     }
 
 
-def require_unvalidated_activation_target_state(args: argparse.Namespace, kv: Any) -> Json:
+def require_unvalidated_target_state(args: argparse.Namespace, kv: Any, *, mode: str) -> Json:
     if not args.skip_validation:
         return {}
     state = inspect_activation_target_state(args, kv)
@@ -1675,7 +1685,7 @@ def require_unvalidated_activation_target_state(args: argparse.Namespace, kv: An
     if getattr(args, 'confirm_unvalidated_target_state', '') == 'YES':
         return state
     raise BackfillError(
-        'activate_shadow with --skip-validation=1 found an empty or unhealthy target prefix; '
+        f'{mode} with --skip-validation=1 found an empty or unhealthy target prefix; '
         'run validate_shadow or pass --confirm-unvalidated-target-state=YES to audit the break-glass activation'
     )
 
@@ -1819,7 +1829,7 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
             raise BackfillError(f'shadow validation failed: {json.dumps(validation, sort_keys=True)}')
     validation_audit = validation_audit_fields(validation, skip_validation=args.skip_validation)
     kv = make_kv(args)
-    unvalidated_target_state = require_unvalidated_activation_target_state(args, kv)
+    unvalidated_target_state = require_unvalidated_target_state(args, kv, mode='activate_shadow')
     if unvalidated_target_state:
         validation_audit['validation_target_state'] = unvalidated_target_state
     previous = kv.get_string(args.active_prefix_key)
@@ -2068,6 +2078,9 @@ def run_incremental_repair(args: argparse.Namespace) -> Json:
     validation_audit = validation_audit_fields(validation, skip_validation=args.skip_validation)
 
     kv = make_kv(args)
+    unvalidated_target_state = require_unvalidated_target_state(args, kv, mode='incremental_repair')
+    if unvalidated_target_state:
+        validation_audit['validation_target_state'] = unvalidated_target_state
     current_active_prefix = kv.get_string(args.active_prefix_key)
     require_expected_active_prefix(args, current_active_prefix)
     require_active_prefix_precondition(args, mode='incremental_repair')
@@ -2115,6 +2128,7 @@ def run_incremental_repair(args: argparse.Namespace) -> Json:
             **validation_audit,
             'validation_strict': bool(args.validation_strict),
             'non_strict_validation_confirmed': bool(not args.validation_strict and args.confirm_non_strict_validation == 'YES'),
+            'unvalidated_target_state_confirmed': bool(args.skip_validation and args.confirm_unvalidated_target_state == 'YES'),
             'active_prefix_precondition_bypassed': active_prefix_precondition_bypassed(args),
             'promotion_consistency': promotion_consistency,
             'promotion_metrics': promotion.get('metrics', {}),
@@ -2140,10 +2154,114 @@ def run_incremental_repair(args: argparse.Namespace) -> Json:
         'promotion': promotion,
         'promotion_consistency': promotion_consistency,
         'audit_key': f'{args.active_prefix_key}:incremental_repair_audit',
+        'unvalidated_target_state_confirmed': bool(args.skip_validation and args.confirm_unvalidated_target_state == 'YES'),
         'active_prefix_precondition_bypassed': active_prefix_precondition_bypassed(args),
     }
     if args.prometheus_output:
         Path(args.prometheus_output).write_text(incremental_repair_to_prometheus(summary), encoding='utf-8')
+    return summary
+
+
+def verify_manifest_to_prometheus(summary: Json) -> str:
+    base = {
+        'job_id': str(summary.get('job_id') or ''),
+        'raw_backend': str(summary.get('raw_backend') or ''),
+        'target_prefix': str(summary.get('target_prefix') or ''),
+        'mode': 'verify_manifest',
+    }
+    lines = [
+        '# HELP matrixark_context_backfill_manifest_verification_status Manifest verification status for persisted backfill evidence.',
+        '# TYPE matrixark_context_backfill_manifest_verification_status gauge',
+        f'matrixark_context_backfill_manifest_verification_status{{{_prom_labels(**base, status=str(summary.get("status") or "unknown"))}}} 1',
+        '# HELP matrixark_context_backfill_manifest_verification_check Manifest verification check result, 1 for pass and 0 for fail.',
+        '# TYPE matrixark_context_backfill_manifest_verification_check gauge',
+    ]
+    checks = summary.get('checks') if isinstance(summary.get('checks'), dict) else {}
+    for check_name, passed in sorted(checks.items()):
+        lines.append(f'matrixark_context_backfill_manifest_verification_check{{{_prom_labels(**base, check=check_name)}}} {1 if passed else 0}')
+    return '\n'.join(lines) + '\n'
+
+
+def maybe_write_verify_manifest_prometheus(args: argparse.Namespace, summary: Json) -> None:
+    if args.prometheus_output:
+        Path(args.prometheus_output).write_text(verify_manifest_to_prometheus(summary), encoding='utf-8')
+
+
+def run_verify_manifest(args: argparse.Namespace) -> Json:
+    if not args.target_prefix:
+        raise BackfillError('verify_manifest requires --target-prefix')
+    kv = make_kv(args)
+    manifest_key = f'{args.target_prefix}:backfill_manifest'
+    raw_manifest = kv.hget(manifest_key, args.job_id)
+    if not raw_manifest:
+        summary = {
+            'status': 'failed',
+            'mode': 'verify_manifest',
+            'job_id': args.job_id,
+            'target_prefix': args.target_prefix,
+            'raw_backend': normalize_raw_backend(args.raw_backend),
+            'manifest_key': manifest_key,
+            'checks': {
+                'manifest_found': False,
+                'manifest_schema_supported': False,
+                'manifest_payload_sha256_match': False,
+            },
+            'error': 'manifest not found',
+        }
+        maybe_write_verify_manifest_prometheus(args, summary)
+        return summary
+    try:
+        manifest = json.loads(raw_manifest)
+    except json.JSONDecodeError as exc:
+        summary = {
+            'status': 'failed',
+            'mode': 'verify_manifest',
+            'job_id': args.job_id,
+            'target_prefix': args.target_prefix,
+            'raw_backend': normalize_raw_backend(args.raw_backend),
+            'manifest_key': manifest_key,
+            'checks': {
+                'manifest_found': True,
+                'manifest_json_valid': False,
+                'manifest_schema_supported': False,
+                'manifest_payload_sha256_match': False,
+            },
+            'error': f'invalid manifest JSON: {exc}',
+        }
+        maybe_write_verify_manifest_prometheus(args, summary)
+        return summary
+    expected_hash = str(manifest.get('manifest_payload_sha256') or '')
+    payload = dict(manifest)
+    payload.pop('manifest_payload_sha256', None)
+    actual_hash = canonical_json_sha256(payload)
+    checks = {
+        'manifest_found': True,
+        'manifest_json_valid': True,
+        'manifest_schema_supported': manifest.get('manifest_schema') == 'matrixark_context_backfill_manifest_v1',
+        'manifest_payload_sha256_present': bool(expected_hash),
+        'manifest_payload_sha256_match': bool(expected_hash) and expected_hash == actual_hash,
+        'manifest_job_id_matches': manifest.get('job_id') == args.job_id,
+        'manifest_target_prefix_matches': manifest.get('target_prefix') == args.target_prefix,
+        'manifest_raw_backend_matches': normalize_raw_backend(str(manifest.get('raw_backend') or args.raw_backend)) == normalize_raw_backend(args.raw_backend),
+    }
+    status = 'ok' if all(bool(value) for value in checks.values()) else 'failed'
+    summary = {
+        'status': status,
+        'mode': 'verify_manifest',
+        'job_id': args.job_id,
+        'target_prefix': args.target_prefix,
+        'raw_backend': normalize_raw_backend(args.raw_backend),
+        'manifest_key': manifest_key,
+        'manifest_schema': manifest.get('manifest_schema', ''),
+        'manifest_payload_sha256': expected_hash,
+        'computed_manifest_payload_sha256': actual_hash,
+        'manifest_mode': manifest.get('mode', ''),
+        'manifest_source_prefix': manifest.get('source_prefix', ''),
+        'manifest_source_range': manifest.get('source_range', {}),
+        'manifest_partial': manifest.get('partial', {}),
+        'checks': checks,
+    }
+    maybe_write_verify_manifest_prometheus(args, summary)
     return summary
 
 
@@ -2161,7 +2279,7 @@ def build_parser() -> argparse.ArgumentParser:
         help='raw ingestion message store that owns source-prefix; affects checkpoints, idempotency, manifests, and metrics',
     )
     parser.add_argument('--target-prefix', default='')
-    parser.add_argument('--mode', choices=['shadow', 'in_place', 'validate_shadow', 'activate_shadow', 'rollback_activation', 'incremental_repair'], default='shadow')
+    parser.add_argument('--mode', choices=['shadow', 'in_place', 'validate_shadow', 'activate_shadow', 'rollback_activation', 'incremental_repair', 'verify_manifest'], default='shadow')
     parser.add_argument('--confirm-in-place', default='')
     parser.add_argument('--confirm-activate', default='')
     parser.add_argument('--confirm-rollback', default='')
@@ -2225,6 +2343,8 @@ def main() -> int:
             summary = run_rollback_activation(args)
         elif args.mode == 'incremental_repair':
             summary = run_incremental_repair(args)
+        elif args.mode == 'verify_manifest':
+            summary = run_verify_manifest(args)
         else:
             summary = run_backfill(args)
     except Exception as exc:

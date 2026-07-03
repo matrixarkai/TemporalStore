@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import tempfile
@@ -26,7 +27,11 @@ REQUIRED_DOC_MARKERS = [
     "--raw-backends=both",
     "--min-backend-qps-ratio",
     "--prometheus-output",
+    "--dual-write-evidence-dir",
+    "matrixark_dual_write_ingestion_qps",
+    "matrixark_dual_write_ingestion_backend_qps_ratio",
     "--batch-sizes",
+    "production_candidate",
     "record_count",
     "record_index",
     "scan_hash",
@@ -53,11 +58,39 @@ REQUIRED_DOC_MARKERS = [
     "completed_with_errors",
     "--baseline-json",
     "append-time idempotency",
+    "manifest_payload_sha256",
+    "matrixark_context_backfill_manifest_v1",
+    "verify_manifest",
+    "matrixark_context_backfill_manifest_verification_status",
+    "matrixark_context_backfill_manifest_verification_check",
+    "matrixark_context_backfill_ci_evidence_verification_status",
+    "verify_matrixark_context_backfill_ci_evidence.py",
+    "uploaded evidence bundle remains verifiable after download or relocation",
+    "--require-relative-paths=1",
+    "readiness report has `status=\"ok\"`",
+    "all readiness checks passed",
+    "all required readiness gate sections report `status=\"ok\"`",
+    "dual-write readiness JSON reports `status=\"ok\"`",
+    "dual-write evidence manifest reports `status=\"ok\"`",
+    "dual-write evidence manifest uses `matrixark_dual_write_readiness_evidence_v1`",
+    "dual-write evidence manifest stores portable relative artifact paths",
+    "dual-write evidence manifest artifact paths stay inside the dual-write evidence directory",
+    "dual-write evidence manifest artifact sizes and SHA-256 checksums match",
+    "nested_verified_artifacts",
 ]
 
 
 def check(name: str, passed: bool, detail: str = "") -> Json:
     return {"name": name, "passed": bool(passed), "detail": detail}
+
+
+def int_or_default(value: Any, default: int = -1) -> int:
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def parser_support_checks() -> list[Json]:
@@ -72,6 +105,7 @@ def parser_support_checks() -> list[Json]:
     benchmark_raw_action = next(action for action in benchmark_parser._actions if "--raw-backends" in action.option_strings)
     return [
         check("backfill_modes_cover_batch_and_incremental", {"shadow", "validate_shadow", "activate_shadow", "rollback_activation", "incremental_repair", "in_place"}.issubset(set(mode_action.choices or []))),
+        check("backfill_has_manifest_verification_mode", "verify_manifest" in set(mode_action.choices or [])),
         check("backfill_raw_backend_choices_cover_all_raw_options", {"temporalstore", "matrixkv"}.issubset(set(raw_backend_action.choices or []))),
         check("benchmark_raw_backend_choices_cover_all_raw_options", {"both", "temporalstore", "matrixkv"}.issubset(set(benchmark_raw_action.choices or []))),
         check("benchmark_has_batch_sweep_option", "--batch-sizes" in benchmark_options),
@@ -112,6 +146,9 @@ def append_accounting_checks() -> list[Json]:
         check("append_many_reports_attempted_written_duplicate", all(token in text for token in ["'attempted'", "'written'", "'duplicate'", "'appended_records'"])),
         check("run_backfill_uses_append_stats_for_written_metrics", all(token in text for token in ["append_stats = target.append_many(pending)", "metrics.written += append_written", "metrics.duplicate += append_duplicate", "metrics.observe_records(appended_records)"])),
         check("run_backfill_reports_data_quality_status", all(token in text for token in ["data_quality_status", "completed_with_errors", "matrixark_context_backfill_data_quality_status"])),
+        check("run_backfill_writes_self_verifying_manifest", all(token in text for token in ["matrixark_context_backfill_manifest_v1", "manifest_payload_sha256", "canonical_json_sha256"])),
+        check("run_backfill_can_verify_manifest_hash", all(token in text for token in ["def run_verify_manifest", "manifest_payload_sha256_match", "computed_manifest_payload_sha256"])),
+        check("run_backfill_exports_verify_manifest_prometheus", all(token in text for token in ["def verify_manifest_to_prometheus", "matrixark_context_backfill_manifest_verification_status", "matrixark_context_backfill_manifest_verification_check"])),
     ]
 
 
@@ -703,6 +740,199 @@ def run_partial_repair_gate(args: argparse.Namespace) -> Json:
     return {"status": status, "results": results}
 
 
+def run_unvalidated_repair_gate(args: argparse.Namespace) -> Json:
+    results: list[Json] = []
+    source_prefix = "matrixark:mcp:readiness_unvalidated_repair"
+    records = max(2, min(max(2, int(args.records)), max(2, int(args.incremental_records))))
+    end_seq = min(records, max(2, int(args.batch_size)))
+    for raw_backend in ["temporalstore", "matrixkv"]:
+        with tempfile.TemporaryDirectory(prefix=f"matrixark_backfill_unvalidated_repair_{raw_backend}_") as tmp:
+            kv_path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(kv_path)
+            bench.seed_raw_log(kv, prefix=source_prefix, records=records, payload_bytes=args.payload_bytes)
+            active_key = "matrixark:context:active_prefix"
+            active_prefix = f"matrixark:context:active:unvalidated:{raw_backend}"
+            repair_prefix = f"matrixark:context_repair:unvalidated:{raw_backend}"
+            job_id = f"readiness-unvalidated-repair-{raw_backend}"
+            kv.put_string(active_key, active_prefix)
+
+            blocked_args = bench.make_backfill_args(
+                kv_path=kv_path,
+                source_prefix=source_prefix,
+                target_prefix=repair_prefix,
+                raw_backend=raw_backend,
+                job_id=job_id,
+                batch_size=args.batch_size,
+                end_seq=end_seq,
+                mode="incremental_repair",
+                confirm_incremental_repair="YES",
+                expect_active_prefix=active_prefix,
+            )
+            blocked_args.skip_validation = True
+            blocked_args.confirm_skip_validation = "YES"
+            blocked_without_target_state_confirmation = False
+            blocked_error = ""
+            try:
+                backfill.run_incremental_repair(blocked_args)
+            except backfill.BackfillError as exc:
+                blocked_error = str(exc)
+                blocked_without_target_state_confirmation = "confirm-unvalidated-target-state=YES" in blocked_error
+
+            repair_args = bench.make_backfill_args(
+                kv_path=kv_path,
+                source_prefix=source_prefix,
+                target_prefix=repair_prefix,
+                raw_backend=raw_backend,
+                job_id=job_id,
+                batch_size=args.batch_size,
+                end_seq=end_seq,
+                mode="incremental_repair",
+                confirm_incremental_repair="YES",
+                expect_active_prefix=active_prefix,
+            )
+            repair_args.skip_validation = True
+            repair_args.confirm_skip_validation = "YES"
+            repair_args.confirm_unvalidated_target_state = "YES"
+            repair = backfill.run_incremental_repair(repair_args)
+            kv_after = backfill.LocalJsonKV(kv_path)
+            audit_raw = kv_after.hget(f"{active_key}:incremental_repair_audit", job_id)
+            audit = json.loads(audit_raw) if audit_raw else {}
+            target_state = repair.get("validation_target_state") if isinstance(repair.get("validation_target_state"), dict) else {}
+            audit_target_state = audit.get("validation_target_state") if isinstance(audit.get("validation_target_state"), dict) else {}
+            promotion = repair.get("promotion") if isinstance(repair.get("promotion"), dict) else {}
+            promotion_metrics = promotion.get("metrics") if isinstance(promotion.get("metrics"), dict) else {}
+            results.append({
+                "raw_backend": raw_backend,
+                "records": records,
+                "end_seq": end_seq,
+                "blocked_without_target_state_confirmation": blocked_without_target_state_confirmation,
+                "blocked_error": blocked_error,
+                "status": repair.get("status"),
+                "validation_status": repair.get("validation_status"),
+                "validation_skipped": bool(repair.get("validation_skipped")),
+                "unvalidated_target_state_confirmed": bool(repair.get("unvalidated_target_state_confirmed")),
+                "validation_target_record_count": int_or_default(target_state.get("record_count")),
+                "validation_target_healthy": bool(target_state.get("healthy_for_unvalidated_activation")),
+                "promotion_written": int(promotion_metrics.get("written", 0) or 0),
+                "promotion_failed": int(promotion_metrics.get("failed", 0) or 0),
+                "promotion_dead_letter": int(promotion_metrics.get("dead_letter", 0) or 0),
+                "audit_written": bool(audit_raw),
+                "audit_unvalidated_target_state_confirmed": bool(audit.get("unvalidated_target_state_confirmed")),
+                "audit_validation_target_record_count": int_or_default(audit_target_state.get("record_count")),
+                "audit_validation_target_healthy": bool(audit_target_state.get("healthy_for_unvalidated_activation")),
+            })
+    status = "ok" if all(
+        item["blocked_without_target_state_confirmation"]
+        and item["status"] == "ok"
+        and item["validation_status"] == "skipped"
+        and item["validation_skipped"]
+        and item["unvalidated_target_state_confirmed"]
+        and item["validation_target_record_count"] == 0
+        and item["validation_target_healthy"] is False
+        and item["promotion_written"] > 0
+        and item["promotion_failed"] == 0
+        and item["promotion_dead_letter"] == 0
+        and item["audit_written"]
+        and item["audit_unvalidated_target_state_confirmed"]
+        and item["audit_validation_target_record_count"] == 0
+        and item["audit_validation_target_healthy"] is False
+        for item in results
+    ) else "failed"
+    return {"status": status, "results": results}
+
+
+def run_manifest_verification_gate(args: argparse.Namespace) -> Json:
+    results: list[Json] = []
+    records = max(2, min(max(2, int(args.records)), max(2, int(args.incremental_records))))
+    source_prefix = "matrixark:mcp:readiness_manifest"
+    for raw_backend in ["temporalstore", "matrixkv"]:
+        with tempfile.TemporaryDirectory(prefix=f"matrixark_backfill_manifest_{raw_backend}_") as tmp:
+            kv_path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(kv_path)
+            bench.seed_raw_log(kv, prefix=source_prefix, records=records, payload_bytes=args.payload_bytes)
+            target_prefix = f"matrixark:context_backfill:readiness_manifest:{raw_backend}"
+            job_id = f"readiness-manifest-{raw_backend}"
+            run_args = bench.make_backfill_args(
+                kv_path=kv_path,
+                source_prefix=source_prefix,
+                target_prefix=target_prefix,
+                raw_backend=raw_backend,
+                job_id=job_id,
+                batch_size=args.batch_size,
+                end_seq=records,
+            )
+            backfilled = backfill.run_backfill(run_args)
+            verify_args = bench.make_backfill_args(
+                kv_path=kv_path,
+                source_prefix=source_prefix,
+                target_prefix=target_prefix,
+                raw_backend=raw_backend,
+                job_id=job_id,
+                batch_size=args.batch_size,
+                mode="verify_manifest",
+            )
+            verify_prom = Path(tmp) / "verify_manifest.prom"
+            verify_args.prometheus_output = str(verify_prom)
+            verified = backfill.run_verify_manifest(verify_args)
+            verify_prom_text = verify_prom.read_text(encoding="utf-8")
+
+            kv_after = backfill.LocalJsonKV(kv_path)
+            manifest_key = f"{target_prefix}:backfill_manifest"
+            manifest = json.loads(kv_after.hget(manifest_key, job_id))
+            manifest.setdefault("source_range", {})["source_record_count"] = int(manifest.get("source_range", {}).get("source_record_count", 0) or 0) + 1
+            kv_after.hset(manifest_key, job_id, json.dumps(manifest, sort_keys=True, separators=(",", ":")))
+            tampered_prom = Path(tmp) / "verify_manifest_tampered.prom"
+            verify_args.prometheus_output = str(tampered_prom)
+            tampered = backfill.run_verify_manifest(verify_args)
+            tampered_prom_text = tampered_prom.read_text(encoding="utf-8")
+
+            results.append({
+                "raw_backend": raw_backend,
+                "records": records,
+                "backfill_status": backfilled.get("status"),
+                "manifest_schema": backfilled.get("manifest_schema"),
+                "manifest_payload_sha256": backfilled.get("manifest_payload_sha256"),
+                "verify_status": verified.get("status"),
+                "verify_hash_match": bool(verified.get("checks", {}).get("manifest_payload_sha256_match")),
+                "verify_schema_supported": bool(verified.get("checks", {}).get("manifest_schema_supported")),
+                "verify_job_id_matches": bool(verified.get("checks", {}).get("manifest_job_id_matches")),
+                "verify_target_prefix_matches": bool(verified.get("checks", {}).get("manifest_target_prefix_matches")),
+                "verify_raw_backend_matches": bool(verified.get("checks", {}).get("manifest_raw_backend_matches")),
+                "verify_prometheus_metrics_present": all(token in verify_prom_text for token in [
+                    "matrixark_context_backfill_manifest_verification_status",
+                    "matrixark_context_backfill_manifest_verification_check",
+                    'status="ok"',
+                    'check="manifest_payload_sha256_match"} 1',
+                ]),
+                "tampered_status": tampered.get("status"),
+                "tampered_hash_match": bool(tampered.get("checks", {}).get("manifest_payload_sha256_match")),
+                "tampered_prometheus_metrics_present": all(token in tampered_prom_text for token in [
+                    "matrixark_context_backfill_manifest_verification_status",
+                    "matrixark_context_backfill_manifest_verification_check",
+                    'status="failed"',
+                    'check="manifest_payload_sha256_match"} 0',
+                ]),
+            })
+    status = "ok" if all(
+        item["backfill_status"] == "ok"
+        and item["manifest_schema"] == "matrixark_context_backfill_manifest_v1"
+        and isinstance(item["manifest_payload_sha256"], str)
+        and len(item["manifest_payload_sha256"]) == 64
+        and item["verify_status"] == "ok"
+        and item["verify_hash_match"]
+        and item["verify_schema_supported"]
+        and item["verify_job_id_matches"]
+        and item["verify_target_prefix_matches"]
+        and item["verify_raw_backend_matches"]
+        and item["verify_prometheus_metrics_present"]
+        and item["tampered_status"] == "failed"
+        and item["tampered_hash_match"] is False
+        and item["tampered_prometheus_metrics_present"]
+        for item in results
+    ) else "failed"
+    return {"status": status, "results": results}
+
+
 def run_dead_letter_gate(args: argparse.Namespace) -> Json:
     results: list[Json] = []
     source_prefix = "matrixark:mcp:readiness_dead_letter"
@@ -1003,10 +1233,156 @@ def run_prometheus_gate(args: argparse.Namespace) -> Json:
     return {"status": status, "results": results}
 
 
+def dual_write_evidence_dir(args: argparse.Namespace) -> Path | None:
+    configured = str(getattr(args, "dual_write_evidence_dir", "") or "").strip()
+    if configured:
+        path = Path(configured)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    if str(getattr(args, "json_output", "") or "").strip():
+        path = Path(args.json_output).resolve().parent / "matrixark_context_backfill_dual_write_evidence"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    path = Path(tempfile.gettempdir()) / "matrixark_context_backfill_dual_write_evidence"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def run_dual_write_gate(args: argparse.Namespace) -> Json:
+    required_metrics = [
+        "matrixark_dual_write_ingestion_status",
+        "matrixark_dual_write_ingestion_qps",
+        "matrixark_dual_write_ingestion_batch_latency_ms",
+        "matrixark_dual_write_ingestion_records_total",
+        "matrixark_dual_write_ingestion_counts_validated",
+        "matrixark_dual_write_ingestion_backend_qps_ratio",
+        "matrixark_dual_write_ingestion_performance_gate_status",
+    ]
+    evidence_dir = dual_write_evidence_dir(args)
+    tmp_path = evidence_dir
+    evidence_persistent = True
+    summary_path = tmp_path / "dual_write_readiness.json"
+    prometheus_path = tmp_path / "dual_write_readiness.prom"
+    manifest_path = tmp_path / "manifest.json"
+    records = max(2, int(args.records))
+    batch_size = max(1, min(int(args.batch_size), records))
+    bench_args = argparse.Namespace(
+        mode="local",
+        records=records,
+        workers=2,
+        batch_size=batch_size,
+        payload_bytes=args.payload_bytes,
+        scope_key="readiness:dual-write",
+        local_write_delay_us=0,
+        storage_prefix="matrixark:mcp:readiness_dual_write",
+        raw_storage_prefix="",
+        raw_backend="temporalstore",
+        raw_backends="both",
+        shard_size=4096,
+        metaserver="unused",
+        namespace="unused",
+        table="unused",
+        library_path="",
+        request_timeout_ms=1000,
+        io_timeout_ms=1000,
+        min_ingestion_qps=1.0,
+        max_batch_p95_ms=1000.0,
+        min_backend_qps_ratio=0.000001,
+        require_dual_write_counts=1,
+        json_output=str(summary_path),
+        prometheus_output=str(prometheus_path),
+    )
+    summary = dual_bench.run_backend_sweep(bench_args)
+    prometheus_text = dual_bench.render_prometheus(summary)
+    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+    prometheus_path.write_text(prometheus_text, encoding="utf-8")
+    artifact_manifest = {
+        "schema": "matrixark_dual_write_readiness_evidence_v1",
+        "status": "ok" if summary.get("status") == "ok" else "failed",
+        "generated_by": "tools/validate_matrixark_context_backfill_readiness.py",
+        "raw_backends": summary.get("raw_backends", []),
+        "records_per_backend": summary.get("records_per_backend"),
+        "artifacts": {
+            "dual_write_readiness_json": {
+                "path": summary_path.name,
+                "bytes": summary_path.stat().st_size,
+                "sha256": sha256_file(summary_path),
+            },
+            "dual_write_readiness_prometheus": {
+                "path": prometheus_path.name,
+                "bytes": prometheus_path.stat().st_size,
+                "sha256": sha256_file(prometheus_path),
+            },
+        },
+    }
+    manifest_path.write_text(json.dumps(artifact_manifest, indent=2, sort_keys=True), encoding="utf-8")
+    metric_samples = [
+        line
+        for line in prometheus_text.splitlines()
+        if line and not line.startswith("#")
+    ]
+    metrics_present = {metric: metric in prometheus_text for metric in required_metrics}
+    raw_backends = set(summary.get("raw_backends") or [])
+    results = summary.get("results") if isinstance(summary.get("results"), list) else []
+    performance_gate = summary.get("performance_gate") if isinstance(summary.get("performance_gate"), dict) else {}
+    gate_checks = performance_gate.get("checks") if isinstance(performance_gate.get("checks"), list) else []
+    ratio_checked = any(item.get("metric") == "backend_ingestion_qps_ratio" and item.get("passed") for item in gate_checks)
+    counts_validated = bool(results) and all(bool(item.get("dual_write_counts_validated")) for item in results)
+    status_ok = (
+        summary.get("status") == "ok"
+        and raw_backends == {"temporalstore", "matrixkv"}
+        and counts_validated
+        and ratio_checked
+        and bool(performance_gate.get("passed"))
+        and all(metrics_present.values())
+        and len(metric_samples) > 0
+        and 'raw_backend="temporalstore"' in prometheus_text
+        and 'raw_backend="matrixkv"' in prometheus_text
+    )
+    return {
+        "status": "ok" if status_ok else "failed",
+        "evidence_persistent": evidence_persistent,
+        "raw_backends": summary.get("raw_backends", []),
+        "records_per_backend": summary.get("records_per_backend"),
+        "batch_size": summary.get("batch_size"),
+        "results": [
+            {
+                "raw_backend": item.get("raw_backend"),
+                "status": item.get("status"),
+                "records": item.get("records"),
+                "ingestion_qps": item.get("ingestion_qps"),
+                "dual_write_counts_validated": item.get("dual_write_counts_validated"),
+            }
+            for item in results
+        ],
+        "summary": summary.get("summary", {}),
+        "performance_gate": performance_gate,
+        "prometheus_metrics_present": metrics_present,
+        "prometheus_metric_count": len(metric_samples),
+        "prometheus_output": str(prometheus_path),
+        "summary_output": str(summary_path),
+        "evidence_manifest": str(manifest_path),
+        "evidence_checksums": {
+            "dual_write_readiness_json": artifact_manifest["artifacts"]["dual_write_readiness_json"]["sha256"],
+            "dual_write_readiness_prometheus": artifact_manifest["artifacts"]["dual_write_readiness_prometheus"]["sha256"],
+            "manifest": sha256_file(manifest_path),
+        },
+    }
+
+
 def benchmark_checks(summary: Json) -> list[Json]:
     performance_gate = summary.get("performance_gate") if isinstance(summary.get("performance_gate"), dict) else {}
     batch_size_summary = summary.get("batch_size_summary") if isinstance(summary.get("batch_size_summary"), dict) else {}
     recommendations = batch_size_summary.get("recommendations") if isinstance(batch_size_summary.get("recommendations"), dict) else {}
+    production_candidate = batch_size_summary.get("production_candidate") if isinstance(batch_size_summary.get("production_candidate"), dict) else {}
     return [
         check("local_benchmark_status_ok", summary.get("status") == "ok"),
         check("local_benchmark_gate_passed", bool(performance_gate.get("passed"))),
@@ -1015,6 +1391,7 @@ def benchmark_checks(summary: Json) -> list[Json]:
         check("local_benchmark_exercised_batch_sweep", len(summary.get("batch_sizes") or []) >= 2),
         check("local_benchmark_reports_partial_repair_recommendation", isinstance(recommendations.get("best_partial_repair_qps"), dict)),
         check("local_benchmark_reports_balanced_recommendation", isinstance(recommendations.get("best_balanced_min_qps"), dict)),
+        check("local_benchmark_reports_production_candidate", int(production_candidate.get("batch_size", 0) or 0) in set(summary.get("batch_sizes") or []) and float(production_candidate.get("balanced_min_qps", 0.0) or 0.0) > 0.0 and float(production_candidate.get("backend_qps_min_max_ratio", 0.0) or 0.0) > 0.0),
     ]
 
 
@@ -1095,6 +1472,32 @@ def partial_repair_checks(summary: Json) -> list[Json]:
     ]
 
 
+def unvalidated_repair_checks(summary: Json) -> list[Json]:
+    results = summary.get("results") if isinstance(summary.get("results"), list) else []
+    return [
+        check("unvalidated_repair_gate_status_ok", summary.get("status") == "ok"),
+        check("unvalidated_repair_gate_covers_temporalstore_and_matrixkv", {item.get("raw_backend") for item in results} == {"temporalstore", "matrixkv"}),
+        check("unvalidated_repair_gate_blocks_without_target_state_confirmation", all(bool(item.get("blocked_without_target_state_confirmation")) for item in results)),
+        check("unvalidated_repair_gate_confirms_and_audits_target_state", all(bool(item.get("unvalidated_target_state_confirmed")) and bool(item.get("audit_unvalidated_target_state_confirmed")) for item in results)),
+        check("unvalidated_repair_gate_records_unhealthy_target_state", all(int_or_default(item.get("validation_target_record_count")) == 0 and item.get("validation_target_healthy") is False and int_or_default(item.get("audit_validation_target_record_count")) == 0 and item.get("audit_validation_target_healthy") is False for item in results)),
+        check("unvalidated_repair_gate_promotes_records", all(int_or_default(item.get("promotion_written"), 0) > 0 and int_or_default(item.get("promotion_failed")) == 0 and int_or_default(item.get("promotion_dead_letter")) == 0 for item in results)),
+    ]
+
+
+def manifest_verification_checks(summary: Json) -> list[Json]:
+    results = summary.get("results") if isinstance(summary.get("results"), list) else []
+    return [
+        check("manifest_verification_gate_status_ok", summary.get("status") == "ok"),
+        check("manifest_verification_gate_covers_temporalstore_and_matrixkv", {item.get("raw_backend") for item in results} == {"temporalstore", "matrixkv"}),
+        check("manifest_verification_gate_schema_and_hash_present", all(item.get("manifest_schema") == "matrixark_context_backfill_manifest_v1" and isinstance(item.get("manifest_payload_sha256"), str) and len(str(item.get("manifest_payload_sha256"))) == 64 for item in results)),
+        check("manifest_verification_gate_verifies_valid_manifest", all(item.get("verify_status") == "ok" and bool(item.get("verify_hash_match")) and bool(item.get("verify_schema_supported")) for item in results)),
+        check("manifest_verification_gate_checks_identity", all(bool(item.get("verify_job_id_matches")) and bool(item.get("verify_target_prefix_matches")) and bool(item.get("verify_raw_backend_matches")) for item in results)),
+        check("manifest_verification_gate_exports_valid_prometheus_metrics", all(bool(item.get("verify_prometheus_metrics_present")) for item in results)),
+        check("manifest_verification_gate_rejects_tampering", all(item.get("tampered_status") == "failed" and item.get("tampered_hash_match") is False for item in results)),
+        check("manifest_verification_gate_exports_tampered_prometheus_metrics", all(bool(item.get("tampered_prometheus_metrics_present")) for item in results)),
+    ]
+
+
 def resume_checks(summary: Json) -> list[Json]:
     results = summary.get("results") if isinstance(summary.get("results"), list) else []
     return [
@@ -1124,6 +1527,22 @@ def prometheus_checks(summary: Json) -> list[Json]:
     ]
 
 
+def dual_write_gate_checks(summary: Json) -> list[Json]:
+    results = summary.get("results") if isinstance(summary.get("results"), list) else []
+    performance_gate = summary.get("performance_gate") if isinstance(summary.get("performance_gate"), dict) else {}
+    gate_checks = performance_gate.get("checks") if isinstance(performance_gate.get("checks"), list) else []
+    return [
+        check("dual_write_gate_status_ok", summary.get("status") == "ok"),
+        check("dual_write_gate_covers_temporalstore_and_matrixkv", set(summary.get("raw_backends") or []) == {"temporalstore", "matrixkv"}),
+        check("dual_write_gate_counts_validated", bool(results) and all(bool(item.get("dual_write_counts_validated")) for item in results)),
+        check("dual_write_gate_backend_ratio_checked", any(item.get("metric") == "backend_ingestion_qps_ratio" and item.get("passed") for item in gate_checks)),
+        check("dual_write_gate_performance_gate_passed", bool(performance_gate.get("passed"))),
+        check("dual_write_gate_prometheus_metrics_present", all((summary.get("prometheus_metrics_present") or {}).values()) and int(summary.get("prometheus_metric_count", 0) or 0) > 0),
+        check("dual_write_gate_evidence_persistent", bool(summary.get("evidence_persistent"))),
+        check("dual_write_gate_evidence_manifest_present", Path(str(summary.get("evidence_manifest") or "")).exists() and all(str(value) for value in (summary.get("evidence_checksums") or {}).values())),
+    ]
+
+
 def run_readiness(args: argparse.Namespace) -> Json:
     checks = parser_support_checks() + docs_checks() + append_accounting_checks()
     benchmark_summary: Json = {}
@@ -1132,8 +1551,11 @@ def run_readiness(args: argparse.Namespace) -> Json:
     dead_letter_summary: Json = {}
     source_scan_summary: Json = {}
     partial_repair_summary: Json = {}
+    unvalidated_repair_summary: Json = {}
+    manifest_verification_summary: Json = {}
     resume_summary: Json = {}
     prometheus_summary: Json = {}
+    dual_write_summary: Json = {}
     if not args.skip_local_benchmark:
         benchmark_summary = run_local_gate(args)
         checks.extend(benchmark_checks(benchmark_summary))
@@ -1152,12 +1574,21 @@ def run_readiness(args: argparse.Namespace) -> Json:
     if not args.skip_partial_repair_gate:
         partial_repair_summary = run_partial_repair_gate(args)
         checks.extend(partial_repair_checks(partial_repair_summary))
+    if not args.skip_unvalidated_repair_gate:
+        unvalidated_repair_summary = run_unvalidated_repair_gate(args)
+        checks.extend(unvalidated_repair_checks(unvalidated_repair_summary))
+    if not args.skip_manifest_verification_gate:
+        manifest_verification_summary = run_manifest_verification_gate(args)
+        checks.extend(manifest_verification_checks(manifest_verification_summary))
     if not args.skip_resume_gate:
         resume_summary = run_resume_gate(args)
         checks.extend(resume_checks(resume_summary))
     if not args.skip_prometheus_gate:
         prometheus_summary = run_prometheus_gate(args)
         checks.extend(prometheus_checks(prometheus_summary))
+    if not args.skip_dual_write_gate:
+        dual_write_summary = run_dual_write_gate(args)
+        checks.extend(dual_write_gate_checks(dual_write_summary))
     status = "ok" if all(item["passed"] for item in checks) else "failed"
     return {
         "status": status,
@@ -1168,8 +1599,11 @@ def run_readiness(args: argparse.Namespace) -> Json:
         "dead_letter_gate": dead_letter_summary,
         "source_scan_gate": source_scan_summary,
         "partial_repair_gate": partial_repair_summary,
+        "unvalidated_repair_gate": unvalidated_repair_summary,
+        "manifest_verification_gate": manifest_verification_summary,
         "resume_gate": resume_summary,
         "prometheus_gate": prometheus_summary,
+        "dual_write_gate": dual_write_summary,
     }
 
 
@@ -1187,8 +1621,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-dead-letter-gate", action="store_true")
     parser.add_argument("--skip-source-scan-gate", action="store_true")
     parser.add_argument("--skip-partial-repair-gate", action="store_true")
+    parser.add_argument("--skip-unvalidated-repair-gate", action="store_true")
+    parser.add_argument("--skip-manifest-verification-gate", action="store_true")
     parser.add_argument("--skip-resume-gate", action="store_true")
     parser.add_argument("--skip-prometheus-gate", action="store_true")
+    parser.add_argument("--skip-dual-write-gate", action="store_true")
+    parser.add_argument("--dual-write-evidence-dir", default="", help="directory for persistent dual-write readiness JSON and Prometheus artifacts")
     parser.add_argument("--json-output", default="")
     return parser
 

@@ -42,7 +42,7 @@ MATRIXARK_EMBEDDING_PROVIDER=deterministic python3 tools/run_matrixark_message_p
 
 ## Configuration
 
-- Event log: `C:\Users\Deeproute\Documents\Codex\temporalstore-main-storage-goal-loop\docs\debug\matrixark_e2e_recent_codex_2pdf_compact_20260704\matrixark_message_resource_debug_trace.jsonl`
+- Event log: `<repo>\docs\debug\matrixark_e2e_recent_codex_2pdf_compact_20260704\matrixark_message_resource_debug_trace.jsonl`
 - Embedding model: `matrixark-local-token-hash-v1`
 - Embedding execution mode: `deterministic-token-hash`
 - Query: `What is the current Project Aurora GPU approval, owner, budget cap, deadline, and runbook blocker?`
@@ -169,23 +169,23 @@ MATRIXARK_EMBEDDING_PROVIDER=deterministic python3 tools/run_matrixark_message_p
 |---|---|---|---|---|
 |session_l0|8695652974415713980|2100209595829882121|0|user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...|
 |batch_l0|3229605441134634939|2100209595829882121|8|user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistan...|
-|resource_l0|5044606450940775875|1737304210274426578|1|resource: C:\Users\Deeproute\Documents\Codex\temporalstore-main-storage-goal-loop\docs\debug\matrixark_e2e_recent_cod...|
+|resource_l0|5044606450940775875|1737304210274426578|1|resource: <repo>\docs\debug\matrixark_e2e_recent_cod...|
 |session_l0|8695652974415713980|1737304210274426578|0|user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...|
-|resource_l0|3282433690769415239|1737304210274426578|1|resource: C:\Users\Deeproute\Documents\Codex\temporalstore-main-storage-goal-loop\docs\debug\matrixark_e2e_recent_cod...|
-|node_l0|1886266633781634111|3084181658660614334|0|tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session :: user: Alice from finance approved the GPU...|
-|node_l1|1616491761191208179|3084181658660614334|0|Context node tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session. Rich overview: user: Alice fro...|
-|node_l0|7072998724969009401|2100209595829882121|8|tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session / conversation:project_aurora :: user: Alice...|
-|node_l1|3186282447509310879|2100209595829882121|8|Context node tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session / conversation:project_aurora. ...|
+|resource_l0|3282433690769415239|1737304210274426578|1|resource: <repo>\docs\debug\matrixark_e2e_recent_cod...|
+|node_l0|1886266633781634111|3084181658660614334|0|tenant:tenant_codex / user:local-user / session:debug-message-pdf-session :: user: Alice from finance approved the GPU...|
+|node_l1|1616491761191208179|3084181658660614334|0|Context node tenant:tenant_codex / user:local-user / session:debug-message-pdf-session. Rich overview: user: Alice fro...|
+|node_l0|7072998724969009401|2100209595829882121|8|tenant:tenant_codex / user:local-user / session:debug-message-pdf-session / conversation:project_aurora :: user: Alice...|
+|node_l1|3186282447509310879|2100209595829882121|8|Context node tenant:tenant_codex / user:local-user / session:debug-message-pdf-session / conversation:project_aurora. ...|
 |node_l0|4626625830169563149|3263141514618168867|0|tenant:tenant_codex :: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing ...|
 |node_l1|1916101716449258884|3263141514618168867|0|Context node tenant:tenant_codex. Rich overview: user: Alice from finance approved the GPU purchase request for Proje...|
-|node_l0|5451123137701072075|623184698193930698|0|tenant:tenant_codex / user:deeproute :: user: Alice from finance approved the GPU purchase request for Project Aurora...|
-|node_l1|7794448877417626891|623184698193930698|0|Context node tenant:tenant_codex / user:deeproute. Rich overview: user: Alice from finance approved the GPU purchase ...|
-|node_l0|2423087115552912795|1257764480205296887|0|tenant:tenant_codex / user:deeproute / resources :: user: Alice from finance approved the GPU purchase request for Pr...|
-|node_l1|8165358132187641623|1257764480205296887|0|Context node tenant:tenant_codex / user:deeproute / resources. Rich overview: user: Alice from finance approved the G...|
-|node_l0|4443347079005396521|5984959491336829337|0|tenant:tenant_codex / user:deeproute / resources / project_aurora :: user: Alice from finance approved the GPU purcha...|
-|node_l1|7129763152424808338|5984959491336829337|0|Context node tenant:tenant_codex / user:deeproute / resources / project_aurora. Rich overview: user: Alice from finan...|
-|node_l0|9161093819732845678|1737304210274426578|6|tenant:tenant_codex / user:deeproute / resources / project_aurora / gpu_procurement :: Project Aurora GPU Approval Pa...|
-|node_l1|1076018507551928025|1737304210274426578|6|Context node tenant:tenant_codex / user:deeproute / resources / project_aurora / gpu_procurement. Rich overview: Proj...|
+|node_l0|5451123137701072075|623184698193930698|0|tenant:tenant_codex / user:local-user :: user: Alice from finance approved the GPU purchase request for Project Aurora...|
+|node_l1|7794448877417626891|623184698193930698|0|Context node tenant:tenant_codex / user:local-user. Rich overview: user: Alice from finance approved the GPU purchase ...|
+|node_l0|2423087115552912795|1257764480205296887|0|tenant:tenant_codex / user:local-user / resources :: user: Alice from finance approved the GPU purchase request for Pr...|
+|node_l1|8165358132187641623|1257764480205296887|0|Context node tenant:tenant_codex / user:local-user / resources. Rich overview: user: Alice from finance approved the G...|
+|node_l0|4443347079005396521|5984959491336829337|0|tenant:tenant_codex / user:local-user / resources / project_aurora :: user: Alice from finance approved the GPU purcha...|
+|node_l1|7129763152424808338|5984959491336829337|0|Context node tenant:tenant_codex / user:local-user / resources / project_aurora. Rich overview: user: Alice from finan...|
+|node_l0|9161093819732845678|1737304210274426578|6|tenant:tenant_codex / user:local-user / resources / project_aurora / gpu_procurement :: Project Aurora GPU Approval Pa...|
+|node_l1|1076018507551928025|1737304210274426578|6|Context node tenant:tenant_codex / user:local-user / resources / project_aurora / gpu_procurement. Rich overview: Proj...|
 
 ## Node L0/L1 Generation Policy
 
@@ -371,7 +371,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "items": [
           {
             "resource_type": "pdf",
-            "source": "C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
+            "source": "<repo>\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
             "text": "resource page=1: Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
             "tokens": 54,
             "unit_kind": "pdf_page",
@@ -380,7 +380,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
           },
           {
             "resource_type": "pdf",
-            "source": "C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_runbook.pdf#page=1",
+            "source": "<repo>\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_runbook.pdf#page=1",
             "text": "resource page=1: GPU Procurement Runbook\nProcedure: Attach finance approval before vendor selection.\nProcedure: Compare primary and backup GPU quotes before purchase order creation.\nTroubleshooting: If approval attachment is missing, notify Alice and stop vendor selection.\nAudit: Store final vendor selection evidence with the purchase order.",
             "tokens": 46,
             "unit_kind": "pdf_page",
@@ -493,7 +493,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "items": [
         {
           "resource_type": "pdf",
-          "source": "C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
+          "source": "<repo>\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
           "text": "resource page=1: Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
           "tokens": 54,
           "unit_kind": "pdf_page",
@@ -502,7 +502,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         },
         {
           "resource_type": "pdf",
-          "source": "C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_runbook.pdf#page=1",
+          "source": "<repo>\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_runbook.pdf#page=1",
           "text": "resource page=1: GPU Procurement Runbook\nProcedure: Attach finance approval before vendor selection.\nProcedure: Compare primary and backup GPU quotes before purchase order creation.\nTroubleshooting: If approval attachment is missing, notify Alice and stop vendor selection.\nAudit: Store final vendor selection evidence with the purchase order.",
           "tokens": 46,
           "unit_kind": "pdf_page",
