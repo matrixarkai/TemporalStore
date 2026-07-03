@@ -428,6 +428,29 @@ LEGACY_ALIAS_MAP = {
 
 ALLOWED_ALIAS_CONTAINERS = {"compatibility_aliases", "legacy_alias", "legacy_aliases", "migration_aliases"}
 
+REQUIRED_SCALE_REPORT_CONFIG_BINDINGS = {
+    "required_storage_lifecycle_top_level_keys": "STORAGE_LIFECYCLE_TOP_LEVEL_KEYS",
+    "required_storage_write_sequence": "STORAGE_WRITE_SEQUENCE_STEPS",
+    "required_storage_write_result_fields": "STORAGE_WRITE_RESULT_FIELDS",
+    "required_storage_write_metrics": "STORAGE_WRITE_METRIC_NAMES",
+    "required_storage_read_sequence": "STORAGE_READ_SEQUENCE_STEPS",
+    "required_storage_read_result_fields": "STORAGE_READ_RESULT_FIELDS",
+    "required_storage_read_metrics": "STORAGE_READ_METRIC_NAMES",
+    "required_storage_cold_scan_sequence": "STORAGE_COLD_SCAN_SEQUENCE_STEPS",
+    "required_storage_cold_scan_result_fields": "STORAGE_COLD_SCAN_RESULT_FIELDS",
+    "required_storage_cold_scan_metrics": "STORAGE_COLD_SCAN_METRIC_NAMES",
+    "required_storage_lifecycle_phases": "STORAGE_LIFECYCLE_PHASE_NAMES",
+    "required_storage_manager_phase_metrics": "STORAGE_MANAGER_PHASE_METRICS",
+    "required_storage_index_behaviors": "STORAGE_INDEX_BEHAVIOR_NAMES",
+    "required_storage_reclaim_semantics": "STORAGE_RECLAIM_SEMANTICS",
+    "required_storage_reclaim_contract_fields": "STORAGE_RECLAIM_CONTRACT_FIELDS",
+    "required_storage_cache_layers": "STORAGE_CACHE_LAYER_NAMES",
+    "required_storage_cache_semantics": "STORAGE_CACHE_SEMANTICS",
+    "required_storage_cache_metrics": "STORAGE_CACHE_METRIC_NAMES",
+    "required_storage_cache_contract_fields": "STORAGE_CACHE_CONTRACT_FIELDS",
+    "required_storage_lifecycle_metrics": "STORAGE_LIFECYCLE_METRIC_NAMES",
+}
+
 
 def _extract_runner_list(name: str) -> list[str]:
     tree = ast.parse(SCALE_REPORT.read_text(encoding="utf-8"), filename=str(SCALE_REPORT))
@@ -765,6 +788,7 @@ def _validate_stream_slot_index_evidence(backend: str, metrics: dict[str, Any]) 
 def validate_contract_and_runner() -> list[str]:
     failures: list[str] = []
     contract_text = CONTRACT.read_text(encoding="utf-8")
+    runner_text = SCALE_REPORT.read_text(encoding="utf-8")
     runner_metrics = _extract_runner_list("STORAGE_LIFECYCLE_METRIC_NAMES")
     runner_write_sequence = _extract_runner_list("STORAGE_WRITE_SEQUENCE_STEPS")
     runner_read_sequence = _extract_runner_list("STORAGE_READ_SEQUENCE_STEPS")
@@ -828,6 +852,12 @@ def validate_contract_and_runner() -> list[str]:
         failures.append("runner:STORAGE_CACHE_CONTRACT_FIELDS does not match the canonical cache contract fields")
     if runner_top_level_keys != REQUIRED_LIFECYCLE_TOP_LEVEL_KEYS:
         failures.append("runner:STORAGE_LIFECYCLE_TOP_LEVEL_KEYS does not match the canonical report shape")
+    for config_key, constant_name in REQUIRED_SCALE_REPORT_CONFIG_BINDINGS.items():
+        expected_binding = f'"{config_key}": {constant_name}'
+        if expected_binding not in runner_text:
+            failures.append(
+                f"runner scale-report config missing canonical binding `{config_key}: {constant_name}`"
+            )
     for metric in REQUIRED_STORAGE_LIFECYCLE_METRICS:
         if f"`{metric}`" not in contract_text:
             failures.append(f"contract missing lifecycle metric `{metric}`")
