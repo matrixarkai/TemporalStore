@@ -159,6 +159,8 @@ python3 tools/matrixark_context_backfill.py \
 
 The returned JSON includes `status`, `source_range`, `planned_source_records`, `resume_state`, `target_state`, `safety_checks`, `required_confirmations`, and `readiness_blockers`. `status="ok"` means the plan inspection itself is consistent. `status="needs_confirmation"` means the planned write path would need an explicit guardrail such as `--confirm-in-place=YES`, `--confirm-active-target=YES`, or an active-prefix precondition before mutation.
 
+If a raw log does not expose `record_count` or legacy `record_index`, `plan` uses scan-hash discovery by default (`--plan-discover-scan-hash=1`). This is still read-only: it scans raw-log hash fields to estimate the source count, first discovered sequence, high watermark, and effective end sequence, then uses those bounds for `planned_source_records` and chunk windows. Set `--plan-discover-scan-hash=0` for a metadata-only preflight when the source is very large and you do not want planning to scan shard keys yet.
+
 For large ranges, add `--plan-window-size=<records>` to emit bounded execution windows:
 
 ```bash

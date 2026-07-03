@@ -69,6 +69,12 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             "partial_filter_json": "",
             "partial_require_bounded": True,
             "batch_size": 2,
+            "plan_window_size": 0,
+            "plan_max_windows": 128,
+            "plan_parallelism": 1,
+            "plan_output_dir": "",
+            "plan_discover_scan_hash": True,
+            "confirm_plan_output_overwrite": "",
             "source_scan_max_empty_shards": 2,
             "dry_run": False,
             "dry_run_check_target": True,
@@ -439,6 +445,39 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertTrue(summary["source_range"]["user_bounded_end"])
             records = read_target_records(backfill.LocalJsonKV(path), "matrixark:context_backfill:test")
             self.assertEqual([record["event_id_hash"] for record in records], [1, 2])
+
+    def test_plan_discovers_scan_hash_range_for_chunk_windows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            shard_key = "matrixark:mcp:records:000000"
+            kv.hset(shard_key, "10", json.dumps({"record_type": "context_event", "event_id_hash": 10}))
+            kv.hset(shard_key, "2", json.dumps({"record_type": "context_event", "event_id_hash": 2}))
+            kv.hset(shard_key, "1", json.dumps({"record_type": "context_event", "event_id_hash": 1}))
+
+            plan = backfill.run_plan(self.make_args(path, mode="plan", plan_window_size=5, plan_parallelism=2))
+
+            self.assertEqual(plan["source_range"]["scan_mode"], "scan_hash")
+            self.assertTrue(plan["plan_scan_hash_discovery_enabled"])
+            self.assertTrue(plan["plan_scan_hash_discovery_used"])
+            self.assertEqual(plan["planned_source_records"], 3)
+            self.assertEqual(plan["source_range"]["discovered_record_count"], 3)
+            self.assertEqual(plan["source_range"]["effective_start_seq"], 1)
+            self.assertEqual(plan["source_range"]["effective_end_seq"], 11)
+            self.assertEqual(plan["source_range"]["source_high_watermark_seq"], 10)
+            self.assertTrue(plan["chunk_plan"]["enabled"])
+            self.assertEqual(plan["chunk_plan"]["total_windows"], 2)
+            self.assertEqual([(item["start_seq"], item["end_seq"]) for item in plan["chunk_plan"]["windows"]], [(1, 6), (6, 11)])
+
+            disabled = backfill.run_plan(self.make_args(
+                path,
+                mode="plan",
+                plan_window_size=5,
+                plan_discover_scan_hash=False,
+            ))
+            self.assertFalse(disabled["plan_scan_hash_discovery_enabled"])
+            self.assertIsNone(disabled["planned_source_records"])
+            self.assertFalse(disabled["chunk_plan"]["enabled"])
 
     def test_legacy_index_backfill(self):
         with tempfile.TemporaryDirectory() as tmp:
