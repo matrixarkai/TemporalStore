@@ -8,7 +8,8 @@
     "tools/validate_page_block_metrics_parity.py",
     "tools/validate_storage_tuning_parity.py",
     "tools/validate_raft_storage_parity_evidence.py",
-    "tools/validate_temporalstore_cpp_rust_performance_parity.py"
+    "tools/validate_temporalstore_cpp_rust_performance_parity.py",
+    "tools/import_temporalstore_cpp_rust_performance_evidence.py"
   ],
   "status_labels": {
     "feature_correct": "Shared contract and deterministic evidence pass for this area.",
@@ -87,7 +88,8 @@
         "docs/rust_cpp_ingestion_retrieval_perf_parity.md",
         "tools/run_matrixark_cpp_rust_scale_report.py",
         "compat/temporalstore_cpp_rust_performance_parity_matrix.json",
-        "tools/validate_temporalstore_cpp_rust_performance_parity.py"
+        "tools/validate_temporalstore_cpp_rust_performance_parity.py",
+        "tools/import_temporalstore_cpp_rust_performance_evidence.py"
       ],
       "open_blockers": [
         "Same-config live C++/Rust p50/p95/p99/QPS parity is not yet proven across the required scale matrix."
