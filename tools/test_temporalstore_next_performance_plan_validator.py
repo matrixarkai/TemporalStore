@@ -7,6 +7,10 @@ import unittest
 
 from audit_temporalstore_cpp_rust_performance_artifacts import PHASE_SCALE_COVERAGE
 from run_temporalstore_cpp_rust_next_performance_workflow import build_execution_plan
+from validate_temporalstore_cpp_rust_performance_parity import (
+    REQUIRED_SAME_CONFIG_COMMAND_ARGS,
+    SAME_CONFIG_KEYS,
+)
 from validate_temporalstore_next_performance_plan import validate_plan
 
 
@@ -31,12 +35,17 @@ def _valid_audit() -> dict:
                         "docs/benchmarks/parity_10K_event_ingestion",
                         "--require-perf-parity",
                         "--require-phase-scale-matrix",
+                        *[
+                            value
+                            for pair in REQUIRED_SAME_CONFIG_COMMAND_ARGS.items()
+                            for value in pair
+                        ],
                     ],
                     "artifact_dir": "docs/benchmarks/parity_10K_event_ingestion",
                     "comparison_path": "docs/benchmarks/parity_10K_event_ingestion/comparison.json",
                     "recommended_execution_output": "docs/benchmarks/parity_10K_event_ingestion/execution.json",
                     "phase_scale_coverage_required": PHASE_SCALE_COVERAGE,
-                    "required_same_config_fields": ["dataset", "storage_mode"],
+                    "required_same_config_fields": SAME_CONFIG_KEYS,
                     "required_result": ["selected_ref_parity=true"],
                     "next_run_hint_source": "matrix",
                 },
@@ -73,6 +82,16 @@ class NextPerformancePlanValidatorTest(unittest.TestCase):
         failures = validate_plan(build_execution_plan(audit))
 
         self.assertTrue(any("phase_scale_coverage_required drift" in failure for failure in failures))
+
+    def test_missing_same_config_flag_fails(self) -> None:
+        audit = _valid_audit()
+        argv = audit["next_required_workflow"]["commands"][0]["argv"]
+        flag_index = argv.index("--dataset")
+        del argv[flag_index : flag_index + 2]
+
+        failures = validate_plan(build_execution_plan(audit))
+
+        self.assertTrue(any("argv missing same-config flag --dataset" in failure for failure in failures))
 
     def test_backend_path_leak_in_wsl_command_fails(self) -> None:
         plan = build_execution_plan(_valid_audit())
