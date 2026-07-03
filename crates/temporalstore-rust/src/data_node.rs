@@ -15,8 +15,8 @@ use crate::control::{
     UnloadShardResponse,
 };
 use crate::engine::reports::{
-    ShardCompactionModelLayoutReport, ShardCompactionUtilityReport, SlotDumpManifest,
-    StorageLifecyclePlan, StorageLifecycleReport, StorageLifecycleRequest,
+    PublicStorageFeatureShapes, ShardCompactionModelLayoutReport, ShardCompactionUtilityReport,
+    SlotDumpManifest, StorageLifecyclePlan, StorageLifecycleReport, StorageLifecycleRequest,
     StorageManagerCycleReport, StorageManagerCycleRequest, StorageManagerStageReport,
     StorageProductionReadinessPolicy, StorageProductionReadinessReport,
 };
@@ -183,6 +183,8 @@ pub struct DataNodeLifecyclePersistenceReport {
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DataNodeLifecycleReport {
+    #[serde(default)]
+    pub public_storage_feature_shapes: PublicStorageFeatureShapes,
     pub loaded_shard_count: usize,
     pub serving_count: usize,
     pub readonly_count: usize,
@@ -2675,6 +2677,7 @@ impl DataNodeRuntime {
             .max()
             .unwrap_or_default();
         DataNodeLifecycleReport {
+            public_storage_feature_shapes: PublicStorageFeatureShapes::default(),
             loaded_shard_count,
             serving_count,
             readonly_count,

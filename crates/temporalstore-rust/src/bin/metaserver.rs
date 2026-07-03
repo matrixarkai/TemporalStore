@@ -4097,6 +4097,7 @@ mod tests {
                                 scheduler_task_id: Some(0),
                                 scheduler_generation: Some(900),
                             }],
+                            ..DataNodeLifecycleReport::default()
                         },
                     ),
                     _ => json_response(404, &Status::error("not_found", "unknown path")),
@@ -4157,6 +4158,7 @@ mod tests {
                                 scheduler_task_id: Some(0),
                                 scheduler_generation: Some(901),
                             }],
+                            ..DataNodeLifecycleReport::default()
                         },
                     ),
                     _ => json_response(404, &Status::error("not_found", "unknown path")),
@@ -4222,6 +4224,7 @@ mod tests {
                                 scheduler_task_id: Some(0),
                                 scheduler_generation: Some(900),
                             }],
+                            ..DataNodeLifecycleReport::default()
                         },
                     ),
                     _ => json_response(404, &Status::error("not_found", "unknown path")),
@@ -4404,6 +4407,7 @@ mod tests {
                 max_load_version: self.load_version,
                 shards: Vec::new(),
                 transitions: self.transition.clone().into_iter().collect(),
+                ..DataNodeLifecycleReport::default()
             }
         }
 

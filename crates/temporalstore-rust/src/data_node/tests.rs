@@ -257,6 +257,7 @@ fn multi_process_lifecycle_validation_requires_load_reload_unload_and_restart() 
                     scheduler_generation: Some(11),
                 },
             ],
+            ..DataNodeLifecycleReport::default()
         },
         DataNodeLifecycleReport {
             loaded_shard_count: 0,
@@ -278,6 +279,7 @@ fn multi_process_lifecycle_validation_requires_load_reload_unload_and_restart() 
                 scheduler_task_id: Some(3),
                 scheduler_generation: Some(12),
             }],
+            ..DataNodeLifecycleReport::default()
         },
     ];
     let persistence = vec![

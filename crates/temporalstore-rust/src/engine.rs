@@ -2400,6 +2400,7 @@ impl TemporalEngine {
             .object_lifecycle;
         StorageLifecycleReport {
             shard_id: request.shard_id,
+            public_storage_feature_shapes: Default::default(),
             plan,
             dump_manifest,
             cache_entries_removed,
