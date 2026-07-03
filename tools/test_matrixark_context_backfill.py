@@ -44,6 +44,7 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             "confirm_activate": "",
             "confirm_rollback": "",
             "confirm_incremental_repair": "",
+            "confirm_skip_validation": "",
             "active_prefix_key": "matrixark:context:active_prefix",
             "rollback_job_id": "",
             "repair_active_prefix": "",
@@ -474,11 +475,22 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             kv = backfill.LocalJsonKV(path)
             kv.put_string("matrixark:context:active_prefix", "matrixark:context:old")
 
+            with self.assertRaisesRegex(backfill.BackfillError, "confirm-skip-validation=YES"):
+                backfill.run_activate_shadow(self.make_args(
+                    path,
+                    mode="activate_shadow",
+                    target_prefix="matrixark:context_backfill:candidate",
+                    confirm_activate="YES",
+                    skip_validation=True,
+                    dry_run=False,
+                ))
+
             activated = backfill.run_activate_shadow(self.make_args(
                 path,
                 mode="activate_shadow",
                 target_prefix="matrixark:context_backfill:candidate",
                 confirm_activate="YES",
+                confirm_skip_validation="YES",
                 skip_validation=True,
                 dry_run=False,
             ))
@@ -750,6 +762,18 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             kv.put_string("matrixark:mcp:record_count", "1")
             kv.put_string("matrixark:context:active_prefix", "matrixark:context:active")
 
+            with self.assertRaisesRegex(backfill.BackfillError, "confirm-skip-validation=YES"):
+                backfill.run_incremental_repair(self.make_args(
+                    path,
+                    mode="incremental_repair",
+                    target_prefix="matrixark:context_repair:skip",
+                    start_seq=0,
+                    end_seq=1,
+                    confirm_incremental_repair="YES",
+                    skip_validation=True,
+                    resume=False,
+                ))
+
             repaired = backfill.run_incremental_repair(self.make_args(
                 path,
                 mode="incremental_repair",
@@ -757,6 +781,7 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
                 start_seq=0,
                 end_seq=1,
                 confirm_incremental_repair="YES",
+                confirm_skip_validation="YES",
                 skip_validation=True,
                 resume=False,
             ))

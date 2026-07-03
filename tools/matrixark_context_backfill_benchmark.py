@@ -132,6 +132,7 @@ def make_backfill_args(
         confirm_in_place="",
         confirm_activate="",
         confirm_incremental_repair=confirm_incremental_repair,
+        confirm_skip_validation="",
         active_prefix_key="matrixark:context:active_prefix",
         repair_active_prefix="",
         validation_strict=True,

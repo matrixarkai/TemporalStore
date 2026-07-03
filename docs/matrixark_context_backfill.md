@@ -996,7 +996,7 @@ For very large jobs:
 7. Monitor readers and context quality.
 8. Keep previous prefix for rollback until validation is complete.
 
-Activation audit records include both the nested validation response and flattened `validation_status`, `validation_skipped`, `validation_skip_reason`, `validation_source_range`, and `validation_target_state` fields so operators can query the cutover boundary and target evidence without parsing the full validation object. If `--skip-validation=1` is used, the audit explicitly records `validation_status=skipped`, `validation_skipped=true`, and `validation_skip_reason=skip_validation_flag`.
+Activation audit records include both the nested validation response and flattened `validation_status`, `validation_skipped`, `validation_skip_reason`, `validation_source_range`, and `validation_target_state` fields so operators can query the cutover boundary and target evidence without parsing the full validation object. Skipping validation is a break-glass path: `activate_shadow` and `incremental_repair` reject `--skip-validation=1` unless `--confirm-skip-validation=YES` is also supplied. If the bypass is explicitly confirmed, the audit records `validation_status=skipped`, `validation_skipped=true`, and `validation_skip_reason=skip_validation_flag`.
 
 ### Partial Repair Runbook
 

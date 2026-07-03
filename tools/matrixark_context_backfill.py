@@ -1473,6 +1473,13 @@ def validation_audit_fields(validation: Json | None, *, skip_validation: bool = 
     }
 
 
+def require_skip_validation_confirmation(args: argparse.Namespace, *, mode: str) -> None:
+    if not args.skip_validation:
+        return
+    if getattr(args, 'confirm_skip_validation', '') != 'YES':
+        raise BackfillError(f'{mode} with --skip-validation=1 requires --confirm-skip-validation=YES')
+
+
 def run_validate_shadow(args: argparse.Namespace) -> Json:
     if not args.target_prefix:
         raise BackfillError('validate_shadow requires --target-prefix')
@@ -1563,6 +1570,7 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
         raise BackfillError('activate_shadow target-prefix must differ from source-prefix')
     if args.confirm_activate != 'YES':
         raise BackfillError('activate_shadow requires --confirm-activate=YES')
+    require_skip_validation_confirmation(args, mode='activate_shadow')
     validation: Json | None = None
     if not args.skip_validation:
         validation = run_validate_shadow(args)
@@ -1762,6 +1770,7 @@ def run_incremental_repair(args: argparse.Namespace) -> Json:
         raise BackfillError('incremental_repair requires a bounded --start-seq/--end-seq window')
     if args.confirm_incremental_repair != 'YES':
         raise BackfillError('incremental_repair requires --confirm-incremental-repair=YES')
+    require_skip_validation_confirmation(args, mode='incremental_repair')
 
     validation: Json | None = None
     if not args.skip_validation:
@@ -1855,6 +1864,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--confirm-activate', default='')
     parser.add_argument('--confirm-rollback', default='')
     parser.add_argument('--confirm-incremental-repair', default='')
+    parser.add_argument('--confirm-skip-validation', default='', help='required YES when activate_shadow or incremental_repair uses --skip-validation=1')
     parser.add_argument('--active-prefix-key', default='matrixark:context:active_prefix')
     parser.add_argument('--rollback-job-id', default='', help='activation job id whose previous active prefix should be restored')
     parser.add_argument('--repair-active-prefix', default='')
