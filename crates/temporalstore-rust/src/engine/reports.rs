@@ -8,6 +8,10 @@ use crate::page_store::{
 };
 use crate::types::ShardId;
 
+fn public_storage_strings(values: &[&str]) -> Vec<String> {
+    values.iter().map(|value| (*value).to_string()).collect()
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShardCompactionReport {
     pub shard_id: ShardId,
@@ -868,12 +872,8 @@ pub struct PublicStorageFeatureShapes {
 
 impl Default for PublicStorageFeatureShapes {
     fn default() -> Self {
-        fn fields(names: &[&str]) -> Vec<String> {
-            names.iter().map(|name| (*name).to_string()).collect()
-        }
-
         Self {
-            page_address_fields: fields(&[
+            page_address_fields: public_storage_strings(&[
                 "shard_id",
                 "zone_id",
                 "segment_id",
@@ -882,7 +882,7 @@ impl Default for PublicStorageFeatureShapes {
                 "length",
                 "generation",
             ]),
-            block_address_fields: fields(&[
+            block_address_fields: public_storage_strings(&[
                 "shard_id",
                 "zone_id",
                 "block_id",
@@ -890,21 +890,21 @@ impl Default for PublicStorageFeatureShapes {
                 "length",
                 "checksum",
             ]),
-            page_index_entry_fields: fields(&[
+            page_index_entry_fields: public_storage_strings(&[
                 "logical_key",
                 "timestamp_range",
                 "page_addresses",
                 "append_watermark",
                 "generation",
             ]),
-            block_index_entry_fields: fields(&[
+            block_index_entry_fields: public_storage_strings(&[
                 "page_address",
                 "block_address",
                 "extent",
                 "checksum",
                 "generation",
             ]),
-            object_index_entry_fields: fields(&[
+            object_index_entry_fields: public_storage_strings(&[
                 "model",
                 "table",
                 "object_key",
@@ -912,33 +912,33 @@ impl Default for PublicStorageFeatureShapes {
                 "tombstone",
                 "generation",
             ]),
-            storage_zone_fields: fields(&[
+            storage_zone_fields: public_storage_strings(&[
                 "zone_id",
                 "total_bytes",
                 "used_bytes",
                 "stale_bytes",
                 "segments",
             ]),
-            stream_fields: fields(&[
+            stream_fields: public_storage_strings(&[
                 "stream_id",
                 "segments",
                 "rollover_count",
                 "sealed_segment_count",
             ]),
-            segment_fields: fields(&[
+            segment_fields: public_storage_strings(&[
                 "segment_id",
                 "extent_id",
                 "start_offset",
                 "sealed",
                 "generation",
             ]),
-            extent_fields: fields(&[
+            extent_fields: public_storage_strings(&[
                 "extent_id",
                 "block_range",
                 "reclaim_state",
                 "generation",
             ]),
-            slot_fields: fields(&[
+            slot_fields: public_storage_strings(&[
                 "slot_id",
                 "dirty_generation",
                 "object_refs",
@@ -946,32 +946,32 @@ impl Default for PublicStorageFeatureShapes {
                 "tombstones",
                 "owner_mismatch_count",
             ]),
-            append_watermark_fields: fields(&[
+            append_watermark_fields: public_storage_strings(&[
                 "shard_id",
                 "slot_id",
                 "log_index",
                 "timestamp_ms",
             ]),
-            compaction_watermark_fields: fields(&[
+            compaction_watermark_fields: public_storage_strings(&[
                 "shard_id",
                 "safe_generation",
                 "safe_timestamp_ms",
                 "follower_floor",
             ]),
-            tombstone_fields: fields(&[
+            tombstone_fields: public_storage_strings(&[
                 "ref",
                 "generation",
                 "deleted_at_ms",
                 "reason",
             ]),
-            gc_eligibility_fields: fields(&[
+            gc_eligibility_fields: public_storage_strings(&[
                 "ref",
                 "eligible_after_ms",
                 "has_tombstone",
                 "follower_safe",
                 "reclaimable_bytes",
             ]),
-            follower_cursor_safety_fields: fields(&[
+            follower_cursor_safety_fields: public_storage_strings(&[
                 "min_follower_cursor",
                 "blocked_reclaim_bytes",
                 "safe_to_reclaim",
@@ -980,13 +980,27 @@ impl Default for PublicStorageFeatureShapes {
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageLifecycleReport {
     pub shard_id: ShardId,
     #[serde(default)]
     pub public_storage_contract: PublicStorageContract,
     #[serde(default)]
     pub public_storage_feature_shapes: PublicStorageFeatureShapes,
+    #[serde(default = "default_storage_write_sequence")]
+    pub storage_write_sequence: Vec<String>,
+    #[serde(default = "default_storage_read_sequence")]
+    pub storage_read_sequence: Vec<String>,
+    #[serde(default = "default_storage_cold_scan_sequence")]
+    pub storage_cold_scan_sequence: Vec<String>,
+    #[serde(default = "default_storage_lifecycle_phases")]
+    pub storage_lifecycle_phases: Vec<String>,
+    #[serde(default = "default_storage_cache_layers")]
+    pub storage_cache_layers: Vec<String>,
+    #[serde(default = "default_storage_cache_semantics")]
+    pub storage_cache_semantics: Vec<String>,
+    #[serde(default = "default_storage_reclaim_semantics")]
+    pub storage_reclaim_semantics: Vec<String>,
     pub plan: StorageLifecyclePlan,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dump_manifest: Option<SlotDumpManifest>,
@@ -1006,6 +1020,116 @@ pub struct StorageLifecycleReport {
     pub install_roll_forward_reports: Vec<SlotDumpInstallRollForwardReport>,
     #[serde(default)]
     pub object_lifecycle: StorageObjectLifecycleReport,
+}
+
+impl Default for StorageLifecycleReport {
+    fn default() -> Self {
+        Self {
+            shard_id: ShardId::default(),
+            public_storage_contract: PublicStorageContract::default(),
+            public_storage_feature_shapes: PublicStorageFeatureShapes::default(),
+            storage_write_sequence: default_storage_write_sequence(),
+            storage_read_sequence: default_storage_read_sequence(),
+            storage_cold_scan_sequence: default_storage_cold_scan_sequence(),
+            storage_lifecycle_phases: default_storage_lifecycle_phases(),
+            storage_cache_layers: default_storage_cache_layers(),
+            storage_cache_semantics: default_storage_cache_semantics(),
+            storage_reclaim_semantics: default_storage_reclaim_semantics(),
+            plan: StorageLifecyclePlan::default(),
+            dump_manifest: None,
+            cache_entries_removed: 0,
+            cache_disk_bytes_removed: 0,
+            cache_warmup_page_refs: 0,
+            cache_warmup: StorageCacheWarmupReport::default(),
+            delayed_destroy_purged_segments: Vec::new(),
+            delayed_destroy_purged_bytes: 0,
+            manifest_prune_plan: SlotDumpManifestPrunePlan::default(),
+            manifest_prune_report: None,
+            install_roll_forward_reports: Vec::new(),
+            object_lifecycle: StorageObjectLifecycleReport::default(),
+        }
+    }
+}
+
+pub fn default_storage_write_sequence() -> Vec<String> {
+    public_storage_strings(&[
+        "append_record",
+        "route_shard_slot",
+        "choose_page",
+        "append_page_buffer",
+        "update_page_index",
+        "flush_page_block_segment",
+        "update_block_index",
+        "publish_append_watermark",
+    ])
+}
+
+pub fn default_storage_read_sequence() -> Vec<String> {
+    public_storage_strings(&[
+        "logical_key_timestamp_range",
+        "object_page_index_lookup",
+        "page_address_list",
+        "block_index_lookup",
+        "page_read",
+        "decode_records",
+        "return_filtered_result",
+    ])
+}
+
+pub fn default_storage_cold_scan_sequence() -> Vec<String> {
+    public_storage_strings(&[
+        "timestamp_page_index_scan",
+        "no_cache_page_read",
+        "bounded_decode",
+        "no_hot_cache_promotion",
+    ])
+}
+
+pub fn default_storage_lifecycle_phases() -> Vec<String> {
+    public_storage_strings(&[
+        "prepare",
+        "reclaim",
+        "evict",
+        "expire",
+        "page_gc",
+        "block_gc",
+        "compaction",
+        "index_gc",
+        "delayed_destroy",
+        "follower_cursor_safety",
+        "watermark_progress",
+    ])
+}
+
+pub fn default_storage_cache_layers() -> Vec<String> {
+    public_storage_strings(&[
+        "memory_object_cache",
+        "page_index_cache",
+        "block_index_cache",
+        "disk_block_cache",
+        "shared_store_read_through",
+    ])
+}
+
+pub fn default_storage_cache_semantics() -> Vec<String> {
+    public_storage_strings(&[
+        "lookup_hot_to_cold",
+        "refill_from_durable_on_miss",
+        "invalidate_on_append_watermark",
+        "invalidate_on_compaction_watermark",
+        "cold_scan_no_promote",
+        "writeback_backpressure_reported",
+    ])
+}
+
+pub fn default_storage_reclaim_semantics() -> Vec<String> {
+    public_storage_strings(&[
+        "cache_eviction_memory_only",
+        "logical_tombstone_required",
+        "stale_pages_blocks_rewritten_or_skipped",
+        "reclaimed_bytes_reported",
+        "physical_reclaim_errors_zero",
+    ])
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]

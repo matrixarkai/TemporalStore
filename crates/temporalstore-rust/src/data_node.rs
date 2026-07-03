@@ -15,6 +15,10 @@ use crate::control::{
     UnloadShardResponse,
 };
 use crate::engine::reports::{
+    default_storage_cache_layers, default_storage_cache_semantics,
+    default_storage_cold_scan_sequence, default_storage_lifecycle_phases,
+    default_storage_read_sequence, default_storage_reclaim_semantics,
+    default_storage_write_sequence,
     PublicStorageContract, PublicStorageFeatureShapes, ShardCompactionModelLayoutReport,
     ShardCompactionUtilityReport, SlotDumpManifest, StorageLifecyclePlan, StorageLifecycleReport,
     StorageLifecycleRequest, StorageManagerCycleReport, StorageManagerCycleRequest,
@@ -181,12 +185,26 @@ pub struct DataNodeLifecyclePersistenceReport {
     pub persist_failure_total: u64,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DataNodeLifecycleReport {
     #[serde(default)]
     pub public_storage_contract: PublicStorageContract,
     #[serde(default)]
     pub public_storage_feature_shapes: PublicStorageFeatureShapes,
+    #[serde(default = "default_storage_write_sequence")]
+    pub storage_write_sequence: Vec<String>,
+    #[serde(default = "default_storage_read_sequence")]
+    pub storage_read_sequence: Vec<String>,
+    #[serde(default = "default_storage_cold_scan_sequence")]
+    pub storage_cold_scan_sequence: Vec<String>,
+    #[serde(default = "default_storage_lifecycle_phases")]
+    pub storage_lifecycle_phases: Vec<String>,
+    #[serde(default = "default_storage_cache_layers")]
+    pub storage_cache_layers: Vec<String>,
+    #[serde(default = "default_storage_cache_semantics")]
+    pub storage_cache_semantics: Vec<String>,
+    #[serde(default = "default_storage_reclaim_semantics")]
+    pub storage_reclaim_semantics: Vec<String>,
     pub loaded_shard_count: usize,
     pub serving_count: usize,
     pub readonly_count: usize,
@@ -198,6 +216,32 @@ pub struct DataNodeLifecycleReport {
     pub shards: Vec<ServerShardServingState>,
     #[serde(default)]
     pub transitions: Vec<DataNodeShardLifecycleState>,
+}
+
+impl Default for DataNodeLifecycleReport {
+    fn default() -> Self {
+        Self {
+            public_storage_contract: PublicStorageContract::default(),
+            public_storage_feature_shapes: PublicStorageFeatureShapes::default(),
+            storage_write_sequence: default_storage_write_sequence(),
+            storage_read_sequence: default_storage_read_sequence(),
+            storage_cold_scan_sequence: default_storage_cold_scan_sequence(),
+            storage_lifecycle_phases: default_storage_lifecycle_phases(),
+            storage_cache_layers: default_storage_cache_layers(),
+            storage_cache_semantics: default_storage_cache_semantics(),
+            storage_reclaim_semantics: default_storage_reclaim_semantics(),
+            loaded_shard_count: 0,
+            serving_count: 0,
+            readonly_count: 0,
+            queued_count: 0,
+            running_count: 0,
+            unloading_count: 0,
+            failed_count: 0,
+            max_load_version: 0,
+            shards: Vec::new(),
+            transitions: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2681,6 +2725,13 @@ impl DataNodeRuntime {
         DataNodeLifecycleReport {
             public_storage_contract: PublicStorageContract::default(),
             public_storage_feature_shapes: PublicStorageFeatureShapes::default(),
+            storage_write_sequence: default_storage_write_sequence(),
+            storage_read_sequence: default_storage_read_sequence(),
+            storage_cold_scan_sequence: default_storage_cold_scan_sequence(),
+            storage_lifecycle_phases: default_storage_lifecycle_phases(),
+            storage_cache_layers: default_storage_cache_layers(),
+            storage_cache_semantics: default_storage_cache_semantics(),
+            storage_reclaim_semantics: default_storage_reclaim_semantics(),
             loaded_shard_count,
             serving_count,
             readonly_count,
