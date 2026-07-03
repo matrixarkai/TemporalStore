@@ -18,6 +18,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from validate_storage_tuning_parity import EXPECTED_DEFAULTS as REQUIRED_STORAGE_TUNING
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MATRIX = ROOT / "compat" / "temporalstore_cpp_rust_performance_parity_matrix.json"
@@ -111,6 +113,15 @@ def _same_config_blockers(same_config: dict[str, Any]) -> list[str]:
     for key, expected in REQUIRED_SAME_CONFIG_VALUES.items():
         if same_config.get(key) != expected:
             blockers.append(f"same_config_drift:{key}")
+    storage_tuning = same_config.get("storage_tuning")
+    if not isinstance(storage_tuning, dict):
+        blockers.append("storage_tuning_missing")
+    else:
+        for key, expected in REQUIRED_STORAGE_TUNING.items():
+            if key not in storage_tuning:
+                blockers.append(f"storage_tuning_missing:{key}")
+            elif storage_tuning.get(key) != expected:
+                blockers.append(f"storage_tuning_drift:{key}")
     return blockers
 
 
