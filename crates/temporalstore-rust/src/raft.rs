@@ -11437,23 +11437,17 @@ fn rustraft_capability_report_from_byteraft_admin(
     let capability_evidence = report
         .capability_matrix
         .iter()
-        .map(|capability| ::rustraft::RaftCapabilityEvidence {
-            capability: capability.capability.clone(),
-            present: capability.ready,
-            evidence: capability
-                .evidence_field
-                .split(';')
-                .map(str::trim)
-                .filter(|field| !field.is_empty())
-                .map(|field| {
-                    if capability.ready {
-                        format!("present:{field}")
-                    } else {
-                        format!("missing:{field}")
-                    }
-                })
-                .collect(),
-            source_reference: "temporalstore_byteraft_runtime_admin_report".to_string(),
+        .map(|capability| {
+            ::rustraft::rustraft_capability_evidence_from_fields(
+                capability.capability.clone(),
+                "temporalstore_byteraft_runtime_admin_report",
+                capability
+                    .evidence_field
+                    .split(';')
+                    .map(str::trim)
+                    .filter(|field| !field.is_empty())
+                    .map(|field| (capability.ready, field)),
+            )
         })
         .collect::<Vec<_>>();
     let mut product_blockers = report
