@@ -44,6 +44,25 @@ class PerformanceParityValidatorTest(unittest.TestCase):
 
         self.assertNotIn("1K_event_ingestion cpp.selected_ref_parity must be true", failures)
 
+    def test_watermarks_must_show_valid_lifecycle_progress(self) -> None:
+        failures: list[str] = []
+        row = {
+            "workload": "1K_event_ingestion",
+            "cpp": {
+                "append_watermark": 0,
+                "compaction_watermark": 1,
+                "selected_ref_parity": True,
+            },
+        }
+
+        _validate_metric_block(row, "cpp", failures)
+
+        self.assertIn("1K_event_ingestion cpp.append_watermark must be positive", failures)
+        self.assertIn(
+            "1K_event_ingestion cpp.compaction_watermark cannot exceed append_watermark",
+            failures,
+        )
+
     def test_qps_ratios_are_required_for_completed_rows(self) -> None:
         failures: list[str] = []
         row = {

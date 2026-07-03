@@ -241,6 +241,18 @@ def _validate_metric_block(
         and metrics.get("selected_ref_parity") is not True
     ):
         failures.append(f"{row.get('workload')} {side}.selected_ref_parity must be true")
+    append_watermark = _as_number(metrics.get("append_watermark"))
+    compaction_watermark = _as_number(metrics.get("compaction_watermark"))
+    if append_watermark is not None and append_watermark <= 0:
+        failures.append(f"{row.get('workload')} {side}.append_watermark must be positive")
+    if (
+        append_watermark is not None
+        and compaction_watermark is not None
+        and compaction_watermark > append_watermark
+    ):
+        failures.append(
+            f"{row.get('workload')} {side}.compaction_watermark cannot exceed append_watermark"
+        )
     return metrics
 
 
