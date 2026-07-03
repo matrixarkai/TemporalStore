@@ -48,6 +48,7 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             "confirm_skip_validation": "",
             "confirm_non_strict_validation": "",
             "active_prefix_key": "matrixark:context:active_prefix",
+            "expect_active_prefix": "",
             "rollback_job_id": "",
             "repair_active_prefix": "",
             "validation_strict": True,
@@ -561,6 +562,16 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(activation_audit["validation_target_state"]["record_count"], 2)
             self.assertIn("matrixark:context_backfill:candidate", json.dumps(activation_audit, sort_keys=True))
 
+            with self.assertRaisesRegex(backfill.BackfillError, "active prefix precondition failed"):
+                backfill.run_activate_shadow(self.make_args(
+                    path,
+                    mode="activate_shadow",
+                    target_prefix="matrixark:context_backfill:candidate",
+                    confirm_activate="YES",
+                    expect_active_prefix="matrixark:context:old",
+                    dry_run=False,
+                ))
+
             with self.assertRaises(backfill.BackfillError):
                 backfill.run_rollback_activation(self.make_args(path, mode="rollback_activation", rollback_job_id="unit"))
 
@@ -574,15 +585,28 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(dry_run["to_prefix"], "matrixark:context:old")
             self.assertEqual(backfill.LocalJsonKV(path).get_string("matrixark:context:active_prefix"), "matrixark:context_backfill:candidate")
 
+            with self.assertRaisesRegex(backfill.BackfillError, "active prefix precondition failed"):
+                backfill.run_rollback_activation(self.make_args(
+                    path,
+                    mode="rollback_activation",
+                    rollback_job_id="unit",
+                    job_id="rollback-stale",
+                    confirm_rollback="YES",
+                    expect_active_prefix="matrixark:context:other",
+                    dry_run=False,
+                ))
+
             rollback = backfill.run_rollback_activation(self.make_args(
                 path,
                 mode="rollback_activation",
                 rollback_job_id="unit",
                 job_id="rollback-unit",
                 confirm_rollback="YES",
+                expect_active_prefix="matrixark:context_backfill:candidate",
                 dry_run=False,
             ))
             self.assertEqual(rollback["status"], "ok")
+            self.assertEqual(rollback["expected_active_prefix"], "matrixark:context_backfill:candidate")
             self.assertEqual(rollback["from_prefix"], "matrixark:context_backfill:candidate")
             self.assertEqual(rollback["to_prefix"], "matrixark:context:old")
             kv_rolled_back = backfill.LocalJsonKV(path)
@@ -797,9 +821,24 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
                 confirm_incremental_repair="YES",
                 resume=False,
             )
+            with self.assertRaisesRegex(backfill.BackfillError, "active prefix precondition failed"):
+                backfill.run_incremental_repair(self.make_args(
+                    path,
+                    mode="incremental_repair",
+                    target_prefix="matrixark:context_repair:p1",
+                    start_seq=1,
+                    end_seq=2,
+                    confirm_incremental_repair="YES",
+                    expect_active_prefix="matrixark:context:other",
+                    resume=False,
+                ))
+
+            repair_args.expect_active_prefix = "matrixark:context:active"
             repaired = backfill.run_incremental_repair(repair_args)
             self.assertEqual(repaired["status"], "ok")
             self.assertEqual(repaired["active_prefix"], "matrixark:context:active")
+            self.assertEqual(repaired["expected_active_prefix"], "matrixark:context:active")
+            self.assertEqual(repaired["current_active_prefix"], "matrixark:context:active")
             self.assertEqual(repaired["promotion"]["metrics"]["written"], 1)
             self.assertEqual(repaired["validation_status"], "ok")
             self.assertFalse(repaired["validation_skipped"])
@@ -820,6 +859,8 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertTrue(repair_audit["validation_strict"])
             self.assertFalse(repair_audit["non_strict_validation_confirmed"])
             self.assertEqual(repair_audit["validation_target_state"]["record_count"], 1)
+            self.assertEqual(repair_audit["expected_active_prefix"], "matrixark:context:active")
+            self.assertEqual(repair_audit["current_active_prefix"], "matrixark:context:active")
             self.assertEqual(repair_audit["promotion_consistency"]["status"], "ok")
             self.assertIn("matrixark:context:active", json.dumps(repair_audit, sort_keys=True))
             active_records = read_target_records(kv_after, "matrixark:context:active")
