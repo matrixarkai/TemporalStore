@@ -141,6 +141,90 @@ def run_baseline_gate(args: argparse.Namespace) -> Json:
         }
 
 
+def run_cutover_gate(args: argparse.Namespace) -> Json:
+    results: list[Json] = []
+    source_prefix = "matrixark:mcp:readiness_cutover"
+    records = max(2, int(args.records))
+    for raw_backend in ["temporalstore", "matrixkv"]:
+        with tempfile.TemporaryDirectory(prefix=f"matrixark_backfill_cutover_{raw_backend}_") as tmp:
+            kv_path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(kv_path)
+            bench.seed_raw_log(kv, prefix=source_prefix, records=records, payload_bytes=args.payload_bytes)
+            active_key = "matrixark:context:active_prefix"
+            old_prefix = f"matrixark:context:active:old:{raw_backend}"
+            target_prefix = f"matrixark:context_backfill:readiness_cutover:{raw_backend}"
+            job_id = f"readiness-cutover-{raw_backend}"
+            kv.put_string(active_key, old_prefix)
+
+            shadow_args = bench.make_backfill_args(
+                kv_path=kv_path,
+                source_prefix=source_prefix,
+                target_prefix=target_prefix,
+                raw_backend=raw_backend,
+                job_id=job_id,
+                batch_size=args.batch_size,
+            )
+            shadow = backfill.run_backfill(shadow_args)
+            activate_args = bench.make_backfill_args(
+                kv_path=kv_path,
+                source_prefix=source_prefix,
+                target_prefix=target_prefix,
+                raw_backend=raw_backend,
+                job_id=job_id,
+                batch_size=args.batch_size,
+                mode="activate_shadow",
+            )
+            activate_args.confirm_activate = "YES"
+            activated = backfill.run_activate_shadow(activate_args)
+            kv_after_activate = backfill.LocalJsonKV(kv_path)
+            activation_audit = kv_after_activate.hget(f"{active_key}:audit", job_id)
+
+            rollback_args = bench.make_backfill_args(
+                kv_path=kv_path,
+                source_prefix=source_prefix,
+                target_prefix=target_prefix,
+                raw_backend=raw_backend,
+                job_id=f"{job_id}:rollback",
+                batch_size=args.batch_size,
+                mode="rollback_activation",
+            )
+            rollback_args.confirm_rollback = "YES"
+            rollback_args.rollback_job_id = job_id
+            rollback = backfill.run_rollback_activation(rollback_args)
+            kv_after_rollback = backfill.LocalJsonKV(kv_path)
+            rollback_audit = kv_after_rollback.hget(f"{active_key}:rollback_audit", f"{job_id}:rollback")
+
+            results.append({
+                "raw_backend": raw_backend,
+                "shadow_status": shadow.get("status"),
+                "shadow_written": int(shadow.get("metrics", {}).get("written", 0) or 0),
+                "activation_status": activated.get("status"),
+                "activation_validation_status": activated.get("validation_status"),
+                "activation_validation_skipped": bool(activated.get("validation_skipped")),
+                "activation_new_prefix": activated.get("new_prefix"),
+                "active_after_activation": kv_after_activate.get_string(active_key),
+                "activation_audit_written": bool(activation_audit),
+                "rollback_status": rollback.get("status"),
+                "rollback_to_prefix": rollback.get("to_prefix"),
+                "active_after_rollback": kv_after_rollback.get_string(active_key),
+                "rollback_audit_written": bool(rollback_audit),
+            })
+    status = "ok" if all(
+        item["shadow_status"] == "ok"
+        and item["shadow_written"] == records
+        and item["activation_status"] == "ok"
+        and item["activation_validation_status"] == "ok"
+        and not item["activation_validation_skipped"]
+        and item["active_after_activation"] == item["activation_new_prefix"]
+        and item["activation_audit_written"]
+        and item["rollback_status"] == "ok"
+        and item["rollback_to_prefix"] == item["active_after_rollback"]
+        and item["rollback_audit_written"]
+        for item in results
+    ) else "failed"
+    return {"status": status, "results": results}
+
+
 def run_resume_gate(args: argparse.Namespace) -> Json:
     results: list[Json] = []
     source_prefix = "matrixark:mcp:readiness_resume"
@@ -320,6 +404,20 @@ def baseline_gate_checks(summary: Json) -> list[Json]:
     ]
 
 
+def cutover_checks(summary: Json) -> list[Json]:
+    results = summary.get("results") if isinstance(summary.get("results"), list) else []
+    return [
+        check("cutover_gate_status_ok", summary.get("status") == "ok"),
+        check("cutover_gate_covers_temporalstore_and_matrixkv", {item.get("raw_backend") for item in results} == {"temporalstore", "matrixkv"}),
+        check("cutover_gate_shadow_wrote_records", all(int(item.get("shadow_written", 0) or 0) > 0 for item in results)),
+        check("cutover_gate_activation_validated_shadow", all(item.get("activation_validation_status") == "ok" and not item.get("activation_validation_skipped") for item in results)),
+        check("cutover_gate_activation_updates_active_pointer", all(item.get("active_after_activation") == item.get("activation_new_prefix") for item in results)),
+        check("cutover_gate_activation_audit_written", all(bool(item.get("activation_audit_written")) for item in results)),
+        check("cutover_gate_rollback_restores_previous_pointer", all(item.get("rollback_to_prefix") == item.get("active_after_rollback") for item in results)),
+        check("cutover_gate_rollback_audit_written", all(bool(item.get("rollback_audit_written")) for item in results)),
+    ]
+
+
 def resume_checks(summary: Json) -> list[Json]:
     results = summary.get("results") if isinstance(summary.get("results"), list) else []
     return [
@@ -347,6 +445,7 @@ def run_readiness(args: argparse.Namespace) -> Json:
     checks = parser_support_checks() + docs_checks()
     benchmark_summary: Json = {}
     baseline_summary: Json = {}
+    cutover_summary: Json = {}
     resume_summary: Json = {}
     prometheus_summary: Json = {}
     if not args.skip_local_benchmark:
@@ -355,6 +454,9 @@ def run_readiness(args: argparse.Namespace) -> Json:
     if not args.skip_baseline_gate:
         baseline_summary = run_baseline_gate(args)
         checks.extend(baseline_gate_checks(baseline_summary))
+    if not args.skip_cutover_gate:
+        cutover_summary = run_cutover_gate(args)
+        checks.extend(cutover_checks(cutover_summary))
     if not args.skip_resume_gate:
         resume_summary = run_resume_gate(args)
         checks.extend(resume_checks(resume_summary))
@@ -367,6 +469,7 @@ def run_readiness(args: argparse.Namespace) -> Json:
         "checks": checks,
         "benchmark": benchmark_summary,
         "baseline_gate": baseline_summary,
+        "cutover_gate": cutover_summary,
         "resume_gate": resume_summary,
         "prometheus_gate": prometheus_summary,
     }
@@ -382,6 +485,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repeat", type=int, default=2)
     parser.add_argument("--skip-local-benchmark", action="store_true")
     parser.add_argument("--skip-baseline-gate", action="store_true")
+    parser.add_argument("--skip-cutover-gate", action="store_true")
     parser.add_argument("--skip-resume-gate", action="store_true")
     parser.add_argument("--skip-prometheus-gate", action="store_true")
     parser.add_argument("--json-output", default="")
