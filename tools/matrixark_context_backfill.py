@@ -161,10 +161,28 @@ class BackfillMetrics:
                 '# HELP matrixark_context_backfill_source_range Source range boundary used by the backfill run.',
                 '# TYPE matrixark_context_backfill_source_range gauge',
             ])
-            for name in ['effective_start_seq', 'effective_end_seq', 'source_high_watermark_seq', 'source_record_count']:
+            for name in [
+                'effective_start_seq',
+                'effective_end_seq',
+                'source_high_watermark_seq',
+                'source_record_count',
+                'discovered_record_count',
+                'discovered_start_seq',
+                'discovered_high_watermark_seq',
+                'scan_hash_max_empty_shards',
+            ]:
                 value = source_range.get(name)
                 if value is not None:
                     lines.append(f'matrixark_context_backfill_source_range{{{labels},boundary="{name}"}} {int(value)}')
+            lines.extend([
+                '# HELP matrixark_context_backfill_source_range_info Source range boolean metadata for recovery and audit.',
+                '# TYPE matrixark_context_backfill_source_range_info gauge',
+                f'matrixark_context_backfill_source_range_info{{{labels},property="source_record_count_estimated"}} {1 if source_range.get("source_record_count_estimated") else 0}',
+                f'matrixark_context_backfill_source_range_info{{{labels},property="user_bounded_end"}} {1 if source_range.get("user_bounded_end") else 0}',
+                '# HELP matrixark_context_backfill_source_scan_mode Source scan mode selected by the backfill runner.',
+                '# TYPE matrixark_context_backfill_source_scan_mode gauge',
+                f'matrixark_context_backfill_source_scan_mode{{{labels},scan_mode="{source_range.get("scan_mode") or "unknown"}"}} 1',
+            ])
         return '\n'.join(lines) + '\n'
 
 

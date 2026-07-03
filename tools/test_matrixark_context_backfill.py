@@ -191,8 +191,9 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             kv = backfill.LocalJsonKV(path)
             write_sharded(kv, "matrixark:mcp", 0, {"record_type": "context_event", "event_id_hash": 1})
             write_sharded(kv, "matrixark:mcp", 2, {"record_type": "context_event", "event_id_hash": 2})
+            prom = Path(tmp) / "scan_hash.prom"
 
-            summary = backfill.run_backfill(self.make_args(path, batch_size=1, resume=False))
+            summary = backfill.run_backfill(self.make_args(path, batch_size=1, resume=False, prometheus_output=str(prom)))
             self.assertEqual(summary["metrics"]["scanned"], 2)
             self.assertEqual(summary["metrics"]["written"], 2)
             self.assertEqual(summary["metrics"]["scan_hash_batches"], 2)
@@ -206,6 +207,14 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(summary["source_range"]["effective_end_seq"], 3)
             self.assertEqual(summary["source_range"]["scan_hash_max_empty_shards"], 2)
             self.assertEqual(backfill.LocalJsonKV(path).get_string("matrixark:context_backfill:test:record_count"), "2")
+            prom_text = prom.read_text()
+            self.assertIn('boundary="discovered_record_count"} 2', prom_text)
+            self.assertIn('boundary="discovered_start_seq"} 0', prom_text)
+            self.assertIn('boundary="discovered_high_watermark_seq"} 2', prom_text)
+            self.assertIn('boundary="scan_hash_max_empty_shards"} 2', prom_text)
+            self.assertIn('property="source_record_count_estimated"} 1', prom_text)
+            self.assertIn('property="user_bounded_end"} 0', prom_text)
+            self.assertIn('scan_mode="scan_hash"} 1', prom_text)
 
     def test_scan_hash_respects_sequence_range(self):
         with tempfile.TemporaryDirectory() as tmp:
