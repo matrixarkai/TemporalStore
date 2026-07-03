@@ -261,6 +261,7 @@ STORAGE_LIFECYCLE_TOP_LEVEL_KEYS = [
     "storage_cache_contract",
     "storage_reclaim_contract",
     "storage_safety_snapshot",
+    "storage_watermark_snapshot",
     "storage_index_snapshot",
     "storage_topology_snapshot",
     "storage_read_sequence",
@@ -855,6 +856,23 @@ def default_storage_safety_snapshot(metrics: Json | None = None) -> Json:
     }
 
 
+def default_storage_watermark_snapshot(metrics: Json | None = None) -> Json:
+    source = metrics if isinstance(metrics, dict) else {}
+    append_watermark = int(source.get("append_watermark") or 0)
+    compaction_watermark = int(source.get("compaction_watermark") or 0)
+    follower_floor = int(source.get("follower_cursor_retention_floor") or 0)
+    follower_safe_watermark = min(compaction_watermark, follower_floor) if follower_floor else compaction_watermark
+    return {
+        "append_watermark": append_watermark,
+        "compaction_watermark": compaction_watermark,
+        "follower_cursor_retention_floor": follower_floor,
+        "follower_cursor_safe_watermark": follower_safe_watermark,
+        "page_index_rebuild_watermark": int(source.get("page_index_rebuild_count") or 0),
+        "block_index_rebuild_watermark": int(source.get("block_index_rebuild_count") or 0),
+        "object_index_rebuild_watermark": int(source.get("object_index_rebuild_count") or 0),
+    }
+
+
 def default_storage_index_snapshot(metrics: Json | None = None) -> Json:
     source = metrics if isinstance(metrics, dict) else {}
     return {
@@ -914,6 +932,7 @@ def storage_lifecycle_report_shape(effective_storage_tuning: Json, metrics: Json
         "storage_cache_contract": default_storage_cache_contract(metrics),
         "storage_reclaim_contract": default_storage_reclaim_contract(metrics),
         "storage_safety_snapshot": default_storage_safety_snapshot(metrics),
+        "storage_watermark_snapshot": default_storage_watermark_snapshot(metrics),
         "storage_index_snapshot": default_storage_index_snapshot(metrics),
         "storage_topology_snapshot": default_storage_topology_snapshot(metrics),
         "storage_write_sequence": list(STORAGE_WRITE_SEQUENCE_STEPS),
@@ -998,6 +1017,12 @@ def attach_storage_lifecycle_shape(result: Json, effective_storage_tuning: Json 
     normalized_safety_snapshot = default_storage_safety_snapshot(metrics)
     normalized_safety_snapshot.update(safety_snapshot)
     shaped["storage_safety_snapshot"] = normalized_safety_snapshot
+    watermark_snapshot = shaped.get("storage_watermark_snapshot")
+    if not isinstance(watermark_snapshot, dict):
+        watermark_snapshot = {}
+    normalized_watermark_snapshot = default_storage_watermark_snapshot(metrics)
+    normalized_watermark_snapshot.update(watermark_snapshot)
+    shaped["storage_watermark_snapshot"] = normalized_watermark_snapshot
     index_snapshot = shaped.get("storage_index_snapshot")
     if not isinstance(index_snapshot, dict):
         index_snapshot = {}

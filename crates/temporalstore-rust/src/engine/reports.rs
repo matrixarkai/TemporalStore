@@ -1039,6 +1039,8 @@ pub struct StorageLifecycleReport {
     pub storage_reclaim_contract: BTreeMap<String, StorageContractValue>,
     #[serde(default = "default_storage_safety_snapshot")]
     pub storage_safety_snapshot: StorageSafetySnapshot,
+    #[serde(default = "default_storage_watermark_snapshot")]
+    pub storage_watermark_snapshot: StorageWatermarkSnapshot,
     #[serde(default = "default_storage_index_snapshot")]
     pub storage_index_snapshot: StorageIndexSnapshot,
     #[serde(default = "default_storage_topology_snapshot")]
@@ -1096,6 +1098,7 @@ impl Default for StorageLifecycleReport {
             storage_cache_contract: default_storage_cache_contract_empty(),
             storage_reclaim_contract: default_storage_reclaim_contract_empty(),
             storage_safety_snapshot: default_storage_safety_snapshot(),
+            storage_watermark_snapshot: default_storage_watermark_snapshot(),
             storage_index_snapshot: default_storage_index_snapshot(),
             storage_topology_snapshot: default_storage_topology_snapshot(),
             storage_write_sequence: default_storage_write_sequence(),
@@ -1391,6 +1394,8 @@ impl StorageLifecycleReport {
             default_storage_reclaim_contract(&self.storage_lifecycle_metrics);
         self.storage_safety_snapshot =
             storage_safety_snapshot_from_metrics(&self.storage_lifecycle_metrics);
+        self.storage_watermark_snapshot =
+            storage_watermark_snapshot_from_metrics(&self.storage_lifecycle_metrics);
         self.storage_index_snapshot =
             storage_index_snapshot_from_metrics(&self.storage_lifecycle_metrics);
         self.storage_topology_snapshot =
@@ -1538,6 +1543,44 @@ pub fn storage_safety_snapshot_from_metrics(
 
 pub fn default_storage_safety_snapshot() -> StorageSafetySnapshot {
     storage_safety_snapshot_from_metrics(&default_storage_lifecycle_metrics())
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageWatermarkSnapshot {
+    pub append_watermark: u64,
+    pub compaction_watermark: u64,
+    pub follower_cursor_retention_floor: u64,
+    pub follower_cursor_safe_watermark: u64,
+    pub page_index_rebuild_watermark: u64,
+    pub block_index_rebuild_watermark: u64,
+    pub object_index_rebuild_watermark: u64,
+}
+
+pub fn storage_watermark_snapshot_from_metrics(
+    metrics: &BTreeMap<String, u64>,
+) -> StorageWatermarkSnapshot {
+    let append_watermark = metric(metrics, "append_watermark");
+    let compaction_watermark = metric(metrics, "compaction_watermark");
+    let follower_cursor_retention_floor =
+        metric(metrics, "follower_cursor_retention_floor");
+    let follower_cursor_safe_watermark = if follower_cursor_retention_floor > 0 {
+        compaction_watermark.min(follower_cursor_retention_floor)
+    } else {
+        compaction_watermark
+    };
+    StorageWatermarkSnapshot {
+        append_watermark,
+        compaction_watermark,
+        follower_cursor_retention_floor,
+        follower_cursor_safe_watermark,
+        page_index_rebuild_watermark: metric(metrics, "page_index_rebuild_count"),
+        block_index_rebuild_watermark: metric(metrics, "block_index_rebuild_count"),
+        object_index_rebuild_watermark: metric(metrics, "object_index_rebuild_count"),
+    }
+}
+
+pub fn default_storage_watermark_snapshot() -> StorageWatermarkSnapshot {
+    storage_watermark_snapshot_from_metrics(&default_storage_lifecycle_metrics())
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]

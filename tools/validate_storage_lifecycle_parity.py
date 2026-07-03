@@ -271,6 +271,7 @@ REQUIRED_LIFECYCLE_TOP_LEVEL_KEYS = [
     "storage_cache_contract",
     "storage_reclaim_contract",
     "storage_safety_snapshot",
+    "storage_watermark_snapshot",
     "storage_index_snapshot",
     "storage_topology_snapshot",
     "storage_read_sequence",
@@ -443,6 +444,16 @@ REQUIRED_STORAGE_SAFETY_FIELDS = [
     "follower_cursor_blocked_reclaim_count",
     "follower_cursor_safe_to_reclaim",
     "physical_reclaim_errors",
+]
+
+REQUIRED_STORAGE_WATERMARK_SNAPSHOT_FIELDS = [
+    "append_watermark",
+    "compaction_watermark",
+    "follower_cursor_retention_floor",
+    "follower_cursor_safe_watermark",
+    "page_index_rebuild_watermark",
+    "block_index_rebuild_watermark",
+    "object_index_rebuild_watermark",
 ]
 
 REQUIRED_STORAGE_INDEX_SNAPSHOT_FIELDS = [
@@ -704,6 +715,18 @@ def _dig_safety_snapshot(report: dict[str, Any]) -> dict[str, Any]:
         report.get("storage_safety_snapshot"),
         report.get("storage_lifecycle", {}).get("safety_snapshot") if isinstance(report.get("storage_lifecycle"), dict) else None,
         report.get("storage_safety", {}).get("snapshot") if isinstance(report.get("storage_safety"), dict) else None,
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            return candidate
+    return {}
+
+
+def _dig_watermark_snapshot(report: dict[str, Any]) -> dict[str, Any]:
+    candidates = [
+        report.get("storage_watermark_snapshot"),
+        report.get("storage_lifecycle", {}).get("watermark_snapshot") if isinstance(report.get("storage_lifecycle"), dict) else None,
+        report.get("storage_watermarks") if isinstance(report.get("storage_watermarks"), dict) else None,
     ]
     for candidate in candidates:
         if isinstance(candidate, dict):
@@ -1082,6 +1105,8 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
     rust_reclaim_contract = _dig_reclaim_contract(rust_report)
     cpp_safety_snapshot = _dig_safety_snapshot(cpp_report)
     rust_safety_snapshot = _dig_safety_snapshot(rust_report)
+    cpp_watermark_snapshot = _dig_watermark_snapshot(cpp_report)
+    rust_watermark_snapshot = _dig_watermark_snapshot(rust_report)
     cpp_index_snapshot = _dig_index_snapshot(cpp_report)
     rust_index_snapshot = _dig_index_snapshot(rust_report)
     cpp_topology_snapshot = _dig_topology_snapshot(cpp_report)
@@ -1325,6 +1350,26 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
                     failures.append(f"{backend} safety snapshot `{field}` must be non-negative")
         if _as_number(safety_snapshot.get("physical_reclaim_errors")) not in (0.0, None):
             failures.append(f"{backend} safety snapshot physical_reclaim_errors must be zero")
+    for field in REQUIRED_STORAGE_WATERMARK_SNAPSHOT_FIELDS:
+        if field not in cpp_watermark_snapshot:
+            failures.append(f"cpp watermark snapshot missing field `{field}`")
+        if field not in rust_watermark_snapshot:
+            failures.append(f"rust watermark snapshot missing field `{field}`")
+    for backend, watermark_snapshot in [
+        ("cpp", cpp_watermark_snapshot),
+        ("rust", rust_watermark_snapshot),
+    ]:
+        for field in REQUIRED_STORAGE_WATERMARK_SNAPSHOT_FIELDS:
+            value = _as_number(watermark_snapshot.get(field))
+            if value is None or value < 0:
+                failures.append(f"{backend} watermark snapshot `{field}` must be non-negative")
+        safe = _as_number(watermark_snapshot.get("follower_cursor_safe_watermark"))
+        compaction = _as_number(watermark_snapshot.get("compaction_watermark"))
+        follower_floor = _as_number(watermark_snapshot.get("follower_cursor_retention_floor"))
+        if safe is not None and compaction is not None and safe > compaction:
+            failures.append(f"{backend} watermark snapshot safe watermark must not exceed compaction watermark")
+        if safe is not None and follower_floor is not None and follower_floor > 0 and safe > follower_floor:
+            failures.append(f"{backend} watermark snapshot safe watermark must not exceed follower cursor floor")
     for field in REQUIRED_STORAGE_INDEX_SNAPSHOT_FIELDS:
         if field not in cpp_index_snapshot:
             failures.append(f"cpp index snapshot missing field `{field}`")
