@@ -228,6 +228,54 @@
       "physical_reclaim_errors": 0,
       "append_watermark": 7,
       "compaction_watermark": 6
+    },
+    "storage_manager_contract": {
+      "manager_identity": "StorageManager/StoreManager",
+      "cpp_public_name": "StorageManager",
+      "rust_public_name": "StoreManager",
+      "phase_order": [
+        "prepare",
+        "reclaim",
+        "evict",
+        "expire",
+        "page_gc",
+        "block_gc",
+        "compaction",
+        "index_gc",
+        "delayed_destroy",
+        "follower_cursor_safety",
+        "watermark_progress"
+      ],
+      "phase_metrics": {
+        "prepare": "storage_manager_prepare_count",
+        "reclaim": "storage_manager_reclaim_count",
+        "evict": "storage_manager_evict_count",
+        "expire": "storage_manager_expire_count",
+        "page_gc": "storage_manager_page_gc_count",
+        "block_gc": "storage_manager_block_gc_count",
+        "compaction": "storage_manager_compaction_count",
+        "index_gc": "storage_manager_index_gc_count",
+        "delayed_destroy": "storage_manager_delayed_destroy_count",
+        "follower_cursor_safety": "storage_manager_follower_cursor_safety_count",
+        "watermark_progress": "storage_manager_watermark_progress_count"
+      },
+      "phase_counts": {
+        "prepare": 1,
+        "reclaim": 1,
+        "evict": 1,
+        "expire": 1,
+        "page_gc": 1,
+        "block_gc": 1,
+        "compaction": 1,
+        "index_gc": 1,
+        "delayed_destroy": 1,
+        "follower_cursor_safety": 1,
+        "watermark_progress": 1
+      },
+      "loop_metric": "storage_manager_loop_ms",
+      "loop_ms": 4.0,
+      "phase_order_enforced": true,
+      "missing_phase_count": 0
     }
   },
   "rust": {
@@ -455,6 +503,54 @@
       "physical_reclaim_errors": 0,
       "append_watermark": 7,
       "compaction_watermark": 6
+    },
+    "storage_manager_contract": {
+      "manager_identity": "StorageManager/StoreManager",
+      "cpp_public_name": "StorageManager",
+      "rust_public_name": "StoreManager",
+      "phase_order": [
+        "prepare",
+        "reclaim",
+        "evict",
+        "expire",
+        "page_gc",
+        "block_gc",
+        "compaction",
+        "index_gc",
+        "delayed_destroy",
+        "follower_cursor_safety",
+        "watermark_progress"
+      ],
+      "phase_metrics": {
+        "prepare": "storage_manager_prepare_count",
+        "reclaim": "storage_manager_reclaim_count",
+        "evict": "storage_manager_evict_count",
+        "expire": "storage_manager_expire_count",
+        "page_gc": "storage_manager_page_gc_count",
+        "block_gc": "storage_manager_block_gc_count",
+        "compaction": "storage_manager_compaction_count",
+        "index_gc": "storage_manager_index_gc_count",
+        "delayed_destroy": "storage_manager_delayed_destroy_count",
+        "follower_cursor_safety": "storage_manager_follower_cursor_safety_count",
+        "watermark_progress": "storage_manager_watermark_progress_count"
+      },
+      "phase_counts": {
+        "prepare": 1,
+        "reclaim": 1,
+        "evict": 1,
+        "expire": 1,
+        "page_gc": 1,
+        "block_gc": 1,
+        "compaction": 1,
+        "index_gc": 1,
+        "delayed_destroy": 1,
+        "follower_cursor_safety": 1,
+        "watermark_progress": 1
+      },
+      "loop_metric": "storage_manager_loop_ms",
+      "loop_ms": 5.0,
+      "phase_order_enforced": true,
+      "missing_phase_count": 0
     }
   }
 }

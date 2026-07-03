@@ -210,6 +210,7 @@ STORAGE_LIFECYCLE_TOP_LEVEL_KEYS = [
     "storage_write_contract",
     "storage_read_contract",
     "storage_cold_scan_contract",
+    "storage_manager_contract",
     "storage_read_sequence",
     "storage_cold_scan_sequence",
     "storage_lifecycle_phases",
@@ -374,6 +375,20 @@ STORAGE_LIFECYCLE_PHASE_NAMES = [
     "follower_cursor_safety",
     "watermark_progress",
 ]
+
+STORAGE_MANAGER_PHASE_METRICS = {
+    "prepare": "storage_manager_prepare_count",
+    "reclaim": "storage_manager_reclaim_count",
+    "evict": "storage_manager_evict_count",
+    "expire": "storage_manager_expire_count",
+    "page_gc": "storage_manager_page_gc_count",
+    "block_gc": "storage_manager_block_gc_count",
+    "compaction": "storage_manager_compaction_count",
+    "index_gc": "storage_manager_index_gc_count",
+    "delayed_destroy": "storage_manager_delayed_destroy_count",
+    "follower_cursor_safety": "storage_manager_follower_cursor_safety_count",
+    "watermark_progress": "storage_manager_watermark_progress_count",
+}
 
 STORAGE_RECLAIM_SEMANTICS = [
     "cache_eviction_memory_only",
@@ -629,6 +644,26 @@ def default_storage_cold_scan_contract(metrics: Json | None = None) -> Json:
     }
 
 
+def default_storage_manager_contract(metrics: Json | None = None) -> Json:
+    source = metrics if isinstance(metrics, dict) else {}
+    phase_counts = {
+        phase: int(source.get(metric_name) or 0)
+        for phase, metric_name in STORAGE_MANAGER_PHASE_METRICS.items()
+    }
+    return {
+        "manager_identity": "StorageManager/StoreManager",
+        "cpp_public_name": "StorageManager",
+        "rust_public_name": "StoreManager",
+        "phase_order": list(STORAGE_LIFECYCLE_PHASE_NAMES),
+        "phase_metrics": dict(STORAGE_MANAGER_PHASE_METRICS),
+        "phase_counts": phase_counts,
+        "loop_metric": "storage_manager_loop_ms",
+        "loop_ms": float(source.get("storage_manager_loop_ms") or 0),
+        "phase_order_enforced": True,
+        "missing_phase_count": 0,
+    }
+
+
 def storage_lifecycle_report_shape(effective_storage_tuning: Json, metrics: Json | None = None) -> Json:
     return {
         "effective_storage_tuning": dict(effective_storage_tuning),
@@ -639,6 +674,7 @@ def storage_lifecycle_report_shape(effective_storage_tuning: Json, metrics: Json
         "storage_write_contract": default_storage_write_contract(metrics),
         "storage_read_contract": default_storage_read_contract(metrics),
         "storage_cold_scan_contract": default_storage_cold_scan_contract(metrics),
+        "storage_manager_contract": default_storage_manager_contract(metrics),
         "storage_write_sequence": list(STORAGE_WRITE_SEQUENCE_STEPS),
         "storage_read_sequence": list(STORAGE_READ_SEQUENCE_STEPS),
         "storage_cold_scan_sequence": list(STORAGE_COLD_SCAN_SEQUENCE_STEPS),
@@ -683,6 +719,12 @@ def attach_storage_lifecycle_shape(result: Json, effective_storage_tuning: Json 
     normalized_cold_scan_contract = default_storage_cold_scan_contract(metrics)
     normalized_cold_scan_contract.update(cold_scan_contract)
     shaped["storage_cold_scan_contract"] = normalized_cold_scan_contract
+    manager_contract = shaped.get("storage_manager_contract")
+    if not isinstance(manager_contract, dict):
+        manager_contract = {}
+    normalized_manager_contract = default_storage_manager_contract(metrics)
+    normalized_manager_contract.update(manager_contract)
+    shaped["storage_manager_contract"] = normalized_manager_contract
     shaped["storage_write_sequence"] = list(STORAGE_WRITE_SEQUENCE_STEPS)
     shaped["storage_read_sequence"] = list(STORAGE_READ_SEQUENCE_STEPS)
     shaped["storage_cold_scan_sequence"] = list(STORAGE_COLD_SCAN_SEQUENCE_STEPS)

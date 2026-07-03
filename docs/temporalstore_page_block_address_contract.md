@@ -856,6 +856,42 @@ Canonical StorageManager/StoreManager lifecycle phases:
 - `follower_cursor_safety`
 - `watermark_progress`
 
+Required StorageManager/StoreManager contract fields:
+
+- `manager_identity`
+- `cpp_public_name`
+- `rust_public_name`
+- `phase_order`
+- `phase_metrics`
+- `phase_counts`
+- `loop_metric`
+- `loop_ms`
+- `phase_order_enforced`
+- `missing_phase_count`
+
+Required manager identity values:
+
+- `manager_identity`: `StorageManager/StoreManager`
+- `cpp_public_name`: `StorageManager`
+- `rust_public_name`: `StoreManager`
+- `loop_metric`: `storage_manager_loop_ms`
+- `phase_order_enforced`: `true`
+- `missing_phase_count`: `0`
+
+Required phase-to-metric mapping:
+
+- `prepare` -> `storage_manager_prepare_count`
+- `reclaim` -> `storage_manager_reclaim_count`
+- `evict` -> `storage_manager_evict_count`
+- `expire` -> `storage_manager_expire_count`
+- `page_gc` -> `storage_manager_page_gc_count`
+- `block_gc` -> `storage_manager_block_gc_count`
+- `compaction` -> `storage_manager_compaction_count`
+- `index_gc` -> `storage_manager_index_gc_count`
+- `delayed_destroy` -> `storage_manager_delayed_destroy_count`
+- `follower_cursor_safety` -> `storage_manager_follower_cursor_safety_count`
+- `watermark_progress` -> `storage_manager_watermark_progress_count`
+
 - `storage_manager_prepare_count`
 - `storage_manager_reclaim_count`
 - `storage_manager_evict_count`
@@ -930,6 +966,7 @@ Rust before comparison tools accept them:
 - `storage_write_contract`
 - `storage_read_contract`
 - `storage_cold_scan_contract`
+- `storage_manager_contract`
 - `storage_read_sequence`
 - `storage_cold_scan_sequence`
 - `storage_lifecycle_phases`
