@@ -101,12 +101,14 @@ A target prefix stores materialized serving records in the same sharded format:
 
 The manifest records the source prefix, target prefix, mode, source range, partial filters, checkpoint key, and final summary. This is the main audit artifact for production recovery.
 
+Backfill summaries and validation scans also include an ordered `serving_record_fingerprint`. The fingerprint is computed from canonical JSON for each materialized serving record in target sequence order. It is not a security boundary, but it is a compact production integrity signal: if expected and actual counts match but one materialized record differs, validation fails on `serving_record_fingerprint_match=false`.
+
 ## Modes
 
 | Mode | Purpose | Mutates source | Mutates target | Confirmation required |
 | --- | --- | --- | --- | --- |
 | `shadow` | Build a separate derived context prefix | No | Yes | No |
-| `validate_shadow` | Dry-run source scan and compare expected count to target | No | No | No |
+| `validate_shadow` | Dry-run source scan and compare expected count, type counts, and ordered serving-record fingerprint to target | No | No | No |
 | `activate_shadow` | Flip active prefix pointer to a validated shadow prefix | No | Metadata only | `--confirm-activate=YES` |
 | `rollback_activation` | Restore the previous active prefix recorded by an activation job | No | Metadata only | `--confirm-rollback=YES` |
 | `incremental_repair` | Promote a bounded shadow repair slice into active prefix | No | Yes | `--confirm-incremental-repair=YES` |
@@ -840,13 +842,24 @@ matrixark_context_backfill_incremental_repair_promotion_consistency_check{job_id
 matrixark_context_backfill_incremental_repair_promotion_records{job_id="...",status="written"}
 ```
 
-`shadow` and `in_place` runs emit elapsed time, scan QPS, record counters, serving-record counters, batch counters, and source-range boundary gauges. `validate_shadow` emits validation status, expected/actual/dead-letter counts, per-check pass/fail gauges, target scan stats, source-range boundary gauges, source-range boolean metadata, and the source scan mode when `--prometheus-output` is set. `incremental_repair` emits promotion consistency status/check gauges, active-promotion record counters, promotion source-range boundaries, and validation status. Dashboards should compare the validation source range with the target scan state before activation or incremental repair promotion, then alert on any failed promotion consistency check after active-prefix replay.
+`shadow` and `in_place` runs emit elapsed time, scan QPS, record counters, serving-record counters, ordered serving-record fingerprint info, batch counters, and source-range boundary gauges. `validate_shadow` emits validation status, expected/actual/dead-letter counts, per-check pass/fail gauges, target scan stats, expected/actual ordered serving-record fingerprint info, source-range boundary gauges, source-range boolean metadata, and the source scan mode when `--prometheus-output` is set. `incremental_repair` emits promotion consistency status/check gauges, active-promotion record counters, promotion source-range boundaries, and validation status. Dashboards should compare the validation source range with the target scan state before activation or incremental repair promotion, then alert on any failed promotion consistency check after active-prefix replay.
+
+Validation fingerprint metrics:
+
+```text
+matrixark_context_backfill_serving_record_fingerprint_info{job_id="...",fingerprint="..."}
+matrixark_context_backfill_validation_serving_record_fingerprint_info{job_id="...",kind="expected",fingerprint="..."}
+matrixark_context_backfill_validation_serving_record_fingerprint_info{job_id="...",kind="actual",fingerprint="..."}
+```
+
+Alert on `matrixark_context_backfill_validation_check{check="serving_record_fingerprint_match"} == 0`. This catches content drift that record counts and serving-type counts cannot detect.
 
 Recommended production alerts:
 
 - `failed > 0` for strict migrations
 - `dead_letter > 0` for any production repair
 - `matrixark_context_backfill_incremental_repair_promotion_consistency_status{status!="ok"}` for active-prefix repair promotion
+- `matrixark_context_backfill_validation_check{check="serving_record_fingerprint_match"} == 0` before activation or incremental repair promotion
 - `written == 0` when a non-empty repair was expected
 - high `duplicate` on first run, which can indicate an unintended rerun or reused target prefix
 - high `filtered / scanned` when partial filters may be too narrow
