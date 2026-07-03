@@ -114,6 +114,28 @@ class FeatureExecutionValidatorTest(unittest.TestCase):
             finally:
                 validator.MATRIX, validator.CORPUS = old_matrix, old_corpus
 
+    def test_static_matrix_must_match_corpus_blocker_and_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            matrix = root / "matrix.json"
+            corpus = root / "corpus.json"
+            payload = _static_matrix(["storage/cache native C++ runner is still pending"])
+            payload["rows"][0]["blocker"] = "short blocker"
+            payload["rows"][0]["expected_runner_command"] = "python3 tools/run_temporalstore_unified_tests.py --family storage/cache --cpp --corpus {corpus} --require-cpp-native"
+            _write_json(matrix, payload)
+            _write_json(corpus, _static_corpus())
+            old_matrix, old_corpus = validator.MATRIX, validator.CORPUS
+            try:
+                validator.MATRIX, validator.CORPUS = matrix, corpus
+                with self.assertRaises(SystemExit) as raised:
+                    validator.main()
+            finally:
+                validator.MATRIX, validator.CORPUS = old_matrix, old_corpus
+
+        message = str(raised.exception)
+        self.assertIn("storage/cache static gate blocker must match corpus coverage blocker", message)
+        self.assertIn("storage/cache static gate expected_runner_command must match corpus coverage", message)
+
 
 if __name__ == "__main__":
     unittest.main()

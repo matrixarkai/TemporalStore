@@ -77,6 +77,10 @@ def _coverage_by_family(corpus: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 "static_rows_missing_exit_criteria": 0,
                 "static_rows_missing_exit_tokens": set(),
                 "static_rows_missing_comparison_tokens": set(),
+                "blockers": set(),
+                "expected_runner_commands": set(),
+                "comparison_commands": set(),
+                "exit_criteria_sets": set(),
             },
         )
         status = str(row.get("status") or "")
@@ -88,16 +92,24 @@ def _coverage_by_family(corpus: dict[str, Any]) -> dict[str, dict[str, Any]]:
             target["suites"].add(str(row.get("suite")))
         if row.get("blocker"):
             target["has_blocker"] = True
+            target["blockers"].add(str(row.get("blocker")))
         if row.get("expected_runner_command") or row.get("runner_command"):
             target["has_expected_runner"] = True
+        expected_runner = str(row.get("expected_runner_command") or row.get("runner_command") or "")
+        if expected_runner:
+            target["expected_runner_commands"].add(expected_runner)
         if status in STATIC_STATUSES:
             comparison_command = str(row.get("comparison_command") or "")
+            if comparison_command:
+                target["comparison_commands"].add(comparison_command)
             if not comparison_command:
                 target["static_rows_missing_comparison"] += 1
             for token in REQUIRED_STATIC_COMPARISON_TOKENS:
                 if token not in comparison_command:
                     target["static_rows_missing_comparison_tokens"].add(token)
             exit_criteria = _as_strings(row.get("exit_criteria"))
+            if exit_criteria:
+                target["exit_criteria_sets"].add(tuple(exit_criteria))
             if not exit_criteria:
                 target["static_rows_missing_exit_criteria"] += 1
             joined_exit_criteria = " ".join(exit_criteria)
@@ -225,9 +237,13 @@ def main() -> int:
                 failures.append(f"{family} static gate cannot claim native_cpp_executable=true")
             if not row.get("blocker"):
                 failures.append(f"{family} static gate requires blocker")
+            elif row.get("blocker") not in source["blockers"]:
+                failures.append(f"{family} static gate blocker must match corpus coverage blocker")
             expected_runner_command = str(row.get("expected_runner_command") or "")
             if not expected_runner_command:
                 failures.append(f"{family} static gate requires expected_runner_command")
+            elif expected_runner_command not in source["expected_runner_commands"]:
+                failures.append(f"{family} static gate expected_runner_command must match corpus coverage")
             for token in REQUIRED_STATIC_RUNNER_TOKENS:
                 if token not in expected_runner_command:
                     failures.append(f"{family} static gate expected_runner_command missing `{token}`")
@@ -239,12 +255,16 @@ def main() -> int:
             comparison_command = str(row.get("comparison_command") or "")
             if not comparison_command:
                 failures.append(f"{family} static gate requires comparison_command")
+            elif comparison_command not in source["comparison_commands"]:
+                failures.append(f"{family} static gate comparison_command must match corpus coverage")
             for token in REQUIRED_STATIC_COMPARISON_TOKENS:
                 if token not in comparison_command:
                     failures.append(f"{family} static gate comparison_command missing `{token}`")
             exit_criteria = _as_strings(row.get("exit_criteria"))
             if not exit_criteria:
                 failures.append(f"{family} static gate requires exit_criteria")
+            elif tuple(exit_criteria) not in source["exit_criteria_sets"]:
+                failures.append(f"{family} static gate exit_criteria must match corpus coverage")
             joined_exit_criteria = " ".join(exit_criteria)
             for token in REQUIRED_STATIC_EXIT_CRITERIA_TOKENS:
                 if token not in joined_exit_criteria:
