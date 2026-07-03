@@ -21,6 +21,18 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ARTIFACT_ROOT = ROOT / "docs" / "benchmarks"
 RUNNER = "tools/run_matrixark_cpp_rust_scale_report.py"
 IMPORTER = "tools/import_temporalstore_cpp_rust_performance_evidence.py"
+PHASE_SCALE_COVERAGE = {
+    "events": [1000, 10000, 100000],
+    "retrieve_workers": [4, 8, 16, 32],
+    "resource_imports": ["large_pdf", "large_csv", "repo_directory"],
+    "contextmemory_features": [
+        "resources",
+        "skills",
+        "cross_session_retrieval",
+        "compact_indexes",
+        "audit_light_telemetry",
+    ],
+}
 WORKLOAD_RUN_ARGS = {
     "1K_event_ingestion": ["--events", "1000"],
     "10K_event_ingestion": ["--events", "10000"],
@@ -56,7 +68,6 @@ def _next_run_command(workload: str) -> list[str]:
         "rust",
         "--artifact-dir",
         artifact_dir,
-        "--require-phase-scale-matrix",
         "--require-perf-parity",
     ]
 
@@ -189,6 +200,7 @@ def audit_artifacts(artifact_root: Path, matrix_path: Path) -> dict[str, Any]:
                 "comparison_path": f"{_artifact_dir(workload)}/comparison.json",
                 "command": _next_run_command(workload),
                 "import_command": _import_command(workload),
+                "phase_scale_coverage_required": PHASE_SCALE_COVERAGE,
                 "required_same_config_fields": SAME_CONFIG_KEYS,
                 "required_result": (
                     "same-config C++ and Rust comparison.json with passed backends, "
@@ -206,6 +218,7 @@ def audit_artifacts(artifact_root: Path, matrix_path: Path) -> dict[str, Any]:
             "comparison_path": details["next_run_hint"]["comparison_path"],
             "command": details["next_run_hint"]["command"],
             "import_command": details["next_run_hint"]["import_command"],
+            "phase_scale_coverage_required": details["next_run_hint"]["phase_scale_coverage_required"],
             "required_same_config_fields": details["next_run_hint"]["required_same_config_fields"],
             "required_result": details["next_run_hint"]["required_result"],
         }
