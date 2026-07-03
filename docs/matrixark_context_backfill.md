@@ -202,6 +202,8 @@ matrixark_context_backfill_incremental_repair_promotion_source_range
 matrixark_context_backfill_incremental_repair_validation_status
 ```
 
+`validate_shadow` also emits a machine-readable `promotion_readiness` block in JSON and the `matrixark_context_backfill_promotion_readiness_status` Prometheus family. Treat `promotion_readiness.ready=true` and `status=ready` as the hard precondition for `activate_shadow` or `incremental_repair`. If it is blocked, `promotion_readiness.blockers` lists the failed validation checks such as `serving_record_fingerprint_match`, `target_records_readable`, or `source_scan_had_no_failures`.
+
 The readiness validator generates Prometheus output for both `temporalstore` and `matrixkv` raw modes and fails if these metric families disappear.
 
 ## Backfill Throughput Benchmark

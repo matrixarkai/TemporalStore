@@ -1377,6 +1377,16 @@ def validation_to_prometheus(validation: Json) -> str:
     checks = validation.get('checks') if isinstance(validation.get('checks'), dict) else {}
     for check_name, passed in sorted(checks.items()):
         lines.append(f'matrixark_context_backfill_validation_check{{{_prom_labels(**base, check=check_name)}}} {1 if passed else 0}')
+    readiness = validation.get('promotion_readiness') if isinstance(validation.get('promotion_readiness'), dict) else {}
+    readiness_status = str(readiness.get('status') or 'unknown')
+    lines.extend([
+        '# HELP matrixark_context_backfill_promotion_readiness_status Whether validation proved a shadow prefix ready for activation or incremental repair.',
+        '# TYPE matrixark_context_backfill_promotion_readiness_status gauge',
+        f'matrixark_context_backfill_promotion_readiness_status{{{_prom_labels(**base, status=readiness_status)}}} {1 if readiness.get("ready") else 0}',
+    ])
+    readiness_blockers = readiness.get('blockers') if isinstance(readiness.get('blockers'), list) else []
+    for blocker in readiness_blockers:
+        lines.append(f'matrixark_context_backfill_promotion_readiness_status{{{_prom_labels(**base, status="blocked", blocker=blocker)}}} 1')
     target_state = validation.get('target_state') if isinstance(validation.get('target_state'), dict) else {}
     target_scan = target_state.get('serving_type_count_scan') if isinstance(target_state.get('serving_type_count_scan'), dict) else {}
     lines.extend([
@@ -1421,6 +1431,28 @@ def validation_to_prometheus(validation: Json) -> str:
         f'matrixark_context_backfill_validation_source_scan_mode{{{_prom_labels(**base, scan_mode=str(source_range.get("scan_mode") or "unknown"))}}} 1',
     ])
     return '\n'.join(lines) + '\n'
+
+
+def build_promotion_readiness(validation: Json) -> Json:
+    checks = validation.get('checks') if isinstance(validation.get('checks'), dict) else {}
+    blockers = [name for name, passed in sorted(checks.items()) if not bool(passed)]
+    ready = validation.get('status') == 'ok' and not blockers
+    expected_records = int(validation.get('expected_records', 0) or 0)
+    actual_records = int(validation.get('actual_records', 0) or 0)
+    dead_letters = int(validation.get('dead_letters', 0) or 0)
+    expected_scan = validation.get('expected_scan') if isinstance(validation.get('expected_scan'), dict) else {}
+    source_failures = int(expected_scan.get('failed', 0) or 0)
+    return {
+        'status': 'ready' if ready else 'blocked',
+        'ready': ready,
+        'action': 'activate_shadow_or_incremental_repair',
+        'blockers': blockers,
+        'validation_strict': bool(validation.get('validation_strict')),
+        'expected_records': expected_records,
+        'actual_records': actual_records,
+        'dead_letters': dead_letters,
+        'source_failures': source_failures,
+    }
 
 
 def validation_audit_fields(validation: Json | None, *, skip_validation: bool = False) -> Json:
@@ -1518,6 +1550,7 @@ def run_validate_shadow(args: argparse.Namespace) -> Json:
             'source_scan_had_no_failures': int(expected_summary['metrics']['failed']) == 0,
         },
     }
+    summary['promotion_readiness'] = build_promotion_readiness(summary)
     if args.prometheus_output:
         Path(args.prometheus_output).write_text(validation_to_prometheus(summary), encoding='utf-8')
     return summary
