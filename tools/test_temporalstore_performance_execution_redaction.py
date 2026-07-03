@@ -8,10 +8,20 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from validate_temporalstore_cpp_rust_performance_parity import (
+    REQUIRED_SAME_CONFIG_COMMAND_ARGS,
+    SAME_CONFIG_KEYS,
+)
 from validate_temporalstore_performance_execution_redaction import (
     REQUIRED_PHASE_SCALE_COVERAGE,
     validate_artifact,
 )
+
+SAME_CONFIG_ARGV = [
+    value
+    for pair in REQUIRED_SAME_CONFIG_COMMAND_ARGS.items()
+    for value in pair
+]
 
 
 class PerformanceExecutionRedactionTest(unittest.TestCase):
@@ -40,7 +50,10 @@ class PerformanceExecutionRedactionTest(unittest.TestCase):
                                     "--rust-cli=<MATRIXARK_PARITY_RUST_CLI>",
                                     "--require-perf-parity",
                                     "--require-phase-scale-matrix",
-                                ]
+                                    *SAME_CONFIG_ARGV,
+                                ],
+                                "required_same_config_fields": SAME_CONFIG_KEYS,
+                                "status": "passed",
                             },
                             {
                                 "step": "import_evidence",
@@ -88,6 +101,7 @@ class PerformanceExecutionRedactionTest(unittest.TestCase):
                                     "--cpp-lib",
                                     "/mnt/c/Users/Deeproute/libbcache2.so",
                                     "--require-perf-parity",
+                                    *SAME_CONFIG_ARGV,
                                 ]
                             },
                             {
@@ -107,7 +121,7 @@ class PerformanceExecutionRedactionTest(unittest.TestCase):
         self.assertTrue(any("missing --require-phase-scale-matrix" in failure for failure in failures))
         self.assertTrue(any("missing phase_scale_coverage_required" in failure for failure in failures))
 
-    def test_rejects_successful_import_without_post_validators(self) -> None:
+    def test_rejects_missing_same_config_execution_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "execution.json"
             path.write_text(
@@ -124,6 +138,39 @@ class PerformanceExecutionRedactionTest(unittest.TestCase):
                                     "--require-perf-parity",
                                     "--require-phase-scale-matrix",
                                 ],
+                                "required_same_config_fields": ["dataset"],
+                                "status": "passed",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            failures = validate_artifact(path)
+
+        self.assertTrue(any("argv missing same-config flag --dataset" in failure for failure in failures))
+        self.assertTrue(any("required_same_config_fields missing" in failure for failure in failures))
+
+    def test_rejects_successful_import_without_post_validators(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "execution.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema": "temporalstore_cpp_rust_next_performance_execution_v1",
+                        "results": [
+                            {
+                                "step": "run_workload",
+                                "phase_scale_coverage_required": REQUIRED_PHASE_SCALE_COVERAGE,
+                                "argv": [
+                                    "python",
+                                    "tools/run_matrixark_cpp_rust_scale_report.py",
+                                    "--require-perf-parity",
+                                    "--require-phase-scale-matrix",
+                                    *SAME_CONFIG_ARGV,
+                                ],
+                                "required_same_config_fields": SAME_CONFIG_KEYS,
                                 "status": "passed",
                             },
                             {

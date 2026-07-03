@@ -14,6 +14,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from validate_temporalstore_cpp_rust_performance_parity import (
+    REQUIRED_SAME_CONFIG_COMMAND_ARGS,
+    SAME_CONFIG_KEYS,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ARTIFACT_ROOT = ROOT / "docs" / "benchmarks"
@@ -105,6 +110,32 @@ def _validate_run_workload_flags(path: Path, data: dict[str, Any]) -> list[str]:
         for flag in REQUIRED_RUN_WORKLOAD_FLAGS:
             if flag not in argv:
                 failures.append(f"{path}: results[{row_index}].argv missing {flag}")
+        if row.get("status") != "passed":
+            # Historical failed/preflight attempts are useful diagnostics, but
+            # they are not admissible performance evidence. Do not rewrite old
+            # argv values as if they ran under the current same-config policy.
+            continue
+        for flag, expected_value in REQUIRED_SAME_CONFIG_COMMAND_ARGS.items():
+            if flag not in argv:
+                failures.append(f"{path}: results[{row_index}].argv missing same-config flag {flag}")
+                continue
+            flag_index = argv.index(flag)
+            actual_value = argv[flag_index + 1] if flag_index + 1 < len(argv) else None
+            if actual_value != expected_value:
+                failures.append(
+                    f"{path}: results[{row_index}].argv {flag} drift "
+                    f"expected {expected_value!r} got {actual_value!r}"
+                )
+        same_config_fields = row.get("required_same_config_fields")
+        if not isinstance(same_config_fields, list):
+            failures.append(f"{path}: results[{row_index}] missing required_same_config_fields")
+        else:
+            missing_fields = [key for key in SAME_CONFIG_KEYS if key not in same_config_fields]
+            if missing_fields:
+                failures.append(
+                    f"{path}: results[{row_index}].required_same_config_fields "
+                    f"missing {missing_fields}"
+                )
     return failures
 
 
