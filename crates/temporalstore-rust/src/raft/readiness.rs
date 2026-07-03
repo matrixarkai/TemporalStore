@@ -107,17 +107,8 @@ pub struct RaftTemporalRaftRolloutReadiness {
     pub missing: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RaftProcessPathReadinessReport {
-    pub ready: bool,
-    pub multi_process_data_node_and_metaserver_raft: bool,
-    pub failover_on_both_planes: bool,
-    pub membership_add_remove_under_load: bool,
-    pub secondary_lag_and_catchup: bool,
-    pub snapshot_restart_after_compaction: bool,
-    #[serde(default)]
-    pub remaining_blockers: Vec<RaftReadinessEvidenceBlocker>,
-}
+pub type RaftProcessPathReadinessReport =
+    ::rustraft::RustRaftCrossPlaneProcessReadinessBlockerReport;
 
 pub fn raft_temporal_raft_rollout_readiness() -> RaftTemporalRaftRolloutReadiness {
     raft_temporal_raft_rollout_readiness_from_reports(None, None)
@@ -127,29 +118,10 @@ pub fn raft_process_path_readiness_report_from_reports(
     data_node_report: &TemporalRaftDataNodeProcessRolloutReport,
     metaserver_report: &TemporalRaftMetaProcessRolloutReport,
 ) -> RaftProcessPathReadinessReport {
-    let rustraft_report = ::rustraft::rustraft_cross_plane_process_readiness_blocker_report(
+    ::rustraft::rustraft_cross_plane_process_readiness_blocker_report(
         data_node_report,
         metaserver_report,
-    );
-    let mut remaining_blockers = rustraft_report.remaining_blockers;
-    remaining_blockers.sort_by(|left, right| {
-        left.evidence_field
-            .cmp(&right.evidence_field)
-            .then(left.blocker.cmp(&right.blocker))
-    });
-    remaining_blockers.dedup_by(|left, right| {
-        left.blocker == right.blocker && left.evidence_field == right.evidence_field
-    });
-    RaftProcessPathReadinessReport {
-        ready: rustraft_report.ready && remaining_blockers.is_empty(),
-        multi_process_data_node_and_metaserver_raft: rustraft_report
-            .multi_process_data_node_and_metaserver_raft,
-        failover_on_both_planes: rustraft_report.failover_on_both_planes,
-        membership_add_remove_under_load: rustraft_report.membership_add_remove_under_load,
-        secondary_lag_and_catchup: rustraft_report.secondary_lag_and_catchup,
-        snapshot_restart_after_compaction: rustraft_report.snapshot_restart_after_compaction,
-        remaining_blockers,
-    }
+    )
 }
 
 fn raft_readiness_blocker_from_rustraft_blocker(
