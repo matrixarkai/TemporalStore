@@ -1,0 +1,111 @@
+{
+  "schema": "temporalstore_cpp_rust_next_performance_execution_v1",
+  "continue_on_error": true,
+  "status": "failed",
+  "failed_count": 1,
+  "results": [
+    {
+      "step": "run_workload",
+      "workload": "1K_event_ingestion",
+      "reason": "blocked_no_importable",
+      "argv": [
+        "python",
+        "tools/run_matrixark_cpp_rust_scale_report.py",
+        "--events",
+        "1000",
+        "--backends",
+        "cpp",
+        "rust",
+        "--artifact-dir",
+        "docs/benchmarks/parity_1K_event_ingestion",
+        "--require-perf-parity"
+      ],
+      "returncode": 125,
+      "status": "preflight_failed",
+      "preflight_blockers": [
+        "missing_cpp_lib:set_MATRIXARK_PARITY_CPP_LIB_or_build_output_ubuntu22_release_sdk_lib",
+        "missing_rust_cli:set_MATRIXARK_PARITY_RUST_CLI_or_build_sdk_rust_temporalstore_release"
+      ],
+      "artifact_dir": "docs/benchmarks/parity_1K_event_ingestion",
+      "comparison_path": "docs/benchmarks/parity_1K_event_ingestion/comparison.json",
+      "recommended_execution_output": "docs/benchmarks/parity_1K_event_ingestion/execution.json",
+      "required_same_config_fields": [
+        "dataset",
+        "storage_mode",
+        "topology",
+        "batch_size",
+        "token_budget",
+        "embedding_model",
+        "reader_model",
+        "judge_model",
+        "storage_tuning"
+      ],
+      "required_result": [
+        "same-config C++ and Rust comparison.json with passed backends",
+        "zero timeouts/errors/fallback flags",
+        "selected_ref_parity=true",
+        "ratios within configured thresholds"
+      ],
+      "next_run_hint_source": "matrix"
+    },
+    {
+      "step": "import_evidence",
+      "workload": "1K_event_ingestion",
+      "reason": "blocked_no_importable",
+      "argv": [
+        "python",
+        "tools/import_temporalstore_cpp_rust_performance_evidence.py",
+        "--report",
+        "docs/benchmarks/parity_1K_event_ingestion/comparison.json",
+        "--validate"
+      ],
+      "returncode": 0,
+      "status": "skipped",
+      "skip_reason": "upstream_workload_failed",
+      "artifact_dir": "docs/benchmarks/parity_1K_event_ingestion",
+      "comparison_path": "docs/benchmarks/parity_1K_event_ingestion/comparison.json",
+      "required_same_config_fields": [
+        "dataset",
+        "storage_mode",
+        "topology",
+        "batch_size",
+        "token_budget",
+        "embedding_model",
+        "reader_model",
+        "judge_model",
+        "storage_tuning"
+      ],
+      "required_result": [
+        "same-config C++ and Rust comparison.json with passed backends",
+        "zero timeouts/errors/fallback flags",
+        "selected_ref_parity=true",
+        "ratios within configured thresholds"
+      ],
+      "next_run_hint_source": "matrix"
+    },
+    {
+      "step": "post_import_validation",
+      "workload": null,
+      "reason": null,
+      "argv": [
+        "python",
+        "tools/validate_temporalstore_cpp_rust_goal_parity.py"
+      ],
+      "returncode": 0,
+      "status": "passed"
+    },
+    {
+      "step": "post_import_validation",
+      "workload": null,
+      "reason": null,
+      "argv": [
+        "python",
+        "tools/validate_storage_engine_9_phase_parity.py",
+        "--loops",
+        "9"
+      ],
+      "returncode": 0,
+      "status": "passed"
+    }
+  ]
+}

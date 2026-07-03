@@ -66,7 +66,13 @@ class PerformanceArtifactAuditTest(unittest.TestCase):
                                 "reason": "blocked_no_importable",
                                 "argv": ["python", "tools/run_matrixark_cpp_rust_scale_report.py"],
                                 "returncode": 124,
-                                "status": "failed",
+                                "status": "preflight_failed",
+                                "preflight_blockers": ["missing_cpp_lib", "missing_rust_cli"],
+                                "artifact_dir": "docs/benchmarks/parity_1K_event_ingestion",
+                                "comparison_path": "docs/benchmarks/parity_1K_event_ingestion/comparison.json",
+                                "required_same_config_fields": ["dataset", "storage_mode"],
+                                "required_result": ["same-config C++ and Rust comparison.json with passed backends"],
+                                "next_run_hint_source": "audit_default",
                             }
                         ],
                     }
@@ -94,6 +100,17 @@ class PerformanceArtifactAuditTest(unittest.TestCase):
             statuses["1K_event_ingestion"]["last_execution_attempt"]["failed_steps"][0]["returncode"],
             124,
         )
+        failed_step = statuses["1K_event_ingestion"]["last_execution_attempt"]["failed_steps"][0]
+        self.assertEqual(failed_step["status"], "preflight_failed")
+        self.assertEqual(failed_step["preflight_blockers"], ["missing_cpp_lib", "missing_rust_cli"])
+        self.assertEqual(failed_step["artifact_dir"], "docs/benchmarks/parity_1K_event_ingestion")
+        self.assertEqual(failed_step["comparison_path"], "docs/benchmarks/parity_1K_event_ingestion/comparison.json")
+        self.assertEqual(failed_step["required_same_config_fields"], ["dataset", "storage_mode"])
+        self.assertEqual(
+            failed_step["required_result"],
+            ["same-config C++ and Rust comparison.json with passed backends"],
+        )
+        self.assertEqual(failed_step["next_run_hint_source"], "audit_default")
         self.assertEqual(statuses["10K_event_ingestion"]["status"], "missing_candidate")
         self.assertIn("batch_size", statuses["1K_event_ingestion"]["next_run_hint"]["required_same_config_fields"])
         self.assertIn("selected_ref_parity=true", statuses["1K_event_ingestion"]["next_run_hint"]["required_result"])
