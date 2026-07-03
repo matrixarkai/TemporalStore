@@ -278,18 +278,57 @@ Required write-path outputs:
 ```json
 {
   "shard_id": 0,
+  "slot": "slot:0",
+  "placement_key": "context:t=...|u=...|s=...|:node=...",
   "page_address": {},
   "block_address": {},
   "append_watermark": 0,
+  "batch_watermark": 0,
   "durability": "async|sync|raft",
-  "index_generation": 0
+  "storage_family": "local|shared_store|raft",
+  "write_mode": "async|sync",
+  "index_generation": 0,
+  "records_appended": 0
 }
 ```
+
+Required write result fields:
+
+- `shard_id`
+- `slot`
+- `placement_key`
+- `page_address`
+- `block_address`
+- `append_watermark`
+- `durability`
+- `storage_family`
+- `write_mode`
+- `index_generation`
+- `batch_watermark`
+- `records_appended`
+
+Required write-path metrics:
+
+- `append_queue_wait_ms`
+- `append_engine_ms`
+- `append_queue_depth`
+- `append_batch_size`
+- `append_batch_bytes`
+- `append_coalesced_writes`
+- `append_durability_failures`
+- `append_watermark`
+- `page_writes`
+- `block_writes`
+- `bytes_written`
 
 Parity rules:
 
 - The write result must contain canonical `PageAddress`, `BlockAddress`, and
   `append_watermark` fields in public reports.
+- `placement_key` and `slot` must make the shard/slot route visible enough to
+  compare C++ and Rust write placement decisions.
+- `storage_family`, `write_mode`, and `durability` must match when C++ and Rust
+  are run under the same test config.
 - C++ and Rust may acknowledge at different internal points only when
   `storage_options.write_mode` differs; same write mode must have the same
   durability contract.
@@ -298,7 +337,9 @@ Parity rules:
 - Failed writes must not leave public indexes pointing to unflushed or
   checksum-invalid block data.
 - Batch append must preserve per-record logical ordering within the same
-  shard/object/timestamp range and publish a batch watermark.
+  shard/object/timestamp range, publish a `batch_watermark`, and report
+  `records_appended`.
+- `append_durability_failures` must be zero for parity acceptance.
 
 ### Read Path
 
@@ -821,6 +862,7 @@ Rust before comparison tools accept them:
 
 - `effective_storage_tuning`
 - `public_storage_contract`
+- `storage_write_contract`
 - `storage_read_sequence`
 - `storage_cold_scan_sequence`
 - `storage_lifecycle_phases`

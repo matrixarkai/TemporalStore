@@ -207,6 +207,7 @@ STORAGE_RECLAIM_SCOPE: Json = {
 STORAGE_LIFECYCLE_TOP_LEVEL_KEYS = [
     "effective_storage_tuning",
     "public_storage_contract",
+    "storage_write_contract",
     "storage_read_sequence",
     "storage_cold_scan_sequence",
     "storage_lifecycle_phases",
@@ -231,6 +232,13 @@ PAGE_BLOCK_METRIC_NAMES = [
     "block_writes",
     "bytes_read",
     "bytes_written",
+    "append_queue_wait_ms",
+    "append_engine_ms",
+    "append_queue_depth",
+    "append_batch_size",
+    "append_batch_bytes",
+    "append_coalesced_writes",
+    "append_durability_failures",
     "compaction_reclaimed_bytes",
     "cold_scan_no_cache_reads",
     "hot_cache_promotions",
@@ -247,6 +255,35 @@ STORAGE_WRITE_SEQUENCE_STEPS = [
     "flush_page_block_segment",
     "update_block_index",
     "publish_append_watermark",
+]
+
+STORAGE_WRITE_RESULT_FIELDS = [
+    "shard_id",
+    "slot",
+    "placement_key",
+    "page_address",
+    "block_address",
+    "append_watermark",
+    "durability",
+    "storage_family",
+    "write_mode",
+    "index_generation",
+    "batch_watermark",
+    "records_appended",
+]
+
+STORAGE_WRITE_METRIC_NAMES = [
+    "append_queue_wait_ms",
+    "append_engine_ms",
+    "append_queue_depth",
+    "append_batch_size",
+    "append_batch_bytes",
+    "append_coalesced_writes",
+    "append_durability_failures",
+    "append_watermark",
+    "page_writes",
+    "block_writes",
+    "bytes_written",
 ]
 
 STORAGE_READ_SEQUENCE_STEPS = [
@@ -451,6 +488,34 @@ def zero_storage_lifecycle_metrics() -> Json:
     return {name: 0 for name in STORAGE_LIFECYCLE_METRIC_NAMES}
 
 
+def default_storage_write_contract(metrics: Json | None = None) -> Json:
+    source = metrics if isinstance(metrics, dict) else {}
+    return {
+        "shard_id": 0,
+        "slot": "slot:0",
+        "placement_key": "storage:parity",
+        "page_address": "PageAddress",
+        "block_address": "BlockAddress",
+        "append_watermark": int(source.get("append_watermark") or 0),
+        "durability": "async",
+        "storage_family": "shared_store",
+        "write_mode": "async",
+        "index_generation": 0,
+        "batch_watermark": int(source.get("append_watermark") or 0),
+        "records_appended": 1,
+        "append_queue_wait_ms": 0,
+        "append_engine_ms": 0,
+        "append_queue_depth": 0,
+        "append_batch_size": 1,
+        "append_batch_bytes": 0,
+        "append_coalesced_writes": 1,
+        "append_durability_failures": 0,
+        "page_writes": int(source.get("page_writes") or 0),
+        "block_writes": int(source.get("block_writes") or 0),
+        "bytes_written": int(source.get("bytes_written") or 0),
+    }
+
+
 def storage_lifecycle_report_shape(effective_storage_tuning: Json, metrics: Json | None = None) -> Json:
     return {
         "effective_storage_tuning": dict(effective_storage_tuning),
@@ -458,6 +523,7 @@ def storage_lifecycle_report_shape(effective_storage_tuning: Json, metrics: Json
             key: (dict(value) if isinstance(value, dict) else value)
             for key, value in PUBLIC_STORAGE_CONTRACT.items()
         },
+        "storage_write_contract": default_storage_write_contract(metrics),
         "storage_write_sequence": list(STORAGE_WRITE_SEQUENCE_STEPS),
         "storage_read_sequence": list(STORAGE_READ_SEQUENCE_STEPS),
         "storage_cold_scan_sequence": list(STORAGE_COLD_SCAN_SEQUENCE_STEPS),
@@ -484,6 +550,12 @@ def attach_storage_lifecycle_shape(result: Json, effective_storage_tuning: Json 
     # nested/legacy lifecycle fields.
     shaped["effective_storage_tuning"] = dict(tuning)
     shaped["public_storage_contract"] = shaped.get("public_storage_contract") or storage_lifecycle_report_shape(tuning)["public_storage_contract"]
+    write_contract = shaped.get("storage_write_contract")
+    if not isinstance(write_contract, dict):
+        write_contract = {}
+    normalized_write_contract = default_storage_write_contract(metrics)
+    normalized_write_contract.update(write_contract)
+    shaped["storage_write_contract"] = normalized_write_contract
     shaped["storage_write_sequence"] = list(STORAGE_WRITE_SEQUENCE_STEPS)
     shaped["storage_read_sequence"] = list(STORAGE_READ_SEQUENCE_STEPS)
     shaped["storage_cold_scan_sequence"] = list(STORAGE_COLD_SCAN_SEQUENCE_STEPS)

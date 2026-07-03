@@ -164,6 +164,7 @@ REQUIRED_CONFIG_FIELDS = [
 REQUIRED_LIFECYCLE_TOP_LEVEL_KEYS = [
     "effective_storage_tuning",
     "public_storage_contract",
+    "storage_write_contract",
     "storage_read_sequence",
     "storage_cold_scan_sequence",
     "storage_lifecycle_phases",
@@ -187,6 +188,35 @@ REQUIRED_STORAGE_WRITE_SEQUENCE = [
     "flush_page_block_segment",
     "update_block_index",
     "publish_append_watermark",
+]
+
+REQUIRED_STORAGE_WRITE_RESULT_FIELDS = [
+    "shard_id",
+    "slot",
+    "placement_key",
+    "page_address",
+    "block_address",
+    "append_watermark",
+    "durability",
+    "storage_family",
+    "write_mode",
+    "index_generation",
+    "batch_watermark",
+    "records_appended",
+]
+
+REQUIRED_STORAGE_WRITE_METRICS = [
+    "append_queue_wait_ms",
+    "append_engine_ms",
+    "append_queue_depth",
+    "append_batch_size",
+    "append_batch_bytes",
+    "append_coalesced_writes",
+    "append_durability_failures",
+    "append_watermark",
+    "page_writes",
+    "block_writes",
+    "bytes_written",
 ]
 
 CANONICAL_PUBLIC_FIELDS = [
@@ -293,6 +323,18 @@ def _dig_sequence(report: dict[str, Any], key: str) -> list[str]:
         if isinstance(candidate, list) and all(isinstance(item, str) for item in candidate):
             return candidate
     return []
+
+
+def _dig_write_contract(report: dict[str, Any]) -> dict[str, Any]:
+    candidates = [
+        report.get("storage_write_contract"),
+        report.get("storage_lifecycle", {}).get("write_contract") if isinstance(report.get("storage_lifecycle"), dict) else None,
+        report.get("write_path", {}).get("contract") if isinstance(report.get("write_path"), dict) else None,
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            return candidate
+    return {}
 
 
 def _dig_lifecycle_phases(report: dict[str, Any]) -> list[str]:
@@ -486,6 +528,8 @@ def validate_contract_and_runner() -> list[str]:
     runner_write_sequence = _extract_runner_list("STORAGE_WRITE_SEQUENCE_STEPS")
     runner_read_sequence = _extract_runner_list("STORAGE_READ_SEQUENCE_STEPS")
     runner_cold_scan_sequence = _extract_runner_list("STORAGE_COLD_SCAN_SEQUENCE_STEPS")
+    runner_write_result_fields = _extract_runner_list("STORAGE_WRITE_RESULT_FIELDS")
+    runner_write_metrics = _extract_runner_list("STORAGE_WRITE_METRIC_NAMES")
     runner_lifecycle_phases = _extract_runner_list("STORAGE_LIFECYCLE_PHASE_NAMES")
     runner_reclaim_semantics = _extract_runner_list("STORAGE_RECLAIM_SEMANTICS")
     runner_cache_layers = _extract_runner_list("STORAGE_CACHE_LAYER_NAMES")
@@ -499,6 +543,10 @@ def validate_contract_and_runner() -> list[str]:
         failures.append("runner:STORAGE_LIFECYCLE_METRIC_NAMES does not match the canonical lifecycle metric order")
     if runner_write_sequence != REQUIRED_STORAGE_WRITE_SEQUENCE:
         failures.append("runner:STORAGE_WRITE_SEQUENCE_STEPS does not match the canonical write sequence")
+    if runner_write_result_fields != REQUIRED_STORAGE_WRITE_RESULT_FIELDS:
+        failures.append("runner:STORAGE_WRITE_RESULT_FIELDS does not match the canonical write result fields")
+    if runner_write_metrics != REQUIRED_STORAGE_WRITE_METRICS:
+        failures.append("runner:STORAGE_WRITE_METRIC_NAMES does not match the canonical write metrics")
     if runner_read_sequence != REQUIRED_STORAGE_READ_SEQUENCE:
         failures.append("runner:STORAGE_READ_SEQUENCE_STEPS does not match the canonical read sequence")
     if runner_cold_scan_sequence != REQUIRED_STORAGE_COLD_SCAN_SEQUENCE:
@@ -524,6 +572,12 @@ def validate_contract_and_runner() -> list[str]:
     for step in REQUIRED_STORAGE_WRITE_SEQUENCE + REQUIRED_STORAGE_READ_SEQUENCE + REQUIRED_STORAGE_COLD_SCAN_SEQUENCE:
         if f"`{step}`" not in contract_text:
             failures.append(f"contract missing storage sequence step `{step}`")
+    for field in REQUIRED_STORAGE_WRITE_RESULT_FIELDS:
+        if f"`{field}`" not in contract_text:
+            failures.append(f"contract missing write result field `{field}`")
+    for metric in REQUIRED_STORAGE_WRITE_METRICS:
+        if f"`{metric}`" not in contract_text:
+            failures.append(f"contract missing write metric `{metric}`")
     for phase in REQUIRED_STORAGE_LIFECYCLE_PHASES:
         if f"`{phase}`" not in contract_text:
             failures.append(f"contract missing lifecycle phase `{phase}`")
@@ -553,6 +607,8 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
     rust_config = _dig_config(rust_report)
     cpp_public_shape = _normalize_public_storage_shape(cpp_report)
     rust_public_shape = _normalize_public_storage_shape(rust_report)
+    cpp_write_contract = _dig_write_contract(cpp_report)
+    rust_write_contract = _dig_write_contract(rust_report)
     cpp_write_sequence = _dig_sequence(cpp_report, "storage_write_sequence")
     rust_write_sequence = _dig_sequence(rust_report, "storage_write_sequence")
     cpp_read_sequence = _dig_sequence(cpp_report, "storage_read_sequence")
@@ -591,6 +647,38 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
             failures.append(f"cpp metrics missing `{metric}`")
         if metric not in rust_metrics:
             failures.append(f"rust metrics missing `{metric}`")
+    for field in REQUIRED_STORAGE_WRITE_RESULT_FIELDS:
+        if field not in cpp_write_contract:
+            failures.append(f"cpp write contract missing result field `{field}`")
+        if field not in rust_write_contract:
+            failures.append(f"rust write contract missing result field `{field}`")
+    for metric in REQUIRED_STORAGE_WRITE_METRICS:
+        if metric not in cpp_write_contract:
+            failures.append(f"cpp write contract missing metric `{metric}`")
+        if metric not in rust_write_contract:
+            failures.append(f"rust write contract missing metric `{metric}`")
+    for field in ["durability", "storage_family", "write_mode"]:
+        if field in cpp_write_contract and field in rust_write_contract and cpp_write_contract[field] != rust_write_contract[field]:
+            failures.append(
+                f"write contract drift `{field}`: cpp={cpp_write_contract[field]!r} rust={rust_write_contract[field]!r}"
+            )
+    for field in ["records_appended", "append_durability_failures"]:
+        cpp_value = _as_number(cpp_write_contract.get(field))
+        rust_value = _as_number(rust_write_contract.get(field))
+        if cpp_value is not None and rust_value is not None and cpp_value != rust_value:
+            failures.append(f"write contract drift `{field}`: cpp={cpp_value} rust={rust_value}")
+    for field in ["append_watermark", "batch_watermark", "index_generation"]:
+        cpp_value = _as_number(cpp_write_contract.get(field))
+        rust_value = _as_number(rust_write_contract.get(field))
+        if cpp_value is not None and cpp_value < 0:
+            failures.append(f"cpp write contract `{field}` must be non-negative")
+        if rust_value is not None and rust_value < 0:
+            failures.append(f"rust write contract `{field}` must be non-negative")
+    for backend, write_contract in [("cpp", cpp_write_contract), ("rust", rust_write_contract)]:
+        if _as_number(write_contract.get("append_durability_failures")) not in (0.0, None):
+            failures.append(f"{backend} write contract append_durability_failures must be zero")
+        if _as_number(write_contract.get("records_appended")) == 0:
+            failures.append(f"{backend} write contract records_appended must be positive")
 
     if cpp_write_sequence != REQUIRED_STORAGE_WRITE_SEQUENCE:
         failures.append(f"cpp storage_write_sequence drift: {cpp_write_sequence!r}")
