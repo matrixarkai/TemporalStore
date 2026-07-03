@@ -47,6 +47,8 @@ SENSITIVE_PATH_FLAGS = {
     "--cpp-lib": "<MATRIXARK_PARITY_CPP_LIB>",
     "--rust-cli": "<MATRIXARK_PARITY_RUST_CLI>",
 }
+WORKSPACE_ROOT_PLACEHOLDER = "<WORKSPACE_ROOT>"
+WORKSPACE_ROOT_WSL_PLACEHOLDER = "<WORKSPACE_ROOT_WSL>"
 
 
 def _wsl_path(path: Path | str) -> str:
@@ -59,9 +61,17 @@ def _wsl_path(path: Path | str) -> str:
 def _redact_sensitive_argv(argv: list[str]) -> list[str]:
     redacted: list[str] = []
     skip_next = False
+    root_path = str(ROOT)
+    root_wsl_path = _wsl_path(ROOT)
     for index, item in enumerate(argv):
         if skip_next:
             skip_next = False
+            continue
+        if item == root_path:
+            redacted.append(WORKSPACE_ROOT_PLACEHOLDER)
+            continue
+        if item == root_wsl_path:
+            redacted.append(WORKSPACE_ROOT_WSL_PLACEHOLDER)
             continue
         if item in SENSITIVE_PATH_FLAGS:
             redacted.append(item)
@@ -250,9 +260,11 @@ def build_execution_plan(audit: dict[str, Any], max_workloads: int | None = None
             | _command_metadata(command)
             | (
                 {
-                    "wsl_argv": _wslize(
-                        _redact_sensitive_argv(_with_backend_artifact_overrides(command.get("argv"))),
-                        distro=wsl_distro,
+                    "wsl_argv": _redact_sensitive_argv(
+                        _wslize(
+                            _with_backend_artifact_overrides(command.get("argv")),
+                            distro=wsl_distro,
+                        )
                     )
                 }
                 if command.get("step") == "run_workload"
