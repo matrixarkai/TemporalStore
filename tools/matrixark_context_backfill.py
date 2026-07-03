@@ -486,6 +486,30 @@ class MatrixKVBackfillTarget:
     def has_idempotency_key(self, key: str) -> bool:
         return bool(key and self.kv.hget(f'{self.prefix}:idempotency', key))
 
+    def existing_idempotency_keys(self, keys: list[str]) -> set[str]:
+        unique_keys = sorted({key for key in keys if key})
+        if not unique_keys:
+            return set()
+        batch_hget = getattr(self.kv, 'batch_hget', None)
+        if not callable(batch_hget):
+            return {key for key in unique_keys if self.has_idempotency_key(key)}
+        entries = [{'key': f'{self.prefix}:idempotency', 'field': key} for key in unique_keys]
+        try:
+            rows = list(batch_hget(entries))
+        except Exception:
+            return {key for key in unique_keys if self.has_idempotency_key(key)}
+        existing: set[str] = set()
+        for index, row in enumerate(rows):
+            if isinstance(row, dict):
+                key = str(row.get('field') or unique_keys[index])
+                value = str(row.get('value') or '')
+            else:
+                key = unique_keys[index]
+                value = str(row or '')
+            if value:
+                existing.add(key)
+        return existing
+
     def append_many(self, records: list[Json]) -> None:
         if not records:
             return
@@ -494,15 +518,19 @@ class MatrixKVBackfillTarget:
         sequence = self._next_sequence
         entries: list[Json] = []
         idempotency_entries: list[Json] = []
+        dedupe_keys = [self._idempotency_key(record) for record in records]
+        existing_keys = self.existing_idempotency_keys(dedupe_keys)
+        seen_keys: set[str] = set()
         if hasattr(self.kv, 'begin_bulk'):
             self.kv.begin_bulk()
         try:
-            for record in records:
+            for record, dedupe_key in zip(records, dedupe_keys):
                 shard = sequence // self.shard_size
                 offset = sequence % self.shard_size
-                dedupe_key = self._idempotency_key(record)
-                if self.has_idempotency_key(dedupe_key):
+                if dedupe_key and (dedupe_key in existing_keys or dedupe_key in seen_keys):
                     continue
+                if dedupe_key:
+                    seen_keys.add(dedupe_key)
                 payload = json.dumps(record, sort_keys=True, separators=(',', ':'))
                 entries.append({'key': f'{self.prefix}:records:{shard:06d}', 'field': f'{offset:020d}', 'value': payload})
                 if dedupe_key:
