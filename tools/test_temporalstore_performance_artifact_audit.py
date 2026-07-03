@@ -21,7 +21,36 @@ class PerformanceArtifactAuditTest(unittest.TestCase):
             report_dir.mkdir()
             report = report_dir / "comparison.json"
             execution = report_dir / "execution.json"
-            matrix.write_text(json.dumps(_matrix()), encoding="utf-8")
+            matrix_data = _matrix()
+            row = next(row for row in matrix_data["rows"] if row["workload"] == "10K_event_ingestion")
+            row["next_run_hint"] = {
+                "artifact_dir": "docs/benchmarks/parity_10K_event_ingestion",
+                "comparison_path": "docs/benchmarks/parity_10K_event_ingestion/comparison.json",
+                "recommended_execution_output": "docs/benchmarks/parity_10K_event_ingestion/execution.json",
+                "command": [
+                    "python",
+                    "tools/run_matrixark_cpp_rust_scale_report.py",
+                    "--events",
+                    "10000",
+                    "--backends",
+                    "cpp",
+                    "rust",
+                    "--artifact-dir",
+                    "docs/benchmarks/parity_10K_event_ingestion",
+                    "--require-perf-parity",
+                ],
+                "import_command": [
+                    "python",
+                    "tools/import_temporalstore_cpp_rust_performance_evidence.py",
+                    "--report",
+                    "docs/benchmarks/parity_10K_event_ingestion/comparison.json",
+                    "--validate",
+                ],
+                "required_same_config_fields": ["dataset", "storage_mode", "topology", "batch_size"],
+                "required_result": ["matrix-provided required result"],
+                "source": "matrix_fixture",
+            }
+            matrix.write_text(json.dumps(matrix_data), encoding="utf-8")
             report.write_text(json.dumps(_report_with_bad_qps_ratio()), encoding="utf-8")
             execution.write_text(
                 json.dumps(
@@ -68,6 +97,12 @@ class PerformanceArtifactAuditTest(unittest.TestCase):
         self.assertEqual(statuses["10K_event_ingestion"]["status"], "missing_candidate")
         self.assertIn("batch_size", statuses["1K_event_ingestion"]["next_run_hint"]["required_same_config_fields"])
         self.assertIn("selected_ref_parity=true", statuses["1K_event_ingestion"]["next_run_hint"]["required_result"])
+        self.assertEqual(statuses["1K_event_ingestion"]["next_run_hint"]["source"], "audit_default")
+        self.assertEqual(
+            statuses["10K_event_ingestion"]["next_run_hint"]["required_result"],
+            ["matrix-provided required result"],
+        )
+        self.assertEqual(statuses["10K_event_ingestion"]["next_run_hint"]["source"], "matrix_fixture")
         next_runs = audit["next_required_runs"]
         self.assertEqual(next_runs[0]["workload"], "10K_event_ingestion")
         self.assertEqual(next_runs[0]["reason"], "missing_candidate")
@@ -81,6 +116,7 @@ class PerformanceArtifactAuditTest(unittest.TestCase):
         self.assertEqual(next_runs[0]["phase_scale_coverage_required"]["events"], [1000, 10000, 100000])
         self.assertEqual(next_runs[0]["phase_scale_coverage_required"]["retrieve_workers"], [4, 8, 16, 32])
         self.assertIn("large_pdf", next_runs[0]["phase_scale_coverage_required"]["resource_imports"])
+        self.assertEqual(next_runs[0]["required_result"], ["matrix-provided required result"])
         self.assertEqual(
             next_runs[0]["import_command"],
             [

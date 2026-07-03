@@ -85,6 +85,40 @@ def _import_command(workload: str) -> list[str]:
     ]
 
 
+def _default_next_run_hint(workload: str) -> dict[str, Any]:
+    return {
+        "workload": workload,
+        "artifact_dir": _artifact_dir(workload),
+        "comparison_path": f"{_artifact_dir(workload)}/comparison.json",
+        "command": _next_run_command(workload),
+        "import_command": _import_command(workload),
+        "phase_scale_coverage_required": PHASE_SCALE_COVERAGE,
+        "required_same_config_fields": SAME_CONFIG_KEYS,
+        "required_result": [
+            "same-config C++ and Rust comparison.json with passed backends",
+            "zero timeouts/errors/fallback flags",
+            "selected_ref_parity=true",
+            "ratios within configured thresholds",
+        ],
+        "recommended_execution_output": f"{_artifact_dir(workload)}/execution.json",
+        "source": "audit_default",
+    }
+
+
+def _matrix_next_run_hint(row: dict[str, Any], workload: str) -> dict[str, Any]:
+    hint = row.get("next_run_hint")
+    if not isinstance(hint, dict):
+        return _default_next_run_hint(workload)
+    merged = _default_next_run_hint(workload)
+    merged.update(hint)
+    merged["workload"] = workload
+    merged["phase_scale_coverage_required"] = PHASE_SCALE_COVERAGE
+    merged.setdefault("source", "matrix")
+    if merged["source"] == "audit_default":
+        merged["source"] = "matrix"
+    return merged
+
+
 def _next_required_workflow(next_required_runs: list[dict[str, Any]]) -> dict[str, Any]:
     commands: list[dict[str, Any]] = []
     for item in next_required_runs:
@@ -272,6 +306,8 @@ def audit_artifacts(artifact_root: Path, matrix_path: Path) -> dict[str, Any]:
     required_workload_status = {}
     for workload in required_workloads:
         row = coverage.get(workload, {})
+        matrix_row = _row_by_workload(base_matrix).get(workload, {})
+        next_run_hint = _matrix_next_run_hint(matrix_row, workload)
         if row.get("importable_report_count", 0) > 0:
             status = "has_importable"
         elif row.get("candidate_report_count", 0) > 0:
@@ -290,21 +326,7 @@ def audit_artifacts(artifact_root: Path, matrix_path: Path) -> dict[str, Any]:
                 else None
             ),
             "blockers": row.get("blockers", []),
-            "next_run_hint": {
-                "workload": workload,
-                "artifact_dir": _artifact_dir(workload),
-                "comparison_path": f"{_artifact_dir(workload)}/comparison.json",
-                "command": _next_run_command(workload),
-                "import_command": _import_command(workload),
-                "phase_scale_coverage_required": PHASE_SCALE_COVERAGE,
-                "required_same_config_fields": SAME_CONFIG_KEYS,
-                "required_result": (
-                    "same-config C++ and Rust comparison.json with passed backends, "
-                    "selected_ref_parity=true, zero errors/timeouts/fallbacks, "
-                    "and QPS/latency ratios within policy"
-                ),
-                "recommended_execution_output": f"{_artifact_dir(workload)}/execution.json",
-            },
+            "next_run_hint": next_run_hint,
         }
     next_required_runs = [
         {
