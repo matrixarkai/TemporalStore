@@ -150,6 +150,10 @@ REQUIRED_GENERATED_FROM = [
     "tools/import_temporalstore_cpp_rust_performance_evidence.py",
     "tools/audit_temporalstore_cpp_rust_performance_artifacts.py",
     "tools/validate_temporalstore_cpp_rust_feature_execution.py",
+    "tools/validate_storage_parity_report_artifacts.py",
+    "tools/test_storage_parity_report_artifacts.py",
+    "tools/validate_temporalstore_performance_execution_redaction.py",
+    "tools/test_temporalstore_performance_execution_redaction.py",
     "tools/test_temporalstore_performance_artifact_audit.py",
     "tools/test_temporalstore_next_performance_workflow.py",
     "tools/test_temporalstore_performance_evidence_import.py",
@@ -160,6 +164,14 @@ REQUIRED_PERFORMANCE_EVIDENCE = [
     "tools/validate_temporalstore_cpp_rust_performance_parity.py",
     "tools/import_temporalstore_cpp_rust_performance_evidence.py",
     "tools/audit_temporalstore_cpp_rust_performance_artifacts.py",
+    "tools/validate_temporalstore_performance_execution_redaction.py",
+]
+
+REQUIRED_STORAGE_LIFECYCLE_EVIDENCE = [
+    "tools/validate_storage_engine_9_phase_parity.py",
+    "tools/validate_storage_lifecycle_parity.py",
+    "tools/validate_storage_parity_report_artifacts.py",
+    "compat/storage_lifecycle_report_pair_corpus.json",
 ]
 
 
@@ -254,6 +266,13 @@ def validate_status(data: dict[str, Any]) -> list[str]:
             _as_strings(areas["gc_eviction_reclaim_parity"].get("evidence")),
             REQUIRED_GC_RECLAIM_EVIDENCE,
             "gc_eviction_reclaim_parity.evidence",
+            failures,
+        )
+    if isinstance(areas.get("storage_lifecycle_parity"), dict):
+        _require_contains(
+            _as_strings(areas["storage_lifecycle_parity"].get("evidence")),
+            REQUIRED_STORAGE_LIFECYCLE_EVIDENCE,
+            "storage_lifecycle_parity.evidence",
             failures,
         )
     if isinstance(areas.get("performance_parity"), dict):
