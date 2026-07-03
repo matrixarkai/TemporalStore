@@ -175,6 +175,18 @@ def main() -> int:
 
     if matrix.get("schema") != "temporalstore_cpp_rust_feature_execution_matrix_v1":
         failures.append("unexpected schema")
+    declared_allowed_statuses = set(_as_strings(matrix.get("allowed_statuses")))
+    if declared_allowed_statuses != ALLOWED_STATUSES:
+        failures.append(
+            "allowed_statuses drift: "
+            f"matrix={sorted(declared_allowed_statuses)} expected={sorted(ALLOWED_STATUSES)}"
+        )
+    declared_completion_statuses = set(_as_strings(matrix.get("completion_statuses")))
+    if declared_completion_statuses != COMPLETION_STATUSES:
+        failures.append(
+            "completion_statuses drift: "
+            f"matrix={sorted(declared_completion_statuses)} expected={sorted(COMPLETION_STATUSES)}"
+        )
 
     coverage = _coverage_by_family(corpus)
     failures.extend(_coverage_identity_failures(corpus))
