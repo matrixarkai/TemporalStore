@@ -1075,6 +1075,68 @@ def estimate_source_window_records(source_range: Json) -> int | None:
         return None
 
 
+def _plan_arg(name: str, value: Any) -> str:
+    return f'--{name}={value}'
+
+
+def _append_plan_arg(args_out: list[str], name: str, value: Any) -> None:
+    if value not in (None, ''):
+        args_out.append(_plan_arg(name, value))
+
+
+def build_plan_command_base_args(args: argparse.Namespace, *, start_seq: int, end_seq: int) -> list[str]:
+    out: list[str] = [
+        _plan_arg('metaserver', args.metaserver),
+        _plan_arg('namespace', args.namespace),
+        _plan_arg('table', args.table),
+        _plan_arg('source-prefix', args.source_prefix),
+        _plan_arg('raw-backend', normalize_raw_backend(args.raw_backend)),
+        _plan_arg('start-seq', start_seq),
+        _plan_arg('end-seq', end_seq),
+        _plan_arg('batch-size', args.batch_size),
+        _plan_arg('source-scan-max-empty-shards', args.source_scan_max_empty_shards),
+    ]
+    _append_plan_arg(out, 'library-path', getattr(args, 'library_path', ''))
+    _append_plan_arg(out, 'local-kv', getattr(args, 'local_kv', ''))
+    if getattr(args, 'partial', False):
+        out.append('--partial=1')
+    for option_name, attr_name in [
+        ('partial-record-types', 'partial_record_types'),
+        ('partial-tenant-ids', 'partial_tenant_ids'),
+        ('partial-user-ids', 'partial_user_ids'),
+        ('partial-session-ids', 'partial_session_ids'),
+        ('partial-filter-json', 'partial_filter_json'),
+    ]:
+        _append_plan_arg(out, option_name, getattr(args, attr_name, ''))
+    if not bool(getattr(args, 'partial_require_bounded', True)):
+        out.append('--partial-require-bounded=0')
+    if not bool(getattr(args, 'resume', True)):
+        out.append('--resume=0')
+    _append_plan_arg(out, 'confirm-resume-range-change', getattr(args, 'confirm_resume_range_change', ''))
+    if bool(getattr(args, 'fail_fast', False)):
+        out.append('--fail-fast')
+    return out
+
+
+def build_plan_active_args(args: argparse.Namespace) -> list[str]:
+    out = [_plan_arg('active-prefix-key', args.active_prefix_key)]
+    _append_plan_arg(out, 'expect-active-prefix', getattr(args, 'expect_active_prefix', ''))
+    _append_plan_arg(out, 'repair-active-prefix', getattr(args, 'repair_active_prefix', ''))
+    _append_plan_arg(out, 'confirm-no-active-prefix-precondition', getattr(args, 'confirm_no_active_prefix_precondition', ''))
+    return out
+
+
+def build_plan_validation_args(args: argparse.Namespace) -> list[str]:
+    out = [
+        _plan_arg('validation-strict', 1 if bool(getattr(args, 'validation_strict', True)) else 0),
+        _plan_arg('skip-validation', 1 if bool(getattr(args, 'skip_validation', False)) else 0),
+    ]
+    _append_plan_arg(out, 'confirm-skip-validation', getattr(args, 'confirm_skip_validation', ''))
+    _append_plan_arg(out, 'confirm-non-strict-validation', getattr(args, 'confirm_non_strict_validation', ''))
+    _append_plan_arg(out, 'confirm-unvalidated-target-state', getattr(args, 'confirm_unvalidated_target_state', ''))
+    return out
+
+
 def build_plan_windows(args: argparse.Namespace, *, source_range: Json, target_prefix: str) -> Json:
     window_size = int(getattr(args, 'plan_window_size', 0) or 0)
     max_windows = int(getattr(args, 'plan_max_windows', 0) or 0)
@@ -1119,13 +1181,9 @@ def build_plan_windows(args: argparse.Namespace, *, source_range: Json, target_p
         window_end = min(end, sequence + window_size)
         chunk_job_id = f'{args.job_id}:w{index:04d}'
         chunk_shadow_prefix = f'{target_prefix}:chunk:{index:04d}'
-        base_args = [
-            f'--source-prefix={args.source_prefix}',
-            f'--raw-backend={normalize_raw_backend(args.raw_backend)}',
-            f'--start-seq={sequence}',
-            f'--end-seq={window_end}',
-            f'--batch-size={args.batch_size}',
-        ]
+        base_args = build_plan_command_base_args(args, start_seq=sequence, end_seq=window_end)
+        active_args = build_plan_active_args(args)
+        validation_args = build_plan_validation_args(args)
         windows.append({
             'index': index,
             'start_seq': sequence,
@@ -1139,12 +1197,14 @@ def build_plan_windows(args: argparse.Namespace, *, source_range: Json, target_p
                 f'--job-id={chunk_job_id}',
                 f'--target-prefix={chunk_shadow_prefix}',
                 '--dry-run=0',
+                *active_args,
                 *base_args,
             ],
             'validate_command_args': [
                 '--mode=validate_shadow',
                 f'--job-id={chunk_job_id}',
                 f'--target-prefix={chunk_shadow_prefix}',
+                *validation_args,
                 *base_args,
             ],
             'incremental_repair_command_args': [
@@ -1152,6 +1212,8 @@ def build_plan_windows(args: argparse.Namespace, *, source_range: Json, target_p
                 f'--job-id={chunk_job_id}',
                 f'--target-prefix={chunk_shadow_prefix}',
                 '--confirm-incremental-repair=YES',
+                *active_args,
+                *validation_args,
                 *base_args,
             ],
         })
