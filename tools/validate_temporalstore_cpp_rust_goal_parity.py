@@ -150,6 +150,7 @@ REQUIRED_GENERATED_FROM = [
     "tools/import_temporalstore_cpp_rust_performance_evidence.py",
     "tools/audit_temporalstore_cpp_rust_performance_artifacts.py",
     "tools/validate_temporalstore_cpp_rust_feature_execution.py",
+    "tools/test_temporalstore_feature_execution_validator.py",
     "tools/validate_storage_parity_report_artifacts.py",
     "tools/test_storage_parity_report_artifacts.py",
     "tools/validate_temporalstore_performance_execution_redaction.py",

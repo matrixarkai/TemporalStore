@@ -268,6 +268,15 @@ def main() -> int:
         isinstance(row, dict) and row.get("status") in COMPLETION_STATUSES
         for row in rows
     ) and bool(rows)
+    static_families = sorted(
+        str(row.get("family") or "")
+        for row in rows
+        if isinstance(row, dict) and row.get("status") in STATIC_STATUSES and row.get("family")
+    )
+    joined_blockers = " ".join(blockers)
+    for family in static_families:
+        if family not in joined_blockers:
+            failures.append(f"status.open_blockers must name static/mixed family `{family}`")
     if feature_correct and blockers:
         failures.append("feature_correct cannot be true while open_blockers remain")
     if feature_correct and not all_complete:

@@ -6,7 +6,8 @@
     "feature_correct": false,
     "open_blockers": [
       "C++ shared-corpus execution still has temporary static surface gates.",
-      "Feature parity cannot be complete until product-behavior shared cases have native C++ execution or an approved native adapter contract."
+      "Feature parity cannot be complete until product-behavior shared cases have native C++ execution or an approved native adapter contract.",
+      "Static or mixed C++ native execution gaps remain for families: storage/cache, raft, context, client/proxy/control-plane, ingestion, benchmarks, ops/scale, codex/mcp, Redis/admin, client_proxy_control_plane, product_api_models."
     ]
   },
   "allowed_statuses": [
