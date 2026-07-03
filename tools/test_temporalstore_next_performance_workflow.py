@@ -106,6 +106,24 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
         self.assertIn("--cd", command)
         self.assertEqual(command[-2:], ["python3", "tools/run_matrixark_cpp_rust_scale_report.py"])
 
+    def test_plan_accepts_custom_wsl_distro(self) -> None:
+        audit = {
+            "next_required_runs": [{"workload": "10K_event_ingestion"}],
+            "next_required_workflow": {
+                "commands": [
+                    {
+                        "step": "run_workload",
+                        "workload": "10K_event_ingestion",
+                        "argv": ["python", "tools/run_matrixark_cpp_rust_scale_report.py"],
+                    }
+                ]
+            },
+        }
+
+        plan = build_execution_plan(audit, max_workloads=1, wsl_distro="Ubuntu2204Deeproute")
+
+        self.assertEqual(plan["commands"][0]["wsl_argv"][:3], ["wsl", "-d", "Ubuntu2204Deeproute"])
+
     def test_backend_artifact_overrides_respect_explicit_paths(self) -> None:
         command = _with_backend_artifact_overrides(
             [
