@@ -205,6 +205,24 @@ class StorageParityReportArtifactTest(unittest.TestCase):
         )
         self.assertTrue(any("legacy alias exposed outside compatibility_aliases" in item for item in failures))
 
+    def test_rejects_nested_storage_alias_leaks_outside_compatibility_container(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            report_dir = root / "parity_smoke"
+            report_dir.mkdir()
+            report = _valid_report("rust")
+            report["storage_write_contract"]["zone"] = "leaked implementation name"  # type: ignore[index]
+            report["storage_read_contract"]["page_segment"] = "leaked implementation name"  # type: ignore[index]
+            report["storage_cache_contract"]["compatibility_aliases"] = {"block_store": "storage_zone"}  # type: ignore[index]
+            (report_dir / "rust.json").write_text(json.dumps(report), encoding="utf-8")
+
+            scanned, failures = validate_artifacts(root)
+
+        self.assertEqual(scanned, 1)
+        self.assertTrue(any("storage_write_contract.zone" in item for item in failures))
+        self.assertTrue(any("storage_read_contract.page_segment" in item for item in failures))
+        self.assertFalse(any("compatibility_aliases.block_store" in item for item in failures))
+
     def test_rejects_comparison_backend_shape_drift(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
