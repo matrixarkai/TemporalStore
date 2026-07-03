@@ -26,6 +26,10 @@ from run_temporalstore_cpp_rust_next_performance_workflow import (
     WORKSPACE_ROOT_WSL_PLACEHOLDER,
     build_execution_plan,
 )
+from validate_temporalstore_cpp_rust_performance_parity import (
+    REQUIRED_SAME_CONFIG_COMMAND_ARGS,
+    SAME_CONFIG_KEYS,
+)
 
 
 SCHEMA = "temporalstore_cpp_rust_next_performance_workflow_v1"
@@ -75,8 +79,26 @@ def _validate_run_command(index: int, command: dict[str, Any]) -> list[str]:
             failures.append(f"{prefix}: missing {key}")
     if not command.get("required_same_config_fields"):
         failures.append(f"{prefix}: missing required_same_config_fields")
+    else:
+        missing_same_config_fields = [
+            key for key in SAME_CONFIG_KEYS if key not in command.get("required_same_config_fields")
+        ]
+        if missing_same_config_fields:
+            failures.append(
+                f"{prefix}: required_same_config_fields missing {missing_same_config_fields}"
+            )
     if not command.get("required_result"):
         failures.append(f"{prefix}: missing required_result")
+    for flag, expected_value in REQUIRED_SAME_CONFIG_COMMAND_ARGS.items():
+        if flag not in argv:
+            failures.append(f"{prefix}: argv missing same-config flag {flag}")
+            continue
+        flag_index = argv.index(flag)
+        actual_value = argv[flag_index + 1] if flag_index + 1 < len(argv) else None
+        if actual_value != expected_value:
+            failures.append(
+                f"{prefix}: argv {flag} drift expected {expected_value!r} got {actual_value!r}"
+            )
 
     wsl_argv = command.get("wsl_argv")
     if not isinstance(wsl_argv, list) or not all(isinstance(item, str) for item in wsl_argv):
@@ -85,6 +107,16 @@ def _validate_run_command(index: int, command: dict[str, Any]) -> list[str]:
         missing_wsl_flags = sorted(flag for flag in REQUIRED_RUN_FLAGS if flag not in wsl_argv)
         if missing_wsl_flags:
             failures.append(f"{prefix}: wsl_argv missing required flags {missing_wsl_flags}")
+        for flag, expected_value in REQUIRED_SAME_CONFIG_COMMAND_ARGS.items():
+            if flag not in wsl_argv:
+                failures.append(f"{prefix}: wsl_argv missing same-config flag {flag}")
+                continue
+            flag_index = wsl_argv.index(flag)
+            actual_value = wsl_argv[flag_index + 1] if flag_index + 1 < len(wsl_argv) else None
+            if actual_value != expected_value:
+                failures.append(
+                    f"{prefix}: wsl_argv {flag} drift expected {expected_value!r} got {actual_value!r}"
+                )
         if "--cd" not in wsl_argv or WORKSPACE_ROOT_WSL_PLACEHOLDER not in _items_after_flags(wsl_argv, {"--cd"}):
             failures.append(f"{prefix}: wsl_argv must redact --cd workspace root")
         backend_values = _items_after_flags(wsl_argv, {"--cpp-lib", "--rust-cli"})
