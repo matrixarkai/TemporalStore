@@ -86,6 +86,12 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(summary["resume_state"]["checkpoint_format"], "missing")
             self.assertFalse(summary["resume_state"]["checkpoint_found"])
             self.assertEqual(summary["resume_state"]["effective_start_seq"], 0)
+            self.assertEqual(summary["source_range"]["scan_mode"], "record_count")
+            self.assertEqual(summary["source_range"]["source_record_count"], 2)
+            self.assertEqual(summary["source_range"]["source_high_watermark_seq"], 1)
+            self.assertEqual(summary["source_range"]["effective_start_seq"], 0)
+            self.assertEqual(summary["source_range"]["effective_end_seq"], 2)
+            self.assertFalse(summary["source_range"]["user_bounded_end"])
             prom_text = prom.read_text()
             self.assertIn("matrixark_context_backfill_records_total", prom_text)
             self.assertIn("matrixark_context_backfill_batches_total", prom_text)
@@ -161,6 +167,10 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(summary["metrics"]["scanned"], 2)
             self.assertEqual(summary["metrics"]["written"], 2)
             self.assertEqual(summary["metrics"]["scan_hash_batches"], 2)
+            self.assertEqual(summary["source_range"]["scan_mode"], "scan_hash")
+            self.assertIsNone(summary["source_range"]["source_record_count"])
+            self.assertIsNone(summary["source_range"]["source_high_watermark_seq"])
+            self.assertIsNone(summary["source_range"]["effective_end_seq"])
             self.assertEqual(backfill.LocalJsonKV(path).get_string("matrixark:context_backfill:test:record_count"), "2")
 
     def test_scan_hash_respects_sequence_range(self):
@@ -173,6 +183,14 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
 
             summary = backfill.run_backfill(self.make_args(path, start_seq=1, end_seq=3, resume=False))
             self.assertEqual(summary["metrics"]["scanned"], 2)
+            self.assertEqual(summary["source_range"]["scan_mode"], "scan_hash")
+            self.assertEqual(summary["source_range"]["requested_start_seq"], 1)
+            self.assertEqual(summary["source_range"]["requested_end_seq"], 3)
+            self.assertEqual(summary["source_range"]["effective_start_seq"], 1)
+            self.assertEqual(summary["source_range"]["effective_end_seq"], 3)
+            self.assertIsNone(summary["source_range"]["source_record_count"])
+            self.assertIsNone(summary["source_range"]["source_high_watermark_seq"])
+            self.assertTrue(summary["source_range"]["user_bounded_end"])
             records = read_target_records(backfill.LocalJsonKV(path), "matrixark:context_backfill:test")
             self.assertEqual([record["event_id_hash"] for record in records], [1, 2])
 

@@ -397,19 +397,79 @@ class MatrixKVRecordLog:
         except Exception as exc:
             return sequence, None, exc
 
-    def source_refs(self, *, start_seq: int, end_seq: int | None, max_empty_scan_shards: int) -> tuple[Iterable[tuple[int, str | None]], str]:
+    def source_range(self, *, start_seq: int, end_seq: int | None) -> Json:
+        effective_start = max(0, start_seq)
         count = self.count()
         if count > 0:
-            stop = min(count, end_seq if end_seq is not None else count)
-            return ((sequence, None) for sequence in range(max(0, start_seq), stop)), 'record_count'
+            effective_end = min(count, end_seq if end_seq is not None else count)
+            return {
+                'scan_mode': 'record_count',
+                'requested_start_seq': start_seq,
+                'requested_end_seq': end_seq,
+                'effective_start_seq': effective_start,
+                'effective_end_seq': effective_end,
+                'source_record_count': count,
+                'source_high_watermark_seq': count - 1,
+                'user_bounded_end': end_seq is not None,
+            }
         index = self.legacy_index()
         if index:
-            stop = min(len(index), end_seq if end_seq is not None else len(index))
-            return ((sequence, index[sequence]) for sequence in range(max(0, start_seq), stop)), 'record_index'
+            effective_end = min(len(index), end_seq if end_seq is not None else len(index))
+            return {
+                'scan_mode': 'record_index',
+                'requested_start_seq': start_seq,
+                'requested_end_seq': end_seq,
+                'effective_start_seq': effective_start,
+                'effective_end_seq': effective_end,
+                'source_record_count': len(index),
+                'source_high_watermark_seq': len(index) - 1,
+                'user_bounded_end': end_seq is not None,
+            }
         scan_hash = getattr(self.kv, 'scan_hash', None)
         if callable(scan_hash):
-            return self._scan_sharded_refs(start_seq=max(0, start_seq), end_seq=end_seq, max_empty_scan_shards=max_empty_scan_shards), 'scan_hash'
-        return iter(()), 'empty'
+            return {
+                'scan_mode': 'scan_hash',
+                'requested_start_seq': start_seq,
+                'requested_end_seq': end_seq,
+                'effective_start_seq': effective_start,
+                'effective_end_seq': end_seq,
+                'source_record_count': None,
+                'source_high_watermark_seq': None,
+                'user_bounded_end': end_seq is not None,
+            }
+        return {
+            'scan_mode': 'empty',
+            'requested_start_seq': start_seq,
+            'requested_end_seq': end_seq,
+            'effective_start_seq': effective_start,
+            'effective_end_seq': effective_start,
+            'source_record_count': 0,
+            'source_high_watermark_seq': None,
+            'user_bounded_end': end_seq is not None,
+        }
+
+    def source_refs(
+        self,
+        *,
+        start_seq: int,
+        end_seq: int | None,
+        max_empty_scan_shards: int,
+        source_range: Json | None = None,
+    ) -> tuple[Iterable[tuple[int, str | None]], str]:
+        range_info = source_range or self.source_range(start_seq=start_seq, end_seq=end_seq)
+        scan_mode = str(range_info.get('scan_mode') or 'empty')
+        effective_start = int(range_info.get('effective_start_seq') or 0)
+        effective_end = range_info.get('effective_end_seq')
+        if scan_mode == 'record_count':
+            stop = int(effective_end or 0)
+            return ((sequence, None) for sequence in range(effective_start, stop)), scan_mode
+        if scan_mode == 'record_index':
+            index = self.legacy_index()
+            stop = min(len(index), int(effective_end if effective_end is not None else len(index)))
+            return ((sequence, index[sequence]) for sequence in range(effective_start, stop)), scan_mode
+        if scan_mode == 'scan_hash':
+            return self._scan_sharded_refs(start_seq=effective_start, end_seq=end_seq, max_empty_scan_shards=max_empty_scan_shards), scan_mode
+        return iter(()), scan_mode
 
     def _scan_sharded_refs(self, *, start_seq: int, end_seq: int | None, max_empty_scan_shards: int) -> Iterable[tuple[int, str | None]]:
         first_shard = start_seq // self.shard_size
@@ -1021,10 +1081,12 @@ def run_backfill(args: argparse.Namespace) -> Json:
                 continue
             process_raw_record(sequence, raw_record or {}, existing_dedupe_ids)
 
+    source_range = source.source_range(start_seq=start_seq, end_seq=args.end_seq)
     source_items, scan_mode = source.source_refs(
         start_seq=start_seq,
         end_seq=args.end_seq,
         max_empty_scan_shards=args.source_scan_max_empty_shards,
+        source_range=source_range,
     )
 
     if outer_bulk:
@@ -1052,6 +1114,7 @@ def run_backfill(args: argparse.Namespace) -> Json:
         partial=partial,
     )
     summary['resume_state'] = resume_state
+    summary['source_range'] = source_range
     manifest = {
         'job_id': args.job_id,
         'mode': args.mode,
@@ -1064,6 +1127,7 @@ def run_backfill(args: argparse.Namespace) -> Json:
         'checkpoint_key': cp_key,
         'checkpoint': checkpoint,
         'resume_state': resume_state,
+        'source_range': source_range,
         'summary': summary,
     }
     summary['manifest_key'] = f'{target_prefix}:backfill_manifest'
