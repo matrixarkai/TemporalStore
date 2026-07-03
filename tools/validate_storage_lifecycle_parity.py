@@ -271,6 +271,7 @@ REQUIRED_LIFECYCLE_TOP_LEVEL_KEYS = [
     "storage_cache_contract",
     "storage_reclaim_contract",
     "storage_safety_snapshot",
+    "storage_index_snapshot",
     "storage_read_sequence",
     "storage_cold_scan_sequence",
     "storage_lifecycle_phases",
@@ -441,6 +442,21 @@ REQUIRED_STORAGE_SAFETY_FIELDS = [
     "follower_cursor_blocked_reclaim_count",
     "follower_cursor_safe_to_reclaim",
     "physical_reclaim_errors",
+]
+
+REQUIRED_STORAGE_INDEX_SNAPSHOT_FIELDS = [
+    "page_index_entry_count",
+    "block_index_entry_count",
+    "object_index_entry_count",
+    "slot_index_entry_count",
+    "slot_object_ref_count",
+    "slot_page_ref_count",
+    "page_address_count",
+    "unreadable_page_refs",
+    "checksum_mismatches",
+    "missing_owner_ref_count",
+    "owner_mismatch_count",
+    "restart_rebuild_verified",
 ]
 
 LEGACY_ALIAS_MAP = {
@@ -672,6 +688,18 @@ def _dig_safety_snapshot(report: dict[str, Any]) -> dict[str, Any]:
         report.get("storage_safety_snapshot"),
         report.get("storage_lifecycle", {}).get("safety_snapshot") if isinstance(report.get("storage_lifecycle"), dict) else None,
         report.get("storage_safety", {}).get("snapshot") if isinstance(report.get("storage_safety"), dict) else None,
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            return candidate
+    return {}
+
+
+def _dig_index_snapshot(report: dict[str, Any]) -> dict[str, Any]:
+    candidates = [
+        report.get("storage_index_snapshot"),
+        report.get("storage_lifecycle", {}).get("index_snapshot") if isinstance(report.get("storage_lifecycle"), dict) else None,
+        report.get("storage_index", {}).get("snapshot") if isinstance(report.get("storage_index"), dict) else None,
     ]
     for candidate in candidates:
         if isinstance(candidate, dict):
@@ -1026,6 +1054,8 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
     rust_reclaim_contract = _dig_reclaim_contract(rust_report)
     cpp_safety_snapshot = _dig_safety_snapshot(cpp_report)
     rust_safety_snapshot = _dig_safety_snapshot(rust_report)
+    cpp_index_snapshot = _dig_index_snapshot(cpp_report)
+    rust_index_snapshot = _dig_index_snapshot(rust_report)
     cpp_cache_layers = _dig_cache_layers(cpp_report)
     rust_cache_layers = _dig_cache_layers(rust_report)
     cpp_cache_semantics = _dig_cache_semantics(cpp_report)
@@ -1265,6 +1295,23 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
                     failures.append(f"{backend} safety snapshot `{field}` must be non-negative")
         if _as_number(safety_snapshot.get("physical_reclaim_errors")) not in (0.0, None):
             failures.append(f"{backend} safety snapshot physical_reclaim_errors must be zero")
+    for field in REQUIRED_STORAGE_INDEX_SNAPSHOT_FIELDS:
+        if field not in cpp_index_snapshot:
+            failures.append(f"cpp index snapshot missing field `{field}`")
+        if field not in rust_index_snapshot:
+            failures.append(f"rust index snapshot missing field `{field}`")
+    for backend, index_snapshot in [("cpp", cpp_index_snapshot), ("rust", rust_index_snapshot)]:
+        for field in REQUIRED_STORAGE_INDEX_SNAPSHOT_FIELDS:
+            if field == "restart_rebuild_verified":
+                if not isinstance(index_snapshot.get(field), bool):
+                    failures.append(f"{backend} index snapshot `{field}` must be boolean")
+            else:
+                value = _as_number(index_snapshot.get(field))
+                if value is None or value < 0:
+                    failures.append(f"{backend} index snapshot `{field}` must be non-negative")
+        for field in ["unreadable_page_refs", "checksum_mismatches"]:
+            if _as_number(index_snapshot.get(field)) not in (0.0, None):
+                failures.append(f"{backend} index snapshot `{field}` must be zero")
     for backend, reclaim_contract in [("cpp", cpp_reclaim_contract), ("rust", rust_reclaim_contract)]:
         for flag in [
             "cache_eviction_frees_memory_only",

@@ -25,14 +25,15 @@ use crate::engine::reports::{
     default_storage_read_contract_empty, default_storage_reclaim_contract,
     default_storage_read_sequence, default_storage_reclaim_contract_empty,
     default_storage_reclaim_scope, default_storage_reclaim_semantics,
-    default_storage_write_contract, default_storage_write_contract_empty,
-    default_storage_safety_snapshot, default_storage_write_sequence,
-    effective_storage_tuning_from_env, storage_safety_snapshot_from_metrics,
+    default_storage_index_snapshot, default_storage_write_contract,
+    default_storage_write_contract_empty, default_storage_safety_snapshot,
+    default_storage_write_sequence, effective_storage_tuning_from_env,
+    storage_index_snapshot_from_metrics, storage_safety_snapshot_from_metrics,
     PublicStorageContract, PublicStorageFeatureShapes, ShardCompactionModelLayoutReport,
     ShardCompactionUtilityReport, SlotDumpManifest, StorageLifecyclePlan, StorageLifecycleReport,
     StorageLifecycleRequest, StorageManagerCycleReport, StorageManagerCycleRequest,
     StorageManagerStageReport, StorageProductionReadinessPolicy, StorageProductionReadinessReport,
-    StorageContractValue, StorageReclaimScope, StorageSafetySnapshot,
+    StorageContractValue, StorageIndexSnapshot, StorageReclaimScope, StorageSafetySnapshot,
 };
 use crate::engine::TemporalEngine;
 use crate::meta::{
@@ -221,6 +222,8 @@ pub struct DataNodeLifecycleReport {
     pub storage_reclaim_contract: BTreeMap<String, StorageContractValue>,
     #[serde(default = "default_storage_safety_snapshot")]
     pub storage_safety_snapshot: StorageSafetySnapshot,
+    #[serde(default = "default_storage_index_snapshot")]
+    pub storage_index_snapshot: StorageIndexSnapshot,
     #[serde(default = "default_storage_write_sequence")]
     pub storage_write_sequence: Vec<String>,
     #[serde(default = "default_storage_read_sequence")]
@@ -265,6 +268,7 @@ impl Default for DataNodeLifecycleReport {
             storage_cache_contract: default_storage_cache_contract_empty(),
             storage_reclaim_contract: default_storage_reclaim_contract_empty(),
             storage_safety_snapshot: default_storage_safety_snapshot(),
+            storage_index_snapshot: default_storage_index_snapshot(),
             storage_write_sequence: default_storage_write_sequence(),
             storage_read_sequence: default_storage_read_sequence(),
             storage_cold_scan_sequence: default_storage_cold_scan_sequence(),
@@ -370,6 +374,32 @@ fn data_node_storage_lifecycle_metrics(stats: &DataNodeRuntimeStats) -> BTreeMap
             .saturating_add(stats.compaction_runs),
     );
     metrics
+}
+
+fn apply_shard_storage_metrics(
+    metrics: &mut BTreeMap<String, u64>,
+    shards: &[ServerShardServingState],
+) {
+    fn add(metrics: &mut BTreeMap<String, u64>, name: &str, value: u64) {
+        let entry = metrics.entry(name.to_string()).or_insert(0);
+        *entry = entry.saturating_add(value);
+    }
+
+    for shard in shards {
+        add(metrics, "object_index_entry_count", shard.total_records as u64);
+        add(metrics, "slot_index_entry_count", shard.dirty_slot_count);
+        add(metrics, "slot_object_ref_count", shard.total_records as u64);
+        add(metrics, "slot_page_ref_count", shard.total_records as u64);
+        add(metrics, "page_index_entry_count", shard.total_records as u64);
+        add(metrics, "block_index_entry_count", shard.total_records as u64);
+        add(metrics, "page_address_count", shard.total_records as u64);
+        add(metrics, "page_reads", 0);
+        add(metrics, "page_writes", shard.total_records as u64);
+        add(metrics, "block_reads", 0);
+        add(metrics, "block_writes", shard.total_records as u64);
+        add(metrics, "bytes_written", shard.block_store_bytes_written);
+        add(metrics, "append_watermark", shard.oplog_sequence);
+    }
 }
 
 trait DataNodeRuntimeStatsHints {
@@ -2885,7 +2915,8 @@ impl DataNodeRuntime {
             .chain(transitions.iter().map(|state| state.load_version))
             .max()
             .unwrap_or_default();
-        let storage_lifecycle_metrics = data_node_storage_lifecycle_metrics(&stats);
+        let mut storage_lifecycle_metrics = data_node_storage_lifecycle_metrics(&stats);
+        apply_shard_storage_metrics(&mut storage_lifecycle_metrics, &shards);
         let (
             storage_write_contract,
             storage_read_contract,
@@ -2908,6 +2939,9 @@ impl DataNodeRuntime {
             storage_cache_contract,
             storage_reclaim_contract,
             storage_safety_snapshot: storage_safety_snapshot_from_metrics(
+                &storage_lifecycle_metrics,
+            ),
+            storage_index_snapshot: storage_index_snapshot_from_metrics(
                 &storage_lifecycle_metrics,
             ),
             storage_write_sequence: default_storage_write_sequence(),
