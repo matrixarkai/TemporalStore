@@ -33,6 +33,7 @@ REQUIRED_DOC_MARKERS = [
     "promotion_readiness",
     "matrixark_context_backfill_promotion_readiness_status",
     "--confirm-skip-validation",
+    "--confirm-non-strict-validation",
     "matrixark_context_backfill_validation_check",
     "matrixark_context_backfill_incremental_repair_status",
     "--baseline-json",
@@ -63,6 +64,7 @@ def parser_support_checks() -> list[Json]:
         check("benchmark_has_baseline_regression_gate", {"--baseline-json", "--min-baseline-qps-ratio", "--max-baseline-latency-ratio"}.issubset(benchmark_options)),
         check("backfill_has_prometheus_output", "--prometheus-output" in backfill_options),
         check("backfill_has_skip_validation_confirmation", "--confirm-skip-validation" in backfill_options),
+        check("backfill_has_non_strict_validation_confirmation", "--confirm-non-strict-validation" in backfill_options),
     ]
 
 

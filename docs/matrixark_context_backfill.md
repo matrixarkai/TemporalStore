@@ -646,7 +646,7 @@ Validation performs a dry-run source scan using the same range and partial filte
 
 The target serving-record type scan uses batched reads with `--batch-size`. If any target serving record is missing or unreadable, `validate_shadow` returns `status=failed` with `checks.target_records_readable=false` and `target_state.serving_type_count_scan.read_errors` instead of failing with an opaque exception.
 
-Strict validation is enabled by default. Use `--validation-strict=0` only when the target prefix is expected to contain validated extra records from a compatible previous run.
+Strict validation is enabled by default. Use `--validation-strict=0` only when the target prefix is expected to contain compatible records from a previous validated run. Promotion paths are guarded: `activate_shadow` and `incremental_repair` reject non-strict validation unless `--confirm-non-strict-validation=YES` is also supplied.
 
 For partial validation, repeat the same partial flags used for the shadow job:
 
@@ -1002,7 +1002,7 @@ For very large jobs:
 7. Monitor readers and context quality.
 8. Keep previous prefix for rollback until validation is complete.
 
-Activation audit records include both the nested validation response and flattened `validation_status`, `validation_skipped`, `validation_skip_reason`, `validation_source_range`, and `validation_target_state` fields so operators can query the cutover boundary and target evidence without parsing the full validation object. Skipping validation is a break-glass path: `activate_shadow` and `incremental_repair` reject `--skip-validation=1` unless `--confirm-skip-validation=YES` is also supplied. If the bypass is explicitly confirmed, the audit records `validation_status=skipped`, `validation_skipped=true`, and `validation_skip_reason=skip_validation_flag`.
+Activation audit records include both the nested validation response and flattened `validation_status`, `validation_skipped`, `validation_skip_reason`, `validation_source_range`, and `validation_target_state` fields so operators can query the cutover boundary and target evidence without parsing the full validation object. Skipping validation is a break-glass path: `activate_shadow` and `incremental_repair` reject `--skip-validation=1` unless `--confirm-skip-validation=YES` is also supplied. Non-strict validation is also explicit: those promotion paths reject `--validation-strict=0` unless `--confirm-non-strict-validation=YES` is supplied. If the bypass is explicitly confirmed, the audit records `validation_status=skipped`, `validation_skipped=true`, and `validation_skip_reason=skip_validation_flag`.
 
 ### Partial Repair Runbook
 
@@ -1160,7 +1160,9 @@ Safety flags:
 --confirm-activate=YES
 --confirm-incremental-repair=YES
 --skip-validation=0|1
+--confirm-skip-validation=YES
 --validation-strict=0|1
+--confirm-non-strict-validation=YES
 ```
 
 Partial flags:
