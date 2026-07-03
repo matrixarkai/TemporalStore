@@ -29,6 +29,9 @@ class MatrixArkDualWriteIngestionBenchmarkTest(unittest.TestCase):
             "library_path": "",
             "request_timeout_ms": 1000,
             "io_timeout_ms": 1000,
+            "min_ingestion_qps": 0.0,
+            "max_batch_p95_ms": 0.0,
+            "require_dual_write_counts": 0,
             "json_output": "",
         }
         values.update(overrides)
@@ -49,6 +52,26 @@ class MatrixArkDualWriteIngestionBenchmarkTest(unittest.TestCase):
         self.assertGreater(raw_backends["temporalstore"], 0)
         self.assertGreater(calls["native_append_queue"], 0)
         self.assertGreater(summary["caller_visible_batch_latency_ms"]["samples"], 0)
+        self.assertFalse(summary["performance_gate"]["enabled"])
+
+    def test_local_benchmark_can_enforce_release_gates(self) -> None:
+        passing = bench.run_benchmark(self.make_args(
+            min_ingestion_qps=1.0,
+            max_batch_p95_ms=1000.0,
+            require_dual_write_counts=1,
+        ))
+        self.assertEqual(passing["status"], "ok")
+        self.assertTrue(passing["performance_gate"]["enabled"])
+        self.assertTrue(passing["performance_gate"]["passed"])
+
+        failing_qps = bench.run_benchmark(self.make_args(min_ingestion_qps=10**12))
+        self.assertEqual(failing_qps["status"], "failed")
+        self.assertFalse(failing_qps["performance_gate"]["passed"])
+
+        failing_latency = bench.run_benchmark(self.make_args(local_write_delay_us=1000, max_batch_p95_ms=0.001))
+        self.assertEqual(failing_latency["status"], "failed")
+        failed_metrics = [check["metric"] for check in failing_latency["performance_gate"]["checks"] if not check["passed"]]
+        self.assertIn("caller_visible_batch_latency_ms_p95", failed_metrics)
 
     def test_local_benchmark_can_label_matrixkv_raw_backend(self) -> None:
         summary = bench.run_benchmark(self.make_args(raw_backend="matrixkv"))
@@ -62,6 +85,22 @@ class MatrixArkDualWriteIngestionBenchmarkTest(unittest.TestCase):
     def test_rejects_invalid_record_count(self) -> None:
         with self.assertRaises(bench.BenchmarkError):
             bench.run_benchmark(self.make_args(records=0))
+
+    def test_rejects_invalid_performance_thresholds(self) -> None:
+        with self.assertRaises(bench.BenchmarkError):
+            bench.run_benchmark(self.make_args(min_ingestion_qps=-1))
+        with self.assertRaises(bench.BenchmarkError):
+            bench.run_benchmark(self.make_args(max_batch_p95_ms=-1))
+
+    def test_cli_returns_nonzero_when_gate_fails(self) -> None:
+        rc = bench.main([
+            "--mode=local",
+            "--records=16",
+            "--workers=1",
+            "--batch-size=8",
+            "--min-ingestion-qps=1000000000000",
+        ])
+        self.assertEqual(rc, 2)
 
 
 if __name__ == "__main__":
