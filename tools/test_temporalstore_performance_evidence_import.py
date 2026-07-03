@@ -104,6 +104,7 @@ def _report_with_bad_qps_ratio() -> dict:
         "ingest": {"p50_ms": 10, "p95_ms": 20, "p99_ms": 30, "timeout_count": 0},
         "retrieve": {"qps": 10, "p50_ms": 10, "p95_ms": 20, "p99_ms": 30, "stage_metrics": {}},
         "storage_lifecycle_metrics": {"append_watermark": 10, "compaction_watermark": 9},
+        "effective_storage_tuning": dict(STORAGE_TUNING),
         "errors": [],
     }
     cpp = {
@@ -182,6 +183,28 @@ class PerformanceEvidenceImportTest(unittest.TestCase):
         self.assertEqual(row["status"], "missing_live_evidence")
         self.assertIn("storage_tuning_missing:TS_PAGE_INDEX_CACHE_BYTES", row["open_blockers"])
         self.assertIn("storage_tuning_drift:TS_STREAM_MAX_BLOB_SIZE", row["open_blockers"])
+
+    def test_backend_storage_tuning_drift_blocks_otherwise_good_report(self) -> None:
+        report = _report_with_good_parity()
+        del report["backends"]["cpp"]["effective_storage_tuning"]["TS_BLOCK_INDEX_CACHE_BYTES"]
+        report["backends"]["rust"]["effective_storage_tuning"]["TS_STORAGE_ZONE_SIZE"] = 123
+
+        updated = import_report(_matrix(), report)
+
+        row = next(row for row in updated["rows"] if row["workload"] == "1K_event_ingestion")
+        self.assertEqual(row["status"], "missing_live_evidence")
+        self.assertIn("cpp_storage_tuning_missing:TS_BLOCK_INDEX_CACHE_BYTES", row["open_blockers"])
+        self.assertIn("rust_storage_tuning_drift:TS_STORAGE_ZONE_SIZE", row["open_blockers"])
+
+    def test_backend_storage_tuning_missing_blocks_otherwise_good_report(self) -> None:
+        report = _report_with_good_parity()
+        report["backends"]["rust"].pop("effective_storage_tuning")
+
+        updated = import_report(_matrix(), report)
+
+        row = next(row for row in updated["rows"] if row["workload"] == "1K_event_ingestion")
+        self.assertEqual(row["status"], "missing_live_evidence")
+        self.assertIn("rust_storage_tuning_missing", row["open_blockers"])
 
     def test_phase_scale_gate_must_be_required_and_passed(self) -> None:
         report = _report_with_good_parity()

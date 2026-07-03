@@ -125,6 +125,19 @@ def _same_config_blockers(same_config: dict[str, Any]) -> list[str]:
     return blockers
 
 
+def _backend_storage_tuning_blockers(name: str, backend: dict[str, Any]) -> list[str]:
+    tuning = backend.get("effective_storage_tuning")
+    if not isinstance(tuning, dict):
+        return [f"{name}_storage_tuning_missing"]
+    blockers: list[str] = []
+    for key, expected in REQUIRED_STORAGE_TUNING.items():
+        if key not in tuning:
+            blockers.append(f"{name}_storage_tuning_missing:{key}")
+        elif tuning.get(key) != expected:
+            blockers.append(f"{name}_storage_tuning_drift:{key}")
+    return blockers
+
+
 def _selected_ref_parity(report: dict[str, Any]) -> bool:
     phase0 = _dig(report, "comparison", "phase0_correctness", default={})
     evidence = phase0.get("evidence") if isinstance(phase0, dict) else {}
@@ -269,6 +282,10 @@ def import_report(matrix: dict[str, Any], report: dict[str, Any]) -> dict[str, A
             blockers.append("cpp_backend_not_passed")
         if not isinstance(rust, dict) or rust.get("status") != "passed":
             blockers.append("rust_backend_not_passed")
+        if isinstance(cpp, dict) and cpp.get("status") == "passed":
+            blockers.extend(_backend_storage_tuning_blockers("cpp", cpp))
+        if isinstance(rust, dict) and rust.get("status") == "passed":
+            blockers.extend(_backend_storage_tuning_blockers("rust", rust))
         blockers.extend(same_config_blockers)
         blockers.extend(phase_scale_blockers)
         if blockers:
