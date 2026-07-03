@@ -21,6 +21,7 @@ REQUIRED_FILES = [
     "CODE_OF_CONDUCT.md",
     ".gitignore",
     "docs/open_source_readiness.md",
+    "tools/run_matrixark_context_backfill_ci_gate_ubuntu22.sh",
 ]
 
 README_TOKENS = [
@@ -52,6 +53,21 @@ IGNORE_TOKENS = [
     "target-rust-bench/",
     "thirdparty/",
     "benchmark_reports/",
+]
+
+BACKFILL_CI_GATE_TOKENS = [
+    "MatrixArk context backfill CI gate for Ubuntu 22",
+    "MATRIXARK_BACKFILL_CI_RECORDS",
+    "MATRIXARK_BACKFILL_CI_BATCH_SIZES",
+    "MATRIXARK_BACKFILL_CI_INCREMENTAL_RECORDS",
+    "python3 -m py_compile",
+    "python3 tools/test_matrixark_context_backfill.py",
+    "python3 tools/test_matrixark_context_backfill_benchmark.py",
+    "python3 tools/test_matrixark_dual_write_ingestion_benchmark.py",
+    "python3 tools/test_validate_matrixark_context_backfill_readiness.py",
+    "python3 tools/validate_open_source_readiness.py",
+    "python3 tools/validate_matrixark_context_backfill_readiness.py",
+    "matrixark_context_backfill_readiness.json",
 ]
 
 PRIVATE_PATH_TOKENS = [
@@ -171,6 +187,10 @@ def main() -> int:
     require_tokens("SECURITY.md", SECURITY_TOKENS)
     require_tokens("CONTRIBUTING.md", CONTRIBUTING_TOKENS)
     require_tokens(".gitignore", IGNORE_TOKENS)
+    require_tokens(
+        "tools/run_matrixark_context_backfill_ci_gate_ubuntu22.sh",
+        BACKFILL_CI_GATE_TOKENS,
+    )
     require_tokens(
         "docs/open_source_readiness.md",
         [
