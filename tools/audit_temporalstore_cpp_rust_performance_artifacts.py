@@ -19,6 +19,16 @@ from import_temporalstore_cpp_rust_performance_evidence import (
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ARTIFACT_ROOT = ROOT / "docs" / "benchmarks"
+RUNNER = "tools/run_matrixark_cpp_rust_scale_report.py"
+WORKLOAD_RUN_ARGS = {
+    "1K_event_ingestion": ["--events", "1000"],
+    "10K_event_ingestion": ["--events", "10000"],
+    "100K_event_ingestion": ["--events", "100000"],
+    "retrieve_workers_4": ["--retrieve-workers", "4"],
+    "retrieve_workers_8": ["--retrieve-workers", "8"],
+    "retrieve_workers_16": ["--retrieve-workers", "16"],
+    "retrieve_workers_32": ["--retrieve-workers", "32"],
+}
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -28,6 +38,21 @@ def _load_json(path: Path) -> dict[str, Any]:
 def _row_by_workload(matrix: dict[str, Any]) -> dict[str, dict[str, Any]]:
     rows = matrix.get("rows") if isinstance(matrix.get("rows"), list) else []
     return {str(row.get("workload")): row for row in rows if isinstance(row, dict)}
+
+
+def _next_run_command(workload: str) -> list[str]:
+    return [
+        "python",
+        RUNNER,
+        *WORKLOAD_RUN_ARGS.get(workload, []),
+        "--backends",
+        "cpp",
+        "rust",
+        "--artifact-dir",
+        f"docs/benchmarks/parity_{workload}",
+        "--require-phase-scale-matrix",
+        "--require-perf-parity",
+    ]
 
 
 def audit_report(base_matrix: dict[str, Any], report_path: Path) -> dict[str, Any]:
@@ -144,6 +169,7 @@ def audit_artifacts(artifact_root: Path, matrix_path: Path) -> dict[str, Any]:
             "blockers": row.get("blockers", []),
             "next_run_hint": {
                 "workload": workload,
+                "command": _next_run_command(workload),
                 "required_same_config_fields": SAME_CONFIG_KEYS,
                 "required_result": (
                     "same-config C++ and Rust comparison.json with passed backends, "
@@ -157,6 +183,7 @@ def audit_artifacts(artifact_root: Path, matrix_path: Path) -> dict[str, Any]:
             "workload": workload,
             "reason": details["status"],
             "blockers": details["blockers"],
+            "command": details["next_run_hint"]["command"],
             "required_same_config_fields": details["next_run_hint"]["required_same_config_fields"],
             "required_result": details["next_run_hint"]["required_result"],
         }
