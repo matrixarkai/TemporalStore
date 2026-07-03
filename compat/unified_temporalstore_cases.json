@@ -12210,7 +12210,7 @@
       },
       {
         "blocker": "C++ executable shared adapter for client/proxy/data-node/metaserver control-plane workflows is still pending.",
-        "expected_runner_command": "run_cpp_control_plane_shared_cases --corpus {corpus}",
+        "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-control-plane-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
         "family": "client_proxy_control_plane",
         "status": "temporary_static_surface_gate",
         "suites": [
@@ -12219,7 +12219,7 @@
       },
       {
         "blocker": "C++ executable shared adapter for Redis/admin/Feature/Sequence/IPS/Risk command corpus is still pending.",
-        "expected_runner_command": "run_cpp_product_api_shared_cases --corpus {corpus}",
+        "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-product-api-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
         "family": "product_api_models",
         "status": "temporary_static_surface_gate",
         "suites": [
