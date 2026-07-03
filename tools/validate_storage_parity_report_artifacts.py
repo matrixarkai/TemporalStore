@@ -37,7 +37,7 @@ from validate_storage_lifecycle_parity import (
     REQUIRED_STORAGE_WRITE_RESULT_FIELDS,
     REQUIRED_STORAGE_WRITE_SEQUENCE,
 )
-from validate_storage_tuning_parity import EXPECTED_KNOBS
+from validate_storage_tuning_parity import EXPECTED_DEFAULTS
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -143,9 +143,14 @@ def _validate_report(path: Path, backend: str, report: dict[str, Any]) -> list[s
     if not isinstance(tuning, dict):
         failures.append(f"{prefix} effective_storage_tuning must be an object")
     else:
-        for key in sorted(EXPECTED_KNOBS):
+        for key, expected in sorted(EXPECTED_DEFAULTS.items()):
             if key not in tuning:
                 failures.append(f"{prefix} missing effective storage tuning `{key}`")
+            elif tuning.get(key) != expected:
+                failures.append(
+                    f"{prefix} effective storage tuning `{key}` drift: "
+                    f"expected {expected!r} got {tuning.get(key)!r}"
+                )
 
     public_contract = report.get("public_storage_contract")
     if public_contract != REQUIRED_PUBLIC_STORAGE_CONTRACT:
