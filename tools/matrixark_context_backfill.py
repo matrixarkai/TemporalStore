@@ -1197,11 +1197,33 @@ def _write_plan_script(path: Path, commands: list[list[str]], *, parallel: bool)
     path.chmod(0o755)
 
 
+def _artifact_file_info(path: Path) -> Json:
+    payload = path.read_bytes()
+    return {
+        'path': str(path),
+        'size_bytes': len(payload),
+        'sha256': hashlib.sha256(payload).hexdigest(),
+        'executable': bool(path.stat().st_mode & 0o111),
+    }
+
+
+def _require_plan_output_dir_writable(args: argparse.Namespace, output_dir: Path) -> None:
+    if not output_dir.exists():
+        return
+    existing = [item for item in output_dir.iterdir() if item.name not in {'.', '..'}]
+    if existing and getattr(args, 'confirm_plan_output_overwrite', '') != 'YES':
+        raise BackfillError(
+            f'plan output directory {output_dir} is not empty; '
+            'use --confirm-plan-output-overwrite=YES to replace generated plan artifacts'
+        )
+
+
 def write_plan_artifacts(args: argparse.Namespace, summary: Json) -> Json:
     output_dir_arg = str(getattr(args, 'plan_output_dir', '') or '')
     if not output_dir_arg:
         return {}
     output_dir = Path(output_dir_arg)
+    _require_plan_output_dir_writable(args, output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     chunk_plan = summary.get('chunk_plan') if isinstance(summary.get('chunk_plan'), dict) else {}
     execution_plan = chunk_plan.get('execution_plan') if isinstance(chunk_plan.get('execution_plan'), dict) else {}
@@ -1228,17 +1250,35 @@ def write_plan_artifacts(args: argparse.Namespace, summary: Json) -> Json:
         _write_plan_script(promote_path, promotion_commands, parallel=False)
         promote_script = str(promote_path)
     plan_path = output_dir / 'plan.json'
+    manifest_path = output_dir / 'artifact_manifest.json'
     artifact_summary = {
         'output_dir': str(output_dir),
         'plan_json': str(plan_path),
+        'artifact_manifest': str(manifest_path),
         'shadow_wave_scripts': shadow_scripts,
         'validate_wave_scripts': validate_scripts,
         'promote_serial_script': promote_script,
         'script_cwd': str(ROOT),
+        'overwrite_confirmed': getattr(args, 'confirm_plan_output_overwrite', '') == 'YES',
     }
     summary_with_artifacts = dict(summary)
     summary_with_artifacts['plan_artifacts'] = artifact_summary
     plan_path.write_text(json.dumps(summary_with_artifacts, sort_keys=True, indent=2), encoding='utf-8')
+    artifact_paths = [
+        plan_path,
+        *[Path(path) for path in shadow_scripts],
+        *[Path(path) for path in validate_scripts],
+        *([Path(promote_script)] if promote_script else []),
+    ]
+    manifest = {
+        'manifest_schema': 'matrixark_context_backfill_plan_artifacts_v1',
+        'job_id': args.job_id,
+        'generated_at_ms': int(time.time() * 1000),
+        'output_dir': str(output_dir),
+        'files': [_artifact_file_info(path) for path in artifact_paths],
+    }
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True, indent=2), encoding='utf-8')
+    artifact_summary['artifact_manifest_sha256'] = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
     return artifact_summary
 
 
@@ -2719,6 +2759,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--plan-max-windows', type=int, default=128, help='plan-only maximum windows to emit; 0 emits all windows')
     parser.add_argument('--plan-parallelism', type=int, default=1, help='plan-only number of independent chunk shadows to group into each preparation wave')
     parser.add_argument('--plan-output-dir', default='', help='plan-only directory for plan.json plus runnable shadow/validation/promotion scripts')
+    parser.add_argument('--confirm-plan-output-overwrite', default='', help='required YES when --plan-output-dir already contains files')
     parser.add_argument('--source-scan-max-empty-shards', type=int, default=2)
     parser.add_argument('--dry-run', type=int, choices=[0, 1], default=1)
     parser.add_argument('--dry-run-check-target', type=int, choices=[0, 1], default=1, help='during dry-run, check target idempotency so duplicate and would-write counts match a real run')
