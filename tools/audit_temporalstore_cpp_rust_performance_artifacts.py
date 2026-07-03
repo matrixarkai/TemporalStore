@@ -65,6 +65,11 @@ def audit_report(base_matrix: dict[str, Any], report_path: Path) -> dict[str, An
 
 def audit_artifacts(artifact_root: Path, matrix_path: Path) -> dict[str, Any]:
     base_matrix = _load_json(matrix_path)
+    required_workloads = [
+        str(workload)
+        for workload in base_matrix.get("required_workloads", [])
+        if isinstance(workload, str) and workload
+    ]
     reports = sorted(artifact_root.rglob("comparison.json"))
     entries = [audit_report(base_matrix, report) for report in reports]
     with_workloads = [entry for entry in entries if entry["candidate_workloads"]]
@@ -73,13 +78,65 @@ def audit_artifacts(artifact_root: Path, matrix_path: Path) -> dict[str, Any]:
         for entry in with_workloads
         if entry["importable_workloads"]
     ]
+    coverage = {
+        workload: {
+            "candidate_report_count": 0,
+            "importable_report_count": 0,
+            "blocked_report_count": 0,
+            "blockers": [],
+        }
+        for workload in required_workloads
+    }
+    for entry in with_workloads:
+        for workload in entry["candidate_workloads"]:
+            target = coverage.setdefault(
+                workload,
+                {
+                    "candidate_report_count": 0,
+                    "importable_report_count": 0,
+                    "blocked_report_count": 0,
+                    "blockers": [],
+                },
+            )
+            target["candidate_report_count"] += 1
+        for workload in entry["importable_workloads"]:
+            coverage[workload]["importable_report_count"] += 1
+        for blocked in entry["blocked_workloads"]:
+            target = coverage.setdefault(
+                str(blocked.get("workload")),
+                {
+                    "candidate_report_count": 0,
+                    "importable_report_count": 0,
+                    "blocked_report_count": 0,
+                    "blockers": [],
+                },
+            )
+            target["blocked_report_count"] += 1
+            for blocker in blocked.get("open_blockers") or []:
+                if blocker not in target["blockers"]:
+                    target["blockers"].append(blocker)
+    missing_required_workloads = [
+        workload
+        for workload in required_workloads
+        if coverage.get(workload, {}).get("candidate_report_count", 0) == 0
+    ]
+    blocked_required_workloads = [
+        workload
+        for workload in required_workloads
+        if coverage.get(workload, {}).get("candidate_report_count", 0) > 0
+        and coverage.get(workload, {}).get("importable_report_count", 0) == 0
+    ]
     return {
         "schema": "temporalstore_cpp_rust_performance_artifact_audit_v1",
         "artifact_root": str(artifact_root),
         "matrix": str(matrix_path),
+        "required_workloads": required_workloads,
         "reports_scanned": len(reports),
         "reports_with_candidate_workloads": len(with_workloads),
         "reports_with_importable_workloads": len(importable),
+        "missing_required_workloads": missing_required_workloads,
+        "blocked_required_workloads": blocked_required_workloads,
+        "workload_coverage": coverage,
         "entries": with_workloads,
     }
 
