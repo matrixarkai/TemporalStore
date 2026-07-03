@@ -44,6 +44,7 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             "confirm_activate": "",
             "confirm_rollback": "",
             "confirm_rollback_noop": "",
+            "confirm_rollback_target_state": "",
             "confirm_incremental_repair": "",
             "confirm_active_target": "",
             "confirm_no_active_prefix_precondition": "",
@@ -487,6 +488,9 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             write_sharded(kv, "matrixark:mcp", 1, {"record_type": "context_event", "event_id_hash": 2})
             kv.put_string("matrixark:mcp:record_count", "2")
             kv.put_string("matrixark:context:active_prefix", "matrixark:context:old")
+            backfill.MatrixKVBackfillTarget(kv, prefix="matrixark:context:old").append_many([
+                {"record_type": "context_event", "event_id_hash": 0}
+            ])
 
             summary = backfill.run_backfill(self.make_args(path, target_prefix="matrixark:context_backfill:candidate"))
             self.assertEqual(summary["metrics"]["written"], 2)
@@ -628,9 +632,49 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(rollback["expected_active_prefix"], "matrixark:context_backfill:candidate")
             self.assertEqual(rollback["from_prefix"], "matrixark:context_backfill:candidate")
             self.assertEqual(rollback["to_prefix"], "matrixark:context:old")
+            self.assertTrue(rollback["rollback_target_state"]["healthy_for_rollback"])
+            self.assertFalse(rollback["rollback_target_state_confirmed"])
             kv_rolled_back = backfill.LocalJsonKV(path)
             self.assertEqual(kv_rolled_back.get_string("matrixark:context:active_prefix"), "matrixark:context:old")
             self.assertIn("matrixark:context_backfill:candidate", kv_rolled_back.hget("matrixark:context:active_prefix:rollback_audit", "rollback-unit"))
+
+    def test_rollback_activation_unhealthy_target_requires_confirmation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            kv.put_string("matrixark:context:active_prefix", "matrixark:context_backfill:candidate")
+            kv.put_string("matrixark:context:active_prefix:previous:unit", "matrixark:context:old")
+
+            with self.assertRaisesRegex(backfill.BackfillError, "previous prefix is empty or unhealthy"):
+                backfill.run_rollback_activation(self.make_args(
+                    path,
+                    mode="rollback_activation",
+                    rollback_job_id="unit",
+                    job_id="rollback-unhealthy",
+                    confirm_rollback="YES",
+                    expect_active_prefix="matrixark:context_backfill:candidate",
+                    dry_run=False,
+                ))
+
+            rollback = backfill.run_rollback_activation(self.make_args(
+                path,
+                mode="rollback_activation",
+                rollback_job_id="unit",
+                job_id="rollback-unhealthy",
+                confirm_rollback="YES",
+                confirm_rollback_target_state="YES",
+                expect_active_prefix="matrixark:context_backfill:candidate",
+                dry_run=False,
+            ))
+
+            self.assertEqual(rollback["status"], "ok")
+            self.assertFalse(rollback["rollback_target_state"]["healthy_for_rollback"])
+            self.assertEqual(rollback["rollback_target_state"]["record_count"], 0)
+            self.assertTrue(rollback["rollback_target_state_confirmed"])
+            kv_after = backfill.LocalJsonKV(path)
+            rollback_audit = json.loads(kv_after.hget("matrixark:context:active_prefix:rollback_audit", "rollback-unhealthy"))
+            self.assertTrue(rollback_audit["rollback_target_state_confirmed"])
+            self.assertFalse(rollback_audit["rollback_target_state"]["healthy_for_rollback"])
 
     def test_rollback_activation_noop_requires_confirmation(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -638,6 +682,9 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             kv = backfill.LocalJsonKV(path)
             kv.put_string("matrixark:context:active_prefix", "matrixark:context:active")
             kv.put_string("matrixark:context:active_prefix:previous:unit", "matrixark:context:active")
+            backfill.MatrixKVBackfillTarget(kv, prefix="matrixark:context:active").append_many([
+                {"record_type": "context_event", "event_id_hash": 1}
+            ])
 
             with self.assertRaisesRegex(backfill.BackfillError, "previous prefix equals current active prefix"):
                 backfill.run_rollback_activation(self.make_args(

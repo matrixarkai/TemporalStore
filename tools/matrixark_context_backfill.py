@@ -1646,6 +1646,38 @@ def require_unvalidated_activation_target_state(args: argparse.Namespace, kv: An
     )
 
 
+def inspect_rollback_target_state(args: argparse.Namespace, kv: Any, target_prefix: str) -> Json:
+    raw_backend = normalize_raw_backend(args.raw_backend)
+    target = MatrixKVBackfillTarget(kv, prefix=target_prefix, raw_backend=raw_backend)
+    counts, scan = target.serving_type_counts_with_stats(batch_size=max(1, int(args.batch_size)))
+    dead_letters = target.count_dead_letters()
+    record_count = int(scan.get('record_count', 0) or 0)
+    read_errors = int(scan.get('read_errors', 0) or 0)
+    missing_records = int(scan.get('missing_records', 0) or 0)
+    return {
+        'target_prefix': target_prefix,
+        'raw_backend': raw_backend,
+        'record_count': record_count,
+        'dead_letter_count': dead_letters,
+        'serving_type_counts': counts,
+        'serving_record_fingerprint': str(scan.get('serving_record_fingerprint') or ''),
+        'serving_type_count_scan': scan,
+        'healthy_for_rollback': record_count > 0 and dead_letters == 0 and read_errors == 0 and missing_records == 0,
+    }
+
+
+def require_rollback_target_state(args: argparse.Namespace, kv: Any, target_prefix: str) -> Json:
+    state = inspect_rollback_target_state(args, kv, target_prefix)
+    if state['healthy_for_rollback']:
+        return state
+    if getattr(args, 'confirm_rollback_target_state', '') == 'YES':
+        return state
+    raise BackfillError(
+        'rollback_activation previous prefix is empty or unhealthy; '
+        'restore/validate the target prefix or pass --confirm-rollback-target-state=YES to audit the break-glass rollback'
+    )
+
+
 def require_non_strict_validation_confirmation(args: argparse.Namespace, *, mode: str) -> None:
     if args.skip_validation or args.validation_strict:
         return
@@ -1831,6 +1863,7 @@ def run_rollback_activation(args: argparse.Namespace) -> Json:
     require_expected_active_prefix(args, current_prefix)
     require_active_prefix_precondition(args, mode='rollback_activation')
     require_non_noop_rollback(args, current_prefix, previous_prefix)
+    rollback_target_state = require_rollback_target_state(args, kv, previous_prefix)
     rolled_back_at_ms = int(time.time() * 1000)
     audit = {
         'job_id': args.job_id,
@@ -1842,8 +1875,10 @@ def run_rollback_activation(args: argparse.Namespace) -> Json:
         'to_prefix': previous_prefix,
         'previous_key': previous_key,
         'raw_backend': normalize_raw_backend(args.raw_backend),
+        'rollback_target_state': rollback_target_state,
         'active_prefix_precondition_bypassed': active_prefix_precondition_bypassed(args),
         'rollback_noop_confirmed': rollback_noop_bypassed(args),
+        'rollback_target_state_confirmed': bool(getattr(args, 'confirm_rollback_target_state', '') == 'YES'),
     }
     if args.dry_run:
         return {
@@ -1856,8 +1891,10 @@ def run_rollback_activation(args: argparse.Namespace) -> Json:
             'to_prefix': previous_prefix,
             'rollback_job_id': rollback_job_id,
             'raw_backend': normalize_raw_backend(args.raw_backend),
+            'rollback_target_state': rollback_target_state,
             'active_prefix_precondition_bypassed': active_prefix_precondition_bypassed(args),
             'rollback_noop_confirmed': rollback_noop_bypassed(args),
+            'rollback_target_state_confirmed': bool(getattr(args, 'confirm_rollback_target_state', '') == 'YES'),
         }
     kv.hset(f'{args.active_prefix_key}:rollback_audit', args.job_id, json.dumps(audit, sort_keys=True, separators=(',', ':')))
     kv.put_string(args.active_prefix_key, previous_prefix)
@@ -1872,8 +1909,10 @@ def run_rollback_activation(args: argparse.Namespace) -> Json:
         'raw_backend': normalize_raw_backend(args.raw_backend),
         'audit_key': f'{args.active_prefix_key}:rollback_audit',
         'job_id': args.job_id,
+        'rollback_target_state': rollback_target_state,
         'active_prefix_precondition_bypassed': active_prefix_precondition_bypassed(args),
         'rollback_noop_confirmed': rollback_noop_bypassed(args),
+        'rollback_target_state_confirmed': bool(getattr(args, 'confirm_rollback_target_state', '') == 'YES'),
     }
 
 
@@ -2093,6 +2132,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--confirm-activate', default='')
     parser.add_argument('--confirm-rollback', default='')
     parser.add_argument('--confirm-rollback-noop', default='', help='required YES to audit an intentional rollback whose previous prefix equals the current active prefix')
+    parser.add_argument('--confirm-rollback-target-state', default='', help='required YES to roll back to an empty or unhealthy previous prefix')
     parser.add_argument('--confirm-incremental-repair', default='')
     parser.add_argument('--confirm-active-target', default='', help='required YES for direct non-dry-run shadow writes to the current active prefix')
     parser.add_argument('--expect-active-prefix', default='', help='optional active-prefix precondition for activation, rollback, and incremental repair')
