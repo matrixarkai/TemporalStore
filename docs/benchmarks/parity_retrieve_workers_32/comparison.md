@@ -302,5 +302,5 @@ Both C++ and Rust backends must expose these lifecycle metric names before strea
 
 | failure | backend | details |
 |---|---|---|
-| backend_not_passed | cpp | `{"backend": "cpp", "error": "invalid_host_platform: C++ direct SDK parity requires loading libbcache2.so from a Linux process. The current runner is Windows Python, which cannot load a Linux .so. Run this command from WSL/Linux or provide a Windows-compatible bcache2.dll. WSL path hint: /mnt/c/Users/Deeproute/Documents/Codex/temporalstore-main-storage-goal-loop/output-ubuntu22/release/sdk/lib/libbcache2.so", "reason": "backend_not_passed", "status": "backend_startup_failed"}` |
+| backend_not_passed | cpp | `{"backend": "cpp", "error": "invalid_host_platform: C++ direct SDK parity requires loading libbcache2.so from a Linux process. The current runner is Windows Python, which cannot load a Linux .so. Run this command from WSL/Linux or provide a Windows-compatible bcache2.dll. WSL path hint: REPO_ROOT/output-ubuntu22/release/sdk/lib/libbcache2.so", "reason": "backend_not_passed", "status": "backend_startup_failed"}` |
 | backend_not_passed | rust | `{"backend": "rust", "error": null, "reason": "backend_not_passed", "status": "topology_not_ready"}` |

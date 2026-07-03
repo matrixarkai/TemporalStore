@@ -512,8 +512,8 @@
   ],
   "worker": {
     "command": [
-      "C:\\Users\\Deeproute\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe",
-      "C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\tools\\run_matrixark_cpp_rust_scale_report.py",
+      "python3",
+      "REPO_ROOT\\tools\\run_matrixark_cpp_rust_scale_report.py",
       "--backend-worker",
       "rust",
       "--backend-worker-output",
@@ -551,9 +551,9 @@
       "--storage-prefix",
       "matrixark:scale",
       "--cpp-lib",
-      "C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\output-ubuntu22\\release\\sdk\\lib\\libbcache2.so",
+      "REPO_ROOT\\output-ubuntu22\\release\\sdk\\lib\\libbcache2.so",
       "--rust-cli",
-      "C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\sdk\\rust\\temporalstore\\target\\release\\matrixark_record_log",
+      "REPO_ROOT\\sdk\\rust\\temporalstore\\target\\release\\matrixark_record_log",
       "--python-ref-store",
       "",
       "--request-timeout-ms",

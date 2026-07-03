@@ -11,7 +11,7 @@
     "TS_STREAM_MAX_BLOB_SIZE": 10485760,
     "effective_block_segment_target_bytes": 10485760
   },
-  "error": "invalid_host_platform: C++ direct SDK parity requires loading libbcache2.so from a Linux process. The current runner is Windows Python, which cannot load a Linux .so. Run this command from WSL/Linux or provide a Windows-compatible bcache2.dll. WSL path hint: /mnt/c/Users/Deeproute/Documents/Codex/temporalstore-main-storage-goal-loop/output-ubuntu22/release/sdk/lib/libbcache2.so",
+  "error": "invalid_host_platform: C++ direct SDK parity requires loading libbcache2.so from a Linux process. The current runner is Windows Python, which cannot load a Linux .so. Run this command from WSL/Linux or provide a Windows-compatible bcache2.dll. WSL path hint: REPO_ROOT/output-ubuntu22/release/sdk/lib/libbcache2.so",
   "public_storage_contract": {
     "append_watermark": "AppendWatermark",
     "block_address": "BlockAddress",
@@ -422,8 +422,8 @@
   ],
   "worker": {
     "command": [
-      "C:\\Users\\Deeproute\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe",
-      "C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\tools\\run_matrixark_cpp_rust_scale_report.py",
+      "python3",
+      "REPO_ROOT\\tools\\run_matrixark_cpp_rust_scale_report.py",
       "--backend-worker",
       "cpp",
       "--backend-worker-output",
@@ -461,9 +461,9 @@
       "--storage-prefix",
       "matrixark:scale",
       "--cpp-lib",
-      "C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\output-ubuntu22\\release\\sdk\\lib\\libbcache2.so",
+      "REPO_ROOT\\output-ubuntu22\\release\\sdk\\lib\\libbcache2.so",
       "--rust-cli",
-      "C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\sdk\\rust\\temporalstore\\target\\release\\matrixark_record_log",
+      "REPO_ROOT\\sdk\\rust\\temporalstore\\target\\release\\matrixark_record_log",
       "--python-ref-store",
       "",
       "--request-timeout-ms",
