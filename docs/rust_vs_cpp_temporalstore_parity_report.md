@@ -30,6 +30,30 @@ The implementation decision remains explicit:
 | Unified tests | The shared corpus has 82 cases. Rust executes the recent Context benchmark-injection, tree/embedding/summary/compression, temporal-compression, and cross storage/control/agent parity cases directly. C++ still has many static surface gates that should become native executable shared cases. | `docs/unified_test_case_inventory.md`, `compat/unified_temporalstore_cases.json` |
 | Ops/scale | Local readiness evidence exists, but broad production readiness needs a Docker/AWS multi-service SLO package. | `docs/storage_raft_production_readiness_plan.md`, `docs/aws_existing_eks_deployment.md` |
 
+## Goal Parity Status Gate
+
+`compat/temporalstore_cpp_rust_goal_parity_status.json` is the machine-readable
+status file for the full Rust-vs-C++ TemporalStore parity goal. It tracks:
+
+- feature parity;
+- performance parity;
+- storage lifecycle parity;
+- StorageManager and StoreManager parity;
+- GC, eviction, compaction, and physical reclaim parity;
+- zone, stream, segment, slot, page, block, PageAddress, and index parity;
+- multi-layer cache parity.
+
+`tools/validate_temporalstore_cpp_rust_goal_parity.py` validates that every area
+has explicit evidence, status, and blockers. It is deliberately fail-closed:
+`goal_complete` cannot be true while global blockers remain, and
+`production_performance_parity` cannot be true until the same-config C++/Rust
+scale matrix has p50/p95/p99, QPS, timeout/error/fallback, selected-ref, cache,
+append-watermark, and compaction-watermark evidence.
+
+This goal-level validator is also part of
+`tools/validate_storage_engine_9_phase_parity.py`, so the 9-phase loop now
+checks both storage contract parity and honest goal status.
+
 ## Recent Context Parity Pass
 
 The latest Rust Context work closes the recent benchmark/pipeline gaps against the shared C++/Rust

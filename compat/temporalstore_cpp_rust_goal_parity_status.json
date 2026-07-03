@@ -1,0 +1,189 @@
+{
+  "schema": "temporalstore_cpp_rust_goal_parity_status_v1",
+  "description": "Machine-readable Rust-vs-C++ TemporalStore parity status for feature, performance, storage lifecycle, manager, GC, eviction, zone, stream, segment, page, PageAddress, and index parity.",
+  "generated_from": [
+    "tools/validate_storage_engine_9_phase_parity.py",
+    "tools/validate_storage_lifecycle_parity.py",
+    "tools/validate_page_address_compatibility_corpus.py",
+    "tools/validate_page_block_metrics_parity.py",
+    "tools/validate_storage_tuning_parity.py",
+    "tools/validate_raft_storage_parity_evidence.py"
+  ],
+  "status_labels": {
+    "feature_correct": "Shared contract and deterministic evidence pass for this area.",
+    "performance_candidate": "Live C++ and Rust runs complete under the same config without silent fallback.",
+    "production_performance_parity": "QPS, p50/p95/p99, timeout/error/fallback rates, and correctness metrics are within thresholds under the same dataset, topology, storage mode, token budget, batch size, and model config.",
+    "active_gap": "The area has known missing live proof or implementation work and must not be marketed as complete."
+  },
+  "global_status": {
+    "feature_correct": false,
+    "performance_candidate": false,
+    "production_performance_parity": false,
+    "goal_complete": false,
+    "open_blockers": [
+      "Live C++ and Rust performance parity evidence is not yet complete for every storage mode and scale target.",
+      "Some C++ shared corpus paths are still static surface gates rather than native executable shared cases.",
+      "Production performance parity still needs same-config p50/p95/p99/QPS/error/timeout/fallback evidence across 1K, 10K, and 100K workloads."
+    ]
+  },
+  "required_scale_matrix": {
+    "datasets": [
+      "shared_storage_corpus",
+      "context_memory_pipeline",
+      "large_resource_imports"
+    ],
+    "workloads": [
+      "1K_event_ingestion",
+      "10K_event_ingestion",
+      "100K_event_ingestion",
+      "retrieve_workers_4",
+      "retrieve_workers_8",
+      "retrieve_workers_16",
+      "retrieve_workers_32"
+    ],
+    "required_metrics": [
+      "message_qps",
+      "retrieve_qps",
+      "p50_ms",
+      "p95_ms",
+      "p99_ms",
+      "timeout_count",
+      "error_count",
+      "fallback_flags",
+      "selected_ref_parity",
+      "scanned_records",
+      "cache_hit_rate",
+      "append_watermark",
+      "compaction_watermark"
+    ],
+    "same_config_required": [
+      "dataset",
+      "storage_mode",
+      "topology",
+      "batch_size",
+      "token_budget",
+      "embedding_model",
+      "reader_model",
+      "judge_model",
+      "storage_tuning"
+    ]
+  },
+  "areas": {
+    "feature_parity": {
+      "status": "active_gap",
+      "evidence": [
+        "compat/unified_temporalstore_cases.json",
+        "tools/run_unified_cpp_rust_parity.py",
+        "tools/validate_rust_vs_cpp_parity_report.py"
+      ],
+      "open_blockers": [
+        "C++ native execution should replace remaining static surface gates where product behavior is shared."
+      ]
+    },
+    "performance_parity": {
+      "status": "active_gap",
+      "evidence": [
+        "docs/rust_cpp_ingestion_retrieval_perf_parity.md",
+        "tools/run_matrixark_cpp_rust_scale_report.py"
+      ],
+      "open_blockers": [
+        "Same-config live C++/Rust p50/p95/p99/QPS parity is not yet proven across the required scale matrix."
+      ]
+    },
+    "storage_lifecycle_parity": {
+      "status": "feature_correct",
+      "evidence": [
+        "tools/validate_storage_engine_9_phase_parity.py",
+        "tools/validate_storage_lifecycle_parity.py",
+        "compat/storage_lifecycle_report_pair_corpus.json"
+      ],
+      "open_blockers": []
+    },
+    "storage_manager_parity": {
+      "status": "feature_correct",
+      "evidence": [
+        "storage_manager_prepare_count",
+        "storage_manager_reclaim_count",
+        "storage_manager_evict_count",
+        "storage_manager_expire_count",
+        "storage_manager_page_gc_count",
+        "storage_manager_block_gc_count",
+        "storage_manager_compaction_count",
+        "storage_manager_index_gc_count",
+        "storage_manager_delayed_destroy_count",
+        "storage_manager_follower_cursor_safety_count",
+        "storage_manager_watermark_progress_count"
+      ],
+      "open_blockers": []
+    },
+    "store_manager_parity": {
+      "status": "feature_correct",
+      "evidence": [
+        "storage_write_sequence",
+        "storage_read_sequence",
+        "storage_cold_scan_sequence",
+        "storage_reclaim_contract"
+      ],
+      "open_blockers": []
+    },
+    "gc_eviction_reclaim_parity": {
+      "status": "feature_correct",
+      "evidence": [
+        "cache_evictions",
+        "tombstone_records",
+        "stale_page_tombstones",
+        "stale_block_tombstones",
+        "stale_pages_rewritten",
+        "stale_pages_skipped",
+        "stale_blocks_rewritten",
+        "stale_blocks_skipped",
+        "compaction_reclaimed_bytes",
+        "physical_reclaimed_bytes",
+        "physical_reclaim_errors"
+      ],
+      "open_blockers": []
+    },
+    "zone_stream_segment_slot_parity": {
+      "status": "feature_correct",
+      "evidence": [
+        "stream_rollover_count",
+        "segment_open_count",
+        "segment_sealed_count",
+        "storage_zone_total_bytes",
+        "storage_zone_used_bytes",
+        "storage_zone_stale_bytes",
+        "slot_dirty_generation_count",
+        "slot_tombstone_count",
+        "slot_stale_ref_count",
+        "slot_owner_mismatch_count"
+      ],
+      "open_blockers": []
+    },
+    "page_block_page_address_index_parity": {
+      "status": "feature_correct",
+      "evidence": [
+        "tools/validate_page_address_compatibility_corpus.py",
+        "tools/validate_page_block_metrics_parity.py",
+        "PageAddress",
+        "BlockAddress",
+        "PageIndexEntry",
+        "BlockIndexEntry",
+        "ObjectIndexEntry"
+      ],
+      "open_blockers": []
+    },
+    "multi_layer_cache_parity": {
+      "status": "feature_correct",
+      "evidence": [
+        "memory_object_cache",
+        "page_index_cache",
+        "block_index_cache",
+        "disk_block_cache",
+        "shared_store_read_through",
+        "cache_writeback_rejections",
+        "hot_cache_promotions"
+      ],
+      "open_blockers": []
+    }
+  }
+}
