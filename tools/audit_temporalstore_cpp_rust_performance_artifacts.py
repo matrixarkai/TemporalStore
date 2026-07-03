@@ -219,8 +219,15 @@ def _load_execution_artifact(path: Path) -> dict[str, Any] | None:
             "step": row.get("step"),
             "workload": row.get("workload"),
             "reason": row.get("reason"),
+            "status": row.get("status"),
             "returncode": row.get("returncode"),
             "argv": row.get("argv"),
+            "preflight_blockers": row.get("preflight_blockers") or [],
+            "artifact_dir": row.get("artifact_dir"),
+            "comparison_path": row.get("comparison_path"),
+            "required_same_config_fields": row.get("required_same_config_fields") or [],
+            "required_result": row.get("required_result") or [],
+            "next_run_hint_source": row.get("next_run_hint_source"),
         }
         for row in results
         if isinstance(row, dict) and row.get("status") != "passed"
