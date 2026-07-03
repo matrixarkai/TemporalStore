@@ -49,6 +49,7 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             "confirm_no_active_prefix_precondition": "",
             "confirm_skip_validation": "",
             "confirm_non_strict_validation": "",
+            "confirm_unvalidated_target_state": "",
             "active_prefix_key": "matrixark:context:active_prefix",
             "expect_active_prefix": "",
             "rollback_job_id": "",
@@ -720,12 +721,25 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
                     dry_run=False,
                 ))
 
+            with self.assertRaisesRegex(backfill.BackfillError, "empty or unhealthy target prefix"):
+                backfill.run_activate_shadow(self.make_args(
+                    path,
+                    mode="activate_shadow",
+                    target_prefix="matrixark:context_backfill:candidate",
+                    confirm_activate="YES",
+                    confirm_skip_validation="YES",
+                    expect_active_prefix="matrixark:context:old",
+                    skip_validation=True,
+                    dry_run=False,
+                ))
+
             activated = backfill.run_activate_shadow(self.make_args(
                 path,
                 mode="activate_shadow",
                 target_prefix="matrixark:context_backfill:candidate",
                 confirm_activate="YES",
                 confirm_skip_validation="YES",
+                confirm_unvalidated_target_state="YES",
                 expect_active_prefix="matrixark:context:old",
                 skip_validation=True,
                 dry_run=False,
@@ -737,7 +751,9 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertTrue(activated["validation_skipped"])
             self.assertEqual(activated["validation_skip_reason"], "skip_validation_flag")
             self.assertEqual(activated["validation_source_range"], {})
-            self.assertEqual(activated["validation_target_state"], {})
+            self.assertEqual(activated["validation_target_state"]["record_count"], 0)
+            self.assertFalse(activated["validation_target_state"]["healthy_for_unvalidated_activation"])
+            self.assertTrue(activated["unvalidated_target_state_confirmed"])
             self.assertFalse(activated["active_prefix_precondition_bypassed"])
 
             kv_after = backfill.LocalJsonKV(path)
@@ -748,8 +764,10 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(activation_audit["validation_skip_reason"], "skip_validation_flag")
             self.assertTrue(activation_audit["validation_strict"])
             self.assertFalse(activation_audit["non_strict_validation_confirmed"])
+            self.assertTrue(activation_audit["unvalidated_target_state_confirmed"])
             self.assertEqual(activation_audit["validation_source_range"], {})
-            self.assertEqual(activation_audit["validation_target_state"], {})
+            self.assertEqual(activation_audit["validation_target_state"]["record_count"], 0)
+            self.assertFalse(activation_audit["validation_target_state"]["healthy_for_unvalidated_activation"])
 
     def test_activate_shadow_non_strict_validation_requires_confirmation(self):
         with tempfile.TemporaryDirectory() as tmp:

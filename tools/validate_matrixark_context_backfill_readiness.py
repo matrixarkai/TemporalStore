@@ -34,6 +34,7 @@ REQUIRED_DOC_MARKERS = [
     "matrixark_context_backfill_promotion_readiness_status",
     "--confirm-skip-validation",
     "--confirm-non-strict-validation",
+    "--confirm-unvalidated-target-state",
     "--confirm-resume-range-change",
     "--confirm-active-target",
     "--confirm-rollback-noop",
@@ -79,6 +80,7 @@ def parser_support_checks() -> list[Json]:
         check("backfill_has_active_prefix_precondition_bypass_confirmation", "--confirm-no-active-prefix-precondition" in backfill_options),
         check("backfill_has_skip_validation_confirmation", "--confirm-skip-validation" in backfill_options),
         check("backfill_has_non_strict_validation_confirmation", "--confirm-non-strict-validation" in backfill_options),
+        check("backfill_has_unvalidated_target_state_confirmation", "--confirm-unvalidated-target-state" in backfill_options),
         check("backfill_has_resume_range_change_confirmation", "--confirm-resume-range-change" in backfill_options),
     ]
 
