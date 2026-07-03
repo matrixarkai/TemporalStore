@@ -95,6 +95,37 @@ REQUIRED_SAME_CONFIG_COMMAND_ARGS = {
     "--replication-mode": "shared_store",
 }
 
+REQUIRED_STORAGE_MODE_MATRIX = {
+    "shared_store_async": {
+        "--storage-family": "shared_store",
+        "--storage-mode": "multi_node",
+        "--write-mode": "async",
+        "--oplog-mode": "async",
+        "--replication-mode": "shared_store",
+    },
+    "shared_store_sync": {
+        "--storage-family": "shared_store",
+        "--storage-mode": "multi_node",
+        "--write-mode": "sync",
+        "--oplog-mode": "sync",
+        "--replication-mode": "shared_store",
+    },
+    "raft_async": {
+        "--storage-family": "raft",
+        "--storage-mode": "multi_node",
+        "--write-mode": "async",
+        "--oplog-mode": "async",
+        "--replication-mode": "raft",
+    },
+    "raft_sync": {
+        "--storage-family": "raft",
+        "--storage-mode": "multi_node",
+        "--write-mode": "sync",
+        "--oplog-mode": "sync",
+        "--replication-mode": "raft",
+    },
+}
+
 REQUIRED_COMPLETED_SAME_CONFIG_VALUES = {
     "dataset": "matrixark-scale-synthetic",
     "batch_size": 20,
@@ -214,6 +245,76 @@ def _validate_missing_evidence_hint(row: dict[str, Any], failures: list[str]) ->
     ]:
         if expected not in required_result:
             failures.append(f"{workload} next_run_hint.required_result missing `{expected}`")
+    _validate_storage_mode_matrix_hint(row, failures)
+
+
+def _validate_command_args(
+    workload: str,
+    command: Any,
+    required_args: dict[str, str],
+    failures: list[str],
+    *,
+    context: str,
+    artifact_dir: str | None = None,
+) -> None:
+    if not isinstance(command, list):
+        failures.append(f"{workload} {context} must be a list")
+        return
+    required = ["python", "tools/run_matrixark_cpp_rust_scale_report.py", *WORKLOAD_RUN_ARGS.get(workload, [])]
+    for item in required:
+        if item not in command:
+            failures.append(f"{workload} {context} missing `{item}`")
+    artifact_dir = artifact_dir or _expected_artifact_dir(workload)
+    for item in ["--backends", "cpp", "rust", "--artifact-dir", artifact_dir, "--require-perf-parity"]:
+        if item not in command:
+            failures.append(f"{workload} {context} missing `{item}`")
+    if "--require-phase-scale-matrix" not in command:
+        failures.append(f"{workload} {context} missing `--require-phase-scale-matrix`")
+    combined_args = dict(REQUIRED_SAME_CONFIG_COMMAND_ARGS)
+    combined_args.update(required_args)
+    for flag, expected_value in combined_args.items():
+        if flag not in command:
+            failures.append(f"{workload} {context} missing `{flag}`")
+            continue
+        index = command.index(flag)
+        actual_value = command[index + 1] if index + 1 < len(command) else None
+        if actual_value != expected_value:
+            failures.append(
+                f"{workload} {context} {flag} drift: "
+                f"expected {expected_value!r} got {actual_value!r}"
+            )
+
+
+def _validate_storage_mode_matrix_hint(row: dict[str, Any], failures: list[str]) -> None:
+    workload = str(row.get("workload") or "")
+    hint = row.get("next_run_hint")
+    if not isinstance(hint, dict):
+        return
+    mode_matrix = hint.get("storage_mode_matrix")
+    if not isinstance(mode_matrix, dict):
+        failures.append(f"{workload} next_run_hint missing `storage_mode_matrix`")
+        return
+    for mode_name, required_args in REQUIRED_STORAGE_MODE_MATRIX.items():
+        entry = mode_matrix.get(mode_name)
+        if not isinstance(entry, dict):
+            failures.append(f"{workload} next_run_hint.storage_mode_matrix missing `{mode_name}`")
+            continue
+        if entry.get("storage_family") != required_args["--storage-family"]:
+            failures.append(f"{workload} {mode_name}.storage_family drift")
+        if entry.get("write_mode") != required_args["--write-mode"]:
+            failures.append(f"{workload} {mode_name}.write_mode drift")
+        if entry.get("replication_mode") != required_args["--replication-mode"]:
+            failures.append(f"{workload} {mode_name}.replication_mode drift")
+        if entry.get("comparison_path") != f"{_expected_artifact_dir(workload)}/{mode_name}/comparison.json":
+            failures.append(f"{workload} {mode_name}.comparison_path drift")
+        _validate_command_args(
+            workload,
+            entry.get("command"),
+            required_args,
+            failures,
+            context=f"next_run_hint.storage_mode_matrix.{mode_name}.command",
+            artifact_dir=f"{_expected_artifact_dir(workload)}/{mode_name}",
+        )
 
 
 def _validate_source_report(row: dict[str, Any], failures: list[str]) -> None:
@@ -384,6 +485,10 @@ def main() -> int:
     for workload in REQUIRED_WORKLOADS:
         if workload not in declared_workloads:
             failures.append(f"required_workloads missing `{workload}`")
+    declared_storage_modes = _as_list(data.get("required_storage_modes"))
+    for mode_name in REQUIRED_STORAGE_MODE_MATRIX:
+        if mode_name not in declared_storage_modes:
+            failures.append(f"required_storage_modes missing `{mode_name}`")
     declared_metrics = _as_list(data.get("required_metrics"))
     for metric in REQUIRED_METRICS:
         if metric not in declared_metrics:
