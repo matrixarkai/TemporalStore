@@ -19,6 +19,8 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
             "payload_bytes": 8,
             "incremental_records": 16,
             "raw_backends": "both",
+            "min_full_shadow_qps": 0.0,
+            "min_incremental_repair_qps": 0.0,
             "json_output": "",
         }
         values.update(overrides)
@@ -48,6 +50,30 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
             self.assertTrue(output.exists())
             self.assertEqual(summary["raw_backends"], ["temporalstore"])
             self.assertIn("full_shadow_qps_avg", summary["qps_summary"])
+
+
+    def test_performance_gate_passes_and_fails_thresholds(self) -> None:
+        passing = bench.run_benchmark(self.make_args(records=32, incremental_records=8, min_full_shadow_qps=1.0, min_incremental_repair_qps=1.0))
+        self.assertEqual(passing["status"], "ok")
+        self.assertTrue(passing["performance_gate"]["enabled"])
+        self.assertTrue(passing["performance_gate"]["passed"])
+
+        failing = bench.run_benchmark(self.make_args(records=32, incremental_records=8, raw_backends="temporalstore", min_full_shadow_qps=10**12))
+        self.assertEqual(failing["status"], "failed")
+        self.assertFalse(failing["performance_gate"]["passed"])
+        failed_checks = [check for check in failing["performance_gate"]["checks"] if not check["passed"]]
+        self.assertEqual(len(failed_checks), 1)
+        self.assertEqual(failed_checks[0]["metric"], "full_shadow_qps")
+
+    def test_cli_returns_nonzero_when_performance_gate_fails(self) -> None:
+        rc = bench.main([
+            "--records=16",
+            "--batch-size=8",
+            "--incremental-records=4",
+            "--raw-backends=temporalstore",
+            "--min-full-shadow-qps=1000000000000",
+        ])
+        self.assertEqual(rc, 2)
 
     def test_rejects_invalid_record_count(self) -> None:
         with self.assertRaises(bench.BackfillBenchmarkError):
