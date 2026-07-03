@@ -452,6 +452,9 @@ class MatrixKVRecordLog:
                 'effective_end_seq': end_seq,
                 'source_record_count': None,
                 'source_high_watermark_seq': None,
+                'source_record_count_estimated': True,
+                'discovered_record_count': 0,
+                'discovered_high_watermark_seq': None,
                 'user_bounded_end': end_seq is not None,
             }
         return {
@@ -1064,6 +1067,8 @@ def run_backfill(args: argparse.Namespace) -> Json:
     seen_ids: set[str] = set()
     pending: list[Json] = []
     checkpoint_pending_seq: int | None = None
+    discovered_min_sequence: int | None = None
+    discovered_max_sequence: int | None = None
     outer_bulk = hasattr(kv, 'begin_bulk') and hasattr(kv, 'end_bulk')
 
     def flush() -> None:
@@ -1147,11 +1152,15 @@ def run_backfill(args: argparse.Namespace) -> Json:
             handle_failure(sequence, raw_record, exc)
 
     def process_source_batch(batch: list[tuple[int, str | None]]) -> None:
+        nonlocal discovered_min_sequence, discovered_max_sequence
         if not batch:
             return
         metrics.source_batches += 1
         if scan_mode == 'scan_hash':
             metrics.scan_hash_batches += 1
+        for sequence, _ in batch:
+            discovered_min_sequence = sequence if discovered_min_sequence is None else min(discovered_min_sequence, sequence)
+            discovered_max_sequence = sequence if discovered_max_sequence is None else max(discovered_max_sequence, sequence)
         rows = source.read_many(batch)
         existing_dedupe_ids: set[str] | None = None
         if not args.dry_run:
@@ -1194,6 +1203,18 @@ def run_backfill(args: argparse.Namespace) -> Json:
             kv.end_bulk()
 
     metrics.finish()
+    if scan_mode == 'scan_hash':
+        source_range.update({
+            'source_record_count': metrics.scanned,
+            'source_record_count_estimated': True,
+            'source_high_watermark_seq': discovered_max_sequence,
+            'discovered_record_count': metrics.scanned,
+            'discovered_start_seq': discovered_min_sequence,
+            'discovered_high_watermark_seq': discovered_max_sequence,
+            'scan_hash_max_empty_shards': args.source_scan_max_empty_shards,
+        })
+        if source_range.get('effective_end_seq') is None and discovered_max_sequence is not None:
+            source_range['effective_end_seq'] = discovered_max_sequence + 1
     summary = metrics.to_json(
         job_id=args.job_id,
         source_prefix=args.source_prefix,
