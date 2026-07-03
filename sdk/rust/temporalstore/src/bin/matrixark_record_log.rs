@@ -14,6 +14,7 @@ struct Command {
     value: Option<String>,
     entries: Option<Vec<HashEntry>>,
     entries_compact: Option<Vec<[String; 3]>>,
+    append_options: Option<Value>,
     record: Option<Value>,
     records: Option<Vec<Value>>,
     record_type: Option<String>,
@@ -663,11 +664,21 @@ fn run_with_client(client: &Client, command: Command) -> Result<Value, String> {
             if count_key.is_some() && count_value.is_some() {
                 written += 1;
             }
+            let append_options = command.append_options.as_ref();
+            let raw_backend = append_options
+                .and_then(|options| options.get("raw_storage_backend"))
+                .and_then(Value::as_str)
+                .unwrap_or("temporalstore");
+            let append_path = append_options
+                .and_then(|options| options.get("append_path"))
+                .and_then(Value::as_str)
+                .unwrap_or("native_batch_append_records");
             Ok(json!({
                 "ok": true,
                 "written": written,
                 "append_api": command.op,
-                "append_path": "native_batch_append_records",
+                "append_path": append_path,
+                "raw_storage_backend": raw_backend,
                 "batch_lowering": "none"
             }))
         }

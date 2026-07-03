@@ -132,6 +132,9 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         self._raw_ingestion_prefix = configured_raw_prefix or f"{self._storage_prefix}:raw_ingestion"
         self._raw_record_hash_key = f"{self._raw_ingestion_prefix}:records"
         self._raw_count_key = f"{self._raw_ingestion_prefix}:record_count"
+        self._raw_storage_backend = self._normalize_raw_storage_backend(
+            os.environ.get("MATRIXARK_RAW_INGESTION_BACKEND", "temporalstore")
+        )
         self._raw_entry_count_cache: int | None = None
         self._shard_size = DIRECT_RECORD_LOG_SHARD_SIZE
         self._index_cache: list[str] | None = None
@@ -426,6 +429,14 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "namespace": self._namespace,
                 "table": self._table,
                 "storage_prefix": self._storage_prefix,
+                "raw_ingestion_backend": self._normalize_raw_storage_backend(
+                    getattr(self, "_raw_storage_backend", "temporalstore")
+                ),
+                "raw_ingestion_prefix": getattr(
+                    self,
+                    "_raw_ingestion_prefix",
+                    f"{self._storage_prefix}:raw_ingestion",
+                ),
                 "audit_mode": self._audit_mode,
                 "audit_buffered_records": len(self._audit_buffer),
                 "audit_flush_failures": self._audit_flush_failures,
@@ -601,9 +612,32 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             "full_context_pack_audit": "sample_or_enqueue_async_policy_enabled",
         }
 
+    def _normalize_raw_storage_backend(self, value: Any) -> str:
+        backend = str(value or "temporalstore").strip().lower().replace("-", "_")
+        if backend in {"", "temporal", "temporal_store", "ts"}:
+            backend = "temporalstore"
+        if backend in {"matrix_kv", "kv"}:
+            backend = "matrixkv"
+        if backend not in {"temporalstore", "matrixkv"}:
+            raise MatrixArkError("MATRIXARK_RAW_INGESTION_BACKEND must be temporalstore or matrixkv")
+        return backend
+
+    def _raw_ingestion_append_path(self) -> str:
+        backend = self._normalize_raw_storage_backend(
+            getattr(self, "_raw_storage_backend", "temporalstore")
+        )
+        if backend == "temporalstore":
+            return "matrixark_raw_ingestion_temporalstore_log"
+        return "matrixark_raw_ingestion_matrixkv_log"
+
     def _raw_ingestion_append_options(self) -> Json:
+        backend = self._normalize_raw_storage_backend(
+            getattr(self, "_raw_storage_backend", "temporalstore")
+        )
         return {
-            "append_path": "matrixark_raw_ingestion_log",
+            "append_path": self._raw_ingestion_append_path(),
+            "raw_storage_backend": backend,
+            "raw_message_store": backend,
             "coalesce_writes": True,
             "route_by": "raw_ingestion_prefix",
             "persist_from_storage_options": True,
@@ -613,6 +647,12 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         }
 
     def _ensure_raw_ingestion_fields(self) -> None:
+        if not hasattr(self, "_raw_storage_backend"):
+            self._raw_storage_backend = self._normalize_raw_storage_backend(
+                os.environ.get("MATRIXARK_RAW_INGESTION_BACKEND", "temporalstore")
+            )
+        else:
+            self._raw_storage_backend = self._normalize_raw_storage_backend(self._raw_storage_backend)
         if not hasattr(self, "_raw_ingestion_prefix"):
             storage_prefix = str(getattr(self, "_storage_prefix", "matrixark:mcp")).rstrip(":")
             configured_raw_prefix = os.environ.get("MATRIXARK_DIRECT_RAW_STORAGE_PREFIX", "").strip().rstrip(":")

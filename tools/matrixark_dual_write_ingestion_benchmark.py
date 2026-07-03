@@ -38,6 +38,7 @@ class InMemoryDualWriteClient:
         self._hashes: dict[tuple[str, str], str] = {}
         self.write_delay_s = max(0, write_delay_us) / 1_000_000.0
         self.calls_by_path: dict[str, int] = {}
+        self.calls_by_raw_backend: dict[str, int] = {}
         self.entries_by_path: dict[str, int] = {}
 
     def get_string(self, key: str) -> str:
@@ -71,9 +72,12 @@ class InMemoryDualWriteClient:
     ) -> None:
         if self.write_delay_s:
             time.sleep(self.write_delay_s)
-        path = str((append_options or {}).get("append_path") or "unknown")
+        options = append_options or {}
+        path = str(options.get("append_path") or "unknown")
+        raw_backend = str(options.get("raw_storage_backend") or "").strip() or "serving"
         with self._lock:
             self.calls_by_path[path] = self.calls_by_path.get(path, 0) + 1
+            self.calls_by_raw_backend[raw_backend] = self.calls_by_raw_backend.get(raw_backend, 0) + 1
             self.entries_by_path[path] = self.entries_by_path.get(path, 0) + len(entries)
             for entry in entries:
                 self._hashes[(str(entry["key"]), str(entry["field"]))] = str(entry["value"])
@@ -127,6 +131,7 @@ def make_direct_adapter(args: argparse.Namespace, client: Any | None = None) -> 
     adapter._raw_ingestion_prefix = (args.raw_storage_prefix or f"{adapter._storage_prefix}:raw_ingestion").rstrip(":")
     adapter._raw_record_hash_key = f"{adapter._raw_ingestion_prefix}:records"
     adapter._raw_count_key = f"{adapter._raw_ingestion_prefix}:record_count"
+    adapter._raw_storage_backend = args.raw_backend
     adapter._raw_entry_count_cache = None
     adapter._shard_size = args.shard_size
     adapter._index_cache = None
@@ -209,7 +214,8 @@ def run_benchmark(args: argparse.Namespace) -> Json:
             "avg": round((statistics.fmean(latencies_ms) / args.batch_size), 6) if latencies_ms else 0.0,
             "p95": round((percentile(latencies_sorted, 0.95) / args.batch_size), 6) if latencies_ms else 0.0,
         },
-        "dual_write_return_policy": "append_many returns after raw MatrixKV append and serving TemporalStore append both finish",
+        "dual_write_return_policy": "append_many returns after raw message append and serving TemporalStore append both finish",
+        "raw_backend": args.raw_backend,
         "storage_prefix": args.storage_prefix,
         "raw_storage_prefix": getattr(adapter, "_raw_ingestion_prefix", args.raw_storage_prefix or f"{args.storage_prefix}:raw_ingestion"),
         "raw_record_count_observed": raw_count,
@@ -218,13 +224,14 @@ def run_benchmark(args: argparse.Namespace) -> Json:
     if client is not None:
         summary["local_native_call_counts"] = {
             "calls_by_append_path": dict(sorted(client.calls_by_path.items())),
+            "calls_by_raw_backend": dict(sorted(client.calls_by_raw_backend.items())),
             "entries_by_append_path": dict(sorted(client.entries_by_path.items())),
         }
         summary["dual_write_counts_validated"] = (
             raw_count == total_written
             and serving_log_entries is not None
             and serving_log_entries > 0
-            and client.calls_by_path.get("matrixark_raw_ingestion_log", 0) > 0
+            and client.calls_by_raw_backend.get(args.raw_backend, 0) > 0
             and client.calls_by_path.get("native_append_queue", 0) > 0
         )
     return summary
@@ -241,6 +248,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--local-write-delay-us", type=int, default=int(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_LOCAL_WRITE_DELAY_US", "0")))
     parser.add_argument("--storage-prefix", default=os.environ.get("MATRIXARK_STORAGE_PREFIX", "matrixark:mcp:bench"))
     parser.add_argument("--raw-storage-prefix", default=os.environ.get("MATRIXARK_DIRECT_RAW_STORAGE_PREFIX", ""))
+    parser.add_argument(
+        "--raw-backend",
+        choices=["temporalstore", "matrixkv"],
+        default=os.environ.get("MATRIXARK_RAW_INGESTION_BACKEND", "temporalstore"),
+        help="Raw-message durability backend label used by the direct adapter.",
+    )
     parser.add_argument("--shard-size", type=int, default=int(os.environ.get("MATRIXARK_DIRECT_RECORD_LOG_SHARD_SIZE", "4096")))
     parser.add_argument("--metaserver", default=os.environ.get("TEMPORALSTORE_METASERVER", "127.0.0.1:65000"))
     parser.add_argument("--namespace", default=os.environ.get("MATRIXARK_NAMESPACE", "matrixark"))

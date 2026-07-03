@@ -60,7 +60,12 @@ matrixark:mcp:raw_ingestion:record_count = 2500000
 matrixark:mcp:raw_ingestion:records:000012 field 00000000000000012345 -> { ... raw record ... }
 ```
 
-Live ingestion writes raw API, batch, stream, resource, and feedback envelopes to this raw prefix before writing materialized serving records to the active TemporalStore context prefix. That dual-write contract keeps the raw MatrixKV log immutable and keeps serving scans free of raw envelopes.
+Live ingestion writes raw API, batch, stream, resource, and feedback envelopes to this raw prefix before writing materialized serving records to the active TemporalStore context prefix. The raw-message store is selectable:
+
+- `temporalstore` is the default. Use it when TemporalStore should be the single system for immutable raw messages and derived context-serving records.
+- `matrixkv` is the alternate raw-message store. Use it when MatrixKV should remain the raw ingestion log while TemporalStore serves materialized context.
+
+That dual-write contract keeps the raw log immutable and keeps serving scans free of raw envelopes.
 
 The runner also supports the legacy index layout:
 
@@ -179,10 +184,10 @@ By default, a bad record does not stop the job. Use `--fail-fast` for debugging 
 
 Live ingestion now writes every incoming MatrixArk payload to two places before the ingestion call returns:
 
-1. the immutable MatrixKV raw ingestion log under `matrixark:mcp:raw_ingestion`
+1. the immutable raw-message ingestion log under `matrixark:mcp:raw_ingestion`, stored in TemporalStore by default or MatrixKV when selected
 2. the materialized TemporalStore context-serving log under the active serving prefix
 
-Use `tools/matrixark_dual_write_ingestion_benchmark.py` to measure that synchronous path. The timer wraps `append_many`, so reported QPS and latency include both native append calls: raw MatrixKV append plus serving TemporalStore append.
+Use `tools/matrixark_dual_write_ingestion_benchmark.py` to measure that synchronous path. The timer wraps `append_many`, so reported QPS and latency include both native append calls: raw-message append plus serving TemporalStore append.
 
 Local smoke, no TemporalStore cluster required:
 
@@ -193,7 +198,21 @@ python3 tools/matrixark_dual_write_ingestion_benchmark.py \
   --workers=4 \
   --batch-size=128 \
   --payload-bytes=128 \
+  --raw-backend=temporalstore \
   --json-output=/tmp/matrixark_dual_write_bench.json
+```
+
+Local MatrixKV raw-message option:
+
+```bash
+MATRIXARK_RAW_INGESTION_BACKEND=matrixkv \
+python3 tools/matrixark_dual_write_ingestion_benchmark.py \
+  --mode=local \
+  --records=10000 \
+  --workers=4 \
+  --batch-size=128 \
+  --payload-bytes=128 \
+  --raw-backend=matrixkv
 ```
 
 Direct TemporalStore/MatrixKV measurement against a running local cluster:
@@ -209,7 +228,8 @@ python3 tools/matrixark_dual_write_ingestion_benchmark.py \
   --records=100000 \
   --workers=8 \
   --batch-size=256 \
-  --payload-bytes=256
+  --payload-bytes=256 \
+  --raw-backend=temporalstore
 ```
 
 Key output fields:
@@ -219,9 +239,10 @@ Key output fields:
 | `ingestion_qps` | Records per second observed by callers after both writes complete. |
 | `caller_visible_batch_latency_ms` | Latency percentiles for one `append_many` call, including raw and serving writes. |
 | `caller_visible_record_latency_ms_estimate` | Batch latency divided by batch size, useful for quick per-record comparison across batch sizes. |
-| `raw_record_count_observed` | Raw MatrixKV ingestion records appended. This should equal `records`. |
+| `raw_backend` | Raw-message storage option measured by the run: `temporalstore` or `matrixkv`. |
+| `raw_record_count_observed` | Raw-message ingestion records appended. This should equal `records`. |
 | `serving_log_entries_observed` | Serving append-log entries. This can be lower than raw records because the serving path can bundle records and also writes secondary index entries. |
-| `local_native_call_counts` | Local-mode proof that both `matrixark_raw_ingestion_log` and `native_append_queue` append paths were called. |
+| `local_native_call_counts` | Local-mode proof that both the selected raw append path and `native_append_queue` were called. |
 | `dual_write_return_policy` | Confirms the measured return boundary: raw append and serving append both finished before return. |
 
 Recommended scale matrix:
