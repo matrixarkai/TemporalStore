@@ -179,13 +179,19 @@ def _row_status(
     blockers: list[str] = []
     min_qps = float(thresholds.get("min_rust_cpp_qps_ratio") or 0.8)
     max_latency = float(thresholds.get("max_rust_cpp_latency_ratio") or 2.0)
-    if cpp.get("timeout_count") or rust.get("timeout_count"):
-        blockers.append("timeout_count_nonzero")
-    if cpp.get("error_count") or rust.get("error_count"):
-        blockers.append("error_count_nonzero")
-    if cpp.get("fallback_flags") or rust.get("fallback_flags"):
+    max_timeouts = int(thresholds.get("max_timeout_count") or 0)
+    max_errors = int(thresholds.get("max_error_count") or 0)
+    allow_fallback_flags = thresholds.get("allow_fallback_flags") is True
+    require_selected_ref_parity = thresholds.get("require_selected_ref_parity") is not False
+    if _int(cpp.get("timeout_count")) > max_timeouts or _int(rust.get("timeout_count")) > max_timeouts:
+        blockers.append(f"timeout_count_above_{max_timeouts}")
+    if _int(cpp.get("error_count")) > max_errors or _int(rust.get("error_count")) > max_errors:
+        blockers.append(f"error_count_above_{max_errors}")
+    if not allow_fallback_flags and (cpp.get("fallback_flags") or rust.get("fallback_flags")):
         blockers.append("fallback_flags_present")
-    if cpp.get("selected_ref_parity") is not True or rust.get("selected_ref_parity") is not True:
+    if require_selected_ref_parity and (
+        cpp.get("selected_ref_parity") is not True or rust.get("selected_ref_parity") is not True
+    ):
         blockers.append("selected_ref_parity_missing")
     for key in ("message_qps_ratio", "retrieve_qps_ratio"):
         if _num(ratios.get(key)) < min_qps:
