@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::control::PartitionInfoStats;
+use crate::control::{PartitionInfoStats, ShardCanonicalStorageStats};
 use crate::partition_id::{validate_partition_set_count, PartitionId, MAX_TABLE_ID};
 use crate::types::{ShardId, Status};
 
@@ -174,6 +174,8 @@ pub struct ServerShardServingState {
     pub total_records: usize,
     pub storage_bytes: u64,
     pub cache_memory_bytes: u64,
+    #[serde(default)]
+    pub storage: ShardCanonicalStorageStats,
     #[serde(alias = "page_store_bytes_written")]
     pub block_store_bytes_written: u64,
     pub oplog_sequence: u64,
@@ -2775,6 +2777,7 @@ mod tests {
                 total_records: 10,
                 storage_bytes: 100,
                 cache_memory_bytes: 64,
+                storage: ShardCanonicalStorageStats::default(),
                 block_store_bytes_written: 100,
                 oplog_sequence: 9,
                 dirty_object_count: 1,
@@ -3902,6 +3905,7 @@ mod tests {
                 total_records: 1,
                 storage_bytes: 10,
                 cache_memory_bytes: 1,
+                storage: ShardCanonicalStorageStats::default(),
                 block_store_bytes_written: 10,
                 oplog_sequence: 1,
                 dirty_object_count: 0,
@@ -4041,6 +4045,7 @@ mod tests {
                 total_records: 2,
                 storage_bytes: 20,
                 cache_memory_bytes: 2,
+                storage: ShardCanonicalStorageStats::default(),
                 block_store_bytes_written: 20,
                 oplog_sequence: 2,
                 dirty_object_count: 0,

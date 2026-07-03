@@ -272,6 +272,7 @@ REQUIRED_LIFECYCLE_TOP_LEVEL_KEYS = [
     "storage_reclaim_contract",
     "storage_safety_snapshot",
     "storage_index_snapshot",
+    "storage_topology_snapshot",
     "storage_read_sequence",
     "storage_cold_scan_sequence",
     "storage_lifecycle_phases",
@@ -457,6 +458,21 @@ REQUIRED_STORAGE_INDEX_SNAPSHOT_FIELDS = [
     "missing_owner_ref_count",
     "owner_mismatch_count",
     "restart_rebuild_verified",
+]
+
+REQUIRED_STORAGE_TOPOLOGY_SNAPSHOT_FIELDS = [
+    "storage_zone_count",
+    "active_storage_zones",
+    "sealed_storage_zones",
+    "stream_segment_count",
+    "segment_open_count",
+    "segment_sealed_count",
+    "delayed_destroy_backlog",
+    "storage_zone_total_bytes",
+    "storage_zone_used_bytes",
+    "storage_zone_stale_bytes",
+    "append_log_replay_records",
+    "append_log_reclaimed_records",
 ]
 
 LEGACY_ALIAS_MAP = {
@@ -700,6 +716,18 @@ def _dig_index_snapshot(report: dict[str, Any]) -> dict[str, Any]:
         report.get("storage_index_snapshot"),
         report.get("storage_lifecycle", {}).get("index_snapshot") if isinstance(report.get("storage_lifecycle"), dict) else None,
         report.get("storage_index", {}).get("snapshot") if isinstance(report.get("storage_index"), dict) else None,
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            return candidate
+    return {}
+
+
+def _dig_topology_snapshot(report: dict[str, Any]) -> dict[str, Any]:
+    candidates = [
+        report.get("storage_topology_snapshot"),
+        report.get("storage_lifecycle", {}).get("topology_snapshot") if isinstance(report.get("storage_lifecycle"), dict) else None,
+        report.get("storage_topology", {}).get("snapshot") if isinstance(report.get("storage_topology"), dict) else None,
     ]
     for candidate in candidates:
         if isinstance(candidate, dict):
@@ -1056,6 +1084,8 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
     rust_safety_snapshot = _dig_safety_snapshot(rust_report)
     cpp_index_snapshot = _dig_index_snapshot(cpp_report)
     rust_index_snapshot = _dig_index_snapshot(rust_report)
+    cpp_topology_snapshot = _dig_topology_snapshot(cpp_report)
+    rust_topology_snapshot = _dig_topology_snapshot(rust_report)
     cpp_cache_layers = _dig_cache_layers(cpp_report)
     rust_cache_layers = _dig_cache_layers(rust_report)
     cpp_cache_semantics = _dig_cache_semantics(cpp_report)
@@ -1312,6 +1342,19 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
         for field in ["unreadable_page_refs", "checksum_mismatches"]:
             if _as_number(index_snapshot.get(field)) not in (0.0, None):
                 failures.append(f"{backend} index snapshot `{field}` must be zero")
+    for field in REQUIRED_STORAGE_TOPOLOGY_SNAPSHOT_FIELDS:
+        if field not in cpp_topology_snapshot:
+            failures.append(f"cpp topology snapshot missing field `{field}`")
+        if field not in rust_topology_snapshot:
+            failures.append(f"rust topology snapshot missing field `{field}`")
+    for backend, topology_snapshot in [
+        ("cpp", cpp_topology_snapshot),
+        ("rust", rust_topology_snapshot),
+    ]:
+        for field in REQUIRED_STORAGE_TOPOLOGY_SNAPSHOT_FIELDS:
+            value = _as_number(topology_snapshot.get(field))
+            if value is None or value < 0:
+                failures.append(f"{backend} topology snapshot `{field}` must be non-negative")
     for backend, reclaim_contract in [("cpp", cpp_reclaim_contract), ("rust", rust_reclaim_contract)]:
         for flag in [
             "cache_eviction_frees_memory_only",

@@ -27,13 +27,16 @@ use crate::engine::reports::{
     default_storage_reclaim_scope, default_storage_reclaim_semantics,
     default_storage_index_snapshot, default_storage_write_contract,
     default_storage_write_contract_empty, default_storage_safety_snapshot,
-    default_storage_write_sequence, effective_storage_tuning_from_env,
+    default_storage_topology_snapshot, default_storage_write_sequence,
+    effective_storage_tuning_from_env,
     storage_index_snapshot_from_metrics, storage_safety_snapshot_from_metrics,
-    PublicStorageContract, PublicStorageFeatureShapes, ShardCompactionModelLayoutReport,
+    storage_topology_snapshot_from_metrics, PublicStorageContract, PublicStorageFeatureShapes,
+    ShardCompactionModelLayoutReport,
     ShardCompactionUtilityReport, SlotDumpManifest, StorageLifecyclePlan, StorageLifecycleReport,
     StorageLifecycleRequest, StorageManagerCycleReport, StorageManagerCycleRequest,
     StorageManagerStageReport, StorageProductionReadinessPolicy, StorageProductionReadinessReport,
     StorageContractValue, StorageIndexSnapshot, StorageReclaimScope, StorageSafetySnapshot,
+    StorageTopologySnapshot,
 };
 use crate::engine::TemporalEngine;
 use crate::meta::{
@@ -224,6 +227,8 @@ pub struct DataNodeLifecycleReport {
     pub storage_safety_snapshot: StorageSafetySnapshot,
     #[serde(default = "default_storage_index_snapshot")]
     pub storage_index_snapshot: StorageIndexSnapshot,
+    #[serde(default = "default_storage_topology_snapshot")]
+    pub storage_topology_snapshot: StorageTopologySnapshot,
     #[serde(default = "default_storage_write_sequence")]
     pub storage_write_sequence: Vec<String>,
     #[serde(default = "default_storage_read_sequence")]
@@ -269,6 +274,7 @@ impl Default for DataNodeLifecycleReport {
             storage_reclaim_contract: default_storage_reclaim_contract_empty(),
             storage_safety_snapshot: default_storage_safety_snapshot(),
             storage_index_snapshot: default_storage_index_snapshot(),
+            storage_topology_snapshot: default_storage_topology_snapshot(),
             storage_write_sequence: default_storage_write_sequence(),
             storage_read_sequence: default_storage_read_sequence(),
             storage_cold_scan_sequence: default_storage_cold_scan_sequence(),
@@ -386,19 +392,37 @@ fn apply_shard_storage_metrics(
     }
 
     for shard in shards {
-        add(metrics, "object_index_entry_count", shard.total_records as u64);
-        add(metrics, "slot_index_entry_count", shard.dirty_slot_count);
-        add(metrics, "slot_object_ref_count", shard.total_records as u64);
-        add(metrics, "slot_page_ref_count", shard.total_records as u64);
-        add(metrics, "page_index_entry_count", shard.total_records as u64);
-        add(metrics, "block_index_entry_count", shard.total_records as u64);
-        add(metrics, "page_address_count", shard.total_records as u64);
-        add(metrics, "page_reads", 0);
-        add(metrics, "page_writes", shard.total_records as u64);
-        add(metrics, "block_reads", 0);
-        add(metrics, "block_writes", shard.total_records as u64);
-        add(metrics, "bytes_written", shard.block_store_bytes_written);
+        let storage = &shard.storage;
+        let page_entries = storage.page_index_entries.max(shard.total_records as u64);
+        let block_entries = storage.block_index_entries.max(page_entries);
+        let object_entries = storage.object_index_entries.max(shard.total_records as u64);
+        let slot_entries = storage.slot_entries.max(shard.dirty_slot_count);
+        add(metrics, "object_index_entry_count", object_entries);
+        add(metrics, "slot_index_entry_count", slot_entries);
+        add(metrics, "slot_object_ref_count", object_entries);
+        add(metrics, "slot_page_ref_count", page_entries);
+        add(metrics, "page_index_entry_count", page_entries);
+        add(metrics, "block_index_entry_count", block_entries);
+        add(metrics, "page_address_count", page_entries);
+        add(metrics, "page_reads", storage.page_reads);
+        add(metrics, "page_writes", storage.page_writes.max(page_entries));
+        add(metrics, "block_reads", storage.block_reads);
+        add(metrics, "block_writes", storage.block_writes.max(block_entries));
+        add(metrics, "bytes_read", storage.bytes_read);
+        add(
+            metrics,
+            "bytes_written",
+            storage.bytes_written.max(shard.block_store_bytes_written),
+        );
         add(metrics, "append_watermark", shard.oplog_sequence);
+        add(metrics, "compaction_watermark", storage.compaction_watermark);
+        add(metrics, "storage_zone_count", storage.storage_zone_count);
+        add(metrics, "active_storage_zones", storage.active_storage_zones);
+        add(metrics, "sealed_storage_zones", storage.sealed_storage_zones);
+        add(metrics, "stream_segment_count", storage.stream_segment_count);
+        add(metrics, "storage_zone_total_bytes", storage.storage_zone_total_bytes);
+        add(metrics, "storage_zone_used_bytes", storage.storage_zone_used_bytes);
+        add(metrics, "storage_zone_stale_bytes", storage.storage_zone_stale_bytes);
     }
 }
 
@@ -2944,6 +2968,9 @@ impl DataNodeRuntime {
             storage_index_snapshot: storage_index_snapshot_from_metrics(
                 &storage_lifecycle_metrics,
             ),
+            storage_topology_snapshot: storage_topology_snapshot_from_metrics(
+                &storage_lifecycle_metrics,
+            ),
             storage_write_sequence: default_storage_write_sequence(),
             storage_read_sequence: default_storage_read_sequence(),
             storage_cold_scan_sequence: default_storage_cold_scan_sequence(),
@@ -3228,6 +3255,7 @@ impl DataNodeRuntime {
                     total_records: stats.total_records,
                     storage_bytes: stats.storage_bytes,
                     cache_memory_bytes: stats.cache.memory_bytes,
+                    storage: stats.storage.clone(),
                     block_store_bytes_written: stats.block_store.bytes_written,
                     oplog_sequence: stats.write_ahead_log.last_sequence,
                     dirty_object_count: dirty_by_shard

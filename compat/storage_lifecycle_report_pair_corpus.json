@@ -416,6 +416,20 @@
       "missing_owner_ref_count": 0,
       "owner_mismatch_count": 0,
       "restart_rebuild_verified": true
+    },
+    "storage_topology_snapshot": {
+      "storage_zone_count": 2,
+      "active_storage_zones": 1,
+      "sealed_storage_zones": 1,
+      "stream_segment_count": 2,
+      "segment_open_count": 1,
+      "segment_sealed_count": 1,
+      "delayed_destroy_backlog": 1,
+      "storage_zone_total_bytes": 4096,
+      "storage_zone_used_bytes": 3072,
+      "storage_zone_stale_bytes": 1024,
+      "append_log_replay_records": 4,
+      "append_log_reclaimed_records": 1
     }
   },
   "rust": {
@@ -831,6 +845,20 @@
       "missing_owner_ref_count": 0,
       "owner_mismatch_count": 0,
       "restart_rebuild_verified": true
+    },
+    "storage_topology_snapshot": {
+      "storage_zone_count": 2,
+      "active_storage_zones": 1,
+      "sealed_storage_zones": 1,
+      "stream_segment_count": 2,
+      "segment_open_count": 1,
+      "segment_sealed_count": 1,
+      "delayed_destroy_backlog": 1,
+      "storage_zone_total_bytes": 4096,
+      "storage_zone_used_bytes": 3072,
+      "storage_zone_stale_bytes": 1024,
+      "append_log_replay_records": 4,
+      "append_log_reclaimed_records": 1
     }
   }
 }
