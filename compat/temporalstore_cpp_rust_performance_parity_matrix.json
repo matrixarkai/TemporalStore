@@ -5,8 +5,16 @@
     "performance_candidate": false,
     "production_performance_parity": false,
     "open_blockers": [
-      "Live C++ and Rust scale runs have not produced complete same-config evidence for every required workload.",
-      "Rows with status=missing_live_evidence must not be used as QPS or latency parity claims."
+      "1K_event_ingestion:same-config live C++ and Rust 1K ingestion evidence missing",
+      "10K_event_ingestion:cpp_backend_not_passed",
+      "10K_event_ingestion:rust_backend_not_passed",
+      "100K_event_ingestion:cpp_backend_not_passed",
+      "100K_event_ingestion:rust_backend_not_passed",
+      "retrieve_workers_4:same-config live C++ and Rust 4-worker retrieval evidence missing",
+      "retrieve_workers_8:same-config live C++ and Rust 8-worker retrieval evidence missing",
+      "retrieve_workers_16:cpp_backend_not_passed",
+      "retrieve_workers_16:rust_backend_not_passed",
+      "retrieve_workers_32:same-config live C++ and Rust 32-worker retrieval evidence missing"
     ]
   },
   "thresholds": {
@@ -69,7 +77,9 @@
       "cpp": {},
       "rust": {},
       "ratios": {},
-      "open_blockers": ["same-config live C++ and Rust 1K ingestion evidence missing"]
+      "open_blockers": [
+        "same-config live C++ and Rust 1K ingestion evidence missing"
+      ]
     },
     {
       "workload": "10K_event_ingestion",
@@ -87,7 +97,10 @@
       "cpp": {},
       "rust": {},
       "ratios": {},
-      "open_blockers": ["same-config live C++ and Rust 10K ingestion evidence missing"]
+      "open_blockers": [
+        "cpp_backend_not_passed",
+        "rust_backend_not_passed"
+      ]
     },
     {
       "workload": "100K_event_ingestion",
@@ -105,7 +118,10 @@
       "cpp": {},
       "rust": {},
       "ratios": {},
-      "open_blockers": ["same-config live C++ and Rust 100K ingestion evidence missing"]
+      "open_blockers": [
+        "cpp_backend_not_passed",
+        "rust_backend_not_passed"
+      ]
     },
     {
       "workload": "retrieve_workers_4",
@@ -123,7 +139,9 @@
       "cpp": {},
       "rust": {},
       "ratios": {},
-      "open_blockers": ["same-config live C++ and Rust 4-worker retrieval evidence missing"]
+      "open_blockers": [
+        "same-config live C++ and Rust 4-worker retrieval evidence missing"
+      ]
     },
     {
       "workload": "retrieve_workers_8",
@@ -141,7 +159,9 @@
       "cpp": {},
       "rust": {},
       "ratios": {},
-      "open_blockers": ["same-config live C++ and Rust 8-worker retrieval evidence missing"]
+      "open_blockers": [
+        "same-config live C++ and Rust 8-worker retrieval evidence missing"
+      ]
     },
     {
       "workload": "retrieve_workers_16",
@@ -159,7 +179,10 @@
       "cpp": {},
       "rust": {},
       "ratios": {},
-      "open_blockers": ["same-config live C++ and Rust 16-worker retrieval evidence missing"]
+      "open_blockers": [
+        "cpp_backend_not_passed",
+        "rust_backend_not_passed"
+      ]
     },
     {
       "workload": "retrieve_workers_32",
@@ -177,7 +200,9 @@
       "cpp": {},
       "rust": {},
       "ratios": {},
-      "open_blockers": ["same-config live C++ and Rust 32-worker retrieval evidence missing"]
+      "open_blockers": [
+        "same-config live C++ and Rust 32-worker retrieval evidence missing"
+      ]
     }
   ]
 }

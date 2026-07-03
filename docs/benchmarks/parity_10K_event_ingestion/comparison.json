@@ -1,0 +1,1651 @@
+{
+  "backends": {
+    "cpp": {
+      "backend": "cpp",
+      "effective_storage_tuning": {
+        "TS_BLOCK_INDEX_CACHE_BYTES": 67108864,
+        "TS_BLOCK_SEGMENT_TARGET_BYTES": 1073741824,
+        "TS_COLD_SCAN_NO_CACHE_FILL": true,
+        "TS_COMPACTION_WATERMARK_BYTES": 268435456,
+        "TS_CONTEXT_PAGE_TARGET_BYTES": 65536,
+        "TS_PAGE_INDEX_CACHE_BYTES": 67108864,
+        "TS_STORAGE_ZONE_SIZE": 10485760,
+        "TS_STREAM_MAX_BLOB_SIZE": 10485760,
+        "effective_block_segment_target_bytes": 10485760
+      },
+      "error": "failed to load TemporalStore library: C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\output-ubuntu22\\release\\sdk\\lib\\libbcache2.so: Could not find module 'C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\output-ubuntu22\\release\\sdk\\lib\\libbcache2.so' (or one of its dependencies). Try using the full path with constructor syntax.; libbcache2.so: Could not find module 'libbcache2.so' (or one of its dependencies). Try using the full path with constructor syntax.; bcache2.dll: Could not find module 'bcache2.dll' (or one of its dependencies). Try using the full path with constructor syntax.; libbcache2.dylib: Could not find module 'libbcache2.dylib' (or one of its dependencies). Try using the full path with constructor syntax.",
+      "public_storage_contract": {
+        "append_watermark": "AppendWatermark",
+        "block_address": "BlockAddress",
+        "block_index_entry": "BlockIndexEntry",
+        "compaction_watermark": "CompactionWatermark",
+        "compatibility_aliases": {},
+        "extent": "Extent",
+        "follower_cursor_safety": "FollowerCursorSafety",
+        "gc_eligibility": "GcEligibility",
+        "object_index_entry": "ObjectIndexEntry",
+        "page_address": "PageAddress",
+        "page_index_entry": "PageIndexEntry",
+        "segment": "Segment",
+        "slot": "Slot",
+        "storage_zone": "StorageZone",
+        "stream": "Stream",
+        "tombstone": "Tombstone"
+      },
+      "retrieve": {
+        "stage_metrics": {
+          "broad_scan_blocked_count": 0,
+          "broad_scan_used_count": 0,
+          "cache_hit_rate": 0.0,
+          "candidate_count_avg": 0.0,
+          "correctness_evidence": {},
+          "drop_counters_total": {},
+          "dropped_refs_avg": 0.0,
+          "fallback_flags_total": {},
+          "index_hits_avg": 0.0,
+          "index_postings_read_avg": 0.0,
+          "index_postings_touched_avg": 0.0,
+          "native_pack_assembly_count": 0,
+          "placement_partitions_touched_avg": 0.0,
+          "python_pack_fallback_count": 0,
+          "raw_candidate_tables_returned_count": 0,
+          "samples": 0,
+          "scanned_records_avg": 0.0,
+          "selected_ref_signatures_by_query": {},
+          "selected_refs_avg": 0.0,
+          "selected_refs_max": 0,
+          "selected_refs_min": 0,
+          "stage_avg_ms": {
+            "append_engine_ms": 0.0,
+            "append_queue_wait_ms": 0.0,
+            "audit_ms": 0.0,
+            "candidate_fetch_ms": 0.0,
+            "index_prefilter_ms": 0.0,
+            "node_traversal_ms": 0.0,
+            "pack_ms": 0.0,
+            "query_plan_ms": 0.0,
+            "score_ms": 0.0
+          },
+          "stage_p95_ms": {
+            "append_engine_ms": 0.0,
+            "append_queue_wait_ms": 0.0,
+            "audit_ms": 0.0,
+            "candidate_fetch_ms": 0.0,
+            "index_prefilter_ms": 0.0,
+            "node_traversal_ms": 0.0,
+            "pack_ms": 0.0,
+            "query_plan_ms": 0.0,
+            "score_ms": 0.0
+          },
+          "timeout_count": 0,
+          "timeout_partial_count": 0,
+          "token_count_avg": 0.0
+        }
+      },
+      "status": "backend_startup_failed",
+      "storage_cache_contract": {
+        "append_watermark_invalidation": true,
+        "cache_invalidations": 0,
+        "cache_refills": 0,
+        "cache_writeback_queue_depth": 0,
+        "cache_writeback_rejections": 0,
+        "cold_scan_no_promote": true,
+        "compaction_watermark_invalidation": true,
+        "durable_refill_on_miss": true,
+        "hot_cache_promotions": 0,
+        "hot_to_cold_lookup": true,
+        "layers": [
+          "memory_object_cache",
+          "page_index_cache",
+          "block_index_cache",
+          "disk_block_cache",
+          "shared_store_read_through"
+        ],
+        "metrics": [
+          "memory_cache_hits",
+          "memory_cache_misses",
+          "page_index_cache_hits",
+          "page_index_cache_misses",
+          "block_index_cache_hits",
+          "block_index_cache_misses",
+          "disk_cache_hits",
+          "disk_cache_misses",
+          "shared_store_read_throughs",
+          "cache_refills",
+          "cache_invalidations",
+          "cache_writeback_queue_depth",
+          "cache_writeback_rejections"
+        ],
+        "semantics": [
+          "lookup_hot_to_cold",
+          "refill_from_durable_on_miss",
+          "invalidate_on_append_watermark",
+          "invalidate_on_compaction_watermark",
+          "cold_scan_no_promote",
+          "writeback_backpressure_reported"
+        ],
+        "writeback_backpressure_measured": true
+      },
+      "storage_cache_layers": [
+        "memory_object_cache",
+        "page_index_cache",
+        "block_index_cache",
+        "disk_block_cache",
+        "shared_store_read_through"
+      ],
+      "storage_cache_semantics": [
+        "lookup_hot_to_cold",
+        "refill_from_durable_on_miss",
+        "invalidate_on_append_watermark",
+        "invalidate_on_compaction_watermark",
+        "cold_scan_no_promote",
+        "writeback_backpressure_reported"
+      ],
+      "storage_cold_scan_contract": {
+        "cache_fill": false,
+        "cold_scan_decode_batch_limit": 0,
+        "cold_scan_decode_byte_limit": 0,
+        "cold_scan_decode_records_ms": 0.0,
+        "cold_scan_no_cache_reads": 0,
+        "cold_scan_page_index_scan_count": 0,
+        "cold_scan_page_index_scan_ms": 0.0,
+        "cold_scan_page_reads": 0,
+        "cold_scan_records_decoded": 0,
+        "cold_scan_records_returned": 0,
+        "deadline_ms": 0,
+        "decode_batch_limit": 0,
+        "decode_byte_limit": 0,
+        "hot_cache_promotions": 0,
+        "no_cache_page_reads": 0,
+        "page_index_scan": "PageIndex",
+        "promotion_policy": "no_promote",
+        "records_decoded": 0,
+        "records_returned": 0,
+        "timestamp_range": "cold"
+      },
+      "storage_cold_scan_sequence": [
+        "timestamp_page_index_scan",
+        "no_cache_page_read",
+        "bounded_decode",
+        "no_hot_cache_promotion"
+      ],
+      "storage_index_contract": {
+        "block_address_codec": "BlockAddress",
+        "block_address_encode_decode": true,
+        "block_index": "page addresses -> physical durable locations",
+        "block_index_entry_count": 1,
+        "checksum_mismatches": 0,
+        "object_index_entry": "{model/table/object_key} -> current page chain",
+        "object_index_entry_count": 1,
+        "page_address_codec": "PageAddress",
+        "page_address_encode_decode": true,
+        "page_index": "logical timestamp/key ranges -> page addresses",
+        "page_index_entry_count": 1,
+        "required_behaviors": [
+          "page_address_encode_decode",
+          "page_address_stable_order",
+          "timestamp_range_page_lookup",
+          "slot_index_maps_slot_to_object_page_refs",
+          "object_index_maps_model_table_object_key_to_page_chain",
+          "page_index_maps_logical_ranges_to_page_addresses",
+          "block_index_maps_page_addresses_to_durable_locations",
+          "restart_rebuilds_page_block_object_indexes"
+        ],
+        "restart_rebuild_verified": true,
+        "slot_index": "slot -> object/page refs",
+        "slot_index_entry_count": 1,
+        "slot_object_ref_count": 1,
+        "slot_page_ref_count": 1,
+        "stable_order": [
+          "shard_id",
+          "zone_id",
+          "segment_id",
+          "page_id",
+          "offset"
+        ],
+        "stable_order_verified": true,
+        "timestamp_range_lookup_verified": true,
+        "unreadable_page_refs": 0
+      },
+      "storage_lifecycle_metrics": {
+        "append_log_reclaimed_records": 0,
+        "append_log_replay_records": 0,
+        "append_watermark": 0,
+        "block_index_cache_hits": 0,
+        "block_index_cache_misses": 0,
+        "block_index_rebuild_count": 0,
+        "cache_admissions": 0,
+        "cache_evictions": 0,
+        "cache_invalidations": 0,
+        "cache_refills": 0,
+        "cache_rehydrates": 0,
+        "cache_writeback_queue_depth": 0,
+        "cache_writeback_rejections": 0,
+        "cold_scan_no_cache_reads": 0,
+        "compaction_reclaimed_bytes": 0,
+        "compaction_watermark": 0,
+        "delayed_destroy_backlog": 0,
+        "disk_cache_hits": 0,
+        "disk_cache_misses": 0,
+        "follower_cursor_retention_floor": 0,
+        "hot_cache_promotions": 0,
+        "memory_cache_hits": 0,
+        "memory_cache_misses": 0,
+        "object_index_rebuild_count": 0,
+        "page_index_cache_hits": 0,
+        "page_index_cache_misses": 0,
+        "page_index_rebuild_count": 0,
+        "physical_reclaim_errors": 0,
+        "physical_reclaimed_bytes": 0,
+        "reclaimable_bytes": 0,
+        "segment_open_count": 0,
+        "segment_sealed_count": 0,
+        "shared_store_read_throughs": 0,
+        "slot_dirty_generation_count": 0,
+        "slot_owner_mismatch_count": 0,
+        "slot_stale_ref_count": 0,
+        "slot_tombstone_count": 0,
+        "stale_block_tombstones": 0,
+        "stale_blocks_rewritten": 0,
+        "stale_blocks_skipped": 0,
+        "stale_page_tombstones": 0,
+        "stale_pages_rewritten": 0,
+        "stale_pages_skipped": 0,
+        "storage_manager_block_gc_count": 0,
+        "storage_manager_compaction_count": 0,
+        "storage_manager_delayed_destroy_count": 0,
+        "storage_manager_evict_count": 0,
+        "storage_manager_expire_count": 0,
+        "storage_manager_follower_cursor_safety_count": 0,
+        "storage_manager_index_gc_count": 0,
+        "storage_manager_loop_ms": 0,
+        "storage_manager_page_gc_count": 0,
+        "storage_manager_prepare_count": 0,
+        "storage_manager_reclaim_count": 0,
+        "storage_manager_watermark_progress_count": 0,
+        "storage_zone_stale_bytes": 0,
+        "storage_zone_total_bytes": 0,
+        "storage_zone_used_bytes": 0,
+        "stream_rollover_count": 0,
+        "tombstone_records": 0
+      },
+      "storage_lifecycle_phases": [
+        "prepare",
+        "reclaim",
+        "evict",
+        "expire",
+        "page_gc",
+        "block_gc",
+        "compaction",
+        "index_gc",
+        "delayed_destroy",
+        "follower_cursor_safety",
+        "watermark_progress"
+      ],
+      "storage_manager_contract": {
+        "cpp_public_name": "StorageManager",
+        "loop_metric": "storage_manager_loop_ms",
+        "loop_ms": 0.0,
+        "manager_identity": "StorageManager/StoreManager",
+        "missing_phase_count": 0,
+        "phase_counts": {
+          "block_gc": 0,
+          "compaction": 0,
+          "delayed_destroy": 0,
+          "evict": 0,
+          "expire": 0,
+          "follower_cursor_safety": 0,
+          "index_gc": 0,
+          "page_gc": 0,
+          "prepare": 0,
+          "reclaim": 0,
+          "watermark_progress": 0
+        },
+        "phase_metrics": {
+          "block_gc": "storage_manager_block_gc_count",
+          "compaction": "storage_manager_compaction_count",
+          "delayed_destroy": "storage_manager_delayed_destroy_count",
+          "evict": "storage_manager_evict_count",
+          "expire": "storage_manager_expire_count",
+          "follower_cursor_safety": "storage_manager_follower_cursor_safety_count",
+          "index_gc": "storage_manager_index_gc_count",
+          "page_gc": "storage_manager_page_gc_count",
+          "prepare": "storage_manager_prepare_count",
+          "reclaim": "storage_manager_reclaim_count",
+          "watermark_progress": "storage_manager_watermark_progress_count"
+        },
+        "phase_order": [
+          "prepare",
+          "reclaim",
+          "evict",
+          "expire",
+          "page_gc",
+          "block_gc",
+          "compaction",
+          "index_gc",
+          "delayed_destroy",
+          "follower_cursor_safety",
+          "watermark_progress"
+        ],
+        "phase_order_enforced": true,
+        "rust_public_name": "StoreManager"
+      },
+      "storage_read_contract": {
+        "block_index_entries": 1,
+        "block_index_lookup_count": 0,
+        "block_index_lookup_ms": 0.0,
+        "decode_records_ms": 0.0,
+        "filter_policy": "normal",
+        "logical_key": "storage:parity",
+        "object_index_entry": "ObjectIndexEntry",
+        "object_page_index_lookup_count": 0,
+        "object_page_index_lookup_ms": 0.0,
+        "page_address_count": 0,
+        "page_addresses": 1,
+        "page_index_entries": 1,
+        "page_reads": 0,
+        "records_decoded": 0,
+        "records_returned": 0,
+        "stale_generations_filtered": 0,
+        "timestamp_range": "all",
+        "tombstones_filtered": 0
+      },
+      "storage_read_sequence": [
+        "logical_key_timestamp_range",
+        "object_page_index_lookup",
+        "page_address_list",
+        "block_index_lookup",
+        "page_read",
+        "decode_records",
+        "return_filtered_result"
+      ],
+      "storage_reclaim_contract": {
+        "cache_eviction_frees_memory_only": true,
+        "cache_evictions": 0,
+        "compaction_reclaimed_bytes": 0,
+        "logical_gc_marks_expired_deletable": true,
+        "physical_reclaim_errors": 0,
+        "physical_reclaim_requires_compaction_or_safe_skip": true,
+        "physical_reclaimed_bytes": 0,
+        "reclaimable_bytes": 0,
+        "stale_block_tombstones": 0,
+        "stale_blocks_rewritten": 0,
+        "stale_blocks_skipped": 0,
+        "stale_page_tombstones": 0,
+        "stale_pages_rewritten": 0,
+        "stale_pages_skipped": 0,
+        "tombstone_records": 0
+      },
+      "storage_reclaim_scope": {
+        "matrixark_context_gc_role": "marks_logical_raw_event_eligibility_only",
+        "owner": "temporalstore_storage_lifecycle",
+        "physical_reclaim_context_specific": false
+      },
+      "storage_reclaim_semantics": [
+        "cache_eviction_memory_only",
+        "logical_tombstone_required",
+        "stale_pages_blocks_rewritten_or_skipped",
+        "reclaimed_bytes_reported",
+        "physical_reclaim_errors_zero"
+      ],
+      "storage_write_contract": {
+        "append_batch_bytes": 0,
+        "append_batch_size": 1,
+        "append_coalesced_writes": 1,
+        "append_durability_failures": 0,
+        "append_engine_ms": 0,
+        "append_queue_depth": 0,
+        "append_queue_wait_ms": 0,
+        "append_watermark": 0,
+        "batch_watermark": 0,
+        "block_address": "BlockAddress",
+        "block_writes": 0,
+        "bytes_written": 0,
+        "durability": "async",
+        "index_generation": 0,
+        "page_address": "PageAddress",
+        "page_writes": 0,
+        "placement_key": "storage:parity",
+        "records_appended": 1,
+        "shard_id": 0,
+        "slot": "slot:0",
+        "storage_family": "shared_store",
+        "write_mode": "async"
+      },
+      "storage_write_sequence": [
+        "append_record",
+        "route_shard_slot",
+        "choose_page",
+        "append_page_buffer",
+        "update_page_index",
+        "flush_page_block_segment",
+        "update_block_index",
+        "publish_append_watermark"
+      ],
+      "worker": {
+        "command": [
+          "C:\\Users\\Deeproute\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe",
+          "C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\tools\\run_matrixark_cpp_rust_scale_report.py",
+          "--backend-worker",
+          "cpp",
+          "--backend-worker-output",
+          "docs\\benchmarks\\parity_10K_event_ingestion\\cpp.json",
+          "--run-id",
+          "1783074105269",
+          "--events",
+          "10000",
+          "--raw-ops",
+          "1000",
+          "--raw-read-ops",
+          "500",
+          "--raw-batch-size",
+          "50",
+          "--raw-read-batch-size",
+          "25",
+          "--raw-workers",
+          "4",
+          "--messages-per-ingest",
+          "20",
+          "--ingest-workers",
+          "4",
+          "--retrieve-queries",
+          "128",
+          "--retrieve-workers",
+          "16",
+          "--max-context-tokens",
+          "12000",
+          "--metaserver",
+          "127.0.0.1:18000",
+          "--namespace",
+          "deploy_ns",
+          "--table",
+          "deploy_table",
+          "--storage-prefix",
+          "matrixark:scale",
+          "--cpp-lib",
+          "C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\output-ubuntu22\\release\\sdk\\lib\\libbcache2.so",
+          "--rust-cli",
+          "C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\sdk\\rust\\temporalstore\\target\\release\\matrixark_record_log",
+          "--python-ref-store",
+          "",
+          "--request-timeout-ms",
+          "60000",
+          "--io-timeout-ms",
+          "60000",
+          "--readiness-timeout-ms",
+          "60000",
+          "--ingest-deadline-ms",
+          "60000",
+          "--retrieve-deadline-ms",
+          "10000",
+          "--phase0-min-selected-refs",
+          "1",
+          "--phase0-max-selected-ref-drift-ratio",
+          "0.35"
+        ],
+        "elapsed_s": 0.337,
+        "returncode": 1,
+        "stderr_tail": "",
+        "stdout_tail": ""
+      }
+    },
+    "rust": {
+      "backend": "rust",
+      "effective_storage_tuning": {
+        "TS_BLOCK_INDEX_CACHE_BYTES": 67108864,
+        "TS_BLOCK_SEGMENT_TARGET_BYTES": 1073741824,
+        "TS_COLD_SCAN_NO_CACHE_FILL": true,
+        "TS_COMPACTION_WATERMARK_BYTES": 268435456,
+        "TS_CONTEXT_PAGE_TARGET_BYTES": 65536,
+        "TS_PAGE_INDEX_CACHE_BYTES": 67108864,
+        "TS_STORAGE_ZONE_SIZE": 10485760,
+        "TS_STREAM_MAX_BLOB_SIZE": 10485760,
+        "effective_block_segment_target_bytes": 10485760
+      },
+      "fallback_flags": {
+        "backend_startup_failed": false,
+        "hash_embedding_fallback": false,
+        "memory_fallback": false,
+        "native_metrics_missing": true,
+        "partial_context_pack": false,
+        "topology_not_ready": true
+      },
+      "ingest": {
+        "avg_ms": 0.0,
+        "elapsed_s": 0.0,
+        "errors": 0,
+        "max_ms": 0.0,
+        "ok": 0,
+        "ops": 0,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "qps": 0.0,
+        "timeout_count": 0
+      },
+      "public_storage_contract": {
+        "append_watermark": "AppendWatermark",
+        "block_address": "BlockAddress",
+        "block_index_entry": "BlockIndexEntry",
+        "compaction_watermark": "CompactionWatermark",
+        "compatibility_aliases": {},
+        "extent": "Extent",
+        "follower_cursor_safety": "FollowerCursorSafety",
+        "gc_eligibility": "GcEligibility",
+        "object_index_entry": "ObjectIndexEntry",
+        "page_address": "PageAddress",
+        "page_index_entry": "PageIndexEntry",
+        "segment": "Segment",
+        "slot": "Slot",
+        "storage_zone": "StorageZone",
+        "stream": "Stream",
+        "tombstone": "Tombstone"
+      },
+      "readiness": {
+        "access": {
+          "account_id": "acct_local",
+          "agent_name": "local_agent",
+          "api_key_id": "dev",
+          "mode": "dev",
+          "role": "dev_admin",
+          "scope_key": "t=4848243343181226175|u=7870245249542275789|",
+          "session_hash": 0,
+          "tenant_hash": 4848243343181226175,
+          "tenant_id": "tenant_local_agent",
+          "user_hash": 7870245249542275789,
+          "user_id": "deeproute"
+        },
+        "attempt_log": [
+          {
+            "attempt": 1,
+            "checks": {
+              "mcp_process_started": true,
+              "metaserver_reachable": {
+                "address": "127.0.0.1:18000",
+                "ok": true
+              },
+              "namespace_table_opened": true,
+              "slot_coverage_verified_by_warmup_hset_hget": false
+            },
+            "error": "[WinError 2] The system cannot find the file specified",
+            "ok": false,
+            "retryable": false
+          }
+        ],
+        "attempts": 1,
+        "backend": "temporalstore-rust",
+        "checks": {
+          "mcp_process_started": true,
+          "metaserver_reachable": {
+            "address": "127.0.0.1:18000",
+            "ok": true
+          },
+          "namespace_table_opened": true,
+          "slot_coverage_verified_by_warmup_hset_hget": false
+        },
+        "error": "[WinError 2] The system cannot find the file specified",
+        "probe": true,
+        "reason": "manual",
+        "status": "topology_not_ready",
+        "topology": {
+          "metaserver": "127.0.0.1:18000",
+          "namespace": "deploy_ns",
+          "storage_prefix": "matrixark:scale:1783074105269:rust",
+          "table": "deploy_table",
+          "warmup_field": "8996:1783074105878:3944562213743375720",
+          "warmup_key": "matrixark:scale:1783074105269:rust:readiness"
+        }
+      },
+      "retrieve": {
+        "avg_ms": 0.0,
+        "elapsed_s": 0.0,
+        "errors": 0,
+        "max_ms": 0.0,
+        "ok": 0,
+        "ops": 0,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "partial_context_packs": 0,
+        "qps": 0.0,
+        "selected_refs_avg": 0.0,
+        "selected_refs_max": 0,
+        "stage_metrics": {
+          "broad_scan_blocked_count": 0,
+          "broad_scan_used_count": 0,
+          "cache_hit_rate": 0.0,
+          "candidate_count_avg": 0.0,
+          "correctness_evidence": {},
+          "drop_counters_total": {},
+          "dropped_refs_avg": 0.0,
+          "fallback_flags_total": {},
+          "index_hits_avg": 0.0,
+          "index_postings_read_avg": 0.0,
+          "index_postings_touched_avg": 0.0,
+          "native_pack_assembly_count": 0,
+          "placement_partitions_touched_avg": 0.0,
+          "python_pack_fallback_count": 0,
+          "raw_candidate_tables_returned_count": 0,
+          "samples": 0,
+          "scanned_records_avg": 0.0,
+          "selected_ref_signatures_by_query": {},
+          "selected_refs_avg": 0.0,
+          "selected_refs_max": 0,
+          "selected_refs_min": 0,
+          "stage_avg_ms": {
+            "append_engine_ms": 0.0,
+            "append_queue_wait_ms": 0.0,
+            "audit_ms": 0.0,
+            "candidate_fetch_ms": 0.0,
+            "index_prefilter_ms": 0.0,
+            "node_traversal_ms": 0.0,
+            "pack_ms": 0.0,
+            "query_plan_ms": 0.0,
+            "score_ms": 0.0
+          },
+          "stage_p95_ms": {
+            "append_engine_ms": 0.0,
+            "append_queue_wait_ms": 0.0,
+            "audit_ms": 0.0,
+            "candidate_fetch_ms": 0.0,
+            "index_prefilter_ms": 0.0,
+            "node_traversal_ms": 0.0,
+            "pack_ms": 0.0,
+            "query_plan_ms": 0.0,
+            "score_ms": 0.0
+          },
+          "timeout_count": 0,
+          "timeout_partial_count": 0,
+          "token_count_avg": 0.0
+        },
+        "timeout_count": 0
+      },
+      "status": "topology_not_ready",
+      "storage_cache_contract": {
+        "append_watermark_invalidation": true,
+        "cache_invalidations": 0,
+        "cache_refills": 0,
+        "cache_writeback_queue_depth": 0,
+        "cache_writeback_rejections": 0,
+        "cold_scan_no_promote": true,
+        "compaction_watermark_invalidation": true,
+        "durable_refill_on_miss": true,
+        "hot_cache_promotions": 0,
+        "hot_to_cold_lookup": true,
+        "layers": [
+          "memory_object_cache",
+          "page_index_cache",
+          "block_index_cache",
+          "disk_block_cache",
+          "shared_store_read_through"
+        ],
+        "metrics": [
+          "memory_cache_hits",
+          "memory_cache_misses",
+          "page_index_cache_hits",
+          "page_index_cache_misses",
+          "block_index_cache_hits",
+          "block_index_cache_misses",
+          "disk_cache_hits",
+          "disk_cache_misses",
+          "shared_store_read_throughs",
+          "cache_refills",
+          "cache_invalidations",
+          "cache_writeback_queue_depth",
+          "cache_writeback_rejections"
+        ],
+        "semantics": [
+          "lookup_hot_to_cold",
+          "refill_from_durable_on_miss",
+          "invalidate_on_append_watermark",
+          "invalidate_on_compaction_watermark",
+          "cold_scan_no_promote",
+          "writeback_backpressure_reported"
+        ],
+        "writeback_backpressure_measured": true
+      },
+      "storage_cache_layers": [
+        "memory_object_cache",
+        "page_index_cache",
+        "block_index_cache",
+        "disk_block_cache",
+        "shared_store_read_through"
+      ],
+      "storage_cache_semantics": [
+        "lookup_hot_to_cold",
+        "refill_from_durable_on_miss",
+        "invalidate_on_append_watermark",
+        "invalidate_on_compaction_watermark",
+        "cold_scan_no_promote",
+        "writeback_backpressure_reported"
+      ],
+      "storage_cold_scan_contract": {
+        "cache_fill": false,
+        "cold_scan_decode_batch_limit": 0,
+        "cold_scan_decode_byte_limit": 0,
+        "cold_scan_decode_records_ms": 0.0,
+        "cold_scan_no_cache_reads": 0,
+        "cold_scan_page_index_scan_count": 0,
+        "cold_scan_page_index_scan_ms": 0.0,
+        "cold_scan_page_reads": 0,
+        "cold_scan_records_decoded": 0,
+        "cold_scan_records_returned": 0,
+        "deadline_ms": 0,
+        "decode_batch_limit": 0,
+        "decode_byte_limit": 0,
+        "hot_cache_promotions": 0,
+        "no_cache_page_reads": 0,
+        "page_index_scan": "PageIndex",
+        "promotion_policy": "no_promote",
+        "records_decoded": 0,
+        "records_returned": 0,
+        "timestamp_range": "cold"
+      },
+      "storage_cold_scan_sequence": [
+        "timestamp_page_index_scan",
+        "no_cache_page_read",
+        "bounded_decode",
+        "no_hot_cache_promotion"
+      ],
+      "storage_index_contract": {
+        "block_address_codec": "BlockAddress",
+        "block_address_encode_decode": true,
+        "block_index": "page addresses -> physical durable locations",
+        "block_index_entry_count": 1,
+        "checksum_mismatches": 0,
+        "object_index_entry": "{model/table/object_key} -> current page chain",
+        "object_index_entry_count": 1,
+        "page_address_codec": "PageAddress",
+        "page_address_encode_decode": true,
+        "page_index": "logical timestamp/key ranges -> page addresses",
+        "page_index_entry_count": 1,
+        "required_behaviors": [
+          "page_address_encode_decode",
+          "page_address_stable_order",
+          "timestamp_range_page_lookup",
+          "slot_index_maps_slot_to_object_page_refs",
+          "object_index_maps_model_table_object_key_to_page_chain",
+          "page_index_maps_logical_ranges_to_page_addresses",
+          "block_index_maps_page_addresses_to_durable_locations",
+          "restart_rebuilds_page_block_object_indexes"
+        ],
+        "restart_rebuild_verified": true,
+        "slot_index": "slot -> object/page refs",
+        "slot_index_entry_count": 1,
+        "slot_object_ref_count": 1,
+        "slot_page_ref_count": 1,
+        "stable_order": [
+          "shard_id",
+          "zone_id",
+          "segment_id",
+          "page_id",
+          "offset"
+        ],
+        "stable_order_verified": true,
+        "timestamp_range_lookup_verified": true,
+        "unreadable_page_refs": 0
+      },
+      "storage_lifecycle_metrics": {
+        "append_log_reclaimed_records": 0,
+        "append_log_replay_records": 0,
+        "append_watermark": 0,
+        "block_index_cache_hits": 0,
+        "block_index_cache_misses": 0,
+        "block_index_rebuild_count": 0,
+        "cache_admissions": 0,
+        "cache_evictions": 0,
+        "cache_invalidations": 0,
+        "cache_refills": 0,
+        "cache_rehydrates": 0,
+        "cache_writeback_queue_depth": 0,
+        "cache_writeback_rejections": 0,
+        "cold_scan_no_cache_reads": 0,
+        "compaction_reclaimed_bytes": 0,
+        "compaction_watermark": 0,
+        "delayed_destroy_backlog": 0,
+        "disk_cache_hits": 0,
+        "disk_cache_misses": 0,
+        "follower_cursor_retention_floor": 0,
+        "hot_cache_promotions": 0,
+        "memory_cache_hits": 0,
+        "memory_cache_misses": 0,
+        "object_index_rebuild_count": 0,
+        "page_index_cache_hits": 0,
+        "page_index_cache_misses": 0,
+        "page_index_rebuild_count": 0,
+        "physical_reclaim_errors": 0,
+        "physical_reclaimed_bytes": 0,
+        "reclaimable_bytes": 0,
+        "segment_open_count": 0,
+        "segment_sealed_count": 0,
+        "shared_store_read_throughs": 0,
+        "slot_dirty_generation_count": 0,
+        "slot_owner_mismatch_count": 0,
+        "slot_stale_ref_count": 0,
+        "slot_tombstone_count": 0,
+        "stale_block_tombstones": 0,
+        "stale_blocks_rewritten": 0,
+        "stale_blocks_skipped": 0,
+        "stale_page_tombstones": 0,
+        "stale_pages_rewritten": 0,
+        "stale_pages_skipped": 0,
+        "storage_manager_block_gc_count": 0,
+        "storage_manager_compaction_count": 0,
+        "storage_manager_delayed_destroy_count": 0,
+        "storage_manager_evict_count": 0,
+        "storage_manager_expire_count": 0,
+        "storage_manager_follower_cursor_safety_count": 0,
+        "storage_manager_index_gc_count": 0,
+        "storage_manager_loop_ms": 0,
+        "storage_manager_page_gc_count": 0,
+        "storage_manager_prepare_count": 0,
+        "storage_manager_reclaim_count": 0,
+        "storage_manager_watermark_progress_count": 0,
+        "storage_zone_stale_bytes": 0,
+        "storage_zone_total_bytes": 0,
+        "storage_zone_used_bytes": 0,
+        "stream_rollover_count": 0,
+        "tombstone_records": 0
+      },
+      "storage_lifecycle_phases": [
+        "prepare",
+        "reclaim",
+        "evict",
+        "expire",
+        "page_gc",
+        "block_gc",
+        "compaction",
+        "index_gc",
+        "delayed_destroy",
+        "follower_cursor_safety",
+        "watermark_progress"
+      ],
+      "storage_manager_contract": {
+        "cpp_public_name": "StorageManager",
+        "loop_metric": "storage_manager_loop_ms",
+        "loop_ms": 0.0,
+        "manager_identity": "StorageManager/StoreManager",
+        "missing_phase_count": 0,
+        "phase_counts": {
+          "block_gc": 0,
+          "compaction": 0,
+          "delayed_destroy": 0,
+          "evict": 0,
+          "expire": 0,
+          "follower_cursor_safety": 0,
+          "index_gc": 0,
+          "page_gc": 0,
+          "prepare": 0,
+          "reclaim": 0,
+          "watermark_progress": 0
+        },
+        "phase_metrics": {
+          "block_gc": "storage_manager_block_gc_count",
+          "compaction": "storage_manager_compaction_count",
+          "delayed_destroy": "storage_manager_delayed_destroy_count",
+          "evict": "storage_manager_evict_count",
+          "expire": "storage_manager_expire_count",
+          "follower_cursor_safety": "storage_manager_follower_cursor_safety_count",
+          "index_gc": "storage_manager_index_gc_count",
+          "page_gc": "storage_manager_page_gc_count",
+          "prepare": "storage_manager_prepare_count",
+          "reclaim": "storage_manager_reclaim_count",
+          "watermark_progress": "storage_manager_watermark_progress_count"
+        },
+        "phase_order": [
+          "prepare",
+          "reclaim",
+          "evict",
+          "expire",
+          "page_gc",
+          "block_gc",
+          "compaction",
+          "index_gc",
+          "delayed_destroy",
+          "follower_cursor_safety",
+          "watermark_progress"
+        ],
+        "phase_order_enforced": true,
+        "rust_public_name": "StoreManager"
+      },
+      "storage_prefix": "matrixark:scale:1783074105269:rust",
+      "storage_read_contract": {
+        "block_index_entries": 1,
+        "block_index_lookup_count": 0,
+        "block_index_lookup_ms": 0.0,
+        "decode_records_ms": 0.0,
+        "filter_policy": "normal",
+        "logical_key": "storage:parity",
+        "object_index_entry": "ObjectIndexEntry",
+        "object_page_index_lookup_count": 0,
+        "object_page_index_lookup_ms": 0.0,
+        "page_address_count": 0,
+        "page_addresses": 1,
+        "page_index_entries": 1,
+        "page_reads": 0,
+        "records_decoded": 0,
+        "records_returned": 0,
+        "stale_generations_filtered": 0,
+        "timestamp_range": "all",
+        "tombstones_filtered": 0
+      },
+      "storage_read_sequence": [
+        "logical_key_timestamp_range",
+        "object_page_index_lookup",
+        "page_address_list",
+        "block_index_lookup",
+        "page_read",
+        "decode_records",
+        "return_filtered_result"
+      ],
+      "storage_reclaim_contract": {
+        "cache_eviction_frees_memory_only": true,
+        "cache_evictions": 0,
+        "compaction_reclaimed_bytes": 0,
+        "logical_gc_marks_expired_deletable": true,
+        "physical_reclaim_errors": 0,
+        "physical_reclaim_requires_compaction_or_safe_skip": true,
+        "physical_reclaimed_bytes": 0,
+        "reclaimable_bytes": 0,
+        "stale_block_tombstones": 0,
+        "stale_blocks_rewritten": 0,
+        "stale_blocks_skipped": 0,
+        "stale_page_tombstones": 0,
+        "stale_pages_rewritten": 0,
+        "stale_pages_skipped": 0,
+        "tombstone_records": 0
+      },
+      "storage_reclaim_scope": {
+        "matrixark_context_gc_role": "marks_logical_raw_event_eligibility_only",
+        "owner": "temporalstore_storage_lifecycle",
+        "physical_reclaim_context_specific": false
+      },
+      "storage_reclaim_semantics": [
+        "cache_eviction_memory_only",
+        "logical_tombstone_required",
+        "stale_pages_blocks_rewritten_or_skipped",
+        "reclaimed_bytes_reported",
+        "physical_reclaim_errors_zero"
+      ],
+      "storage_write_contract": {
+        "append_batch_bytes": 0,
+        "append_batch_size": 1,
+        "append_coalesced_writes": 1,
+        "append_durability_failures": 0,
+        "append_engine_ms": 0,
+        "append_queue_depth": 0,
+        "append_queue_wait_ms": 0,
+        "append_watermark": 0,
+        "batch_watermark": 0,
+        "block_address": "BlockAddress",
+        "block_writes": 0,
+        "bytes_written": 0,
+        "durability": "async",
+        "index_generation": 0,
+        "page_address": "PageAddress",
+        "page_writes": 0,
+        "placement_key": "storage:parity",
+        "records_appended": 1,
+        "shard_id": 0,
+        "slot": "slot:0",
+        "storage_family": "shared_store",
+        "write_mode": "async"
+      },
+      "storage_write_sequence": [
+        "append_record",
+        "route_shard_slot",
+        "choose_page",
+        "append_page_buffer",
+        "update_page_index",
+        "flush_page_block_segment",
+        "update_block_index",
+        "publish_append_watermark"
+      ],
+      "worker": {
+        "command": [
+          "C:\\Users\\Deeproute\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe",
+          "C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\tools\\run_matrixark_cpp_rust_scale_report.py",
+          "--backend-worker",
+          "rust",
+          "--backend-worker-output",
+          "docs\\benchmarks\\parity_10K_event_ingestion\\rust.json",
+          "--run-id",
+          "1783074105269",
+          "--events",
+          "10000",
+          "--raw-ops",
+          "1000",
+          "--raw-read-ops",
+          "500",
+          "--raw-batch-size",
+          "50",
+          "--raw-read-batch-size",
+          "25",
+          "--raw-workers",
+          "4",
+          "--messages-per-ingest",
+          "20",
+          "--ingest-workers",
+          "4",
+          "--retrieve-queries",
+          "128",
+          "--retrieve-workers",
+          "16",
+          "--max-context-tokens",
+          "12000",
+          "--metaserver",
+          "127.0.0.1:18000",
+          "--namespace",
+          "deploy_ns",
+          "--table",
+          "deploy_table",
+          "--storage-prefix",
+          "matrixark:scale",
+          "--cpp-lib",
+          "C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\output-ubuntu22\\release\\sdk\\lib\\libbcache2.so",
+          "--rust-cli",
+          "C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\sdk\\rust\\temporalstore\\target\\release\\matrixark_record_log",
+          "--python-ref-store",
+          "",
+          "--request-timeout-ms",
+          "60000",
+          "--io-timeout-ms",
+          "60000",
+          "--readiness-timeout-ms",
+          "60000",
+          "--ingest-deadline-ms",
+          "60000",
+          "--retrieve-deadline-ms",
+          "10000",
+          "--phase0-min-selected-refs",
+          "1",
+          "--phase0-max-selected-ref-drift-ratio",
+          "0.35"
+        ],
+        "elapsed_s": 0.298,
+        "returncode": 1,
+        "stderr_tail": "",
+        "stdout_tail": ""
+      }
+    }
+  },
+  "comparison": {
+    "phase0_correctness": {
+      "backend_values": {
+        "cpp": {
+          "broad_scan_blocked_count": 0,
+          "broad_scan_used_count": 0,
+          "candidate_count_avg": 0.0,
+          "correctness_evidence": {},
+          "drop_counters_total": {},
+          "dropped_refs_avg": 0.0,
+          "index_hits_avg": 0.0,
+          "index_postings_read_avg": 0.0,
+          "index_postings_touched_avg": 0.0,
+          "native_pack_assembly_count": 0,
+          "python_pack_fallback_count": 0,
+          "raw_candidate_tables_returned_count": 0,
+          "scanned_records_avg": 0.0,
+          "selected_ref_signatures_by_query": {},
+          "selected_refs_avg": 0.0,
+          "selected_refs_max": 0,
+          "status": "backend_startup_failed",
+          "timeout_partial_count": 0,
+          "timeouts": 0,
+          "token_count_avg": 0.0
+        },
+        "rust": {
+          "broad_scan_blocked_count": 0,
+          "broad_scan_used_count": 0,
+          "candidate_count_avg": 0.0,
+          "correctness_evidence": {},
+          "drop_counters_total": {},
+          "dropped_refs_avg": 0.0,
+          "index_hits_avg": 0.0,
+          "index_postings_read_avg": 0.0,
+          "index_postings_touched_avg": 0.0,
+          "native_pack_assembly_count": 0,
+          "python_pack_fallback_count": 0,
+          "raw_candidate_tables_returned_count": 0,
+          "scanned_records_avg": 0.0,
+          "selected_ref_signatures_by_query": {},
+          "selected_refs_avg": 0.0,
+          "selected_refs_max": 0,
+          "status": "topology_not_ready",
+          "timeout_partial_count": 0,
+          "timeouts": 0,
+          "token_count_avg": 0.0
+        }
+      },
+      "failures": [
+        {
+          "backend": "cpp",
+          "error": "failed to load TemporalStore library: C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\output-ubuntu22\\release\\sdk\\lib\\libbcache2.so: Could not find module 'C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\output-ubuntu22\\release\\sdk\\lib\\libbcache2.so' (or one of its dependencies). Try using the full path with constructor syntax.; libbcache2.so: Could not find module 'libbcache2.so' (or one of its dependencies). Try using the full path with constructor syntax.; bcache2.dll: Could not find module 'bcache2.dll' (or one of its dependencies). Try using the full path with constructor syntax.; libbcache2.dylib: Could not find module 'libbcache2.dylib' (or one of its dependencies). Try using the full path with constructor syntax.",
+          "reason": "backend_not_passed",
+          "status": "backend_startup_failed"
+        },
+        {
+          "backend": "rust",
+          "error": null,
+          "reason": "backend_not_passed",
+          "status": "topology_not_ready"
+        }
+      ],
+      "max_selected_ref_drift_ratio": 0.35,
+      "minimum_selected_refs": 1,
+      "phase": "phase1_native_retrieve_correctness",
+      "selected_ref_drift_ratio": null,
+      "shared_correctness_requirements": [
+        "selected_ref_parity",
+        "scope_filtering",
+        "placement_filtering",
+        "compact_secondary_index_prefilter",
+        "stale_superseded_exclusion",
+        "shared_resource_skill_quota",
+        "cross_session_quota_rerank"
+      ],
+      "status": "failed"
+    },
+    "reason": "both C++ and Rust backends must pass",
+    "rust_vs_cpp_parity": {
+      "feature_parity": {
+        "criteria": [
+          "selected_ref_parity",
+          "scope_filtering",
+          "placement_filtering",
+          "compact_secondary_index_prefilter",
+          "stale_superseded_exclusion",
+          "shared_resource_skill_quota",
+          "cross_session_quota_rerank"
+        ],
+        "passed": false,
+        "source": "phase0_correctness",
+        "status": "failed"
+      },
+      "performance_parity": {
+        "passed": false,
+        "reason": "both C++ and Rust backends must pass before performance parity is evaluated",
+        "status": "not_comparable"
+      }
+    },
+    "status": "not_comparable",
+    "status_labels": {
+      "feature_correct": false,
+      "performance_candidate": false,
+      "production_performance_parity": false
+    }
+  },
+  "config": {
+    "allow_phase0_correctness_failure": false,
+    "batch_size": 20,
+    "dataset": "matrixark-scale-synthetic",
+    "effective_storage_tuning": {
+      "TS_BLOCK_INDEX_CACHE_BYTES": 67108864,
+      "TS_BLOCK_SEGMENT_TARGET_BYTES": 1073741824,
+      "TS_COLD_SCAN_NO_CACHE_FILL": true,
+      "TS_COMPACTION_WATERMARK_BYTES": 268435456,
+      "TS_CONTEXT_PAGE_TARGET_BYTES": 65536,
+      "TS_PAGE_INDEX_CACHE_BYTES": 67108864,
+      "TS_STORAGE_ZONE_SIZE": 10485760,
+      "TS_STREAM_MAX_BLOB_SIZE": 10485760,
+      "effective_block_segment_target_bytes": 10485760
+    },
+    "embedding_model": "hashing-local",
+    "embedding_provider": "hash",
+    "events": 10000,
+    "ingest_workers": 4,
+    "judge_model": "matrixark-deterministic-judge",
+    "judge_provider": "deterministic",
+    "max_context_tokens": 12000,
+    "messages_per_ingest": 20,
+    "metaserver": "127.0.0.1:18000",
+    "namespace": "deploy_ns",
+    "perf_max_latency_ratio": 2.0,
+    "perf_min_qps_ratio": 0.8,
+    "phase0_max_selected_ref_drift_ratio": 0.35,
+    "phase0_min_selected_refs": 1,
+    "phase_contextmemory_features": [
+      "resources",
+      "skills",
+      "cross_session_retrieval",
+      "compact_indexes",
+      "audit_light_telemetry"
+    ],
+    "phase_name": "current",
+    "phase_resource_imports": [
+      "large_pdf",
+      "large_csv",
+      "repo_directory"
+    ],
+    "phase_retrieve_workers": [
+      4,
+      8,
+      16,
+      32
+    ],
+    "phase_scale_events": [
+      1000,
+      10000,
+      100000
+    ],
+    "python_ref_store": "",
+    "raw_batch_size": 50,
+    "raw_ops": 1000,
+    "raw_read_batch_size": 25,
+    "raw_read_ops": 500,
+    "raw_workers": 4,
+    "reader_model": "matrixark-deterministic-reader",
+    "reader_provider": "deterministic",
+    "require_perf_parity": true,
+    "require_phase_scale_matrix": false,
+    "required_page_block_metrics": [
+      "page_index_lookup_count",
+      "page_index_lookup_ms",
+      "page_index_cache_hit_rate",
+      "block_index_lookup_count",
+      "block_index_lookup_ms",
+      "block_index_cache_hit_rate",
+      "page_reads",
+      "page_writes",
+      "block_reads",
+      "block_writes",
+      "bytes_read",
+      "bytes_written",
+      "append_queue_wait_ms",
+      "append_engine_ms",
+      "append_queue_depth",
+      "append_batch_size",
+      "append_batch_bytes",
+      "append_coalesced_writes",
+      "append_durability_failures",
+      "compaction_reclaimed_bytes",
+      "cold_scan_no_cache_reads",
+      "cold_scan_page_reads",
+      "hot_cache_promotions",
+      "append_watermark",
+      "compaction_watermark"
+    ],
+    "required_storage_cache_layers": [
+      "memory_object_cache",
+      "page_index_cache",
+      "block_index_cache",
+      "disk_block_cache",
+      "shared_store_read_through"
+    ],
+    "required_storage_cache_metrics": [
+      "memory_cache_hits",
+      "memory_cache_misses",
+      "page_index_cache_hits",
+      "page_index_cache_misses",
+      "block_index_cache_hits",
+      "block_index_cache_misses",
+      "disk_cache_hits",
+      "disk_cache_misses",
+      "shared_store_read_throughs",
+      "cache_refills",
+      "cache_invalidations",
+      "cache_writeback_queue_depth",
+      "cache_writeback_rejections"
+    ],
+    "required_storage_cache_semantics": [
+      "lookup_hot_to_cold",
+      "refill_from_durable_on_miss",
+      "invalidate_on_append_watermark",
+      "invalidate_on_compaction_watermark",
+      "cold_scan_no_promote",
+      "writeback_backpressure_reported"
+    ],
+    "required_storage_cold_scan_sequence": [
+      "timestamp_page_index_scan",
+      "no_cache_page_read",
+      "bounded_decode",
+      "no_hot_cache_promotion"
+    ],
+    "required_storage_lifecycle_metrics": [
+      "storage_manager_prepare_count",
+      "storage_manager_reclaim_count",
+      "storage_manager_evict_count",
+      "storage_manager_expire_count",
+      "storage_manager_page_gc_count",
+      "storage_manager_block_gc_count",
+      "storage_manager_compaction_count",
+      "storage_manager_index_gc_count",
+      "storage_manager_delayed_destroy_count",
+      "storage_manager_follower_cursor_safety_count",
+      "storage_manager_watermark_progress_count",
+      "storage_manager_loop_ms",
+      "stream_rollover_count",
+      "segment_open_count",
+      "segment_sealed_count",
+      "storage_zone_total_bytes",
+      "storage_zone_used_bytes",
+      "storage_zone_stale_bytes",
+      "append_log_replay_records",
+      "append_log_reclaimed_records",
+      "slot_dirty_generation_count",
+      "slot_tombstone_count",
+      "slot_stale_ref_count",
+      "slot_owner_mismatch_count",
+      "page_index_rebuild_count",
+      "block_index_rebuild_count",
+      "object_index_rebuild_count",
+      "cache_admissions",
+      "cache_evictions",
+      "cache_rehydrates",
+      "memory_cache_hits",
+      "memory_cache_misses",
+      "page_index_cache_hits",
+      "page_index_cache_misses",
+      "block_index_cache_hits",
+      "block_index_cache_misses",
+      "disk_cache_hits",
+      "disk_cache_misses",
+      "shared_store_read_throughs",
+      "cache_refills",
+      "cache_invalidations",
+      "cache_writeback_queue_depth",
+      "cache_writeback_rejections",
+      "cold_scan_no_cache_reads",
+      "hot_cache_promotions",
+      "tombstone_records",
+      "stale_page_tombstones",
+      "stale_block_tombstones",
+      "stale_pages_rewritten",
+      "stale_pages_skipped",
+      "stale_blocks_rewritten",
+      "stale_blocks_skipped",
+      "delayed_destroy_backlog",
+      "follower_cursor_retention_floor",
+      "reclaimable_bytes",
+      "compaction_reclaimed_bytes",
+      "physical_reclaimed_bytes",
+      "physical_reclaim_errors",
+      "append_watermark",
+      "compaction_watermark"
+    ],
+    "required_storage_lifecycle_phases": [
+      "prepare",
+      "reclaim",
+      "evict",
+      "expire",
+      "page_gc",
+      "block_gc",
+      "compaction",
+      "index_gc",
+      "delayed_destroy",
+      "follower_cursor_safety",
+      "watermark_progress"
+    ],
+    "required_storage_read_sequence": [
+      "logical_key_timestamp_range",
+      "object_page_index_lookup",
+      "page_address_list",
+      "block_index_lookup",
+      "page_read",
+      "decode_records",
+      "return_filtered_result"
+    ],
+    "required_storage_reclaim_semantics": [
+      "cache_eviction_memory_only",
+      "logical_tombstone_required",
+      "stale_pages_blocks_rewritten_or_skipped",
+      "reclaimed_bytes_reported",
+      "physical_reclaim_errors_zero"
+    ],
+    "retrieve_queries": 128,
+    "retrieve_workers": 16,
+    "rust_record_log_root": "docs\\benchmarks\\parity_10K_event_ingestion\\rust_record_log_root",
+    "skip_context_pipeline": false,
+    "storage_options": {
+      "oplog_mode": "async",
+      "replication_mode": "shared_store",
+      "storage_family": "shared_store",
+      "storage_mode": "multi_node",
+      "write_mode": "async"
+    },
+    "table": "deploy_table",
+    "topology": {
+      "metaserver": "127.0.0.1:18000",
+      "namespace": "deploy_ns",
+      "table": "deploy_table"
+    }
+  },
+  "generated_at_ms": 1783074105269,
+  "phase_scale_matrix": {
+    "checks": {
+      "contextmemory_pipeline": [
+        {
+          "case": "resources",
+          "status": "open"
+        },
+        {
+          "case": "skills",
+          "status": "open"
+        },
+        {
+          "case": "cross_session_retrieval",
+          "status": "passed"
+        },
+        {
+          "case": "compact_indexes",
+          "status": "passed"
+        },
+        {
+          "case": "audit_light_telemetry",
+          "status": "passed"
+        }
+      ],
+      "event_ingestion": [
+        {
+          "case": 1000,
+          "status": "open"
+        },
+        {
+          "case": 10000,
+          "status": "passed"
+        },
+        {
+          "case": 100000,
+          "status": "open"
+        }
+      ],
+      "resource_imports": [
+        {
+          "case": "large_pdf",
+          "status": "open"
+        },
+        {
+          "case": "large_csv",
+          "status": "open"
+        },
+        {
+          "case": "repo_directory",
+          "status": "open"
+        }
+      ],
+      "retrieve_workers": [
+        {
+          "case": 4,
+          "status": "open"
+        },
+        {
+          "case": 8,
+          "status": "open"
+        },
+        {
+          "case": 16,
+          "status": "passed"
+        },
+        {
+          "case": 32,
+          "status": "open"
+        }
+      ]
+    },
+    "evidence": {
+      "completed_contextmemory_features": [
+        "audit_light_telemetry",
+        "compact_indexes",
+        "cross_session_retrieval"
+      ],
+      "completed_events": [
+        10000
+      ],
+      "completed_resource_imports": [],
+      "completed_retrieve_workers": [
+        16
+      ],
+      "current_run": {
+        "events": 10000,
+        "retrieve_workers": 16,
+        "skip_context_pipeline": false
+      }
+    },
+    "full_contextmemory_pipeline": {
+      "description": "large PDF/CSV/repo resource imports plus resources, skills, cross-session retrieval, compact indexes, and audit-light telemetry",
+      "required_features": [
+        "resources",
+        "skills",
+        "cross_session_retrieval",
+        "compact_indexes",
+        "audit_light_telemetry"
+      ],
+      "required_resource_imports": [
+        "large_pdf",
+        "large_csv",
+        "repo_directory"
+      ],
+      "status": "incomplete"
+    },
+    "open_required_cases": [
+      {
+        "case": 1000,
+        "group": "event_ingestion"
+      },
+      {
+        "case": 100000,
+        "group": "event_ingestion"
+      },
+      {
+        "case": 4,
+        "group": "retrieve_workers"
+      },
+      {
+        "case": 8,
+        "group": "retrieve_workers"
+      },
+      {
+        "case": 32,
+        "group": "retrieve_workers"
+      },
+      {
+        "case": "large_pdf",
+        "group": "resource_imports"
+      },
+      {
+        "case": "large_csv",
+        "group": "resource_imports"
+      },
+      {
+        "case": "repo_directory",
+        "group": "resource_imports"
+      },
+      {
+        "case": "resources",
+        "group": "contextmemory_pipeline"
+      },
+      {
+        "case": "skills",
+        "group": "contextmemory_pipeline"
+      }
+    ],
+    "phase": "current",
+    "require_gate": false,
+    "status": "incomplete"
+  },
+  "production_policy": {
+    "blockers": [
+      {
+        "detail": "Selected refs must be non-empty and logically equivalent across C++/Rust/Python before latency is considered.",
+        "name": "correctness_before_latency",
+        "status": "failed"
+      },
+      {
+        "detail": "cpp status=backend_startup_failed; selected_refs_max=0.0",
+        "name": "cpp_selected_refs_non_empty",
+        "status": "failed"
+      },
+      {
+        "detail": "rust status=topology_not_ready; selected_refs_max=0.0",
+        "name": "rust_selected_refs_non_empty",
+        "status": "failed"
+      }
+    ],
+    "checks": [
+      {
+        "detail": "Selected refs must be non-empty and logically equivalent across C++/Rust/Python before latency is considered.",
+        "name": "correctness_before_latency",
+        "status": "failed"
+      },
+      {
+        "detail": "cpp status=backend_startup_failed; selected_refs_max=0.0",
+        "name": "cpp_selected_refs_non_empty",
+        "status": "failed"
+      },
+      {
+        "detail": "cpp broad_scan_used_count=0; broad scan is fallback/debug only.",
+        "name": "cpp_placement_index_driven",
+        "status": "passed"
+      },
+      {
+        "detail": "cpp python_pack_fallback_count=0, raw_candidate_tables_returned_count=0.",
+        "name": "cpp_native_pack_or_dispatcher_only",
+        "status": "passed"
+      },
+      {
+        "detail": "cpp audit_p95_ms=0.0; rich audit/debug must be async/sampled by default.",
+        "name": "cpp_audit_not_hot_path_blocking",
+        "status": "passed"
+      },
+      {
+        "detail": "rust status=topology_not_ready; selected_refs_max=0.0",
+        "name": "rust_selected_refs_non_empty",
+        "status": "failed"
+      },
+      {
+        "detail": "rust broad_scan_used_count=0; broad scan is fallback/debug only.",
+        "name": "rust_placement_index_driven",
+        "status": "passed"
+      },
+      {
+        "detail": "rust python_pack_fallback_count=0, raw_candidate_tables_returned_count=0.",
+        "name": "rust_native_pack_or_dispatcher_only",
+        "status": "passed"
+      },
+      {
+        "detail": "rust audit_p95_ms=0.0; rich audit/debug must be async/sampled by default.",
+        "name": "rust_audit_not_hot_path_blocking",
+        "status": "passed"
+      },
+      {
+        "detail": "Performance parity requires the same dataset, storage mode, topology, token budget, batch size, embedding model, reader, judge, and effective storage tuning for C++ and Rust.",
+        "name": "same_dataset_storage_topology_budget_batch_models",
+        "status": "passed"
+      },
+      {
+        "detail": "C++ and Rust passed backends must report the same effective TS_* storage tuning as the run config. all required knobs match",
+        "name": "same_effective_storage_tuning",
+        "status": "passed"
+      }
+    ],
+    "policy": [
+      "Correctness beats latency: do not tune C++ performance until selected refs are non-empty and logically equivalent to Rust/Python.",
+      "Python remains API/auth/model orchestration only; serving-critical scan/filter/pack/write work belongs in C++/Rust.",
+      "Normal retrieval is placement-key and compact-index driven; broad scan is fallback/debug only.",
+      "Audit/debug records do not block hot retrieval by default.",
+      "Performance parity uses the same dataset, storage mode, topology, token budget, batch size, embedding model, reader, judge, and effective storage tuning for C++ and Rust."
+    ],
+    "status": "failed"
+  },
+  "run_id": "1783074105269"
+}

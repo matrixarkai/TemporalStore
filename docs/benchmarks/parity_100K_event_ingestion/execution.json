@@ -1,0 +1,41 @@
+{
+  "schema": "temporalstore_cpp_rust_next_performance_execution_v1",
+  "continue_on_error": true,
+  "status": "failed",
+  "failed_count": 1,
+  "results": [
+    {
+      "step": "run_workload",
+      "workload": "100K_event_ingestion",
+      "reason": "missing_candidate",
+      "argv": [
+        "python",
+        "tools/run_matrixark_cpp_rust_scale_report.py",
+        "--events",
+        "100000",
+        "--backends",
+        "cpp",
+        "rust",
+        "--artifact-dir",
+        "docs/benchmarks/parity_100K_event_ingestion",
+        "--require-perf-parity"
+      ],
+      "returncode": 3,
+      "status": "failed"
+    },
+    {
+      "step": "import_evidence",
+      "workload": "100K_event_ingestion",
+      "reason": "missing_candidate",
+      "argv": [
+        "python",
+        "tools/import_temporalstore_cpp_rust_performance_evidence.py",
+        "--report",
+        "docs/benchmarks/parity_100K_event_ingestion/comparison.json",
+        "--validate"
+      ],
+      "returncode": 0,
+      "status": "passed"
+    }
+  ]
+}

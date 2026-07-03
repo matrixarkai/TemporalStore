@@ -651,6 +651,47 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertIn("cpp_selected_refs_non_empty", blocker_names)
         self.assertIn("cpp_placement_index_driven", blocker_names)
 
+    def test_production_policy_gate_fails_selected_refs_when_backend_not_passed(self) -> None:
+        report = {
+            "config": {
+                "events": 10000,
+                "dataset": "matrixark-scale-synthetic",
+                "messages_per_ingest": 20,
+                "batch_size": 20,
+                "retrieve_workers": 16,
+                "retrieve_queries": 128,
+                "max_context_tokens": 12000,
+                "storage_options": {"storage_family": "shared_store"},
+                "topology": {"metaserver": "127.0.0.1:18000", "namespace": "deploy_ns", "table": "deploy_table"},
+                "embedding_provider": "hash",
+                "embedding_model": "matrixark-local-token-hash-v1",
+                "reader_provider": "deterministic",
+                "reader_model": "matrixark-deterministic-reader",
+                "judge_provider": "deterministic",
+                "judge_model": "matrixark-deterministic-judge",
+                "effective_storage_tuning": self._storage_tuning(),
+            },
+            "comparison": {"phase0_correctness": {"status": "failed"}},
+            "backends": {
+                "cpp": {
+                    "status": "backend_startup_failed",
+                    "effective_storage_tuning": self._storage_tuning(),
+                    "retrieve": {"stage_metrics": {"selected_refs_max": 0, "stage_p95_ms": {"audit_ms": 0}}},
+                },
+                "rust": {
+                    "status": "topology_not_ready",
+                    "effective_storage_tuning": self._storage_tuning(),
+                    "retrieve": {"stage_metrics": {"selected_refs_max": 0, "stage_p95_ms": {"audit_ms": 0}}},
+                },
+            },
+        }
+
+        gate = production_policy_gate(report)
+
+        blocker_names = {item["name"] for item in gate["blockers"]}
+        self.assertIn("cpp_selected_refs_non_empty", blocker_names)
+        self.assertIn("rust_selected_refs_non_empty", blocker_names)
+
     def test_production_policy_gate_passes_native_index_driven_context_path(self) -> None:
         metrics = {
             "selected_refs_max": 3,
