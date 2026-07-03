@@ -213,10 +213,10 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
                 )
             persisted = json.loads(output.read_text(encoding="utf-8"))
 
-        self.assertEqual(run.call_count, 3)
+        self.assertEqual(run.call_count, 2)
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["failed_count"], 1)
-        self.assertEqual([row["status"] for row in result["results"]], ["failed", "passed", "passed"])
+        self.assertEqual([row["status"] for row in result["results"]], ["failed", "skipped", "passed"])
         self.assertEqual(result["execution_output"], str(output))
         self.assertEqual(persisted["status"], "failed")
         self.assertEqual(persisted["failed_count"], 1)
@@ -276,6 +276,46 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
         self.assertEqual(result["results"][0]["status"], "timeout")
         self.assertEqual(result["results"][0]["returncode"], 124)
         self.assertEqual(result["results"][0]["timeout_sec"], 7)
+
+    def test_run_plan_fails_closed_when_backend_artifacts_missing(self) -> None:
+        plan = {
+            "commands": [
+                {
+                    "step": "run_workload",
+                    "workload": "10K",
+                    "reason": "missing",
+                    "argv": ["python", "tools/run_matrixark_cpp_rust_scale_report.py"],
+                },
+                {"step": "import_evidence", "workload": "10K", "reason": "missing", "argv": ["python", "second.py"]},
+            ],
+            "post_import_validation": [],
+        }
+        preflight = {
+            "cpp_lib": {"exists": False},
+            "rust_cli": {"exists": False},
+            "ready": False,
+        }
+
+        with patch(
+            "run_temporalstore_cpp_rust_next_performance_workflow._backend_artifact_preflight",
+            return_value=preflight,
+        ), patch("run_temporalstore_cpp_rust_next_performance_workflow.subprocess.run") as run:
+            result = run_plan(
+                plan,
+                include_post_validation=False,
+                continue_on_error=True,
+                require_backend_artifacts=True,
+            )
+
+        self.assertEqual(run.call_count, 0)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["failed_count"], 1)
+        self.assertEqual(result["results"][0]["status"], "preflight_failed")
+        self.assertEqual(result["results"][0]["returncode"], 125)
+        self.assertIn("missing_cpp_lib", result["results"][0]["preflight_blockers"][0])
+        self.assertIn("missing_rust_cli", result["results"][0]["preflight_blockers"][1])
+        self.assertEqual(result["results"][1]["status"], "skipped")
+        self.assertEqual(result["results"][1]["skip_reason"], "upstream_workload_failed")
 
     def test_run_plan_fails_fast_by_default(self) -> None:
         plan = {

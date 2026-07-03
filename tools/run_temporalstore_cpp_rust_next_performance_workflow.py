@@ -19,6 +19,7 @@ from typing import Any
 from audit_temporalstore_cpp_rust_performance_artifacts import (
     DEFAULT_ARTIFACT_ROOT,
     DEFAULT_MATRIX,
+    RUNNER,
     audit_artifacts,
 )
 
@@ -129,6 +130,22 @@ def _with_backend_artifact_overrides(argv: list[str]) -> list[str]:
     return patched
 
 
+def _has_arg(argv: list[str], name: str) -> bool:
+    return name in argv
+
+
+def _backend_artifact_blockers(argv: list[str]) -> list[str]:
+    if RUNNER not in argv:
+        return []
+    preflight = _backend_artifact_preflight()
+    blockers: list[str] = []
+    if not _has_arg(argv, "--cpp-lib") and not preflight["cpp_lib"]["exists"]:
+        blockers.append(f"missing_cpp_lib:set_{CPP_LIB_ENV}_or_build_output_ubuntu22_release_sdk_lib")
+    if not _has_arg(argv, "--rust-cli") and not preflight["rust_cli"]["exists"]:
+        blockers.append(f"missing_rust_cli:set_{RUST_CLI_ENV}_or_build_sdk_rust_temporalstore_release")
+    return blockers
+
+
 def build_execution_plan(audit: dict[str, Any], max_workloads: int | None = None, *, wsl_distro: str = DEFAULT_WSL_DISTRO) -> dict[str, Any]:
     workflow = audit.get("next_required_workflow") if isinstance(audit.get("next_required_workflow"), dict) else {}
     commands = workflow.get("commands") if isinstance(workflow.get("commands"), list) else []
@@ -201,11 +218,13 @@ def run_plan(
     execution_output: Path | None = None,
     execute_in_wsl: bool = False,
     command_timeout_sec: int | None = None,
+    require_backend_artifacts: bool = False,
 ) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
+    failed_workloads: set[str] = set()
 
     def finish(status: str | None = None) -> dict[str, Any]:
-        failed = sum(1 for row in results if row["status"] != "passed")
+        failed = sum(1 for row in results if row["status"] not in {"passed", "skipped"})
         execution = {
             "schema": "temporalstore_cpp_rust_next_performance_execution_v1",
             "continue_on_error": continue_on_error,
@@ -220,6 +239,21 @@ def run_plan(
         return execution
 
     def run_one(step: str, argv: list[str], *, workload: str | None = None, reason: str | None = None) -> None:
+        blockers = _backend_artifact_blockers(argv) if require_backend_artifacts else []
+        if blockers:
+            row = {
+                "step": step,
+                "workload": workload,
+                "reason": reason,
+                "argv": argv,
+                "returncode": 125,
+                "status": "preflight_failed",
+                "preflight_blockers": blockers,
+            }
+            results.append(row)
+            if not continue_on_error:
+                raise SystemExit(json.dumps(finish(), indent=2))
+            return
         timeout = command_timeout_sec if command_timeout_sec and command_timeout_sec > 0 else None
         try:
             completed = subprocess.run(_pythonize(argv), cwd=ROOT, check=False, timeout=timeout)
@@ -249,17 +283,34 @@ def run_plan(
         argv = command.get("argv")
         if not isinstance(argv, list) or not all(isinstance(item, str) for item in argv):
             raise SystemExit(f"invalid workflow command: {command!r}")
+        workload = str(command.get("workload")) if command.get("workload") is not None else None
+        if command.get("step") == "import_evidence" and workload in failed_workloads:
+            results.append(
+                {
+                    "step": "import_evidence",
+                    "workload": workload,
+                    "reason": str(command.get("reason")) if command.get("reason") is not None else None,
+                    "argv": argv,
+                    "returncode": 0,
+                    "status": "skipped",
+                    "skip_reason": "upstream_workload_failed",
+                }
+            )
+            continue
         if execute_in_wsl and command.get("step") == "run_workload":
             wsl_argv = command.get("wsl_argv")
             if not isinstance(wsl_argv, list) or not all(isinstance(item, str) for item in wsl_argv):
                 raise SystemExit(f"workflow command has no valid wsl_argv: {command!r}")
             argv = wsl_argv
+        before = len(results)
         run_one(
             str(command.get("step") or "workflow"),
             argv,
-            workload=str(command.get("workload")) if command.get("workload") is not None else None,
+            workload=workload,
             reason=str(command.get("reason")) if command.get("reason") is not None else None,
         )
+        if command.get("step") == "run_workload" and len(results) > before and results[-1]["status"] != "passed" and workload:
+            failed_workloads.add(workload)
     if include_post_validation:
         validators = plan.get("post_import_validation") if isinstance(plan.get("post_import_validation"), list) else []
         for argv in validators:
@@ -283,6 +334,11 @@ def main() -> int:
     )
     parser.add_argument("--continue-on-error", action="store_true", help="With --execute, keep running later commands after a failure.")
     parser.add_argument("--workflow-command-timeout-sec", type=int, default=900, help="With --execute, cap each generated workflow command and record timeout rows.")
+    parser.add_argument(
+        "--skip-backend-artifact-preflight",
+        action="store_true",
+        help="With --execute, skip the fail-closed C++ SDK/Rust CLI artifact preflight gate.",
+    )
     parser.add_argument("--execution-output", type=Path, help="With --execute, write the execution summary JSON here.")
     parser.add_argument(
         "--skip-post-validation",
@@ -305,6 +361,7 @@ def main() -> int:
         execution_output=execution_output,
         execute_in_wsl=args.execute_in_wsl,
         command_timeout_sec=args.workflow_command_timeout_sec,
+        require_backend_artifacts=not args.skip_backend_artifact_preflight,
     )
     print(json.dumps(execution, indent=2) + "\n", end="")
     return 0 if execution["status"] == "passed" else 1
