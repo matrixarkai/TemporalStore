@@ -156,6 +156,29 @@ pub struct PartitionInfoStats {
     pub object_manager: ObjectManagerStats,
 }
 
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShardCanonicalStorageStats {
+    pub page_index_entries: u64,
+    pub block_index_entries: u64,
+    pub object_index_entries: u64,
+    pub slot_entries: u64,
+    pub storage_zone_count: u64,
+    pub active_storage_zones: u64,
+    pub sealed_storage_zones: u64,
+    pub stream_segment_count: u64,
+    pub storage_zone_total_bytes: u64,
+    pub storage_zone_used_bytes: u64,
+    pub storage_zone_stale_bytes: u64,
+    pub page_reads: u64,
+    pub page_writes: u64,
+    pub block_reads: u64,
+    pub block_writes: u64,
+    pub bytes_read: u64,
+    pub bytes_written: u64,
+    pub append_watermark: u64,
+    pub compaction_watermark: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ShardStats {
     pub shard_id: ShardId,
@@ -173,6 +196,8 @@ pub struct ShardStats {
     pub storage_bytes: u64,
     pub object_manager: ObjectManagerStats,
     pub partition_info: PartitionInfoStats,
+    #[serde(default)]
+    pub storage: ShardCanonicalStorageStats,
     pub cache: CacheStats,
     #[serde(default)]
     pub page_store: BlockStoreStats,
