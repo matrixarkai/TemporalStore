@@ -165,6 +165,12 @@ fn raft_readiness_blocker_from_rustraft_process_field(
     evidence_field: &str,
 ) -> RaftReadinessEvidenceBlocker {
     let blocker = ::rustraft::rustraft_process_readiness_blocker(evidence_field);
+    raft_readiness_blocker_from_rustraft_blocker(blocker)
+}
+
+fn raft_readiness_blocker_from_rustraft_blocker(
+    blocker: ::rustraft::RustRaftProcessReadinessBlocker,
+) -> RaftReadinessEvidenceBlocker {
     RaftReadinessEvidenceBlocker {
         blocker: blocker.blocker,
         evidence_field: blocker.evidence_field,
@@ -224,10 +230,14 @@ pub fn raft_temporal_raft_rollout_readiness_from_reports(
                 .to_string()
                 + &operational_missing,
         );
-        missing_evidence_fields.extend(process_rollout_evidence_blockers(
-            "data_node_report",
-            data_node_report.map(DataNodeRolloutView::from),
-        ));
+        missing_evidence_fields.extend(
+            ::rustraft::rustraft_data_node_process_rollout_blockers(
+                "data_node_report",
+                data_node_report,
+            )
+            .into_iter()
+            .map(raft_readiness_blocker_from_rustraft_blocker),
+        );
     }
     if !metaserver_real_process_rollout_validated {
         let operational_missing = metaserver_report
@@ -240,10 +250,14 @@ pub fn raft_temporal_raft_rollout_readiness_from_reports(
                 .to_string()
                 + &operational_missing,
         );
-        missing_evidence_fields.extend(process_rollout_evidence_blockers(
-            "metaserver_report",
-            metaserver_report.map(MetaRolloutView::from),
-        ));
+        missing_evidence_fields.extend(
+            ::rustraft::rustraft_meta_process_rollout_blockers(
+                "metaserver_report",
+                metaserver_report,
+            )
+            .into_iter()
+            .map(raft_readiness_blocker_from_rustraft_blocker),
+        );
     }
     if !multi_process_log_store_validation_present {
         missing.push(
@@ -277,316 +291,6 @@ pub fn raft_temporal_raft_rollout_readiness_from_reports(
         production_ready,
         missing_evidence_fields,
         missing,
-    }
-}
-
-trait RolloutEvidenceView {
-    fn ready(&self) -> bool;
-    fn spawned_process_count(&self) -> u64;
-    fn independent_wal_dirs(&self) -> bool;
-    fn independent_snapshot_dirs(&self) -> bool;
-    fn observed_process_requests(&self) -> u64;
-    fn read_index_responses_observed(&self) -> u64;
-    fn restarted_node_count(&self) -> u64;
-    fn per_node_log_store_inspection_count(&self) -> u64;
-    fn node_count(&self) -> usize;
-    fn process_api_observed(&self) -> bool;
-    fn snapshot_install_validated(&self) -> bool;
-    fn restart_recovery_validated(&self) -> bool;
-    fn multi_process_log_store_validated(&self) -> bool;
-    fn failover_validated(&self) -> bool;
-    fn membership_change_validated(&self) -> bool;
-    fn follower_lag_validated(&self) -> bool;
-    fn secondary_read_validated(&self) -> bool;
-    fn nodes_restarted_and_log_checked(&self) -> bool;
-    fn operational_missing(&self) -> Vec<String>;
-}
-
-struct DataNodeRolloutView<'a>(&'a TemporalRaftDataNodeProcessRolloutReport);
-
-impl<'a> From<&'a TemporalRaftDataNodeProcessRolloutReport> for DataNodeRolloutView<'a> {
-    fn from(report: &'a TemporalRaftDataNodeProcessRolloutReport) -> Self {
-        Self(report)
-    }
-}
-
-impl RolloutEvidenceView for DataNodeRolloutView<'_> {
-    fn ready(&self) -> bool {
-        self.0.ready
-    }
-    fn spawned_process_count(&self) -> u64 {
-        self.0.spawned_process_count
-    }
-    fn independent_wal_dirs(&self) -> bool {
-        self.0.independent_wal_dirs
-    }
-    fn independent_snapshot_dirs(&self) -> bool {
-        self.0.independent_snapshot_dirs
-    }
-    fn observed_process_requests(&self) -> u64 {
-        self.0.observed_process_requests
-    }
-    fn read_index_responses_observed(&self) -> u64 {
-        self.0.read_index_responses_observed
-    }
-    fn restarted_node_count(&self) -> u64 {
-        self.0.restarted_node_count
-    }
-    fn per_node_log_store_inspection_count(&self) -> u64 {
-        self.0.per_node_log_store_inspection_count
-    }
-    fn node_count(&self) -> usize {
-        self.0.nodes.len()
-    }
-    fn process_api_observed(&self) -> bool {
-        self.0.write_proposed_through_process_api
-    }
-    fn snapshot_install_validated(&self) -> bool {
-        self.0.snapshot_install_validated
-    }
-    fn restart_recovery_validated(&self) -> bool {
-        self.0.restart_recovery_validated && self.0.recovered_after_restart
-    }
-    fn multi_process_log_store_validated(&self) -> bool {
-        self.0.multi_process_log_store_validated
-    }
-    fn failover_validated(&self) -> bool {
-        self.0.failover_validated
-    }
-    fn membership_change_validated(&self) -> bool {
-        self.0.membership_change_validated
-    }
-    fn follower_lag_validated(&self) -> bool {
-        self.0.follower_lag_validated
-    }
-    fn secondary_read_validated(&self) -> bool {
-        self.0.secondary_read_validated
-    }
-    fn nodes_restarted_and_log_checked(&self) -> bool {
-        self.0.nodes.iter().all(|node| {
-            node.restarted && node.log_store_validated && node.applied_index >= node.commit_index
-        })
-    }
-    fn operational_missing(&self) -> Vec<String> {
-        self.0.operational_semantics.missing_requirements()
-    }
-}
-
-struct MetaRolloutView<'a>(&'a TemporalRaftMetaProcessRolloutReport);
-
-impl<'a> From<&'a TemporalRaftMetaProcessRolloutReport> for MetaRolloutView<'a> {
-    fn from(report: &'a TemporalRaftMetaProcessRolloutReport) -> Self {
-        Self(report)
-    }
-}
-
-impl RolloutEvidenceView for MetaRolloutView<'_> {
-    fn ready(&self) -> bool {
-        self.0.ready
-    }
-    fn spawned_process_count(&self) -> u64 {
-        self.0.spawned_process_count
-    }
-    fn independent_wal_dirs(&self) -> bool {
-        self.0.independent_wal_dirs
-    }
-    fn independent_snapshot_dirs(&self) -> bool {
-        self.0.independent_snapshot_dirs
-    }
-    fn observed_process_requests(&self) -> u64 {
-        self.0.observed_process_requests
-    }
-    fn read_index_responses_observed(&self) -> u64 {
-        self.0.read_index_responses_observed
-    }
-    fn restarted_node_count(&self) -> u64 {
-        self.0.restarted_node_count
-    }
-    fn per_node_log_store_inspection_count(&self) -> u64 {
-        self.0.per_node_log_store_inspection_count
-    }
-    fn node_count(&self) -> usize {
-        self.0.nodes.len()
-    }
-    fn process_api_observed(&self) -> bool {
-        self.0.mutation_proposed_through_process_api && self.0.applied_raft_mutations > 0
-    }
-    fn snapshot_install_validated(&self) -> bool {
-        self.0.snapshot_install_validated
-    }
-    fn restart_recovery_validated(&self) -> bool {
-        self.0.recovered_after_restart
-    }
-    fn multi_process_log_store_validated(&self) -> bool {
-        self.0.multi_process_log_store_validated
-    }
-    fn failover_validated(&self) -> bool {
-        self.0.failover_validated
-    }
-    fn membership_change_validated(&self) -> bool {
-        self.0.membership_change_validated
-    }
-    fn follower_lag_validated(&self) -> bool {
-        self.0.follower_lag_validated
-    }
-    fn secondary_read_validated(&self) -> bool {
-        self.0.secondary_read_validated
-    }
-    fn nodes_restarted_and_log_checked(&self) -> bool {
-        self.0.nodes.iter().all(|node| {
-            node.restarted && node.log_store_validated && node.applied_index >= node.commit_index
-        })
-    }
-    fn operational_missing(&self) -> Vec<String> {
-        self.0.operational_semantics.missing_requirements()
-    }
-}
-
-fn process_rollout_evidence_blockers<T: RolloutEvidenceView>(
-    prefix: &str,
-    report: Option<T>,
-) -> Vec<RaftReadinessEvidenceBlocker> {
-    let Some(report) = report else {
-        return vec![RaftReadinessEvidenceBlocker {
-            blocker: format!("{prefix}_missing"),
-            evidence_field: prefix.to_string(),
-            detail: "No process-harness report was supplied; local fixtures cannot satisfy production Raft readiness.".to_string(),
-        }];
-    };
-    let mut blockers = Vec::new();
-    push_if_false(
-        &mut blockers,
-        report.ready(),
-        prefix,
-        "ready",
-        "process rollout report must be ready",
-    );
-    push_if_false(
-        &mut blockers,
-        report.spawned_process_count() >= 3 && report.node_count() >= 3,
-        prefix,
-        "spawned_process_count",
-        "multi-process data-node/metaserver Raft evidence requires at least three spawned nodes",
-    );
-    push_if_false(
-        &mut blockers,
-        report.independent_wal_dirs(),
-        prefix,
-        "independent_wal_dirs",
-        "each process must use an independent WAL directory",
-    );
-    push_if_false(
-        &mut blockers,
-        report.independent_snapshot_dirs(),
-        prefix,
-        "independent_snapshot_dirs",
-        "each process must use an independent snapshot directory",
-    );
-    push_if_false(
-        &mut blockers,
-        report.observed_process_requests() >= report.node_count() as u64,
-        prefix,
-        "observed_process_requests",
-        "harness must observe real process API traffic rather than in-memory fixture calls",
-    );
-    push_if_false(
-        &mut blockers,
-        report.read_index_responses_observed() > 0,
-        prefix,
-        "read_index_responses_observed",
-        "process harness must observe read-index responses",
-    );
-    push_if_false(
-        &mut blockers,
-        report.restart_recovery_validated(),
-        prefix,
-        "restart_recovery_validated",
-        "restart recovery must be validated after persisted WAL/snapshot state",
-    );
-    push_if_false(
-        &mut blockers,
-        report.nodes_restarted_and_log_checked(),
-        prefix,
-        "nodes[*].{restarted,log_store_validated,applied_index,commit_index}",
-        "every node must restart, pass log-store inspection, and converge applied index to commit index",
-    );
-    push_if_false(
-        &mut blockers,
-        report.process_api_observed(),
-        prefix,
-        "process_api_mutations_or_writes",
-        "writes/mutations must be proposed through process APIs",
-    );
-    push_if_false(
-        &mut blockers,
-        report.multi_process_log_store_validated(),
-        prefix,
-        "multi_process_log_store_validated",
-        "independent process log stores must be inspected and validated",
-    );
-    push_if_false(
-        &mut blockers,
-        report.failover_validated(),
-        prefix,
-        "failover_validated",
-        "failover must be validated on this plane",
-    );
-    push_if_false(
-        &mut blockers,
-        report.membership_change_validated(),
-        prefix,
-        "membership_change_validated",
-        "membership add/remove under load must be validated",
-    );
-    push_if_false(
-        &mut blockers,
-        report.follower_lag_validated(),
-        prefix,
-        "follower_lag_validated",
-        "secondary lag and catch-up must be observed",
-    );
-    push_if_false(
-        &mut blockers,
-        report.secondary_read_validated(),
-        prefix,
-        "secondary_read_validated",
-        "secondary read eligibility after catch-up must be validated",
-    );
-    push_if_false(
-        &mut blockers,
-        report.snapshot_install_validated(),
-        prefix,
-        "snapshot_install_validated",
-        "snapshot install/restart after compaction must be validated",
-    );
-    for missing in report.operational_missing() {
-        blockers.push(RaftReadinessEvidenceBlocker {
-            blocker: format!("{prefix}_operational_semantics_missing"),
-            evidence_field: format!("{prefix}.operational_semantics.{missing}"),
-            detail: "RustRaft/ByteRaft-derived operational semantics evidence is incomplete."
-                .to_string(),
-        });
-    }
-    blockers
-}
-
-fn push_if_false(
-    blockers: &mut Vec<RaftReadinessEvidenceBlocker>,
-    ready: bool,
-    prefix: &str,
-    evidence_field: &str,
-    detail: &str,
-) {
-    if !ready {
-        blockers.push(RaftReadinessEvidenceBlocker {
-            blocker: format!(
-                "{}_{}_missing",
-                prefix,
-                evidence_field.replace(['.', '*', '{', '}', '[', ']', ','], "_")
-            ),
-            evidence_field: format!("{prefix}.{evidence_field}"),
-            detail: detail.to_string(),
-        });
     }
 }
 
