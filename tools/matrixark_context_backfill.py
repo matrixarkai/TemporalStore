@@ -1137,6 +1137,36 @@ def build_plan_validation_args(args: argparse.Namespace) -> list[str]:
     return out
 
 
+def build_plan_execution(args: argparse.Namespace, windows: list[Json]) -> Json:
+    parallelism = max(1, int(getattr(args, 'plan_parallelism', 1) or 1))
+    waves: list[Json] = []
+    for offset in range(0, len(windows), parallelism):
+        wave_windows = windows[offset:offset + parallelism]
+        waves.append({
+            'wave': len(waves),
+            'window_indexes': [int(window['index']) for window in wave_windows],
+            'shadow_command_args': [window['shadow_command_args'] for window in wave_windows],
+            'validate_command_args': [window['validate_command_args'] for window in wave_windows],
+        })
+    return {
+        'plan_parallelism': parallelism,
+        'shadow_validation_waves': waves,
+        'promotion_sequence': [
+            {
+                'order': index,
+                'window_index': int(window['index']),
+                'incremental_repair_command_args': window['incremental_repair_command_args'],
+            }
+            for index, window in enumerate(windows)
+        ],
+        'execution_order': [
+            'run each shadow_validation_waves[].shadow_command_args group concurrently up to plan_parallelism',
+            'run each shadow_validation_waves[].validate_command_args group after its shadow wave finishes',
+            'run promotion_sequence[].incremental_repair_command_args one at a time in order',
+        ],
+    }
+
+
 def build_plan_windows(args: argparse.Namespace, *, source_range: Json, target_prefix: str) -> Json:
     window_size = int(getattr(args, 'plan_window_size', 0) or 0)
     max_windows = int(getattr(args, 'plan_max_windows', 0) or 0)
@@ -1220,10 +1250,12 @@ def build_plan_windows(args: argparse.Namespace, *, source_range: Json, target_p
         sequence = window_end
         index += 1
     total_windows = (end - start + window_size - 1) // window_size
+    execution_plan = build_plan_execution(args, windows)
     return {
         'enabled': True,
         'window_size': window_size,
         'windows': windows,
+        'execution_plan': execution_plan,
         'total_windows': total_windows,
         'emitted_windows': len(windows),
         'truncated': len(windows) < total_windows,
@@ -2606,6 +2638,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--batch-size', type=int, default=256)
     parser.add_argument('--plan-window-size', type=int, default=0, help='plan-only bounded source records per execution window; 0 disables chunk planning')
     parser.add_argument('--plan-max-windows', type=int, default=128, help='plan-only maximum windows to emit; 0 emits all windows')
+    parser.add_argument('--plan-parallelism', type=int, default=1, help='plan-only number of independent chunk shadows to group into each preparation wave')
     parser.add_argument('--source-scan-max-empty-shards', type=int, default=2)
     parser.add_argument('--dry-run', type=int, choices=[0, 1], default=1)
     parser.add_argument('--dry-run-check-target', type=int, choices=[0, 1], default=1, help='during dry-run, check target idempotency so duplicate and would-write counts match a real run')
@@ -2634,6 +2667,8 @@ def main() -> int:
         parser.error('--plan-window-size must be non-negative')
     if args.plan_max_windows < 0:
         parser.error('--plan-max-windows must be non-negative')
+    if args.plan_parallelism <= 0:
+        parser.error('--plan-parallelism must be positive')
     if args.source_scan_max_empty_shards <= 0:
         parser.error('--source-scan-max-empty-shards must be positive')
     try:
