@@ -16,8 +16,10 @@ from pathlib import Path
 from typing import Any
 
 from validate_storage_lifecycle_parity import (
+    ALLOWED_ALIAS_CONTAINERS,
     CANONICAL_JSON_FIELDS,
     CANONICAL_PUBLIC_FIELDS,
+    LEGACY_ALIAS_MAP,
     REQUIRED_STORAGE_CACHE_LAYERS,
     REQUIRED_STORAGE_CACHE_SEMANTICS,
     REQUIRED_STORAGE_CACHE_CONTRACT_FIELDS,
@@ -68,18 +70,8 @@ REQUIRED_TOP_LEVEL_SECTIONS = (
     "storage_index_contract",
 )
 
-LEGACY_PUBLIC_KEYS = {
-    "page_store",
-    "block_store",
-    "stream_blob",
-    "oplog",
-}
-ALLOWED_ALIAS_CONTAINER_KEYS = {
-    "compatibility_aliases",
-    "legacy_alias",
-    "legacy_aliases",
-    "migration_aliases",
-}
+LEGACY_PUBLIC_KEYS = set(LEGACY_ALIAS_MAP)
+ALLOWED_ALIAS_CONTAINER_KEYS = set(ALLOWED_ALIAS_CONTAINERS)
 REQUIRED_PUBLIC_STORAGE_CONTRACT = {
     json_field: public_field
     for json_field, public_field in zip(CANONICAL_JSON_FIELDS, CANONICAL_PUBLIC_FIELDS)
