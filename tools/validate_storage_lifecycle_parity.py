@@ -172,6 +172,41 @@ REQUIRED_STORAGE_MANAGER_PHASE_METRICS = {
     "watermark_progress": "storage_manager_watermark_progress_count",
 }
 
+REQUIRED_STORAGE_INDEX_CONTRACT_FIELDS = [
+    "page_address_codec",
+    "block_address_codec",
+    "stable_order",
+    "slot_index",
+    "object_index_entry",
+    "page_index",
+    "block_index",
+    "required_behaviors",
+    "page_address_encode_decode",
+    "block_address_encode_decode",
+    "stable_order_verified",
+    "timestamp_range_lookup_verified",
+    "slot_index_entry_count",
+    "slot_object_ref_count",
+    "slot_page_ref_count",
+    "object_index_entry_count",
+    "page_index_entry_count",
+    "block_index_entry_count",
+    "restart_rebuild_verified",
+    "unreadable_page_refs",
+    "checksum_mismatches",
+]
+
+REQUIRED_STORAGE_INDEX_BEHAVIORS = [
+    "page_address_encode_decode",
+    "page_address_stable_order",
+    "timestamp_range_page_lookup",
+    "slot_index_maps_slot_to_object_page_refs",
+    "object_index_maps_model_table_object_key_to_page_chain",
+    "page_index_maps_logical_ranges_to_page_addresses",
+    "block_index_maps_page_addresses_to_durable_locations",
+    "restart_rebuilds_page_block_object_indexes",
+]
+
 REQUIRED_STORAGE_RECLAIM_SCOPE = {
     "owner": "temporalstore_storage_lifecycle",
     "matrixark_context_gc_role": "marks_logical_raw_event_eligibility_only",
@@ -196,6 +231,7 @@ REQUIRED_LIFECYCLE_TOP_LEVEL_KEYS = [
     "storage_read_contract",
     "storage_cold_scan_contract",
     "storage_manager_contract",
+    "storage_index_contract",
     "storage_read_sequence",
     "storage_cold_scan_sequence",
     "storage_lifecycle_phases",
@@ -472,6 +508,18 @@ def _dig_manager_contract(report: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _dig_index_contract(report: dict[str, Any]) -> dict[str, Any]:
+    candidates = [
+        report.get("storage_index_contract"),
+        report.get("storage_lifecycle", {}).get("index_contract") if isinstance(report.get("storage_lifecycle"), dict) else None,
+        report.get("storage_index", {}).get("contract") if isinstance(report.get("storage_index"), dict) else None,
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            return candidate
+    return {}
+
+
 def _dig_lifecycle_phases(report: dict[str, Any]) -> list[str]:
     candidates = [
         report.get("storage_lifecycle_phases"),
@@ -671,6 +719,7 @@ def validate_contract_and_runner() -> list[str]:
     runner_cold_scan_metrics = _extract_runner_list("STORAGE_COLD_SCAN_METRIC_NAMES")
     runner_lifecycle_phases = _extract_runner_list("STORAGE_LIFECYCLE_PHASE_NAMES")
     runner_manager_phase_metrics = _extract_runner_dict("STORAGE_MANAGER_PHASE_METRICS")
+    runner_index_behaviors = _extract_runner_list("STORAGE_INDEX_BEHAVIOR_NAMES")
     runner_reclaim_semantics = _extract_runner_list("STORAGE_RECLAIM_SEMANTICS")
     runner_cache_layers = _extract_runner_list("STORAGE_CACHE_LAYER_NAMES")
     runner_cache_semantics = _extract_runner_list("STORAGE_CACHE_SEMANTICS")
@@ -703,6 +752,8 @@ def validate_contract_and_runner() -> list[str]:
         failures.append("runner:STORAGE_LIFECYCLE_PHASE_NAMES does not match the canonical lifecycle phase order")
     if runner_manager_phase_metrics != REQUIRED_STORAGE_MANAGER_PHASE_METRICS:
         failures.append("runner:STORAGE_MANAGER_PHASE_METRICS does not match the canonical manager phase metrics")
+    if runner_index_behaviors != REQUIRED_STORAGE_INDEX_BEHAVIORS:
+        failures.append("runner:STORAGE_INDEX_BEHAVIOR_NAMES does not match the canonical index behaviors")
     if runner_reclaim_semantics != REQUIRED_STORAGE_RECLAIM_SEMANTICS:
         failures.append("runner:STORAGE_RECLAIM_SEMANTICS does not match the canonical reclaim semantics")
     if runner_cache_layers != REQUIRED_STORAGE_CACHE_LAYERS:
@@ -751,6 +802,12 @@ def validate_contract_and_runner() -> list[str]:
             failures.append(f"contract missing manager phase `{phase}`")
         if f"`{metric}`" not in contract_text:
             failures.append(f"contract missing manager phase metric `{metric}`")
+    for field in REQUIRED_STORAGE_INDEX_CONTRACT_FIELDS:
+        if f"`{field}`" not in contract_text:
+            failures.append(f"contract missing index contract field `{field}`")
+    for behavior in REQUIRED_STORAGE_INDEX_BEHAVIORS:
+        if f"`{behavior}`" not in contract_text:
+            failures.append(f"contract missing index behavior `{behavior}`")
     for semantic in REQUIRED_STORAGE_RECLAIM_SEMANTICS:
         if f"`{semantic}`" not in contract_text:
             failures.append(f"contract missing reclaim semantic `{semantic}`")
@@ -785,6 +842,8 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
     rust_cold_scan_contract = _dig_cold_scan_contract(rust_report)
     cpp_manager_contract = _dig_manager_contract(cpp_report)
     rust_manager_contract = _dig_manager_contract(rust_report)
+    cpp_index_contract = _dig_index_contract(cpp_report)
+    rust_index_contract = _dig_index_contract(rust_report)
     cpp_write_sequence = _dig_sequence(cpp_report, "storage_write_sequence")
     rust_write_sequence = _dig_sequence(rust_report, "storage_write_sequence")
     cpp_read_sequence = _dig_sequence(cpp_report, "storage_read_sequence")
@@ -939,6 +998,51 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
                     failures.append(f"{backend} manager phase_counts `{phase}` must be non-negative")
         if _as_number(manager_contract.get("loop_ms")) is not None and _as_number(manager_contract.get("loop_ms")) < 0:
             failures.append(f"{backend} manager loop_ms must be non-negative")
+    for field in REQUIRED_STORAGE_INDEX_CONTRACT_FIELDS:
+        if field not in cpp_index_contract:
+            failures.append(f"cpp index contract missing field `{field}`")
+        if field not in rust_index_contract:
+            failures.append(f"rust index contract missing field `{field}`")
+    for backend, index_contract in [("cpp", cpp_index_contract), ("rust", rust_index_contract)]:
+        if index_contract.get("page_address_codec") != "PageAddress":
+            failures.append(f"{backend} index contract page_address_codec must be PageAddress")
+        if index_contract.get("block_address_codec") != "BlockAddress":
+            failures.append(f"{backend} index contract block_address_codec must be BlockAddress")
+        if index_contract.get("stable_order") != ["shard_id", "zone_id", "segment_id", "page_id", "offset"]:
+            failures.append(f"{backend} index contract stable_order drift: {index_contract.get('stable_order')!r}")
+        if index_contract.get("slot_index") != "slot -> object/page refs":
+            failures.append(f"{backend} index contract slot_index mapping drift")
+        if index_contract.get("object_index_entry") != "{model/table/object_key} -> current page chain":
+            failures.append(f"{backend} index contract object_index_entry mapping drift")
+        if index_contract.get("page_index") != "logical timestamp/key ranges -> page addresses":
+            failures.append(f"{backend} index contract page_index mapping drift")
+        if index_contract.get("block_index") != "page addresses -> physical durable locations":
+            failures.append(f"{backend} index contract block_index mapping drift")
+        if index_contract.get("required_behaviors") != REQUIRED_STORAGE_INDEX_BEHAVIORS:
+            failures.append(f"{backend} index contract required_behaviors drift: {index_contract.get('required_behaviors')!r}")
+        for flag in [
+            "page_address_encode_decode",
+            "block_address_encode_decode",
+            "stable_order_verified",
+            "timestamp_range_lookup_verified",
+            "restart_rebuild_verified",
+        ]:
+            if index_contract.get(flag) is not True:
+                failures.append(f"{backend} index contract {flag} must be true")
+        for field in [
+            "slot_index_entry_count",
+            "slot_object_ref_count",
+            "slot_page_ref_count",
+            "object_index_entry_count",
+            "page_index_entry_count",
+            "block_index_entry_count",
+        ]:
+            value = _as_number(index_contract.get(field))
+            if value is None or value <= 0:
+                failures.append(f"{backend} index contract `{field}` must be positive")
+        for field in ["unreadable_page_refs", "checksum_mismatches"]:
+            if _as_number(index_contract.get(field)) not in (0.0, None):
+                failures.append(f"{backend} index contract `{field}` must be zero")
 
     if cpp_write_sequence != REQUIRED_STORAGE_WRITE_SEQUENCE:
         failures.append(f"cpp storage_write_sequence drift: {cpp_write_sequence!r}")
