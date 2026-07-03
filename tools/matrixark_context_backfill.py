@@ -1173,15 +1173,19 @@ def expected_serving_type_counts(metrics: Json) -> Json:
     return dict(sorted(counts.items()))
 
 
-def validation_audit_fields(validation: Json | None) -> Json:
+def validation_audit_fields(validation: Json | None, *, skip_validation: bool = False) -> Json:
     if not isinstance(validation, dict):
         return {
             'validation_status': 'skipped',
+            'validation_skipped': True,
+            'validation_skip_reason': 'skip_validation_flag' if skip_validation else 'validation_not_run',
             'validation_source_range': {},
             'validation_target_state': {},
         }
     return {
         'validation_status': validation.get('status', 'unknown'),
+        'validation_skipped': False,
+        'validation_skip_reason': '',
         'validation_source_range': validation.get('source_range', {}),
         'validation_target_state': validation.get('target_state', {}),
     }
@@ -1261,7 +1265,7 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
         validation = run_validate_shadow(args)
         if validation.get('status') != 'ok':
             raise BackfillError(f'shadow validation failed: {json.dumps(validation, sort_keys=True)}')
-    validation_audit = validation_audit_fields(validation)
+    validation_audit = validation_audit_fields(validation, skip_validation=args.skip_validation)
     if args.dry_run:
         return {
             'status': 'ok',
@@ -1371,7 +1375,7 @@ def run_incremental_repair(args: argparse.Namespace) -> Json:
         validation = run_validate_shadow(args)
         if validation.get('status') != 'ok':
             raise BackfillError(f'incremental repair shadow validation failed: {json.dumps(validation, sort_keys=True)}')
-    validation_audit = validation_audit_fields(validation)
+    validation_audit = validation_audit_fields(validation, skip_validation=args.skip_validation)
 
     kv = make_kv(args)
     active_prefix = args.repair_active_prefix or kv.get_string(args.active_prefix_key)

@@ -315,6 +315,8 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             ))
             self.assertEqual(activated["status"], "ok")
             self.assertEqual(activated["validation_status"], "ok")
+            self.assertFalse(activated["validation_skipped"])
+            self.assertEqual(activated["validation_skip_reason"], "")
             self.assertEqual(activated["validation_source_range"]["source_high_watermark_seq"], 1)
             self.assertEqual(activated["validation_target_state"]["record_count"], 2)
             kv_after = backfill.LocalJsonKV(path)
@@ -322,6 +324,8 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(kv_after.get_string("matrixark:context:active_prefix:previous:unit"), "matrixark:context:old")
             activation_audit = json.loads(kv_after.hget("matrixark:context:active_prefix:audit", "unit"))
             self.assertEqual(activation_audit["validation_status"], "ok")
+            self.assertFalse(activation_audit["validation_skipped"])
+            self.assertEqual(activation_audit["validation_skip_reason"], "")
             self.assertEqual(activation_audit["validation_target_state"]["record_count"], 2)
             self.assertIn("matrixark:context_backfill:candidate", json.dumps(activation_audit, sort_keys=True))
 
@@ -352,6 +356,38 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             kv_rolled_back = backfill.LocalJsonKV(path)
             self.assertEqual(kv_rolled_back.get_string("matrixark:context:active_prefix"), "matrixark:context:old")
             self.assertIn("matrixark:context_backfill:candidate", kv_rolled_back.hget("matrixark:context:active_prefix:rollback_audit", "rollback-unit"))
+
+    def test_activate_shadow_skip_validation_is_explicitly_audited(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            kv.put_string("matrixark:context:active_prefix", "matrixark:context:old")
+
+            activated = backfill.run_activate_shadow(self.make_args(
+                path,
+                mode="activate_shadow",
+                target_prefix="matrixark:context_backfill:candidate",
+                confirm_activate="YES",
+                skip_validation=True,
+                dry_run=False,
+            ))
+
+            self.assertEqual(activated["status"], "ok")
+            self.assertIsNone(activated["validation"])
+            self.assertEqual(activated["validation_status"], "skipped")
+            self.assertTrue(activated["validation_skipped"])
+            self.assertEqual(activated["validation_skip_reason"], "skip_validation_flag")
+            self.assertEqual(activated["validation_source_range"], {})
+            self.assertEqual(activated["validation_target_state"], {})
+
+            kv_after = backfill.LocalJsonKV(path)
+            activation_audit = json.loads(kv_after.hget("matrixark:context:active_prefix:audit", "unit"))
+            self.assertIsNone(activation_audit["validation"])
+            self.assertEqual(activation_audit["validation_status"], "skipped")
+            self.assertTrue(activation_audit["validation_skipped"])
+            self.assertEqual(activation_audit["validation_skip_reason"], "skip_validation_flag")
+            self.assertEqual(activation_audit["validation_source_range"], {})
+            self.assertEqual(activation_audit["validation_target_state"], {})
 
 
     def test_validate_shadow_fails_on_type_mismatch_even_when_count_matches(self):
@@ -419,6 +455,8 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(repaired["active_prefix"], "matrixark:context:active")
             self.assertEqual(repaired["promotion"]["metrics"]["written"], 1)
             self.assertEqual(repaired["validation_status"], "ok")
+            self.assertFalse(repaired["validation_skipped"])
+            self.assertEqual(repaired["validation_skip_reason"], "")
             self.assertEqual(repaired["validation_source_range"]["effective_start_seq"], 1)
             self.assertEqual(repaired["validation_target_state"]["target_prefix"], "matrixark:context_repair:p1")
 
@@ -426,6 +464,8 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(kv_after.get_string("matrixark:context:active_prefix"), "matrixark:context:active")
             repair_audit = json.loads(kv_after.hget("matrixark:context:active_prefix:incremental_repair_audit", "unit"))
             self.assertEqual(repair_audit["validation_status"], "ok")
+            self.assertFalse(repair_audit["validation_skipped"])
+            self.assertEqual(repair_audit["validation_skip_reason"], "")
             self.assertEqual(repair_audit["validation_target_state"]["record_count"], 1)
             self.assertIn("matrixark:context:active", json.dumps(repair_audit, sort_keys=True))
             active_records = read_target_records(kv_after, "matrixark:context:active")
@@ -434,6 +474,45 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             retried = backfill.run_incremental_repair(repair_args)
             self.assertEqual(retried["promotion"]["metrics"]["duplicate"], 1)
             self.assertEqual(backfill.LocalJsonKV(path).get_string("matrixark:context:active:record_count"), "1")
+
+    def test_incremental_repair_skip_validation_is_explicitly_audited(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            write_sharded(kv, "matrixark:mcp", 0, {"record_type": "context_event", "event_id_hash": 1})
+            kv.put_string("matrixark:mcp:record_count", "1")
+            kv.put_string("matrixark:context:active_prefix", "matrixark:context:active")
+
+            repaired = backfill.run_incremental_repair(self.make_args(
+                path,
+                mode="incremental_repair",
+                target_prefix="matrixark:context_repair:skip",
+                start_seq=0,
+                end_seq=1,
+                confirm_incremental_repair="YES",
+                skip_validation=True,
+                resume=False,
+            ))
+
+            self.assertEqual(repaired["status"], "ok")
+            self.assertIsNone(repaired["validation"])
+            self.assertEqual(repaired["validation_status"], "skipped")
+            self.assertTrue(repaired["validation_skipped"])
+            self.assertEqual(repaired["validation_skip_reason"], "skip_validation_flag")
+            self.assertEqual(repaired["validation_source_range"], {})
+            self.assertEqual(repaired["validation_target_state"], {})
+            self.assertEqual(repaired["promotion"]["metrics"]["written"], 1)
+
+            kv_after = backfill.LocalJsonKV(path)
+            repair_audit = json.loads(kv_after.hget("matrixark:context:active_prefix:incremental_repair_audit", "unit"))
+            self.assertIsNone(repair_audit["validation"])
+            self.assertEqual(repair_audit["validation_status"], "skipped")
+            self.assertTrue(repair_audit["validation_skipped"])
+            self.assertEqual(repair_audit["validation_skip_reason"], "skip_validation_flag")
+            self.assertEqual(repair_audit["validation_source_range"], {})
+            self.assertEqual(repair_audit["validation_target_state"], {})
+            active_records = read_target_records(kv_after, "matrixark:context:active")
+            self.assertEqual([record["event_id_hash"] for record in active_records], [1])
 
     def test_partial_backfill_filters_and_isolates_checkpoint(self):
         with tempfile.TemporaryDirectory() as tmp:
