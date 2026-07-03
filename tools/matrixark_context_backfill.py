@@ -639,6 +639,62 @@ def checkpoint_key(
     return f'matrixark:backfill:{job_id}:checkpoint:{fingerprint}'
 
 
+def read_checkpoint_sequence(kv: Any, key: str) -> int | None:
+    raw_checkpoint = kv.get_string(key)
+    if not raw_checkpoint:
+        return None
+    try:
+        return int(raw_checkpoint)
+    except ValueError:
+        pass
+    try:
+        checkpoint = json.loads(raw_checkpoint)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(checkpoint, dict):
+        return None
+    value = checkpoint.get('last_sequence')
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def build_checkpoint_metadata(
+    *,
+    job_id: str,
+    source_prefix: str,
+    target_prefix: str,
+    raw_backend: str,
+    mode: str,
+    partial: Json,
+    batch_size: int,
+    last_sequence: int,
+    metrics: 'BackfillMetrics',
+) -> Json:
+    return {
+        'version': 2,
+        'job_id': job_id,
+        'source_prefix': source_prefix,
+        'target_prefix': target_prefix,
+        'raw_backend': normalize_raw_backend(raw_backend),
+        'mode': mode,
+        'partial': partial,
+        'batch_size': batch_size,
+        'last_sequence': last_sequence,
+        'updated_at_ms': int(time.time() * 1000),
+        'metrics': {
+            'scanned': metrics.scanned,
+            'written': metrics.written,
+            'duplicate': metrics.duplicate,
+            'failed': metrics.failed,
+            'dead_letter': metrics.dead_letter,
+            'source_batches': metrics.source_batches,
+            'target_batches': metrics.target_batches,
+        },
+    }
+
+
 def default_target_prefix(job_id: str) -> str:
     return f'matrixark:context_backfill:{job_id}'
 
@@ -811,13 +867,11 @@ def run_backfill(args: argparse.Namespace) -> Json:
         partial=partial,
     )
     start_seq = max(0, args.start_seq)
+    checkpoint: Json | None = None
     if args.resume:
-        raw_checkpoint = kv.get_string(cp_key)
-        if raw_checkpoint:
-            try:
-                start_seq = max(start_seq, int(raw_checkpoint) + 1)
-            except ValueError:
-                pass
+        checkpoint_sequence = read_checkpoint_sequence(kv, cp_key)
+        if checkpoint_sequence is not None:
+            start_seq = max(start_seq, checkpoint_sequence + 1)
 
     seen_ids: set[str] = set()
     pending: list[Json] = []
@@ -825,18 +879,30 @@ def run_backfill(args: argparse.Namespace) -> Json:
     outer_bulk = hasattr(kv, 'begin_bulk') and hasattr(kv, 'end_bulk')
 
     def flush() -> None:
-        nonlocal pending, checkpoint_pending_seq
+        nonlocal pending, checkpoint, checkpoint_pending_seq
         if not pending and checkpoint_pending_seq is None:
             return
         if not args.dry_run:
             if pending:
                 target.append_many(pending)
-            if checkpoint_pending_seq is not None:
-                kv.put_string(cp_key, str(checkpoint_pending_seq))
         if pending:
             metrics.target_batches += 1
             metrics.written += len(pending)
             metrics.observe_records(pending)
+        if not args.dry_run:
+            if checkpoint_pending_seq is not None:
+                checkpoint = build_checkpoint_metadata(
+                    job_id=args.job_id,
+                    source_prefix=args.source_prefix,
+                    target_prefix=target_prefix,
+                    raw_backend=raw_backend,
+                    mode=args.mode,
+                    partial=partial,
+                    batch_size=args.batch_size,
+                    last_sequence=checkpoint_pending_seq,
+                    metrics=metrics,
+                )
+                kv.put_string(cp_key, json.dumps(checkpoint, sort_keys=True, separators=(',', ':')))
         pending = []
         checkpoint_pending_seq = None
 
@@ -955,6 +1021,7 @@ def run_backfill(args: argparse.Namespace) -> Json:
         'end_seq': args.end_seq,
         'partial': partial,
         'checkpoint_key': cp_key,
+        'checkpoint': checkpoint,
         'summary': summary,
     }
     summary['manifest_key'] = f'{target_prefix}:backfill_manifest'

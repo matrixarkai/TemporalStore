@@ -89,9 +89,53 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertIn('raw_backend="temporalstore"', prom_text)
             self.assertEqual(summary["raw_backend"], "temporalstore")
             self.assertEqual(len(read_target_records(backfill.LocalJsonKV(path), "matrixark:context_backfill:test")), 2)
+            cp_key = backfill.checkpoint_key(
+                "matrixark:context_backfill:test",
+                "unit",
+                source_prefix="matrixark:mcp",
+                raw_backend="temporalstore",
+                partial=summary["partial"],
+            )
+            checkpoint = json.loads(backfill.LocalJsonKV(path).get_string(cp_key))
+            self.assertEqual(checkpoint["version"], 2)
+            self.assertEqual(checkpoint["last_sequence"], 1)
+            self.assertEqual(checkpoint["job_id"], "unit")
+            self.assertEqual(checkpoint["source_prefix"], "matrixark:mcp")
+            self.assertEqual(checkpoint["target_prefix"], "matrixark:context_backfill:test")
+            self.assertEqual(checkpoint["raw_backend"], "temporalstore")
+            self.assertEqual(checkpoint["metrics"]["written"], 2)
 
             resumed = backfill.run_backfill(self.make_args(path, prometheus_output=str(prom)))
             self.assertEqual(resumed["metrics"]["scanned"], 0)
+
+    def test_resume_accepts_legacy_integer_checkpoint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            write_sharded(kv, "matrixark:mcp", 0, {"record_type": "context_event", "event_id_hash": 1})
+            write_sharded(kv, "matrixark:mcp", 1, {"record_type": "context_event", "event_id_hash": 2})
+            write_sharded(kv, "matrixark:mcp", 2, {"record_type": "context_event", "event_id_hash": 3})
+            kv.put_string("matrixark:mcp:record_count", "3")
+            cp_key = backfill.checkpoint_key("matrixark:context_backfill:test", "unit", source_prefix="matrixark:mcp", raw_backend="temporalstore", partial=backfill.build_partial_spec(self.make_args(path)))
+            kv.put_string(cp_key, "0")
+
+            summary = backfill.run_backfill(self.make_args(path, batch_size=2, resume=True))
+            self.assertEqual(summary["metrics"]["scanned"], 2)
+            self.assertEqual([record["event_id_hash"] for record in read_target_records(backfill.LocalJsonKV(path), "matrixark:context_backfill:test")], [2, 3])
+
+    def test_resume_accepts_structured_checkpoint_metadata(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            write_sharded(kv, "matrixark:mcp", 0, {"record_type": "context_event", "event_id_hash": 1})
+            write_sharded(kv, "matrixark:mcp", 1, {"record_type": "context_event", "event_id_hash": 2})
+            kv.put_string("matrixark:mcp:record_count", "2")
+            cp_key = backfill.checkpoint_key("matrixark:context_backfill:test", "unit", source_prefix="matrixark:mcp", raw_backend="temporalstore", partial=backfill.build_partial_spec(self.make_args(path)))
+            kv.put_string(cp_key, json.dumps({"version": 2, "last_sequence": 0, "job_id": "unit"}))
+
+            summary = backfill.run_backfill(self.make_args(path, batch_size=2, resume=True))
+            self.assertEqual(summary["metrics"]["scanned"], 1)
+            self.assertEqual([record["event_id_hash"] for record in read_target_records(backfill.LocalJsonKV(path), "matrixark:context_backfill:test")], [2])
 
 
     def test_scan_hash_backfill_without_record_count_or_index(self):
@@ -372,7 +416,7 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             full_cp = backfill.checkpoint_key("shadow:full", "same", source_prefix="matrixark:mcp", raw_backend="temporalstore", partial=full["partial"])
             partial_cp = backfill.checkpoint_key("shadow:partial", "same", source_prefix="matrixark:mcp", raw_backend="temporalstore", partial=partial["partial"])
             self.assertNotEqual(full_cp, partial_cp)
-            self.assertEqual(kv_after.get_string(partial_cp), "2")
+            self.assertEqual(json.loads(kv_after.get_string(partial_cp))["last_sequence"], 2)
 
     def test_raw_backend_isolates_checkpoint_manifest_and_append_options(self):
         with tempfile.TemporaryDirectory() as tmp:

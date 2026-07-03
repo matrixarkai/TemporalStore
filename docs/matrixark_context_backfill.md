@@ -223,7 +223,9 @@ matrixark:backfill:<job_id>:checkpoint:<hash(source_prefix,raw_backend,target_pr
 
 This prevents a partial repair from accidentally resuming from a full-backfill checkpoint, and it prevents TemporalStore raw-source jobs from sharing checkpoint state with MatrixKV raw-source jobs. With `--resume=1`, the next run starts after the last successfully processed source sequence for the exact same source, raw backend, target, and partial filter.
 
-Checkpoints advance after the pending target batch is flushed. After a restart, the runner may replay at most the last uncommitted batch. Target-side idempotency keys prevent duplicate appends for already written records.
+Checkpoint values are JSON audit records. Current runners write `version=2`, `last_sequence`, `updated_at_ms`, job/source/target/raw-backend labels, the partial filter spec, batch size, and committed counters for scanned, written, duplicate, failed, dead-letter, source batches, and target batches. Older checkpoints that contain only a bare integer sequence are still accepted, so existing jobs can resume after an upgrade.
+
+Checkpoints advance after the pending target batch is flushed and counted. After a restart, the runner may replay at most the last uncommitted batch. Target-side idempotency keys prevent duplicate appends for already written records.
 
 Use `--resume=0` when intentionally rerunning a job from `--start-seq`.
 
