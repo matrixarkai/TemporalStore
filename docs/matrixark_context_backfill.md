@@ -445,6 +445,20 @@ By default, a bad record does not stop the job. Use `--fail-fast` for debugging 
 
 Backfill runs remain resumable and may return top-level `status="ok"` after writing dead letters, but the JSON summary also includes `data_quality_status`. Treat `data_quality_status="clean"` as the normal production success state. Treat `data_quality_status="completed_with_errors"` as requiring validation failure review, dead-letter triage, or an explicit incident-owner exception before promotion.
 
+Export dead letters before retrying or promoting a repaired prefix:
+
+```bash
+python3 tools/matrixark_context_backfill.py \
+  --mode=export_dead_letters \
+  --target-prefix=matrixark:context_backfill:repair-20260704 \
+  --job-id=repair-20260704 \
+  --dead-letter-start=0 \
+  --dead-letter-limit=1000 \
+  --dead-letter-output=/var/tmp/repair-20260704.dead_letters.jsonl
+```
+
+The command is read-only. Its JSON summary includes `dead_letter_total`, `exported_count`, `has_more`, `next_start`, and a stable `dead_letter_fingerprint`. Use `next_start` to page through large dead-letter sets and archive the JSONL with the run evidence.
+
 
 ## Dual-Write Ingestion Performance Benchmark
 

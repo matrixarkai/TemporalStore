@@ -1551,6 +1551,24 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(summary["data_quality_status"], "completed_with_errors")
             self.assertTrue(summary["has_failures"])
             self.assertEqual(backfill.LocalJsonKV(path).get_string("matrixark:context_backfill:test:dead_letter_count"), "1")
+            export_path = Path(tmp) / "dead_letters.jsonl"
+            exported = backfill.run_export_dead_letters(self.make_args(
+                path,
+                mode="export_dead_letters",
+                target_prefix="matrixark:context_backfill:test",
+                dead_letter_start=0,
+                dead_letter_limit=1,
+                dead_letter_output=str(export_path),
+            ))
+            self.assertEqual(exported["status"], "ok")
+            self.assertEqual(exported["dead_letter_total"], 1)
+            self.assertEqual(exported["exported_count"], 1)
+            self.assertFalse(exported["has_more"])
+            self.assertRegex(exported["dead_letter_fingerprint"], r"^[0-9a-f]{64}$")
+            self.assertEqual(exported["dead_letters"][0]["dead_letter_sequence"], 0)
+            self.assertIn("missing sharded record", exported["dead_letters"][0]["error"])
+            exported_rows = [json.loads(line) for line in export_path.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(exported_rows, exported["dead_letters"])
 
             with self.assertRaises(backfill.BackfillError):
                 backfill.run_backfill(self.make_args(path, mode="in_place"))
