@@ -572,23 +572,29 @@ pub fn validate_raft_deployment_mode(
     mode: RaftDeploymentMode,
 ) -> Result<RaftDistributedReadiness, RaftProductionReadinessError> {
     let readiness = distributed_raft_readiness();
-    match mode {
-        RaftDeploymentMode::LocalModel => Err(RaftProductionReadinessError {
+    match ::rustraft::rustraft_validate_deployment_readiness(
+        rustraft_deployment_mode(mode),
+        readiness.production_ready,
+        readiness.missing.clone(),
+    ) {
+        Ok(()) => Ok(readiness),
+        Err(error) => Err(RaftProductionReadinessError {
             mode,
-            message:
-                "local Raft deployment mode is disabled; production distributed Raft is required"
-                    .to_string(),
-            missing: readiness.missing,
-        }),
-        RaftDeploymentMode::ProductionDistributed if readiness.production_ready => Ok(readiness),
-        RaftDeploymentMode::ProductionDistributed => Err(RaftProductionReadinessError {
-            mode,
-            message: "distributed Raft is not production-ready".to_string(),
-            missing: readiness.missing,
+            message: error.message,
+            missing: error.missing,
         }),
     }
 }
 
 pub fn require_production_raft_ready() -> Result<(), RaftProductionReadinessError> {
     validate_raft_deployment_mode(RaftDeploymentMode::ProductionDistributed).map(|_| ())
+}
+
+fn rustraft_deployment_mode(mode: RaftDeploymentMode) -> ::rustraft::RustRaftDeploymentMode {
+    match mode {
+        RaftDeploymentMode::LocalModel => ::rustraft::RustRaftDeploymentMode::LocalModel,
+        RaftDeploymentMode::ProductionDistributed => {
+            ::rustraft::RustRaftDeploymentMode::ProductionDistributed
+        }
+    }
 }
