@@ -432,16 +432,7 @@ pub fn raft_transport_security_readiness() -> RaftTransportSecurityReadiness {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum RaftDeploymentMode {
-    /// Backward-compatible deserialization variant only.
-    ///
-    /// Runtime validation rejects local Raft deployment; local clusters remain
-    /// internal test fixtures and production must use distributed Raft.
-    LocalModel,
-    ProductionDistributed,
-}
+pub type RaftDeploymentMode = ::rustraft::RustRaftDeploymentMode;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RaftProductionReadinessError {
@@ -572,7 +563,7 @@ pub fn validate_raft_deployment_mode(
 ) -> Result<RaftDistributedReadiness, RaftProductionReadinessError> {
     let readiness = distributed_raft_readiness();
     match ::rustraft::rustraft_validate_deployment_readiness(
-        rustraft_deployment_mode(mode),
+        mode,
         readiness.production_ready,
         readiness.missing.clone(),
     ) {
@@ -587,13 +578,4 @@ pub fn validate_raft_deployment_mode(
 
 pub fn require_production_raft_ready() -> Result<(), RaftProductionReadinessError> {
     validate_raft_deployment_mode(RaftDeploymentMode::ProductionDistributed).map(|_| ())
-}
-
-fn rustraft_deployment_mode(mode: RaftDeploymentMode) -> ::rustraft::RustRaftDeploymentMode {
-    match mode {
-        RaftDeploymentMode::LocalModel => ::rustraft::RustRaftDeploymentMode::LocalModel,
-        RaftDeploymentMode::ProductionDistributed => {
-            ::rustraft::RustRaftDeploymentMode::ProductionDistributed
-        }
-    }
 }
