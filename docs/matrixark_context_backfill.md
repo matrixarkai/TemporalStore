@@ -83,7 +83,8 @@ If both metadata keys are missing, the runner can fall back to bounded hash scan
 ```
 
 The scan starts at `--start-seq`, respects `--end-seq`, and stops after `--source-scan-max-empty-shards` consecutive empty shards when no explicit end sequence is supplied.
-In this fallback mode, `source_range.source_record_count` and `source_range.source_high_watermark_seq` are discovered estimates from the scanned shards, and `source_range.source_record_count_estimated=true` is included in the JSON summary, checkpoint, manifest, and Prometheus source-range gauges. Treat these values as recovery evidence for the scanned window, not as authoritative full-log metadata.
+
+In this fallback mode, `source_range.source_record_count` and `source_range.source_high_watermark_seq` are discovered estimates from the scanned shards, and `source_range.source_record_count_estimated=true` is included in the JSON summary, checkpoint, manifest, and Prometheus output. Prometheus exports the discovered count/range under `matrixark_context_backfill_source_range`, the estimated flag under `matrixark_context_backfill_source_range_info`, and the selected mode under `matrixark_context_backfill_source_scan_mode`. Treat these values as recovery evidence for the scanned window, not as authoritative full-log metadata.
 
 ## Target Layout
 
