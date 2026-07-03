@@ -733,6 +733,14 @@ def partial_checkpoint_fingerprint(source_prefix: str, target_prefix: str, raw_b
     return stable_hash(seed)
 
 
+def derive_backfill_idempotency_key(source_prefix: str, raw_backend: str, sequence: int, raw_record: Json) -> str:
+    key = str(raw_record.get('idempotency_key') or '')
+    if key:
+        return key
+    seed = f'{normalize_raw_backend(raw_backend)}:{source_prefix}:{sequence}:{json.dumps(raw_record, sort_keys=True)}'
+    return f'backfill:{stable_hash(seed)}'
+
+
 def derive_backfill_record(source_prefix: str, raw_backend: str, sequence: int, raw_record: Json) -> Json:
     record = dict(raw_record)
     backfill = dict(record.get('backfill') or {})
@@ -744,8 +752,7 @@ def derive_backfill_record(source_prefix: str, raw_backend: str, sequence: int, 
     })
     record['backfill'] = backfill
     if 'idempotency_key' not in record:
-        seed = f'{normalize_raw_backend(raw_backend)}:{source_prefix}:{sequence}:{json.dumps(raw_record, sort_keys=True)}'
-        record['idempotency_key'] = f'backfill:{stable_hash(seed)}'
+        record['idempotency_key'] = derive_backfill_idempotency_key(source_prefix, raw_backend, sequence, raw_record)
     return record
 
 
@@ -832,7 +839,7 @@ def run_backfill(args: argparse.Namespace) -> Json:
         if args.fail_fast:
             raise exc
 
-    def process_raw_record(sequence: int, raw_record: Json) -> None:
+    def process_raw_record(sequence: int, raw_record: Json, existing_dedupe_ids: set[str] | None = None) -> None:
         nonlocal checkpoint_pending_seq
         try:
             if not record_matches_partial(raw_record, partial):
@@ -845,7 +852,10 @@ def run_backfill(args: argparse.Namespace) -> Json:
                 return
             record = derive_backfill_record(args.source_prefix, raw_backend, sequence, raw_record)
             dedupe_id = str(record.get('idempotency_key') or f'{args.source_prefix}:{sequence}')
-            if dedupe_id in seen_ids or (not args.dry_run and target.has_idempotency_key(dedupe_id)):
+            exists_in_target = False
+            if not args.dry_run:
+                exists_in_target = dedupe_id in existing_dedupe_ids if existing_dedupe_ids is not None else target.has_idempotency_key(dedupe_id)
+            if dedupe_id in seen_ids or exists_in_target:
                 metrics.duplicate += 1
                 checkpoint_pending_seq = sequence
                 return
@@ -871,12 +881,23 @@ def run_backfill(args: argparse.Namespace) -> Json:
         metrics.source_batches += 1
         if scan_mode == 'scan_hash':
             metrics.scan_hash_batches += 1
-        for sequence, raw_record, read_error in source.read_many(batch):
+        rows = source.read_many(batch)
+        existing_dedupe_ids: set[str] | None = None
+        if not args.dry_run:
+            dedupe_candidates = [
+                derive_backfill_idempotency_key(args.source_prefix, raw_backend, sequence, raw_record or {})
+                for sequence, raw_record, read_error in rows
+                if read_error is None
+                and record_matches_partial(raw_record or {}, partial)
+                and should_backfill_record(raw_record or {})
+            ]
+            existing_dedupe_ids = target.existing_idempotency_keys(dedupe_candidates)
+        for sequence, raw_record, read_error in rows:
             metrics.scanned += 1
             if read_error is not None:
                 handle_failure(sequence, {}, read_error)
                 continue
-            process_raw_record(sequence, raw_record or {})
+            process_raw_record(sequence, raw_record or {}, existing_dedupe_ids)
 
     source_items, scan_mode = source.source_refs(
         start_seq=start_seq,
