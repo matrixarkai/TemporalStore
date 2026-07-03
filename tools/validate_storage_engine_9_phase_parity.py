@@ -100,6 +100,8 @@ PHASES: tuple[Phase, ...] = (
             "validate_storage_parity_report_artifacts.py",
             "test_temporalstore_performance_artifact_audit.py",
             "test_temporalstore_next_performance_workflow.py",
+            "test_temporalstore_next_performance_plan_validator.py",
+            "validate_temporalstore_next_performance_plan.py",
             "test_temporalstore_performance_execution_redaction.py",
             "validate_temporalstore_performance_execution_redaction.py",
             "test_temporalstore_performance_evidence_import.py",

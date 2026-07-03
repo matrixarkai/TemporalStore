@@ -156,6 +156,8 @@ REQUIRED_GENERATED_FROM = [
     "tools/test_temporalstore_performance_execution_redaction.py",
     "tools/test_temporalstore_performance_artifact_audit.py",
     "tools/test_temporalstore_next_performance_workflow.py",
+    "tools/validate_temporalstore_next_performance_plan.py",
+    "tools/test_temporalstore_next_performance_plan_validator.py",
     "tools/test_temporalstore_performance_evidence_import.py",
 ]
 
@@ -165,6 +167,7 @@ REQUIRED_PERFORMANCE_EVIDENCE = [
     "tools/import_temporalstore_cpp_rust_performance_evidence.py",
     "tools/audit_temporalstore_cpp_rust_performance_artifacts.py",
     "tools/validate_temporalstore_performance_execution_redaction.py",
+    "tools/validate_temporalstore_next_performance_plan.py",
 ]
 
 REQUIRED_STORAGE_LIFECYCLE_EVIDENCE = [
