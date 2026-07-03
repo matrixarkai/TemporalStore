@@ -15,6 +15,7 @@ prefix by default and never mutates source records.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -38,9 +39,33 @@ from matrixark_mcp_local_adapter import MatrixArkLocalAdapter  # noqa: E402
 
 Json = dict[str, Any]
 
+VOLATILE_SERVING_FINGERPRINT_FIELDS = {
+    'context_event_key',
+    'timestamp_key_ms',
+    'updated_at_ms',
+}
+
 
 class BackfillError(RuntimeError):
     pass
+
+
+def stable_serving_fingerprint_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): stable_serving_fingerprint_value(nested)
+            for key, nested in value.items()
+            if str(key) not in VOLATILE_SERVING_FINGERPRINT_FIELDS
+        }
+    if isinstance(value, list):
+        return [stable_serving_fingerprint_value(item) for item in value]
+    return value
+
+
+def update_serving_fingerprint(hasher: Any, record: Json) -> None:
+    payload = json.dumps(stable_serving_fingerprint_value(record), sort_keys=True, separators=(',', ':')).encode('utf-8')
+    hasher.update(len(payload).to_bytes(8, 'big'))
+    hasher.update(payload)
 
 
 @dataclass
@@ -63,9 +88,11 @@ class BackfillMetrics:
     scan_hash_batches: int = 0
     started_at_ms: int = field(default_factory=lambda: int(time.time() * 1000))
     finished_at_ms: int = 0
+    _serving_fingerprint: Any = field(default_factory=hashlib.sha256, repr=False)
 
     def observe_records(self, records: list[Json]) -> None:
         for record in records:
+            update_serving_fingerprint(self._serving_fingerprint, record)
             record_type = str(record.get('record_type') or '')
             if record_type == 'context_event':
                 self.context_events += 1
@@ -82,6 +109,9 @@ class BackfillMetrics:
 
     def finish(self) -> None:
         self.finished_at_ms = int(time.time() * 1000)
+
+    def serving_record_fingerprint(self) -> str:
+        return self._serving_fingerprint.hexdigest()
 
     def to_json(
         self,
@@ -122,6 +152,7 @@ class BackfillMetrics:
                 'source_batches': self.source_batches,
                 'target_batches': self.target_batches,
                 'scan_hash_batches': self.scan_hash_batches,
+                'serving_record_fingerprint': self.serving_record_fingerprint(),
             },
         }
 
@@ -150,6 +181,9 @@ class BackfillMetrics:
             f'matrixark_context_backfill_serving_records_total{{{labels},type="context_embedding"}} {self.context_embeddings}',
             f'matrixark_context_backfill_serving_records_total{{{labels},type="context_index"}} {self.context_indexes}',
             f'matrixark_context_backfill_serving_records_total{{{labels},type="context_pack_audit"}} {self.context_audits}',
+            '# HELP matrixark_context_backfill_serving_record_fingerprint_info Ordered fingerprint for materialized serving records in this run.',
+            '# TYPE matrixark_context_backfill_serving_record_fingerprint_info gauge',
+            f'matrixark_context_backfill_serving_record_fingerprint_info{{{labels},fingerprint="{self.serving_record_fingerprint()}"}} 1',
             '# HELP matrixark_context_backfill_batches_total Source and target batches processed.',
             '# TYPE matrixark_context_backfill_batches_total counter',
             f'matrixark_context_backfill_batches_total{{{labels},phase="source"}} {self.source_batches}',
@@ -732,6 +766,7 @@ class MatrixKVBackfillTarget:
     def serving_type_counts_with_stats(self, *, batch_size: int = 1024) -> tuple[Json, Json]:
         counts: Json = {}
         total = self.count()
+        fingerprint = hashlib.sha256()
         stats: Json = {
             'record_count': total,
             'batch_size': max(1, batch_size),
@@ -750,6 +785,8 @@ class MatrixKVBackfillTarget:
                     continue
                 record_type = str(record.get('record_type') or 'unknown')
                 counts[record_type] = int(counts.get(record_type, 0)) + 1
+                update_serving_fingerprint(fingerprint, record)
+        stats['serving_record_fingerprint'] = fingerprint.hexdigest()
         return dict(sorted(counts.items())), stats
 
 
@@ -1348,6 +1385,14 @@ def validation_to_prometheus(validation: Json) -> str:
     ])
     for name in ['record_count', 'batch_size', 'batches', 'read_errors', 'missing_records']:
         lines.append(f'matrixark_context_backfill_validation_target_scan{{{_prom_labels(**base, stat=name)}}} {int(target_scan.get(name, 0) or 0)}')
+    expected_fingerprint = str(validation.get('expected_serving_record_fingerprint') or '')
+    actual_fingerprint = str(validation.get('actual_serving_record_fingerprint') or '')
+    lines.extend([
+        '# HELP matrixark_context_backfill_validation_serving_record_fingerprint_info Ordered serving-record fingerprints compared during validation.',
+        '# TYPE matrixark_context_backfill_validation_serving_record_fingerprint_info gauge',
+        f'matrixark_context_backfill_validation_serving_record_fingerprint_info{{{_prom_labels(**base, kind="expected", fingerprint=expected_fingerprint)}}} 1',
+        f'matrixark_context_backfill_validation_serving_record_fingerprint_info{{{_prom_labels(**base, kind="actual", fingerprint=actual_fingerprint)}}} 1',
+    ])
     source_range = validation.get('source_range') if isinstance(validation.get('source_range'), dict) else {}
     lines.extend([
         '# HELP matrixark_context_backfill_validation_source_range Source range boundary used during validation.',
@@ -1415,12 +1460,15 @@ def run_validate_shadow(args: argparse.Namespace) -> Json:
     expected_count = int(expected_summary['metrics']['written'])
     expected_type_counts = expected_serving_type_counts(expected_summary['metrics'])
     actual_type_counts, target_scan = target.serving_type_counts_with_stats(batch_size=max(1, int(args.batch_size)))
+    expected_fingerprint = str(expected_summary['metrics'].get('serving_record_fingerprint') or '')
+    actual_fingerprint = str(target_scan.get('serving_record_fingerprint') or '')
     target_state: Json = {
         'target_prefix': args.target_prefix,
         'raw_backend': raw_backend,
         'record_count': actual_count,
         'dead_letter_count': dead_letters,
         'serving_type_counts': actual_type_counts,
+        'serving_record_fingerprint': actual_fingerprint,
         'serving_type_count_scan': target_scan,
     }
     exact_match = actual_count == expected_count
@@ -1428,10 +1476,12 @@ def run_validate_shadow(args: argparse.Namespace) -> Json:
     exact_type_match = actual_type_counts == expected_type_counts
     enough_type_records = all(int(actual_type_counts.get(record_type, 0)) >= int(count) for record_type, count in expected_type_counts.items())
     type_counts_passed = exact_type_match if args.validation_strict else enough_type_records
+    fingerprint_match = actual_fingerprint == expected_fingerprint
     target_records_readable = int(target_scan.get('read_errors', 0) or 0) == 0
     passed = (
         (exact_match if args.validation_strict else enough_records)
         and type_counts_passed
+        and fingerprint_match
         and target_records_readable
         and dead_letters == 0
         and int(expected_summary['metrics']['failed']) == 0
@@ -1451,6 +1501,8 @@ def run_validate_shadow(args: argparse.Namespace) -> Json:
         'actual_records': actual_count,
         'expected_type_counts': expected_type_counts,
         'actual_type_counts': actual_type_counts,
+        'expected_serving_record_fingerprint': expected_fingerprint,
+        'actual_serving_record_fingerprint': actual_fingerprint,
         'dead_letters': dead_letters,
         'expected_scan': expected_summary['metrics'],
         'source_range': expected_summary.get('source_range', {}),
@@ -1460,6 +1512,7 @@ def run_validate_shadow(args: argparse.Namespace) -> Json:
             'actual_records_at_least_expected': enough_records,
             'exact_serving_type_counts_match': exact_type_match,
             'actual_serving_type_counts_at_least_expected': enough_type_records,
+            'serving_record_fingerprint_match': fingerprint_match,
             'target_records_readable': target_records_readable,
             'no_shadow_dead_letters': dead_letters == 0,
             'source_scan_had_no_failures': int(expected_summary['metrics']['failed']) == 0,

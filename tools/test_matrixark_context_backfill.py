@@ -84,6 +84,7 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(summary["metrics"]["written"], 2)
             self.assertEqual(summary["metrics"]["source_batches"], 1)
             self.assertEqual(summary["metrics"]["target_batches"], 1)
+            self.assertRegex(summary["metrics"]["serving_record_fingerprint"], r"^[0-9a-f]{64}$")
             self.assertEqual(summary["resume_state"]["checkpoint_format"], "missing")
             self.assertFalse(summary["resume_state"]["checkpoint_found"])
             self.assertEqual(summary["resume_state"]["effective_start_seq"], 0)
@@ -98,6 +99,7 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertIn("matrixark_context_backfill_scan_qps", prom_text)
             self.assertIn("matrixark_context_backfill_records_total", prom_text)
             self.assertIn("matrixark_context_backfill_batches_total", prom_text)
+            self.assertIn("matrixark_context_backfill_serving_record_fingerprint_info", prom_text)
             self.assertIn('boundary="source_high_watermark_seq"} 1', prom_text)
             self.assertIn('boundary="effective_end_seq"} 2', prom_text)
             self.assertIn('raw_backend="temporalstore"', prom_text)
@@ -148,6 +150,7 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(stats["batch_size"], 2)
             self.assertEqual(stats["batches"], 2)
             self.assertEqual(stats["read_errors"], 0)
+            self.assertRegex(stats["serving_record_fingerprint"], r"^[0-9a-f]{64}$")
             self.assertEqual(kv.batch_hget_calls, 2)
 
     def test_resume_accepts_legacy_integer_checkpoint(self):
@@ -373,6 +376,11 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(validation["actual_records"], 2)
             self.assertEqual(validation["expected_type_counts"], {"context_event": 2})
             self.assertEqual(validation["actual_type_counts"], {"context_event": 2})
+            self.assertRegex(validation["expected_serving_record_fingerprint"], r"^[0-9a-f]{64}$")
+            self.assertEqual(
+                validation["actual_serving_record_fingerprint"],
+                validation["expected_serving_record_fingerprint"],
+            )
             self.assertEqual(validation["source_range"]["scan_mode"], "record_count")
             self.assertEqual(validation["source_range"]["source_high_watermark_seq"], 1)
             self.assertEqual(validation["source_range"]["effective_end_seq"], 2)
@@ -380,12 +388,19 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(validation["target_state"]["record_count"], 2)
             self.assertEqual(validation["target_state"]["dead_letter_count"], 0)
             self.assertEqual(validation["target_state"]["serving_type_counts"], {"context_event": 2})
+            self.assertEqual(
+                validation["target_state"]["serving_record_fingerprint"],
+                validation["expected_serving_record_fingerprint"],
+            )
             self.assertTrue(validation["checks"]["exact_serving_type_counts_match"])
+            self.assertTrue(validation["checks"]["serving_record_fingerprint_match"])
             prom_text = prom.read_text()
             self.assertIn("matrixark_context_backfill_validation_status", prom_text)
             self.assertIn('status="ok"', prom_text)
             self.assertIn('kind="expected"} 2', prom_text)
             self.assertIn('check="target_records_readable"} 1', prom_text)
+            self.assertIn('check="serving_record_fingerprint_match"} 1', prom_text)
+            self.assertIn("matrixark_context_backfill_validation_serving_record_fingerprint_info", prom_text)
             self.assertIn("matrixark_context_backfill_validation_source_range", prom_text)
             self.assertIn('boundary="effective_end_seq"} 2', prom_text)
             self.assertIn('boundary="source_high_watermark_seq"} 1', prom_text)
@@ -500,6 +515,31 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(validation["target_state"]["serving_type_counts"], {"context_summary": 1})
             self.assertEqual(validation["target_state"]["serving_type_count_scan"]["read_errors"], 0)
             self.assertFalse(validation["checks"]["exact_serving_type_counts_match"])
+            self.assertFalse(validation["checks"]["serving_record_fingerprint_match"])
+
+    def test_validate_shadow_fails_on_content_mismatch_even_when_type_counts_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            write_sharded(kv, "matrixark:mcp", 0, {"record_type": "context_event", "event_id_hash": 1, "text": "expected"})
+            kv.put_string("matrixark:mcp:record_count", "1")
+            target = backfill.MatrixKVBackfillTarget(kv, prefix="matrixark:context_backfill:test")
+            target.append_many([{"record_type": "context_event", "event_id_hash": 1, "text": "different"}])
+
+            validation = backfill.run_validate_shadow(self.make_args(path, mode="validate_shadow"))
+
+            self.assertEqual(validation["expected_records"], 1)
+            self.assertEqual(validation["actual_records"], 1)
+            self.assertEqual(validation["expected_type_counts"], {"context_event": 1})
+            self.assertEqual(validation["actual_type_counts"], {"context_event": 1})
+            self.assertEqual(validation["status"], "failed")
+            self.assertTrue(validation["checks"]["exact_record_count_match"])
+            self.assertTrue(validation["checks"]["exact_serving_type_counts_match"])
+            self.assertFalse(validation["checks"]["serving_record_fingerprint_match"])
+            self.assertNotEqual(
+                validation["actual_serving_record_fingerprint"],
+                validation["expected_serving_record_fingerprint"],
+            )
 
     def test_validate_shadow_reports_unreadable_target_records(self):
         with tempfile.TemporaryDirectory() as tmp:
