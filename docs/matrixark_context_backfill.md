@@ -186,6 +186,20 @@ python3 tools/matrixark_context_backfill_benchmark.py \
   --json-output=/tmp/matrixark_context_backfill_bench.json
 ```
 
+For release or CI gating, add explicit minimum QPS thresholds. The command exits with code `2` and writes `status=failed` when either raw backend falls below the configured floor:
+
+```bash
+python3 tools/matrixark_context_backfill_benchmark.py \
+  --records=10000 \
+  --batch-size=1024 \
+  --incremental-records=1000 \
+  --payload-bytes=128 \
+  --raw-backends=both \
+  --min-full-shadow-qps=5000 \
+  --min-incremental-repair-qps=1500 \
+  --json-output=/tmp/matrixark_context_backfill_bench_gate.json
+```
+
 Key output:
 
 | Field | Meaning |
@@ -194,6 +208,7 @@ Key output:
 | `results[].incremental_shadow.qps` | Serving records written per second while creating a bounded repair shadow. |
 | `results[].incremental_repair.qps` | Active-prefix promotion throughput, including validation and bounded replay. |
 | `qps_summary` | Average full and incremental QPS across the selected raw backends. |
+| `performance_gate` | Optional per-backend pass/fail checks for `--min-full-shadow-qps` and `--min-incremental-repair-qps`. |
 
 Local mode is an in-process correctness and regression signal. For production capacity numbers, run the same batch sizes through `tools/matrixark_context_backfill.py` against a real TemporalStore/MatrixKV deployment and compare the resulting JSON summaries and Prometheus output.
 

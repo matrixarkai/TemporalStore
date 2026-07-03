@@ -202,6 +202,39 @@ def summarize_backend_qps(results: list[Json]) -> Json:
     }
 
 
+def evaluate_performance_gate(args: argparse.Namespace, results: list[Json]) -> Json:
+    min_full = float(getattr(args, "min_full_shadow_qps", 0.0) or 0.0)
+    min_repair = float(getattr(args, "min_incremental_repair_qps", 0.0) or 0.0)
+    checks: list[Json] = []
+    for result in results:
+        backend = result["raw_backend"]
+        full_qps = float(result["full_shadow"]["qps"])
+        repair_qps = float(result["incremental_repair"]["qps"])
+        checks.append({
+            "raw_backend": backend,
+            "metric": "full_shadow_qps",
+            "observed": round(full_qps, 3),
+            "minimum": min_full,
+            "passed": full_qps >= min_full,
+        })
+        checks.append({
+            "raw_backend": backend,
+            "metric": "incremental_repair_qps",
+            "observed": round(repair_qps, 3),
+            "minimum": min_repair,
+            "passed": repair_qps >= min_repair,
+        })
+    enabled = min_full > 0.0 or min_repair > 0.0
+    passed = all(bool(check["passed"]) for check in checks) if checks else True
+    return {
+        "enabled": enabled,
+        "passed": passed,
+        "min_full_shadow_qps": min_full,
+        "min_incremental_repair_qps": min_repair,
+        "checks": checks,
+    }
+
+
 def run_benchmark(args: argparse.Namespace) -> Json:
     if args.records <= 0:
         raise BackfillBenchmarkError("--records must be positive")
@@ -209,12 +242,17 @@ def run_benchmark(args: argparse.Namespace) -> Json:
         raise BackfillBenchmarkError("--batch-size must be positive")
     if args.incremental_records <= 0:
         raise BackfillBenchmarkError("--incremental-records must be positive")
+    if float(getattr(args, "min_full_shadow_qps", 0.0) or 0.0) < 0.0:
+        raise BackfillBenchmarkError("--min-full-shadow-qps must be non-negative")
+    if float(getattr(args, "min_incremental_repair_qps", 0.0) or 0.0) < 0.0:
+        raise BackfillBenchmarkError("--min-incremental-repair-qps must be non-negative")
     raw_backends = ["temporalstore", "matrixkv"] if args.raw_backends == "both" else [args.raw_backends]
     started = time.perf_counter()
     results = [run_one_backend(args, raw_backend) for raw_backend in raw_backends]
     elapsed_s = max(0.000001, time.perf_counter() - started)
+    performance_gate = evaluate_performance_gate(args, results)
     summary = {
-        "status": "ok",
+        "status": "ok" if performance_gate["passed"] else "failed",
         "mode": "local",
         "records": args.records,
         "batch_size": args.batch_size,
@@ -224,6 +262,7 @@ def run_benchmark(args: argparse.Namespace) -> Json:
         "elapsed_ms": round(elapsed_s * 1000.0, 3),
         "results": results,
         "qps_summary": summarize_backend_qps(results),
+        "performance_gate": performance_gate,
     }
     if args.json_output:
         Path(args.json_output).write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
@@ -237,6 +276,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--payload-bytes", type=int, default=int(os.environ.get("MATRIXARK_BACKFILL_BENCH_PAYLOAD_BYTES", "128")))
     parser.add_argument("--incremental-records", type=int, default=int(os.environ.get("MATRIXARK_BACKFILL_BENCH_INCREMENTAL_RECORDS", "1000")))
     parser.add_argument("--raw-backends", choices=["both", "temporalstore", "matrixkv"], default=os.environ.get("MATRIXARK_BACKFILL_BENCH_RAW_BACKENDS", "both"))
+    parser.add_argument("--min-full-shadow-qps", type=float, default=float(os.environ.get("MATRIXARK_BACKFILL_BENCH_MIN_FULL_SHADOW_QPS", "0")))
+    parser.add_argument("--min-incremental-repair-qps", type=float, default=float(os.environ.get("MATRIXARK_BACKFILL_BENCH_MIN_INCREMENTAL_REPAIR_QPS", "0")))
     parser.add_argument("--json-output", default=os.environ.get("MATRIXARK_BACKFILL_BENCH_JSON", ""))
     return parser
 
@@ -249,7 +290,7 @@ def main(argv: list[str] | None = None) -> int:
     except BackfillBenchmarkError as exc:
         parser.error(str(exc))
     print(json.dumps(summary, indent=2, sort_keys=True))
-    return 0
+    return 0 if summary.get("status") == "ok" else 2
 
 
 if __name__ == "__main__":
