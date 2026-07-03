@@ -294,6 +294,9 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(validation["actual_records"], 2)
             self.assertEqual(validation["expected_type_counts"], {"context_event": 2})
             self.assertEqual(validation["actual_type_counts"], {"context_event": 2})
+            self.assertEqual(validation["source_range"]["scan_mode"], "record_count")
+            self.assertEqual(validation["source_range"]["source_high_watermark_seq"], 1)
+            self.assertEqual(validation["source_range"]["effective_end_seq"], 2)
             self.assertTrue(validation["checks"]["exact_serving_type_counts_match"])
 
             with self.assertRaises(backfill.BackfillError):
@@ -357,6 +360,7 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(validation["status"], "failed")
             self.assertEqual(validation["expected_type_counts"], {"context_event": 1})
             self.assertEqual(validation["actual_type_counts"], {"context_summary": 1})
+            self.assertEqual(validation["source_range"]["source_high_watermark_seq"], 0)
             self.assertFalse(validation["checks"]["exact_serving_type_counts_match"])
 
 
