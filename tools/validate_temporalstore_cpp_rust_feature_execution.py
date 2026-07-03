@@ -31,6 +31,7 @@ REQUIRED_STATIC_RUNNER_TOKENS = (
     "tools/run_temporalstore_unified_tests.py",
     "--cpp",
     "--require-cpp-native",
+    "--family",
     "{corpus}",
 )
 REQUIRED_STATIC_COMPARISON_TOKENS = (
@@ -170,6 +171,11 @@ def main() -> int:
             for token in REQUIRED_STATIC_RUNNER_TOKENS:
                 if token not in expected_runner_command:
                     failures.append(f"{family} static gate expected_runner_command missing `{token}`")
+            if f"--family {family}" not in expected_runner_command:
+                failures.append(
+                    f"{family} static gate expected_runner_command must scope native proof "
+                    f"with `--family {family}`"
+                )
             comparison_command = str(row.get("comparison_command") or "")
             if not comparison_command:
                 failures.append(f"{family} static gate requires comparison_command")
