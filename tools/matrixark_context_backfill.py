@@ -1612,6 +1612,40 @@ def require_skip_validation_confirmation(args: argparse.Namespace, *, mode: str)
         raise BackfillError(f'{mode} with --skip-validation=1 requires --confirm-skip-validation=YES')
 
 
+def inspect_activation_target_state(args: argparse.Namespace, kv: Any) -> Json:
+    raw_backend = normalize_raw_backend(args.raw_backend)
+    target = MatrixKVBackfillTarget(kv, prefix=args.target_prefix, raw_backend=raw_backend)
+    counts, scan = target.serving_type_counts_with_stats(batch_size=max(1, int(args.batch_size)))
+    dead_letters = target.count_dead_letters()
+    record_count = int(scan.get('record_count', 0) or 0)
+    read_errors = int(scan.get('read_errors', 0) or 0)
+    missing_records = int(scan.get('missing_records', 0) or 0)
+    return {
+        'target_prefix': args.target_prefix,
+        'raw_backend': raw_backend,
+        'record_count': record_count,
+        'dead_letter_count': dead_letters,
+        'serving_type_counts': counts,
+        'serving_record_fingerprint': str(scan.get('serving_record_fingerprint') or ''),
+        'serving_type_count_scan': scan,
+        'healthy_for_unvalidated_activation': record_count > 0 and dead_letters == 0 and read_errors == 0 and missing_records == 0,
+    }
+
+
+def require_unvalidated_activation_target_state(args: argparse.Namespace, kv: Any) -> Json:
+    if not args.skip_validation:
+        return {}
+    state = inspect_activation_target_state(args, kv)
+    if state['healthy_for_unvalidated_activation']:
+        return state
+    if getattr(args, 'confirm_unvalidated_target_state', '') == 'YES':
+        return state
+    raise BackfillError(
+        'activate_shadow with --skip-validation=1 found an empty or unhealthy target prefix; '
+        'run validate_shadow or pass --confirm-unvalidated-target-state=YES to audit the break-glass activation'
+    )
+
+
 def require_non_strict_validation_confirmation(args: argparse.Namespace, *, mode: str) -> None:
     if args.skip_validation or args.validation_strict:
         return
@@ -1719,6 +1753,9 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
             raise BackfillError(f'shadow validation failed: {json.dumps(validation, sort_keys=True)}')
     validation_audit = validation_audit_fields(validation, skip_validation=args.skip_validation)
     kv = make_kv(args)
+    unvalidated_target_state = require_unvalidated_activation_target_state(args, kv)
+    if unvalidated_target_state:
+        validation_audit['validation_target_state'] = unvalidated_target_state
     previous = kv.get_string(args.active_prefix_key)
     require_expected_active_prefix(args, previous)
     require_active_prefix_precondition(args, mode='activate_shadow')
@@ -1736,6 +1773,7 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
             **validation_audit,
             'validation_strict': bool(args.validation_strict),
             'non_strict_validation_confirmed': bool(not args.validation_strict and args.confirm_non_strict_validation == 'YES'),
+            'unvalidated_target_state_confirmed': bool(args.skip_validation and args.confirm_unvalidated_target_state == 'YES'),
             'active_prefix_precondition_bypassed': active_prefix_precondition_bypassed(args),
         }
     activated_at_ms = int(time.time() * 1000)
@@ -1755,6 +1793,7 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
         **validation_audit,
         'validation_strict': bool(args.validation_strict),
         'non_strict_validation_confirmed': bool(not args.validation_strict and args.confirm_non_strict_validation == 'YES'),
+        'unvalidated_target_state_confirmed': bool(args.skip_validation and args.confirm_unvalidated_target_state == 'YES'),
         'active_prefix_precondition_bypassed': active_prefix_precondition_bypassed(args),
     }
     kv.put_string(f'{args.active_prefix_key}:previous:{args.job_id}', previous)
@@ -1772,6 +1811,7 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
         'job_id': args.job_id,
         'validation': validation,
         **validation_audit,
+        'unvalidated_target_state_confirmed': bool(args.skip_validation and args.confirm_unvalidated_target_state == 'YES'),
         'active_prefix_precondition_bypassed': active_prefix_precondition_bypassed(args),
     }
 
@@ -2059,6 +2099,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--confirm-no-active-prefix-precondition', default='', help='required YES to mutate the active prefix without --expect-active-prefix')
     parser.add_argument('--confirm-skip-validation', default='', help='required YES when activate_shadow or incremental_repair uses --skip-validation=1')
     parser.add_argument('--confirm-non-strict-validation', default='', help='required YES when activate_shadow or incremental_repair uses --validation-strict=0')
+    parser.add_argument('--confirm-unvalidated-target-state', default='', help='required YES to activate an empty or unhealthy target while using --skip-validation=1')
     parser.add_argument('--active-prefix-key', default='matrixark:context:active_prefix')
     parser.add_argument('--rollback-job-id', default='', help='activation job id whose previous active prefix should be restored')
     parser.add_argument('--repair-active-prefix', default='')
