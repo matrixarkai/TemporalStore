@@ -1,0 +1,120 @@
+{
+  "schema": "temporalstore_cpp_rust_feature_execution_matrix_v1",
+  "description": "Fail-closed C++/Rust shared-corpus feature execution matrix. Static C++ surface gates are tracked as active gaps until native C++ runners emit comparable shared-case reports.",
+  "source": "compat/unified_temporalstore_cases.json:coverage.cpp_adapter_coverage",
+  "status": {
+    "feature_correct": false,
+    "open_blockers": [
+      "C++ shared-corpus execution still has temporary static surface gates.",
+      "Feature parity cannot be complete until product-behavior shared cases have native C++ execution or an approved native adapter contract."
+    ]
+  },
+  "allowed_statuses": [
+    "native_executable",
+    "native_adapter_contract",
+    "mixed_native_and_static_surface_gate",
+    "temporary_static_surface_gate"
+  ],
+  "completion_statuses": [
+    "native_executable",
+    "native_adapter_contract"
+  ],
+  "rows": [
+    {
+      "family": "storage/cache",
+      "status": "temporary_static_surface_gate",
+      "native_cpp_executable": false,
+      "blocker": "Native C++ storage/cache corpus runner is not wired yet; static C++ object/page/slot/storage harness paths remain required.",
+      "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD=cpp-storage-corpus-runner python3 tools/run_temporalstore_unified_tests.py --cpp --corpus {corpus} --require-cpp-native",
+      "suites": ["cpp_storage_parity", "storage_proxy_client_parity"]
+    },
+    {
+      "family": "raft",
+      "status": "mixed_native_and_static_surface_gate",
+      "native_cpp_executable": false,
+      "blocker": "Some legacy RustRaft/C++ source-surface gates remain static until a native C++ shared-case runner emits temporalstore_unified_case_report_v1 for every Raft case.",
+      "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-raft-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
+      "suites": ["cpp_data_raft_parity"]
+    },
+    {
+      "family": "context",
+      "status": "temporary_static_surface_gate",
+      "native_cpp_executable": false,
+      "blocker": "Native C++ context pipeline corpus runner is not wired yet; C++ context source/debug paths remain required while Rust executes the shared cases.",
+      "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
+      "suites": ["cpp_context_pipeline_parity", "cpp_context_query_debug_parity"]
+    },
+    {
+      "family": "client/proxy/control-plane",
+      "status": "temporary_static_surface_gate",
+      "native_cpp_executable": false,
+      "blocker": "Native C++ control-plane corpus runner is not wired yet; client/proxy/data-node/metaserver source and harness paths remain required.",
+      "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-control-plane-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
+      "suites": ["cpp_client_control_plane_parity", "cpp_proxy_control_plane_parity", "cpp_data_node_lifecycle_parity", "cpp_metaserver_control_plane_parity", "cpp_cross_subsystem_parity"]
+    },
+    {
+      "family": "ingestion",
+      "status": "temporary_static_surface_gate",
+      "native_cpp_executable": false,
+      "blocker": "Native C++ Kafka/Flink/dead-letter ingestion corpus runner is not wired yet; static ingestion source/harness paths remain required.",
+      "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-ingestion-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
+      "suites": ["cpp_ingestion_parity"]
+    },
+    {
+      "family": "benchmarks",
+      "status": "native_adapter_contract",
+      "native_cpp_executable": true,
+      "blocker": "",
+      "expected_runner_command": "compat/cpp_context_benchmark_report_adapter.h emits matrixark_vikingmem_context_benchmark_report_v1; python3 tools/compare_context_benchmark_reports.py compares Rust and C++ reports.",
+      "suites": ["cpp_context_benchmark_parity"]
+    },
+    {
+      "family": "ops/scale",
+      "status": "temporary_static_surface_gate",
+      "native_cpp_executable": false,
+      "blocker": "Native C++ ops/scale SLO corpus runner is not wired yet; static readiness, external chaos, rolling restart, and scale report paths remain required.",
+      "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-ops-scale-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
+      "suites": ["cpp_ops_scale_parity"]
+    },
+    {
+      "family": "codex/mcp",
+      "status": "temporary_static_surface_gate",
+      "native_cpp_executable": false,
+      "blocker": "Native C++ Codex/MCP parity runner is not wired yet; static MCP integration paths remain required.",
+      "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-codex-mcp-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
+      "suites": ["cpp_rust_codex_mcp_parity"]
+    },
+    {
+      "family": "Redis/admin",
+      "status": "mixed_native_and_static_surface_gate",
+      "native_cpp_executable": false,
+      "blocker": "Native C++ Redis/admin product command corpus runner is not wired yet; Rust executes the broad Redis engine command flow while C++ parity remains tied to Redis/admin/API product surface evidence.",
+      "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-redis-admin-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
+      "suites": ["redis_admin_product_parity"]
+    },
+    {
+      "family": "client_proxy_control_plane",
+      "status": "temporary_static_surface_gate",
+      "native_cpp_executable": false,
+      "blocker": "C++ executable shared adapter for client/proxy/data-node/metaserver control-plane workflows is still pending.",
+      "expected_runner_command": "run_cpp_control_plane_shared_cases --corpus {corpus}",
+      "suites": ["cpp_client_proxy_control_plane_parity"]
+    },
+    {
+      "family": "product_api_models",
+      "status": "temporary_static_surface_gate",
+      "native_cpp_executable": false,
+      "blocker": "C++ executable shared adapter for Redis/admin/Feature/Sequence/IPS/Risk command corpus is still pending.",
+      "expected_runner_command": "run_cpp_product_api_shared_cases --corpus {corpus}",
+      "suites": ["cpp_product_api_parity"]
+    },
+    {
+      "family": "context_benchmark_report_contract",
+      "status": "temporary_static_surface_gate",
+      "native_cpp_executable": false,
+      "blocker": "C++ native benchmark adapter must emit matrixark_vikingmem_context_benchmark_report_v1 before static benchmark report contracts become executable shared cases.",
+      "expected_runner_command": "run_cpp_context_benchmark_shared_cases --corpus {corpus}",
+      "suites": ["cpp_context_benchmark_parity"]
+    }
+  ]
+}

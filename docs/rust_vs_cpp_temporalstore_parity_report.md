@@ -64,6 +64,12 @@ after each live C++/Rust scale run. The importer updates only the workload rows
 proven by that report; missing config, failed backends, non-empty fallbacks,
 timeouts, errors, selected-ref drift, or threshold misses keep the row blocked.
 
+`compat/temporalstore_cpp_rust_feature_execution_matrix.json` is the required
+feature-execution ledger. It mirrors `coverage.cpp_adapter_coverage` from the
+shared corpus and keeps C++ static surface gates explicit by family. A family
+may only move to complete status when it has native C++ execution or an approved
+native adapter contract, no blocker, and comparable shared-case output.
+
 This goal-level validator is also part of
 `tools/validate_storage_engine_9_phase_parity.py`, so the 9-phase loop now
 checks both storage contract parity and honest goal status.

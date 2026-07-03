@@ -20,6 +20,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 STATUS = ROOT / "compat" / "temporalstore_cpp_rust_goal_parity_status.json"
 PERFORMANCE_VALIDATOR = ROOT / "tools" / "validate_temporalstore_cpp_rust_performance_parity.py"
+FEATURE_EXECUTION_VALIDATOR = ROOT / "tools" / "validate_temporalstore_cpp_rust_feature_execution.py"
 
 
 REQUIRED_AREAS = [
@@ -109,6 +110,7 @@ def _require_contains(haystack: list[str], needles: list[str], label: str, failu
 
 
 def main() -> int:
+    subprocess.run([sys.executable, str(FEATURE_EXECUTION_VALIDATOR)], cwd=ROOT, check=True)
     subprocess.run([sys.executable, str(PERFORMANCE_VALIDATOR)], cwd=ROOT, check=True)
     data = json.loads(STATUS.read_text(encoding="utf-8"))
     failures: list[str] = []
