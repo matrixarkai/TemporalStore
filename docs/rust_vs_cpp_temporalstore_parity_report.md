@@ -75,7 +75,9 @@ native adapter contract, no blocker, and comparable shared-case output.
 policy. Use it before importing old benchmark artifacts: the audit reports
 candidate workloads, importable workloads, and exact blockers such as missing
 same-config fields, backend failures, selected-ref parity gaps, fallback flags,
-or QPS/latency threshold misses.
+or QPS/latency threshold misses. It also summarizes required workload coverage,
+so missing 10K/100K/32-worker evidence is visible separately from present but
+blocked evidence.
 
 This goal-level validator is also part of
 `tools/validate_storage_engine_9_phase_parity.py`, so the 9-phase loop now

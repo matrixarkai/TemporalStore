@@ -28,6 +28,12 @@ class PerformanceArtifactAuditTest(unittest.TestCase):
         self.assertEqual(audit["reports_scanned"], 1)
         self.assertEqual(audit["reports_with_candidate_workloads"], 1)
         self.assertEqual(audit["reports_with_importable_workloads"], 0)
+        self.assertIn("10K_event_ingestion", audit["missing_required_workloads"])
+        self.assertIn("1K_event_ingestion", audit["blocked_required_workloads"])
+        coverage = audit["workload_coverage"]["1K_event_ingestion"]
+        self.assertEqual(coverage["candidate_report_count"], 1)
+        self.assertEqual(coverage["importable_report_count"], 0)
+        self.assertIn("message_qps_ratio_below_0.8", coverage["blockers"])
         blocked = audit["entries"][0]["blocked_workloads"][0]
         self.assertEqual(blocked["workload"], "1K_event_ingestion")
         self.assertIn("message_qps_ratio_below_0.8", blocked["open_blockers"])
