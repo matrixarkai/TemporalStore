@@ -27,6 +27,12 @@ ALLOWED_STATUSES = {
 }
 COMPLETION_STATUSES = {"native_executable", "native_adapter_contract"}
 STATIC_STATUSES = {"mixed_native_and_static_surface_gate", "temporary_static_surface_gate"}
+REQUIRED_STATIC_RUNNER_TOKENS = (
+    "tools/run_temporalstore_unified_tests.py",
+    "--cpp",
+    "--require-cpp-native",
+    "{corpus}",
+)
 
 
 def _as_list(value: Any) -> list[Any]:
@@ -105,8 +111,12 @@ def main() -> int:
                 failures.append(f"{family} static gate cannot claim native_cpp_executable=true")
             if not row.get("blocker"):
                 failures.append(f"{family} static gate requires blocker")
-            if not row.get("expected_runner_command"):
+            expected_runner_command = str(row.get("expected_runner_command") or "")
+            if not expected_runner_command:
                 failures.append(f"{family} static gate requires expected_runner_command")
+            for token in REQUIRED_STATIC_RUNNER_TOKENS:
+                if token not in expected_runner_command:
+                    failures.append(f"{family} static gate expected_runner_command missing `{token}`")
         if status in COMPLETION_STATUSES:
             if row.get("native_cpp_executable") is not True:
                 failures.append(f"{family} completion status requires native_cpp_executable=true")
