@@ -231,9 +231,12 @@ python3 tools/matrixark_context_backfill_benchmark.py \
   --raw-backends=both \
   --min-full-shadow-qps=5000 \
   --min-incremental-repair-qps=1500 \
+  --min-partial-repair-qps=1500 \
   --max-full-shadow-p95-ms=1000 \
   --max-incremental-shadow-p95-ms=500 \
   --max-incremental-repair-p95-ms=500 \
+  --max-partial-shadow-p95-ms=500 \
+  --max-partial-repair-p95-ms=500 \
   --min-backend-qps-ratio=0.50 \
   --gate-aggregation=min \
   --json-output=/tmp/matrixark_context_backfill_bench_gate.json
@@ -251,9 +254,12 @@ python3 tools/matrixark_context_backfill_benchmark.py \
   --raw-backends=both \
   --min-full-shadow-qps=5000 \
   --min-incremental-repair-qps=1500 \
+  --min-partial-repair-qps=1500 \
   --max-full-shadow-p95-ms=1000 \
   --max-incremental-shadow-p95-ms=500 \
   --max-incremental-repair-p95-ms=500 \
+  --max-partial-shadow-p95-ms=500 \
+  --max-partial-repair-p95-ms=500 \
   --gate-aggregation=min \
   --json-output=/tmp/matrixark_context_backfill_batch_sweep.json
 ```
@@ -265,22 +271,26 @@ Key output:
 | `results[].full_shadow.qps` | Materialized serving records written per second for a full shadow rebuild. |
 | `results[].incremental_shadow.qps` | Serving records written per second while creating a bounded repair shadow. |
 | `results[].incremental_repair.qps` | Active-prefix promotion throughput, including validation and bounded replay. |
+| `results[].partial_shadow.qps` | Serving records written per second while creating a bounded, filtered repair shadow. |
+| `results[].partial_repair.qps` | Active-prefix partial repair throughput for filtered source records. |
 | `results[].repeat_index` | One-based sample index when `--repeat` is greater than `1`. |
-| `qps_summary` | Average, min, max, and min/max ratio for full shadow, incremental shadow, and incremental repair QPS across the selected raw backends. |
-| `latency_ms_summary` | Average, min, max, and p95 elapsed milliseconds for full shadow, incremental shadow, and incremental repair phases. |
-| `batch_size_summary` | Per-batch-size QPS/latency summaries plus recommended batch sizes for full shadow, incremental repair, and balanced throughput. |
+| `qps_summary` | Average, min, max, and min/max ratio for full shadow, incremental shadow, incremental repair, partial shadow, and partial repair QPS across the selected raw backends. |
+| `latency_ms_summary` | Average, min, max, and p95 elapsed milliseconds for full shadow, incremental shadow, incremental repair, partial shadow, and partial repair phases. |
+| `batch_size_summary` | Per-batch-size QPS/latency summaries plus recommended batch sizes for full shadow, incremental repair, partial repair, and balanced throughput. |
 | `performance_gate` | Optional pass/fail checks for QPS floors, p95 latency ceilings, and backend QPS parity, using the selected `--gate-aggregation`. |
 | `baseline_gate` | Optional pass/fail checks comparing candidate QPS and latency against a prior benchmark JSON. |
 
 Local mode is an in-process correctness and regression signal. For production capacity numbers, run the same batch sizes through `tools/matrixark_context_backfill.py` against a real TemporalStore/MatrixKV deployment and compare the resulting JSON summaries and Prometheus output.
 
-Use `--repeat` for release and CI runs where a single local sample is too noisy. The default `--gate-aggregation=min` gates the worst repeated QPS sample per backend and p95 latency per backend, which is conservative enough for release checks while keeping the output compact. Use `--gate-aggregation=avg` for trend dashboards, and `--gate-aggregation=sample` when every individual sample must pass. Use `--batch-sizes` when tuning throughput; pick from `batch_size_summary.recommendations`, then rerun the selected size against the real deployment before changing production defaults. Use `--min-backend-qps-ratio` when both raw-message storage options are selected. It fails the gate when the slowest selected backend aggregate falls below the configured fraction of the fastest selected backend aggregate for full shadow, incremental shadow, or incremental repair. This catches asymmetric regressions that average QPS can hide.
+Use `--repeat` for release and CI runs where a single local sample is too noisy. The default `--gate-aggregation=min` gates the worst repeated QPS sample per backend and p95 latency per backend, which is conservative enough for release checks while keeping the output compact. Use `--gate-aggregation=avg` for trend dashboards, and `--gate-aggregation=sample` when every individual sample must pass. Use `--batch-sizes` when tuning throughput; pick from `batch_size_summary.recommendations`, then rerun the selected size against the real deployment before changing production defaults. Use `--min-backend-qps-ratio` when both raw-message storage options are selected. It fails the gate when the slowest selected backend aggregate falls below the configured fraction of the fastest selected backend aggregate for full shadow, incremental shadow, incremental repair, partial shadow, or partial repair. This catches asymmetric regressions that average QPS can hide.
 
 Latency gates are optional and disabled by default:
 
 - `--max-full-shadow-p95-ms`
 - `--max-incremental-shadow-p95-ms`
 - `--max-incremental-repair-p95-ms`
+- `--max-partial-shadow-p95-ms`
+- `--max-partial-repair-p95-ms`
 
 Use them with QPS floors when tuning batch size. A throughput improvement that also violates the latency ceiling should not pass a production release gate.
 
@@ -309,7 +319,7 @@ python3 tools/matrixark_context_backfill_benchmark.py \
   --json-output=/tmp/matrixark_context_backfill_candidate.json
 ```
 
-`--baseline-json` matches samples by raw backend and batch size, then checks full shadow, incremental shadow, and incremental repair phases. `--min-baseline-qps-ratio=0.90` fails when candidate QPS drops below 90% of the baseline for a matching phase. `--max-baseline-latency-ratio=1.25` fails when candidate elapsed latency exceeds 125% of baseline. Use these alongside absolute QPS and p95 gates: absolute gates enforce capacity floors, while the baseline gate catches relative regressions before they reach production.
+`--baseline-json` matches samples by raw backend and batch size, then checks full shadow, incremental shadow, incremental repair, partial shadow, and partial repair phases. `--min-baseline-qps-ratio=0.90` fails when candidate QPS drops below 90% of the baseline for a matching phase. `--max-baseline-latency-ratio=1.25` fails when candidate elapsed latency exceeds 125% of baseline. Use these alongside absolute QPS and p95 gates: absolute gates enforce capacity floors, while the baseline gate catches relative regressions before they reach production.
 
 ## Resume And Checkpoints
 
