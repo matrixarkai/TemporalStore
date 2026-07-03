@@ -823,14 +823,18 @@ matrixark_context_backfill_validation_check{job_id="...",check="target_records_r
 matrixark_context_backfill_validation_target_scan{job_id="...",stat="read_errors"}
 matrixark_context_backfill_validation_source_range{job_id="...",boundary="effective_end_seq"}
 matrixark_context_backfill_validation_source_scan_mode{job_id="...",scan_mode="record_count"}
+matrixark_context_backfill_incremental_repair_promotion_consistency_status{job_id="...",status="ok"}
+matrixark_context_backfill_incremental_repair_promotion_consistency_check{job_id="...",check="promotion_source_range_matches_validation"}
+matrixark_context_backfill_incremental_repair_promotion_records{job_id="...",status="written"}
 ```
 
-`shadow` and `in_place` runs emit elapsed time, scan QPS, record counters, serving-record counters, batch counters, and source-range boundary gauges. `validate_shadow` emits validation status, expected/actual/dead-letter counts, per-check pass/fail gauges, target scan stats, source-range boundary gauges, source-range boolean metadata, and the source scan mode when `--prometheus-output` is set. Dashboards should compare the validation source range with the target scan state before activation or incremental repair promotion.
+`shadow` and `in_place` runs emit elapsed time, scan QPS, record counters, serving-record counters, batch counters, and source-range boundary gauges. `validate_shadow` emits validation status, expected/actual/dead-letter counts, per-check pass/fail gauges, target scan stats, source-range boundary gauges, source-range boolean metadata, and the source scan mode when `--prometheus-output` is set. `incremental_repair` emits promotion consistency status/check gauges, active-promotion record counters, promotion source-range boundaries, and validation status. Dashboards should compare the validation source range with the target scan state before activation or incremental repair promotion, then alert on any failed promotion consistency check after active-prefix replay.
 
 Recommended production alerts:
 
 - `failed > 0` for strict migrations
 - `dead_letter > 0` for any production repair
+- `matrixark_context_backfill_incremental_repair_promotion_consistency_status{status!="ok"}` for active-prefix repair promotion
 - `written == 0` when a non-empty repair was expected
 - high `duplicate` on first run, which can indicate an unintended rerun or reused target prefix
 - high `filtered / scanned` when partial filters may be too narrow

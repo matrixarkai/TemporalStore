@@ -597,6 +597,26 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(retried["promotion_consistency"]["status"], "ok")
             self.assertEqual(backfill.LocalJsonKV(path).get_string("matrixark:context:active:record_count"), "1")
 
+            prom = Path(tmp) / "incremental_repair.prom"
+            monitored = backfill.run_incremental_repair(self.make_args(
+                path,
+                mode="incremental_repair",
+                target_prefix="matrixark:context_repair:p1",
+                start_seq=1,
+                end_seq=2,
+                confirm_incremental_repair="YES",
+                resume=False,
+                prometheus_output=str(prom),
+            ))
+            self.assertEqual(monitored["promotion"]["metrics"]["duplicate"], 1)
+            prom_text = prom.read_text()
+            self.assertIn("matrixark_context_backfill_incremental_repair_promotion_consistency_status", prom_text)
+            self.assertIn('status="ok"} 1', prom_text)
+            self.assertIn('check="promotion_source_range_matches_validation"} 1', prom_text)
+            self.assertIn('status="duplicate"} 1', prom_text)
+            self.assertIn('boundary="effective_start_seq"} 1', prom_text)
+            self.assertIn('matrixark_context_backfill_incremental_repair_validation_status', prom_text)
+
     def test_incremental_repair_rejects_inconsistent_promotion(self):
         partial = {"enabled": False, "record_types": [], "tenant_ids": [], "user_ids": [], "session_ids": [], "filter_json": {}}
         validation = {
