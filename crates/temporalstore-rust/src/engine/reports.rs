@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::cache::{CacheEntryInfo, CacheStats};
@@ -791,6 +793,61 @@ pub struct StoragePageGcDependencyPlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicStorageContract {
+    pub page_address: String,
+    pub block_address: String,
+    pub page_index_entry: String,
+    pub block_index_entry: String,
+    pub object_index_entry: String,
+    pub storage_zone: String,
+    pub stream: String,
+    pub segment: String,
+    pub extent: String,
+    pub slot: String,
+    pub append_watermark: String,
+    pub compaction_watermark: String,
+    pub tombstone: String,
+    pub gc_eligibility: String,
+    pub follower_cursor_safety: String,
+    pub compatibility_aliases: BTreeMap<String, String>,
+}
+
+impl Default for PublicStorageContract {
+    fn default() -> Self {
+        fn text(value: &str) -> String {
+            value.to_string()
+        }
+
+        let mut compatibility_aliases = BTreeMap::new();
+        compatibility_aliases.insert(text("page_store"), text("StorageZone"));
+        compatibility_aliases.insert(text("block_store"), text("BlockAddress"));
+        compatibility_aliases.insert(text("object_index"), text("ObjectIndexEntry"));
+        compatibility_aliases.insert(text("page_segment_id"), text("segment_id"));
+        compatibility_aliases.insert(text("oplog"), text("AppendWatermark"));
+        compatibility_aliases.insert(text("stream_blob"), text("Stream"));
+
+        Self {
+            page_address: text("PageAddress"),
+            block_address: text("BlockAddress"),
+            page_index_entry: text("PageIndexEntry"),
+            block_index_entry: text("BlockIndexEntry"),
+            object_index_entry: text("ObjectIndexEntry"),
+            storage_zone: text("StorageZone"),
+            stream: text("Stream"),
+            segment: text("Segment"),
+            extent: text("Extent"),
+            slot: text("Slot"),
+            append_watermark: text("AppendWatermark"),
+            compaction_watermark: text("CompactionWatermark"),
+            tombstone: text("Tombstone"),
+            gc_eligibility: text("GcEligibility"),
+            follower_cursor_safety: text("FollowerCursorSafety"),
+            compatibility_aliases,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PublicStorageFeatureShapes {
     pub page_address_fields: Vec<String>,
     pub block_address_fields: Vec<String>,
@@ -926,6 +983,8 @@ impl Default for PublicStorageFeatureShapes {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageLifecycleReport {
     pub shard_id: ShardId,
+    #[serde(default)]
+    pub public_storage_contract: PublicStorageContract,
     #[serde(default)]
     pub public_storage_feature_shapes: PublicStorageFeatureShapes,
     pub plan: StorageLifecyclePlan,
