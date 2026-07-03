@@ -34,6 +34,11 @@ class PerformanceArtifactAuditTest(unittest.TestCase):
         self.assertEqual(coverage["candidate_report_count"], 1)
         self.assertEqual(coverage["importable_report_count"], 0)
         self.assertIn("message_qps_ratio_below_0.8", coverage["blockers"])
+        statuses = audit["required_workload_status"]
+        self.assertEqual(statuses["1K_event_ingestion"]["status"], "blocked_no_importable")
+        self.assertEqual(statuses["10K_event_ingestion"]["status"], "missing_candidate")
+        self.assertIn("batch_size", statuses["1K_event_ingestion"]["next_run_hint"]["required_same_config_fields"])
+        self.assertIn("selected_ref_parity=true", statuses["1K_event_ingestion"]["next_run_hint"]["required_result"])
         blocked = audit["entries"][0]["blocked_workloads"][0]
         self.assertEqual(blocked["workload"], "1K_event_ingestion")
         self.assertIn("message_qps_ratio_below_0.8", blocked["open_blockers"])

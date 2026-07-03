@@ -11,6 +11,7 @@ from typing import Any
 
 from import_temporalstore_cpp_rust_performance_evidence import (
     DEFAULT_MATRIX,
+    SAME_CONFIG_KEYS,
     _candidate_workloads,
     import_report,
 )
@@ -126,6 +127,31 @@ def audit_artifacts(artifact_root: Path, matrix_path: Path) -> dict[str, Any]:
         if coverage.get(workload, {}).get("candidate_report_count", 0) > 0
         and coverage.get(workload, {}).get("importable_report_count", 0) == 0
     ]
+    required_workload_status = {}
+    for workload in required_workloads:
+        row = coverage.get(workload, {})
+        if row.get("importable_report_count", 0) > 0:
+            status = "has_importable"
+        elif row.get("candidate_report_count", 0) > 0:
+            status = "blocked_no_importable"
+        else:
+            status = "missing_candidate"
+        required_workload_status[workload] = {
+            "status": status,
+            "candidate_report_count": row.get("candidate_report_count", 0),
+            "importable_report_count": row.get("importable_report_count", 0),
+            "blocked_report_count": row.get("blocked_report_count", 0),
+            "blockers": row.get("blockers", []),
+            "next_run_hint": {
+                "workload": workload,
+                "required_same_config_fields": SAME_CONFIG_KEYS,
+                "required_result": (
+                    "same-config C++ and Rust comparison.json with passed backends, "
+                    "selected_ref_parity=true, zero errors/timeouts/fallbacks, "
+                    "and QPS/latency ratios within policy"
+                ),
+            },
+        }
     return {
         "schema": "temporalstore_cpp_rust_performance_artifact_audit_v1",
         "artifact_root": str(artifact_root),
@@ -136,6 +162,7 @@ def audit_artifacts(artifact_root: Path, matrix_path: Path) -> dict[str, Any]:
         "reports_with_importable_workloads": len(importable),
         "missing_required_workloads": missing_required_workloads,
         "blocked_required_workloads": blocked_required_workloads,
+        "required_workload_status": required_workload_status,
         "workload_coverage": coverage,
         "entries": with_workloads,
     }
