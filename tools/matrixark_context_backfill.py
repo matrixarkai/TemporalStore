@@ -907,6 +907,60 @@ def read_checkpoint_state(kv: Any, key: str) -> Json:
     return state
 
 
+def checkpoint_resume_compatible(checkpoint_range: Json | None, *, requested_start_seq: int, requested_end_seq: int | None) -> bool:
+    if not isinstance(checkpoint_range, dict) or not checkpoint_range:
+        return True
+    checkpoint_start = checkpoint_range.get('requested_start_seq')
+    checkpoint_end = checkpoint_range.get('requested_end_seq')
+    if checkpoint_start is not None:
+        try:
+            if int(checkpoint_start) != int(requested_start_seq):
+                return False
+        except (TypeError, ValueError):
+            return False
+    if checkpoint_end == requested_end_seq:
+        return True
+    if checkpoint_end is not None and requested_end_seq is None:
+        return True
+    return False
+
+
+def apply_resume_checkpoint(
+    *,
+    args: argparse.Namespace,
+    start_seq: int,
+    resume_state: Json,
+) -> tuple[int, Json]:
+    resume_state.update({
+        'resume_requested': bool(args.resume),
+        'requested_start_seq': args.start_seq,
+        'requested_end_seq': args.end_seq,
+        'effective_start_seq': start_seq,
+        'checkpoint_ignored': False,
+        'checkpoint_ignore_reason': '',
+    })
+    if not args.resume:
+        return start_seq, resume_state
+    checkpoint_sequence = resume_state.get('checkpoint_last_sequence')
+    if checkpoint_sequence is None:
+        return start_seq, resume_state
+    checkpoint_range = resume_state.get('checkpoint_source_range')
+    compatible = checkpoint_resume_compatible(
+        checkpoint_range,
+        requested_start_seq=args.start_seq,
+        requested_end_seq=args.end_seq,
+    )
+    if not compatible:
+        if getattr(args, 'confirm_resume_range_change', '') != 'YES':
+            raise BackfillError('resume checkpoint source range differs from requested --start-seq/--end-seq; use --confirm-resume-range-change=YES to ignore the checkpoint')
+        resume_state['checkpoint_ignored'] = True
+        resume_state['checkpoint_ignore_reason'] = 'source_range_mismatch_confirmed'
+        return start_seq, resume_state
+    start_seq = max(start_seq, int(checkpoint_sequence) + 1)
+    resume_state['effective_start_seq'] = start_seq
+    return start_seq, resume_state
+
+
 def build_checkpoint_metadata(
     *,
     job_id: str,
@@ -1118,16 +1172,11 @@ def run_backfill(args: argparse.Namespace) -> Json:
     start_seq = max(0, args.start_seq)
     checkpoint: Json | None = None
     resume_state = read_checkpoint_state(kv, cp_key)
-    resume_state.update({
-        'resume_requested': bool(args.resume),
-        'requested_start_seq': args.start_seq,
-        'effective_start_seq': start_seq,
-    })
-    if args.resume:
-        checkpoint_sequence = resume_state.get('checkpoint_last_sequence')
-        if checkpoint_sequence is not None:
-            start_seq = max(start_seq, checkpoint_sequence + 1)
-            resume_state['effective_start_seq'] = start_seq
+    start_seq, resume_state = apply_resume_checkpoint(
+        args=args,
+        start_seq=start_seq,
+        resume_state=resume_state,
+    )
 
     seen_ids: set[str] = set()
     pending: list[Json] = []
@@ -1924,6 +1973,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--source-scan-max-empty-shards', type=int, default=2)
     parser.add_argument('--dry-run', type=int, choices=[0, 1], default=1)
     parser.add_argument('--resume', type=int, choices=[0, 1], default=1)
+    parser.add_argument('--confirm-resume-range-change', default='', help='required YES to ignore an existing checkpoint whose source range differs from requested start/end')
     parser.add_argument('--fail-fast', action='store_true')
     parser.add_argument('--prometheus-output', default='')
     parser.add_argument('--local-kv', default='', help='test-only JSON KV backend path')

@@ -34,6 +34,7 @@ REQUIRED_DOC_MARKERS = [
     "matrixark_context_backfill_promotion_readiness_status",
     "--confirm-skip-validation",
     "--confirm-non-strict-validation",
+    "--confirm-resume-range-change",
     "matrixark_context_backfill_validation_check",
     "matrixark_context_backfill_incremental_repair_status",
     "--baseline-json",
@@ -65,6 +66,7 @@ def parser_support_checks() -> list[Json]:
         check("backfill_has_prometheus_output", "--prometheus-output" in backfill_options),
         check("backfill_has_skip_validation_confirmation", "--confirm-skip-validation" in backfill_options),
         check("backfill_has_non_strict_validation_confirmation", "--confirm-non-strict-validation" in backfill_options),
+        check("backfill_has_resume_range_change_confirmation", "--confirm-resume-range-change" in backfill_options),
     ]
 
 
@@ -634,6 +636,37 @@ def run_resume_gate(args: argparse.Namespace) -> Json:
             )
             second_args.resume = True
             second = backfill.run_backfill(second_args)
+            incompatible_blocked = False
+            incompatible_error = ""
+            incompatible_args = bench.make_backfill_args(
+                kv_path=kv_path,
+                source_prefix=source_prefix,
+                target_prefix=target_prefix,
+                raw_backend=raw_backend,
+                job_id=job_id,
+                batch_size=args.batch_size,
+                start_seq=1,
+                end_seq=records,
+            )
+            incompatible_args.resume = True
+            try:
+                backfill.run_backfill(incompatible_args)
+            except backfill.BackfillError as exc:
+                incompatible_blocked = "confirm-resume-range-change=YES" in str(exc)
+                incompatible_error = str(exc)
+            confirmed_args = bench.make_backfill_args(
+                kv_path=kv_path,
+                source_prefix=source_prefix,
+                target_prefix=target_prefix,
+                raw_backend=raw_backend,
+                job_id=job_id,
+                batch_size=args.batch_size,
+                start_seq=1,
+                end_seq=records,
+            )
+            confirmed_args.resume = True
+            confirmed_args.confirm_resume_range_change = "YES"
+            confirmed = backfill.run_backfill(confirmed_args)
             validation = backfill.run_validate_shadow(bench.make_backfill_args(
                 kv_path=kv_path,
                 source_prefix=source_prefix,
@@ -650,6 +683,14 @@ def run_resume_gate(args: argparse.Namespace) -> Json:
                 "first_written": int(first["metrics"]["written"]),
                 "second_written": int(second["metrics"]["written"]),
                 "second_resume_state": second.get("resume_state", {}),
+                "incompatible_resume_blocked": incompatible_blocked,
+                "incompatible_resume_error": incompatible_error,
+                "confirmed_resume_state": confirmed.get("resume_state", {}),
+                "confirmed_scanned": int(confirmed.get("metrics", {}).get("scanned", 0) or 0),
+                "confirmed_duplicate": int(confirmed.get("metrics", {}).get("duplicate", 0) or 0),
+                "confirmed_written": int(confirmed.get("metrics", {}).get("written", 0) or 0),
+                "confirmed_failed": int(confirmed.get("metrics", {}).get("failed", 0) or 0),
+                "confirmed_dead_letter": int(confirmed.get("metrics", {}).get("dead_letter", 0) or 0),
                 "validation_status": validation.get("status"),
                 "actual_records": validation.get("actual_records"),
                 "expected_records": validation.get("expected_records"),
@@ -871,6 +912,11 @@ def resume_checks(summary: Json) -> list[Json]:
         check("resume_gate_covers_temporalstore_and_matrixkv", {item.get("raw_backend") for item in results} == {"temporalstore", "matrixkv"}),
         check("resume_gate_checkpoint_found_on_second_run", all(bool(item.get("second_resume_state", {}).get("checkpoint_found")) for item in results)),
         check("resume_gate_second_run_started_after_first_window", all(int(item.get("second_resume_state", {}).get("effective_start_seq", -1)) == int(item.get("first_end_seq", -2)) for item in results)),
+        check("resume_gate_blocks_incompatible_source_range", all(bool(item.get("incompatible_resume_blocked")) for item in results)),
+        check("resume_gate_confirmed_range_change_ignores_checkpoint", all(bool(item.get("confirmed_resume_state", {}).get("checkpoint_ignored")) for item in results)),
+        check("resume_gate_confirmed_range_change_scans_requested_window", all(int(item.get("confirmed_scanned", -1)) == max(0, int(item.get("records", 0)) - 1) for item in results)),
+        check("resume_gate_confirmed_range_change_is_idempotent", all(int(item.get("confirmed_duplicate", 0) or 0) > 0 and int(item.get("confirmed_written", -1)) == 0 for item in results)),
+        check("resume_gate_confirmed_range_change_has_no_failures", all(int(item.get("confirmed_failed", -1)) == 0 and int(item.get("confirmed_dead_letter", -1)) == 0 for item in results)),
         check("resume_gate_completed_expected_records", all(int(item.get("actual_records", -1)) == int(item.get("expected_records", -2)) == int(item.get("records", -3)) for item in results)),
         check("resume_gate_fingerprint_match", all(bool(item.get("serving_record_fingerprint_match")) for item in results)),
     ]
