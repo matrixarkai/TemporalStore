@@ -1257,7 +1257,8 @@ def run_backfill(args: argparse.Namespace) -> Json:
             record = derive_backfill_record(args.source_prefix, raw_backend, sequence, raw_record)
             dedupe_id = str(record.get('idempotency_key') or f'{args.source_prefix}:{sequence}')
             exists_in_target = False
-            if not args.dry_run:
+            check_target_duplicates = (not args.dry_run) or bool(getattr(args, 'dry_run_check_target', True))
+            if check_target_duplicates:
                 exists_in_target = dedupe_id in existing_dedupe_ids if existing_dedupe_ids is not None else target.has_idempotency_key(dedupe_id)
             if dedupe_id in seen_ids or exists_in_target:
                 metrics.duplicate += 1
@@ -1291,7 +1292,8 @@ def run_backfill(args: argparse.Namespace) -> Json:
             discovered_max_sequence = sequence if discovered_max_sequence is None else max(discovered_max_sequence, sequence)
         rows = source.read_many(batch)
         existing_dedupe_ids: set[str] | None = None
-        if not args.dry_run:
+        check_target_duplicates = (not args.dry_run) or bool(getattr(args, 'dry_run_check_target', True))
+        if check_target_duplicates:
             dedupe_candidates = [
                 derive_backfill_idempotency_key(args.source_prefix, raw_backend, sequence, raw_record or {})
                 for sequence, raw_record, read_error in rows
@@ -1367,6 +1369,8 @@ def run_backfill(args: argparse.Namespace) -> Json:
     )
     summary['resume_state'] = resume_state
     summary['source_range'] = source_range
+    summary['dry_run'] = bool(args.dry_run)
+    summary['dry_run_check_target'] = bool(getattr(args, 'dry_run_check_target', True))
     manifest = {
         'job_id': args.job_id,
         'mode': args.mode,
@@ -1380,6 +1384,8 @@ def run_backfill(args: argparse.Namespace) -> Json:
         'checkpoint': checkpoint,
         'resume_state': resume_state,
         'source_range': source_range,
+        'dry_run': bool(args.dry_run),
+        'dry_run_check_target': bool(getattr(args, 'dry_run_check_target', True)),
         'summary': summary,
     }
     summary['manifest_key'] = f'{target_prefix}:backfill_manifest'
@@ -1568,6 +1574,7 @@ def run_validate_shadow(args: argparse.Namespace) -> Json:
     validation_args = Namespace(**vars(args))
     validation_args.mode = 'shadow'
     validation_args.dry_run = True
+    validation_args.dry_run_check_target = False
     validation_args.resume = False
     validation_args.prometheus_output = ''
     expected_summary = run_backfill(validation_args)
@@ -1972,6 +1979,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--batch-size', type=int, default=256)
     parser.add_argument('--source-scan-max-empty-shards', type=int, default=2)
     parser.add_argument('--dry-run', type=int, choices=[0, 1], default=1)
+    parser.add_argument('--dry-run-check-target', type=int, choices=[0, 1], default=1, help='during dry-run, check target idempotency so duplicate and would-write counts match a real run')
     parser.add_argument('--resume', type=int, choices=[0, 1], default=1)
     parser.add_argument('--confirm-resume-range-change', default='', help='required YES to ignore an existing checkpoint whose source range differs from requested start/end')
     parser.add_argument('--fail-fast', action='store_true')
@@ -1984,6 +1992,7 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
     args.dry_run = bool(args.dry_run)
+    args.dry_run_check_target = bool(args.dry_run_check_target)
     args.resume = bool(args.resume)
     args.validation_strict = bool(args.validation_strict)
     args.skip_validation = bool(args.skip_validation)

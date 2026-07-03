@@ -64,6 +64,7 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             "batch_size": 2,
             "source_scan_max_empty_shards": 2,
             "dry_run": False,
+            "dry_run_check_target": True,
             "resume": True,
             "confirm_resume_range_change": "",
             "fail_fast": False,
@@ -133,6 +134,32 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(resumed["resume_state"]["checkpoint_last_sequence"], 1)
             self.assertEqual(resumed["resume_state"]["checkpoint_source_range"]["source_high_watermark_seq"], 1)
             self.assertEqual(resumed["resume_state"]["effective_start_seq"], 2)
+
+    def test_dry_run_checks_target_idempotency_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            write_sharded(kv, "matrixark:mcp", 0, {"record_type": "context_event", "event_id_hash": 1})
+            write_sharded(kv, "matrixark:mcp", 1, {"record_type": "context_event", "event_id_hash": 2})
+            kv.put_string("matrixark:mcp:record_count", "2")
+
+            applied = backfill.run_backfill(self.make_args(path, dry_run=False, resume=False))
+            self.assertEqual(applied["metrics"]["written"], 2)
+
+            dry = backfill.run_backfill(self.make_args(path, dry_run=True, resume=False))
+            self.assertTrue(dry["dry_run"])
+            self.assertTrue(dry["dry_run_check_target"])
+            self.assertEqual(dry["metrics"]["scanned"], 2)
+            self.assertEqual(dry["metrics"]["duplicate"], 2)
+            self.assertEqual(dry["metrics"]["written"], 0)
+            self.assertEqual(len(read_target_records(backfill.LocalJsonKV(path), "matrixark:context_backfill:test")), 2)
+
+            source_only = backfill.run_backfill(self.make_args(path, dry_run=True, dry_run_check_target=False, resume=False))
+            self.assertFalse(source_only["dry_run_check_target"])
+            self.assertEqual(source_only["metrics"]["scanned"], 2)
+            self.assertEqual(source_only["metrics"]["duplicate"], 0)
+            self.assertEqual(source_only["metrics"]["written"], 2)
+            self.assertEqual(len(read_target_records(backfill.LocalJsonKV(path), "matrixark:context_backfill:test")), 2)
 
     def test_target_serving_type_counts_use_batched_reads(self):
         with tempfile.TemporaryDirectory() as tmp:
