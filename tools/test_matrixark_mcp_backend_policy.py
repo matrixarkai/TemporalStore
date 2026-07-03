@@ -1787,6 +1787,44 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             "native_context_pack",
         )
 
+    def test_direct_retrieve_derives_native_hash_scope_from_plain_ids(self) -> None:
+        client = _NativeContextPackClient()
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._client = client
+        adapter._storage_prefix = "matrixark:test:native-pack"
+        adapter._record_hash_key = f"{adapter._storage_prefix}:records"
+        adapter._index_key = f"{adapter._storage_prefix}:record_index"
+        adapter._count_key = f"{adapter._storage_prefix}:record_count"
+        adapter._entry_count_cache = None
+        scope = {
+            "account_id": "acct_scale",
+            "tenant_id": "tenant_scale",
+            "user_id": "user_scale",
+            "session_id": "session_scale",
+        }
+
+        adapter.retrieve(
+            {
+                "query": "Who approved the GPU budget?",
+                "scope": scope,
+                "max_context_tokens": 2048,
+                "ranking": {"max_selected_refs": 8},
+            }
+        )
+
+        request = client.requests[0]
+        expected_hashes = mcp_core.identity_hashes("acct_scale", "tenant_scale", "user_scale", "session_scale")
+        self.assertEqual(request["tenant_hash"], expected_hashes["tenant_hash"])
+        self.assertEqual(request["scope"]["tenant_hash"], expected_hashes["tenant_hash"])
+        self.assertEqual(request["scope"]["user_hash"], expected_hashes["user_hash"])
+        self.assertEqual(request["scope"]["session_hash"], expected_hashes["session_hash"])
+        self.assertEqual(request["scope_key"], expected_hashes["scope_key"])
+        self.assertEqual(request["scope_hash"], mcp_core.stable_hash(expected_hashes["scope_key"]))
+        self.assertEqual(
+            request["placement_key"],
+            f"context:{expected_hashes['scope_key']}:node={request['start_node_hash']}",
+        )
+
     def test_direct_retrieve_compact_pack_can_include_native_retrieval_metrics(self) -> None:
         client = _NativeContextPackClient()
         adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
