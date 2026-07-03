@@ -1066,6 +1066,15 @@ def resolve_target_prefix(args: argparse.Namespace) -> str:
 
 
 def estimate_source_window_records(source_range: Json) -> int | None:
+    if (
+        source_range.get('source_record_count_estimated')
+        and source_range.get('discovered_record_count') is not None
+        and source_range.get('scan_hash_max_empty_shards') is not None
+    ):
+        try:
+            return max(0, int(source_range.get('discovered_record_count') or 0))
+        except (TypeError, ValueError):
+            return None
     effective_start = source_range.get('effective_start_seq')
     effective_end = source_range.get('effective_end_seq')
     if effective_start is None or effective_end is None:
@@ -1074,6 +1083,48 @@ def estimate_source_window_records(source_range: Json) -> int | None:
         return max(0, int(effective_end) - int(effective_start))
     except (TypeError, ValueError):
         return None
+
+
+def discover_scan_hash_source_range(
+    source: MatrixKVRecordLog,
+    source_range: Json,
+    *,
+    end_seq: int | None,
+    max_empty_scan_shards: int,
+) -> Json:
+    if str(source_range.get('scan_mode') or '') != 'scan_hash':
+        return source_range
+    discovered = dict(source_range)
+    discovered_min_sequence: int | None = None
+    discovered_max_sequence: int | None = None
+    discovered_count = 0
+    refs, _ = source.source_refs(
+        start_seq=int(discovered.get('effective_start_seq') or 0),
+        end_seq=end_seq,
+        max_empty_scan_shards=max_empty_scan_shards,
+        source_range=discovered,
+    )
+    for ref in refs:
+        sequence, _, _ = source._normalize_ref(ref)
+        discovered_count += 1
+        discovered_min_sequence = sequence if discovered_min_sequence is None else min(discovered_min_sequence, sequence)
+        discovered_max_sequence = sequence if discovered_max_sequence is None else max(discovered_max_sequence, sequence)
+    discovered.update({
+        'source_record_count': discovered_count,
+        'source_record_count_estimated': True,
+        'source_high_watermark_seq': discovered_max_sequence,
+        'discovered_record_count': discovered_count,
+        'discovered_start_seq': discovered_min_sequence,
+        'discovered_high_watermark_seq': discovered_max_sequence,
+        'scan_hash_max_empty_shards': max_empty_scan_shards,
+    })
+    if discovered_min_sequence is not None:
+        discovered['effective_start_seq'] = discovered_min_sequence
+    if discovered.get('effective_end_seq') is None and discovered_max_sequence is not None:
+        discovered['effective_end_seq'] = discovered_max_sequence + 1
+    if discovered_count == 0 and discovered.get('effective_end_seq') is None:
+        discovered['effective_end_seq'] = int(discovered.get('effective_start_seq') or 0)
+    return discovered
 
 
 def _plan_arg(name: str, value: Any) -> str:
@@ -1427,13 +1478,13 @@ def build_plan_windows(args: argparse.Namespace, *, source_range: Json, target_p
     effective_end = source_range.get('effective_end_seq')
     if effective_start is None or effective_end is None:
         return {
-            'enabled': True,
+            'enabled': False,
             'window_size': window_size,
             'windows': [],
             'total_windows': 0,
             'truncated': False,
             'parallel_write_safety': 'requires_bounded_effective_end_seq',
-            'reason': 'source range has no effective_end_seq; pass --end-seq or use record_count/index metadata',
+            'reason': 'source range has no effective_end_seq; pass --end-seq, use record_count/index metadata, or enable scan-hash discovery',
         }
     start = int(effective_start)
     end = int(effective_end)
@@ -2525,6 +2576,14 @@ def run_plan(args: argparse.Namespace) -> Json:
         resume_state=resume_state,
     )
     source_range = source.source_range(start_seq=effective_start_seq, end_seq=args.end_seq)
+    plan_scan_hash_discovery_enabled = bool(getattr(args, 'plan_discover_scan_hash', True))
+    if plan_scan_hash_discovery_enabled:
+        source_range = discover_scan_hash_source_range(
+            source,
+            source_range,
+            end_seq=args.end_seq,
+            max_empty_scan_shards=args.source_scan_max_empty_shards,
+        )
     current_active_prefix = kv.get_string(args.active_prefix_key) if args.active_prefix_key else ''
     expected_active_prefix = str(getattr(args, 'expect_active_prefix', '') or '')
     target_count = target.count()
@@ -2587,6 +2646,8 @@ def run_plan(args: argparse.Namespace) -> Json:
         'end_seq': args.end_seq,
         'effective_start_seq': effective_start_seq,
         'source_range': source_range,
+        'plan_scan_hash_discovery_enabled': plan_scan_hash_discovery_enabled,
+        'plan_scan_hash_discovery_used': bool(plan_scan_hash_discovery_enabled and source_range.get('scan_hash_max_empty_shards') is not None),
         'planned_source_records': planned_source_records,
         'planned_source_records_estimated': bool(source_range.get('source_record_count_estimated')),
         'partial': partial,
@@ -2888,6 +2949,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--plan-max-windows', type=int, default=128, help='plan-only maximum windows to emit; 0 emits all windows')
     parser.add_argument('--plan-parallelism', type=int, default=1, help='plan-only number of independent chunk shadows to group into each preparation wave')
     parser.add_argument('--plan-output-dir', default='', help='plan-only directory for plan.json plus runnable shadow/validation/promotion scripts')
+    parser.add_argument('--plan-discover-scan-hash', type=int, choices=[0, 1], default=1, help='plan-only read scan-hash raw-log refs to discover high watermark when record_count/index metadata is absent')
     parser.add_argument('--confirm-plan-output-overwrite', default='', help='required YES when --plan-output-dir already contains files')
     parser.add_argument('--source-scan-max-empty-shards', type=int, default=2)
     parser.add_argument('--dry-run', type=int, choices=[0, 1], default=1)
@@ -2910,6 +2972,7 @@ def main() -> int:
     args.skip_validation = bool(args.skip_validation)
     args.partial = bool(args.partial)
     args.partial_require_bounded = bool(args.partial_require_bounded)
+    args.plan_discover_scan_hash = bool(args.plan_discover_scan_hash)
     args.raw_backend = normalize_raw_backend(args.raw_backend)
     if args.batch_size <= 0:
         parser.error('--batch-size must be positive')
