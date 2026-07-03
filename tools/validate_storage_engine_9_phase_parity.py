@@ -97,6 +97,7 @@ PHASES: tuple[Phase, ...] = (
             "validate_page_block_metrics_parity.py",
             "validate_grafana_metrics_parity.py",
             "test_temporalstore_performance_artifact_audit.py",
+            "test_temporalstore_next_performance_workflow.py",
             "test_temporalstore_performance_evidence_import.py",
             "validate_temporalstore_cpp_rust_performance_parity.py",
         ),
