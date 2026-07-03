@@ -786,6 +786,8 @@ Important metrics:
 The runner emits Prometheus text format. The main metric families are:
 
 ```text
+matrixark_context_backfill_run_elapsed_ms{job_id="..."}
+matrixark_context_backfill_scan_qps{job_id="..."}
 matrixark_context_backfill_records_total{job_id="...",status="scanned"}
 matrixark_context_backfill_records_total{job_id="...",status="filtered"}
 matrixark_context_backfill_records_total{job_id="...",status="written"}
@@ -793,13 +795,14 @@ matrixark_context_backfill_serving_records_total{job_id="...",type="context_even
 matrixark_context_backfill_batches_total{job_id="...",phase="source"}
 matrixark_context_backfill_batches_total{job_id="...",phase="target"}
 matrixark_context_backfill_batches_total{job_id="...",phase="scan_hash"}
+matrixark_context_backfill_source_range{job_id="...",boundary="source_high_watermark_seq"}
 matrixark_context_backfill_validation_status{job_id="...",mode="validate_shadow",status="ok"}
 matrixark_context_backfill_validation_records{job_id="...",kind="expected"}
 matrixark_context_backfill_validation_check{job_id="...",check="target_records_readable"}
 matrixark_context_backfill_validation_target_scan{job_id="...",stat="read_errors"}
 ```
 
-`shadow` and `in_place` runs emit record, serving-record, and batch metrics. `validate_shadow` emits validation status, expected/actual/dead-letter counts, per-check pass/fail gauges, and target scan stats when `--prometheus-output` is set.
+`shadow` and `in_place` runs emit elapsed time, scan QPS, record counters, serving-record counters, batch counters, and source-range boundary gauges. `validate_shadow` emits validation status, expected/actual/dead-letter counts, per-check pass/fail gauges, and target scan stats when `--prometheus-output` is set.
 
 Recommended production alerts:
 
