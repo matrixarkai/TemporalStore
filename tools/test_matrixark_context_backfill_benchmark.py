@@ -23,6 +23,9 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
             "min_full_shadow_qps": 0.0,
             "min_incremental_repair_qps": 0.0,
             "min_backend_qps_ratio": 0.0,
+            "max_full_shadow_p95_ms": 0.0,
+            "max_incremental_shadow_p95_ms": 0.0,
+            "max_incremental_repair_p95_ms": 0.0,
             "gate_aggregation": "min",
             "json_output": "",
         }
@@ -51,6 +54,9 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
         self.assertIn("incremental_shadow_qps", summary["qps_summary"])
         self.assertIn("incremental_repair_qps", summary["qps_summary"])
         self.assertGreater(summary["qps_summary"]["full_shadow_qps"]["min_max_ratio"], 0)
+        self.assertIn("latency_ms_summary", summary)
+        self.assertGreater(summary["latency_ms_summary"]["full_shadow_ms"]["p95"], 0)
+        self.assertGreater(summary["latency_ms_summary"]["incremental_repair_ms"]["p95"], 0)
 
     def test_local_benchmark_can_write_json_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -104,6 +110,32 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
         self.assertEqual(len(failed_checks), 1)
         self.assertEqual(failed_checks[0]["metric"], "full_shadow_qps")
 
+    def test_performance_gate_can_enforce_latency_ceilings(self) -> None:
+        passing = bench.run_benchmark(self.make_args(
+            records=32,
+            incremental_records=8,
+            raw_backends="temporalstore",
+            max_full_shadow_p95_ms=100000.0,
+            max_incremental_shadow_p95_ms=100000.0,
+            max_incremental_repair_p95_ms=100000.0,
+        ))
+        self.assertEqual(passing["status"], "ok")
+        latency_checks = [check for check in passing["performance_gate"]["checks"] if check["metric"].endswith("_p95_ms")]
+        self.assertEqual(len(latency_checks), 3)
+        self.assertTrue(all(check["passed"] for check in latency_checks))
+
+        failing = bench.run_benchmark(self.make_args(
+            records=32,
+            incremental_records=8,
+            raw_backends="temporalstore",
+            max_incremental_repair_p95_ms=0.000001,
+        ))
+        self.assertEqual(failing["status"], "failed")
+        failed_checks = [check for check in failing["performance_gate"]["checks"] if not check["passed"]]
+        self.assertEqual(len(failed_checks), 1)
+        self.assertEqual(failed_checks[0]["metric"], "incremental_repair_p95_ms")
+        self.assertIn("maximum", failed_checks[0])
+
     def test_cli_returns_nonzero_when_performance_gate_fails(self) -> None:
         rc = bench.main([
             "--records=16",
@@ -125,6 +157,10 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
     def test_rejects_invalid_backend_ratio(self) -> None:
         with self.assertRaises(bench.BackfillBenchmarkError):
             bench.run_benchmark(self.make_args(min_backend_qps_ratio=1.01))
+
+    def test_rejects_invalid_latency_gate(self) -> None:
+        with self.assertRaises(bench.BackfillBenchmarkError):
+            bench.run_benchmark(self.make_args(max_full_shadow_p95_ms=-1.0))
 
     def test_rejects_invalid_gate_aggregation(self) -> None:
         with self.assertRaises(bench.BackfillBenchmarkError):

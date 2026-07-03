@@ -123,9 +123,9 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
             },
         }
 
-        plan = build_execution_plan(audit, max_workloads=1, wsl_distro="Ubuntu2204Deeproute")
+        plan = build_execution_plan(audit, max_workloads=1, wsl_distro="CustomUbuntu")
 
-        self.assertEqual(plan["commands"][0]["wsl_argv"][:3], ["wsl", "-d", "Ubuntu2204Deeproute"])
+        self.assertEqual(plan["commands"][0]["wsl_argv"][:3], ["wsl", "-d", "CustomUbuntu"])
 
     def test_backend_artifact_overrides_respect_explicit_paths(self) -> None:
         command = _with_backend_artifact_overrides(
