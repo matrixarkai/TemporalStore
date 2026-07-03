@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 from run_temporalstore_cpp_rust_next_performance_workflow import (
     DEFAULT_WSL_DISTRO,
+    _backend_artifact_preflight,
     _pythonize,
     _with_backend_artifact_overrides,
     _wslize,
@@ -63,6 +64,8 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
 
         self.assertEqual(plan["schema"], "temporalstore_cpp_rust_next_performance_workflow_v1")
         self.assertTrue(plan["dry_run_default"])
+        self.assertEqual(plan["execution_environment"]["wsl_distro"], DEFAULT_WSL_DISTRO)
+        self.assertIn("backend_artifacts", plan["execution_environment"])
         self.assertEqual(plan["workload_count"], 1)
         self.assertEqual([command["workload"] for command in plan["commands"]], ["10K_event_ingestion", "10K_event_ingestion"])
         self.assertEqual(
@@ -162,6 +165,26 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
         self.assertIn("--rust-cli", command)
         self.assertIn("libbcache2.so", command[command.index("--cpp-lib") + 1])
         self.assertIn("matrixark_record_log", command[command.index("--rust-cli") + 1])
+
+    def test_backend_artifact_preflight_reports_environment_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cpp_lib = root / "libbcache2.so"
+            rust_cli = root / "matrixark_record_log"
+            cpp_lib.write_text("", encoding="utf-8")
+            rust_cli.write_text("", encoding="utf-8")
+            with patch.dict(
+                os.environ,
+                {
+                    "MATRIXARK_PARITY_CPP_LIB": str(cpp_lib),
+                    "MATRIXARK_PARITY_RUST_CLI": str(rust_cli),
+                },
+            ):
+                preflight = _backend_artifact_preflight()
+
+        self.assertTrue(preflight["ready"])
+        self.assertEqual(preflight["cpp_lib"]["source"], "env")
+        self.assertEqual(preflight["rust_cli"]["source"], "env")
 
     def test_run_plan_can_continue_after_failure(self) -> None:
         plan = {
