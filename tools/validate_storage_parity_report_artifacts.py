@@ -20,11 +20,22 @@ from validate_storage_lifecycle_parity import (
     CANONICAL_PUBLIC_FIELDS,
     REQUIRED_STORAGE_CACHE_LAYERS,
     REQUIRED_STORAGE_CACHE_SEMANTICS,
+    REQUIRED_STORAGE_CACHE_CONTRACT_FIELDS,
     REQUIRED_STORAGE_COLD_SCAN_SEQUENCE,
+    REQUIRED_STORAGE_COLD_SCAN_METRICS,
+    REQUIRED_STORAGE_COLD_SCAN_RESULT_FIELDS,
+    REQUIRED_STORAGE_INDEX_CONTRACT_FIELDS,
     REQUIRED_STORAGE_LIFECYCLE_METRICS,
     REQUIRED_STORAGE_LIFECYCLE_PHASES,
+    REQUIRED_STORAGE_MANAGER_CONTRACT_FIELDS,
     REQUIRED_STORAGE_READ_SEQUENCE,
+    REQUIRED_STORAGE_READ_METRICS,
+    REQUIRED_STORAGE_READ_RESULT_FIELDS,
+    REQUIRED_STORAGE_RECLAIM_CONTRACT_FIELDS,
     REQUIRED_STORAGE_RECLAIM_SEMANTICS,
+    REQUIRED_STORAGE_WRITE_METRICS,
+    REQUIRED_STORAGE_WRITE_RESULT_FIELDS,
+    REQUIRED_STORAGE_WRITE_SEQUENCE,
 )
 from validate_storage_tuning_parity import EXPECTED_KNOBS
 
@@ -36,8 +47,12 @@ REPORT_NAMES = {"cpp.json", "rust.json", "comparison.json"}
 REQUIRED_TOP_LEVEL_SECTIONS = (
     "effective_storage_tuning",
     "public_storage_contract",
+    "storage_write_sequence",
+    "storage_write_contract",
     "storage_read_sequence",
+    "storage_read_contract",
     "storage_cold_scan_sequence",
+    "storage_cold_scan_contract",
     "storage_lifecycle_phases",
     "storage_lifecycle_metrics",
     "storage_cache_layers",
@@ -100,6 +115,22 @@ def _find_legacy_alias_leaks(value: Any, path: tuple[str, ...] = ()) -> list[str
     return leaks
 
 
+def _require_object_fields(
+    prefix: str,
+    report: dict[str, Any],
+    section: str,
+    required_fields: list[str],
+) -> list[str]:
+    failures: list[str] = []
+    value = report.get(section)
+    if not isinstance(value, dict):
+        return [f"{prefix} {section} must be an object"]
+    for field in required_fields:
+        if field not in value:
+            failures.append(f"{prefix} {section} missing `{field}`")
+    return failures
+
+
 def _validate_report(path: Path, backend: str, report: dict[str, Any]) -> list[str]:
     prefix = f"{path}:{backend}"
     failures: list[str] = []
@@ -120,6 +151,8 @@ def _validate_report(path: Path, backend: str, report: dict[str, Any]) -> list[s
     if public_contract != REQUIRED_PUBLIC_STORAGE_CONTRACT:
         failures.append(f"{prefix} public_storage_contract drift")
 
+    if report.get("storage_write_sequence") != REQUIRED_STORAGE_WRITE_SEQUENCE:
+        failures.append(f"{prefix} storage_write_sequence drift")
     if report.get("storage_read_sequence") != REQUIRED_STORAGE_READ_SEQUENCE:
         failures.append(f"{prefix} storage_read_sequence drift")
     if report.get("storage_cold_scan_sequence") != REQUIRED_STORAGE_COLD_SCAN_SEQUENCE:
@@ -140,6 +173,63 @@ def _validate_report(path: Path, backend: str, report: dict[str, Any]) -> list[s
         for metric in REQUIRED_STORAGE_LIFECYCLE_METRICS:
             if metric not in lifecycle:
                 failures.append(f"{prefix} missing storage lifecycle metric `{metric}`")
+
+    failures.extend(
+        _require_object_fields(
+            prefix,
+            report,
+            "storage_write_contract",
+            [*REQUIRED_STORAGE_WRITE_RESULT_FIELDS, *REQUIRED_STORAGE_WRITE_METRICS],
+        )
+    )
+    failures.extend(
+        _require_object_fields(
+            prefix,
+            report,
+            "storage_read_contract",
+            [*REQUIRED_STORAGE_READ_RESULT_FIELDS, *REQUIRED_STORAGE_READ_METRICS],
+        )
+    )
+    failures.extend(
+        _require_object_fields(
+            prefix,
+            report,
+            "storage_cold_scan_contract",
+            [*REQUIRED_STORAGE_COLD_SCAN_RESULT_FIELDS, *REQUIRED_STORAGE_COLD_SCAN_METRICS],
+        )
+    )
+    failures.extend(
+        _require_object_fields(
+            prefix,
+            report,
+            "storage_manager_contract",
+            REQUIRED_STORAGE_MANAGER_CONTRACT_FIELDS,
+        )
+    )
+    failures.extend(
+        _require_object_fields(
+            prefix,
+            report,
+            "storage_index_contract",
+            REQUIRED_STORAGE_INDEX_CONTRACT_FIELDS,
+        )
+    )
+    failures.extend(
+        _require_object_fields(
+            prefix,
+            report,
+            "storage_cache_contract",
+            REQUIRED_STORAGE_CACHE_CONTRACT_FIELDS,
+        )
+    )
+    failures.extend(
+        _require_object_fields(
+            prefix,
+            report,
+            "storage_reclaim_contract",
+            REQUIRED_STORAGE_RECLAIM_CONTRACT_FIELDS,
+        )
+    )
 
     leaks = _find_legacy_alias_leaks(report)
     for leak in leaks:
