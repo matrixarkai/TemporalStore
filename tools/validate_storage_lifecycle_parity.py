@@ -1268,19 +1268,18 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
                 f"{backend} public report exposes legacy alias `{key}` outside compatibility_aliases at {'.'.join(path)}"
             )
 
-    if cpp_public_shape or rust_public_shape:
-        for field in CANONICAL_JSON_FIELDS:
-            if field not in cpp_public_shape:
-                failures.append(f"cpp public storage shape missing canonical `{field}`")
-            if field not in rust_public_shape:
-                failures.append(f"rust public storage shape missing canonical `{field}`")
-        comparable_fields = [field for field in CANONICAL_JSON_FIELDS if field in cpp_public_shape and field in rust_public_shape]
-        for field in comparable_fields:
-            if type(cpp_public_shape[field]).__name__ != type(rust_public_shape[field]).__name__:
-                failures.append(
-                    f"public storage shape type drift `{field}`: cpp={type(cpp_public_shape[field]).__name__} "
-                    f"rust={type(rust_public_shape[field]).__name__}"
-                )
+    for field in CANONICAL_JSON_FIELDS:
+        if field not in cpp_public_shape:
+            failures.append(f"cpp public storage shape missing canonical `{field}`")
+        if field not in rust_public_shape:
+            failures.append(f"rust public storage shape missing canonical `{field}`")
+    comparable_fields = [field for field in CANONICAL_JSON_FIELDS if field in cpp_public_shape and field in rust_public_shape]
+    for field in comparable_fields:
+        if type(cpp_public_shape[field]).__name__ != type(rust_public_shape[field]).__name__:
+            failures.append(
+                f"public storage shape type drift `{field}`: cpp={type(cpp_public_shape[field]).__name__} "
+                f"rust={type(rust_public_shape[field]).__name__}"
+            )
 
     for metric in [
         "cold_scan_no_cache_reads",

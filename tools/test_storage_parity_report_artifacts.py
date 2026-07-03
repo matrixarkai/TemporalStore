@@ -31,6 +31,7 @@ from validate_storage_lifecycle_parity import (
     REQUIRED_STORAGE_WRITE_METRICS,
     REQUIRED_STORAGE_WRITE_RESULT_FIELDS,
     REQUIRED_STORAGE_WRITE_SEQUENCE,
+    validate_report_pair,
 )
 from validate_storage_parity_report_artifacts import REQUIRED_PUBLIC_STORAGE_CONTRACT, validate_artifacts
 from validate_storage_tuning_parity import EXPECTED_DEFAULTS
@@ -261,6 +262,18 @@ class StorageParityReportArtifactTest(unittest.TestCase):
         self.assertTrue(any("storage_index_contract.required_behaviors drift" in item for item in failures))
         self.assertTrue(any("storage_cache_contract.cold_scan_no_promote must be true" in item for item in failures))
         self.assertTrue(any("storage_reclaim_contract.physical_reclaim_errors must be zero" in item for item in failures))
+
+    def test_pair_validator_rejects_missing_public_storage_contract(self) -> None:
+        cpp = _valid_report("cpp")
+        rust = _valid_report("rust")
+        del cpp["public_storage_contract"]
+
+        failures = validate_report_pair(cpp, rust)
+
+        self.assertTrue(
+            any("cpp report missing required top-level `public_storage_contract`" in item for item in failures)
+        )
+        self.assertTrue(any("cpp public storage shape missing canonical `page_address`" in item for item in failures))
 
     def test_rejects_effective_storage_tuning_value_drift(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
