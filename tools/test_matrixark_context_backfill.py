@@ -149,6 +149,30 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(kv.matrixark_append_records_options[-1]["raw_storage_backend"], "temporalstore")
             self.assertEqual(kv.get_string("shadow:batch:record_count"), "1")
 
+    def test_run_backfill_prefetches_source_batch_idempotency_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            write_sharded(kv, "matrixark:mcp", 0, {"record_type": "context_event", "event_id_hash": 1, "idempotency_key": "existing"})
+            write_sharded(kv, "matrixark:mcp", 1, {"record_type": "context_event", "event_id_hash": 2, "idempotency_key": "new"})
+            write_sharded(kv, "matrixark:mcp", 2, {"record_type": "context_event", "event_id_hash": 3, "idempotency_key": "new"})
+            kv.put_string("matrixark:mcp:record_count", "3")
+            kv.hset("matrixark:context_backfill:test:idempotency", "existing", "0")
+
+            original_make_kv = backfill.make_kv
+            backfill.make_kv = lambda args: kv
+            try:
+                summary = backfill.run_backfill(self.make_args(path, batch_size=3, resume=False))
+            finally:
+                backfill.make_kv = original_make_kv
+
+            self.assertEqual(summary["metrics"]["scanned"], 3)
+            self.assertEqual(summary["metrics"]["duplicate"], 2)
+            self.assertEqual(summary["metrics"]["written"], 1)
+            self.assertEqual(kv.batch_hget_calls, 3)
+            records = read_target_records(backfill.LocalJsonKV(path), "matrixark:context_backfill:test")
+            self.assertEqual([record["event_id_hash"] for record in records], [2])
+
     def test_target_prefetches_idempotency_keys_and_skips_duplicates(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "kv.json"
