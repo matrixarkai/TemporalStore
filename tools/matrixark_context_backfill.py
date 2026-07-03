@@ -1064,6 +1064,17 @@ def resolve_target_prefix(args: argparse.Namespace) -> str:
     return args.source_prefix if args.mode == 'in_place' else (args.target_prefix or default_target_prefix(args.job_id))
 
 
+def estimate_source_window_records(source_range: Json) -> int | None:
+    effective_start = source_range.get('effective_start_seq')
+    effective_end = source_range.get('effective_end_seq')
+    if effective_start is None or effective_end is None:
+        return None
+    try:
+        return max(0, int(effective_end) - int(effective_start))
+    except (TypeError, ValueError):
+        return None
+
+
 def require_active_target_confirmation(args: argparse.Namespace, kv: Any, target_prefix: str) -> None:
     if args.dry_run or args.mode != 'shadow':
         return
@@ -2058,6 +2069,131 @@ def incremental_repair_to_prometheus(summary: Json) -> str:
     return '\n'.join(lines) + '\n'
 
 
+def run_plan(args: argparse.Namespace) -> Json:
+    partial = build_partial_spec(args)
+    validate_partial_args(args, partial)
+    raw_backend = normalize_raw_backend(args.raw_backend)
+    kv = make_kv(args)
+    target_prefix = resolve_target_prefix(args)
+    source = MatrixKVRecordLog(kv, prefix=args.source_prefix)
+    target = MatrixKVBackfillTarget(kv, prefix=target_prefix, raw_backend=raw_backend)
+    cp_key = checkpoint_key(
+        target_prefix,
+        args.job_id,
+        source_prefix=args.source_prefix,
+        raw_backend=raw_backend,
+        partial=partial,
+    )
+    resume_state = read_checkpoint_state(kv, cp_key)
+    effective_start_seq, resume_state = apply_resume_checkpoint(
+        args=args,
+        start_seq=max(0, args.start_seq),
+        resume_state=resume_state,
+    )
+    source_range = source.source_range(start_seq=effective_start_seq, end_seq=args.end_seq)
+    current_active_prefix = kv.get_string(args.active_prefix_key) if args.active_prefix_key else ''
+    expected_active_prefix = str(getattr(args, 'expect_active_prefix', '') or '')
+    target_count = target.count()
+    dead_letter_count = target.count_dead_letters()
+    planned_source_records = estimate_source_window_records(source_range)
+    active_target = bool(current_active_prefix and current_active_prefix == target_prefix)
+    incremental_window_bounded = args.end_seq is not None and args.end_seq > args.start_seq
+    safety_checks: Json = {
+        'no_writes_performed': True,
+        'source_prefix_present': bool(args.source_prefix),
+        'target_prefix_present': bool(target_prefix),
+        'target_differs_from_source': target_prefix != args.source_prefix,
+        'batch_size_positive': args.batch_size > 0,
+        'partial_filters_valid': True,
+        'resume_checkpoint_compatible': not bool(resume_state.get('checkpoint_ignored')),
+        'in_place_confirmed_if_needed': args.mode != 'in_place' or args.confirm_in_place == 'YES',
+        'active_target_confirmed_if_needed': not active_target or getattr(args, 'confirm_active_target', '') == 'YES',
+        'incremental_window_bounded': incremental_window_bounded,
+        'incremental_confirmed_if_requested': getattr(args, 'confirm_incremental_repair', '') == 'YES',
+        'active_prefix_precondition_satisfied': not expected_active_prefix or current_active_prefix == expected_active_prefix,
+        'active_prefix_precondition_bypassed': active_prefix_precondition_bypassed(args),
+    }
+    required_confirmations: list[str] = []
+    if target_prefix == args.source_prefix:
+        required_confirmations.append('--mode=in_place --confirm-in-place=YES')
+    if active_target and getattr(args, 'confirm_active_target', '') != 'YES':
+        required_confirmations.append('--confirm-active-target=YES for direct writes into the active prefix')
+    if getattr(args, 'confirm_incremental_repair', '') != 'YES':
+        required_confirmations.append('--confirm-incremental-repair=YES before incremental_repair promotion')
+    if not expected_active_prefix and not active_prefix_precondition_bypassed(args):
+        required_confirmations.append('--expect-active-prefix=<current> or --confirm-no-active-prefix-precondition=YES before active-prefix mutation')
+    readiness_blockers = [
+        name
+        for name, passed in sorted(safety_checks.items())
+        if name not in {
+            'active_prefix_precondition_bypassed',
+            'incremental_confirmed_if_requested',
+            'incremental_window_bounded',
+        }
+        and not bool(passed)
+    ]
+    if partial.get('enabled') and not incremental_window_bounded and not any(
+        partial.get(key) for key in ['record_types', 'tenant_ids', 'user_ids', 'session_ids', 'filter_json']
+    ):
+        readiness_blockers.append('partial_backfill_requires_bounded_range_or_filter')
+    return {
+        'status': 'ok' if not readiness_blockers else 'needs_confirmation',
+        'mode': 'plan',
+        'job_id': args.job_id,
+        'raw_backend': raw_backend,
+        'source_prefix': args.source_prefix,
+        'target_prefix': target_prefix,
+        'target_is_default_shadow_prefix': not bool(args.target_prefix),
+        'active_prefix_key': args.active_prefix_key,
+        'current_active_prefix': current_active_prefix,
+        'expected_active_prefix': expected_active_prefix,
+        'repair_active_prefix': str(getattr(args, 'repair_active_prefix', '') or ''),
+        'start_seq': args.start_seq,
+        'end_seq': args.end_seq,
+        'effective_start_seq': effective_start_seq,
+        'source_range': source_range,
+        'planned_source_records': planned_source_records,
+        'planned_source_records_estimated': bool(source_range.get('source_record_count_estimated')),
+        'partial': partial,
+        'batch_size': args.batch_size,
+        'source_scan_max_empty_shards': args.source_scan_max_empty_shards,
+        'resume_state': resume_state,
+        'checkpoint_key': cp_key,
+        'target_state': {
+            'record_count': target_count,
+            'dead_letter_count': dead_letter_count,
+            'is_current_active_prefix': active_target,
+            'raw_backend': raw_backend,
+        },
+        'execution_modes': {
+            'batch_shadow': {
+                'command_mode': 'shadow',
+                'dry_run_default': True,
+                'write_command_requires': ['--dry-run=0'],
+            },
+            'incremental_repair': {
+                'command_mode': 'incremental_repair',
+                'bounded_window_required': True,
+                'active_prefix_required': True,
+                'write_command_requires': ['--dry-run=0', '--confirm-incremental-repair=YES'],
+            },
+            'in_place': {
+                'command_mode': 'in_place',
+                'guarded': True,
+                'write_command_requires': ['--dry-run=0', '--confirm-in-place=YES'],
+            },
+        },
+        'safety_checks': safety_checks,
+        'required_confirmations': sorted(set(required_confirmations)),
+        'readiness_blockers': sorted(set(readiness_blockers)),
+        'next_steps': [
+            'run shadow backfill with --dry-run=0 into target_prefix',
+            'run validate_shadow against target_prefix',
+            'run activate_shadow for full cutover or incremental_repair for bounded active repair',
+        ],
+    }
+
+
 def run_incremental_repair(args: argparse.Namespace) -> Json:
     if not args.target_prefix:
         raise BackfillError('incremental_repair requires --target-prefix for the shadow repair prefix')
@@ -2279,7 +2415,7 @@ def build_parser() -> argparse.ArgumentParser:
         help='raw ingestion message store that owns source-prefix; affects checkpoints, idempotency, manifests, and metrics',
     )
     parser.add_argument('--target-prefix', default='')
-    parser.add_argument('--mode', choices=['shadow', 'in_place', 'validate_shadow', 'activate_shadow', 'rollback_activation', 'incremental_repair', 'verify_manifest'], default='shadow')
+    parser.add_argument('--mode', choices=['plan', 'shadow', 'in_place', 'validate_shadow', 'activate_shadow', 'rollback_activation', 'incremental_repair', 'verify_manifest'], default='shadow')
     parser.add_argument('--confirm-in-place', default='')
     parser.add_argument('--confirm-activate', default='')
     parser.add_argument('--confirm-rollback', default='')
@@ -2335,7 +2471,9 @@ def main() -> int:
     if args.source_scan_max_empty_shards <= 0:
         parser.error('--source-scan-max-empty-shards must be positive')
     try:
-        if args.mode == 'validate_shadow':
+        if args.mode == 'plan':
+            summary = run_plan(args)
+        elif args.mode == 'validate_shadow':
             summary = run_validate_shadow(args)
         elif args.mode == 'activate_shadow':
             summary = run_activate_shadow(args)
