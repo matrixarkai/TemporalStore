@@ -790,9 +790,144 @@ pub struct StoragePageGcDependencyPlan {
     pub blocker_reasons: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicStorageFeatureShapes {
+    pub page_address_fields: Vec<String>,
+    pub block_address_fields: Vec<String>,
+    pub page_index_entry_fields: Vec<String>,
+    pub block_index_entry_fields: Vec<String>,
+    pub object_index_entry_fields: Vec<String>,
+    pub storage_zone_fields: Vec<String>,
+    pub stream_fields: Vec<String>,
+    pub segment_fields: Vec<String>,
+    pub extent_fields: Vec<String>,
+    pub slot_fields: Vec<String>,
+    pub append_watermark_fields: Vec<String>,
+    pub compaction_watermark_fields: Vec<String>,
+    pub tombstone_fields: Vec<String>,
+    pub gc_eligibility_fields: Vec<String>,
+    pub follower_cursor_safety_fields: Vec<String>,
+}
+
+impl Default for PublicStorageFeatureShapes {
+    fn default() -> Self {
+        fn fields(names: &[&str]) -> Vec<String> {
+            names.iter().map(|name| (*name).to_string()).collect()
+        }
+
+        Self {
+            page_address_fields: fields(&[
+                "shard_id",
+                "zone_id",
+                "segment_id",
+                "page_id",
+                "offset",
+                "length",
+                "generation",
+            ]),
+            block_address_fields: fields(&[
+                "shard_id",
+                "zone_id",
+                "block_id",
+                "offset",
+                "length",
+                "checksum",
+            ]),
+            page_index_entry_fields: fields(&[
+                "logical_key",
+                "timestamp_range",
+                "page_addresses",
+                "append_watermark",
+                "generation",
+            ]),
+            block_index_entry_fields: fields(&[
+                "page_address",
+                "block_address",
+                "extent",
+                "checksum",
+                "generation",
+            ]),
+            object_index_entry_fields: fields(&[
+                "model",
+                "table",
+                "object_key",
+                "page_chain",
+                "tombstone",
+                "generation",
+            ]),
+            storage_zone_fields: fields(&[
+                "zone_id",
+                "total_bytes",
+                "used_bytes",
+                "stale_bytes",
+                "segments",
+            ]),
+            stream_fields: fields(&[
+                "stream_id",
+                "segments",
+                "rollover_count",
+                "sealed_segment_count",
+            ]),
+            segment_fields: fields(&[
+                "segment_id",
+                "extent_id",
+                "start_offset",
+                "sealed",
+                "generation",
+            ]),
+            extent_fields: fields(&[
+                "extent_id",
+                "block_range",
+                "reclaim_state",
+                "generation",
+            ]),
+            slot_fields: fields(&[
+                "slot_id",
+                "dirty_generation",
+                "object_refs",
+                "page_refs",
+                "tombstones",
+                "owner_mismatch_count",
+            ]),
+            append_watermark_fields: fields(&[
+                "shard_id",
+                "slot_id",
+                "log_index",
+                "timestamp_ms",
+            ]),
+            compaction_watermark_fields: fields(&[
+                "shard_id",
+                "safe_generation",
+                "safe_timestamp_ms",
+                "follower_floor",
+            ]),
+            tombstone_fields: fields(&[
+                "ref",
+                "generation",
+                "deleted_at_ms",
+                "reason",
+            ]),
+            gc_eligibility_fields: fields(&[
+                "ref",
+                "eligible_after_ms",
+                "has_tombstone",
+                "follower_safe",
+                "reclaimable_bytes",
+            ]),
+            follower_cursor_safety_fields: fields(&[
+                "min_follower_cursor",
+                "blocked_reclaim_bytes",
+                "safe_to_reclaim",
+            ]),
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageLifecycleReport {
     pub shard_id: ShardId,
+    #[serde(default)]
+    pub public_storage_feature_shapes: PublicStorageFeatureShapes,
     pub plan: StorageLifecyclePlan,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dump_manifest: Option<SlotDumpManifest>,
