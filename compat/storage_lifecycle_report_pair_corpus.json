@@ -357,6 +357,23 @@
       "cache_writeback_queue_depth": 0,
       "cache_writeback_rejections": 0,
       "hot_cache_promotions": 0
+    },
+    "storage_reclaim_contract": {
+      "cache_eviction_frees_memory_only": true,
+      "logical_gc_marks_expired_deletable": true,
+      "physical_reclaim_requires_compaction_or_safe_skip": true,
+      "cache_evictions": 2,
+      "tombstone_records": 1,
+      "stale_page_tombstones": 1,
+      "stale_block_tombstones": 1,
+      "stale_pages_rewritten": 1,
+      "stale_pages_skipped": 1,
+      "stale_blocks_rewritten": 1,
+      "stale_blocks_skipped": 1,
+      "reclaimable_bytes": 1024,
+      "compaction_reclaimed_bytes": 512,
+      "physical_reclaimed_bytes": 512,
+      "physical_reclaim_errors": 0
     }
   },
   "rust": {
@@ -713,6 +730,23 @@
       "cache_writeback_queue_depth": 0,
       "cache_writeback_rejections": 0,
       "hot_cache_promotions": 0
+    },
+    "storage_reclaim_contract": {
+      "cache_eviction_frees_memory_only": true,
+      "logical_gc_marks_expired_deletable": true,
+      "physical_reclaim_requires_compaction_or_safe_skip": true,
+      "cache_evictions": 2,
+      "tombstone_records": 1,
+      "stale_page_tombstones": 1,
+      "stale_block_tombstones": 1,
+      "stale_pages_rewritten": 1,
+      "stale_pages_skipped": 1,
+      "stale_blocks_rewritten": 1,
+      "stale_blocks_skipped": 1,
+      "reclaimable_bytes": 1024,
+      "compaction_reclaimed_bytes": 512,
+      "physical_reclaimed_bytes": 512,
+      "physical_reclaim_errors": 0
     }
   }
 }

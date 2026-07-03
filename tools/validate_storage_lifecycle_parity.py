@@ -162,6 +162,24 @@ REQUIRED_STORAGE_RECLAIM_SEMANTICS = [
     "physical_reclaim_errors_zero",
 ]
 
+REQUIRED_STORAGE_RECLAIM_CONTRACT_FIELDS = [
+    "cache_eviction_frees_memory_only",
+    "logical_gc_marks_expired_deletable",
+    "physical_reclaim_requires_compaction_or_safe_skip",
+    "cache_evictions",
+    "tombstone_records",
+    "stale_page_tombstones",
+    "stale_block_tombstones",
+    "stale_pages_rewritten",
+    "stale_pages_skipped",
+    "stale_blocks_rewritten",
+    "stale_blocks_skipped",
+    "reclaimable_bytes",
+    "compaction_reclaimed_bytes",
+    "physical_reclaimed_bytes",
+    "physical_reclaim_errors",
+]
+
 REQUIRED_STORAGE_MANAGER_CONTRACT_FIELDS = [
     "manager_identity",
     "cpp_public_name",
@@ -250,6 +268,7 @@ REQUIRED_LIFECYCLE_TOP_LEVEL_KEYS = [
     "storage_manager_contract",
     "storage_index_contract",
     "storage_cache_contract",
+    "storage_reclaim_contract",
     "storage_read_sequence",
     "storage_cold_scan_sequence",
     "storage_lifecycle_phases",
@@ -583,6 +602,18 @@ def _dig_reclaim_scope(report: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _dig_reclaim_contract(report: dict[str, Any]) -> dict[str, Any]:
+    candidates = [
+        report.get("storage_reclaim_contract"),
+        report.get("storage_lifecycle", {}).get("reclaim_contract") if isinstance(report.get("storage_lifecycle"), dict) else None,
+        report.get("storage_reclaim", {}).get("contract") if isinstance(report.get("storage_reclaim"), dict) else None,
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            return candidate
+    return {}
+
+
 def _dig_cache_layers(report: dict[str, Any]) -> list[str]:
     candidates = [
         report.get("storage_cache_layers"),
@@ -751,6 +782,7 @@ def validate_contract_and_runner() -> list[str]:
     runner_manager_phase_metrics = _extract_runner_dict("STORAGE_MANAGER_PHASE_METRICS")
     runner_index_behaviors = _extract_runner_list("STORAGE_INDEX_BEHAVIOR_NAMES")
     runner_reclaim_semantics = _extract_runner_list("STORAGE_RECLAIM_SEMANTICS")
+    runner_reclaim_contract_fields = _extract_runner_list("STORAGE_RECLAIM_CONTRACT_FIELDS")
     runner_cache_layers = _extract_runner_list("STORAGE_CACHE_LAYER_NAMES")
     runner_cache_semantics = _extract_runner_list("STORAGE_CACHE_SEMANTICS")
     runner_cache_metrics = _extract_runner_list("STORAGE_CACHE_METRIC_NAMES")
@@ -787,6 +819,8 @@ def validate_contract_and_runner() -> list[str]:
         failures.append("runner:STORAGE_INDEX_BEHAVIOR_NAMES does not match the canonical index behaviors")
     if runner_reclaim_semantics != REQUIRED_STORAGE_RECLAIM_SEMANTICS:
         failures.append("runner:STORAGE_RECLAIM_SEMANTICS does not match the canonical reclaim semantics")
+    if runner_reclaim_contract_fields != REQUIRED_STORAGE_RECLAIM_CONTRACT_FIELDS:
+        failures.append("runner:STORAGE_RECLAIM_CONTRACT_FIELDS does not match the canonical reclaim contract fields")
     if runner_cache_layers != REQUIRED_STORAGE_CACHE_LAYERS:
         failures.append("runner:STORAGE_CACHE_LAYER_NAMES does not match the canonical cache layers")
     if runner_cache_semantics != REQUIRED_STORAGE_CACHE_SEMANTICS:
@@ -844,6 +878,9 @@ def validate_contract_and_runner() -> list[str]:
     for semantic in REQUIRED_STORAGE_RECLAIM_SEMANTICS:
         if f"`{semantic}`" not in contract_text:
             failures.append(f"contract missing reclaim semantic `{semantic}`")
+    for field in REQUIRED_STORAGE_RECLAIM_CONTRACT_FIELDS:
+        if f"`{field}`" not in contract_text:
+            failures.append(f"contract missing reclaim contract field `{field}`")
     for layer in REQUIRED_STORAGE_CACHE_LAYERS:
         if f"`{layer}`" not in contract_text:
             failures.append(f"contract missing cache layer `{layer}`")
@@ -894,6 +931,8 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
     rust_reclaim_semantics = _dig_reclaim_semantics(rust_report)
     cpp_reclaim_scope = _dig_reclaim_scope(cpp_report)
     rust_reclaim_scope = _dig_reclaim_scope(rust_report)
+    cpp_reclaim_contract = _dig_reclaim_contract(cpp_report)
+    rust_reclaim_contract = _dig_reclaim_contract(rust_report)
     cpp_cache_layers = _dig_cache_layers(cpp_report)
     rust_cache_layers = _dig_cache_layers(rust_report)
     cpp_cache_semantics = _dig_cache_semantics(cpp_report)
@@ -1115,6 +1154,57 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
                 failures.append(f"{backend} cache contract `{field}` must be non-negative")
         if _as_number(cache_contract.get("hot_cache_promotions")) not in (0.0, None):
             failures.append(f"{backend} cache contract hot_cache_promotions must be zero for cold scan no-promote parity")
+    for field in REQUIRED_STORAGE_RECLAIM_CONTRACT_FIELDS:
+        if field not in cpp_reclaim_contract:
+            failures.append(f"cpp reclaim contract missing field `{field}`")
+        if field not in rust_reclaim_contract:
+            failures.append(f"rust reclaim contract missing field `{field}`")
+    for backend, reclaim_contract in [("cpp", cpp_reclaim_contract), ("rust", rust_reclaim_contract)]:
+        for flag in [
+            "cache_eviction_frees_memory_only",
+            "logical_gc_marks_expired_deletable",
+            "physical_reclaim_requires_compaction_or_safe_skip",
+        ]:
+            if reclaim_contract.get(flag) is not True:
+                failures.append(f"{backend} reclaim contract {flag} must be true")
+        for field in [
+            "cache_evictions",
+            "tombstone_records",
+            "stale_page_tombstones",
+            "stale_block_tombstones",
+            "stale_pages_rewritten",
+            "stale_pages_skipped",
+            "stale_blocks_rewritten",
+            "stale_blocks_skipped",
+            "reclaimable_bytes",
+            "compaction_reclaimed_bytes",
+            "physical_reclaimed_bytes",
+            "physical_reclaim_errors",
+        ]:
+            value = _as_number(reclaim_contract.get(field))
+            if value is None or value < 0:
+                failures.append(f"{backend} reclaim contract `{field}` must be non-negative")
+        if _as_number(reclaim_contract.get("physical_reclaim_errors")) not in (0.0, None):
+            failures.append(f"{backend} reclaim contract physical_reclaim_errors must be zero")
+        physical = _metric_number(reclaim_contract, "physical_reclaimed_bytes")
+        if physical > 0:
+            tombstones = (
+                _metric_number(reclaim_contract, "tombstone_records")
+                + _metric_number(reclaim_contract, "stale_page_tombstones")
+                + _metric_number(reclaim_contract, "stale_block_tombstones")
+            )
+            rewrite_or_skip = (
+                _metric_number(reclaim_contract, "stale_pages_rewritten")
+                + _metric_number(reclaim_contract, "stale_pages_skipped")
+                + _metric_number(reclaim_contract, "stale_blocks_rewritten")
+                + _metric_number(reclaim_contract, "stale_blocks_skipped")
+            )
+            if tombstones <= 0:
+                failures.append(f"{backend} physical reclaim requires tombstone/logical GC evidence")
+            if rewrite_or_skip <= 0:
+                failures.append(f"{backend} physical reclaim requires compaction rewrite or safe-skip evidence")
+            if _metric_number(reclaim_contract, "compaction_reclaimed_bytes") <= 0:
+                failures.append(f"{backend} physical reclaim requires compaction_reclaimed_bytes")
 
     if cpp_write_sequence != REQUIRED_STORAGE_WRITE_SEQUENCE:
         failures.append(f"cpp storage_write_sequence drift: {cpp_write_sequence!r}")

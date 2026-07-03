@@ -1040,6 +1040,7 @@ Rust before comparison tools accept them:
 - `storage_manager_contract`
 - `storage_index_contract`
 - `storage_cache_contract`
+- `storage_reclaim_contract`
 - `storage_read_sequence`
 - `storage_cold_scan_sequence`
 - `storage_lifecycle_phases`
@@ -1082,6 +1083,42 @@ Canonical reclaim semantics:
   `physical_reclaimed_bytes` and `compaction_reclaimed_bytes`.
 - `physical_reclaim_errors_zero`: physical reclaim is not complete unless
   `physical_reclaim_errors` is zero.
+
+Lifecycle reports must also expose the fail-closed `storage_reclaim_contract`
+block. C++ and Rust compare this block directly after normalizing any private
+implementation names into the public storage contract:
+
+```json
+{
+  "storage_reclaim_contract": {
+    "cache_eviction_frees_memory_only": true,
+    "logical_gc_marks_expired_deletable": true,
+    "physical_reclaim_requires_compaction_or_safe_skip": true,
+    "cache_evictions": 2,
+    "tombstone_records": 1,
+    "stale_page_tombstones": 1,
+    "stale_block_tombstones": 1,
+    "stale_pages_rewritten": 1,
+    "stale_pages_skipped": 1,
+    "stale_blocks_rewritten": 1,
+    "stale_blocks_skipped": 1,
+    "reclaimable_bytes": 4096,
+    "compaction_reclaimed_bytes": 2048,
+    "physical_reclaimed_bytes": 2048,
+    "physical_reclaim_errors": 0
+  }
+}
+```
+
+The boolean fields are required evidence, not labels. `cache_eviction_frees_memory_only`
+must be true because cache eviction frees memory without proving durable reclaim.
+`logical_gc_marks_expired_deletable` must be true because logical GC only marks
+records as expired/deletable. `physical_reclaim_requires_compaction_or_safe_skip`
+must be true because physical reclaim is complete only after stale pages/blocks
+are tombstoned and then compacted, rewritten, or safely skipped. If
+`physical_reclaimed_bytes` is positive, reports must also include tombstone
+evidence, stale page/block rewrite-or-skip evidence, positive
+`compaction_reclaimed_bytes`, and zero `physical_reclaim_errors`.
 
 Canonical reclaim ownership:
 

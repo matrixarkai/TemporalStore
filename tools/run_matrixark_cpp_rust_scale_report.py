@@ -213,6 +213,7 @@ STORAGE_LIFECYCLE_TOP_LEVEL_KEYS = [
     "storage_manager_contract",
     "storage_index_contract",
     "storage_cache_contract",
+    "storage_reclaim_contract",
     "storage_read_sequence",
     "storage_cold_scan_sequence",
     "storage_lifecycle_phases",
@@ -409,6 +410,24 @@ STORAGE_RECLAIM_SEMANTICS = [
     "stale_pages_blocks_rewritten_or_skipped",
     "reclaimed_bytes_reported",
     "physical_reclaim_errors_zero",
+]
+
+STORAGE_RECLAIM_CONTRACT_FIELDS = [
+    "cache_eviction_frees_memory_only",
+    "logical_gc_marks_expired_deletable",
+    "physical_reclaim_requires_compaction_or_safe_skip",
+    "cache_evictions",
+    "tombstone_records",
+    "stale_page_tombstones",
+    "stale_block_tombstones",
+    "stale_pages_rewritten",
+    "stale_pages_skipped",
+    "stale_blocks_rewritten",
+    "stale_blocks_skipped",
+    "reclaimable_bytes",
+    "compaction_reclaimed_bytes",
+    "physical_reclaimed_bytes",
+    "physical_reclaim_errors",
 ]
 
 STORAGE_CACHE_LAYER_NAMES = [
@@ -741,6 +760,27 @@ def default_storage_cache_contract(metrics: Json | None = None) -> Json:
     }
 
 
+def default_storage_reclaim_contract(metrics: Json | None = None) -> Json:
+    source = metrics if isinstance(metrics, dict) else {}
+    return {
+        "cache_eviction_frees_memory_only": True,
+        "logical_gc_marks_expired_deletable": True,
+        "physical_reclaim_requires_compaction_or_safe_skip": True,
+        "cache_evictions": int(source.get("cache_evictions") or 0),
+        "tombstone_records": int(source.get("tombstone_records") or 0),
+        "stale_page_tombstones": int(source.get("stale_page_tombstones") or 0),
+        "stale_block_tombstones": int(source.get("stale_block_tombstones") or 0),
+        "stale_pages_rewritten": int(source.get("stale_pages_rewritten") or 0),
+        "stale_pages_skipped": int(source.get("stale_pages_skipped") or 0),
+        "stale_blocks_rewritten": int(source.get("stale_blocks_rewritten") or 0),
+        "stale_blocks_skipped": int(source.get("stale_blocks_skipped") or 0),
+        "reclaimable_bytes": int(source.get("reclaimable_bytes") or 0),
+        "compaction_reclaimed_bytes": int(source.get("compaction_reclaimed_bytes") or 0),
+        "physical_reclaimed_bytes": int(source.get("physical_reclaimed_bytes") or 0),
+        "physical_reclaim_errors": int(source.get("physical_reclaim_errors") or 0),
+    }
+
+
 def storage_lifecycle_report_shape(effective_storage_tuning: Json, metrics: Json | None = None) -> Json:
     return {
         "effective_storage_tuning": dict(effective_storage_tuning),
@@ -754,6 +794,7 @@ def storage_lifecycle_report_shape(effective_storage_tuning: Json, metrics: Json
         "storage_manager_contract": default_storage_manager_contract(metrics),
         "storage_index_contract": default_storage_index_contract(metrics),
         "storage_cache_contract": default_storage_cache_contract(metrics),
+        "storage_reclaim_contract": default_storage_reclaim_contract(metrics),
         "storage_write_sequence": list(STORAGE_WRITE_SEQUENCE_STEPS),
         "storage_read_sequence": list(STORAGE_READ_SEQUENCE_STEPS),
         "storage_cold_scan_sequence": list(STORAGE_COLD_SCAN_SEQUENCE_STEPS),
@@ -816,6 +857,12 @@ def attach_storage_lifecycle_shape(result: Json, effective_storage_tuning: Json 
     normalized_cache_contract = default_storage_cache_contract(metrics)
     normalized_cache_contract.update(cache_contract)
     shaped["storage_cache_contract"] = normalized_cache_contract
+    reclaim_contract = shaped.get("storage_reclaim_contract")
+    if not isinstance(reclaim_contract, dict):
+        reclaim_contract = {}
+    normalized_reclaim_contract = default_storage_reclaim_contract(metrics)
+    normalized_reclaim_contract.update(reclaim_contract)
+    shaped["storage_reclaim_contract"] = normalized_reclaim_contract
     shaped["storage_write_sequence"] = list(STORAGE_WRITE_SEQUENCE_STEPS)
     shaped["storage_read_sequence"] = list(STORAGE_READ_SEQUENCE_STEPS)
     shaped["storage_cold_scan_sequence"] = list(STORAGE_COLD_SCAN_SEQUENCE_STEPS)
