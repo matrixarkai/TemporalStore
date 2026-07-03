@@ -125,9 +125,17 @@ class BackfillMetrics:
             },
         }
 
-    def to_prometheus(self, *, job_id: str, raw_backend: str) -> str:
+    def to_prometheus(self, *, job_id: str, raw_backend: str, source_range: Json | None = None) -> str:
         labels = f'job_id="{job_id}",raw_backend="{raw_backend}"'
+        elapsed_ms = max(0, (self.finished_at_ms or int(time.time() * 1000)) - self.started_at_ms)
+        scan_qps = (self.scanned * 1000.0 / elapsed_ms) if elapsed_ms else 0.0
         lines = [
+            '# HELP matrixark_context_backfill_run_elapsed_ms Backfill run elapsed time in milliseconds.',
+            '# TYPE matrixark_context_backfill_run_elapsed_ms gauge',
+            f'matrixark_context_backfill_run_elapsed_ms{{{labels}}} {elapsed_ms}',
+            '# HELP matrixark_context_backfill_scan_qps Backfill source scan throughput in records per second.',
+            '# TYPE matrixark_context_backfill_scan_qps gauge',
+            f'matrixark_context_backfill_scan_qps{{{labels}}} {round(scan_qps, 3)}',
             '# HELP matrixark_context_backfill_records_total Records processed by context backfill.',
             '# TYPE matrixark_context_backfill_records_total counter',
         ]
@@ -148,6 +156,15 @@ class BackfillMetrics:
             f'matrixark_context_backfill_batches_total{{{labels},phase="target"}} {self.target_batches}',
             f'matrixark_context_backfill_batches_total{{{labels},phase="scan_hash"}} {self.scan_hash_batches}',
         ])
+        if isinstance(source_range, dict):
+            lines.extend([
+                '# HELP matrixark_context_backfill_source_range Source range boundary used by the backfill run.',
+                '# TYPE matrixark_context_backfill_source_range gauge',
+            ])
+            for name in ['effective_start_seq', 'effective_end_seq', 'source_high_watermark_seq', 'source_record_count']:
+                value = source_range.get(name)
+                if value is not None:
+                    lines.append(f'matrixark_context_backfill_source_range{{{labels},boundary="{name}"}} {int(value)}')
         return '\n'.join(lines) + '\n'
 
 
@@ -1207,7 +1224,7 @@ def run_backfill(args: argparse.Namespace) -> Json:
         kv.hset(summary['manifest_key'], args.job_id, json.dumps(manifest, sort_keys=True, separators=(',', ':')))
     if args.prometheus_output:
         Path(args.prometheus_output).write_text(
-            metrics.to_prometheus(job_id=args.job_id, raw_backend=raw_backend),
+            metrics.to_prometheus(job_id=args.job_id, raw_backend=raw_backend, source_range=source_range),
             encoding='utf-8',
         )
     return summary
