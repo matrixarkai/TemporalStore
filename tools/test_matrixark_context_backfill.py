@@ -215,6 +215,20 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertIn('property="source_record_count_estimated"} 1', prom_text)
             self.assertIn('property="user_bounded_end"} 0', prom_text)
             self.assertIn('scan_mode="scan_hash"} 1', prom_text)
+            validate_prom = Path(tmp) / "scan_hash_validate.prom"
+            validation = backfill.run_validate_shadow(self.make_args(
+                path,
+                mode="validate_shadow",
+                batch_size=1,
+                prometheus_output=str(validate_prom),
+            ))
+            self.assertEqual(validation["status"], "ok")
+            validate_prom_text = validate_prom.read_text()
+            self.assertIn("matrixark_context_backfill_validation_source_range", validate_prom_text)
+            self.assertIn('boundary="discovered_record_count"} 2', validate_prom_text)
+            self.assertIn('property="source_record_count_estimated"} 1', validate_prom_text)
+            self.assertIn("matrixark_context_backfill_validation_source_scan_mode", validate_prom_text)
+            self.assertIn('scan_mode="scan_hash"} 1', validate_prom_text)
             cp_key = backfill.checkpoint_key(
                 "matrixark:context_backfill:test",
                 "unit",
@@ -371,6 +385,11 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertIn('status="ok"', prom_text)
             self.assertIn('kind="expected"} 2', prom_text)
             self.assertIn('check="target_records_readable"} 1', prom_text)
+            self.assertIn("matrixark_context_backfill_validation_source_range", prom_text)
+            self.assertIn('boundary="effective_end_seq"} 2', prom_text)
+            self.assertIn('boundary="source_high_watermark_seq"} 1', prom_text)
+            self.assertIn("matrixark_context_backfill_validation_source_scan_mode", prom_text)
+            self.assertIn('scan_mode="record_count"} 1', prom_text)
 
             with self.assertRaises(backfill.BackfillError):
                 backfill.run_activate_shadow(self.make_args(path, mode="activate_shadow", target_prefix="matrixark:context_backfill:candidate"))

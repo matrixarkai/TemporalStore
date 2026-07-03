@@ -1348,6 +1348,33 @@ def validation_to_prometheus(validation: Json) -> str:
     ])
     for name in ['record_count', 'batch_size', 'batches', 'read_errors', 'missing_records']:
         lines.append(f'matrixark_context_backfill_validation_target_scan{{{_prom_labels(**base, stat=name)}}} {int(target_scan.get(name, 0) or 0)}')
+    source_range = validation.get('source_range') if isinstance(validation.get('source_range'), dict) else {}
+    lines.extend([
+        '# HELP matrixark_context_backfill_validation_source_range Source range boundary used during validation.',
+        '# TYPE matrixark_context_backfill_validation_source_range gauge',
+    ])
+    for name in [
+        'effective_start_seq',
+        'effective_end_seq',
+        'source_high_watermark_seq',
+        'source_record_count',
+        'discovered_record_count',
+        'discovered_start_seq',
+        'discovered_high_watermark_seq',
+        'scan_hash_max_empty_shards',
+    ]:
+        value = source_range.get(name)
+        if value is not None:
+            lines.append(f'matrixark_context_backfill_validation_source_range{{{_prom_labels(**base, boundary=name)}}} {int(value)}')
+    lines.extend([
+        '# HELP matrixark_context_backfill_validation_source_range_info Source range boolean metadata observed during validation.',
+        '# TYPE matrixark_context_backfill_validation_source_range_info gauge',
+        f'matrixark_context_backfill_validation_source_range_info{{{_prom_labels(**base, property="source_record_count_estimated")}}} {1 if source_range.get("source_record_count_estimated") else 0}',
+        f'matrixark_context_backfill_validation_source_range_info{{{_prom_labels(**base, property="user_bounded_end")}}} {1 if source_range.get("user_bounded_end") else 0}',
+        '# HELP matrixark_context_backfill_validation_source_scan_mode Source scan mode observed during validation.',
+        '# TYPE matrixark_context_backfill_validation_source_scan_mode gauge',
+        f'matrixark_context_backfill_validation_source_scan_mode{{{_prom_labels(**base, scan_mode=str(source_range.get("scan_mode") or "unknown"))}}} 1',
+    ])
     return '\n'.join(lines) + '\n'
 
 

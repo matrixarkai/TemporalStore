@@ -818,9 +818,11 @@ matrixark_context_backfill_validation_status{job_id="...",mode="validate_shadow"
 matrixark_context_backfill_validation_records{job_id="...",kind="expected"}
 matrixark_context_backfill_validation_check{job_id="...",check="target_records_readable"}
 matrixark_context_backfill_validation_target_scan{job_id="...",stat="read_errors"}
+matrixark_context_backfill_validation_source_range{job_id="...",boundary="effective_end_seq"}
+matrixark_context_backfill_validation_source_scan_mode{job_id="...",scan_mode="record_count"}
 ```
 
-`shadow` and `in_place` runs emit elapsed time, scan QPS, record counters, serving-record counters, batch counters, and source-range boundary gauges. `validate_shadow` emits validation status, expected/actual/dead-letter counts, per-check pass/fail gauges, and target scan stats when `--prometheus-output` is set.
+`shadow` and `in_place` runs emit elapsed time, scan QPS, record counters, serving-record counters, batch counters, and source-range boundary gauges. `validate_shadow` emits validation status, expected/actual/dead-letter counts, per-check pass/fail gauges, target scan stats, source-range boundary gauges, source-range boolean metadata, and the source scan mode when `--prometheus-output` is set. Dashboards should compare the validation source range with the target scan state before activation or incremental repair promotion.
 
 Recommended production alerts:
 
