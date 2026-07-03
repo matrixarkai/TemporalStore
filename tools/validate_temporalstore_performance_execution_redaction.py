@@ -36,6 +36,10 @@ REQUIRED_RUN_WORKLOAD_FLAGS = (
     "--require-perf-parity",
     "--require-phase-scale-matrix",
 )
+REQUIRED_POST_IMPORT_VALIDATORS = (
+    ("python", "tools/validate_temporalstore_cpp_rust_goal_parity.py"),
+    ("python", "tools/validate_storage_engine_9_phase_parity.py", "--loops", "9"),
+)
 REQUIRED_PHASE_SCALE_COVERAGE = {
     "events": [1000, 10000, 100000],
     "retrieve_workers": [4, 8, 16, 32],
@@ -121,6 +125,34 @@ def _validate_phase_scale_coverage(path: Path, data: dict[str, Any]) -> list[str
     return failures
 
 
+def _validate_post_import_validators(path: Path, data: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    results = data.get("results") if isinstance(data.get("results"), list) else []
+    import_passed = any(
+        isinstance(row, dict)
+        and row.get("step") == "import_evidence"
+        and row.get("status") == "passed"
+        for row in results
+    )
+    if not import_passed:
+        return failures
+    post_validators = {
+        tuple(row.get("argv"))
+        for row in results
+        if isinstance(row, dict)
+        and row.get("step") == "post_import_validation"
+        and row.get("status") == "passed"
+        and isinstance(row.get("argv"), list)
+        and all(isinstance(item, str) for item in row.get("argv"))
+    }
+    for required in REQUIRED_POST_IMPORT_VALIDATORS:
+        if required not in post_validators:
+            failures.append(
+                f"{path}: missing passed post_import_validation {list(required)!r}"
+            )
+    return failures
+
+
 def validate_artifact(path: Path) -> list[str]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -136,6 +168,7 @@ def validate_artifact(path: Path) -> list[str]:
     failures.extend(_validate_sensitive_flag_placeholders(path, data))
     failures.extend(_validate_run_workload_flags(path, data))
     failures.extend(_validate_phase_scale_coverage(path, data))
+    failures.extend(_validate_post_import_validators(path, data))
     return failures
 
 
