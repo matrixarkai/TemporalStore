@@ -793,7 +793,13 @@ matrixark_context_backfill_serving_records_total{job_id="...",type="context_even
 matrixark_context_backfill_batches_total{job_id="...",phase="source"}
 matrixark_context_backfill_batches_total{job_id="...",phase="target"}
 matrixark_context_backfill_batches_total{job_id="...",phase="scan_hash"}
+matrixark_context_backfill_validation_status{job_id="...",mode="validate_shadow",status="ok"}
+matrixark_context_backfill_validation_records{job_id="...",kind="expected"}
+matrixark_context_backfill_validation_check{job_id="...",check="target_records_readable"}
+matrixark_context_backfill_validation_target_scan{job_id="...",stat="read_errors"}
 ```
+
+`shadow` and `in_place` runs emit record, serving-record, and batch metrics. `validate_shadow` emits validation status, expected/actual/dead-letter counts, per-check pass/fail gauges, and target scan stats when `--prometheus-output` is set.
 
 Recommended production alerts:
 

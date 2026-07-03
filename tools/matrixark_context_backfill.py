@@ -1236,6 +1236,51 @@ def expected_serving_type_counts(metrics: Json) -> Json:
     return dict(sorted(counts.items()))
 
 
+def _prom_label_value(value: Any) -> str:
+    return str(value).replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
+
+
+def _prom_labels(**labels: Any) -> str:
+    return ','.join(f'{key}="{_prom_label_value(value)}"' for key, value in labels.items())
+
+
+def validation_to_prometheus(validation: Json) -> str:
+    job_id = str(validation.get('job_id') or '')
+    raw_backend = str(validation.get('raw_backend') or '')
+    target_prefix = str(validation.get('target_prefix') or '')
+    mode = str(validation.get('mode') or 'validate_shadow')
+    base = {
+        'job_id': job_id,
+        'raw_backend': raw_backend,
+        'target_prefix': target_prefix,
+        'mode': mode,
+    }
+    lines = [
+        '# HELP matrixark_context_backfill_validation_status Validation status for a shadow target.',
+        '# TYPE matrixark_context_backfill_validation_status gauge',
+        f'matrixark_context_backfill_validation_status{{{_prom_labels(**base, status=str(validation.get("status") or "unknown"))}}} 1',
+        '# HELP matrixark_context_backfill_validation_records Record counts observed during validation.',
+        '# TYPE matrixark_context_backfill_validation_records gauge',
+        f'matrixark_context_backfill_validation_records{{{_prom_labels(**base, kind="expected")}}} {int(validation.get("expected_records", 0) or 0)}',
+        f'matrixark_context_backfill_validation_records{{{_prom_labels(**base, kind="actual")}}} {int(validation.get("actual_records", 0) or 0)}',
+        f'matrixark_context_backfill_validation_records{{{_prom_labels(**base, kind="dead_letter")}}} {int(validation.get("dead_letters", 0) or 0)}',
+        '# HELP matrixark_context_backfill_validation_check Validation check result, 1 for pass and 0 for fail.',
+        '# TYPE matrixark_context_backfill_validation_check gauge',
+    ]
+    checks = validation.get('checks') if isinstance(validation.get('checks'), dict) else {}
+    for check_name, passed in sorted(checks.items()):
+        lines.append(f'matrixark_context_backfill_validation_check{{{_prom_labels(**base, check=check_name)}}} {1 if passed else 0}')
+    target_state = validation.get('target_state') if isinstance(validation.get('target_state'), dict) else {}
+    target_scan = target_state.get('serving_type_count_scan') if isinstance(target_state.get('serving_type_count_scan'), dict) else {}
+    lines.extend([
+        '# HELP matrixark_context_backfill_validation_target_scan Target serving-record scan stats observed during validation.',
+        '# TYPE matrixark_context_backfill_validation_target_scan gauge',
+    ])
+    for name in ['record_count', 'batch_size', 'batches', 'read_errors', 'missing_records']:
+        lines.append(f'matrixark_context_backfill_validation_target_scan{{{_prom_labels(**base, stat=name)}}} {int(target_scan.get(name, 0) or 0)}')
+    return '\n'.join(lines) + '\n'
+
+
 def validation_audit_fields(validation: Json | None, *, skip_validation: bool = False) -> Json:
     if not isinstance(validation, dict):
         return {
@@ -1294,7 +1339,7 @@ def run_validate_shadow(args: argparse.Namespace) -> Json:
         and dead_letters == 0
         and int(expected_summary['metrics']['failed']) == 0
     )
-    return {
+    summary = {
         'status': 'ok' if passed else 'failed',
         'job_id': args.job_id,
         'mode': 'validate_shadow',
@@ -1323,6 +1368,9 @@ def run_validate_shadow(args: argparse.Namespace) -> Json:
             'source_scan_had_no_failures': int(expected_summary['metrics']['failed']) == 0,
         },
     }
+    if args.prometheus_output:
+        Path(args.prometheus_output).write_text(validation_to_prometheus(summary), encoding='utf-8')
+    return summary
 
 
 def run_activate_shadow(args: argparse.Namespace) -> Json:

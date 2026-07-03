@@ -309,7 +309,13 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             summary = backfill.run_backfill(self.make_args(path, target_prefix="matrixark:context_backfill:candidate"))
             self.assertEqual(summary["metrics"]["written"], 2)
 
-            validation = backfill.run_validate_shadow(self.make_args(path, mode="validate_shadow", target_prefix="matrixark:context_backfill:candidate"))
+            prom = Path(tmp) / "validate.prom"
+            validation = backfill.run_validate_shadow(self.make_args(
+                path,
+                mode="validate_shadow",
+                target_prefix="matrixark:context_backfill:candidate",
+                prometheus_output=str(prom),
+            ))
             self.assertEqual(validation["status"], "ok")
             self.assertEqual(validation["expected_records"], 2)
             self.assertEqual(validation["actual_records"], 2)
@@ -323,6 +329,11 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(validation["target_state"]["dead_letter_count"], 0)
             self.assertEqual(validation["target_state"]["serving_type_counts"], {"context_event": 2})
             self.assertTrue(validation["checks"]["exact_serving_type_counts_match"])
+            prom_text = prom.read_text()
+            self.assertIn("matrixark_context_backfill_validation_status", prom_text)
+            self.assertIn('status="ok"', prom_text)
+            self.assertIn('kind="expected"} 2', prom_text)
+            self.assertIn('check="target_records_readable"} 1', prom_text)
 
             with self.assertRaises(backfill.BackfillError):
                 backfill.run_activate_shadow(self.make_args(path, mode="activate_shadow", target_prefix="matrixark:context_backfill:candidate"))
@@ -444,7 +455,8 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             target.append_many([{"record_type": "context_event", "event_id_hash": 1, "idempotency_key": "event-1"}])
             kv.put_string("matrixark:context_backfill:test:record_count", "2")
 
-            validation = backfill.run_validate_shadow(self.make_args(path, mode="validate_shadow", batch_size=2))
+            prom = Path(tmp) / "validate_failed.prom"
+            validation = backfill.run_validate_shadow(self.make_args(path, mode="validate_shadow", batch_size=2, prometheus_output=str(prom)))
 
             self.assertEqual(validation["status"], "failed")
             self.assertEqual(validation["expected_records"], 2)
@@ -453,6 +465,10 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(validation["target_state"]["serving_type_count_scan"]["read_errors"], 1)
             self.assertEqual(validation["target_state"]["serving_type_count_scan"]["missing_records"], 1)
             self.assertFalse(validation["checks"]["target_records_readable"])
+            prom_text = prom.read_text()
+            self.assertIn('status="failed"', prom_text)
+            self.assertIn('check="target_records_readable"} 0', prom_text)
+            self.assertIn('stat="read_errors"} 1', prom_text)
 
 
     def test_incremental_repair_promotes_bounded_range_to_active_prefix(self):
