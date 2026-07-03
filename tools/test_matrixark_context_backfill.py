@@ -8,6 +8,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import matrixark_context_backfill as backfill
 
@@ -574,6 +575,10 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(repaired["validation_skip_reason"], "")
             self.assertEqual(repaired["validation_source_range"]["effective_start_seq"], 1)
             self.assertEqual(repaired["validation_target_state"]["target_prefix"], "matrixark:context_repair:p1")
+            self.assertEqual(repaired["promotion_consistency"]["status"], "ok")
+            self.assertTrue(repaired["promotion_consistency"]["checks"]["promotion_had_no_failures"])
+            self.assertTrue(repaired["promotion_consistency"]["checks"]["promotion_source_range_matches_validation"])
+            self.assertTrue(repaired["promotion_consistency"]["checks"]["promotion_covered_expected_records"])
 
             kv_after = backfill.LocalJsonKV(path)
             self.assertEqual(kv_after.get_string("matrixark:context:active_prefix"), "matrixark:context:active")
@@ -582,13 +587,84 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertFalse(repair_audit["validation_skipped"])
             self.assertEqual(repair_audit["validation_skip_reason"], "")
             self.assertEqual(repair_audit["validation_target_state"]["record_count"], 1)
+            self.assertEqual(repair_audit["promotion_consistency"]["status"], "ok")
             self.assertIn("matrixark:context:active", json.dumps(repair_audit, sort_keys=True))
             active_records = read_target_records(kv_after, "matrixark:context:active")
             self.assertEqual([record["event_id_hash"] for record in active_records], [2])
 
             retried = backfill.run_incremental_repair(repair_args)
             self.assertEqual(retried["promotion"]["metrics"]["duplicate"], 1)
+            self.assertEqual(retried["promotion_consistency"]["status"], "ok")
             self.assertEqual(backfill.LocalJsonKV(path).get_string("matrixark:context:active:record_count"), "1")
+
+    def test_incremental_repair_rejects_inconsistent_promotion(self):
+        partial = {"enabled": False, "record_types": [], "tenant_ids": [], "user_ids": [], "session_ids": [], "filter_json": {}}
+        validation = {
+            "expected_records": 1,
+            "partial": partial,
+            "source_range": {
+                "effective_start_seq": 1,
+                "effective_end_seq": 2,
+                "source_high_watermark_seq": 1,
+                "source_record_count": 2,
+                "scan_mode": "record_count",
+                "user_bounded_end": True,
+            },
+        }
+        promotion = {
+            "partial": partial,
+            "source_range": {
+                "effective_start_seq": 1,
+                "effective_end_seq": 3,
+                "source_high_watermark_seq": 2,
+                "source_record_count": 3,
+                "scan_mode": "record_count",
+                "user_bounded_end": True,
+            },
+            "metrics": {"written": 1, "duplicate": 0, "failed": 0, "dead_letter": 0},
+        }
+
+        consistency = backfill.incremental_promotion_consistency(validation, promotion, partial)
+
+        self.assertEqual(consistency["status"], "failed")
+        self.assertFalse(consistency["checks"]["promotion_source_range_matches_validation"])
+
+    def test_incremental_repair_raises_when_promotion_has_failures(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            kv.put_string("matrixark:context:active_prefix", "matrixark:context:active")
+            args = self.make_args(
+                path,
+                mode="incremental_repair",
+                target_prefix="matrixark:context_repair:p1",
+                start_seq=1,
+                end_seq=2,
+                confirm_incremental_repair="YES",
+                resume=False,
+            )
+            validation = {
+                "status": "ok",
+                "expected_records": 1,
+                "partial": backfill.build_partial_spec(args),
+                "source_range": {
+                    "effective_start_seq": 1,
+                    "effective_end_seq": 2,
+                    "source_high_watermark_seq": 1,
+                    "source_record_count": 2,
+                    "scan_mode": "record_count",
+                    "user_bounded_end": True,
+                },
+                "target_state": {},
+            }
+            promotion = {
+                "partial": backfill.build_partial_spec(args),
+                "source_range": validation["source_range"],
+                "metrics": {"written": 0, "duplicate": 0, "failed": 1, "dead_letter": 1},
+            }
+            with patch.object(backfill, "run_validate_shadow", return_value=validation), patch.object(backfill, "run_backfill", return_value=promotion):
+                with self.assertRaisesRegex(backfill.BackfillError, "promotion consistency failed"):
+                    backfill.run_incremental_repair(args)
 
     def test_incremental_repair_skip_validation_is_explicitly_audited(self):
         with tempfile.TemporaryDirectory() as tmp:

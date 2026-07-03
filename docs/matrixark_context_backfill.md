@@ -687,11 +687,14 @@ matrixark:context:active_prefix:incremental_repair_audit field <job_id>
 
 The active prefix pointer remains unchanged. The active target receives newly materialized serving records for the same source range and partial spec used by the shadow repair. Target-side idempotency keys make the promotion retryable: rerunning the same command should increase `duplicate`, not append a second copy.
 
+`incremental_repair` also runs a promotion consistency gate after writing to the active prefix. The gate fails the command if promotion reports failures or dead letters, if the promotion source range differs from the validated shadow source range, if the partial filter differs from the validated shadow filter, or if the active promotion does not cover the expected records through either new writes or idempotent duplicates. The returned JSON and audit record include `promotion_consistency` with per-check booleans for incident review.
+
 ### Incremental Postchecks
 
 After promotion:
 
 - inspect the incremental repair audit entry
+- confirm `promotion_consistency.status == "ok"`
 - confirm active target `record_count` increased only by the expected new records
 - rerun a read/query smoke for the repaired tenant, session, or sequence range
 - compare before/after retrieval quality for representative context-pack refs
@@ -878,7 +881,7 @@ Activation audit records include both the nested validation response and flatten
 6. Inspect incremental repair audit.
 7. Retry the same command if needed; idempotency prevents duplicate active appends.
 
-Incremental repair audit records also include `validation_status`, `validation_skipped`, `validation_skip_reason`, `validation_source_range`, and `validation_target_state` alongside promotion metrics. Use those fields to prove which shadow repair prefix was validated before replaying into the active prefix, or to make an emergency validation bypass explicit in the audit trail.
+Incremental repair audit records also include `validation_status`, `validation_skipped`, `validation_skip_reason`, `validation_source_range`, `validation_target_state`, `promotion_consistency`, and promotion metrics. Use those fields to prove which shadow repair prefix was validated before replaying into the active prefix, whether the active promotion used the same source range and partial filter, or to make an emergency validation bypass explicit in the audit trail.
 
 ### Partition Restore Runbook
 
