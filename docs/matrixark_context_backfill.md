@@ -540,7 +540,7 @@ Every successful `activate_shadow` stores the old active prefix under:
 <active-prefix-key>:previous:<activation-job-id>
 ```
 
-If a newly activated shadow needs to be backed out, use `rollback_activation` with the activation job id. The command is metadata-only: it restores the active prefix pointer and writes a rollback audit record. It does not delete the shadow prefix or rewrite source raw records.
+If a newly activated shadow needs to be backed out, use `rollback_activation` with the activation job id. The command is metadata-only: it restores the active prefix pointer and writes a rollback audit record. It does not delete the shadow prefix or rewrite source raw records. By default rollback verifies that the saved previous prefix is non-empty, readable, and has no dead letters. If the previous prefix was intentionally evacuated or is being restored separately, `--confirm-rollback-target-state=YES` is required and audited with `rollback_target_state_confirmed=true` plus the inspected `rollback_target_state`.
 
 Dry run first:
 
