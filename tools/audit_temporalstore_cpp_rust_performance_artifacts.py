@@ -21,6 +21,8 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ARTIFACT_ROOT = ROOT / "docs" / "benchmarks"
 RUNNER = "tools/run_matrixark_cpp_rust_scale_report.py"
 IMPORTER = "tools/import_temporalstore_cpp_rust_performance_evidence.py"
+GOAL_VALIDATOR = "tools/validate_temporalstore_cpp_rust_goal_parity.py"
+NINE_PHASE_VALIDATOR = "tools/validate_storage_engine_9_phase_parity.py"
 PHASE_SCALE_COVERAGE = {
     "events": [1000, 10000, 100000],
     "retrieve_workers": [4, 8, 16, 32],
@@ -80,6 +82,39 @@ def _import_command(workload: str) -> list[str]:
         f"{_artifact_dir(workload)}/comparison.json",
         "--validate",
     ]
+
+
+def _next_required_workflow(next_required_runs: list[dict[str, Any]]) -> dict[str, Any]:
+    commands: list[dict[str, Any]] = []
+    for item in next_required_runs:
+        commands.append(
+            {
+                "step": "run_workload",
+                "workload": item["workload"],
+                "reason": item["reason"],
+                "argv": item["command"],
+            }
+        )
+        commands.append(
+            {
+                "step": "import_evidence",
+                "workload": item["workload"],
+                "reason": item["reason"],
+                "argv": item["import_command"],
+            }
+        )
+    return {
+        "description": (
+            "Run each workload command, import its comparison.json, then rerun the fail-closed "
+            "goal and 9-phase validators. Missing-candidate workloads are ordered before blocked "
+            "workloads."
+        ),
+        "commands": commands,
+        "post_import_validation": [
+            ["python", GOAL_VALIDATOR],
+            ["python", NINE_PHASE_VALIDATOR, "--loops", "9"],
+        ],
+    }
 
 
 def audit_report(base_matrix: dict[str, Any], report_path: Path) -> dict[str, Any]:
@@ -243,6 +278,7 @@ def audit_artifacts(artifact_root: Path, matrix_path: Path) -> dict[str, Any]:
         "blocked_required_workloads": blocked_required_workloads,
         "required_workload_status": required_workload_status,
         "next_required_runs": next_required_runs,
+        "next_required_workflow": _next_required_workflow(next_required_runs),
         "workload_coverage": coverage,
         "entries": with_workloads,
     }

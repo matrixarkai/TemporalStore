@@ -65,6 +65,19 @@ class PerformanceArtifactAuditTest(unittest.TestCase):
         self.assertEqual(next_runs[-1]["reason"], "blocked_no_importable")
         self.assertIn("message_qps_ratio_below_0.8", next_runs[-1]["blockers"])
         self.assertIn("1000", next_runs[-1]["command"])
+        workflow = audit["next_required_workflow"]
+        self.assertEqual(workflow["commands"][0]["step"], "run_workload")
+        self.assertEqual(workflow["commands"][0]["workload"], "10K_event_ingestion")
+        self.assertEqual(workflow["commands"][1]["step"], "import_evidence")
+        self.assertEqual(workflow["commands"][1]["workload"], "10K_event_ingestion")
+        self.assertIn(
+            ["python", "tools/validate_temporalstore_cpp_rust_goal_parity.py"],
+            workflow["post_import_validation"],
+        )
+        self.assertIn(
+            ["python", "tools/validate_storage_engine_9_phase_parity.py", "--loops", "9"],
+            workflow["post_import_validation"],
+        )
         blocked = audit["entries"][0]["blocked_workloads"][0]
         self.assertEqual(blocked["workload"], "1K_event_ingestion")
         self.assertIn("message_qps_ratio_below_0.8", blocked["open_blockers"])
