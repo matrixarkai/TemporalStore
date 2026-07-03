@@ -63,6 +63,32 @@ class PerformanceParityValidatorTest(unittest.TestCase):
             failures,
         )
 
+    def test_qps_latency_and_cache_hit_rate_have_real_bounds(self) -> None:
+        failures: list[str] = []
+        row = {
+            "workload": "1K_event_ingestion",
+            "cpp": {
+                "message_qps": 0,
+                "retrieve_qps": 0,
+                "p50_ms": 0,
+                "p95_ms": 0,
+                "p99_ms": 0,
+                "cache_hit_rate": 1.1,
+                "append_watermark": 1,
+                "compaction_watermark": 0,
+                "selected_ref_parity": True,
+            },
+        }
+
+        _validate_metric_block(row, "cpp", failures)
+
+        self.assertIn("1K_event_ingestion cpp.message_qps must be positive", failures)
+        self.assertIn("1K_event_ingestion cpp.retrieve_qps must be positive", failures)
+        self.assertIn("1K_event_ingestion cpp.p50_ms must be positive", failures)
+        self.assertIn("1K_event_ingestion cpp.p95_ms must be positive", failures)
+        self.assertIn("1K_event_ingestion cpp.p99_ms must be positive", failures)
+        self.assertIn("1K_event_ingestion cpp.cache_hit_rate must be <= 1", failures)
+
     def test_qps_ratios_are_required_for_completed_rows(self) -> None:
         failures: list[str] = []
         row = {
