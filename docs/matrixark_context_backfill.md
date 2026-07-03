@@ -181,7 +181,7 @@ python3 tools/matrixark_context_backfill.py \
 
 `chunk_plan.execution_plan` groups independent shadow and validation commands into waves of up to `--plan-parallelism` windows. Treat those waves as the fast preparation phase. The same plan also emits `promotion_sequence`, which should be run one command at a time in sequence because it updates the active serving prefix.
 
-When `--plan-output-dir` is set, the planner writes `plan.json`, `shadow_wave_*.sh`, `validate_wave_*.sh`, and `promote_serial.sh`. The wave scripts run independent chunk work in parallel inside each wave. The promotion script runs repairs sequentially. Review `plan.json` and the generated scripts before execution, then archive the directory with the recovery ticket or release evidence.
+When `--plan-output-dir` is set, the planner writes `plan.json`, `artifact_manifest.json`, `shadow_wave_*.sh`, `validate_wave_*.sh`, and `promote_serial.sh`. The wave scripts run independent chunk work in parallel inside each wave. The promotion script runs repairs sequentially. The manifest records SHA-256 and size for each generated file. The planner refuses to write into a non-empty output directory unless `--confirm-plan-output-overwrite=YES` is supplied, which prevents accidentally mixing evidence from different recovery runs. Review `plan.json` and the generated scripts before execution, then archive the directory with the recovery ticket or release evidence.
 
 ## Quick Start: Full Shadow Backfill
 
