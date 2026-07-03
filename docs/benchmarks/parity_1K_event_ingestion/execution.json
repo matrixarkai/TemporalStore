@@ -47,7 +47,32 @@
         "selected_ref_parity=true",
         "ratios within configured thresholds"
       ],
-      "next_run_hint_source": "matrix"
+      "next_run_hint_source": "matrix",
+      "phase_scale_coverage_required": {
+        "events": [
+          1000,
+          10000,
+          100000
+        ],
+        "retrieve_workers": [
+          4,
+          8,
+          16,
+          32
+        ],
+        "resource_imports": [
+          "large_pdf",
+          "large_csv",
+          "repo_directory"
+        ],
+        "contextmemory_features": [
+          "resources",
+          "skills",
+          "cross_session_retrieval",
+          "compact_indexes",
+          "audit_light_telemetry"
+        ]
+      }
     },
     {
       "step": "import_evidence",

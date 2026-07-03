@@ -73,6 +73,18 @@ class PerformanceArtifactAuditTest(unittest.TestCase):
                                 "skip_reason": "workflow_command_timeout",
                                 "artifact_dir": "docs/benchmarks/parity_1K_event_ingestion",
                                 "comparison_path": "docs/benchmarks/parity_1K_event_ingestion/comparison.json",
+                                "phase_scale_coverage_required": {
+                                    "events": [1000, 10000, 100000],
+                                    "retrieve_workers": [4, 8, 16, 32],
+                                    "resource_imports": ["large_pdf", "large_csv", "repo_directory"],
+                                    "contextmemory_features": [
+                                        "resources",
+                                        "skills",
+                                        "cross_session_retrieval",
+                                        "compact_indexes",
+                                        "audit_light_telemetry",
+                                    ],
+                                },
                                 "required_same_config_fields": ["dataset", "storage_mode"],
                                 "required_result": ["same-config C++ and Rust comparison.json with passed backends"],
                                 "next_run_hint_source": "audit_default",
@@ -110,6 +122,8 @@ class PerformanceArtifactAuditTest(unittest.TestCase):
         self.assertEqual(failed_step["skip_reason"], "workflow_command_timeout")
         self.assertEqual(failed_step["artifact_dir"], "docs/benchmarks/parity_1K_event_ingestion")
         self.assertEqual(failed_step["comparison_path"], "docs/benchmarks/parity_1K_event_ingestion/comparison.json")
+        self.assertEqual(failed_step["phase_scale_coverage_required"]["events"], [1000, 10000, 100000])
+        self.assertEqual(failed_step["phase_scale_coverage_required"]["retrieve_workers"], [4, 8, 16, 32])
         self.assertEqual(failed_step["required_same_config_fields"], ["dataset", "storage_mode"])
         self.assertEqual(
             failed_step["required_result"],

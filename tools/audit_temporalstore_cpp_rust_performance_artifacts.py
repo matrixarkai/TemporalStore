@@ -228,6 +228,7 @@ def _load_execution_artifact(path: Path) -> dict[str, Any] | None:
             "skip_reason": row.get("skip_reason"),
             "artifact_dir": row.get("artifact_dir"),
             "comparison_path": row.get("comparison_path"),
+            "phase_scale_coverage_required": row.get("phase_scale_coverage_required"),
             "required_same_config_fields": row.get("required_same_config_fields") or [],
             "required_result": row.get("required_result") or [],
             "next_run_hint_source": row.get("next_run_hint_source"),
