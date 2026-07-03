@@ -159,6 +159,24 @@ python3 tools/matrixark_context_backfill.py \
 
 The returned JSON includes `status`, `source_range`, `planned_source_records`, `resume_state`, `target_state`, `safety_checks`, `required_confirmations`, and `readiness_blockers`. `status="ok"` means the plan inspection itself is consistent. `status="needs_confirmation"` means the planned write path would need an explicit guardrail such as `--confirm-in-place=YES`, `--confirm-active-target=YES`, or an active-prefix precondition before mutation.
 
+For large ranges, add `--plan-window-size=<records>` to emit bounded execution windows:
+
+```bash
+python3 tools/matrixark_context_backfill.py \
+  --mode=plan \
+  --source-prefix=matrixark:mcp:raw_ingestion \
+  --raw-backend=matrixkv \
+  --target-prefix=matrixark:context_backfill:full-20260704 \
+  --job-id=full-20260704 \
+  --start-seq=0 \
+  --end-seq=5000000 \
+  --batch-size=2048 \
+  --plan-window-size=250000 \
+  --plan-max-windows=8
+```
+
+`chunk_plan.windows[]` includes ready-to-run argument lists for `shadow`, `validate_shadow`, and `incremental_repair`. Shared target-prefix writes should be serialized. For faster preparation, use each window's independent `parallel_shadow_prefix` to build and validate chunk shadows concurrently, then serialize active-prefix promotion with `incremental_repair` so active serving state remains deterministic.
+
 ## Quick Start: Full Shadow Backfill
 
 Use the wrapper for Ubuntu 22 local or server-style operation:
