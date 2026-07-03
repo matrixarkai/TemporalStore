@@ -225,6 +225,86 @@ def run_cutover_gate(args: argparse.Namespace) -> Json:
     return {"status": status, "results": results}
 
 
+def run_dead_letter_gate(args: argparse.Namespace) -> Json:
+    results: list[Json] = []
+    source_prefix = "matrixark:mcp:readiness_dead_letter"
+    records = max(3, int(args.records))
+    missing_sequence = 1
+    for raw_backend in ["temporalstore", "matrixkv"]:
+        with tempfile.TemporaryDirectory(prefix=f"matrixark_backfill_dead_letter_{raw_backend}_") as tmp:
+            kv_path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(kv_path)
+            bench.seed_raw_log(kv, prefix=source_prefix, records=records, payload_bytes=args.payload_bytes)
+            shard = missing_sequence // backfill.DIRECT_RECORD_LOG_SHARD_SIZE
+            offset = missing_sequence % backfill.DIRECT_RECORD_LOG_SHARD_SIZE
+            kv.data["hashes"].get(f"{source_prefix}:records:{shard:06d}", {}).pop(f"{offset:020d}", None)
+            kv._flush()
+
+            target_prefix = f"matrixark:context_backfill:readiness_dead_letter:{raw_backend}"
+            job_id = f"readiness-dead-letter-{raw_backend}"
+            run_args = bench.make_backfill_args(
+                kv_path=kv_path,
+                source_prefix=source_prefix,
+                target_prefix=target_prefix,
+                raw_backend=raw_backend,
+                job_id=job_id,
+                batch_size=args.batch_size,
+            )
+            summary = backfill.run_backfill(run_args)
+            validation = backfill.run_validate_shadow(bench.make_backfill_args(
+                kv_path=kv_path,
+                source_prefix=source_prefix,
+                target_prefix=target_prefix,
+                raw_backend=raw_backend,
+                job_id=job_id,
+                batch_size=args.batch_size,
+                mode="validate_shadow",
+            ))
+            kv_after = backfill.LocalJsonKV(kv_path)
+            dead_letter_count = kv_after.get_string(f"{target_prefix}:dead_letter_count")
+            dead_letter_preview = kv_after.hget(f"{target_prefix}:dead_letter", "00000000000000000000")
+            partial = backfill.build_partial_spec(run_args)
+            checkpoint_state = backfill.read_checkpoint_state(
+                kv_after,
+                backfill.checkpoint_key(
+                    job_id=job_id,
+                    source_prefix=source_prefix,
+                    target_prefix=target_prefix,
+                    raw_backend=raw_backend,
+                    partial=partial,
+                ),
+            )
+            results.append({
+                "raw_backend": raw_backend,
+                "records": records,
+                "missing_sequence": missing_sequence,
+                "status": summary.get("status"),
+                "failed": int(summary.get("metrics", {}).get("failed", 0) or 0),
+                "dead_letter": int(summary.get("metrics", {}).get("dead_letter", 0) or 0),
+                "written": int(summary.get("metrics", {}).get("written", 0) or 0),
+                "dead_letter_count": int(dead_letter_count or 0),
+                "dead_letter_preview_has_error": "missing sharded record" in dead_letter_preview,
+                "checkpoint_last_sequence": checkpoint_state.get("checkpoint_last_sequence"),
+                "validation_status": validation.get("status"),
+                "validation_no_shadow_dead_letters": validation.get("checks", {}).get("no_shadow_dead_letters"),
+                "validation_source_scan_had_no_failures": validation.get("checks", {}).get("source_scan_had_no_failures"),
+            })
+    status = "ok" if all(
+        item["status"] == "ok"
+        and item["failed"] == 1
+        and item["dead_letter"] == 1
+        and item["dead_letter_count"] == 1
+        and item["dead_letter_preview_has_error"]
+        and item["written"] == item["records"] - 1
+        and item["checkpoint_last_sequence"] == item["records"] - 1
+        and item["validation_status"] == "failed"
+        and item["validation_no_shadow_dead_letters"] is False
+        and item["validation_source_scan_had_no_failures"] is False
+        for item in results
+    ) else "failed"
+    return {"status": status, "results": results}
+
+
 def run_resume_gate(args: argparse.Namespace) -> Json:
     results: list[Json] = []
     source_prefix = "matrixark:mcp:readiness_resume"
@@ -418,6 +498,19 @@ def cutover_checks(summary: Json) -> list[Json]:
     ]
 
 
+def dead_letter_checks(summary: Json) -> list[Json]:
+    results = summary.get("results") if isinstance(summary.get("results"), list) else []
+    return [
+        check("dead_letter_gate_status_ok", summary.get("status") == "ok"),
+        check("dead_letter_gate_covers_temporalstore_and_matrixkv", {item.get("raw_backend") for item in results} == {"temporalstore", "matrixkv"}),
+        check("dead_letter_gate_records_failure", all(int(item.get("failed", 0) or 0) == 1 for item in results)),
+        check("dead_letter_gate_writes_dead_letter", all(int(item.get("dead_letter_count", 0) or 0) == 1 and bool(item.get("dead_letter_preview_has_error")) for item in results)),
+        check("dead_letter_gate_continues_good_records", all(int(item.get("written", 0) or 0) == int(item.get("records", -1) or -1) - 1 for item in results)),
+        check("dead_letter_gate_checkpoint_reaches_end", all(int(item.get("checkpoint_last_sequence", -1) or -1) == int(item.get("records", -2) or -2) - 1 for item in results)),
+        check("dead_letter_gate_validation_rejects_shadow", all(item.get("validation_status") == "failed" for item in results)),
+    ]
+
+
 def resume_checks(summary: Json) -> list[Json]:
     results = summary.get("results") if isinstance(summary.get("results"), list) else []
     return [
@@ -446,6 +539,7 @@ def run_readiness(args: argparse.Namespace) -> Json:
     benchmark_summary: Json = {}
     baseline_summary: Json = {}
     cutover_summary: Json = {}
+    dead_letter_summary: Json = {}
     resume_summary: Json = {}
     prometheus_summary: Json = {}
     if not args.skip_local_benchmark:
@@ -457,6 +551,9 @@ def run_readiness(args: argparse.Namespace) -> Json:
     if not args.skip_cutover_gate:
         cutover_summary = run_cutover_gate(args)
         checks.extend(cutover_checks(cutover_summary))
+    if not args.skip_dead_letter_gate:
+        dead_letter_summary = run_dead_letter_gate(args)
+        checks.extend(dead_letter_checks(dead_letter_summary))
     if not args.skip_resume_gate:
         resume_summary = run_resume_gate(args)
         checks.extend(resume_checks(resume_summary))
@@ -470,6 +567,7 @@ def run_readiness(args: argparse.Namespace) -> Json:
         "benchmark": benchmark_summary,
         "baseline_gate": baseline_summary,
         "cutover_gate": cutover_summary,
+        "dead_letter_gate": dead_letter_summary,
         "resume_gate": resume_summary,
         "prometheus_gate": prometheus_summary,
     }
@@ -486,6 +584,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-local-benchmark", action="store_true")
     parser.add_argument("--skip-baseline-gate", action="store_true")
     parser.add_argument("--skip-cutover-gate", action="store_true")
+    parser.add_argument("--skip-dead-letter-gate", action="store_true")
     parser.add_argument("--skip-resume-gate", action="store_true")
     parser.add_argument("--skip-prometheus-gate", action="store_true")
     parser.add_argument("--json-output", default="")
