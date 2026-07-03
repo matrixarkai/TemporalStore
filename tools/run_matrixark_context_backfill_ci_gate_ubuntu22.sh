@@ -49,6 +49,7 @@ python3 - \
 import hashlib
 import json
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -69,8 +70,13 @@ def artifact(path: Path) -> dict:
         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
     }
 
+manifest_path.parent.mkdir(parents=True, exist_ok=True)
+bundled_readiness_path = manifest_path.parent / readiness_path.name
+if readiness_path.resolve() != bundled_readiness_path.resolve():
+    shutil.copy2(readiness_path, bundled_readiness_path)
+
 artifacts = {
-    "matrixark_context_backfill_readiness_json": artifact(readiness_path),
+    "matrixark_context_backfill_readiness_json": artifact(bundled_readiness_path),
 }
 dual_write_dir = evidence_dir / "dual_write"
 for name in ["dual_write_readiness.json", "dual_write_readiness.prom", "manifest.json"]:
@@ -88,7 +94,6 @@ payload = {
     "repeat": repeat,
     "artifacts": artifacts,
 }
-manifest_path.parent.mkdir(parents=True, exist_ok=True)
 manifest_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 PY
 
@@ -100,6 +105,7 @@ grep -q 'matrixark_context_backfill_ci_evidence_verification_status' "${EVIDENCE
 grep -q 'check="readiness_status_ok"' "${EVIDENCE_MANIFEST_PROMETHEUS}"
 grep -q 'check="readiness_checks_all_passed"' "${EVIDENCE_MANIFEST_PROMETHEUS}"
 grep -q 'check="readiness_required_sections_ok"' "${EVIDENCE_MANIFEST_PROMETHEUS}"
+grep -q 'check="artifact_paths_within_dir"' "${EVIDENCE_MANIFEST_PROMETHEUS}"
 grep -q 'check="dual_write_readiness_status_ok"' "${EVIDENCE_MANIFEST_PROMETHEUS}"
 grep -q 'check="dual_write_manifest_schema_supported"' "${EVIDENCE_MANIFEST_PROMETHEUS}"
 grep -q 'check="dual_write_manifest_status_ok"' "${EVIDENCE_MANIFEST_PROMETHEUS}"

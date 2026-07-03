@@ -81,6 +81,7 @@ BACKFILL_CI_GATE_TOKENS = [
     "readiness_status_ok",
     "readiness_checks_all_passed",
     "readiness_required_sections_ok",
+    "artifact_paths_within_dir",
     "dual_write_readiness_status_ok",
     "dual_write_manifest_schema_supported",
     "dual_write_manifest_status_ok",
