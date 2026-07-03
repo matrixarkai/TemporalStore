@@ -139,10 +139,20 @@ REQUIRED_ZONE_STREAM_SEGMENT_SLOT_EVIDENCE = [
 
 REQUIRED_GENERATED_FROM = [
     "tools/validate_storage_engine_9_phase_parity.py",
+    "tools/validate_storage_lifecycle_parity.py",
+    "tools/validate_page_address_compatibility_corpus.py",
+    "tools/validate_page_block_metrics_parity.py",
+    "tools/validate_storage_tuning_parity.py",
+    "tools/validate_storage_proxy_client_parity_coverage.py",
+    "tools/validate_grafana_metrics_parity.py",
+    "tools/validate_raft_storage_parity_evidence.py",
     "tools/validate_temporalstore_cpp_rust_performance_parity.py",
     "tools/import_temporalstore_cpp_rust_performance_evidence.py",
     "tools/audit_temporalstore_cpp_rust_performance_artifacts.py",
     "tools/validate_temporalstore_cpp_rust_feature_execution.py",
+    "tools/test_temporalstore_performance_artifact_audit.py",
+    "tools/test_temporalstore_next_performance_workflow.py",
+    "tools/test_temporalstore_performance_evidence_import.py",
 ]
 
 REQUIRED_PERFORMANCE_EVIDENCE = [

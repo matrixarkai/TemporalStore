@@ -44,6 +44,21 @@ class TemporalStoreGoalParityStatusTest(unittest.TestCase):
             )
         )
 
+    def test_generated_from_requires_core_phase_validators(self) -> None:
+        data = self._status()
+        data["generated_from"].remove("tools/validate_grafana_metrics_parity.py")
+        data["generated_from"].remove("tools/validate_storage_proxy_client_parity_coverage.py")
+
+        failures = validate_status(data)
+
+        self.assertTrue(
+            any(
+                "generated_from missing: tools/validate_storage_proxy_client_parity_coverage.py, tools/validate_grafana_metrics_parity.py"
+                in failure
+                for failure in failures
+            )
+        )
+
     def test_storage_manager_evidence_is_required(self) -> None:
         data = self._status()
         data["areas"]["storage_manager_parity"]["evidence"].remove(
