@@ -221,6 +221,32 @@ def summarize_backend_qps(results: list[Json]) -> Json:
     }
 
 
+def _percentile(values: list[float], percentile: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = min(len(ordered) - 1, max(0, int(round((percentile / 100.0) * (len(ordered) - 1)))))
+    return ordered[index]
+
+
+def summarize_phase_latency_ms(results: list[Json]) -> Json:
+    def phase_stats(phase: str) -> Json:
+        values = [float(item[phase]["elapsed_ms"]) for item in results]
+        if not values:
+            return {"avg": 0.0, "min": 0.0, "max": 0.0, "p95": 0.0}
+        return {
+            "avg": round(statistics.fmean(values), 3),
+            "min": round(min(values), 3),
+            "max": round(max(values), 3),
+            "p95": round(_percentile(values, 95.0), 3),
+        }
+    return {
+        "full_shadow_ms": phase_stats("full_shadow"),
+        "incremental_shadow_ms": phase_stats("incremental_shadow"),
+        "incremental_repair_ms": phase_stats("incremental_repair"),
+    }
+
+
 def _qps_values_by_backend(results: list[Json], phase: str) -> dict[str, list[float]]:
     grouped: dict[str, list[float]] = {}
     for result in results:
@@ -236,10 +262,28 @@ def _aggregate_qps(values: list[float], aggregation: str) -> float:
     return min(values)
 
 
+def _latency_values_by_backend(results: list[Json], phase: str) -> dict[str, list[float]]:
+    grouped: dict[str, list[float]] = {}
+    for result in results:
+        grouped.setdefault(str(result["raw_backend"]), []).append(float(result[phase]["elapsed_ms"]))
+    return grouped
+
+
+def _aggregate_latency_ms(values: list[float], aggregation: str) -> float:
+    if not values:
+        return 0.0
+    if aggregation == "avg":
+        return statistics.fmean(values)
+    return _percentile(values, 95.0)
+
+
 def evaluate_performance_gate(args: argparse.Namespace, results: list[Json]) -> Json:
     min_full = float(getattr(args, "min_full_shadow_qps", 0.0) or 0.0)
     min_repair = float(getattr(args, "min_incremental_repair_qps", 0.0) or 0.0)
     min_backend_ratio = float(getattr(args, "min_backend_qps_ratio", 0.0) or 0.0)
+    max_full_latency = float(getattr(args, "max_full_shadow_p95_ms", 0.0) or 0.0)
+    max_incremental_shadow_latency = float(getattr(args, "max_incremental_shadow_p95_ms", 0.0) or 0.0)
+    max_repair_latency = float(getattr(args, "max_incremental_repair_p95_ms", 0.0) or 0.0)
     gate_aggregation = str(getattr(args, "gate_aggregation", "min") or "min")
     checks: list[Json] = []
     if gate_aggregation == "sample":
@@ -248,6 +292,9 @@ def evaluate_performance_gate(args: argparse.Namespace, results: list[Json]) -> 
             repeat_index = int(result.get("repeat_index", 1))
             full_qps = float(result["full_shadow"]["qps"])
             repair_qps = float(result["incremental_repair"]["qps"])
+            full_latency = float(result["full_shadow"]["elapsed_ms"])
+            incremental_shadow_latency = float(result["incremental_shadow"]["elapsed_ms"])
+            repair_latency = float(result["incremental_repair"]["elapsed_ms"])
             checks.append({
                 "raw_backend": backend,
                 "metric": "full_shadow_qps",
@@ -266,6 +313,21 @@ def evaluate_performance_gate(args: argparse.Namespace, results: list[Json]) -> 
                 "minimum": min_repair,
                 "passed": repair_qps >= min_repair,
             })
+            for metric, observed, maximum in [
+                ("full_shadow_p95_ms", full_latency, max_full_latency),
+                ("incremental_shadow_p95_ms", incremental_shadow_latency, max_incremental_shadow_latency),
+                ("incremental_repair_p95_ms", repair_latency, max_repair_latency),
+            ]:
+                if maximum > 0.0:
+                    checks.append({
+                        "raw_backend": backend,
+                        "metric": metric,
+                        "aggregation": "sample",
+                        "repeat_index": repeat_index,
+                        "observed": round(observed, 3),
+                        "maximum": maximum,
+                        "passed": observed <= maximum,
+                    })
     else:
         for backend, values in _qps_values_by_backend(results, "full_shadow").items():
             observed = _aggregate_qps(values, gate_aggregation)
@@ -289,6 +351,24 @@ def evaluate_performance_gate(args: argparse.Namespace, results: list[Json]) -> 
                 "minimum": min_repair,
                 "passed": observed >= min_repair,
             })
+        for metric, phase, maximum in [
+            ("full_shadow_p95_ms", "full_shadow", max_full_latency),
+            ("incremental_shadow_p95_ms", "incremental_shadow", max_incremental_shadow_latency),
+            ("incremental_repair_p95_ms", "incremental_repair", max_repair_latency),
+        ]:
+            if maximum <= 0.0:
+                continue
+            for backend, values in _latency_values_by_backend(results, phase).items():
+                observed = _aggregate_latency_ms(values, gate_aggregation)
+                checks.append({
+                    "raw_backend": backend,
+                    "metric": metric,
+                    "aggregation": "avg" if gate_aggregation == "avg" else "p95",
+                    "samples": len(values),
+                    "observed": round(observed, 3),
+                    "maximum": maximum,
+                    "passed": observed <= maximum,
+                })
     if min_backend_ratio > 0.0 and len(results) > 1:
         for metric, path in [
             ("full_shadow_qps_ratio", ("full_shadow", "qps")),
@@ -316,7 +396,14 @@ def evaluate_performance_gate(args: argparse.Namespace, results: list[Json]) -> 
                 "minimum": min_backend_ratio,
                 "passed": observed >= min_backend_ratio,
             })
-    enabled = min_full > 0.0 or min_repair > 0.0 or min_backend_ratio > 0.0
+    enabled = (
+        min_full > 0.0
+        or min_repair > 0.0
+        or min_backend_ratio > 0.0
+        or max_full_latency > 0.0
+        or max_incremental_shadow_latency > 0.0
+        or max_repair_latency > 0.0
+    )
     passed = all(bool(check["passed"]) for check in checks) if checks else True
     return {
         "enabled": enabled,
@@ -324,6 +411,9 @@ def evaluate_performance_gate(args: argparse.Namespace, results: list[Json]) -> 
         "min_full_shadow_qps": min_full,
         "min_incremental_repair_qps": min_repair,
         "min_backend_qps_ratio": min_backend_ratio,
+        "max_full_shadow_p95_ms": max_full_latency,
+        "max_incremental_shadow_p95_ms": max_incremental_shadow_latency,
+        "max_incremental_repair_p95_ms": max_repair_latency,
         "gate_aggregation": gate_aggregation,
         "checks": checks,
     }
@@ -342,6 +432,12 @@ def run_benchmark(args: argparse.Namespace) -> Json:
         raise BackfillBenchmarkError("--min-full-shadow-qps must be non-negative")
     if float(getattr(args, "min_incremental_repair_qps", 0.0) or 0.0) < 0.0:
         raise BackfillBenchmarkError("--min-incremental-repair-qps must be non-negative")
+    if float(getattr(args, "max_full_shadow_p95_ms", 0.0) or 0.0) < 0.0:
+        raise BackfillBenchmarkError("--max-full-shadow-p95-ms must be non-negative")
+    if float(getattr(args, "max_incremental_shadow_p95_ms", 0.0) or 0.0) < 0.0:
+        raise BackfillBenchmarkError("--max-incremental-shadow-p95-ms must be non-negative")
+    if float(getattr(args, "max_incremental_repair_p95_ms", 0.0) or 0.0) < 0.0:
+        raise BackfillBenchmarkError("--max-incremental-repair-p95-ms must be non-negative")
     min_backend_ratio = float(getattr(args, "min_backend_qps_ratio", 0.0) or 0.0)
     if min_backend_ratio < 0.0 or min_backend_ratio > 1.0:
         raise BackfillBenchmarkError("--min-backend-qps-ratio must be between 0 and 1")
@@ -370,6 +466,7 @@ def run_benchmark(args: argparse.Namespace) -> Json:
         "elapsed_ms": round(elapsed_s * 1000.0, 3),
         "results": results,
         "qps_summary": summarize_backend_qps(results),
+        "latency_ms_summary": summarize_phase_latency_ms(results),
         "performance_gate": performance_gate,
     }
     if args.json_output:
@@ -388,6 +485,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-full-shadow-qps", type=float, default=float(os.environ.get("MATRIXARK_BACKFILL_BENCH_MIN_FULL_SHADOW_QPS", "0")))
     parser.add_argument("--min-incremental-repair-qps", type=float, default=float(os.environ.get("MATRIXARK_BACKFILL_BENCH_MIN_INCREMENTAL_REPAIR_QPS", "0")))
     parser.add_argument("--min-backend-qps-ratio", type=float, default=float(os.environ.get("MATRIXARK_BACKFILL_BENCH_MIN_BACKEND_QPS_RATIO", "0")), help="optional parity floor: slowest selected backend QPS divided by fastest selected backend QPS, 0 disables")
+    parser.add_argument("--max-full-shadow-p95-ms", type=float, default=float(os.environ.get("MATRIXARK_BACKFILL_BENCH_MAX_FULL_SHADOW_P95_MS", "0")), help="optional p95 latency ceiling for full shadow backfill, 0 disables")
+    parser.add_argument("--max-incremental-shadow-p95-ms", type=float, default=float(os.environ.get("MATRIXARK_BACKFILL_BENCH_MAX_INCREMENTAL_SHADOW_P95_MS", "0")), help="optional p95 latency ceiling for incremental shadow build, 0 disables")
+    parser.add_argument("--max-incremental-repair-p95-ms", type=float, default=float(os.environ.get("MATRIXARK_BACKFILL_BENCH_MAX_INCREMENTAL_REPAIR_P95_MS", "0")), help="optional p95 latency ceiling for incremental active repair, 0 disables")
     parser.add_argument("--gate-aggregation", choices=["sample", "min", "avg"], default=os.environ.get("MATRIXARK_BACKFILL_BENCH_GATE_AGGREGATION", "min"), help="how performance gates aggregate repeated samples: min is the conservative default, avg smooths noisy local runs, sample checks every sample")
     parser.add_argument("--json-output", default=os.environ.get("MATRIXARK_BACKFILL_BENCH_JSON", ""))
     return parser

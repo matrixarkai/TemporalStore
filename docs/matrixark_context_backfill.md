@@ -190,7 +190,7 @@ python3 tools/matrixark_context_backfill_benchmark.py \
   --json-output=/tmp/matrixark_context_backfill_bench.json
 ```
 
-For release or CI gating, add explicit minimum QPS thresholds. The command exits with code `2` and writes `status=failed` when either raw backend falls below the configured floor:
+For release or CI gating, add explicit minimum QPS thresholds and optional p95 latency ceilings. The command exits with code `2` and writes `status=failed` when either raw backend falls below the configured throughput floor or exceeds a configured latency ceiling:
 
 ```bash
 python3 tools/matrixark_context_backfill_benchmark.py \
@@ -202,6 +202,9 @@ python3 tools/matrixark_context_backfill_benchmark.py \
   --raw-backends=both \
   --min-full-shadow-qps=5000 \
   --min-incremental-repair-qps=1500 \
+  --max-full-shadow-p95-ms=1000 \
+  --max-incremental-shadow-p95-ms=500 \
+  --max-incremental-repair-p95-ms=500 \
   --min-backend-qps-ratio=0.50 \
   --gate-aggregation=min \
   --json-output=/tmp/matrixark_context_backfill_bench_gate.json
@@ -216,11 +219,20 @@ Key output:
 | `results[].incremental_repair.qps` | Active-prefix promotion throughput, including validation and bounded replay. |
 | `results[].repeat_index` | One-based sample index when `--repeat` is greater than `1`. |
 | `qps_summary` | Average, min, max, and min/max ratio for full shadow, incremental shadow, and incremental repair QPS across the selected raw backends. |
-| `performance_gate` | Optional pass/fail checks for `--min-full-shadow-qps`, `--min-incremental-repair-qps`, and `--min-backend-qps-ratio`, using the selected `--gate-aggregation`. |
+| `latency_ms_summary` | Average, min, max, and p95 elapsed milliseconds for full shadow, incremental shadow, and incremental repair phases. |
+| `performance_gate` | Optional pass/fail checks for QPS floors, p95 latency ceilings, and backend QPS parity, using the selected `--gate-aggregation`. |
 
 Local mode is an in-process correctness and regression signal. For production capacity numbers, run the same batch sizes through `tools/matrixark_context_backfill.py` against a real TemporalStore/MatrixKV deployment and compare the resulting JSON summaries and Prometheus output.
 
-Use `--repeat` for release and CI runs where a single local sample is too noisy. The default `--gate-aggregation=min` gates the worst repeated sample per backend, which is conservative enough for release checks while keeping the output compact. Use `--gate-aggregation=avg` for trend dashboards, and `--gate-aggregation=sample` when every individual sample must pass. Use `--min-backend-qps-ratio` when both raw-message storage options are selected. It fails the gate when the slowest selected backend aggregate falls below the configured fraction of the fastest selected backend aggregate for full shadow, incremental shadow, or incremental repair. This catches asymmetric regressions that average QPS can hide.
+Use `--repeat` for release and CI runs where a single local sample is too noisy. The default `--gate-aggregation=min` gates the worst repeated QPS sample per backend and p95 latency per backend, which is conservative enough for release checks while keeping the output compact. Use `--gate-aggregation=avg` for trend dashboards, and `--gate-aggregation=sample` when every individual sample must pass. Use `--min-backend-qps-ratio` when both raw-message storage options are selected. It fails the gate when the slowest selected backend aggregate falls below the configured fraction of the fastest selected backend aggregate for full shadow, incremental shadow, or incremental repair. This catches asymmetric regressions that average QPS can hide.
+
+Latency gates are optional and disabled by default:
+
+- `--max-full-shadow-p95-ms`
+- `--max-incremental-shadow-p95-ms`
+- `--max-incremental-repair-p95-ms`
+
+Use them with QPS floors when tuning batch size. A throughput improvement that also violates the latency ceiling should not pass a production release gate.
 
 ## Resume And Checkpoints
 
