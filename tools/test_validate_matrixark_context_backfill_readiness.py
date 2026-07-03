@@ -36,7 +36,9 @@ class MatrixArkContextBackfillReadinessTest(unittest.TestCase):
         self.assertTrue(names["backfill_raw_backend_choices_cover_all_raw_options"])
         self.assertTrue(names["benchmark_has_batch_sweep_option"])
         self.assertTrue(names["benchmark_has_latency_gate_options"])
+        self.assertTrue(names["benchmark_has_baseline_regression_gate"])
         self.assertTrue(names["manual_mentions_--batch-sizes"])
+        self.assertTrue(names["manual_mentions_--baseline-json"])
         self.assertEqual(summary["benchmark"], {})
         self.assertEqual(summary["resume_gate"], {})
         self.assertEqual(summary["prometheus_gate"], {})
@@ -47,6 +49,7 @@ class MatrixArkContextBackfillReadinessTest(unittest.TestCase):
         names = {item["name"]: item["passed"] for item in summary["checks"]}
         self.assertTrue(names["local_benchmark_status_ok"])
         self.assertTrue(names["local_benchmark_gate_passed"])
+        self.assertTrue(names["local_benchmark_baseline_gate_available"])
         self.assertTrue(names["local_benchmark_covers_temporalstore_and_matrixkv"])
         self.assertTrue(names["local_benchmark_exercised_batch_sweep"])
         self.assertEqual(summary["benchmark"]["batch_sizes"], [8, 16])
@@ -81,6 +84,7 @@ class MatrixArkContextBackfillReadinessTest(unittest.TestCase):
             self.assertIn("local_benchmark_gate_passed", output.read_text(encoding="utf-8"))
             self.assertIn("resume_gate_checkpoint_found_on_second_run", output.read_text(encoding="utf-8"))
             self.assertIn("prometheus_gate_incremental_repair_metrics_present", output.read_text(encoding="utf-8"))
+            self.assertIn("local_benchmark_baseline_gate_available", output.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
