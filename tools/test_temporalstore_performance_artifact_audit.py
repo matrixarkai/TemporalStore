@@ -66,8 +66,10 @@ class PerformanceArtifactAuditTest(unittest.TestCase):
                                 "reason": "blocked_no_importable",
                                 "argv": ["python", "tools/run_matrixark_cpp_rust_scale_report.py"],
                                 "returncode": 124,
-                                "status": "preflight_failed",
+                                "status": "timeout",
+                                "timeout_sec": 90,
                                 "preflight_blockers": ["missing_cpp_lib", "missing_rust_cli"],
+                                "skip_reason": "workflow_command_timeout",
                                 "artifact_dir": "docs/benchmarks/parity_1K_event_ingestion",
                                 "comparison_path": "docs/benchmarks/parity_1K_event_ingestion/comparison.json",
                                 "required_same_config_fields": ["dataset", "storage_mode"],
@@ -101,8 +103,10 @@ class PerformanceArtifactAuditTest(unittest.TestCase):
             124,
         )
         failed_step = statuses["1K_event_ingestion"]["last_execution_attempt"]["failed_steps"][0]
-        self.assertEqual(failed_step["status"], "preflight_failed")
+        self.assertEqual(failed_step["status"], "timeout")
+        self.assertEqual(failed_step["timeout_sec"], 90)
         self.assertEqual(failed_step["preflight_blockers"], ["missing_cpp_lib", "missing_rust_cli"])
+        self.assertEqual(failed_step["skip_reason"], "workflow_command_timeout")
         self.assertEqual(failed_step["artifact_dir"], "docs/benchmarks/parity_1K_event_ingestion")
         self.assertEqual(failed_step["comparison_path"], "docs/benchmarks/parity_1K_event_ingestion/comparison.json")
         self.assertEqual(failed_step["required_same_config_fields"], ["dataset", "storage_mode"])
