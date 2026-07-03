@@ -233,6 +233,13 @@ def _validate_metric_block(
             value = _as_number(metrics.get(numeric))
             if value is None or value < 0:
                 failures.append(f"{row.get('workload')} {side}.{numeric} must be non-negative")
+    for positive in ["message_qps", "retrieve_qps", "p50_ms", "p95_ms", "p99_ms"]:
+        value = _as_number(metrics.get(positive))
+        if value is not None and value <= 0:
+            failures.append(f"{row.get('workload')} {side}.{positive} must be positive")
+    cache_hit_rate = _as_number(metrics.get("cache_hit_rate"))
+    if cache_hit_rate is not None and cache_hit_rate > 1:
+        failures.append(f"{row.get('workload')} {side}.cache_hit_rate must be <= 1")
     if "fallback_flags" in metrics and not isinstance(metrics.get("fallback_flags"), list):
         failures.append(f"{row.get('workload')} {side}.fallback_flags must be a list")
     if (

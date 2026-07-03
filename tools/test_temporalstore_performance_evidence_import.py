@@ -102,7 +102,13 @@ def _report_with_bad_qps_ratio() -> dict:
     backend_template = {
         "status": "passed",
         "ingest": {"p50_ms": 10, "p95_ms": 20, "p99_ms": 30, "timeout_count": 0},
-        "retrieve": {"qps": 10, "p50_ms": 10, "p95_ms": 20, "p99_ms": 30, "stage_metrics": {}},
+        "retrieve": {
+            "qps": 10,
+            "p50_ms": 10,
+            "p95_ms": 20,
+            "p99_ms": 30,
+            "stage_metrics": {"cache_hit_rate": 0.5},
+        },
         "storage_lifecycle_metrics": {"append_watermark": 10, "compaction_watermark": 9},
         "effective_storage_tuning": dict(STORAGE_TUNING),
         "errors": [],
@@ -217,6 +223,20 @@ class PerformanceEvidenceImportTest(unittest.TestCase):
         self.assertEqual(row["status"], "missing_live_evidence")
         self.assertIn("cpp_append_watermark_not_advanced", row["open_blockers"])
         self.assertIn("rust_compaction_watermark_ahead_of_append", row["open_blockers"])
+
+    def test_zero_perf_metrics_and_invalid_cache_rate_block_otherwise_good_report(self) -> None:
+        report = _report_with_good_parity()
+        report["backends"]["cpp"]["ingest_messages"]["message_qps"] = 0
+        report["backends"]["cpp"]["ingest"]["p95_ms"] = 0
+        report["backends"]["rust"]["retrieve"]["stage_metrics"]["cache_hit_rate"] = 1.5
+
+        updated = import_report(_matrix(), report)
+
+        row = next(row for row in updated["rows"] if row["workload"] == "1K_event_ingestion")
+        self.assertEqual(row["status"], "missing_live_evidence")
+        self.assertIn("cpp_message_qps_not_positive", row["open_blockers"])
+        self.assertIn("cpp_p95_ms_not_positive", row["open_blockers"])
+        self.assertIn("rust_cache_hit_rate_above_1", row["open_blockers"])
 
     def test_aggregated_fallback_counters_block_otherwise_good_report(self) -> None:
         report = _report_with_good_parity()

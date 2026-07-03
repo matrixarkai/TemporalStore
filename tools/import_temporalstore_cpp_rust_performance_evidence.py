@@ -252,6 +252,11 @@ def _row_status(
     ):
         blockers.append("selected_ref_parity_missing")
     for side, metrics in (("cpp", cpp), ("rust", rust)):
+        for positive in ("message_qps", "retrieve_qps", "p50_ms", "p95_ms", "p99_ms"):
+            if _num(metrics.get(positive)) <= 0:
+                blockers.append(f"{side}_{positive}_not_positive")
+        if _num(metrics.get("cache_hit_rate")) > 1:
+            blockers.append(f"{side}_cache_hit_rate_above_1")
         append_watermark = _num(metrics.get("append_watermark"))
         compaction_watermark = _num(metrics.get("compaction_watermark"))
         if append_watermark <= 0:
