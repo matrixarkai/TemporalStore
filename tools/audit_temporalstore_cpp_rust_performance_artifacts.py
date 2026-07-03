@@ -72,6 +72,7 @@ def _next_run_command(workload: str) -> list[str]:
         "--artifact-dir",
         artifact_dir,
         "--require-perf-parity",
+        "--require-phase-scale-matrix",
     ]
 
 

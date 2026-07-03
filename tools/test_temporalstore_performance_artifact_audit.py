@@ -38,6 +38,7 @@ class PerformanceArtifactAuditTest(unittest.TestCase):
                     "--artifact-dir",
                     "docs/benchmarks/parity_10K_event_ingestion",
                     "--require-perf-parity",
+                    "--require-phase-scale-matrix",
                 ],
                 "import_command": [
                     "python",
@@ -133,7 +134,7 @@ class PerformanceArtifactAuditTest(unittest.TestCase):
         self.assertIn("--events", next_runs[0]["command"])
         self.assertIn("10000", next_runs[0]["command"])
         self.assertIn("--require-perf-parity", next_runs[0]["command"])
-        self.assertNotIn("--require-phase-scale-matrix", next_runs[0]["command"])
+        self.assertIn("--require-phase-scale-matrix", next_runs[0]["command"])
         self.assertEqual(next_runs[0]["phase_scale_coverage_required"]["events"], [1000, 10000, 100000])
         self.assertEqual(next_runs[0]["phase_scale_coverage_required"]["retrieve_workers"], [4, 8, 16, 32])
         self.assertIn("large_pdf", next_runs[0]["phase_scale_coverage_required"]["resource_imports"])

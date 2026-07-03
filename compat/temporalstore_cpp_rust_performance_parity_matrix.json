@@ -97,7 +97,8 @@
           "rust",
           "--artifact-dir",
           "docs/benchmarks/parity_1K_event_ingestion",
-          "--require-perf-parity"
+          "--require-perf-parity",
+          "--require-phase-scale-matrix"
         ],
         "import_command": [
           "python",
@@ -159,7 +160,8 @@
           "rust",
           "--artifact-dir",
           "docs/benchmarks/parity_10K_event_ingestion",
-          "--require-perf-parity"
+          "--require-perf-parity",
+          "--require-phase-scale-matrix"
         ],
         "import_command": [
           "python",
@@ -221,7 +223,8 @@
           "rust",
           "--artifact-dir",
           "docs/benchmarks/parity_100K_event_ingestion",
-          "--require-perf-parity"
+          "--require-perf-parity",
+          "--require-phase-scale-matrix"
         ],
         "import_command": [
           "python",
@@ -282,7 +285,8 @@
           "rust",
           "--artifact-dir",
           "docs/benchmarks/parity_retrieve_workers_4",
-          "--require-perf-parity"
+          "--require-perf-parity",
+          "--require-phase-scale-matrix"
         ],
         "import_command": [
           "python",
@@ -343,7 +347,8 @@
           "rust",
           "--artifact-dir",
           "docs/benchmarks/parity_retrieve_workers_8",
-          "--require-perf-parity"
+          "--require-perf-parity",
+          "--require-phase-scale-matrix"
         ],
         "import_command": [
           "python",
@@ -405,7 +410,8 @@
           "rust",
           "--artifact-dir",
           "docs/benchmarks/parity_retrieve_workers_16",
-          "--require-perf-parity"
+          "--require-perf-parity",
+          "--require-phase-scale-matrix"
         ],
         "import_command": [
           "python",
@@ -467,7 +473,8 @@
           "rust",
           "--artifact-dir",
           "docs/benchmarks/parity_retrieve_workers_32",
-          "--require-perf-parity"
+          "--require-perf-parity",
+          "--require-phase-scale-matrix"
         ],
         "import_command": [
           "python",

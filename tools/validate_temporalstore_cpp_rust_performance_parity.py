@@ -131,6 +131,8 @@ def _validate_missing_evidence_hint(row: dict[str, Any], failures: list[str]) ->
         for item in ["--backends", "cpp", "rust", "--artifact-dir", artifact_dir, "--require-perf-parity"]:
             if item not in command:
                 failures.append(f"{workload} next_run_hint.command missing `{item}`")
+        if "--require-phase-scale-matrix" not in command:
+            failures.append(f"{workload} next_run_hint.command missing `--require-phase-scale-matrix`")
     import_command = hint.get("import_command")
     expected_import = [
         "python",
