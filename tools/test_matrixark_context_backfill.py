@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -1514,6 +1515,65 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
 
             with self.assertRaises(backfill.BackfillError):
                 backfill.run_backfill(self.make_args(path, mode="in_place"))
+
+    def test_plan_artifact_manifest_verifies_after_bundle_restore(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "plan_bundle"
+            restored_dir = Path(tmp) / "restored_bundle"
+            args = argparse.Namespace(
+                plan_output_dir=str(output_dir),
+                job_id="portable-plan",
+                confirm_plan_output_overwrite="",
+            )
+            summary = {
+                "status": "ok",
+                "chunk_plan": {
+                    "execution_plan": {
+                        "shadow_validation_waves": [
+                            {
+                                "wave": 0,
+                                "shadow_command_args": [["--mode=shadow", "--job-id=portable-plan"]],
+                                "validate_command_args": [["--mode=validate_shadow", "--job-id=portable-plan"]],
+                            }
+                        ],
+                        "promotion_sequence": [
+                            {
+                                "incremental_repair_command_args": [
+                                    "--mode=incremental_repair",
+                                    "--job-id=portable-plan",
+                                ]
+                            }
+                        ],
+                    }
+                },
+            }
+
+            artifacts = backfill.write_plan_artifacts(args, summary)
+            manifest = json.loads(Path(artifacts["artifact_manifest"]).read_text(encoding="utf-8"))
+            self.assertTrue(all(item.get("relative_path") for item in manifest["files"]))
+
+            shutil.copytree(output_dir, restored_dir)
+            restored_manifest_path = restored_dir / "artifact_manifest.json"
+            restored_manifest = json.loads(restored_manifest_path.read_text(encoding="utf-8"))
+            for item in restored_manifest["files"]:
+                item["path"] = f"/missing/original/{item['relative_path']}"
+            restored_manifest_path.write_text(json.dumps(restored_manifest, sort_keys=True, indent=2), encoding="utf-8")
+
+            verified = backfill.run_verify_plan_artifacts(argparse.Namespace(
+                plan_output_dir=str(restored_dir),
+                job_id="portable-plan",
+            ))
+            self.assertEqual(verified["status"], "ok")
+            self.assertTrue(all(item["path_source"] == "relative_path" for item in verified["file_checks"]))
+
+            restored_manifest["files"][0]["relative_path"] = "../plan.json"
+            restored_manifest_path.write_text(json.dumps(restored_manifest, sort_keys=True, indent=2), encoding="utf-8")
+            unsafe = backfill.run_verify_plan_artifacts(argparse.Namespace(
+                plan_output_dir=str(restored_dir),
+                job_id="portable-plan",
+            ))
+            self.assertEqual(unsafe["status"], "failed")
+            self.assertFalse(unsafe["checks"]["all_paths_safe"])
 
 
 if __name__ == "__main__":
