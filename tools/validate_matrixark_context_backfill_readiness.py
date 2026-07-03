@@ -36,6 +36,7 @@ REQUIRED_DOC_MARKERS = [
     "--confirm-non-strict-validation",
     "--confirm-resume-range-change",
     "--confirm-active-target",
+    "--confirm-rollback-noop",
     "--expect-active-prefix",
     "--confirm-no-active-prefix-precondition",
     "--dry-run-check-target",
@@ -73,6 +74,7 @@ def parser_support_checks() -> list[Json]:
         check("backfill_has_prometheus_output", "--prometheus-output" in backfill_options),
         check("backfill_has_dry_run_target_check_option", "--dry-run-check-target" in backfill_options),
         check("backfill_has_active_target_confirmation", "--confirm-active-target" in backfill_options),
+        check("backfill_has_rollback_noop_confirmation", "--confirm-rollback-noop" in backfill_options),
         check("backfill_has_expect_active_prefix_precondition", "--expect-active-prefix" in backfill_options),
         check("backfill_has_active_prefix_precondition_bypass_confirmation", "--confirm-no-active-prefix-precondition" in backfill_options),
         check("backfill_has_skip_validation_confirmation", "--confirm-skip-validation" in backfill_options),
@@ -283,6 +285,41 @@ def run_cutover_gate(args: argparse.Namespace) -> Json:
             rollback = backfill.run_rollback_activation(rollback_args)
             kv_after_rollback = backfill.LocalJsonKV(kv_path)
             rollback_audit = kv_after_rollback.hget(f"{active_key}:rollback_audit", f"{job_id}:rollback")
+            noop_rollback_job_id = f"{job_id}:rollback-noop"
+            kv_after_rollback.put_string(f"{active_key}:previous:{noop_rollback_job_id}", old_prefix)
+            noop_rollback_blocked = False
+            try:
+                noop_rollback_args = bench.make_backfill_args(
+                    kv_path=kv_path,
+                    source_prefix=source_prefix,
+                    target_prefix=target_prefix,
+                    raw_backend=raw_backend,
+                    job_id=noop_rollback_job_id,
+                    batch_size=args.batch_size,
+                    mode="rollback_activation",
+                )
+                noop_rollback_args.confirm_rollback = "YES"
+                noop_rollback_args.rollback_job_id = noop_rollback_job_id
+                noop_rollback_args.expect_active_prefix = old_prefix
+                backfill.run_rollback_activation(noop_rollback_args)
+            except backfill.BackfillError as exc:
+                noop_rollback_blocked = "previous prefix equals current active prefix" in str(exc)
+            noop_rollback_confirmed_args = bench.make_backfill_args(
+                kv_path=kv_path,
+                source_prefix=source_prefix,
+                target_prefix=target_prefix,
+                raw_backend=raw_backend,
+                job_id=f"{noop_rollback_job_id}:confirmed",
+                batch_size=args.batch_size,
+                mode="rollback_activation",
+            )
+            noop_rollback_confirmed_args.confirm_rollback = "YES"
+            noop_rollback_confirmed_args.confirm_rollback_noop = "YES"
+            noop_rollback_confirmed_args.rollback_job_id = noop_rollback_job_id
+            noop_rollback_confirmed_args.expect_active_prefix = old_prefix
+            noop_rollback_confirmed = backfill.run_rollback_activation(noop_rollback_confirmed_args)
+            kv_after_noop = backfill.LocalJsonKV(kv_path)
+            noop_rollback_audit = kv_after_noop.hget(f"{active_key}:rollback_audit", f"{noop_rollback_job_id}:confirmed")
 
             results.append({
                 "raw_backend": raw_backend,
@@ -303,6 +340,10 @@ def run_cutover_gate(args: argparse.Namespace) -> Json:
                 "rollback_to_prefix": rollback.get("to_prefix"),
                 "active_after_rollback": kv_after_rollback.get_string(active_key),
                 "rollback_audit_written": bool(rollback_audit),
+                "noop_rollback_blocked": noop_rollback_blocked,
+                "noop_rollback_confirmed": bool(noop_rollback_confirmed.get("rollback_noop_confirmed")),
+                "noop_rollback_audit_written": bool(noop_rollback_audit),
+                "noop_rollback_audited": "rollback_noop_confirmed" in str(noop_rollback_audit),
             })
     status = "ok" if all(
         item["shadow_status"] == "ok"
@@ -320,6 +361,10 @@ def run_cutover_gate(args: argparse.Namespace) -> Json:
         and item["rollback_status"] == "ok"
         and item["rollback_to_prefix"] == item["active_after_rollback"]
         and item["rollback_audit_written"]
+        and item["noop_rollback_blocked"]
+        and item["noop_rollback_confirmed"]
+        and item["noop_rollback_audit_written"]
+        and item["noop_rollback_audited"]
         for item in results
     ) else "failed"
     return {"status": status, "results": results}
@@ -936,6 +981,8 @@ def cutover_checks(summary: Json) -> list[Json]:
         check("cutover_gate_activation_audit_written", all(bool(item.get("activation_audit_written")) for item in results)),
         check("cutover_gate_rollback_restores_previous_pointer", all(item.get("rollback_to_prefix") == item.get("active_after_rollback") for item in results)),
         check("cutover_gate_rollback_audit_written", all(bool(item.get("rollback_audit_written")) for item in results)),
+        check("cutover_gate_blocks_noop_rollback", all(bool(item.get("noop_rollback_blocked")) for item in results)),
+        check("cutover_gate_noop_rollback_is_explicitly_audited", all(bool(item.get("noop_rollback_confirmed")) and bool(item.get("noop_rollback_audited")) for item in results)),
     ]
 
 

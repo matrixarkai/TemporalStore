@@ -1057,6 +1057,18 @@ def require_active_prefix_precondition(args: argparse.Namespace, *, mode: str) -
     raise BackfillError(f'{mode} requires --expect-active-prefix or --confirm-no-active-prefix-precondition=YES')
 
 
+def rollback_noop_bypassed(args: argparse.Namespace) -> bool:
+    return getattr(args, 'confirm_rollback_noop', '') == 'YES'
+
+
+def require_non_noop_rollback(args: argparse.Namespace, current_prefix: str, previous_prefix: str) -> None:
+    if current_prefix != previous_prefix:
+        return
+    if rollback_noop_bypassed(args):
+        return
+    raise BackfillError('rollback_activation previous prefix equals current active prefix; use --confirm-rollback-noop=YES to audit an intentional no-op rollback')
+
+
 def clone_args(args: argparse.Namespace, **overrides: Any) -> argparse.Namespace:
     values = vars(args).copy()
     values.update(overrides)
@@ -1778,6 +1790,7 @@ def run_rollback_activation(args: argparse.Namespace) -> Json:
     current_prefix = kv.get_string(args.active_prefix_key)
     require_expected_active_prefix(args, current_prefix)
     require_active_prefix_precondition(args, mode='rollback_activation')
+    require_non_noop_rollback(args, current_prefix, previous_prefix)
     rolled_back_at_ms = int(time.time() * 1000)
     audit = {
         'job_id': args.job_id,
@@ -1790,6 +1803,7 @@ def run_rollback_activation(args: argparse.Namespace) -> Json:
         'previous_key': previous_key,
         'raw_backend': normalize_raw_backend(args.raw_backend),
         'active_prefix_precondition_bypassed': active_prefix_precondition_bypassed(args),
+        'rollback_noop_confirmed': rollback_noop_bypassed(args),
     }
     if args.dry_run:
         return {
@@ -1803,6 +1817,7 @@ def run_rollback_activation(args: argparse.Namespace) -> Json:
             'rollback_job_id': rollback_job_id,
             'raw_backend': normalize_raw_backend(args.raw_backend),
             'active_prefix_precondition_bypassed': active_prefix_precondition_bypassed(args),
+            'rollback_noop_confirmed': rollback_noop_bypassed(args),
         }
     kv.hset(f'{args.active_prefix_key}:rollback_audit', args.job_id, json.dumps(audit, sort_keys=True, separators=(',', ':')))
     kv.put_string(args.active_prefix_key, previous_prefix)
@@ -1818,6 +1833,7 @@ def run_rollback_activation(args: argparse.Namespace) -> Json:
         'audit_key': f'{args.active_prefix_key}:rollback_audit',
         'job_id': args.job_id,
         'active_prefix_precondition_bypassed': active_prefix_precondition_bypassed(args),
+        'rollback_noop_confirmed': rollback_noop_bypassed(args),
     }
 
 
@@ -2036,6 +2052,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--confirm-in-place', default='')
     parser.add_argument('--confirm-activate', default='')
     parser.add_argument('--confirm-rollback', default='')
+    parser.add_argument('--confirm-rollback-noop', default='', help='required YES to audit an intentional rollback whose previous prefix equals the current active prefix')
     parser.add_argument('--confirm-incremental-repair', default='')
     parser.add_argument('--confirm-active-target', default='', help='required YES for direct non-dry-run shadow writes to the current active prefix')
     parser.add_argument('--expect-active-prefix', default='', help='optional active-prefix precondition for activation, rollback, and incremental repair')

@@ -132,6 +132,8 @@ def make_backfill_args(
         mode=mode,
         confirm_in_place="",
         confirm_activate="",
+        confirm_rollback="",
+        confirm_rollback_noop="",
         confirm_incremental_repair=confirm_incremental_repair,
         confirm_no_active_prefix_precondition="",
         confirm_skip_validation="",
