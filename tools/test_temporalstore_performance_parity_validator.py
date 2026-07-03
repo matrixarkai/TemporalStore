@@ -10,6 +10,7 @@ from validate_temporalstore_cpp_rust_performance_parity import (
     _validate_completed_same_config,
     _validate_metric_block,
     _validate_ratios,
+    _validate_source_report,
 )
 from validate_storage_tuning_parity import EXPECTED_DEFAULTS as STORAGE_TUNING
 
@@ -173,6 +174,21 @@ class PerformanceParityValidatorTest(unittest.TestCase):
         self.assertIn("1K_event_ingestion storage_tuning missing `TS_BLOCK_INDEX_CACHE_BYTES`", failures)
         self.assertIn(
             "1K_event_ingestion storage_tuning `TS_STORAGE_ZONE_SIZE` drift: expected 10485760 got 123",
+            failures,
+        )
+
+    def test_completed_rows_require_canonical_source_report(self) -> None:
+        failures: list[str] = []
+        row = {
+            "workload": "1K_event_ingestion",
+            "source_report": "docs/benchmarks/parity_10K_event_ingestion/comparison.json",
+        }
+
+        _validate_source_report(row, failures)
+
+        self.assertIn(
+            "1K_event_ingestion source_report must be "
+            "docs/benchmarks/parity_1K_event_ingestion/comparison.json",
             failures,
         )
 
