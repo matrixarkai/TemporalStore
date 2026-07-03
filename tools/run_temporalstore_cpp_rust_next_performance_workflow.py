@@ -25,10 +25,24 @@ from audit_temporalstore_cpp_rust_performance_artifacts import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _wsl_path(path: Path | str) -> str:
+    normalized = str(path).replace("\\", "/")
+    if len(normalized) >= 3 and normalized[1] == ":" and normalized[2] == "/":
+        return f"/mnt/{normalized[0].lower()}/{normalized[3:]}"
+    return normalized
+
+
 def _pythonize(argv: list[str]) -> list[str]:
     if argv and argv[0] == "python":
         return [sys.executable, *argv[1:]]
     return argv
+
+
+def _wslize(argv: list[str], *, distro: str) -> list[str]:
+    if not argv:
+        return argv
+    inner = ["python3" if argv[0] == "python" else argv[0], *argv[1:]]
+    return ["wsl", "-d", distro, "--cd", _wsl_path(ROOT), "--", *inner]
 
 
 def build_execution_plan(audit: dict[str, Any], max_workloads: int | None = None) -> dict[str, Any]:
@@ -53,13 +67,20 @@ def build_execution_plan(audit: dict[str, Any], max_workloads: int | None = None
         "dry_run_default": True,
         "workload_count": len({command.get("workload") for command in commands if isinstance(command, dict)}),
         "commands": [
-            {
+            ({
                 "step": command.get("step"),
                 "workload": command.get("workload"),
                 "reason": command.get("reason"),
                 "argv": command.get("argv"),
                 "recommended_execution_output": command.get("recommended_execution_output"),
             }
+            | (
+                {"wsl_argv": _wslize(command.get("argv"), distro="Ubuntu2204Deeproute")}
+                if command.get("step") == "run_workload"
+                and isinstance(command.get("argv"), list)
+                and all(isinstance(item, str) for item in command.get("argv"))
+                else {}
+            ))
             for command in commands
             if isinstance(command, dict)
         ],
@@ -84,6 +105,7 @@ def run_plan(
     include_post_validation: bool,
     continue_on_error: bool = False,
     execution_output: Path | None = None,
+    execute_in_wsl: bool = False,
 ) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
 
@@ -123,6 +145,11 @@ def run_plan(
         argv = command.get("argv")
         if not isinstance(argv, list) or not all(isinstance(item, str) for item in argv):
             raise SystemExit(f"invalid workflow command: {command!r}")
+        if execute_in_wsl and command.get("step") == "run_workload":
+            wsl_argv = command.get("wsl_argv")
+            if not isinstance(wsl_argv, list) or not all(isinstance(item, str) for item in wsl_argv):
+                raise SystemExit(f"workflow command has no valid wsl_argv: {command!r}")
+            argv = wsl_argv
         run_one(
             str(command.get("step") or "workflow"),
             argv,
@@ -144,6 +171,7 @@ def main() -> int:
     parser.add_argument("--matrix", type=Path, default=DEFAULT_MATRIX)
     parser.add_argument("--max-workloads", type=int, default=1)
     parser.add_argument("--execute", action="store_true", help="Run the generated commands. Default is dry-run JSON output.")
+    parser.add_argument("--execute-in-wsl", action="store_true", help="With --execute, run workload commands through WSL so Linux libbcache2.so can load.")
     parser.add_argument("--continue-on-error", action="store_true", help="With --execute, keep running later commands after a failure.")
     parser.add_argument("--execution-output", type=Path, help="With --execute, write the execution summary JSON here.")
     parser.add_argument(
@@ -165,6 +193,7 @@ def main() -> int:
         include_post_validation=not args.skip_post_validation,
         continue_on_error=args.continue_on_error,
         execution_output=execution_output,
+        execute_in_wsl=args.execute_in_wsl,
     )
     print(json.dumps(execution, indent=2) + "\n", end="")
     return 0 if execution["status"] == "passed" else 1
