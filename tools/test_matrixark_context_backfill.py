@@ -149,6 +149,28 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(kv.matrixark_append_records_options[-1]["raw_storage_backend"], "temporalstore")
             self.assertEqual(kv.get_string("shadow:batch:record_count"), "1")
 
+    def test_target_prefetches_idempotency_keys_and_skips_duplicates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            kv.hset("shadow:dedupe:idempotency", "already", "0")
+            target = backfill.MatrixKVBackfillTarget(kv, prefix="shadow:dedupe")
+
+            target.append_many([
+                {"record_type": "context_event", "event_id_hash": 1, "idempotency_key": "already"},
+                {"record_type": "context_event", "event_id_hash": 2, "idempotency_key": "new"},
+                {"record_type": "context_event", "event_id_hash": 3, "idempotency_key": "new"},
+                {"record_type": "context_event", "event_id_hash": 4, "idempotency_key": "other"},
+            ])
+
+            self.assertEqual(kv.batch_hget_calls, 1)
+            self.assertEqual(kv.get_string("shadow:dedupe:record_count"), "2")
+            records = read_target_records(backfill.LocalJsonKV(path), "shadow:dedupe")
+            self.assertEqual([record["event_id_hash"] for record in records], [2, 4])
+            kv_after = backfill.LocalJsonKV(path)
+            self.assertEqual(kv_after.hget("shadow:dedupe:idempotency", "new"), "0")
+            self.assertEqual(kv_after.hget("shadow:dedupe:idempotency", "other"), "1")
+
 
     def test_validate_and_activate_shadow_prefix(self):
         with tempfile.TemporaryDirectory() as tmp:
