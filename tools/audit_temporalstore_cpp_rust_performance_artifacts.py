@@ -152,6 +152,23 @@ def audit_artifacts(artifact_root: Path, matrix_path: Path) -> dict[str, Any]:
                 ),
             },
         }
+    next_required_runs = [
+        {
+            "workload": workload,
+            "reason": details["status"],
+            "blockers": details["blockers"],
+            "required_same_config_fields": details["next_run_hint"]["required_same_config_fields"],
+            "required_result": details["next_run_hint"]["required_result"],
+        }
+        for workload, details in required_workload_status.items()
+        if details["status"] != "has_importable"
+    ]
+    next_required_runs.sort(
+        key=lambda item: (
+            0 if item["reason"] == "missing_candidate" else 1,
+            required_workloads.index(item["workload"]) if item["workload"] in required_workloads else len(required_workloads),
+        )
+    )
     return {
         "schema": "temporalstore_cpp_rust_performance_artifact_audit_v1",
         "artifact_root": str(artifact_root),
@@ -163,6 +180,7 @@ def audit_artifacts(artifact_root: Path, matrix_path: Path) -> dict[str, Any]:
         "missing_required_workloads": missing_required_workloads,
         "blocked_required_workloads": blocked_required_workloads,
         "required_workload_status": required_workload_status,
+        "next_required_runs": next_required_runs,
         "workload_coverage": coverage,
         "entries": with_workloads,
     }
