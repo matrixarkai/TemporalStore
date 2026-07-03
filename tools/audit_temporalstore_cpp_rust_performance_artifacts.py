@@ -15,6 +15,7 @@ from import_temporalstore_cpp_rust_performance_evidence import (
     _candidate_workloads,
     import_report,
 )
+from validate_temporalstore_performance_execution_redaction import validate_artifact
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -209,6 +210,7 @@ def _load_execution_artifact(path: Path) -> dict[str, Any] | None:
         return None
     if data.get("schema") != EXECUTION_SCHEMA:
         return None
+    contract_failures = validate_artifact(path)
     results = data.get("results") if isinstance(data.get("results"), list) else []
     workloads = sorted(
         {
@@ -243,6 +245,8 @@ def _load_execution_artifact(path: Path) -> dict[str, Any] | None:
         "status": data.get("status"),
         "failed_count": data.get("failed_count"),
         "continue_on_error": data.get("continue_on_error") is True,
+        "contract_valid": not contract_failures,
+        "contract_failures": contract_failures,
         "workloads": workloads,
         "failed_steps": failed_steps,
     }
@@ -312,9 +316,16 @@ def audit_artifacts(artifact_root: Path, matrix_path: Path) -> dict[str, Any]:
     execution_attempts_by_workload: dict[str, list[dict[str, Any]]] = {
         workload: [] for workload in required_workloads
     }
+    execution_contract_failures_by_workload: dict[str, list[str]] = {
+        workload: [] for workload in required_workloads
+    }
     for artifact in execution_artifacts:
         for workload in artifact["workloads"]:
             execution_attempts_by_workload.setdefault(workload, []).append(artifact)
+            target = execution_contract_failures_by_workload.setdefault(workload, [])
+            for failure in artifact.get("contract_failures") or []:
+                if failure not in target:
+                    target.append(failure)
     missing_required_workloads = [
         workload
         for workload in required_workloads
@@ -343,6 +354,12 @@ def audit_artifacts(artifact_root: Path, matrix_path: Path) -> dict[str, Any]:
             "importable_report_count": row.get("importable_report_count", 0),
             "blocked_report_count": row.get("blocked_report_count", 0),
             "execution_attempt_count": len(execution_attempts_by_workload.get(workload, [])),
+            "invalid_execution_attempt_count": sum(
+                1
+                for attempt in execution_attempts_by_workload.get(workload, [])
+                if not attempt.get("contract_valid")
+            ),
+            "execution_contract_failures": execution_contract_failures_by_workload.get(workload, []),
             "last_execution_attempt": (
                 execution_attempts_by_workload.get(workload, [])[-1]
                 if execution_attempts_by_workload.get(workload)
@@ -382,6 +399,9 @@ def audit_artifacts(artifact_root: Path, matrix_path: Path) -> dict[str, Any]:
         "required_workloads": required_workloads,
         "reports_scanned": len(reports),
         "execution_artifacts_scanned": len(execution_artifacts),
+        "invalid_execution_artifacts": [
+            artifact for artifact in execution_artifacts if not artifact.get("contract_valid")
+        ],
         "reports_with_candidate_workloads": len(with_workloads),
         "reports_with_importable_workloads": len(importable),
         "missing_required_workloads": missing_required_workloads,

@@ -99,6 +99,8 @@ class PerformanceArtifactAuditTest(unittest.TestCase):
 
         self.assertEqual(audit["reports_scanned"], 1)
         self.assertEqual(audit["execution_artifacts_scanned"], 1)
+        self.assertEqual(len(audit["invalid_execution_artifacts"]), 1)
+        self.assertFalse(audit["invalid_execution_artifacts"][0]["contract_valid"])
         self.assertEqual(audit["reports_with_candidate_workloads"], 1)
         self.assertEqual(audit["reports_with_importable_workloads"], 0)
         self.assertIn("10K_event_ingestion", audit["missing_required_workloads"])
@@ -110,6 +112,13 @@ class PerformanceArtifactAuditTest(unittest.TestCase):
         statuses = audit["required_workload_status"]
         self.assertEqual(statuses["1K_event_ingestion"]["status"], "blocked_no_importable")
         self.assertEqual(statuses["1K_event_ingestion"]["execution_attempt_count"], 1)
+        self.assertEqual(statuses["1K_event_ingestion"]["invalid_execution_attempt_count"], 1)
+        self.assertTrue(
+            any(
+                "argv missing --require-perf-parity" in failure
+                for failure in statuses["1K_event_ingestion"]["execution_contract_failures"]
+            )
+        )
         self.assertEqual(statuses["1K_event_ingestion"]["last_execution_attempt"]["status"], "failed")
         self.assertEqual(
             statuses["1K_event_ingestion"]["last_execution_attempt"]["failed_steps"][0]["returncode"],
