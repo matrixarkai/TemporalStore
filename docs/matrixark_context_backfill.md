@@ -409,6 +409,20 @@ python3 tools/matrixark_dual_write_ingestion_benchmark.py \
   --require-dual-write-counts=1
 ```
 
+One-command local sweep across both raw-message storage options:
+
+```bash
+python3 tools/matrixark_dual_write_ingestion_benchmark.py \
+  --mode=local \
+  --records=10000 \
+  --workers=4 \
+  --batch-size=128 \
+  --payload-bytes=128 \
+  --raw-backends=both \
+  --require-dual-write-counts=1 \
+  --json-output=/tmp/matrixark_dual_write_both.json
+```
+
 Direct TemporalStore/MatrixKV measurement against a running local cluster:
 
 ```bash
@@ -436,6 +450,9 @@ Key output fields:
 | `caller_visible_batch_latency_ms` | Latency percentiles for one `append_many` call, including raw and serving writes. |
 | `caller_visible_record_latency_ms_estimate` | Batch latency divided by batch size, useful for quick per-record comparison across batch sizes. |
 | `raw_backend` | Raw-message storage option measured by the run: `temporalstore` or `matrixkv`. |
+| `raw_backends` | In sweep mode, the raw-message storage options measured by the run. |
+| `results[]` | In sweep mode, the per-backend single-run summaries. |
+| `summary.ingestion_qps` | In sweep mode, average/min/max caller-visible ingestion QPS across selected raw backends. |
 | `raw_record_count_observed` | Raw-message ingestion records appended. This should equal `records`. |
 | `serving_log_entries_observed` | Serving append-log entries. This can be lower than raw records because the serving path can bundle records and also writes secondary index entries. |
 | `local_native_call_counts` | Local-mode proof that both the selected raw append path and `native_append_queue` were called. |

@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import matrixark_context_backfill as backfill  # noqa: E402
 import matrixark_context_backfill_benchmark as bench  # noqa: E402
+import matrixark_dual_write_ingestion_benchmark as dual_bench  # noqa: E402
 
 Json = dict[str, Any]
 
@@ -22,6 +23,7 @@ Json = dict[str, Any]
 REQUIRED_DOC_MARKERS = [
     "--raw-backend=temporalstore",
     "--raw-backend=matrixkv",
+    "--raw-backends=both",
     "--batch-sizes",
     "record_count",
     "record_index",
@@ -59,8 +61,10 @@ def check(name: str, passed: bool, detail: str = "") -> Json:
 def parser_support_checks() -> list[Json]:
     backfill_parser = backfill.build_parser()
     benchmark_parser = bench.build_parser()
+    dual_write_parser = dual_bench.build_parser()
     backfill_options = {option for action in backfill_parser._actions for option in action.option_strings}
     benchmark_options = {option for action in benchmark_parser._actions for option in action.option_strings}
+    dual_write_options = {option for action in dual_write_parser._actions for option in action.option_strings}
     mode_action = next(action for action in backfill_parser._actions if "--mode" in action.option_strings)
     raw_backend_action = next(action for action in backfill_parser._actions if "--raw-backend" in action.option_strings)
     benchmark_raw_action = next(action for action in benchmark_parser._actions if "--raw-backends" in action.option_strings)
@@ -73,6 +77,8 @@ def parser_support_checks() -> list[Json]:
         check("benchmark_has_partial_repair_qps_gate", "--min-partial-repair-qps" in benchmark_options),
         check("benchmark_has_backend_parity_gate", "--min-backend-qps-ratio" in benchmark_options),
         check("benchmark_has_baseline_regression_gate", {"--baseline-json", "--min-baseline-qps-ratio", "--max-baseline-latency-ratio"}.issubset(benchmark_options)),
+        check("dual_write_benchmark_has_raw_backend_sweep", "--raw-backends" in dual_write_options),
+        check("dual_write_benchmark_has_count_gate", "--require-dual-write-counts" in dual_write_options),
         check("backfill_has_prometheus_output", "--prometheus-output" in backfill_options),
         check("backfill_has_dry_run_target_check_option", "--dry-run-check-target" in backfill_options),
         check("backfill_has_active_target_confirmation", "--confirm-active-target" in backfill_options),

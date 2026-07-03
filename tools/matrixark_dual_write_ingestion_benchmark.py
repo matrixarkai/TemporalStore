@@ -23,6 +23,7 @@ from matrixark_mcp_core import stable_hash  # noqa: E402
 from matrixark_mcp_temporal_adapters import MatrixArkTemporalStoreDirectAdapter  # noqa: E402
 
 Json = dict[str, Any]
+RAW_BACKEND_CHOICES = ["temporalstore", "matrixkv"]
 
 
 class BenchmarkError(RuntimeError):
@@ -187,6 +188,84 @@ def evaluate_performance_gate(args: argparse.Namespace, summary: Json) -> Json:
     }
 
 
+def parse_raw_backends(value: str, fallback: str) -> list[str]:
+    selected = (value or "").strip()
+    if not selected:
+        selected = fallback
+    if selected == "both":
+        return list(RAW_BACKEND_CHOICES)
+    backends: list[str] = []
+    for item in selected.split(","):
+        backend = item.strip()
+        if not backend:
+            continue
+        if backend not in RAW_BACKEND_CHOICES:
+            raise BenchmarkError(f"unsupported raw backend {backend!r}; expected one of {', '.join(RAW_BACKEND_CHOICES)} or both")
+        if backend not in backends:
+            backends.append(backend)
+    if not backends:
+        raise BenchmarkError("--raw-backends selected no backends")
+    return backends
+
+
+def summarize_sweep(results: list[Json]) -> Json:
+    qps_values = [float(result.get("ingestion_qps", 0.0) or 0.0) for result in results]
+    p95_values = [float((result.get("caller_visible_batch_latency_ms") or {}).get("p95", 0.0) or 0.0) for result in results]
+    qps_min = min(qps_values) if qps_values else 0.0
+    qps_max = max(qps_values) if qps_values else 0.0
+    p95_max = max(p95_values) if p95_values else 0.0
+    return {
+        "ingestion_qps": {
+            "avg": round(statistics.fmean(qps_values), 3) if qps_values else 0.0,
+            "min": round(qps_min, 3),
+            "max": round(qps_max, 3),
+            "min_max_ratio": round(qps_min / qps_max, 6) if qps_max > 0 else 0.0,
+        },
+        "caller_visible_batch_latency_ms_p95": {
+            "avg": round(statistics.fmean(p95_values), 3) if p95_values else 0.0,
+            "max": round(p95_max, 3),
+        },
+    }
+
+
+def run_backend_sweep(args: argparse.Namespace) -> Json:
+    backends = parse_raw_backends(getattr(args, "raw_backends", ""), args.raw_backend)
+    results: list[Json] = []
+    for backend in backends:
+        one_args = argparse.Namespace(**vars(args))
+        one_args.raw_backend = backend
+        one_args.raw_backends = ""
+        results.append(run_benchmark(one_args))
+    gate_checks: list[Json] = []
+    for result in results:
+        gate = result.get("performance_gate") if isinstance(result.get("performance_gate"), dict) else {}
+        for check in gate.get("checks", []):
+            enriched = dict(check)
+            enriched["raw_backend"] = result.get("raw_backend")
+            gate_checks.append(enriched)
+    gate_enabled = any(bool((result.get("performance_gate") or {}).get("enabled")) for result in results)
+    gate_passed = all(bool((result.get("performance_gate") or {}).get("passed", True)) for result in results)
+    status = "ok" if all(result.get("status") == "ok" for result in results) and gate_passed else "failed"
+    return {
+        "status": status,
+        "mode": args.mode,
+        "raw_backends": backends,
+        "records_per_backend": args.records,
+        "total_records": sum(int(result.get("records", 0) or 0) for result in results),
+        "workers": args.workers,
+        "batch_size": args.batch_size,
+        "payload_bytes": args.payload_bytes,
+        "dual_write_return_policy": "append_many returns after raw message append and serving TemporalStore append both finish",
+        "results": results,
+        "summary": summarize_sweep(results),
+        "performance_gate": {
+            "enabled": gate_enabled,
+            "passed": gate_passed,
+            "checks": gate_checks,
+        },
+    }
+
+
 def run_benchmark(args: argparse.Namespace) -> Json:
     if args.records <= 0:
         raise BenchmarkError("--records must be positive")
@@ -297,9 +376,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--raw-storage-prefix", default=os.environ.get("MATRIXARK_DIRECT_RAW_STORAGE_PREFIX", ""))
     parser.add_argument(
         "--raw-backend",
-        choices=["temporalstore", "matrixkv"],
+        choices=RAW_BACKEND_CHOICES,
         default=os.environ.get("MATRIXARK_RAW_INGESTION_BACKEND", "temporalstore"),
         help="Raw-message durability backend label used by the direct adapter.",
+    )
+    parser.add_argument(
+        "--raw-backends",
+        default=os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_RAW_BACKENDS", ""),
+        help="Run a backend sweep for temporalstore, matrixkv, both, or a comma-separated subset. Empty means --raw-backend only.",
     )
     parser.add_argument("--shard-size", type=int, default=int(os.environ.get("MATRIXARK_DIRECT_RECORD_LOG_SHARD_SIZE", "4096")))
     parser.add_argument("--metaserver", default=os.environ.get("TEMPORALSTORE_METASERVER", "127.0.0.1:65000"))
@@ -317,7 +401,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    summary = run_benchmark(args)
+    summary = run_backend_sweep(args) if getattr(args, "raw_backends", "") else run_benchmark(args)
     text = json.dumps(summary, indent=2, sort_keys=True)
     print(text)
     if args.json_output:

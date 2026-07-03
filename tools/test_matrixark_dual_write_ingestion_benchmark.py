@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 import matrixark_dual_write_ingestion_benchmark as bench
 
@@ -82,6 +85,32 @@ class MatrixArkDualWriteIngestionBenchmarkTest(unittest.TestCase):
         self.assertGreater(calls["matrixark_raw_ingestion_matrixkv_log"], 0)
         self.assertGreater(raw_backends["matrixkv"], 0)
 
+    def test_backend_sweep_covers_both_raw_options(self) -> None:
+        args = self.make_args(records=40, workers=2, batch_size=10, require_dual_write_counts=1)
+        args.raw_backends = "both"
+        summary = bench.run_backend_sweep(args)
+        self.assertEqual(summary["status"], "ok")
+        self.assertEqual(summary["raw_backends"], ["temporalstore", "matrixkv"])
+        self.assertEqual(summary["records_per_backend"], 40)
+        self.assertEqual(summary["total_records"], 80)
+        self.assertTrue(summary["performance_gate"]["enabled"])
+        self.assertTrue(summary["performance_gate"]["passed"])
+        self.assertEqual(len(summary["results"]), 2)
+        by_backend = {result["raw_backend"]: result for result in summary["results"]}
+        self.assertEqual(set(by_backend), {"temporalstore", "matrixkv"})
+        self.assertGreater(summary["summary"]["ingestion_qps"]["min"], 0)
+        self.assertGreater(summary["summary"]["caller_visible_batch_latency_ms_p95"]["max"], 0)
+        for backend, result in by_backend.items():
+            self.assertEqual(result["records"], 40)
+            self.assertTrue(result["dual_write_counts_validated"])
+            self.assertIn(backend, result["local_native_call_counts"]["calls_by_raw_backend"])
+
+    def test_backend_sweep_rejects_unknown_backend(self) -> None:
+        args = self.make_args()
+        args.raw_backends = "temporalstore,unknown"
+        with self.assertRaises(bench.BenchmarkError):
+            bench.run_backend_sweep(args)
+
     def test_rejects_invalid_record_count(self) -> None:
         with self.assertRaises(bench.BenchmarkError):
             bench.run_benchmark(self.make_args(records=0))
@@ -101,6 +130,24 @@ class MatrixArkDualWriteIngestionBenchmarkTest(unittest.TestCase):
             "--min-ingestion-qps=1000000000000",
         ])
         self.assertEqual(rc, 2)
+
+    def test_cli_can_write_backend_sweep_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "dual_write_sweep.json"
+            rc = bench.main([
+                "--mode=local",
+                "--records=20",
+                "--workers=2",
+                "--batch-size=10",
+                "--raw-backends=both",
+                "--require-dual-write-counts=1",
+                f"--json-output={output}",
+            ])
+            self.assertEqual(rc, 0)
+            summary = json.loads(output.read_text())
+            self.assertEqual(summary["raw_backends"], ["temporalstore", "matrixkv"])
+            self.assertEqual(summary["total_records"], 40)
+            self.assertTrue(summary["performance_gate"]["passed"])
 
 
 if __name__ == "__main__":
