@@ -844,12 +844,15 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(repaired["expected_active_prefix"], "matrixark:context:active")
             self.assertEqual(repaired["current_active_prefix"], "matrixark:context:active")
             self.assertEqual(repaired["promotion"]["metrics"]["written"], 1)
+            self.assertEqual(repaired["promotion"]["data_quality_status"], "clean")
             self.assertEqual(repaired["validation_status"], "ok")
             self.assertFalse(repaired["validation_skipped"])
             self.assertEqual(repaired["validation_skip_reason"], "")
             self.assertEqual(repaired["validation_source_range"]["effective_start_seq"], 1)
             self.assertEqual(repaired["validation_target_state"]["target_prefix"], "matrixark:context_repair:p1")
             self.assertEqual(repaired["promotion_consistency"]["status"], "ok")
+            self.assertEqual(repaired["promotion_consistency"]["promotion_data_quality_status"], "clean")
+            self.assertTrue(repaired["promotion_consistency"]["checks"]["promotion_data_quality_clean"])
             self.assertTrue(repaired["promotion_consistency"]["checks"]["promotion_had_no_failures"])
             self.assertTrue(repaired["promotion_consistency"]["checks"]["promotion_source_range_matches_validation"])
             self.assertTrue(repaired["promotion_consistency"]["checks"]["promotion_covered_expected_records"])
@@ -890,6 +893,8 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             prom_text = prom.read_text()
             self.assertIn("matrixark_context_backfill_incremental_repair_promotion_consistency_status", prom_text)
             self.assertIn('status="ok"} 1', prom_text)
+            self.assertIn("matrixark_context_backfill_incremental_repair_promotion_data_quality_status", prom_text)
+            self.assertIn('status="clean"} 1', prom_text)
             self.assertIn('check="promotion_source_range_matches_validation"} 1', prom_text)
             self.assertIn('status="duplicate"} 1', prom_text)
             self.assertIn('boundary="effective_start_seq"} 1', prom_text)
@@ -910,6 +915,7 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             },
         }
         promotion = {
+            "data_quality_status": "clean",
             "partial": partial,
             "source_range": {
                 "effective_start_seq": 1,
@@ -926,6 +932,33 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
 
         self.assertEqual(consistency["status"], "failed")
         self.assertFalse(consistency["checks"]["promotion_source_range_matches_validation"])
+
+    def test_incremental_repair_consistency_requires_clean_promotion_quality(self):
+        partial = {"enabled": False, "record_types": [], "tenant_ids": [], "user_ids": [], "session_ids": [], "filter_json": {}}
+        validation = {
+            "expected_records": 1,
+            "partial": partial,
+            "source_range": {
+                "effective_start_seq": 0,
+                "effective_end_seq": 1,
+                "source_high_watermark_seq": 0,
+                "source_record_count": 1,
+                "scan_mode": "record_count",
+                "user_bounded_end": True,
+            },
+        }
+        promotion = {
+            "data_quality_status": "completed_with_errors",
+            "partial": partial,
+            "source_range": validation["source_range"],
+            "metrics": {"written": 1, "duplicate": 0, "failed": 0, "dead_letter": 0},
+        }
+
+        consistency = backfill.incremental_promotion_consistency(validation, promotion, partial)
+
+        self.assertEqual(consistency["status"], "failed")
+        self.assertEqual(consistency["promotion_data_quality_status"], "completed_with_errors")
+        self.assertFalse(consistency["checks"]["promotion_data_quality_clean"])
 
     def test_incremental_repair_raises_when_promotion_has_failures(self):
         with tempfile.TemporaryDirectory() as tmp:

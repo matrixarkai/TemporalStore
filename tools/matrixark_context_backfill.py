@@ -1798,7 +1798,9 @@ def run_rollback_activation(args: argparse.Namespace) -> Json:
 
 def incremental_promotion_consistency(validation: Json | None, promotion: Json, partial: Json, *, skip_validation: bool = False) -> Json:
     metrics = promotion.get('metrics') if isinstance(promotion.get('metrics'), dict) else {}
+    data_quality_status = str(promotion.get('data_quality_status') or '')
     checks: Json = {
+        'promotion_data_quality_clean': data_quality_status == 'clean',
         'promotion_had_no_failures': int(metrics.get('failed', 0) or 0) == 0,
         'promotion_had_no_dead_letters': int(metrics.get('dead_letter', 0) or 0) == 0,
         'promotion_source_scan_had_no_failures': int(metrics.get('failed', 0) or 0) == 0,
@@ -1830,6 +1832,7 @@ def incremental_promotion_consistency(validation: Json | None, promotion: Json, 
     return {
         'status': 'ok' if passed else 'failed',
         'checks': checks,
+        'promotion_data_quality_status': data_quality_status or 'unknown',
         'promotion_source_range': promotion.get('source_range', {}),
         'promotion_metrics': metrics,
     }
@@ -1869,6 +1872,11 @@ def incremental_repair_to_prometheus(summary: Json) -> str:
     ])
     for name in ['scanned', 'filtered', 'written', 'duplicate', 'failed', 'dead_letter', 'skipped']:
         lines.append(f'matrixark_context_backfill_incremental_repair_promotion_records{{{_prom_labels(**base, status=name)}}} {int(metrics.get(name, 0) or 0)}')
+    lines.extend([
+        '# HELP matrixark_context_backfill_incremental_repair_promotion_data_quality_status Data-quality status observed while replaying the repair window into the active prefix.',
+        '# TYPE matrixark_context_backfill_incremental_repair_promotion_data_quality_status gauge',
+        f'matrixark_context_backfill_incremental_repair_promotion_data_quality_status{{{_prom_labels(**base, status=str(consistency.get("promotion_data_quality_status") or "unknown"))}}} 1',
+    ])
     source_range = consistency.get('promotion_source_range') if isinstance(consistency.get('promotion_source_range'), dict) else {}
     lines.extend([
         '# HELP matrixark_context_backfill_incremental_repair_promotion_source_range Source range replayed into the active prefix.',

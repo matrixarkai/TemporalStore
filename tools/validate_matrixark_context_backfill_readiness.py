@@ -40,6 +40,7 @@ REQUIRED_DOC_MARKERS = [
     "--dry-run-check-target",
     "matrixark_context_backfill_validation_check",
     "matrixark_context_backfill_incremental_repair_status",
+    "matrixark_context_backfill_incremental_repair_promotion_data_quality_status",
     "matrixark_context_backfill_data_quality_status",
     "completed_with_errors",
     "--baseline-json",
@@ -506,6 +507,8 @@ def run_partial_repair_gate(args: argparse.Namespace) -> Json:
                 "target_count": target_count,
                 "partial_enabled": bool(shadow.get("partial", {}).get("enabled")),
                 "promotion_partial_matches_validation": bool(consistency.get("checks", {}).get("promotion_partial_matches_validation")),
+                "promotion_data_quality_status": consistency.get("promotion_data_quality_status"),
+                "promotion_data_quality_clean": bool(consistency.get("checks", {}).get("promotion_data_quality_clean")),
                 "promotion_source_range_matches_validation": bool(consistency.get("checks", {}).get("promotion_source_range_matches_validation")),
                 "promotion_covered_expected_records": bool(consistency.get("checks", {}).get("promotion_covered_expected_records")),
                 "audit_written": bool(audit),
@@ -524,6 +527,8 @@ def run_partial_repair_gate(args: argparse.Namespace) -> Json:
         and item["retry_duplicate"] == item["expected_matches"]
         and item["target_count"] == item["expected_matches"]
         and item["promotion_partial_matches_validation"]
+        and item["promotion_data_quality_status"] == "clean"
+        and item["promotion_data_quality_clean"]
         and item["promotion_source_range_matches_validation"]
         and item["promotion_covered_expected_records"]
         and item["audit_written"]
@@ -725,6 +730,7 @@ def run_prometheus_gate(args: argparse.Namespace) -> Json:
         "matrixark_context_backfill_incremental_repair_promotion_consistency_status",
         "matrixark_context_backfill_incremental_repair_promotion_consistency_check",
         "matrixark_context_backfill_incremental_repair_promotion_records",
+        "matrixark_context_backfill_incremental_repair_promotion_data_quality_status",
         "matrixark_context_backfill_incremental_repair_promotion_source_range",
         "matrixark_context_backfill_incremental_repair_validation_status",
     ]
@@ -913,6 +919,7 @@ def partial_repair_checks(summary: Json) -> list[Json]:
         check("partial_repair_gate_promotes_expected_slice", all(int(item.get("repair_written", 0) or 0) == int(item.get("expected_matches", -1) or -1) for item in results)),
         check("partial_repair_gate_retry_is_idempotent", all(int(item.get("retry_duplicate", 0) or 0) == int(item.get("expected_matches", -1) or -1) for item in results)),
         check("partial_repair_gate_partial_matches_validation", all(bool(item.get("promotion_partial_matches_validation")) for item in results)),
+        check("partial_repair_gate_promotion_data_quality_clean", all(item.get("promotion_data_quality_status") == "clean" and bool(item.get("promotion_data_quality_clean")) for item in results)),
         check("partial_repair_gate_audit_written", all(bool(item.get("audit_written")) for item in results)),
     ]
 
