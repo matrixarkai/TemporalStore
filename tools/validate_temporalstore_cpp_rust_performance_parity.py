@@ -320,6 +320,21 @@ def _validate_completed_same_config(row: dict[str, Any], failures: list[str]) ->
                 )
 
 
+def _validate_global_blocker_ledger(
+    status: dict[str, Any],
+    by_workload: dict[str, dict[str, Any]],
+    failures: list[str],
+) -> None:
+    global_blockers = {str(blocker) for blocker in _as_list(status.get("open_blockers"))}
+    for workload, row in by_workload.items():
+        if workload not in REQUIRED_WORKLOADS:
+            continue
+        for blocker in _as_list(row.get("open_blockers")):
+            expected = f"{workload}:{blocker}"
+            if expected not in global_blockers:
+                failures.append(f"global open_blockers missing `{expected}`")
+
+
 def main() -> int:
     data = json.loads(MATRIX.read_text(encoding="utf-8"))
     failures: list[str] = []
@@ -378,6 +393,7 @@ def main() -> int:
     for workload in REQUIRED_WORKLOADS:
         if workload not in by_workload:
             failures.append(f"rows missing workload `{workload}`")
+    _validate_global_blocker_ledger(status, by_workload, failures)
 
     production_rows = 0
     candidate_rows = 0

@@ -7,6 +7,7 @@ import unittest
 
 from validate_temporalstore_cpp_rust_performance_parity import (
     _exceeds_limit,
+    _validate_global_blocker_ledger,
     _validate_completed_same_config,
     _validate_metric_block,
     _validate_ratios,
@@ -191,6 +192,20 @@ class PerformanceParityValidatorTest(unittest.TestCase):
             "docs/benchmarks/parity_1K_event_ingestion/comparison.json",
             failures,
         )
+
+    def test_global_blocker_ledger_must_cover_every_row_blocker(self) -> None:
+        failures: list[str] = []
+        status = {"open_blockers": ["1K_event_ingestion:cpp_backend_not_passed"]}
+        rows = {
+            "1K_event_ingestion": {
+                "workload": "1K_event_ingestion",
+                "open_blockers": ["cpp_backend_not_passed", "rust_backend_not_passed"],
+            }
+        }
+
+        _validate_global_blocker_ledger(status, rows, failures)
+
+        self.assertIn("global open_blockers missing `1K_event_ingestion:rust_backend_not_passed`", failures)
 
 
 if __name__ == "__main__":
