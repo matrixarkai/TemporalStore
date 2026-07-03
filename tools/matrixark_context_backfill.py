@@ -660,6 +660,39 @@ def read_checkpoint_sequence(kv: Any, key: str) -> int | None:
         return None
 
 
+def read_checkpoint_state(kv: Any, key: str) -> Json:
+    raw_checkpoint = kv.get_string(key)
+    state: Json = {
+        'checkpoint_key': key,
+        'checkpoint_found': bool(raw_checkpoint),
+        'checkpoint_format': 'missing',
+        'checkpoint_last_sequence': None,
+    }
+    if not raw_checkpoint:
+        return state
+    try:
+        state['checkpoint_last_sequence'] = int(raw_checkpoint)
+        state['checkpoint_format'] = 'legacy_integer'
+        return state
+    except ValueError:
+        pass
+    try:
+        checkpoint = json.loads(raw_checkpoint)
+    except json.JSONDecodeError:
+        state['checkpoint_format'] = 'invalid_json'
+        return state
+    if not isinstance(checkpoint, dict):
+        state['checkpoint_format'] = 'invalid_type'
+        return state
+    state['checkpoint_format'] = 'json'
+    value = checkpoint.get('last_sequence')
+    try:
+        state['checkpoint_last_sequence'] = int(value)
+    except (TypeError, ValueError):
+        state['checkpoint_format'] = 'json_missing_last_sequence'
+    return state
+
+
 def build_checkpoint_metadata(
     *,
     job_id: str,
@@ -868,10 +901,17 @@ def run_backfill(args: argparse.Namespace) -> Json:
     )
     start_seq = max(0, args.start_seq)
     checkpoint: Json | None = None
+    resume_state = read_checkpoint_state(kv, cp_key)
+    resume_state.update({
+        'resume_requested': bool(args.resume),
+        'requested_start_seq': args.start_seq,
+        'effective_start_seq': start_seq,
+    })
     if args.resume:
-        checkpoint_sequence = read_checkpoint_sequence(kv, cp_key)
+        checkpoint_sequence = resume_state.get('checkpoint_last_sequence')
         if checkpoint_sequence is not None:
             start_seq = max(start_seq, checkpoint_sequence + 1)
+            resume_state['effective_start_seq'] = start_seq
 
     seen_ids: set[str] = set()
     pending: list[Json] = []
@@ -1011,6 +1051,7 @@ def run_backfill(args: argparse.Namespace) -> Json:
         raw_backend=raw_backend,
         partial=partial,
     )
+    summary['resume_state'] = resume_state
     manifest = {
         'job_id': args.job_id,
         'mode': args.mode,
@@ -1022,6 +1063,7 @@ def run_backfill(args: argparse.Namespace) -> Json:
         'partial': partial,
         'checkpoint_key': cp_key,
         'checkpoint': checkpoint,
+        'resume_state': resume_state,
         'summary': summary,
     }
     summary['manifest_key'] = f'{target_prefix}:backfill_manifest'

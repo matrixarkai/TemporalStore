@@ -225,6 +225,8 @@ This prevents a partial repair from accidentally resuming from a full-backfill c
 
 Checkpoint values are JSON audit records. Current runners write `version=2`, `last_sequence`, `updated_at_ms`, job/source/target/raw-backend labels, the partial filter spec, batch size, and committed counters for scanned, written, duplicate, failed, dead-letter, source batches, and target batches. Older checkpoints that contain only a bare integer sequence are still accepted, so existing jobs can resume after an upgrade.
 
+Every run summary and manifest includes a `resume_state` block with `resume_requested`, `requested_start_seq`, `effective_start_seq`, `checkpoint_key`, `checkpoint_found`, `checkpoint_format`, and `checkpoint_last_sequence`. Use this block in runbooks and automation to prove whether a job resumed from a JSON checkpoint, a legacy integer checkpoint, or no checkpoint at all.
+
 Checkpoints advance after the pending target batch is flushed and counted. After a restart, the runner may replay at most the last uncommitted batch. Target-side idempotency keys prevent duplicate appends for already written records.
 
 Use `--resume=0` when intentionally rerunning a job from `--start-seq`.
