@@ -854,6 +854,41 @@ class MatrixKVBackfillTarget:
         self.kv.hset(f'{self.prefix}:dead_letter', f'{sequence:020d}', payload)
         self.kv.put_string(f'{self.prefix}:dead_letter_count', str(sequence + 1))
 
+    def read_dead_letters(self, *, start: int = 0, limit: int = 100) -> list[Json]:
+        total = self.count_dead_letters()
+        start = max(0, int(start))
+        limit = max(0, int(limit))
+        if limit <= 0 or start >= total:
+            return []
+        end = min(total, start + limit)
+        entries = [{'key': f'{self.prefix}:dead_letter', 'field': f'{sequence:020d}', 'sequence': sequence} for sequence in range(start, end)]
+        batch_hget = getattr(self.kv, 'batch_hget', None)
+        rows: list[Any]
+        if callable(batch_hget):
+            try:
+                rows = list(batch_hget(entries))
+            except Exception:
+                rows = []
+        else:
+            rows = []
+        exported: list[Json] = []
+        for index, sequence in enumerate(range(start, end)):
+            payload = ''
+            if rows:
+                row = rows[index] if index < len(rows) else {}
+                payload = row if isinstance(row, str) else str((row or {}).get('value') or '')
+            if not payload:
+                payload = self.kv.hget(f'{self.prefix}:dead_letter', f'{sequence:020d}')
+            item: Json
+            try:
+                decoded = json.loads(payload) if payload else {}
+                item = decoded if isinstance(decoded, dict) else {'raw': decoded}
+            except Exception as exc:
+                item = {'read_error': str(exc), 'raw_preview': str(payload)[:2048]}
+            item.setdefault('dead_letter_sequence', sequence)
+            exported.append(item)
+        return exported
+
 
 class CaptureAdapter(MatrixArkLocalAdapter):
     def __init__(self) -> None:
@@ -1459,6 +1494,43 @@ def run_verify_plan_artifacts(args: argparse.Namespace) -> Json:
         'checks': checks,
         'file_checks': file_checks,
         'errors': errors,
+    }
+
+
+def run_export_dead_letters(args: argparse.Namespace) -> Json:
+    if not args.target_prefix:
+        raise BackfillError('export_dead_letters requires --target-prefix')
+    raw_backend = normalize_raw_backend(args.raw_backend)
+    kv = make_kv(args)
+    target = MatrixKVBackfillTarget(kv, prefix=args.target_prefix, raw_backend=raw_backend)
+    total = target.count_dead_letters()
+    start = max(0, int(getattr(args, 'dead_letter_start', 0) or 0))
+    limit = max(0, int(getattr(args, 'dead_letter_limit', 100) or 0))
+    rows = target.read_dead_letters(start=start, limit=limit)
+    fingerprint = hashlib.sha256()
+    for row in rows:
+        fingerprint.update(json.dumps(row, sort_keys=True, separators=(',', ':')).encode('utf-8'))
+        fingerprint.update(b'\n')
+    output_path = str(getattr(args, 'dead_letter_output', '') or '')
+    if output_path:
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(''.join(json.dumps(row, sort_keys=True) + '\n' for row in rows), encoding='utf-8')
+    return {
+        'status': 'ok',
+        'mode': 'export_dead_letters',
+        'job_id': args.job_id,
+        'target_prefix': args.target_prefix,
+        'raw_backend': raw_backend,
+        'dead_letter_total': total,
+        'dead_letter_start': start,
+        'dead_letter_limit': limit,
+        'exported_count': len(rows),
+        'has_more': start + len(rows) < total,
+        'next_start': start + len(rows) if start + len(rows) < total else None,
+        'dead_letter_fingerprint': fingerprint.hexdigest(),
+        'dead_letter_output': output_path,
+        'dead_letters': rows,
     }
 
 
@@ -2916,7 +2988,7 @@ def build_parser() -> argparse.ArgumentParser:
         help='raw ingestion message store that owns source-prefix; affects checkpoints, idempotency, manifests, and metrics',
     )
     parser.add_argument('--target-prefix', default='')
-    parser.add_argument('--mode', choices=['plan', 'shadow', 'in_place', 'validate_shadow', 'activate_shadow', 'rollback_activation', 'incremental_repair', 'verify_manifest', 'verify_plan_artifacts'], default='shadow')
+    parser.add_argument('--mode', choices=['plan', 'shadow', 'in_place', 'validate_shadow', 'activate_shadow', 'rollback_activation', 'incremental_repair', 'verify_manifest', 'verify_plan_artifacts', 'export_dead_letters'], default='shadow')
     parser.add_argument('--confirm-in-place', default='')
     parser.add_argument('--confirm-activate', default='')
     parser.add_argument('--confirm-rollback', default='')
@@ -2957,6 +3029,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--resume', type=int, choices=[0, 1], default=1)
     parser.add_argument('--confirm-resume-range-change', default='', help='required YES to ignore an existing checkpoint whose source range differs from requested start/end')
     parser.add_argument('--fail-fast', action='store_true')
+    parser.add_argument('--dead-letter-start', type=int, default=0, help='export_dead_letters start offset')
+    parser.add_argument('--dead-letter-limit', type=int, default=100, help='export_dead_letters maximum rows to return and optionally write')
+    parser.add_argument('--dead-letter-output', default='', help='optional JSONL output path for export_dead_letters')
     parser.add_argument('--prometheus-output', default='')
     parser.add_argument('--local-kv', default='', help='test-only JSON KV backend path')
     return parser
@@ -2984,6 +3059,10 @@ def main() -> int:
         parser.error('--plan-parallelism must be positive')
     if args.source_scan_max_empty_shards <= 0:
         parser.error('--source-scan-max-empty-shards must be positive')
+    if args.dead_letter_start < 0:
+        parser.error('--dead-letter-start must be non-negative')
+    if args.dead_letter_limit < 0:
+        parser.error('--dead-letter-limit must be non-negative')
     try:
         if args.mode == 'plan':
             summary = run_plan(args)
@@ -2999,6 +3078,8 @@ def main() -> int:
             summary = run_verify_manifest(args)
         elif args.mode == 'verify_plan_artifacts':
             summary = run_verify_plan_artifacts(args)
+        elif args.mode == 'export_dead_letters':
+            summary = run_export_dead_letters(args)
         else:
             summary = run_backfill(args)
     except Exception as exc:
