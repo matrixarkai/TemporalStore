@@ -16,6 +16,7 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
         values = {
             "records": 64,
             "batch_size": 16,
+            "batch_sizes": "",
             "payload_bytes": 8,
             "incremental_records": 16,
             "repeat": 1,
@@ -36,6 +37,7 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
         summary = bench.run_benchmark(self.make_args())
         self.assertEqual(summary["status"], "ok")
         self.assertEqual(summary["raw_backends"], ["temporalstore", "matrixkv"])
+        self.assertEqual(summary["batch_sizes"], [16])
         self.assertEqual(summary["repeat"], 1)
         self.assertEqual(len(summary["results"]), 2)
         by_backend = {item["raw_backend"]: item for item in summary["results"]}
@@ -57,6 +59,10 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
         self.assertIn("latency_ms_summary", summary)
         self.assertGreater(summary["latency_ms_summary"]["full_shadow_ms"]["p95"], 0)
         self.assertGreater(summary["latency_ms_summary"]["incremental_repair_ms"]["p95"], 0)
+        self.assertIn("batch_size_summary", summary)
+        self.assertIn("16", summary["batch_size_summary"]["by_batch_size"])
+        self.assertEqual(summary["batch_size_summary"]["by_batch_size"]["16"]["samples"], 2)
+        self.assertIn("best_balanced_min_qps", summary["batch_size_summary"]["recommendations"])
 
     def test_local_benchmark_can_write_json_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -76,6 +82,26 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
         self.assertEqual(summary["performance_gate"]["gate_aggregation"], "min")
         self.assertEqual(len(summary["performance_gate"]["checks"]), 2)
         self.assertTrue(all(check["samples"] == 2 for check in summary["performance_gate"]["checks"]))
+
+    def test_local_benchmark_can_sweep_batch_sizes(self) -> None:
+        summary = bench.run_benchmark(self.make_args(
+            records=32,
+            incremental_records=8,
+            raw_backends="temporalstore",
+            batch_size=8,
+            batch_sizes="8,16,8",
+        ))
+        self.assertEqual(summary["status"], "ok")
+        self.assertEqual(summary["batch_size"], 8)
+        self.assertEqual(summary["batch_sizes"], [8, 16])
+        self.assertEqual([result["batch_size"] for result in summary["results"]], [8, 16])
+        by_batch = summary["batch_size_summary"]["by_batch_size"]
+        self.assertEqual(set(by_batch), {"8", "16"})
+        self.assertEqual(by_batch["8"]["samples"], 1)
+        self.assertEqual(by_batch["16"]["samples"], 1)
+        recommendation = summary["batch_size_summary"]["recommendations"]["best_balanced_min_qps"]
+        self.assertIn(recommendation["batch_size"], [8, 16])
+        self.assertGreater(recommendation["observed"], 0)
 
     def test_local_benchmark_can_gate_each_sample(self) -> None:
         summary = bench.run_benchmark(self.make_args(
@@ -157,6 +183,12 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
     def test_rejects_invalid_backend_ratio(self) -> None:
         with self.assertRaises(bench.BackfillBenchmarkError):
             bench.run_benchmark(self.make_args(min_backend_qps_ratio=1.01))
+
+    def test_rejects_invalid_batch_size_sweep(self) -> None:
+        with self.assertRaises(bench.BackfillBenchmarkError):
+            bench.run_benchmark(self.make_args(batch_sizes="8,bad"))
+        with self.assertRaises(bench.BackfillBenchmarkError):
+            bench.run_benchmark(self.make_args(batch_sizes="0"))
 
     def test_rejects_invalid_latency_gate(self) -> None:
         with self.assertRaises(bench.BackfillBenchmarkError):

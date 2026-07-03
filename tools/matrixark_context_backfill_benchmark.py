@@ -277,6 +277,65 @@ def _aggregate_latency_ms(values: list[float], aggregation: str) -> float:
     return _percentile(values, 95.0)
 
 
+def parse_batch_sizes(value: str, default_batch_size: int) -> list[int]:
+    raw = str(value or "").strip()
+    if not raw:
+        return [default_batch_size]
+    batch_sizes: list[int] = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            batch_size = int(item)
+        except ValueError as exc:
+            raise BackfillBenchmarkError("--batch-sizes must be a comma-separated list of positive integers") from exc
+        if batch_size <= 0:
+            raise BackfillBenchmarkError("--batch-sizes values must be positive")
+        if batch_size not in batch_sizes:
+            batch_sizes.append(batch_size)
+    if not batch_sizes:
+        raise BackfillBenchmarkError("--batch-sizes must include at least one positive integer")
+    return batch_sizes
+
+
+def summarize_batch_size_performance(results: list[Json]) -> Json:
+    grouped: dict[int, list[Json]] = {}
+    for result in results:
+        grouped.setdefault(int(result["batch_size"]), []).append(result)
+    by_batch_size: Json = {}
+    recommendations: Json = {}
+    for batch_size in sorted(grouped):
+        batch_results = grouped[batch_size]
+        qps_summary = summarize_backend_qps(batch_results)
+        latency_summary = summarize_phase_latency_ms(batch_results)
+        full_qps = float(qps_summary["full_shadow_qps"]["min"])
+        repair_qps = float(qps_summary["incremental_repair_qps"]["min"])
+        balanced_qps = min(full_qps, repair_qps)
+        by_batch_size[str(batch_size)] = {
+            "samples": len(batch_results),
+            "raw_backends": sorted({str(item["raw_backend"]) for item in batch_results}),
+            "qps_summary": qps_summary,
+            "latency_ms_summary": latency_summary,
+            "balanced_min_qps": round(balanced_qps, 3),
+        }
+        for name, value in [
+            ("best_full_shadow_qps", full_qps),
+            ("best_incremental_repair_qps", repair_qps),
+            ("best_balanced_min_qps", balanced_qps),
+        ]:
+            current = recommendations.get(name)
+            if not isinstance(current, dict) or value > float(current.get("observed", -1.0)):
+                recommendations[name] = {
+                    "batch_size": batch_size,
+                    "observed": round(value, 3),
+                }
+    return {
+        "by_batch_size": by_batch_size,
+        "recommendations": recommendations,
+    }
+
+
 def evaluate_performance_gate(args: argparse.Namespace, results: list[Json]) -> Json:
     min_full = float(getattr(args, "min_full_shadow_qps", 0.0) or 0.0)
     min_repair = float(getattr(args, "min_incremental_repair_qps", 0.0) or 0.0)
@@ -444,21 +503,29 @@ def run_benchmark(args: argparse.Namespace) -> Json:
     args.gate_aggregation = str(getattr(args, "gate_aggregation", "min") or "min")
     if args.gate_aggregation not in {"sample", "min", "avg"}:
         raise BackfillBenchmarkError("--gate-aggregation must be sample, min, or avg")
+    batch_sizes = parse_batch_sizes(getattr(args, "batch_sizes", ""), args.batch_size)
     raw_backends = ["temporalstore", "matrixkv"] if args.raw_backends == "both" else [args.raw_backends]
     started = time.perf_counter()
     results: list[Json] = []
-    for repeat_index in range(1, args.repeat + 1):
-        for raw_backend in raw_backends:
-            result = run_one_backend(args, raw_backend)
-            result["repeat_index"] = repeat_index
-            results.append(result)
+    original_batch_size = args.batch_size
+    try:
+        for batch_size in batch_sizes:
+            args.batch_size = batch_size
+            for repeat_index in range(1, args.repeat + 1):
+                for raw_backend in raw_backends:
+                    result = run_one_backend(args, raw_backend)
+                    result["repeat_index"] = repeat_index
+                    results.append(result)
+    finally:
+        args.batch_size = original_batch_size
     elapsed_s = max(0.000001, time.perf_counter() - started)
     performance_gate = evaluate_performance_gate(args, results)
     summary = {
         "status": "ok" if performance_gate["passed"] else "failed",
         "mode": "local",
         "records": args.records,
-        "batch_size": args.batch_size,
+        "batch_size": batch_sizes[0],
+        "batch_sizes": batch_sizes,
         "payload_bytes": args.payload_bytes,
         "incremental_records": min(args.incremental_records, args.records),
         "repeat": args.repeat,
@@ -467,6 +534,7 @@ def run_benchmark(args: argparse.Namespace) -> Json:
         "results": results,
         "qps_summary": summarize_backend_qps(results),
         "latency_ms_summary": summarize_phase_latency_ms(results),
+        "batch_size_summary": summarize_batch_size_performance(results),
         "performance_gate": performance_gate,
     }
     if args.json_output:
@@ -478,6 +546,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Benchmark local MatrixArk context backfill paths.")
     parser.add_argument("--records", type=int, default=int(os.environ.get("MATRIXARK_BACKFILL_BENCH_RECORDS", "10000")))
     parser.add_argument("--batch-size", type=int, default=int(os.environ.get("MATRIXARK_BACKFILL_BENCH_BATCH_SIZE", "1024")))
+    parser.add_argument("--batch-sizes", default=os.environ.get("MATRIXARK_BACKFILL_BENCH_BATCH_SIZES", ""), help="optional comma-separated batch-size sweep; overrides single --batch-size for benchmark execution")
     parser.add_argument("--payload-bytes", type=int, default=int(os.environ.get("MATRIXARK_BACKFILL_BENCH_PAYLOAD_BYTES", "128")))
     parser.add_argument("--incremental-records", type=int, default=int(os.environ.get("MATRIXARK_BACKFILL_BENCH_INCREMENTAL_RECORDS", "1000")))
     parser.add_argument("--repeat", type=int, default=int(os.environ.get("MATRIXARK_BACKFILL_BENCH_REPEAT", "1")), help="number of samples to run for each selected raw backend")
