@@ -1,11 +1,6 @@
 use super::*;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RaftReadinessEvidenceBlocker {
-    pub blocker: String,
-    pub evidence_field: String,
-    pub detail: String,
-}
+pub type RaftReadinessEvidenceBlocker = ::rustraft::RustRaftProcessReadinessBlocker;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RaftDistributedReadiness {
@@ -171,11 +166,7 @@ fn raft_readiness_blocker_from_rustraft_process_field(
 fn raft_readiness_blocker_from_rustraft_blocker(
     blocker: ::rustraft::RustRaftProcessReadinessBlocker,
 ) -> RaftReadinessEvidenceBlocker {
-    RaftReadinessEvidenceBlocker {
-        blocker: blocker.blocker,
-        evidence_field: blocker.evidence_field,
-        detail: blocker.detail,
-    }
+    blocker
 }
 
 pub fn raft_temporal_raft_rollout_readiness_from_reports(
