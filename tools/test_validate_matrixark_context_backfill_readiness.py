@@ -95,6 +95,8 @@ class MatrixArkContextBackfillReadinessTest(unittest.TestCase):
         self.assertTrue(names["cutover_gate_status_ok"])
         self.assertTrue(names["cutover_gate_covers_temporalstore_and_matrixkv"])
         self.assertTrue(names["cutover_gate_shadow_wrote_records"])
+        self.assertTrue(names["cutover_gate_blocks_missing_active_precondition"])
+        self.assertTrue(names["cutover_gate_bypass_is_explicitly_audited"])
         self.assertTrue(names["cutover_gate_activation_validated_shadow"])
         self.assertTrue(names["cutover_gate_activation_updates_active_pointer"])
         self.assertTrue(names["cutover_gate_activation_audit_written"])
