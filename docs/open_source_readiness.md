@@ -16,12 +16,10 @@ Rust TemporalStore worktree.
 - `CODE_OF_CONDUCT.md`
 - `.gitignore`
 
-CI is tracked in `.github/workflows/matrixark-context-backfill-ci.yml`. The
-`MatrixArk Context Backfill CI` workflow runs the Ubuntu 22 readiness gate and
-uploads `matrixark_context_backfill_readiness.json` plus
-`matrixark_context_backfill_evidence/` so reviewers can verify checksums,
-Prometheus text output, and nested dual-write evidence. Publishing workflow
-changes still requires a GitHub credential with `workflow` scope.
+CI is intentionally tracked as a follow-up publishing step when the pushing
+credential has GitHub `workflow` scope. The repository-level validator does not
+require `.github/workflows/*` because GitHub rejects workflow updates from
+tokens without that scope.
 
 ## Scope Statement
 
@@ -50,15 +48,15 @@ Run:
 
 ```bash
 python3 tools/validate_open_source_readiness.py
-tools/run_matrixark_context_backfill_ci_gate_ubuntu22.sh
 cargo fmt --all -- --check
 python3 tools/run_temporalstore_unified_tests.py --validate-only
 ```
 
 The open-source readiness validator checks required files, license alignment,
 scope language, generated-output ignore rules, absence of tracked local Codex
-hook config, absence of personal absolute checkout paths, the backfill CI shell
-gate, and the GitHub Actions workflow that publishes readiness evidence.
+hook config, and absence of personal absolute checkout paths. Add the CI
+workflow with a credential that has `workflow` scope, then run the same
+validation commands in that workflow.
 
 ## Release Hygiene
 
