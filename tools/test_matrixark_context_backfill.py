@@ -159,17 +159,17 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             target.append_many([
                 {"record_type": "context_event", "event_id_hash": 1, "idempotency_key": "already"},
                 {"record_type": "context_event", "event_id_hash": 2, "idempotency_key": "new"},
-                {"record_type": "context_event", "event_id_hash": 3, "idempotency_key": "new"},
+                {"record_type": "context_debug_record", "ref_hash": 2, "idempotency_key": "new"},
                 {"record_type": "context_event", "event_id_hash": 4, "idempotency_key": "other"},
             ])
 
             self.assertEqual(kv.batch_hget_calls, 1)
-            self.assertEqual(kv.get_string("shadow:dedupe:record_count"), "2")
+            self.assertEqual(kv.get_string("shadow:dedupe:record_count"), "3")
             records = read_target_records(backfill.LocalJsonKV(path), "shadow:dedupe")
-            self.assertEqual([record["event_id_hash"] for record in records], [2, 4])
+            self.assertEqual([record["record_type"] for record in records], ["context_event", "context_debug_record", "context_event"])
             kv_after = backfill.LocalJsonKV(path)
-            self.assertEqual(kv_after.hget("shadow:dedupe:idempotency", "new"), "0")
-            self.assertEqual(kv_after.hget("shadow:dedupe:idempotency", "other"), "1")
+            self.assertEqual(kv_after.hget("shadow:dedupe:idempotency", "new"), "1")
+            self.assertEqual(kv_after.hget("shadow:dedupe:idempotency", "other"), "2")
 
 
     def test_validate_and_activate_shadow_prefix(self):
