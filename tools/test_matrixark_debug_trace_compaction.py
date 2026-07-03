@@ -65,6 +65,83 @@ class MatrixArkDebugTraceCompactionTest(unittest.TestCase):
         self.assertNotIn("context_event_key", payload)
         self.assertNotIn("source_locator", payload)
 
+    def test_data_model_rows_use_short_aliases_and_drop_forensic_fields(self) -> None:
+        aliases = trace_runner.ReportAliases()
+        event = trace_runner.compact_context_event(
+            {
+                "event_id_hash": 1121810234980183195,
+                "node_hash": 2100209595829882121,
+                "classification": "NEW_EVENT",
+                "text": "user: Alice approved Project Aurora.",
+                "context_event_key": "00000001782681920521:1121810234980183195",
+            },
+            aliases,
+        )
+        entity = trace_runner.compact_context_entity(
+            {
+                "entity_hash": 7343877841316191174,
+                "node_hash": 2100209595829882121,
+                "entity_type": "resource_decision",
+                "entity_name": "decision:/tmp/fixtures/aurora.pdf:Alice approved the Project Aurora GPU purchase",
+                "operator": "LATEST",
+                "state": "approved",
+                "source_ref": "/tmp/fixtures/aurora.pdf#page=1",
+            },
+            aliases,
+        )
+        summary = trace_runner.compact_context_summary(
+            {
+                "summary_hash": 8695652974415713980,
+                "summary_version_hash": 123,
+                "node_hash": 2100209595829882121,
+                "summary_type": "session_l0",
+                "summary_text": "Alice approved Project Aurora.",
+            },
+            aliases,
+        )
+        embedding = trace_runner.compact_context_embedding(
+            {
+                "embedding_type": "event_text",
+                "ref_type": "event",
+                "ref_hash": 1121810234980183195,
+                "model_ref": "model_hash:2794525681328894881",
+                "dim": 32,
+                "vector": [0.1, 0.2],
+            },
+            aliases,
+        )
+        indexes = trace_runner.compact_context_indexes(
+            [
+                {
+                    "data_model": "context_event",
+                    "index_name": "event_type:approval",
+                    "timestamp_key_ms": 1782681920550,
+                    "node_hash": 2100209595829882121,
+                    "ref_type": "event",
+                    "ref_hashes": [1121810234980183195],
+                }
+            ],
+            aliases,
+        )
+
+        payload = json.dumps(
+            {"event": event, "entity": entity, "summary": summary, "embedding": embedding, "indexes": indexes},
+            sort_keys=True,
+        )
+        self.assertIn('"event": "e1"', payload)
+        self.assertIn('"node": "n1"', payload)
+        self.assertIn('"summary": "s1"', payload)
+        self.assertIn('"ref": "e1"', payload)
+        self.assertIn("Alice approved the Project Aurora GPU purchase", payload)
+        self.assertNotIn("1121810234980183195", payload)
+        self.assertNotIn("2100209595829882121", payload)
+        self.assertNotIn("context_event_key", payload)
+        self.assertNotIn("summary_version_hash", payload)
+        self.assertNotIn("model_hash", payload)
+        self.assertNotIn("NEW_EVENT", payload)
+        self.assertNotIn("/tmp/fixtures", payload)
+        self.assertNotIn("timestamp_key_ms", payload)
+
 
 if __name__ == "__main__":
     unittest.main()
