@@ -23,6 +23,7 @@ python3 tools/test_matrixark_context_backfill.py
 python3 tools/test_matrixark_context_backfill_benchmark.py
 python3 tools/test_matrixark_dual_write_ingestion_benchmark.py
 python3 tools/test_validate_matrixark_context_backfill_readiness.py
+python3 tools/test_validate_open_source_readiness.py
 python3 tools/validate_open_source_readiness.py
 python3 tools/validate_matrixark_context_backfill_readiness.py \
   --records="${RECORDS}" \

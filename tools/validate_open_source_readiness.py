@@ -65,6 +65,7 @@ BACKFILL_CI_GATE_TOKENS = [
     "python3 tools/test_matrixark_context_backfill_benchmark.py",
     "python3 tools/test_matrixark_dual_write_ingestion_benchmark.py",
     "python3 tools/test_validate_matrixark_context_backfill_readiness.py",
+    "python3 tools/test_validate_open_source_readiness.py",
     "python3 tools/validate_open_source_readiness.py",
     "python3 tools/validate_matrixark_context_backfill_readiness.py",
     "matrixark_context_backfill_readiness.json",
@@ -89,6 +90,12 @@ FALLBACK_SCAN_SKIP_DIRS = {
     "benchmark_reports",
     "thirdparty",
     "__pycache__",
+}
+
+PRIVATE_PATH_FIXTURE_FILES = {
+    "tools/validate_open_source_readiness.py",
+    "tools/validate_temporalstore_performance_execution_redaction.py",
+    "tools/test_temporalstore_performance_execution_redaction.py",
 }
 
 def read(relative_path: str) -> str:
@@ -139,7 +146,7 @@ def validate_no_private_paths() -> None:
     tracked = repository_files()
     offenders: list[str] = []
     for relative_path in tracked:
-        if relative_path == "tools/validate_open_source_readiness.py":
+        if relative_path in PRIVATE_PATH_FIXTURE_FILES:
             continue
         path = ROOT / relative_path
         if not path.is_file():
