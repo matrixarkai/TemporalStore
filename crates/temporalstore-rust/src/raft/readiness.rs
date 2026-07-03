@@ -1,5 +1,4 @@
 use super::*;
-use std::collections::HashSet;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RaftReadinessEvidenceBlocker {
@@ -251,78 +250,10 @@ pub fn raft_temporal_raft_rollout_readiness_from_reports(
     let metaserver_process_startup_selects_temporal_raft = true;
     let durable_log_state_present = true;
     let data_node_real_process_rollout_validated = data_node_report
-        .map(|report| {
-            report.ready
-                && process_path_proof_is_complete(
-                    report.spawned_process_count,
-                    report.independent_wal_dirs,
-                    report.independent_snapshot_dirs,
-                    report.observed_process_requests,
-                    report.read_index_responses_observed,
-                    report.restarted_node_count,
-                    report.per_node_log_store_inspection_count,
-                    &report.nodes,
-                )
-                && report.write_proposed_through_process_api
-                && report.recovered_after_restart
-                && report.restart_recovery_validated
-                && report.snapshot_install_validated
-                && report.applied_fence_validated
-                && report.crash_after_storage_mutation_recovered
-                && report.crash_after_wal_persist_recovered
-                && report.crash_during_snapshot_install_recovered
-                && report.apply_fence_recovered_after_restart
-                && report.multi_process_log_store_validated
-                && report.leader_transfer_validated
-                && report.failover_validated
-                && report.membership_change_validated
-                && report.follower_lag_validated
-                && report.secondary_read_validated
-                && report.operational_semantics.proves_runtime_semantics()
-                && report.nodes.len() >= 3
-                && report.nodes.iter().all(|node| {
-                    node.restarted
-                        && node.log_store_validated
-                        && node.applied_index >= node.commit_index
-                })
-        })
+        .map(::rustraft::rustraft_data_node_strict_process_rollout_validated)
         .unwrap_or(false);
     let metaserver_real_process_rollout_validated = metaserver_report
-        .map(|report| {
-            report.ready
-                && process_path_proof_is_complete(
-                    report.spawned_process_count,
-                    report.independent_wal_dirs,
-                    report.independent_snapshot_dirs,
-                    report.observed_process_requests,
-                    report.read_index_responses_observed,
-                    report.restarted_node_count,
-                    report.per_node_log_store_inspection_count,
-                    &report.nodes,
-                )
-                && report.mutation_proposed_through_process_api
-                && report.applied_raft_mutations > 0
-                && report.read_index_validated
-                && report.snapshot_install_validated
-                && report.recovered_after_restart
-                && report.scheduler_task_replay_validated
-                && report.crash_after_meta_mutation_recovered
-                && report.crash_after_meta_wal_persist_recovered
-                && report.crash_during_meta_snapshot_install_recovered
-                && report.meta_apply_fence_recovered_after_restart
-                && report.multi_process_log_store_validated
-                && report.failover_validated
-                && report.membership_change_validated
-                && report.follower_lag_validated
-                && report.secondary_read_validated
-                && report.operational_semantics.proves_runtime_semantics()
-                && report.nodes.len() >= 3
-                && report.nodes.iter().all(|node| {
-                    node.restarted
-                        && node.log_store_validated
-                        && node.applied_index >= node.commit_index
-                })
-        })
+        .map(::rustraft::rustraft_meta_strict_process_rollout_validated)
         .unwrap_or(false);
     let multi_process_log_store_validation_present = data_node_report
         .map(|report| report.multi_process_log_store_validated)
@@ -726,43 +657,6 @@ fn push_if_false(
             detail: detail.to_string(),
         });
     }
-}
-
-fn process_path_proof_is_complete(
-    spawned_process_count: u64,
-    independent_wal_dirs: bool,
-    independent_snapshot_dirs: bool,
-    observed_process_requests: u64,
-    read_index_responses_observed: u64,
-    restarted_node_count: u64,
-    per_node_log_store_inspection_count: u64,
-    nodes: &[TemporalRaftProcessNodeEvidence],
-) -> bool {
-    let expected = nodes.len() as u64;
-    spawned_process_count >= 3
-        && expected >= 3
-        && spawned_process_count >= expected
-        && independent_wal_dirs
-        && independent_snapshot_dirs
-        && observed_process_requests >= expected
-        && read_index_responses_observed > 0
-        && restarted_node_count >= expected
-        && per_node_log_store_inspection_count >= expected
-        && unique_non_empty_dirs(nodes.iter().map(|node| node.addr.as_str()))
-        && unique_non_empty_dirs(nodes.iter().map(|node| node.wal_dir.as_str()))
-        && unique_non_empty_dirs(nodes.iter().map(|node| node.snapshot_dir.as_str()))
-}
-
-fn unique_non_empty_dirs<'a>(dirs: impl Iterator<Item = &'a str>) -> bool {
-    let mut seen = HashSet::new();
-    let mut count = 0usize;
-    for dir in dirs {
-        if dir.is_empty() || !seen.insert(dir) {
-            return false;
-        }
-        count += 1;
-    }
-    count >= 3
 }
 
 pub fn raft_metaserver_membership_readiness() -> RaftMetaserverMembershipReadiness {
