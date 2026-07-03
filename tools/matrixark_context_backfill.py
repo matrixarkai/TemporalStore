@@ -18,6 +18,7 @@ import argparse
 import hashlib
 import json
 import os
+import shlex
 import sys
 import time
 from argparse import Namespace
@@ -1165,6 +1166,80 @@ def build_plan_execution(args: argparse.Namespace, windows: list[Json]) -> Json:
             'run promotion_sequence[].incremental_repair_command_args one at a time in order',
         ],
     }
+
+
+def _script_command(args_list: list[str]) -> str:
+    command = ['python3', 'tools/matrixark_context_backfill.py', *args_list]
+    return ' '.join(shlex.quote(part) for part in command)
+
+
+def _write_plan_script(path: Path, commands: list[list[str]], *, parallel: bool) -> None:
+    lines = [
+        '#!/usr/bin/env bash',
+        'set -euo pipefail',
+        f'cd {shlex.quote(str(ROOT))}',
+        '',
+    ]
+    if parallel:
+        lines.append('pids=()')
+        for args_list in commands:
+            lines.append(f'{_script_command(args_list)} &')
+            lines.append('pids+=("$!")')
+        lines.extend([
+            'for pid in "${pids[@]}"; do',
+            '  wait "$pid"',
+            'done',
+        ])
+    else:
+        for args_list in commands:
+            lines.append(_script_command(args_list))
+    path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    path.chmod(0o755)
+
+
+def write_plan_artifacts(args: argparse.Namespace, summary: Json) -> Json:
+    output_dir_arg = str(getattr(args, 'plan_output_dir', '') or '')
+    if not output_dir_arg:
+        return {}
+    output_dir = Path(output_dir_arg)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chunk_plan = summary.get('chunk_plan') if isinstance(summary.get('chunk_plan'), dict) else {}
+    execution_plan = chunk_plan.get('execution_plan') if isinstance(chunk_plan.get('execution_plan'), dict) else {}
+    shadow_scripts: list[str] = []
+    validate_scripts: list[str] = []
+    for wave in execution_plan.get('shadow_validation_waves') or []:
+        if not isinstance(wave, dict):
+            continue
+        wave_id = int(wave.get('wave', len(shadow_scripts)) or 0)
+        shadow_path = output_dir / f'shadow_wave_{wave_id:04d}.sh'
+        validate_path = output_dir / f'validate_wave_{wave_id:04d}.sh'
+        _write_plan_script(shadow_path, list(wave.get('shadow_command_args') or []), parallel=True)
+        _write_plan_script(validate_path, list(wave.get('validate_command_args') or []), parallel=True)
+        shadow_scripts.append(str(shadow_path))
+        validate_scripts.append(str(validate_path))
+    promotion_commands = [
+        item.get('incremental_repair_command_args')
+        for item in (execution_plan.get('promotion_sequence') or [])
+        if isinstance(item, dict) and isinstance(item.get('incremental_repair_command_args'), list)
+    ]
+    promote_script = ''
+    if promotion_commands:
+        promote_path = output_dir / 'promote_serial.sh'
+        _write_plan_script(promote_path, promotion_commands, parallel=False)
+        promote_script = str(promote_path)
+    plan_path = output_dir / 'plan.json'
+    artifact_summary = {
+        'output_dir': str(output_dir),
+        'plan_json': str(plan_path),
+        'shadow_wave_scripts': shadow_scripts,
+        'validate_wave_scripts': validate_scripts,
+        'promote_serial_script': promote_script,
+        'script_cwd': str(ROOT),
+    }
+    summary_with_artifacts = dict(summary)
+    summary_with_artifacts['plan_artifacts'] = artifact_summary
+    plan_path.write_text(json.dumps(summary_with_artifacts, sort_keys=True, indent=2), encoding='utf-8')
+    return artifact_summary
 
 
 def build_plan_windows(args: argparse.Namespace, *, source_range: Json, target_prefix: str) -> Json:
@@ -2327,7 +2402,7 @@ def run_plan(args: argparse.Namespace) -> Json:
         partial.get(key) for key in ['record_types', 'tenant_ids', 'user_ids', 'session_ids', 'filter_json']
     ):
         readiness_blockers.append('partial_backfill_requires_bounded_range_or_filter')
-    return {
+    summary = {
         'status': 'ok' if not readiness_blockers else 'needs_confirmation',
         'mode': 'plan',
         'job_id': args.job_id,
@@ -2384,6 +2459,10 @@ def run_plan(args: argparse.Namespace) -> Json:
             'run activate_shadow for full cutover or incremental_repair for bounded active repair',
         ],
     }
+    artifacts = write_plan_artifacts(args, summary)
+    if artifacts:
+        summary['plan_artifacts'] = artifacts
+    return summary
 
 
 def run_incremental_repair(args: argparse.Namespace) -> Json:
@@ -2639,6 +2718,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--plan-window-size', type=int, default=0, help='plan-only bounded source records per execution window; 0 disables chunk planning')
     parser.add_argument('--plan-max-windows', type=int, default=128, help='plan-only maximum windows to emit; 0 emits all windows')
     parser.add_argument('--plan-parallelism', type=int, default=1, help='plan-only number of independent chunk shadows to group into each preparation wave')
+    parser.add_argument('--plan-output-dir', default='', help='plan-only directory for plan.json plus runnable shadow/validation/promotion scripts')
     parser.add_argument('--source-scan-max-empty-shards', type=int, default=2)
     parser.add_argument('--dry-run', type=int, choices=[0, 1], default=1)
     parser.add_argument('--dry-run-check-target', type=int, choices=[0, 1], default=1, help='during dry-run, check target idempotency so duplicate and would-write counts match a real run')

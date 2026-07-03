@@ -173,12 +173,15 @@ python3 tools/matrixark_context_backfill.py \
   --batch-size=2048 \
   --plan-window-size=250000 \
   --plan-max-windows=8 \
-  --plan-parallelism=4
+  --plan-parallelism=4 \
+  --plan-output-dir=/var/tmp/matrixark_backfill_full_20260704
 ```
 
 `chunk_plan.windows[]` includes ready-to-run argument lists for `shadow`, `validate_shadow`, and `incremental_repair`. The emitted arguments preserve the selected raw backend, TemporalStore connection settings, bounded sequence range, batch size, source scan limits, partial filters, resume behavior, validation mode, and active-prefix preconditions from the plan command. Shared target-prefix writes should be serialized. For faster preparation, use each window's independent `parallel_shadow_prefix` to build and validate chunk shadows concurrently, then serialize active-prefix promotion with `incremental_repair` so active serving state remains deterministic.
 
 `chunk_plan.execution_plan` groups independent shadow and validation commands into waves of up to `--plan-parallelism` windows. Treat those waves as the fast preparation phase. The same plan also emits `promotion_sequence`, which should be run one command at a time in sequence because it updates the active serving prefix.
+
+When `--plan-output-dir` is set, the planner writes `plan.json`, `shadow_wave_*.sh`, `validate_wave_*.sh`, and `promote_serial.sh`. The wave scripts run independent chunk work in parallel inside each wave. The promotion script runs repairs sequentially. Review `plan.json` and the generated scripts before execution, then archive the directory with the recovery ticket or release evidence.
 
 ## Quick Start: Full Shadow Backfill
 
