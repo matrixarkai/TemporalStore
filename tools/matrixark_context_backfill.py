@@ -1616,6 +1616,57 @@ def incremental_promotion_consistency(validation: Json | None, promotion: Json, 
     }
 
 
+def incremental_repair_to_prometheus(summary: Json) -> str:
+    job_id = str(summary.get('job_id') or '')
+    raw_backend = str(summary.get('raw_backend') or '')
+    shadow_prefix = str(summary.get('shadow_prefix') or '')
+    active_prefix = str(summary.get('active_prefix') or '')
+    base = {
+        'job_id': job_id,
+        'raw_backend': raw_backend,
+        'shadow_prefix': shadow_prefix,
+        'active_prefix': active_prefix,
+        'mode': 'incremental_repair',
+    }
+    consistency = summary.get('promotion_consistency') if isinstance(summary.get('promotion_consistency'), dict) else {}
+    consistency_status = str(consistency.get('status') or 'unknown')
+    lines = [
+        '# HELP matrixark_context_backfill_incremental_repair_status Incremental repair status.',
+        '# TYPE matrixark_context_backfill_incremental_repair_status gauge',
+        f'matrixark_context_backfill_incremental_repair_status{{{_prom_labels(**base, status=str(summary.get("status") or "unknown"))}}} 1',
+        '# HELP matrixark_context_backfill_incremental_repair_promotion_consistency_status Incremental repair promotion consistency status.',
+        '# TYPE matrixark_context_backfill_incremental_repair_promotion_consistency_status gauge',
+        f'matrixark_context_backfill_incremental_repair_promotion_consistency_status{{{_prom_labels(**base, status=consistency_status)}}} 1',
+        '# HELP matrixark_context_backfill_incremental_repair_promotion_consistency_check Incremental repair promotion consistency check result, 1 for pass and 0 for fail.',
+        '# TYPE matrixark_context_backfill_incremental_repair_promotion_consistency_check gauge',
+    ]
+    checks = consistency.get('checks') if isinstance(consistency.get('checks'), dict) else {}
+    for check_name, passed in sorted(checks.items()):
+        lines.append(f'matrixark_context_backfill_incremental_repair_promotion_consistency_check{{{_prom_labels(**base, check=check_name)}}} {1 if passed else 0}')
+    metrics = consistency.get('promotion_metrics') if isinstance(consistency.get('promotion_metrics'), dict) else {}
+    lines.extend([
+        '# HELP matrixark_context_backfill_incremental_repair_promotion_records Promotion record counters for the active-prefix replay.',
+        '# TYPE matrixark_context_backfill_incremental_repair_promotion_records gauge',
+    ])
+    for name in ['scanned', 'filtered', 'written', 'duplicate', 'failed', 'dead_letter', 'skipped']:
+        lines.append(f'matrixark_context_backfill_incremental_repair_promotion_records{{{_prom_labels(**base, status=name)}}} {int(metrics.get(name, 0) or 0)}')
+    source_range = consistency.get('promotion_source_range') if isinstance(consistency.get('promotion_source_range'), dict) else {}
+    lines.extend([
+        '# HELP matrixark_context_backfill_incremental_repair_promotion_source_range Source range replayed into the active prefix.',
+        '# TYPE matrixark_context_backfill_incremental_repair_promotion_source_range gauge',
+    ])
+    for name in ['effective_start_seq', 'effective_end_seq', 'source_high_watermark_seq', 'source_record_count']:
+        value = source_range.get(name)
+        if value is not None:
+            lines.append(f'matrixark_context_backfill_incremental_repair_promotion_source_range{{{_prom_labels(**base, boundary=name)}}} {int(value)}')
+    lines.extend([
+        '# HELP matrixark_context_backfill_incremental_repair_validation_status Validation status observed before active-prefix promotion.',
+        '# TYPE matrixark_context_backfill_incremental_repair_validation_status gauge',
+        f'matrixark_context_backfill_incremental_repair_validation_status{{{_prom_labels(**base, status=str(summary.get("validation_status") or "unknown"), skipped=str(bool(summary.get("validation_skipped"))).lower())}}} 1',
+    ])
+    return '\n'.join(lines) + '\n'
+
+
 def run_incremental_repair(args: argparse.Namespace) -> Json:
     if not args.target_prefix:
         raise BackfillError('incremental_repair requires --target-prefix for the shadow repair prefix')
@@ -1677,7 +1728,7 @@ def run_incremental_repair(args: argparse.Namespace) -> Json:
         }
         kv.hset(f'{args.active_prefix_key}:incremental_repair_audit', args.job_id, json.dumps(audit, sort_keys=True, separators=(',', ':')))
 
-    return {
+    summary = {
         'status': 'ok',
         'mode': 'incremental_repair',
         'job_id': args.job_id,
@@ -1694,6 +1745,9 @@ def run_incremental_repair(args: argparse.Namespace) -> Json:
         'promotion_consistency': promotion_consistency,
         'audit_key': f'{args.active_prefix_key}:incremental_repair_audit',
     }
+    if args.prometheus_output:
+        Path(args.prometheus_output).write_text(incremental_repair_to_prometheus(summary), encoding='utf-8')
+    return summary
 
 
 def build_parser() -> argparse.ArgumentParser:
