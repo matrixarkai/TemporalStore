@@ -34,6 +34,7 @@ class MatrixArkDualWriteIngestionBenchmarkTest(unittest.TestCase):
             "io_timeout_ms": 1000,
             "min_ingestion_qps": 0.0,
             "max_batch_p95_ms": 0.0,
+            "min_backend_qps_ratio": 0.0,
             "require_dual_write_counts": 0,
             "json_output": "",
         }
@@ -111,6 +112,23 @@ class MatrixArkDualWriteIngestionBenchmarkTest(unittest.TestCase):
         with self.assertRaises(bench.BenchmarkError):
             bench.run_backend_sweep(args)
 
+    def test_backend_sweep_can_enforce_backend_qps_ratio(self) -> None:
+        passing = self.make_args(records=40, workers=2, batch_size=10, min_backend_qps_ratio=0.000001)
+        passing.raw_backends = "both"
+        passing_summary = bench.run_backend_sweep(passing)
+        self.assertEqual(passing_summary["status"], "ok")
+        ratio_checks = [check for check in passing_summary["performance_gate"]["checks"] if check["metric"] == "backend_ingestion_qps_ratio"]
+        self.assertEqual(len(ratio_checks), 1)
+        self.assertTrue(ratio_checks[0]["passed"])
+
+        failing = self.make_args(records=40, workers=2, batch_size=10, min_backend_qps_ratio=2.0)
+        failing.raw_backends = "both"
+        failing_summary = bench.run_backend_sweep(failing)
+        self.assertEqual(failing_summary["status"], "failed")
+        failed_ratio_checks = [check for check in failing_summary["performance_gate"]["checks"] if check["metric"] == "backend_ingestion_qps_ratio"]
+        self.assertEqual(len(failed_ratio_checks), 1)
+        self.assertFalse(failed_ratio_checks[0]["passed"])
+
     def test_rejects_invalid_record_count(self) -> None:
         with self.assertRaises(bench.BenchmarkError):
             bench.run_benchmark(self.make_args(records=0))
@@ -120,6 +138,10 @@ class MatrixArkDualWriteIngestionBenchmarkTest(unittest.TestCase):
             bench.run_benchmark(self.make_args(min_ingestion_qps=-1))
         with self.assertRaises(bench.BenchmarkError):
             bench.run_benchmark(self.make_args(max_batch_p95_ms=-1))
+        args = self.make_args(min_backend_qps_ratio=-1)
+        args.raw_backends = "both"
+        with self.assertRaises(bench.BenchmarkError):
+            bench.run_backend_sweep(args)
 
     def test_cli_returns_nonzero_when_gate_fails(self) -> None:
         rc = bench.main([
@@ -140,6 +162,7 @@ class MatrixArkDualWriteIngestionBenchmarkTest(unittest.TestCase):
                 "--workers=2",
                 "--batch-size=10",
                 "--raw-backends=both",
+                "--min-backend-qps-ratio=0.000001",
                 "--require-dual-write-counts=1",
                 f"--json-output={output}",
             ])
@@ -148,6 +171,7 @@ class MatrixArkDualWriteIngestionBenchmarkTest(unittest.TestCase):
             self.assertEqual(summary["raw_backends"], ["temporalstore", "matrixkv"])
             self.assertEqual(summary["total_records"], 40)
             self.assertTrue(summary["performance_gate"]["passed"])
+            self.assertEqual(summary["performance_gate"]["min_backend_qps_ratio"], 0.000001)
 
 
 if __name__ == "__main__":
