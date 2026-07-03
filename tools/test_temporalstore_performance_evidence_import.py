@@ -218,6 +218,19 @@ class PerformanceEvidenceImportTest(unittest.TestCase):
         self.assertIn("cpp_append_watermark_not_advanced", row["open_blockers"])
         self.assertIn("rust_compaction_watermark_ahead_of_append", row["open_blockers"])
 
+    def test_aggregated_fallback_counters_block_otherwise_good_report(self) -> None:
+        report = _report_with_good_parity()
+        report["backends"]["cpp"]["retrieve"]["stage_metrics"]["broad_scan_used_count"] = 1
+        report["backends"]["rust"]["retrieve"]["stage_metrics"]["timeout_partial_count"] = 1
+
+        updated = import_report(_matrix(), report)
+
+        row = next(row for row in updated["rows"] if row["workload"] == "1K_event_ingestion")
+        self.assertEqual(row["status"], "missing_live_evidence")
+        self.assertIn("fallback_flags_present", row["open_blockers"])
+        self.assertIn("broad_scan_used", row["cpp"]["fallback_flags"])
+        self.assertIn("timeout_partial", row["rust"]["fallback_flags"])
+
     def test_phase_scale_gate_must_be_required_and_passed(self) -> None:
         report = _report_with_good_parity()
         report["phase_scale_matrix"] = {
