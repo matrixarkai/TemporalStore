@@ -128,7 +128,12 @@ def _next_required_workflow(next_required_runs: list[dict[str, Any]]) -> dict[st
                 "workload": item["workload"],
                 "reason": item["reason"],
                 "argv": item["command"],
+                "artifact_dir": item.get("artifact_dir"),
+                "comparison_path": item.get("comparison_path"),
                 "recommended_execution_output": item.get("recommended_execution_output"),
+                "required_same_config_fields": item.get("required_same_config_fields"),
+                "required_result": item.get("required_result"),
+                "next_run_hint_source": item.get("source"),
             }
         )
         commands.append(
@@ -137,6 +142,11 @@ def _next_required_workflow(next_required_runs: list[dict[str, Any]]) -> dict[st
                 "workload": item["workload"],
                 "reason": item["reason"],
                 "argv": item["import_command"],
+                "artifact_dir": item.get("artifact_dir"),
+                "comparison_path": item.get("comparison_path"),
+                "required_same_config_fields": item.get("required_same_config_fields"),
+                "required_result": item.get("required_result"),
+                "next_run_hint_source": item.get("source"),
             }
         )
     return {
@@ -341,6 +351,7 @@ def audit_artifacts(artifact_root: Path, matrix_path: Path) -> dict[str, Any]:
             "phase_scale_coverage_required": details["next_run_hint"]["phase_scale_coverage_required"],
             "required_same_config_fields": details["next_run_hint"]["required_same_config_fields"],
             "required_result": details["next_run_hint"]["required_result"],
+            "source": details["next_run_hint"].get("source"),
         }
         for workload, details in required_workload_status.items()
         if details["status"] != "has_importable"
