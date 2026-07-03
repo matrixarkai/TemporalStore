@@ -65,6 +65,7 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             "source_scan_max_empty_shards": 2,
             "dry_run": False,
             "resume": True,
+            "confirm_resume_range_change": "",
             "fail_fast": False,
             "prometheus_output": "",
             "local_kv": str(path),
@@ -189,6 +190,38 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(summary["resume_state"]["checkpoint_last_sequence"], 0)
             self.assertEqual(summary["resume_state"]["effective_start_seq"], 1)
             self.assertEqual([record["event_id_hash"] for record in read_target_records(backfill.LocalJsonKV(path), "matrixark:context_backfill:test")], [2])
+
+    def test_resume_rejects_incompatible_source_range_without_confirmation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            write_sharded(kv, "matrixark:mcp", 0, {"record_type": "context_event", "event_id_hash": 1})
+            write_sharded(kv, "matrixark:mcp", 1, {"record_type": "context_event", "event_id_hash": 2})
+            write_sharded(kv, "matrixark:mcp", 2, {"record_type": "context_event", "event_id_hash": 3})
+            kv.put_string("matrixark:mcp:record_count", "3")
+
+            first = backfill.run_backfill(self.make_args(path, start_seq=0, end_seq=2, batch_size=2, resume=True))
+            self.assertEqual(first["metrics"]["written"], 2)
+
+            with self.assertRaisesRegex(backfill.BackfillError, "confirm-resume-range-change=YES"):
+                backfill.run_backfill(self.make_args(path, start_seq=1, end_seq=3, batch_size=2, resume=True))
+
+            confirmed = backfill.run_backfill(self.make_args(
+                path,
+                start_seq=1,
+                end_seq=3,
+                batch_size=2,
+                resume=True,
+                confirm_resume_range_change="YES",
+            ))
+            self.assertTrue(confirmed["resume_state"]["checkpoint_ignored"])
+            self.assertEqual(confirmed["resume_state"]["checkpoint_ignore_reason"], "source_range_mismatch_confirmed")
+            self.assertEqual(confirmed["resume_state"]["effective_start_seq"], 1)
+            self.assertEqual(confirmed["metrics"]["scanned"], 2)
+            self.assertEqual(confirmed["metrics"]["duplicate"], 1)
+            self.assertEqual(confirmed["metrics"]["written"], 1)
+            records = read_target_records(backfill.LocalJsonKV(path), "matrixark:context_backfill:test")
+            self.assertEqual([record["event_id_hash"] for record in records], [1, 2, 3])
 
 
     def test_scan_hash_backfill_without_record_count_or_index(self):

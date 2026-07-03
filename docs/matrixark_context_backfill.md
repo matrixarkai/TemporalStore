@@ -345,6 +345,8 @@ Every run summary and manifest includes a `resume_state` block with `resume_requ
 
 Checkpoints advance after the pending target batch is flushed and counted. After a restart, the runner may replay at most the last uncommitted batch. Target-side idempotency keys prevent duplicate appends for already written records.
 
+Resume is source-window guarded. When a JSON checkpoint contains `checkpoint_source_range`, the next `--resume=1` run must use the same requested `--start-seq` and either the same `--end-seq` or widen a previously bounded run to unbounded completion. If the requested window differs, the runner fails instead of silently skipping the intended range. Use `--confirm-resume-range-change=YES` only for an intentional recovery; that confirmation ignores the old checkpoint and starts from the requested range while target-side idempotency protects already written records.
+
 For scan-hash fallback jobs, the runner refreshes the final checkpoint after discovery completes so checkpoint `source_range` matches the JSON summary and manifest. This keeps resume audits accurate even though intermediate per-batch checkpoints are written before the final discovered high-watermark is known.
 
 Use `--resume=0` when intentionally rerunning a job from `--start-seq`.
@@ -1149,6 +1151,7 @@ Core flags:
 --batch-size
 --dry-run
 --resume
+--confirm-resume-range-change=YES
 --fail-fast
 --prometheus-output
 ```
