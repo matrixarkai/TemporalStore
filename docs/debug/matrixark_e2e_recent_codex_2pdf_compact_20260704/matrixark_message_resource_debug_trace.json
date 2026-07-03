@@ -1,0 +1,2676 @@
+{
+  "context_pack": {
+    "context_pack_id": "3950118627389790960",
+    "counts": {
+      "refs": {
+        "compression": 0,
+        "entity": 4,
+        "event": 2,
+        "resource_chunk": 2,
+        "resource_entity_fact": 0,
+        "resource_fact": 1,
+        "segment": 1,
+        "skill_section": 0,
+        "summary": 0
+      }
+    },
+    "groups": [
+      {
+        "items": [
+          {
+            "entity": "the GPU purchase request for Project Aurora after reviewing the Q3 budget",
+            "entity_type": "approval_state",
+            "text": "approval_state: the GPU purchase request for Project Aurora after reviewing the Q3 budget = the GPU purchase request for Project Aurora after reviewing the Q3 budget",
+            "tokens": 25
+          },
+          {
+            "entity": "must be attached before vendor selection",
+            "entity_type": "approval_state",
+            "text": "approval_state: must be attached before vendor selection = must be attached before vendor selection",
+            "tokens": 13
+          },
+          {
+            "entity": "by Alice in finance, pending procurement owner assignment",
+            "entity_type": "approval_state",
+            "text": "approval_state: by Alice in finance, pending procurement owner assignment = by Alice in finance, pending procurement owner assignment",
+            "tokens": 17
+          },
+          {
+            "entity": "attachment",
+            "entity_type": "approval_state",
+            "text": "approval_state: attachment = attachment",
+            "tokens": 3
+          }
+        ],
+        "n": 4,
+        "type": "entity"
+      },
+      {
+        "class": "resource_fact",
+        "items": [
+          {
+            "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+            "tokens": 51
+          }
+        ],
+        "n": 1,
+        "type": "event"
+      },
+      {
+        "items": [
+          {
+            "resource_type": "pdf",
+            "source": "C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_approval_packet.pdf#page=1",
+            "text": "resource page=1: Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+            "tokens": 54,
+            "unit_kind": "pdf_page",
+            "version": "d9847f56b13efbdd",
+            "version_state": "current"
+          },
+          {
+            "resource_type": "pdf",
+            "source": "C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_runbook.pdf#page=1",
+            "text": "resource page=1: GPU Procurement Runbook\nProcedure: Attach finance approval before vendor selection.\nProcedure: Compare primary and backup GPU quotes before purchase order creation.\nTroubleshooting: If approval attachment is missing, notify Alice and stop vendor selection.\nAudit: Store final vendor selection evidence with the purchase order.",
+            "tokens": 46,
+            "unit_kind": "pdf_page",
+            "version": "c950b972df2d7e46",
+            "version_state": "current"
+          }
+        ],
+        "n": 2,
+        "type": "resource_chunk"
+      },
+      {
+        "items": [
+          {
+            "text": "0: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. 1: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment. 2: Bob will own procurement, and the budget cap is 42000 dollars for the initial GPU batch. 4: The deadline is July 15, 2026, and the runbook says finance approval must be attached before vendor sele...",
+            "tokens": 69
+          }
+        ],
+        "n": 1,
+        "type": "segment"
+      },
+      {
+        "items": [
+          {
+            "text": "user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget.",
+            "tokens": 17
+          },
+          {
+            "text": "assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment.",
+            "tokens": 16
+          }
+        ],
+        "n": 2,
+        "type": "event"
+      }
+    ],
+    "tokens": {
+      "remote": 311,
+      "remote_budget": 9872,
+      "total": 311
+    }
+  },
+  "embeddings": [
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        0.0,
+        0.04994,
+        -0.19975,
+        0.3995,
+        0.0,
+        -0.24969,
+        0.04994
+      ],
+      "ref": "summary:8695652974415713980",
+      "type": "session_l0"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        0.0,
+        0.0,
+        -0.2,
+        0.4,
+        0.0,
+        -0.2,
+        0.0
+      ],
+      "ref": "event:390515146070215547",
+      "type": "event_text"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        0.0,
+        0.26726,
+        0.0,
+        0.26726,
+        0.0,
+        -0.26726,
+        0.26726
+      ],
+      "ref": "event:1557402973722976893",
+      "type": "event_text"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        0.0,
+        -0.2582,
+        -0.2582,
+        0.2582,
+        0.2582,
+        0.0,
+        0.0
+      ],
+      "ref": "event:1537019087039074216",
+      "type": "event_text"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        0.0,
+        -0.22942,
+        0.22942,
+        0.0,
+        0.22942,
+        0.0,
+        0.0
+      ],
+      "ref": "event:8281355690372387016",
+      "type": "event_text"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        -0.22942,
+        -0.22942,
+        -0.22942,
+        0.22942,
+        0.0,
+        -0.45883,
+        -0.22942
+      ],
+      "ref": "event:8394769407351691099",
+      "type": "event_text"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.24254,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -0.24254,
+        0.0
+      ],
+      "ref": "event:199706346490473758",
+      "type": "event_text"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        0.0,
+        0.0,
+        -0.44721,
+        0.22361,
+        0.22361,
+        0.22361,
+        0.0
+      ],
+      "ref": "event:4785019507418970771",
+      "type": "event_text"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.31623,
+        0.31623,
+        0.0,
+        -0.31623
+      ],
+      "ref": "event:5575279812667982889",
+      "type": "event_text"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        0.0,
+        -0.24254,
+        0.0,
+        0.0,
+        0.24254,
+        0.0,
+        0.0
+      ],
+      "ref": "entity:1488030737650625042",
+      "type": "entity_state"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        0.24254,
+        0.0,
+        -0.24254,
+        0.24254,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref": "entity:5205088207995267081",
+      "type": "entity_state"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        0.33333,
+        0.33333,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.33333
+      ],
+      "ref": "entity:5708414255151575681",
+      "type": "entity_state"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        0.0,
+        0.0,
+        -0.44721,
+        0.0,
+        0.44721,
+        -0.44721,
+        0.0
+      ],
+      "ref": "entity:8967060400784335657",
+      "type": "entity_state"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.70711,
+        0.70711,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "ref": "entity:1722827731307680407",
+      "type": "entity_state"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        -0.07538,
+        -0.07538,
+        -0.30151,
+        0.15076,
+        0.0,
+        -0.30151,
+        0.0
+      ],
+      "ref": "segment:2704430496910278940",
+      "type": "segment_text"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        0.0,
+        0.0,
+        -0.3849,
+        0.0,
+        0.19245,
+        0.19245,
+        0.19245
+      ],
+      "ref": "segment:3708475525076359226",
+      "type": "segment_text"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        0.0,
+        -0.22361,
+        0.0,
+        0.22361,
+        0.22361,
+        0.0,
+        0.0
+      ],
+      "ref": "segment:2330412898750113116",
+      "type": "segment_text"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.05083,
+        -0.05083,
+        -0.10167,
+        -0.1525,
+        0.35583,
+        0.20333,
+        -0.20333,
+        0.0
+      ],
+      "ref": "summary:3229605441134634939",
+      "type": "batch_l0"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        -0.08944,
+        -0.08944,
+        -0.44721,
+        0.26833,
+        0.17888,
+        -0.08944,
+        0.08944
+      ],
+      "ref": "summary:5044606450940775875",
+      "type": "resource_l0"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        -0.0767,
+        -0.0767,
+        -0.46018,
+        0.23009,
+        0.0767,
+        -0.0767,
+        0.15339
+      ],
+      "ref": "resource_chunk:252983731941246106",
+      "type": "resource_chunk"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        0.0,
+        -0.08704,
+        -0.43519,
+        0.26112,
+        0.0,
+        -0.34815,
+        0.08704
+      ],
+      "ref": "event:5560117811447811670",
+      "type": "event_text"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        -0.07762,
+        -0.07762,
+        -0.38808,
+        0.31046,
+        0.0,
+        -0.23284,
+        0.07762
+      ],
+      "ref": "entity:6247907100159583553",
+      "type": "entity_state"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        0.1,
+        -0.2,
+        -0.6,
+        0.2,
+        0.0,
+        -0.3,
+        0.1
+      ],
+      "ref": "event:7961743726253113316",
+      "type": "event_text"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        0.08671,
+        -0.26013,
+        -0.69369,
+        0.17342,
+        0.0,
+        -0.26013,
+        0.08671
+      ],
+      "ref": "entity:9084589347207474833",
+      "type": "entity_state"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        0.0,
+        0.0,
+        -0.5,
+        0.25,
+        0.0,
+        -0.25,
+        0.0
+      ],
+      "ref": "event:8406585495907365101",
+      "type": "event_text"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.08737,
+        -0.08737,
+        -0.26211,
+        -0.52422,
+        -0.17474,
+        0.43685,
+        0.08737,
+        0.0
+      ],
+      "ref": "summary:3282433690769415239",
+      "type": "resource_l0"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.07293,
+        -0.07293,
+        -0.2188,
+        -0.58346,
+        -0.29173,
+        0.36466,
+        0.07293,
+        0.07293
+      ],
+      "ref": "resource_chunk:4996044706456527137",
+      "type": "resource_chunk"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.09091,
+        0.0,
+        -0.27273,
+        -0.54546,
+        -0.36364,
+        0.36364,
+        -0.09091,
+        0.0
+      ],
+      "ref": "event:4203705342578598515",
+      "type": "event_text"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.08333,
+        -0.08333,
+        -0.16667,
+        -0.5,
+        -0.33333,
+        0.33333,
+        0.0,
+        0.0
+      ],
+      "ref": "entity:5206464065100464610",
+      "type": "entity_state"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.09667,
+        0.0,
+        -0.29002,
+        -0.58004,
+        -0.29002,
+        0.3867,
+        -0.09667,
+        0.0
+      ],
+      "ref": "event:1110371357745234587",
+      "type": "event_text"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.08392,
+        -0.08392,
+        -0.25175,
+        -0.58743,
+        -0.25175,
+        0.41959,
+        0.0,
+        0.0
+      ],
+      "ref": "entity:6041746208301469057",
+      "type": "entity_state"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        0.0,
+        0.0,
+        -0.57735,
+        0.0,
+        0.0,
+        -0.28868,
+        0.0
+      ],
+      "ref": "event:1902485603234667889",
+      "type": "event_text"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        0.0,
+        0.0,
+        -0.14434,
+        0.57735,
+        0.0,
+        -0.14434,
+        0.0
+      ],
+      "ref": "summary:1886266633781634111",
+      "type": "node_l0"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0336,
+        -0.0336,
+        -0.06719,
+        -0.23517,
+        0.40315,
+        0.16798,
+        -0.20157,
+        0.0
+      ],
+      "ref": "summary:1616491761191208179",
+      "type": "node_l1"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        0.0,
+        0.0,
+        -0.28571,
+        0.42857,
+        0.14286,
+        -0.14286,
+        0.0
+      ],
+      "ref": "summary:7072998724969009401",
+      "type": "node_l0"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        -0.03975,
+        -0.11924,
+        -0.23848,
+        0.35772,
+        0.23848,
+        -0.15899,
+        -0.07949
+      ],
+      "ref": "summary:3186282447509310879",
+      "type": "node_l1"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        0.0,
+        0.0,
+        -0.21953,
+        0.43906,
+        -0.10976,
+        -0.21953,
+        0.0
+      ],
+      "ref": "summary:4626625830169563149",
+      "type": "node_l0"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        -0.02704,
+        -0.02704,
+        -0.16222,
+        0.35148,
+        0.05407,
+        -0.27037,
+        0.02704
+      ],
+      "ref": "summary:1916101716449258884",
+      "type": "node_l1"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        0.0,
+        0.0,
+        -0.2325,
+        0.46499,
+        0.0,
+        -0.2325,
+        0.0
+      ],
+      "ref": "summary:5451123137701072075",
+      "type": "node_l0"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        -0.02736,
+        -0.02736,
+        -0.16415,
+        0.38302,
+        0.02736,
+        -0.27359,
+        0.02736
+      ],
+      "ref": "summary:7794448877417626891",
+      "type": "node_l1"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        -0.11868,
+        0.0,
+        -0.23736,
+        0.47471,
+        0.0,
+        -0.23736,
+        0.0
+      ],
+      "ref": "summary:2423087115552912795",
+      "type": "node_l0"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        -0.07809,
+        -0.11713,
+        -0.39043,
+        0.2733,
+        0.15617,
+        -0.15617,
+        0.03904
+      ],
+      "ref": "summary:8165358132187641623",
+      "type": "node_l1"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        -0.125,
+        0.0,
+        -0.125,
+        0.5,
+        0.125,
+        -0.25,
+        0.0
+      ],
+      "ref": "summary:4443347079005396521",
+      "type": "node_l0"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        -0.03913,
+        -0.07827,
+        -0.39133,
+        0.27393,
+        0.19567,
+        -0.15653,
+        0.03913
+      ],
+      "ref": "summary:7129763152424808338",
+      "type": "node_l1"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.0,
+        0.0,
+        0.0,
+        -0.343,
+        0.5145,
+        0.1715,
+        0.1715,
+        0.0
+      ],
+      "ref": "summary:9161093819732845678",
+      "type": "node_l0"
+    },
+    {
+      "dim": 32,
+      "preview": [
+        0.03931,
+        -0.03931,
+        -0.19657,
+        -0.58971,
+        0.11794,
+        0.15726,
+        -0.2752,
+        0.07863
+      ],
+      "ref": "summary:1076018507551928025",
+      "type": "node_l1"
+    }
+  ],
+  "raw_event_log": "C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\matrixark_message_resource_debug_trace.jsonl",
+  "record_counts": {
+    "context_batch_commit": 1,
+    "context_child_ref": 6,
+    "context_debug_record": 2,
+    "context_embedding": 69,
+    "context_entity": 9,
+    "context_entity_update_audit": 5,
+    "context_event": 14,
+    "context_extraction_audit": 1,
+    "context_index": 84,
+    "context_node": 7,
+    "context_recall_reinforcement": 3,
+    "context_segment": 3,
+    "context_summary": 41,
+    "context_summary_dirty": 69,
+    "matrixark_audit_log": 14,
+    "matrixark_idempotency": 12,
+    "matrixark_metric": 2,
+    "resource_chunk": 2,
+    "resource_import_task": 6,
+    "resource_manifest": 2,
+    "resource_registry": 2,
+    "session_buffer_event": 10
+  },
+  "records_by_type": {
+    "context_embedding": [
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          0.0,
+          0.04994,
+          -0.19975,
+          0.3995,
+          0.0,
+          -0.24969,
+          0.04994
+        ],
+        "ref": "summary:8695652974415713980",
+        "type": "session_l0"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          0.0,
+          0.0,
+          -0.2,
+          0.4,
+          0.0,
+          -0.2,
+          0.0
+        ],
+        "ref": "event:390515146070215547",
+        "type": "event_text"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          0.0,
+          0.26726,
+          0.0,
+          0.26726,
+          0.0,
+          -0.26726,
+          0.26726
+        ],
+        "ref": "event:1557402973722976893",
+        "type": "event_text"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          0.0,
+          -0.2582,
+          -0.2582,
+          0.2582,
+          0.2582,
+          0.0,
+          0.0
+        ],
+        "ref": "event:1537019087039074216",
+        "type": "event_text"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          0.0,
+          -0.22942,
+          0.22942,
+          0.0,
+          0.22942,
+          0.0,
+          0.0
+        ],
+        "ref": "event:8281355690372387016",
+        "type": "event_text"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          -0.22942,
+          -0.22942,
+          -0.22942,
+          0.22942,
+          0.0,
+          -0.45883,
+          -0.22942
+        ],
+        "ref": "event:8394769407351691099",
+        "type": "event_text"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.24254,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          -0.24254,
+          0.0
+        ],
+        "ref": "event:199706346490473758",
+        "type": "event_text"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          0.0,
+          0.0,
+          -0.44721,
+          0.22361,
+          0.22361,
+          0.22361,
+          0.0
+        ],
+        "ref": "event:4785019507418970771",
+        "type": "event_text"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.31623,
+          0.31623,
+          0.0,
+          -0.31623
+        ],
+        "ref": "event:5575279812667982889",
+        "type": "event_text"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          0.0,
+          -0.24254,
+          0.0,
+          0.0,
+          0.24254,
+          0.0,
+          0.0
+        ],
+        "ref": "entity:1488030737650625042",
+        "type": "entity_state"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          0.24254,
+          0.0,
+          -0.24254,
+          0.24254,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "ref": "entity:5205088207995267081",
+        "type": "entity_state"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          0.33333,
+          0.33333,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.33333
+        ],
+        "ref": "entity:5708414255151575681",
+        "type": "entity_state"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          0.0,
+          0.0,
+          -0.44721,
+          0.0,
+          0.44721,
+          -0.44721,
+          0.0
+        ],
+        "ref": "entity:8967060400784335657",
+        "type": "entity_state"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.70711,
+          0.70711,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "ref": "entity:1722827731307680407",
+        "type": "entity_state"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          -0.07538,
+          -0.07538,
+          -0.30151,
+          0.15076,
+          0.0,
+          -0.30151,
+          0.0
+        ],
+        "ref": "segment:2704430496910278940",
+        "type": "segment_text"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          0.0,
+          0.0,
+          -0.3849,
+          0.0,
+          0.19245,
+          0.19245,
+          0.19245
+        ],
+        "ref": "segment:3708475525076359226",
+        "type": "segment_text"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          0.0,
+          -0.22361,
+          0.0,
+          0.22361,
+          0.22361,
+          0.0,
+          0.0
+        ],
+        "ref": "segment:2330412898750113116",
+        "type": "segment_text"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.05083,
+          -0.05083,
+          -0.10167,
+          -0.1525,
+          0.35583,
+          0.20333,
+          -0.20333,
+          0.0
+        ],
+        "ref": "summary:3229605441134634939",
+        "type": "batch_l0"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          -0.08944,
+          -0.08944,
+          -0.44721,
+          0.26833,
+          0.17888,
+          -0.08944,
+          0.08944
+        ],
+        "ref": "summary:5044606450940775875",
+        "type": "resource_l0"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          -0.0767,
+          -0.0767,
+          -0.46018,
+          0.23009,
+          0.0767,
+          -0.0767,
+          0.15339
+        ],
+        "ref": "resource_chunk:252983731941246106",
+        "type": "resource_chunk"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          0.0,
+          -0.08704,
+          -0.43519,
+          0.26112,
+          0.0,
+          -0.34815,
+          0.08704
+        ],
+        "ref": "event:5560117811447811670",
+        "type": "event_text"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          -0.07762,
+          -0.07762,
+          -0.38808,
+          0.31046,
+          0.0,
+          -0.23284,
+          0.07762
+        ],
+        "ref": "entity:6247907100159583553",
+        "type": "entity_state"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          0.1,
+          -0.2,
+          -0.6,
+          0.2,
+          0.0,
+          -0.3,
+          0.1
+        ],
+        "ref": "event:7961743726253113316",
+        "type": "event_text"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          0.08671,
+          -0.26013,
+          -0.69369,
+          0.17342,
+          0.0,
+          -0.26013,
+          0.08671
+        ],
+        "ref": "entity:9084589347207474833",
+        "type": "entity_state"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          0.0,
+          0.0,
+          -0.5,
+          0.25,
+          0.0,
+          -0.25,
+          0.0
+        ],
+        "ref": "event:8406585495907365101",
+        "type": "event_text"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.08737,
+          -0.08737,
+          -0.26211,
+          -0.52422,
+          -0.17474,
+          0.43685,
+          0.08737,
+          0.0
+        ],
+        "ref": "summary:3282433690769415239",
+        "type": "resource_l0"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.07293,
+          -0.07293,
+          -0.2188,
+          -0.58346,
+          -0.29173,
+          0.36466,
+          0.07293,
+          0.07293
+        ],
+        "ref": "resource_chunk:4996044706456527137",
+        "type": "resource_chunk"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.09091,
+          0.0,
+          -0.27273,
+          -0.54546,
+          -0.36364,
+          0.36364,
+          -0.09091,
+          0.0
+        ],
+        "ref": "event:4203705342578598515",
+        "type": "event_text"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.08333,
+          -0.08333,
+          -0.16667,
+          -0.5,
+          -0.33333,
+          0.33333,
+          0.0,
+          0.0
+        ],
+        "ref": "entity:5206464065100464610",
+        "type": "entity_state"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.09667,
+          0.0,
+          -0.29002,
+          -0.58004,
+          -0.29002,
+          0.3867,
+          -0.09667,
+          0.0
+        ],
+        "ref": "event:1110371357745234587",
+        "type": "event_text"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.08392,
+          -0.08392,
+          -0.25175,
+          -0.58743,
+          -0.25175,
+          0.41959,
+          0.0,
+          0.0
+        ],
+        "ref": "entity:6041746208301469057",
+        "type": "entity_state"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          0.0,
+          0.0,
+          -0.57735,
+          0.0,
+          0.0,
+          -0.28868,
+          0.0
+        ],
+        "ref": "event:1902485603234667889",
+        "type": "event_text"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          0.0,
+          0.0,
+          -0.14434,
+          0.57735,
+          0.0,
+          -0.14434,
+          0.0
+        ],
+        "ref": "summary:1886266633781634111",
+        "type": "node_l0"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0336,
+          -0.0336,
+          -0.06719,
+          -0.23517,
+          0.40315,
+          0.16798,
+          -0.20157,
+          0.0
+        ],
+        "ref": "summary:1616491761191208179",
+        "type": "node_l1"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          0.0,
+          0.0,
+          -0.28571,
+          0.42857,
+          0.14286,
+          -0.14286,
+          0.0
+        ],
+        "ref": "summary:7072998724969009401",
+        "type": "node_l0"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          -0.03975,
+          -0.11924,
+          -0.23848,
+          0.35772,
+          0.23848,
+          -0.15899,
+          -0.07949
+        ],
+        "ref": "summary:3186282447509310879",
+        "type": "node_l1"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          0.0,
+          0.0,
+          -0.21953,
+          0.43906,
+          -0.10976,
+          -0.21953,
+          0.0
+        ],
+        "ref": "summary:4626625830169563149",
+        "type": "node_l0"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          -0.02704,
+          -0.02704,
+          -0.16222,
+          0.35148,
+          0.05407,
+          -0.27037,
+          0.02704
+        ],
+        "ref": "summary:1916101716449258884",
+        "type": "node_l1"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          0.0,
+          0.0,
+          -0.2325,
+          0.46499,
+          0.0,
+          -0.2325,
+          0.0
+        ],
+        "ref": "summary:5451123137701072075",
+        "type": "node_l0"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          -0.02736,
+          -0.02736,
+          -0.16415,
+          0.38302,
+          0.02736,
+          -0.27359,
+          0.02736
+        ],
+        "ref": "summary:7794448877417626891",
+        "type": "node_l1"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          -0.11868,
+          0.0,
+          -0.23736,
+          0.47471,
+          0.0,
+          -0.23736,
+          0.0
+        ],
+        "ref": "summary:2423087115552912795",
+        "type": "node_l0"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          -0.07809,
+          -0.11713,
+          -0.39043,
+          0.2733,
+          0.15617,
+          -0.15617,
+          0.03904
+        ],
+        "ref": "summary:8165358132187641623",
+        "type": "node_l1"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          -0.125,
+          0.0,
+          -0.125,
+          0.5,
+          0.125,
+          -0.25,
+          0.0
+        ],
+        "ref": "summary:4443347079005396521",
+        "type": "node_l0"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          -0.03913,
+          -0.07827,
+          -0.39133,
+          0.27393,
+          0.19567,
+          -0.15653,
+          0.03913
+        ],
+        "ref": "summary:7129763152424808338",
+        "type": "node_l1"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.0,
+          0.0,
+          0.0,
+          -0.343,
+          0.5145,
+          0.1715,
+          0.1715,
+          0.0
+        ],
+        "ref": "summary:9161093819732845678",
+        "type": "node_l0"
+      },
+      {
+        "dim": 32,
+        "preview": [
+          0.03931,
+          -0.03931,
+          -0.19657,
+          -0.58971,
+          0.11794,
+          0.15726,
+          -0.2752,
+          0.07863
+        ],
+        "ref": "summary:1076018507551928025",
+        "type": "node_l1"
+      }
+    ],
+    "context_entity": [
+      {
+        "entity": 1488030737650625042,
+        "name": "current_plan",
+        "node": 2100209595829882121,
+        "op": "LLM_MERGE",
+        "source": "",
+        "state": "track Bob as procurement owner and the 42000 dollar cap for the initial batch",
+        "type": "current_plan"
+      },
+      {
+        "entity": 5205088207995267081,
+        "name": "the GPU purchase request for Project Aurora after reviewing the Q3 budget",
+        "node": 2100209595829882121,
+        "op": "LLM_MERGE",
+        "source": "",
+        "state": "the GPU purchase request for Project Aurora after reviewing the Q3 budget",
+        "type": "approval_state"
+      },
+      {
+        "entity": 5708414255151575681,
+        "name": "by Alice in finance, pending procurement owner assignment",
+        "node": 2100209595829882121,
+        "op": "LLM_MERGE",
+        "source": "",
+        "state": "by Alice in finance, pending procurement owner assignment",
+        "type": "approval_state"
+      },
+      {
+        "entity": 8967060400784335657,
+        "name": "must be attached before vendor selection",
+        "node": 2100209595829882121,
+        "op": "LLM_MERGE",
+        "source": "",
+        "state": "must be attached before vendor selection",
+        "type": "approval_state"
+      },
+      {
+        "entity": 1722827731307680407,
+        "name": "attachment",
+        "node": 2100209595829882121,
+        "op": "LLM_MERGE",
+        "source": "",
+        "state": "attachment",
+        "type": "approval_state"
+      },
+      {
+        "entity": 6247907100159583553,
+        "name": "decision:Alice approved the Project Aurora GPU purchase after finance review",
+        "node": 1737304210274426578,
+        "op": "LATEST",
+        "source": "page=1",
+        "state": "resource_decision: Alice approved the Project Aurora GPU purchase after finance review. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July ...",
+        "type": "resource_decision"
+      },
+      {
+        "entity": 9084589347207474833,
+        "name": "owner:Bob owns procurement and vendor coordination",
+        "node": 1737304210274426578,
+        "op": "LATEST",
+        "source": "page=1",
+        "state": "resource_owner: Bob owns procurement and vendor coordination. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor sel...",
+        "type": "resource_owner"
+      },
+      {
+        "entity": 5206464065100464610,
+        "name": "troubleshooting:Procedure: Attach finance approval before vendor selection",
+        "node": 1737304210274426578,
+        "op": "LATEST",
+        "source": "page=1",
+        "state": "resource_troubleshooting_step: Procedure: Attach finance approval before vendor selection. Source: GPU Procurement Runbook Procedure: Attach finance approval before vendor selection. Procedure: Compare primary and backup GPU quotes before purchase order creation. Troubleshooting: If approval attachment is missing, notify Alice and stop vendor selection. A...",
+        "type": "resource_troubleshooting"
+      },
+      {
+        "entity": 6041746208301469057,
+        "name": "approval:before vendor selection",
+        "node": 1737304210274426578,
+        "op": "LATEST",
+        "source": "page=1",
+        "state": "resource_approval: before vendor selection. Source: GPU Procurement Runbook Procedure: Attach finance approval before vendor selection. Procedure: Compare primary and backup GPU quotes before purchase order creation. Troubleshooting: If approval attachment is missing, notify Alice and stop vendor selection. Audit: Store final vendor selection evidence wit...",
+        "type": "resource_approval"
+      }
+    ],
+    "context_event": [
+      {
+        "event": 390515146070215547,
+        "node": 2100209595829882121,
+        "text": "user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget."
+      },
+      {
+        "event": 1557402973722976893,
+        "node": 2100209595829882121,
+        "text": "assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment."
+      },
+      {
+        "event": 1537019087039074216,
+        "node": 2100209595829882121,
+        "text": "user: Bob will own procurement, and the budget cap is 42000 dollars for the initial GPU batch."
+      },
+      {
+        "event": 8281355690372387016,
+        "node": 2100209595829882121,
+        "text": "assistant: I will track Bob as procurement owner and the 42000 dollar cap for the initial batch."
+      },
+      {
+        "event": 8394769407351691099,
+        "node": 2100209595829882121,
+        "text": "user: The deadline is July 15, 2026, and the runbook says finance approval must be attached before vendor selection."
+      },
+      {
+        "event": 199706346490473758,
+        "node": 2100209595829882121,
+        "text": "assistant: The active deadline is July 15, 2026. Vendor selection requires the finance approval attachment."
+      },
+      {
+        "event": 4785019507418970771,
+        "node": 2100209595829882121,
+        "text": "user: Correction: Alice raised the cap to 45000 dollars after the backup GPU quote came in."
+      },
+      {
+        "event": 5575279812667982889,
+        "node": 2100209595829882121,
+        "text": "assistant: Updated: the current Project Aurora GPU budget cap is 45000 dollars."
+      },
+      {
+        "class": "RESOURCE_FACT",
+        "event": 5560117811447811670,
+        "node": 1737304210274426578,
+        "source": "page=1",
+        "text": "resource_decision: Alice approved the Project Aurora GPU purchase after finance review",
+        "type": "resource_decision"
+      },
+      {
+        "class": "RESOURCE_FACT",
+        "event": 7961743726253113316,
+        "node": 1737304210274426578,
+        "source": "page=1",
+        "text": "resource_owner: Bob owns procurement and vendor coordination",
+        "type": "resource_owner"
+      },
+      {
+        "event": 8406585495907365101,
+        "node": 1737304210274426578,
+        "text": "tool: Import PDF resource for MatrixArk parsing: Project Aurora GPU Approval Packet"
+      },
+      {
+        "class": "RESOURCE_FACT",
+        "event": 4203705342578598515,
+        "node": 1737304210274426578,
+        "source": "page=1",
+        "text": "resource_troubleshooting_step: Procedure: Attach finance approval before vendor selection",
+        "type": "resource_troubleshooting_step"
+      },
+      {
+        "class": "RESOURCE_FACT",
+        "event": 1110371357745234587,
+        "node": 1737304210274426578,
+        "source": "page=1",
+        "text": "resource_approval: before vendor selection",
+        "type": "resource_approval"
+      },
+      {
+        "event": 1902485603234667889,
+        "node": 1737304210274426578,
+        "text": "tool: Import PDF resource for MatrixArk parsing: GPU Procurement Runbook"
+      }
+    ],
+    "context_index_postings": [
+      {
+        "index": "classification:batch_memory",
+        "model": "context_batch_commit",
+        "node": 2100209595829882121,
+        "refs": 1,
+        "sample": [
+          5748013813980329926
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "entity_type:approval_state",
+        "model": "context_batch_commit",
+        "node": 2100209595829882121,
+        "refs": 1,
+        "sample": [
+          5748013813980329926
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "entity_type:current_plan",
+        "model": "context_batch_commit",
+        "node": 2100209595829882121,
+        "refs": 1,
+        "sample": [
+          5748013813980329926
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "event_type:correction",
+        "model": "context_batch_commit",
+        "node": 2100209595829882121,
+        "refs": 1,
+        "sample": [
+          5748013813980329926
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "segment_topic:approval_budget",
+        "model": "context_batch_commit",
+        "node": 2100209595829882121,
+        "refs": 1,
+        "sample": [
+          5748013813980329926
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "segment_topic:correction",
+        "model": "context_batch_commit",
+        "node": 2100209595829882121,
+        "refs": 1,
+        "sample": [
+          5748013813980329926
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "source_type:message",
+        "model": "context_batch_commit",
+        "node": 2100209595829882121,
+        "refs": 1,
+        "sample": [
+          5748013813980329926
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "status:observed",
+        "model": "context_batch_commit",
+        "node": 2100209595829882121,
+        "refs": 1,
+        "sample": [
+          5748013813980329926
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "event_type:confirmation",
+        "model": "context_event",
+        "node": 2100209595829882121,
+        "refs": 2,
+        "sample": [
+          1557402973722976893,
+          390515146070215547
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "event_type:correction",
+        "model": "context_event",
+        "node": 2100209595829882121,
+        "refs": 2,
+        "sample": [
+          4785019507418970771,
+          5575279812667982889
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "event_type:dialogue_batch",
+        "model": "context_event",
+        "node": 2100209595829882121,
+        "refs": 2,
+        "sample": [
+          199706346490473758,
+          8394769407351691099
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "event_type:dialogue_batch",
+        "model": "context_event",
+        "node": 1737304210274426578,
+        "refs": 2,
+        "sample": [
+          1902485603234667889,
+          8406585495907365101
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "event_type:plan_update",
+        "model": "context_event",
+        "node": 2100209595829882121,
+        "refs": 2,
+        "sample": [
+          1537019087039074216,
+          8281355690372387016
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "source_type:message",
+        "model": "context_event",
+        "node": 2100209595829882121,
+        "refs": 8,
+        "sample": [
+          1537019087039074216,
+          1557402973722976893,
+          199706346490473758
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "source_type:resource",
+        "model": "context_event",
+        "node": 1737304210274426578,
+        "refs": 2,
+        "sample": [
+          1902485603234667889,
+          8406585495907365101
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "status:observed",
+        "model": "context_event",
+        "node": 2100209595829882121,
+        "refs": 8,
+        "sample": [
+          1537019087039074216,
+          1557402973722976893,
+          199706346490473758
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "status:observed",
+        "model": "context_event",
+        "node": 1737304210274426578,
+        "refs": 2,
+        "sample": [
+          1902485603234667889,
+          8406585495907365101
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "resource_type:pdf",
+        "model": "context_summary",
+        "node": 1737304210274426578,
+        "refs": 2,
+        "sample": [
+          3282433690769415239,
+          5044606450940775875
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "source_type:resource",
+        "model": "context_summary",
+        "node": 1737304210274426578,
+        "refs": 2,
+        "sample": [
+          3282433690769415239,
+          5044606450940775875
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "keyword:approval",
+        "model": "resource_chunk",
+        "node": 1737304210274426578,
+        "refs": 2,
+        "sample": [
+          252983731941246106,
+          7529073535243352042
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "keyword:attach",
+        "model": "resource_chunk",
+        "node": 1737304210274426578,
+        "refs": 2,
+        "sample": [
+          4051654065808865899,
+          4996044706456527137
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "keyword:aurora",
+        "model": "resource_chunk",
+        "node": 1737304210274426578,
+        "refs": 2,
+        "sample": [
+          252983731941246106,
+          7529073535243352042
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "keyword:decision",
+        "model": "resource_chunk",
+        "node": 1737304210274426578,
+        "refs": 2,
+        "sample": [
+          252983731941246106,
+          7529073535243352042
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "keyword:finance",
+        "model": "resource_chunk",
+        "node": 1737304210274426578,
+        "refs": 2,
+        "sample": [
+          4051654065808865899,
+          4996044706456527137
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "keyword:gpu",
+        "model": "resource_chunk",
+        "node": 1737304210274426578,
+        "refs": 4,
+        "sample": [
+          252983731941246106,
+          4051654065808865899,
+          4996044706456527137
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "keyword:packet",
+        "model": "resource_chunk",
+        "node": 1737304210274426578,
+        "refs": 2,
+        "sample": [
+          252983731941246106,
+          7529073535243352042
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "keyword:procedure",
+        "model": "resource_chunk",
+        "node": 1737304210274426578,
+        "refs": 2,
+        "sample": [
+          4051654065808865899,
+          4996044706456527137
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "keyword:procurement",
+        "model": "resource_chunk",
+        "node": 1737304210274426578,
+        "refs": 2,
+        "sample": [
+          4051654065808865899,
+          4996044706456527137
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "keyword:project",
+        "model": "resource_chunk",
+        "node": 1737304210274426578,
+        "refs": 2,
+        "sample": [
+          252983731941246106,
+          7529073535243352042
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "keyword:runbook",
+        "model": "resource_chunk",
+        "node": 1737304210274426578,
+        "refs": 2,
+        "sample": [
+          4051654065808865899,
+          4996044706456527137
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "resource_type:pdf",
+        "model": "resource_chunk",
+        "node": 1737304210274426578,
+        "refs": 4,
+        "sample": [
+          252983731941246106,
+          4051654065808865899,
+          4996044706456527137
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "source_type:resource",
+        "model": "resource_chunk",
+        "node": 1737304210274426578,
+        "refs": 4,
+        "sample": [
+          252983731941246106,
+          4051654065808865899,
+          4996044706456527137
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "unit_kind:pdf_page",
+        "model": "resource_chunk",
+        "node": 1737304210274426578,
+        "refs": 4,
+        "sample": [
+          252983731941246106,
+          4051654065808865899,
+          4996044706456527137
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "entity_type:resource_approval",
+        "model": "resource_fact",
+        "node": 1737304210274426578,
+        "refs": 3,
+        "sample": [
+          1036509710481650017,
+          1110371357745234587,
+          4996044706456527137
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "entity_type:resource_decision",
+        "model": "resource_fact",
+        "node": 1737304210274426578,
+        "refs": 3,
+        "sample": [
+          252983731941246106,
+          5560117811447811670,
+          8585682261562719907
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "entity_type:resource_fact",
+        "model": "resource_fact",
+        "node": 1737304210274426578,
+        "refs": 8,
+        "sample": [
+          1036509710481650017,
+          1110371357745234587,
+          252983731941246106
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "entity_type:resource_owner",
+        "model": "resource_fact",
+        "node": 1737304210274426578,
+        "refs": 3,
+        "sample": [
+          252983731941246106,
+          7961743726253113316,
+          8585682261562719907
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "entity_type:resource_troubleshooting",
+        "model": "resource_fact",
+        "node": 1737304210274426578,
+        "refs": 3,
+        "sample": [
+          1036509710481650017,
+          4203705342578598515,
+          4996044706456527137
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "event_type:resource_approval",
+        "model": "resource_fact",
+        "node": 1737304210274426578,
+        "refs": 3,
+        "sample": [
+          1036509710481650017,
+          1110371357745234587,
+          4996044706456527137
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "event_type:resource_decision",
+        "model": "resource_fact",
+        "node": 1737304210274426578,
+        "refs": 3,
+        "sample": [
+          252983731941246106,
+          5560117811447811670,
+          8585682261562719907
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "event_type:resource_owner",
+        "model": "resource_fact",
+        "node": 1737304210274426578,
+        "refs": 3,
+        "sample": [
+          252983731941246106,
+          7961743726253113316,
+          8585682261562719907
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "event_type:resource_troubleshooting_step",
+        "model": "resource_fact",
+        "node": 1737304210274426578,
+        "refs": 3,
+        "sample": [
+          1036509710481650017,
+          4203705342578598515,
+          4996044706456527137
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "keyword:approval",
+        "model": "resource_fact",
+        "node": 1737304210274426578,
+        "refs": 4,
+        "sample": [
+          252983731941246106,
+          5560117811447811670,
+          7961743726253113316
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "keyword:aurora",
+        "model": "resource_fact",
+        "node": 1737304210274426578,
+        "refs": 4,
+        "sample": [
+          252983731941246106,
+          5560117811447811670,
+          7961743726253113316
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "keyword:gpu",
+        "model": "resource_fact",
+        "node": 1737304210274426578,
+        "refs": 8,
+        "sample": [
+          1036509710481650017,
+          1110371357745234587,
+          252983731941246106
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "keyword:procedure",
+        "model": "resource_fact",
+        "node": 1737304210274426578,
+        "refs": 4,
+        "sample": [
+          1036509710481650017,
+          1110371357745234587,
+          4203705342578598515
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "keyword:procurement",
+        "model": "resource_fact",
+        "node": 1737304210274426578,
+        "refs": 4,
+        "sample": [
+          1036509710481650017,
+          1110371357745234587,
+          4203705342578598515
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "keyword:project",
+        "model": "resource_fact",
+        "node": 1737304210274426578,
+        "refs": 4,
+        "sample": [
+          252983731941246106,
+          5560117811447811670,
+          7961743726253113316
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "keyword:runbook",
+        "model": "resource_fact",
+        "node": 1737304210274426578,
+        "refs": 4,
+        "sample": [
+          1036509710481650017,
+          1110371357745234587,
+          4203705342578598515
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "resource_type:pdf",
+        "model": "resource_fact",
+        "node": 1737304210274426578,
+        "refs": 8,
+        "sample": [
+          1036509710481650017,
+          1110371357745234587,
+          252983731941246106
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "source_type:resource_fact",
+        "model": "resource_fact",
+        "node": 1737304210274426578,
+        "refs": 8,
+        "sample": [
+          1036509710481650017,
+          1110371357745234587,
+          252983731941246106
+        ],
+        "time": 1783113360000
+      },
+      {
+        "index": "unit_kind:pdf_page",
+        "model": "resource_fact",
+        "node": 1737304210274426578,
+        "refs": 8,
+        "sample": [
+          1036509710481650017,
+          1110371357745234587,
+          252983731941246106
+        ],
+        "time": 1783113360000
+      }
+    ],
+    "context_node": [
+      {
+        "name": "tenant:tenant_codex",
+        "node": 3263141514618168867,
+        "parent": 0,
+        "path": "tenant:tenant_codex"
+      },
+      {
+        "name": "user:deeproute",
+        "node": 623184698193930698,
+        "parent": 3263141514618168867,
+        "path": "tenant:tenant_codex/user:deeproute"
+      },
+      {
+        "name": "session:debug-message-pdf-session",
+        "node": 3084181658660614334,
+        "parent": 623184698193930698,
+        "path": "user:deeproute/session:debug-message-pdf-session"
+      },
+      {
+        "name": "conversation:project_aurora",
+        "node": 2100209595829882121,
+        "parent": 3084181658660614334,
+        "path": "session:debug-message-pdf-session/conversation:project_aurora"
+      },
+      {
+        "name": "resources",
+        "node": 1257764480205296887,
+        "parent": 623184698193930698,
+        "path": "user:deeproute/resources"
+      },
+      {
+        "name": "project_aurora",
+        "node": 5984959491336829337,
+        "parent": 1257764480205296887,
+        "path": "resources/project_aurora"
+      },
+      {
+        "name": "gpu_procurement",
+        "node": 1737304210274426578,
+        "parent": 5984959491336829337,
+        "path": "project_aurora/gpu_procurement"
+      }
+    ],
+    "context_summary": [
+      {
+        "node": 2100209595829882121,
+        "sources": 0,
+        "summary": 8695652974415713980,
+        "text": "user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment. user: Alice from finance approved the GPU purchase request for...",
+        "type": "session_l0"
+      },
+      {
+        "node": 2100209595829882121,
+        "sources": 8,
+        "summary": 3229605441134634939,
+        "text": "user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment. user: Bob will own procurement, and the budget cap is 42000 dollars for the initial GPU batch. assistant: I will track Bob as procurement owner and the 42000 dollar cap for the initial batch. user: The deadline is July 15, 2026, and the runbook says finance approval must be attached before vendor selection. assistant: The active deadline is July 15, 2026. Vendor selection requires the finance approval attachment. user: Correction: Alice raised the cap to 45000 dol...",
+        "type": "batch_l0"
+      },
+      {
+        "node": 1737304210274426578,
+        "sources": 1,
+        "summary": 5044606450940775875,
+        "text": "resource: C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_approval_packet.pdf section: pdf_page Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor selection is blocked if finance approval is not attached.",
+        "type": "resource_l0"
+      },
+      {
+        "node": 1737304210274426578,
+        "sources": 0,
+        "summary": 8695652974415713980,
+        "text": "user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment. user: Alice from finance approved the GPU purchase request for...",
+        "type": "session_l0"
+      },
+      {
+        "node": 1737304210274426578,
+        "sources": 1,
+        "summary": 3282433690769415239,
+        "text": "resource: C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_runbook.pdf section: pdf_page GPU Procurement Runbook Procedure: Attach finance approval before vendor selection. Procedure: Compare primary and backup GPU quotes before purchase order creation. Troubleshooting: If approval attachment is missing, notify Alice and stop vendor selection. Audit: Store final vendor selection evidence with the purchase order.",
+        "type": "resource_l0"
+      },
+      {
+        "node": 3084181658660614334,
+        "sources": 0,
+        "summary": 1886266633781634111,
+        "text": "tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session :: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistant: Recorded: Project Aur...",
+        "type": "node_l0"
+      },
+      {
+        "node": 3084181658660614334,
+        "sources": 0,
+        "summary": 1616491761191208179,
+        "text": "Context node tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session. Rich overview: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment. user: Bob will own procurement, and the budget cap is 42000 dollars for the initial GPU batch. assistant: I will track Bob as procurement owner and the 42000 dollar cap for the initial batch. user: The deadline is July 15, 2026, and the runbook says finance approval must be attached before vendor selection. assistant: The active deadline is July 15, 2026. Vendor selection requires the finance approval attachment. user: Correction: Alice raised the cap to 45000 dol... tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session / conversation:project_aurora :: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. as... Context node tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session / conversation:project_aurora. Rich overview: user: Alice from finance approved the GPU...",
+        "type": "node_l1"
+      },
+      {
+        "node": 2100209595829882121,
+        "sources": 8,
+        "summary": 7072998724969009401,
+        "text": "tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session / conversation:project_aurora :: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. as...",
+        "type": "node_l0"
+      },
+      {
+        "node": 2100209595829882121,
+        "sources": 8,
+        "summary": 3186282447509310879,
+        "text": "Context node tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session / conversation:project_aurora. Rich overview: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment. user: Bob will own procurement, and the budget cap is 42000 dollars for the initial GPU batch. assistant: I will track Bob as procurement owner and the 42000 dollar cap for the initial batch. user: The deadline is July 15, 2026, and the runbook says finance approval must be attached before vendor selection. assistant: The active deadline is July 15, 2026. Vendor selection requires the finance approval attachment. user: Correction: Alice raised the cap to 45000 dollars after the backup GPU quote came in. assistant: Updated: the current Project Aurora GPU budget cap is 45000 dollars.. This node belongs to path tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session / conversation:project_aurora and should be used for tree-first retrieval before leaf event/entity recall.",
+        "type": "node_l1"
+      },
+      {
+        "node": 3263141514618168867,
+        "sources": 0,
+        "summary": 4626625830169563149,
+        "text": "tenant:tenant_codex :: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase request for Project Aurora after r...",
+        "type": "node_l0"
+      },
+      {
+        "node": 3263141514618168867,
+        "sources": 0,
+        "summary": 1916101716449258884,
+        "text": "Context node tenant:tenant_codex. Rich overview: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment. user: Alice from finance approved the GPU purchase request for... user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment. user: Bob will own procurement, and the budget cap is 42000 dollars for the initial GPU batch. assistant: I will track Bob as procurement owner and the 42000 dollar cap for the initial batch. user: The deadline is July 15, 2026, and the runbook says finance approval must be attached before vendor selection. assistant: The active deadline is July 15, 2026. Vendor selection requires the finance approval a...",
+        "type": "node_l1"
+      },
+      {
+        "node": 623184698193930698,
+        "sources": 0,
+        "summary": 5451123137701072075,
+        "text": "tenant:tenant_codex / user:deeproute :: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase request for Proje...",
+        "type": "node_l0"
+      },
+      {
+        "node": 623184698193930698,
+        "sources": 0,
+        "summary": 7794448877417626891,
+        "text": "Context node tenant:tenant_codex / user:deeproute. Rich overview: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment. user: Alice from finance approved the GPU purchase request for... user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment. user: Bob will own procurement, and the budget cap is 42000 dollars for the initial GPU batch. assistant: I will track Bob as procurement owner and the 42000 dollar cap for the initial batch. user: The deadline is July 15, 2026, and the runbook says finance approval must be attached before vendor selection. assistant: The active deadline is July 15, 2026. Vendor selection requires the f...",
+        "type": "node_l1"
+      },
+      {
+        "node": 1257764480205296887,
+        "sources": 0,
+        "summary": 2423087115552912795,
+        "text": "tenant:tenant_codex / user:deeproute / resources :: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase reque...",
+        "type": "node_l0"
+      },
+      {
+        "node": 1257764480205296887,
+        "sources": 0,
+        "summary": 8165358132187641623,
+        "text": "Context node tenant:tenant_codex / user:deeproute / resources. Rich overview: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment. user: Alice from finance approved the GPU purchase request for... resource: C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_runbook.pdf section: pdf_page GPU Procurement Runbook Procedure: Attach finance approval before vendor selection. Procedure: Compare primary and backup GPU quotes before purchase order creation. Troubleshooting: If approval attachment is missing, notify Alice and stop vendor selection. Audit: Store final vendor selection evidence with the purchase order.. This node belongs to path tenant:tenant_codex / user:deeproute / resources and should ...",
+        "type": "node_l1"
+      },
+      {
+        "node": 5984959491336829337,
+        "sources": 0,
+        "summary": 4443347079005396521,
+        "text": "tenant:tenant_codex / user:deeproute / resources / project_aurora :: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the G...",
+        "type": "node_l0"
+      },
+      {
+        "node": 5984959491336829337,
+        "sources": 0,
+        "summary": 7129763152424808338,
+        "text": "Context node tenant:tenant_codex / user:deeproute / resources / project_aurora. Rich overview: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment. user: Alice from finance approved the GPU purchase request for... resource: C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_runbook.pdf section: pdf_page GPU Procurement Runbook Procedure: Attach finance approval before vendor selection. Procedure: Compare primary and backup GPU quotes before purchase order creation. Troubleshooting: If approval attachment is missing, notify Alice and stop vendor selection. Audit: Store final vendor selection evidence with the purchase order.. This node belongs to path tenant:tenant_codex / user:deeproute / reso...",
+        "type": "node_l1"
+      },
+      {
+        "node": 1737304210274426578,
+        "sources": 6,
+        "summary": 9161093819732845678,
+        "text": "tenant:tenant_codex / user:deeproute / resources / project_aurora / gpu_procurement :: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns ...",
+        "type": "node_l0"
+      },
+      {
+        "node": 1737304210274426578,
+        "sources": 6,
+        "summary": 1076018507551928025,
+        "text": "Context node tenant:tenant_codex / user:deeproute / resources / project_aurora / gpu_procurement. Rich overview: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor selection is blocked if finance approval is not attached. Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor selection is blocked if finance approval is not attached. tool: Import PDF resource for MatrixArk parsing: Project Aurora GPU Approval Packet GPU Procurement Runbook Procedure: Attach finance approval before vendor selection. Procedure: Compare primary and backup GPU quotes before purchase order creation. Troubleshooting: If approval attachment is missing, notify Alice and stop vendor selection. Audit: Store final vendor selection evidence with the purch...",
+        "type": "node_l1"
+      }
+    ],
+    "resource_chunk": [
+      {
+        "chunk": 252983731941246106,
+        "kind": "pdf_page",
+        "resource": 7529073535243352042,
+        "source": "page=1",
+        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+        "tokens": 51
+      },
+      {
+        "chunk": 4996044706456527137,
+        "kind": "pdf_page",
+        "resource": 4051654065808865899,
+        "source": "page=1",
+        "text": "GPU Procurement Runbook\nProcedure: Attach finance approval before vendor selection.\nProcedure: Compare primary and backup GPU quotes before purchase order creation.\nTroubleshooting: If approval attachment is missing, notify Alice and stop vendor selection.\nAudit: Store final vendor selection evidence with the purchase order.",
+        "tokens": 43
+      }
+    ],
+    "resource_import_task": [
+      {
+        "chunks": "",
+        "entities": "",
+        "facts": "",
+        "source": "<repo>\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_approval_packet.pdf",
+        "status": "queued",
+        "type": "pdf"
+      },
+      {
+        "chunks": "",
+        "entities": "",
+        "facts": "",
+        "source": "<repo>\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_approval_packet.pdf",
+        "status": "running",
+        "type": "pdf"
+      },
+      {
+        "chunks": 1,
+        "entities": 2,
+        "facts": 2,
+        "source": "<repo>\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_approval_packet.pdf",
+        "status": "completed",
+        "type": "pdf"
+      },
+      {
+        "chunks": "",
+        "entities": "",
+        "facts": "",
+        "source": "<repo>\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_runbook.pdf",
+        "status": "queued",
+        "type": "pdf"
+      },
+      {
+        "chunks": "",
+        "entities": "",
+        "facts": "",
+        "source": "<repo>\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_runbook.pdf",
+        "status": "running",
+        "type": "pdf"
+      },
+      {
+        "chunks": 1,
+        "entities": 2,
+        "facts": 2,
+        "source": "<repo>\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_runbook.pdf",
+        "status": "completed",
+        "type": "pdf"
+      }
+    ]
+  },
+  "replay": {
+    "context_pack_id": "3950118627389790960"
+  },
+  "summary_generation_policy": [],
+  "trace": {
+    "calls": [
+      {
+        "kind": "message",
+        "message_index": 1,
+        "result": {
+          "status": "accepted"
+        },
+        "tool": "matrixark_ingest"
+      },
+      {
+        "kind": "message",
+        "message_index": 2,
+        "result": {
+          "status": "accepted"
+        },
+        "tool": "matrixark_ingest"
+      },
+      {
+        "kind": "message",
+        "message_index": 3,
+        "result": {
+          "status": "accepted"
+        },
+        "tool": "matrixark_ingest"
+      },
+      {
+        "kind": "message",
+        "message_index": 4,
+        "result": {
+          "status": "accepted"
+        },
+        "tool": "matrixark_ingest"
+      },
+      {
+        "kind": "message",
+        "message_index": 5,
+        "result": {
+          "status": "accepted"
+        },
+        "tool": "matrixark_ingest"
+      },
+      {
+        "kind": "message",
+        "message_index": 6,
+        "result": {
+          "status": "accepted"
+        },
+        "tool": "matrixark_ingest"
+      },
+      {
+        "kind": "message",
+        "message_index": 7,
+        "result": {
+          "status": "accepted"
+        },
+        "tool": "matrixark_ingest"
+      },
+      {
+        "kind": "message",
+        "message_index": 8,
+        "result": {
+          "status": "accepted"
+        },
+        "tool": "matrixark_ingest"
+      },
+      {
+        "result": {
+          "status": "committed"
+        },
+        "tool": "matrixark_session_commit"
+      },
+      {
+        "kind": "resource",
+        "resource": "<repo>\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_approval_packet.pdf",
+        "resource_type": "pdf",
+        "result": {
+          "status": "accepted"
+        },
+        "tool": "matrixark_ingest"
+      },
+      {
+        "kind": "resource",
+        "resource": "<repo>\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_runbook.pdf",
+        "resource_type": "pdf",
+        "result": {
+          "status": "accepted"
+        },
+        "tool": "matrixark_ingest"
+      },
+      {
+        "result": {
+          "status": "ok"
+        },
+        "tool": "matrixark_refresh_summaries"
+      },
+      {
+        "result": {
+          "context_pack_id": "3950118627389790960"
+        },
+        "tool": "matrixark_retrieve"
+      },
+      {
+        "result": {
+          "context_pack_id": "3950118627389790960"
+        },
+        "tool": "matrixark_replay"
+      }
+    ],
+    "embedding_execution_mode": "deterministic-token-hash",
+    "embedding_model": "matrixark-local-token-hash-v1",
+    "query": "What is the current Project Aurora GPU approval, owner, budget cap, deadline, and runbook blocker?",
+    "resources": [
+      {
+        "lines": 5,
+        "rid": "r1",
+        "source": "<repo>\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_approval_packet.pdf",
+        "title": "Project Aurora GPU Approval Packet",
+        "type": "pdf"
+      },
+      {
+        "lines": 4,
+        "rid": "r2",
+        "source": "<repo>\\docs\\debug\\matrixark_e2e_recent_codex_2pdf_compact_20260704\\fixtures\\aurora_gpu_runbook.pdf",
+        "title": "GPU Procurement Runbook",
+        "type": "pdf"
+      }
+    ],
+    "scope": {
+      "account_id": "acct_local",
+      "agent_name": "codex",
+      "session_id": "debug-message-pdf-session",
+      "tenant_id": "tenant_codex",
+      "user_id": "deeproute"
+    },
+    "summary_refresh_policy": {
+      "background_interval_ms": 1000,
+      "background_limit": 64,
+      "boundary_refresh_tool": "matrixark_refresh_summaries",
+      "node_l1_policy": "generate when child summaries, >=3 source events, or >=180 estimated source tokens"
+    }
+  }
+}
