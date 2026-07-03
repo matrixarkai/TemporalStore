@@ -60,7 +60,7 @@
       "worker": {
         "command": [
           "/usr/bin/python3",
-          "/mnt/c/Users/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/push-feature-parity-worktree/tools/run_matrixark_cpp_rust_scale_report.py",
+          "<codex-worktree>/tools/run_matrixark_cpp_rust_scale_report.py",
           "--backend-worker",
           "cpp",
           "--backend-worker-output",
@@ -98,9 +98,9 @@
           "--storage-prefix",
           "matrixark:scale",
           "--cpp-lib",
-          "/root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so",
+          "<repo>/output-ubuntu22/release/sdk/lib/libbcache2.so",
           "--rust-cli",
-          "/root/src/github-services/TemporalStore/sdk/rust/temporalstore/target/release/matrixark_record_log",
+          "<repo>/sdk/rust/temporalstore/target/release/matrixark_record_log",
           "--python-ref-store",
           "",
           "--request-timeout-ms",
@@ -184,7 +184,7 @@
               "namespace_table_opened": true,
               "slot_coverage_verified_by_warmup_hset_hget": false
             },
-            "error": "Rust TemporalStore hset process exited (127): /root/src/github-services/TemporalStore/sdk/rust/temporalstore/target/release/matrixark_record_log: error while loading shared libraries: libbcache2.so: cannot open shared object file: No such file or directory\n",
+            "error": "Rust TemporalStore hset process exited (127): <repo>/sdk/rust/temporalstore/target/release/matrixark_record_log: error while loading shared libraries: libbcache2.so: cannot open shared object file: No such file or directory\n",
             "ok": false,
             "retryable": false
           }
@@ -200,7 +200,7 @@
           "namespace_table_opened": true,
           "slot_coverage_verified_by_warmup_hset_hget": false
         },
-        "error": "Rust TemporalStore hset process exited (127): /root/src/github-services/TemporalStore/sdk/rust/temporalstore/target/release/matrixark_record_log: error while loading shared libraries: libbcache2.so: cannot open shared object file: No such file or directory\n",
+        "error": "Rust TemporalStore hset process exited (127): <repo>/sdk/rust/temporalstore/target/release/matrixark_record_log: error while loading shared libraries: libbcache2.so: cannot open shared object file: No such file or directory\n",
         "probe": true,
         "reason": "manual",
         "status": "topology_not_ready",
@@ -282,7 +282,7 @@
       "worker": {
         "command": [
           "/usr/bin/python3",
-          "/mnt/c/Users/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/push-feature-parity-worktree/tools/run_matrixark_cpp_rust_scale_report.py",
+          "<codex-worktree>/tools/run_matrixark_cpp_rust_scale_report.py",
           "--backend-worker",
           "rust",
           "--backend-worker-output",
@@ -320,9 +320,9 @@
           "--storage-prefix",
           "matrixark:scale",
           "--cpp-lib",
-          "/root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so",
+          "<repo>/output-ubuntu22/release/sdk/lib/libbcache2.so",
           "--rust-cli",
-          "/root/src/github-services/TemporalStore/sdk/rust/temporalstore/target/release/matrixark_record_log",
+          "<repo>/sdk/rust/temporalstore/target/release/matrixark_record_log",
           "--python-ref-store",
           "",
           "--request-timeout-ms",
