@@ -91,11 +91,11 @@ def _report_with_bad_qps_ratio() -> dict:
         "dataset": "matrixark-scale-synthetic",
         "storage_options": {"storage_family": "shared_store", "write_mode": "async"},
         "topology": {"metaserver": "127.0.0.1:18000"},
-        "batch_size": 10,
+        "batch_size": 20,
         "max_context_tokens": 12000,
-        "embedding_model": "hashing-local",
-        "reader_model": "deterministic-reader",
-        "judge_model": "deterministic-judge",
+        "embedding_model": "matrixark-local-token-hash-v1",
+        "reader_model": "matrixark-deterministic-reader",
+        "judge_model": "matrixark-deterministic-judge",
         "effective_storage_tuning": {"TS_CONTEXT_PAGE_TARGET_BYTES": 65536},
     }
     backend_template = {
@@ -156,6 +156,19 @@ class PerformanceEvidenceImportTest(unittest.TestCase):
         self.assertEqual(row["status"], "missing_live_evidence")
         self.assertIn("phase_scale_matrix_missing", row["open_blockers"])
         self.assertFalse(updated["status"]["performance_candidate"])
+
+    def test_same_config_drift_blocks_otherwise_good_report(self) -> None:
+        report = _report_with_good_parity()
+        report["config"]["dataset"] = "different-dataset"
+        report["config"]["batch_size"] = 10
+
+        updated = import_report(_matrix(), report)
+
+        row = next(row for row in updated["rows"] if row["workload"] == "1K_event_ingestion")
+        self.assertEqual(row["status"], "missing_live_evidence")
+        self.assertFalse(row["same_config_match"])
+        self.assertIn("same_config_drift:dataset", row["open_blockers"])
+        self.assertIn("same_config_drift:batch_size", row["open_blockers"])
 
     def test_phase_scale_gate_must_be_required_and_passed(self) -> None:
         report = _report_with_good_parity()
