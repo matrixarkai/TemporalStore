@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import sys
 import unittest
+from unittest.mock import patch
 
-from run_temporalstore_cpp_rust_next_performance_workflow import _pythonize, build_execution_plan
+from run_temporalstore_cpp_rust_next_performance_workflow import _pythonize, build_execution_plan, run_plan
 
 
 class NextPerformanceWorkflowTest(unittest.TestCase):
@@ -58,6 +59,51 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
     def test_pythonize_uses_current_interpreter(self) -> None:
         self.assertEqual(_pythonize(["python", "tool.py", "--x"]), [sys.executable, "tool.py", "--x"])
         self.assertEqual(_pythonize(["custom-python", "tool.py"]), ["custom-python", "tool.py"])
+
+    def test_run_plan_can_continue_after_failure(self) -> None:
+        plan = {
+            "commands": [
+                {"step": "run_workload", "workload": "10K", "reason": "missing", "argv": ["python", "first.py"]},
+                {"step": "import_evidence", "workload": "10K", "reason": "missing", "argv": ["python", "second.py"]},
+            ],
+            "post_import_validation": [["python", "validator.py"]],
+        }
+
+        class Result:
+            def __init__(self, returncode: int) -> None:
+                self.returncode = returncode
+
+        with patch(
+            "run_temporalstore_cpp_rust_next_performance_workflow.subprocess.run",
+            side_effect=[Result(1), Result(0), Result(0)],
+        ) as run:
+            result = run_plan(plan, include_post_validation=True, continue_on_error=True)
+
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["failed_count"], 1)
+        self.assertEqual([row["status"] for row in result["results"]], ["failed", "passed", "passed"])
+
+    def test_run_plan_fails_fast_by_default(self) -> None:
+        plan = {
+            "commands": [
+                {"step": "run_workload", "workload": "10K", "reason": "missing", "argv": ["python", "first.py"]},
+                {"step": "import_evidence", "workload": "10K", "reason": "missing", "argv": ["python", "second.py"]},
+            ],
+            "post_import_validation": [],
+        }
+
+        class Result:
+            returncode = 2
+
+        with patch(
+            "run_temporalstore_cpp_rust_next_performance_workflow.subprocess.run",
+            return_value=Result(),
+        ) as run:
+            with self.assertRaises(SystemExit):
+                run_plan(plan, include_post_validation=False)
+
+        self.assertEqual(run.call_count, 1)
 
 
 if __name__ == "__main__":
