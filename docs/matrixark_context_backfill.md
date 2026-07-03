@@ -1111,7 +1111,7 @@ python3 tools/validate_open_source_readiness.py
 python3 tools/validate_codex_mcp_parity.py
 ```
 
-The backfill readiness validator performs static surface checks, confirms the manual documents the production-critical flags, runs the local batch/incremental benchmark for both raw-message storage options, verifies checkpoint resume for both `temporalstore` and `matrixkv` raw modes, and generates Prometheus output for shadow and incremental repair runs. A passing result means the local open-source gate exercised full shadow, bounded incremental repair, batch-size sweep, latency/QPS gates, raw-backend parity, serving-record fingerprints, resumable checkpoints, and scrapeable operator metrics.
+The backfill readiness validator performs static surface checks, confirms the manual documents the production-critical flags, runs the local batch/incremental benchmark for both raw-message storage options, executes a baseline-vs-candidate regression gate for both raw modes, verifies checkpoint resume for both `temporalstore` and `matrixkv` raw modes, and generates Prometheus output for shadow and incremental repair runs. A passing result means the local open-source gate exercised full shadow, bounded incremental repair, batch-size sweep, latency/QPS gates, raw-backend parity, baseline regression checks, serving-record fingerprints, resumable checkpoints, and scrapeable operator metrics.
 
 ## CLI Reference
 
