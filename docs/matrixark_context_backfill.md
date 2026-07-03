@@ -1047,6 +1047,11 @@ python3 tools/matrixark_context_backfill.py \
 Validate repository readiness:
 
 ```bash
+python3 tools/validate_matrixark_context_backfill_readiness.py \
+  --records=128 \
+  --batch-sizes=32,64 \
+  --incremental-records=32 \
+  --repeat=2
 python3 tools/validate_open_source_readiness.py
 python3 tools/validate_codex_mcp_parity.py
 ```
