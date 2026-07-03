@@ -27,6 +27,7 @@ REQUIRED_DOC_MARKERS = [
     "serving_record_fingerprint_match",
     "matrixark_context_backfill_validation_check",
     "matrixark_context_backfill_incremental_repair_status",
+    "--baseline-json",
 ]
 
 
@@ -49,6 +50,7 @@ def parser_support_checks() -> list[Json]:
         check("benchmark_has_batch_sweep_option", "--batch-sizes" in benchmark_options),
         check("benchmark_has_latency_gate_options", {"--max-full-shadow-p95-ms", "--max-incremental-shadow-p95-ms", "--max-incremental-repair-p95-ms"}.issubset(benchmark_options)),
         check("benchmark_has_backend_parity_gate", "--min-backend-qps-ratio" in benchmark_options),
+        check("benchmark_has_baseline_regression_gate", {"--baseline-json", "--min-baseline-qps-ratio", "--max-baseline-latency-ratio"}.issubset(benchmark_options)),
         check("backfill_has_prometheus_output", "--prometheus-output" in backfill_options),
     ]
 
@@ -83,6 +85,7 @@ def run_local_gate(args: argparse.Namespace) -> Json:
     return {
         "status": summary.get("status"),
         "performance_gate": summary.get("performance_gate", {}),
+        "baseline_gate": summary.get("baseline_gate", {}),
         "batch_sizes": summary.get("batch_sizes", []),
         "raw_backends": summary.get("raw_backends", []),
         "batch_size_summary": summary.get("batch_size_summary", {}),
@@ -249,6 +252,7 @@ def benchmark_checks(summary: Json) -> list[Json]:
     return [
         check("local_benchmark_status_ok", summary.get("status") == "ok"),
         check("local_benchmark_gate_passed", bool(performance_gate.get("passed"))),
+        check("local_benchmark_baseline_gate_available", isinstance(summary.get("baseline_gate"), dict)),
         check("local_benchmark_covers_temporalstore_and_matrixkv", set(summary.get("raw_backends") or []) == {"temporalstore", "matrixkv"}),
         check("local_benchmark_exercised_batch_sweep", len(summary.get("batch_sizes") or []) >= 2),
         check("local_benchmark_reports_balanced_recommendation", isinstance(recommendations.get("best_balanced_min_qps"), dict)),

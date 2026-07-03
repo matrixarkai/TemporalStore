@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -28,6 +29,9 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
             "max_incremental_shadow_p95_ms": 0.0,
             "max_incremental_repair_p95_ms": 0.0,
             "gate_aggregation": "min",
+            "baseline_json": "",
+            "min_baseline_qps_ratio": 0.0,
+            "max_baseline_latency_ratio": 0.0,
             "json_output": "",
         }
         values.update(overrides)
@@ -63,6 +67,8 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
         self.assertIn("16", summary["batch_size_summary"]["by_batch_size"])
         self.assertEqual(summary["batch_size_summary"]["by_batch_size"]["16"]["samples"], 2)
         self.assertIn("best_balanced_min_qps", summary["batch_size_summary"]["recommendations"])
+        self.assertFalse(summary["baseline_gate"]["enabled"])
+        self.assertTrue(summary["baseline_gate"]["passed"])
 
     def test_local_benchmark_can_write_json_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -162,6 +168,58 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
         self.assertEqual(failed_checks[0]["metric"], "incremental_repair_p95_ms")
         self.assertIn("maximum", failed_checks[0])
 
+    def test_baseline_gate_passes_matching_prior_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline_path = Path(tmp) / "baseline.json"
+            baseline = bench.run_benchmark(self.make_args(
+                records=16,
+                incremental_records=4,
+                raw_backends="temporalstore",
+                batch_size=8,
+                json_output=str(baseline_path),
+            ))
+            self.assertEqual(baseline["status"], "ok")
+            current = bench.run_benchmark(self.make_args(
+                records=16,
+                incremental_records=4,
+                raw_backends="temporalstore",
+                batch_size=8,
+                baseline_json=str(baseline_path),
+                min_baseline_qps_ratio=0.000001,
+                max_baseline_latency_ratio=1000000.0,
+            ))
+            self.assertEqual(current["status"], "ok")
+            self.assertTrue(current["baseline_gate"]["enabled"])
+            self.assertTrue(current["baseline_gate"]["passed"])
+            self.assertEqual(len(current["baseline_gate"]["checks"]), 6)
+
+    def test_baseline_gate_fails_qps_regression(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline_path = Path(tmp) / "baseline.json"
+            baseline = bench.run_benchmark(self.make_args(
+                records=16,
+                incremental_records=4,
+                raw_backends="temporalstore",
+                batch_size=8,
+            ))
+            for result in baseline["results"]:
+                for phase in ["full_shadow", "incremental_shadow", "incremental_repair"]:
+                    result[phase]["qps"] = 10**12
+            baseline_path.write_text(json.dumps(baseline, sort_keys=True), encoding="utf-8")
+            current = bench.run_benchmark(self.make_args(
+                records=16,
+                incremental_records=4,
+                raw_backends="temporalstore",
+                batch_size=8,
+                baseline_json=str(baseline_path),
+                min_baseline_qps_ratio=0.90,
+            ))
+            self.assertEqual(current["status"], "failed")
+            self.assertFalse(current["baseline_gate"]["passed"])
+            failed_checks = [check for check in current["baseline_gate"]["checks"] if not check["passed"]]
+            self.assertTrue(failed_checks)
+            self.assertTrue(all(check["metric"] == "baseline_qps_ratio" for check in failed_checks))
+
     def test_cli_returns_nonzero_when_performance_gate_fails(self) -> None:
         rc = bench.main([
             "--records=16",
@@ -183,6 +241,16 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
     def test_rejects_invalid_backend_ratio(self) -> None:
         with self.assertRaises(bench.BackfillBenchmarkError):
             bench.run_benchmark(self.make_args(min_backend_qps_ratio=1.01))
+
+    def test_rejects_missing_baseline_json(self) -> None:
+        with self.assertRaises(bench.BackfillBenchmarkError):
+            bench.run_benchmark(self.make_args(baseline_json="/tmp/does-not-exist.json", min_baseline_qps_ratio=0.9))
+
+    def test_rejects_invalid_baseline_gate_values(self) -> None:
+        with self.assertRaises(bench.BackfillBenchmarkError):
+            bench.run_benchmark(self.make_args(min_baseline_qps_ratio=-0.1))
+        with self.assertRaises(bench.BackfillBenchmarkError):
+            bench.run_benchmark(self.make_args(max_baseline_latency_ratio=-0.1))
 
     def test_rejects_invalid_batch_size_sweep(self) -> None:
         with self.assertRaises(bench.BackfillBenchmarkError):

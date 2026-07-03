@@ -478,6 +478,92 @@ def evaluate_performance_gate(args: argparse.Namespace, results: list[Json]) -> 
     }
 
 
+def _result_key(result: Json) -> tuple[str, int]:
+    return str(result.get("raw_backend") or ""), int(result.get("batch_size") or 0)
+
+
+def evaluate_baseline_gate(args: argparse.Namespace, results: list[Json]) -> Json:
+    baseline_path = str(getattr(args, "baseline_json", "") or "").strip()
+    min_qps_ratio = float(getattr(args, "min_baseline_qps_ratio", 0.0) or 0.0)
+    max_latency_ratio = float(getattr(args, "max_baseline_latency_ratio", 0.0) or 0.0)
+    enabled = bool(baseline_path) and (min_qps_ratio > 0.0 or max_latency_ratio > 0.0)
+    checks: list[Json] = []
+    if not baseline_path:
+        return {
+            "enabled": False,
+            "passed": True,
+            "baseline_json": "",
+            "min_baseline_qps_ratio": min_qps_ratio,
+            "max_baseline_latency_ratio": max_latency_ratio,
+            "checks": checks,
+        }
+    path = Path(baseline_path)
+    if not path.exists():
+        raise BackfillBenchmarkError(f"--baseline-json does not exist: {baseline_path}")
+    try:
+        baseline = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise BackfillBenchmarkError(f"--baseline-json is not valid JSON: {baseline_path}") from exc
+    baseline_results = baseline.get("results")
+    if not isinstance(baseline_results, list):
+        raise BackfillBenchmarkError("--baseline-json must contain a results array")
+    baseline_by_key = {_result_key(result): result for result in baseline_results if isinstance(result, dict)}
+    current_by_key = {_result_key(result): result for result in results}
+    for key, current in sorted(current_by_key.items()):
+        baseline_result = baseline_by_key.get(key)
+        if not isinstance(baseline_result, dict):
+            checks.append({
+                "raw_backend": key[0],
+                "batch_size": key[1],
+                "metric": "baseline_result_present",
+                "passed": False,
+                "detail": "baseline missing matching raw_backend and batch_size",
+            })
+            continue
+        for phase in ["full_shadow", "incremental_shadow", "incremental_repair"]:
+            current_phase = current.get(phase) if isinstance(current.get(phase), dict) else {}
+            baseline_phase = baseline_result.get(phase) if isinstance(baseline_result.get(phase), dict) else {}
+            current_qps = float(current_phase.get("qps", 0.0) or 0.0)
+            baseline_qps = float(baseline_phase.get("qps", 0.0) or 0.0)
+            current_latency = float(current_phase.get("elapsed_ms", 0.0) or 0.0)
+            baseline_latency = float(baseline_phase.get("elapsed_ms", 0.0) or 0.0)
+            if min_qps_ratio > 0.0:
+                observed = (current_qps / baseline_qps) if baseline_qps > 0.0 else 0.0
+                checks.append({
+                    "raw_backend": key[0],
+                    "batch_size": key[1],
+                    "phase": phase,
+                    "metric": "baseline_qps_ratio",
+                    "observed": round(observed, 6),
+                    "minimum": min_qps_ratio,
+                    "current": round(current_qps, 3),
+                    "baseline": round(baseline_qps, 3),
+                    "passed": observed >= min_qps_ratio,
+                })
+            if max_latency_ratio > 0.0:
+                observed = (current_latency / baseline_latency) if baseline_latency > 0.0 else 0.0
+                checks.append({
+                    "raw_backend": key[0],
+                    "batch_size": key[1],
+                    "phase": phase,
+                    "metric": "baseline_latency_ratio",
+                    "observed": round(observed, 6),
+                    "maximum": max_latency_ratio,
+                    "current": round(current_latency, 3),
+                    "baseline": round(baseline_latency, 3),
+                    "passed": observed <= max_latency_ratio,
+                })
+    passed = all(bool(check["passed"]) for check in checks) if checks else True
+    return {
+        "enabled": enabled,
+        "passed": passed,
+        "baseline_json": baseline_path,
+        "min_baseline_qps_ratio": min_qps_ratio,
+        "max_baseline_latency_ratio": max_latency_ratio,
+        "checks": checks,
+    }
+
+
 def run_benchmark(args: argparse.Namespace) -> Json:
     if args.records <= 0:
         raise BackfillBenchmarkError("--records must be positive")
@@ -500,6 +586,12 @@ def run_benchmark(args: argparse.Namespace) -> Json:
     min_backend_ratio = float(getattr(args, "min_backend_qps_ratio", 0.0) or 0.0)
     if min_backend_ratio < 0.0 or min_backend_ratio > 1.0:
         raise BackfillBenchmarkError("--min-backend-qps-ratio must be between 0 and 1")
+    min_baseline_qps_ratio = float(getattr(args, "min_baseline_qps_ratio", 0.0) or 0.0)
+    if min_baseline_qps_ratio < 0.0:
+        raise BackfillBenchmarkError("--min-baseline-qps-ratio must be non-negative")
+    max_baseline_latency_ratio = float(getattr(args, "max_baseline_latency_ratio", 0.0) or 0.0)
+    if max_baseline_latency_ratio < 0.0:
+        raise BackfillBenchmarkError("--max-baseline-latency-ratio must be non-negative")
     args.gate_aggregation = str(getattr(args, "gate_aggregation", "min") or "min")
     if args.gate_aggregation not in {"sample", "min", "avg"}:
         raise BackfillBenchmarkError("--gate-aggregation must be sample, min, or avg")
@@ -520,8 +612,10 @@ def run_benchmark(args: argparse.Namespace) -> Json:
         args.batch_size = original_batch_size
     elapsed_s = max(0.000001, time.perf_counter() - started)
     performance_gate = evaluate_performance_gate(args, results)
+    baseline_gate = evaluate_baseline_gate(args, results)
+    status_ok = performance_gate["passed"] and baseline_gate["passed"]
     summary = {
-        "status": "ok" if performance_gate["passed"] else "failed",
+        "status": "ok" if status_ok else "failed",
         "mode": "local",
         "records": args.records,
         "batch_size": batch_sizes[0],
@@ -536,6 +630,7 @@ def run_benchmark(args: argparse.Namespace) -> Json:
         "latency_ms_summary": summarize_phase_latency_ms(results),
         "batch_size_summary": summarize_batch_size_performance(results),
         "performance_gate": performance_gate,
+        "baseline_gate": baseline_gate,
     }
     if args.json_output:
         Path(args.json_output).write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
@@ -558,6 +653,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-incremental-shadow-p95-ms", type=float, default=float(os.environ.get("MATRIXARK_BACKFILL_BENCH_MAX_INCREMENTAL_SHADOW_P95_MS", "0")), help="optional p95 latency ceiling for incremental shadow build, 0 disables")
     parser.add_argument("--max-incremental-repair-p95-ms", type=float, default=float(os.environ.get("MATRIXARK_BACKFILL_BENCH_MAX_INCREMENTAL_REPAIR_P95_MS", "0")), help="optional p95 latency ceiling for incremental active repair, 0 disables")
     parser.add_argument("--gate-aggregation", choices=["sample", "min", "avg"], default=os.environ.get("MATRIXARK_BACKFILL_BENCH_GATE_AGGREGATION", "min"), help="how performance gates aggregate repeated samples: min is the conservative default, avg smooths noisy local runs, sample checks every sample")
+    parser.add_argument("--baseline-json", default=os.environ.get("MATRIXARK_BACKFILL_BENCH_BASELINE_JSON", ""), help="optional prior benchmark JSON used for regression gating")
+    parser.add_argument("--min-baseline-qps-ratio", type=float, default=float(os.environ.get("MATRIXARK_BACKFILL_BENCH_MIN_BASELINE_QPS_RATIO", "0")), help="fail when current QPS for a matching backend/batch/phase is below this fraction of baseline, 0 disables")
+    parser.add_argument("--max-baseline-latency-ratio", type=float, default=float(os.environ.get("MATRIXARK_BACKFILL_BENCH_MAX_BASELINE_LATENCY_RATIO", "0")), help="fail when current elapsed latency for a matching backend/batch/phase exceeds this multiple of baseline, 0 disables")
     parser.add_argument("--json-output", default=os.environ.get("MATRIXARK_BACKFILL_BENCH_JSON", ""))
     return parser
 
