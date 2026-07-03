@@ -72,10 +72,15 @@ def _coverage_by_family(corpus: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 "suites": set(),
                 "has_blocker": False,
                 "has_expected_runner": False,
+                "static_rows_missing_comparison": 0,
+                "static_rows_missing_exit_criteria": 0,
+                "static_rows_missing_exit_tokens": set(),
+                "static_rows_missing_comparison_tokens": set(),
             },
         )
-        if row.get("status"):
-            target["statuses"].add(str(row.get("status")))
+        status = str(row.get("status") or "")
+        if status:
+            target["statuses"].add(status)
         for suite in _as_strings(row.get("suites")):
             target["suites"].add(suite)
         if row.get("suite"):
@@ -84,6 +89,20 @@ def _coverage_by_family(corpus: dict[str, Any]) -> dict[str, dict[str, Any]]:
             target["has_blocker"] = True
         if row.get("expected_runner_command") or row.get("runner_command"):
             target["has_expected_runner"] = True
+        if status in STATIC_STATUSES:
+            comparison_command = str(row.get("comparison_command") or "")
+            if not comparison_command:
+                target["static_rows_missing_comparison"] += 1
+            for token in REQUIRED_STATIC_COMPARISON_TOKENS:
+                if token not in comparison_command:
+                    target["static_rows_missing_comparison_tokens"].add(token)
+            exit_criteria = _as_strings(row.get("exit_criteria"))
+            if not exit_criteria:
+                target["static_rows_missing_exit_criteria"] += 1
+            joined_exit_criteria = " ".join(exit_criteria)
+            for token in REQUIRED_STATIC_EXIT_CRITERIA_TOKENS:
+                if token not in joined_exit_criteria:
+                    target["static_rows_missing_exit_tokens"].add(token)
     return out
 
 
@@ -119,6 +138,28 @@ def main() -> int:
         if missing_suites:
             failures.append(f"{family} missing suites from corpus coverage: {', '.join(missing_suites)}")
         if status in STATIC_STATUSES:
+            if source["static_rows_missing_comparison"]:
+                failures.append(
+                    f"{family} corpus static coverage rows missing comparison_command: "
+                    f"{source['static_rows_missing_comparison']}"
+                )
+            missing_comparison_tokens = sorted(source["static_rows_missing_comparison_tokens"])
+            if missing_comparison_tokens:
+                failures.append(
+                    f"{family} corpus static comparison_command missing tokens: "
+                    + ", ".join(missing_comparison_tokens)
+                )
+            if source["static_rows_missing_exit_criteria"]:
+                failures.append(
+                    f"{family} corpus static coverage rows missing exit_criteria: "
+                    f"{source['static_rows_missing_exit_criteria']}"
+                )
+            missing_exit_tokens = sorted(source["static_rows_missing_exit_tokens"])
+            if missing_exit_tokens:
+                failures.append(
+                    f"{family} corpus static exit_criteria missing tokens: "
+                    + ", ".join(missing_exit_tokens)
+                )
             if row.get("native_cpp_executable") is True:
                 failures.append(f"{family} static gate cannot claim native_cpp_executable=true")
             if not row.get("blocker"):

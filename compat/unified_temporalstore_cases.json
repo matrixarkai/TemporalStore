@@ -12104,7 +12104,7 @@
           "cpp_storage_parity",
           "storage_proxy_client_parity"
         ],
-        "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report rust-report.json --cpp-report cpp-report.json",
+        "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
         "next_executable_families": [
           "slot/object/block index authority",
           "slot layout transitions",
@@ -12114,6 +12114,11 @@
           "GC plus eviction cold reads",
           "WAL/index-GC reclaim",
           "cache replacement soak"
+        ],
+        "exit_criteria": [
+          "native C++ runner emits temporalstore_unified_case_report_v1 for all selected shared cases in storage/cache",
+          "C++ and Rust reports pass tools/compare_unified_cpp_rust_case_reports.py with matching case/step names and required output evidence",
+          "matrix row can move to native_executable only after no static surface gate remains for this family"
         ]
       },
       {
@@ -12125,6 +12130,11 @@
         "status": "mixed_native_and_static_surface_gate",
         "suites": [
           "cpp_data_raft_parity"
+        ],
+        "exit_criteria": [
+          "native C++ runner emits temporalstore_unified_case_report_v1 for all selected shared cases in raft",
+          "C++ and Rust reports pass tools/compare_unified_cpp_rust_case_reports.py with matching case/step names and required output evidence",
+          "matrix row can move to native_executable only after no static surface gate remains for this family"
         ]
       },
       {
@@ -12134,6 +12144,12 @@
         "status": "temporary_static_surface_gate",
         "suites": [
           "cpp_context_pipeline_parity"
+        ],
+        "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+        "exit_criteria": [
+          "native C++ runner emits temporalstore_unified_case_report_v1 for all selected shared cases in context",
+          "C++ and Rust reports pass tools/compare_unified_cpp_rust_case_reports.py with matching case/step names and required output evidence",
+          "matrix row can move to native_executable only after no static surface gate remains for this family"
         ]
       },
       {
@@ -12147,6 +12163,12 @@
           "cpp_data_node_lifecycle_parity",
           "cpp_metaserver_control_plane_parity",
           "cpp_cross_subsystem_parity"
+        ],
+        "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+        "exit_criteria": [
+          "native C++ runner emits temporalstore_unified_case_report_v1 for all selected shared cases in client/proxy/control-plane",
+          "C++ and Rust reports pass tools/compare_unified_cpp_rust_case_reports.py with matching case/step names and required output evidence",
+          "matrix row can move to native_executable only after no static surface gate remains for this family"
         ]
       },
       {
@@ -12156,6 +12178,12 @@
         "status": "temporary_static_surface_gate",
         "suites": [
           "cpp_ingestion_parity"
+        ],
+        "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+        "exit_criteria": [
+          "native C++ runner emits temporalstore_unified_case_report_v1 for all selected shared cases in ingestion",
+          "C++ and Rust reports pass tools/compare_unified_cpp_rust_case_reports.py with matching case/step names and required output evidence",
+          "matrix row can move to native_executable only after no static surface gate remains for this family"
         ]
       },
       {
@@ -12174,6 +12202,12 @@
         "status": "temporary_static_surface_gate",
         "suites": [
           "cpp_ops_scale_parity"
+        ],
+        "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+        "exit_criteria": [
+          "native C++ runner emits temporalstore_unified_case_report_v1 for all selected shared cases in ops/scale",
+          "C++ and Rust reports pass tools/compare_unified_cpp_rust_case_reports.py with matching case/step names and required output evidence",
+          "matrix row can move to native_executable only after no static surface gate remains for this family"
         ]
       },
       {
@@ -12183,17 +12217,28 @@
         "status": "temporary_static_surface_gate",
         "suites": [
           "cpp_rust_codex_mcp_parity"
+        ],
+        "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+        "exit_criteria": [
+          "native C++ runner emits temporalstore_unified_case_report_v1 for all selected shared cases in codex/mcp",
+          "C++ and Rust reports pass tools/compare_unified_cpp_rust_case_reports.py with matching case/step names and required output evidence",
+          "matrix row can move to native_executable only after no static surface gate remains for this family"
         ]
       },
       {
         "blocker": "Native C++ Redis/admin product command corpus runner is not wired yet; Rust executes the broad Redis engine command flow while C++ parity remains tied to Redis/admin/API product surface evidence.",
-        "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json>",
+        "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
         "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-redis-admin-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
         "family": "Redis/admin",
         "runner_command": "compat/cpp_unified_case_report_adapter.h emits temporalstore_unified_case_report_v1 for Redis/admin shared cases; tools/compare_unified_cpp_rust_case_reports.py compares Rust and C++ reports.",
         "status": "mixed_native_and_static_surface_gate",
         "suites": [
           "redis_admin_product_parity"
+        ],
+        "exit_criteria": [
+          "native C++ runner emits temporalstore_unified_case_report_v1 for all selected shared cases in Redis/admin",
+          "C++ and Rust reports pass tools/compare_unified_cpp_rust_case_reports.py with matching case/step names and required output evidence",
+          "matrix row can move to native_executable only after no static surface gate remains for this family"
         ]
       },
       {
@@ -12206,6 +12251,12 @@
         "suite": "cpp_context_query_debug_parity",
         "suites": [
           "cpp_context_query_debug_parity"
+        ],
+        "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+        "exit_criteria": [
+          "native C++ runner emits temporalstore_unified_case_report_v1 for all selected shared cases in context",
+          "C++ and Rust reports pass tools/compare_unified_cpp_rust_case_reports.py with matching case/step names and required output evidence",
+          "matrix row can move to native_executable only after no static surface gate remains for this family"
         ]
       },
       {
@@ -12215,6 +12266,12 @@
         "status": "temporary_static_surface_gate",
         "suites": [
           "cpp_client_proxy_control_plane_parity"
+        ],
+        "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+        "exit_criteria": [
+          "native C++ runner emits temporalstore_unified_case_report_v1 for all selected shared cases in client_proxy_control_plane",
+          "C++ and Rust reports pass tools/compare_unified_cpp_rust_case_reports.py with matching case/step names and required output evidence",
+          "matrix row can move to native_executable only after no static surface gate remains for this family"
         ]
       },
       {
@@ -12224,6 +12281,12 @@
         "status": "temporary_static_surface_gate",
         "suites": [
           "cpp_product_api_parity"
+        ],
+        "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+        "exit_criteria": [
+          "native C++ runner emits temporalstore_unified_case_report_v1 for all selected shared cases in product_api_models",
+          "C++ and Rust reports pass tools/compare_unified_cpp_rust_case_reports.py with matching case/step names and required output evidence",
+          "matrix row can move to native_executable only after no static surface gate remains for this family"
         ]
       },
       {
