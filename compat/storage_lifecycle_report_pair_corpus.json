@@ -314,6 +314,49 @@
       "unreadable_page_refs": 0,
       "checksum_mismatches": 0,
       "object_index_entry": "{model/table/object_key} -> current page chain"
+    },
+    "storage_cache_contract": {
+      "layers": [
+        "memory_object_cache",
+        "page_index_cache",
+        "block_index_cache",
+        "disk_block_cache",
+        "shared_store_read_through"
+      ],
+      "semantics": [
+        "lookup_hot_to_cold",
+        "refill_from_durable_on_miss",
+        "invalidate_on_append_watermark",
+        "invalidate_on_compaction_watermark",
+        "cold_scan_no_promote",
+        "writeback_backpressure_reported"
+      ],
+      "metrics": [
+        "memory_cache_hits",
+        "memory_cache_misses",
+        "page_index_cache_hits",
+        "page_index_cache_misses",
+        "block_index_cache_hits",
+        "block_index_cache_misses",
+        "disk_cache_hits",
+        "disk_cache_misses",
+        "shared_store_read_throughs",
+        "cache_refills",
+        "cache_invalidations",
+        "cache_writeback_queue_depth",
+        "cache_writeback_rejections"
+      ],
+      "hot_to_cold_lookup": true,
+      "durable_refill_on_miss": true,
+      "append_watermark_invalidation": true,
+      "compaction_watermark_invalidation": true,
+      "cold_scan_no_promote": true,
+      "writeback_backpressure_measured": true,
+      "cache_refills": 3,
+      "cache_invalidations": 2,
+      "cache_writeback_queue_depth": 0,
+      "cache_writeback_rejections": 0,
+      "hot_cache_promotions": 0
     }
   },
   "rust": {
@@ -627,6 +670,49 @@
       "unreadable_page_refs": 0,
       "checksum_mismatches": 0,
       "object_index_entry": "{model/table/object_key} -> current page chain"
+    },
+    "storage_cache_contract": {
+      "layers": [
+        "memory_object_cache",
+        "page_index_cache",
+        "block_index_cache",
+        "disk_block_cache",
+        "shared_store_read_through"
+      ],
+      "semantics": [
+        "lookup_hot_to_cold",
+        "refill_from_durable_on_miss",
+        "invalidate_on_append_watermark",
+        "invalidate_on_compaction_watermark",
+        "cold_scan_no_promote",
+        "writeback_backpressure_reported"
+      ],
+      "metrics": [
+        "memory_cache_hits",
+        "memory_cache_misses",
+        "page_index_cache_hits",
+        "page_index_cache_misses",
+        "block_index_cache_hits",
+        "block_index_cache_misses",
+        "disk_cache_hits",
+        "disk_cache_misses",
+        "shared_store_read_throughs",
+        "cache_refills",
+        "cache_invalidations",
+        "cache_writeback_queue_depth",
+        "cache_writeback_rejections"
+      ],
+      "hot_to_cold_lookup": true,
+      "durable_refill_on_miss": true,
+      "append_watermark_invalidation": true,
+      "compaction_watermark_invalidation": true,
+      "cold_scan_no_promote": true,
+      "writeback_backpressure_measured": true,
+      "cache_refills": 3,
+      "cache_invalidations": 2,
+      "cache_writeback_queue_depth": 0,
+      "cache_writeback_rejections": 0,
+      "hot_cache_promotions": 0
     }
   }
 }

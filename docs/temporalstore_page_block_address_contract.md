@@ -885,6 +885,34 @@ Canonical cache metrics:
 - `cache_writeback_queue_depth`
 - `cache_writeback_rejections`
 
+Lifecycle parity reports must also include `storage_cache_contract` with these
+required fields:
+
+- `layers`
+- `semantics`
+- `metrics`
+- `hot_to_cold_lookup`
+- `durable_refill_on_miss`
+- `append_watermark_invalidation`
+- `compaction_watermark_invalidation`
+- `cold_scan_no_promote`
+- `writeback_backpressure_measured`
+- `cache_refills`
+- `cache_invalidations`
+- `cache_writeback_queue_depth`
+- `cache_writeback_rejections`
+- `hot_cache_promotions`
+
+Required cache contract behavior:
+
+- `hot_to_cold_lookup` must be `true`.
+- `durable_refill_on_miss` must be `true`.
+- `append_watermark_invalidation` must be `true`.
+- `compaction_watermark_invalidation` must be `true`.
+- `cold_scan_no_promote` must be `true`.
+- `writeback_backpressure_measured` must be `true`.
+- `hot_cache_promotions` must be `0` for cold scan no-promote parity.
+
 Canonical StorageManager/StoreManager lifecycle phases:
 
 - `prepare`
@@ -1011,6 +1039,7 @@ Rust before comparison tools accept them:
 - `storage_cold_scan_contract`
 - `storage_manager_contract`
 - `storage_index_contract`
+- `storage_cache_contract`
 - `storage_read_sequence`
 - `storage_cold_scan_sequence`
 - `storage_lifecycle_phases`

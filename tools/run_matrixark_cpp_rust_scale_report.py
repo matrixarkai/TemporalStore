@@ -212,6 +212,7 @@ STORAGE_LIFECYCLE_TOP_LEVEL_KEYS = [
     "storage_cold_scan_contract",
     "storage_manager_contract",
     "storage_index_contract",
+    "storage_cache_contract",
     "storage_read_sequence",
     "storage_cold_scan_sequence",
     "storage_lifecycle_phases",
@@ -441,6 +442,23 @@ STORAGE_CACHE_METRIC_NAMES = [
     "cache_invalidations",
     "cache_writeback_queue_depth",
     "cache_writeback_rejections",
+]
+
+STORAGE_CACHE_CONTRACT_FIELDS = [
+    "layers",
+    "semantics",
+    "metrics",
+    "hot_to_cold_lookup",
+    "durable_refill_on_miss",
+    "append_watermark_invalidation",
+    "compaction_watermark_invalidation",
+    "cold_scan_no_promote",
+    "writeback_backpressure_measured",
+    "cache_refills",
+    "cache_invalidations",
+    "cache_writeback_queue_depth",
+    "cache_writeback_rejections",
+    "hot_cache_promotions",
 ]
 
 STORAGE_LIFECYCLE_METRIC_NAMES = [
@@ -703,6 +721,26 @@ def default_storage_index_contract(metrics: Json | None = None) -> Json:
     }
 
 
+def default_storage_cache_contract(metrics: Json | None = None) -> Json:
+    source = metrics if isinstance(metrics, dict) else {}
+    return {
+        "layers": list(STORAGE_CACHE_LAYER_NAMES),
+        "semantics": list(STORAGE_CACHE_SEMANTICS),
+        "metrics": list(STORAGE_CACHE_METRIC_NAMES),
+        "hot_to_cold_lookup": True,
+        "durable_refill_on_miss": True,
+        "append_watermark_invalidation": True,
+        "compaction_watermark_invalidation": True,
+        "cold_scan_no_promote": True,
+        "writeback_backpressure_measured": True,
+        "cache_refills": int(source.get("cache_refills") or 0),
+        "cache_invalidations": int(source.get("cache_invalidations") or 0),
+        "cache_writeback_queue_depth": int(source.get("cache_writeback_queue_depth") or 0),
+        "cache_writeback_rejections": int(source.get("cache_writeback_rejections") or 0),
+        "hot_cache_promotions": int(source.get("hot_cache_promotions") or 0),
+    }
+
+
 def storage_lifecycle_report_shape(effective_storage_tuning: Json, metrics: Json | None = None) -> Json:
     return {
         "effective_storage_tuning": dict(effective_storage_tuning),
@@ -715,6 +753,7 @@ def storage_lifecycle_report_shape(effective_storage_tuning: Json, metrics: Json
         "storage_cold_scan_contract": default_storage_cold_scan_contract(metrics),
         "storage_manager_contract": default_storage_manager_contract(metrics),
         "storage_index_contract": default_storage_index_contract(metrics),
+        "storage_cache_contract": default_storage_cache_contract(metrics),
         "storage_write_sequence": list(STORAGE_WRITE_SEQUENCE_STEPS),
         "storage_read_sequence": list(STORAGE_READ_SEQUENCE_STEPS),
         "storage_cold_scan_sequence": list(STORAGE_COLD_SCAN_SEQUENCE_STEPS),
@@ -771,6 +810,12 @@ def attach_storage_lifecycle_shape(result: Json, effective_storage_tuning: Json 
     normalized_index_contract = default_storage_index_contract(metrics)
     normalized_index_contract.update(index_contract)
     shaped["storage_index_contract"] = normalized_index_contract
+    cache_contract = shaped.get("storage_cache_contract")
+    if not isinstance(cache_contract, dict):
+        cache_contract = {}
+    normalized_cache_contract = default_storage_cache_contract(metrics)
+    normalized_cache_contract.update(cache_contract)
+    shaped["storage_cache_contract"] = normalized_cache_contract
     shaped["storage_write_sequence"] = list(STORAGE_WRITE_SEQUENCE_STEPS)
     shaped["storage_read_sequence"] = list(STORAGE_READ_SEQUENCE_STEPS)
     shaped["storage_cold_scan_sequence"] = list(STORAGE_COLD_SCAN_SEQUENCE_STEPS)
