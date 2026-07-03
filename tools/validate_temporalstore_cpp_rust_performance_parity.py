@@ -133,6 +133,16 @@ def _require(condition: bool, message: str, failures: list[str]) -> None:
         failures.append(message)
 
 
+def _has_duplicates(items: list[Any]) -> bool:
+    seen: set[str] = set()
+    for item in items:
+        key = str(item)
+        if key in seen:
+            return True
+        seen.add(key)
+    return False
+
+
 def _expected_artifact_dir(workload: str) -> str:
     return f"docs/benchmarks/parity_{workload}"
 
@@ -325,11 +335,17 @@ def _validate_global_blocker_ledger(
     by_workload: dict[str, dict[str, Any]],
     failures: list[str],
 ) -> None:
-    global_blockers = {str(blocker) for blocker in _as_list(status.get("open_blockers"))}
+    global_blocker_list = _as_list(status.get("open_blockers"))
+    if _has_duplicates(global_blocker_list):
+        failures.append("global open_blockers must be unique")
+    global_blockers = {str(blocker) for blocker in global_blocker_list}
     for workload, row in by_workload.items():
         if workload not in REQUIRED_WORKLOADS:
             continue
-        for blocker in _as_list(row.get("open_blockers")):
+        row_blockers = _as_list(row.get("open_blockers"))
+        if _has_duplicates(row_blockers):
+            failures.append(f"{workload} open_blockers must be unique")
+        for blocker in row_blockers:
             expected = f"{workload}:{blocker}"
             if expected not in global_blockers:
                 failures.append(f"global open_blockers missing `{expected}`")
