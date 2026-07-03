@@ -49,6 +49,33 @@ from tools.matrixark_mcp_temporal_adapters import (  # noqa: E402
 Json = dict[str, Any]
 
 
+def _is_windows_host() -> bool:
+    return os.name == "nt"
+
+
+def _wsl_path(path: str) -> str:
+    normalized = str(path).replace("\\", "/")
+    if len(normalized) >= 3 and normalized[1] == ":" and normalized[2] == "/":
+        drive = normalized[0].lower()
+        return f"/mnt/{drive}/{normalized[3:]}"
+    return normalized
+
+
+def _linux_so_on_windows_error(path: str) -> str:
+    return (
+        "invalid_host_platform: C++ direct SDK parity requires loading libbcache2.so from "
+        "a Linux process. The current runner is Windows Python, which cannot load a Linux .so. "
+        "Run this command from WSL/Linux or provide a Windows-compatible bcache2.dll. "
+        f"WSL path hint: {_wsl_path(path)}"
+    )
+
+
+def validate_cpp_runtime_host(cpp_lib: str) -> None:
+    suffix = Path(cpp_lib).suffix.lower()
+    if _is_windows_host() and suffix == ".so":
+        raise RuntimeError(_linux_so_on_windows_error(cpp_lib))
+
+
 def percentile(values: list[float], pct: float) -> float:
     if not values:
         return 0.0
@@ -1516,6 +1543,7 @@ def make_adapter(backend: str, args: argparse.Namespace, storage_prefix: str):
         "io_timeout_ms": args.io_timeout_ms,
     }
     if backend == "cpp":
+        validate_cpp_runtime_host(args.cpp_lib)
         return MatrixArkTemporalStoreDirectAdapter(library_path=args.cpp_lib, **common)
     if backend == "rust":
         return MatrixArkTemporalStoreRustAdapter(rust_cli=args.rust_cli, **common)
@@ -1527,6 +1555,7 @@ def make_adapter(backend: str, args: argparse.Namespace, storage_prefix: str):
 
 def make_raw_client(backend: str, args: argparse.Namespace):
     if backend == "cpp":
+        validate_cpp_runtime_host(args.cpp_lib)
         sdk_root = ROOT / "sdk" / "python"
         sys.path.insert(0, str(sdk_root))
         from temporalstore import Client, Options  # type: ignore

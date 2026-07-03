@@ -5,7 +5,8 @@
     "performance_candidate": false,
     "production_performance_parity": false,
     "open_blockers": [
-      "1K_event_ingestion:same-config live C++ and Rust 1K ingestion evidence missing",
+      "1K_event_ingestion:cpp_backend_not_passed",
+      "1K_event_ingestion:rust_backend_not_passed",
       "10K_event_ingestion:cpp_backend_not_passed",
       "10K_event_ingestion:rust_backend_not_passed",
       "100K_event_ingestion:cpp_backend_not_passed",
@@ -14,7 +15,8 @@
       "retrieve_workers_8:same-config live C++ and Rust 8-worker retrieval evidence missing",
       "retrieve_workers_16:cpp_backend_not_passed",
       "retrieve_workers_16:rust_backend_not_passed",
-      "retrieve_workers_32:same-config live C++ and Rust 32-worker retrieval evidence missing"
+      "retrieve_workers_32:cpp_backend_not_passed",
+      "retrieve_workers_32:rust_backend_not_passed"
     ]
   },
   "thresholds": {
@@ -78,7 +80,8 @@
       "rust": {},
       "ratios": {},
       "open_blockers": [
-        "same-config live C++ and Rust 1K ingestion evidence missing"
+        "cpp_backend_not_passed",
+        "rust_backend_not_passed"
       ]
     },
     {
@@ -201,7 +204,8 @@
       "rust": {},
       "ratios": {},
       "open_blockers": [
-        "same-config live C++ and Rust 32-worker retrieval evidence missing"
+        "cpp_backend_not_passed",
+        "rust_backend_not_passed"
       ]
     }
   ]

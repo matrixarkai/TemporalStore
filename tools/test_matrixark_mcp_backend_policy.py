@@ -24,6 +24,7 @@ try:
         storage_tuning_failures,
         summarize_retrieval_metrics,
         timeout_count,
+        validate_cpp_runtime_host,
     )
     from tools.validate_storage_lifecycle_parity import REPORT_PAIR_CORPUS, _load_json, validate_report_pair
 except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
@@ -39,6 +40,7 @@ except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
         storage_tuning_failures,
         summarize_retrieval_metrics,
         timeout_count,
+        validate_cpp_runtime_host,
     )
     from validate_storage_lifecycle_parity import REPORT_PAIR_CORPUS, _load_json, validate_report_pair
 
@@ -691,6 +693,15 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         blocker_names = {item["name"] for item in gate["blockers"]}
         self.assertIn("cpp_selected_refs_non_empty", blocker_names)
         self.assertIn("rust_selected_refs_non_empty", blocker_names)
+
+    def test_cpp_linux_so_preflight_rejects_windows_python(self) -> None:
+        original = validate_cpp_runtime_host.__globals__["_is_windows_host"]
+        validate_cpp_runtime_host.__globals__["_is_windows_host"] = lambda: True
+        try:
+            with self.assertRaisesRegex(RuntimeError, "invalid_host_platform"):
+                validate_cpp_runtime_host("C:\\repo\\output-ubuntu22\\release\\sdk\\lib\\libbcache2.so")
+        finally:
+            validate_cpp_runtime_host.__globals__["_is_windows_host"] = original
 
     def test_production_policy_gate_passes_native_index_driven_context_path(self) -> None:
         metrics = {
