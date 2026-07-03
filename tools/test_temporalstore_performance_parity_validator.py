@@ -7,6 +7,7 @@ import unittest
 
 from validate_temporalstore_cpp_rust_performance_parity import (
     _exceeds_limit,
+    _validate_completed_same_config,
     _validate_metric_block,
     _validate_ratios,
 )
@@ -75,6 +76,33 @@ class PerformanceParityValidatorTest(unittest.TestCase):
 
         self.assertIn("1K_event_ingestion message_qps_ratio below 0.8", failures)
         self.assertNotIn("1K_event_ingestion retrieve_qps_ratio below 0.8", failures)
+
+    def test_completed_same_config_rejects_drift_from_required_run_policy(self) -> None:
+        failures: list[str] = []
+        row = {
+            "workload": "1K_event_ingestion",
+            "dataset": "other",
+            "storage_mode": "shared_store",
+            "topology": {"metaserver": "127.0.0.1:18000"},
+            "batch_size": 10,
+            "token_budget": 12000,
+            "embedding_model": "matrixark-local-token-hash-v1",
+            "reader_model": "matrixark-deterministic-reader",
+            "judge_model": "matrixark-deterministic-judge",
+            "storage_tuning": {"TS_CONTEXT_PAGE_TARGET_BYTES": 65536},
+        }
+
+        _validate_completed_same_config(row, failures)
+
+        self.assertIn(
+            "1K_event_ingestion same-config field `dataset` drift: expected "
+            "'matrixark-scale-synthetic' got 'other'",
+            failures,
+        )
+        self.assertIn(
+            "1K_event_ingestion same-config field `batch_size` drift: expected 20 got 10",
+            failures,
+        )
 
 
 if __name__ == "__main__":

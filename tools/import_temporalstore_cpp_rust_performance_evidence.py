@@ -35,6 +35,15 @@ SAME_CONFIG_KEYS = [
     "storage_tuning",
 ]
 
+REQUIRED_SAME_CONFIG_VALUES = {
+    "dataset": "matrixark-scale-synthetic",
+    "batch_size": 20,
+    "token_budget": 12000,
+    "embedding_model": "matrixark-local-token-hash-v1",
+    "reader_model": "matrixark-deterministic-reader",
+    "judge_model": "matrixark-deterministic-judge",
+}
+
 
 def _dig(data: dict[str, Any], *path: str, default: Any = None) -> Any:
     value: Any = data
@@ -90,6 +99,19 @@ def _same_config(report: dict[str, Any]) -> dict[str, Any]:
         "judge_model": config.get("judge_model"),
         "storage_tuning": config.get("effective_storage_tuning"),
     }
+
+
+def _same_config_blockers(same_config: dict[str, Any]) -> list[str]:
+    blockers = [
+        "missing_same_config:" + ",".join(
+            key for key in SAME_CONFIG_KEYS if same_config.get(key) in (None, "", "required_per_row")
+        )
+    ]
+    blockers = [blocker for blocker in blockers if blocker != "missing_same_config:"]
+    for key, expected in REQUIRED_SAME_CONFIG_VALUES.items():
+        if same_config.get(key) != expected:
+            blockers.append(f"same_config_drift:{key}")
+    return blockers
 
 
 def _selected_ref_parity(report: dict[str, Any]) -> bool:
@@ -221,7 +243,7 @@ def import_report(matrix: dict[str, Any], report: dict[str, Any]) -> dict[str, A
     cpp = _dig(report, "backends", "cpp", default={})
     rust = _dig(report, "backends", "rust", default={})
     same_config = _same_config(report)
-    missing_config = [key for key in SAME_CONFIG_KEYS if same_config.get(key) in (None, "", "required_per_row")]
+    same_config_blockers = _same_config_blockers(same_config)
     selected_ref_parity = _selected_ref_parity(report)
     phase_scale_blockers = _phase_scale_blockers(report)
     thresholds = out.get("thresholds") if isinstance(out.get("thresholds"), dict) else {}
@@ -236,8 +258,7 @@ def import_report(matrix: dict[str, Any], report: dict[str, Any]) -> dict[str, A
             blockers.append("cpp_backend_not_passed")
         if not isinstance(rust, dict) or rust.get("status") != "passed":
             blockers.append("rust_backend_not_passed")
-        if missing_config:
-            blockers.append("missing_same_config:" + ",".join(missing_config))
+        blockers.extend(same_config_blockers)
         blockers.extend(phase_scale_blockers)
         if blockers:
             row.update(

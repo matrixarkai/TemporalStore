@@ -93,6 +93,15 @@ REQUIRED_SAME_CONFIG_COMMAND_ARGS = {
     "--replication-mode": "shared_store",
 }
 
+REQUIRED_COMPLETED_SAME_CONFIG_VALUES = {
+    "dataset": "matrixark-scale-synthetic",
+    "batch_size": 20,
+    "token_budget": 12000,
+    "embedding_model": "matrixark-local-token-hash-v1",
+    "reader_model": "matrixark-deterministic-reader",
+    "judge_model": "matrixark-deterministic-judge",
+}
+
 VALID_ROW_STATUSES = {
     "missing_live_evidence",
     "performance_candidate",
@@ -252,6 +261,19 @@ def _validate_ratios(row: dict[str, Any], thresholds: dict[str, Any], failures: 
             failures.append(f"{row.get('workload')} {latency_ratio} above {max_latency}")
 
 
+def _validate_completed_same_config(row: dict[str, Any], failures: list[str]) -> None:
+    workload = row.get("workload")
+    for key in SAME_CONFIG_KEYS:
+        if row.get(key) in (None, "", "required_per_row"):
+            failures.append(f"{workload} missing same-config field `{key}`")
+    for key, expected in REQUIRED_COMPLETED_SAME_CONFIG_VALUES.items():
+        if row.get(key) != expected:
+            failures.append(
+                f"{workload} same-config field `{key}` drift: "
+                f"expected {expected!r} got {row.get(key)!r}"
+            )
+
+
 def main() -> int:
     data = json.loads(MATRIX.read_text(encoding="utf-8"))
     failures: list[str] = []
@@ -335,9 +357,7 @@ def main() -> int:
             failures.append(f"{workload} cannot be {row_status} while open_blockers remain")
         if row.get("same_config_match") is not True:
             failures.append(f"{workload} requires same_config_match=true")
-        for key in SAME_CONFIG_KEYS:
-            if row.get(key) in (None, "", "required_per_row"):
-                failures.append(f"{workload} missing same-config field `{key}`")
+        _validate_completed_same_config(row, failures)
         require_selected_ref_parity = thresholds.get("require_selected_ref_parity") is not False
         cpp = _validate_metric_block(
             row,
