@@ -456,6 +456,33 @@ Required cold scan sequence step names:
 - `bounded_decode`
 - `no_hot_cache_promotion`
 
+Required cold scan result fields:
+
+- `timestamp_range`
+- `page_index_scan`
+- `no_cache_page_reads`
+- `decode_batch_limit`
+- `decode_byte_limit`
+- `deadline_ms`
+- `records_decoded`
+- `records_returned`
+- `hot_cache_promotions`
+- `cache_fill`
+- `promotion_policy`
+
+Required cold scan metrics:
+
+- `cold_scan_no_cache_reads`
+- `cold_scan_page_index_scan_count`
+- `cold_scan_page_index_scan_ms`
+- `cold_scan_page_reads`
+- `cold_scan_decode_records_ms`
+- `cold_scan_records_decoded`
+- `cold_scan_records_returned`
+- `cold_scan_decode_batch_limit`
+- `cold_scan_decode_byte_limit`
+- `hot_cache_promotions`
+
 Required behavior:
 
 - Cold lifecycle scans must start from a timestamp range and use `PageIndex`
@@ -464,6 +491,11 @@ Required behavior:
   `TS_COLD_SCAN_NO_CACHE_FILL=true`.
 - Decode work must be bounded by batch size, byte budget, and deadline so
   compression, backfill, audit, or GC workers cannot starve serving retrieval.
+- `storage_cold_scan_contract.cache_fill` must be `false` and
+  `storage_cold_scan_contract.promotion_policy` must be `no_promote`.
+- `storage_cold_scan_contract.hot_cache_promotions` must be `0`.
+- `storage_cold_scan_contract.records_returned` must not exceed
+  `storage_cold_scan_contract.records_decoded`.
 - Cold scan reads may write warm summaries, tombstones, or compaction metadata,
   but raw source pages must not enter hot LRU/admission unless an explicit
   replay/query path reinforces them.
@@ -897,6 +929,7 @@ Rust before comparison tools accept them:
 - `public_storage_contract`
 - `storage_write_contract`
 - `storage_read_contract`
+- `storage_cold_scan_contract`
 - `storage_read_sequence`
 - `storage_cold_scan_sequence`
 - `storage_lifecycle_phases`

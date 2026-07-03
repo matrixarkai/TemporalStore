@@ -35,6 +35,7 @@ REQUIRED_METRICS = [
     "append_durability_failures",
     "compaction_reclaimed_bytes",
     "cold_scan_no_cache_reads",
+    "cold_scan_page_reads",
     "hot_cache_promotions",
     "append_watermark",
     "compaction_watermark",

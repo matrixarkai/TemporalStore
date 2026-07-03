@@ -209,6 +209,7 @@ STORAGE_LIFECYCLE_TOP_LEVEL_KEYS = [
     "public_storage_contract",
     "storage_write_contract",
     "storage_read_contract",
+    "storage_cold_scan_contract",
     "storage_read_sequence",
     "storage_cold_scan_sequence",
     "storage_lifecycle_phases",
@@ -242,6 +243,7 @@ PAGE_BLOCK_METRIC_NAMES = [
     "append_durability_failures",
     "compaction_reclaimed_bytes",
     "cold_scan_no_cache_reads",
+    "cold_scan_page_reads",
     "hot_cache_promotions",
     "append_watermark",
     "compaction_watermark",
@@ -330,6 +332,33 @@ STORAGE_COLD_SCAN_SEQUENCE_STEPS = [
     "no_cache_page_read",
     "bounded_decode",
     "no_hot_cache_promotion",
+]
+
+STORAGE_COLD_SCAN_RESULT_FIELDS = [
+    "timestamp_range",
+    "page_index_scan",
+    "no_cache_page_reads",
+    "decode_batch_limit",
+    "decode_byte_limit",
+    "deadline_ms",
+    "records_decoded",
+    "records_returned",
+    "hot_cache_promotions",
+    "cache_fill",
+    "promotion_policy",
+]
+
+STORAGE_COLD_SCAN_METRIC_NAMES = [
+    "cold_scan_no_cache_reads",
+    "cold_scan_page_index_scan_count",
+    "cold_scan_page_index_scan_ms",
+    "cold_scan_page_reads",
+    "cold_scan_decode_records_ms",
+    "cold_scan_records_decoded",
+    "cold_scan_records_returned",
+    "cold_scan_decode_batch_limit",
+    "cold_scan_decode_byte_limit",
+    "hot_cache_promotions",
 ]
 
 STORAGE_LIFECYCLE_PHASE_NAMES = [
@@ -572,6 +601,34 @@ def default_storage_read_contract(metrics: Json | None = None) -> Json:
     }
 
 
+def default_storage_cold_scan_contract(metrics: Json | None = None) -> Json:
+    source = metrics if isinstance(metrics, dict) else {}
+    records_decoded = int(source.get("cold_scan_records_decoded") or 0)
+    records_returned = int(source.get("cold_scan_records_returned") or records_decoded)
+    return {
+        "timestamp_range": "cold",
+        "page_index_scan": "PageIndex",
+        "no_cache_page_reads": int(source.get("cold_scan_no_cache_reads") or 0),
+        "decode_batch_limit": int(source.get("cold_scan_decode_batch_limit") or 0),
+        "decode_byte_limit": int(source.get("cold_scan_decode_byte_limit") or 0),
+        "deadline_ms": 0,
+        "records_decoded": records_decoded,
+        "records_returned": min(records_returned, records_decoded) if records_decoded else records_returned,
+        "hot_cache_promotions": int(source.get("hot_cache_promotions") or 0),
+        "cache_fill": False,
+        "promotion_policy": "no_promote",
+        "cold_scan_no_cache_reads": int(source.get("cold_scan_no_cache_reads") or 0),
+        "cold_scan_page_index_scan_count": int(source.get("cold_scan_page_index_scan_count") or 0),
+        "cold_scan_page_index_scan_ms": float(source.get("cold_scan_page_index_scan_ms") or 0),
+        "cold_scan_page_reads": int(source.get("cold_scan_page_reads") or source.get("cold_scan_no_cache_reads") or 0),
+        "cold_scan_decode_records_ms": float(source.get("cold_scan_decode_records_ms") or 0),
+        "cold_scan_records_decoded": records_decoded,
+        "cold_scan_records_returned": min(records_returned, records_decoded) if records_decoded else records_returned,
+        "cold_scan_decode_batch_limit": int(source.get("cold_scan_decode_batch_limit") or 0),
+        "cold_scan_decode_byte_limit": int(source.get("cold_scan_decode_byte_limit") or 0),
+    }
+
+
 def storage_lifecycle_report_shape(effective_storage_tuning: Json, metrics: Json | None = None) -> Json:
     return {
         "effective_storage_tuning": dict(effective_storage_tuning),
@@ -581,6 +638,7 @@ def storage_lifecycle_report_shape(effective_storage_tuning: Json, metrics: Json
         },
         "storage_write_contract": default_storage_write_contract(metrics),
         "storage_read_contract": default_storage_read_contract(metrics),
+        "storage_cold_scan_contract": default_storage_cold_scan_contract(metrics),
         "storage_write_sequence": list(STORAGE_WRITE_SEQUENCE_STEPS),
         "storage_read_sequence": list(STORAGE_READ_SEQUENCE_STEPS),
         "storage_cold_scan_sequence": list(STORAGE_COLD_SCAN_SEQUENCE_STEPS),
@@ -619,6 +677,12 @@ def attach_storage_lifecycle_shape(result: Json, effective_storage_tuning: Json 
     normalized_read_contract = default_storage_read_contract(metrics)
     normalized_read_contract.update(read_contract)
     shaped["storage_read_contract"] = normalized_read_contract
+    cold_scan_contract = shaped.get("storage_cold_scan_contract")
+    if not isinstance(cold_scan_contract, dict):
+        cold_scan_contract = {}
+    normalized_cold_scan_contract = default_storage_cold_scan_contract(metrics)
+    normalized_cold_scan_contract.update(cold_scan_contract)
+    shaped["storage_cold_scan_contract"] = normalized_cold_scan_contract
     shaped["storage_write_sequence"] = list(STORAGE_WRITE_SEQUENCE_STEPS)
     shaped["storage_read_sequence"] = list(STORAGE_READ_SEQUENCE_STEPS)
     shaped["storage_cold_scan_sequence"] = list(STORAGE_COLD_SCAN_SEQUENCE_STEPS)
