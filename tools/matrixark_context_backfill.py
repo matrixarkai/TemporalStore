@@ -1504,6 +1504,13 @@ def require_skip_validation_confirmation(args: argparse.Namespace, *, mode: str)
         raise BackfillError(f'{mode} with --skip-validation=1 requires --confirm-skip-validation=YES')
 
 
+def require_non_strict_validation_confirmation(args: argparse.Namespace, *, mode: str) -> None:
+    if args.skip_validation or args.validation_strict:
+        return
+    if getattr(args, 'confirm_non_strict_validation', '') != 'YES':
+        raise BackfillError(f'{mode} with --validation-strict=0 requires --confirm-non-strict-validation=YES')
+
+
 def run_validate_shadow(args: argparse.Namespace) -> Json:
     if not args.target_prefix:
         raise BackfillError('validate_shadow requires --target-prefix')
@@ -1595,6 +1602,7 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
     if args.confirm_activate != 'YES':
         raise BackfillError('activate_shadow requires --confirm-activate=YES')
     require_skip_validation_confirmation(args, mode='activate_shadow')
+    require_non_strict_validation_confirmation(args, mode='activate_shadow')
     validation: Json | None = None
     if not args.skip_validation:
         validation = run_validate_shadow(args)
@@ -1611,6 +1619,8 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
             'raw_backend': normalize_raw_backend(args.raw_backend),
             'validation': validation,
             **validation_audit,
+            'validation_strict': bool(args.validation_strict),
+            'non_strict_validation_confirmed': bool(not args.validation_strict and args.confirm_non_strict_validation == 'YES'),
         }
     kv = make_kv(args)
     previous = kv.get_string(args.active_prefix_key)
@@ -1628,6 +1638,8 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
         'partial': build_partial_spec(args),
         'validation': validation,
         **validation_audit,
+        'validation_strict': bool(args.validation_strict),
+        'non_strict_validation_confirmed': bool(not args.validation_strict and args.confirm_non_strict_validation == 'YES'),
     }
     kv.put_string(f'{args.active_prefix_key}:previous:{args.job_id}', previous)
     kv.hset(f'{args.active_prefix_key}:audit', args.job_id, json.dumps(audit, sort_keys=True, separators=(',', ':')))
@@ -1795,6 +1807,7 @@ def run_incremental_repair(args: argparse.Namespace) -> Json:
     if args.confirm_incremental_repair != 'YES':
         raise BackfillError('incremental_repair requires --confirm-incremental-repair=YES')
     require_skip_validation_confirmation(args, mode='incremental_repair')
+    require_non_strict_validation_confirmation(args, mode='incremental_repair')
 
     validation: Json | None = None
     if not args.skip_validation:
@@ -1842,6 +1855,8 @@ def run_incremental_repair(args: argparse.Namespace) -> Json:
             'partial': partial,
             'validation': validation,
             **validation_audit,
+            'validation_strict': bool(args.validation_strict),
+            'non_strict_validation_confirmed': bool(not args.validation_strict and args.confirm_non_strict_validation == 'YES'),
             'promotion_consistency': promotion_consistency,
             'promotion_metrics': promotion.get('metrics', {}),
         }
@@ -1889,6 +1904,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--confirm-rollback', default='')
     parser.add_argument('--confirm-incremental-repair', default='')
     parser.add_argument('--confirm-skip-validation', default='', help='required YES when activate_shadow or incremental_repair uses --skip-validation=1')
+    parser.add_argument('--confirm-non-strict-validation', default='', help='required YES when activate_shadow or incremental_repair uses --validation-strict=0')
     parser.add_argument('--active-prefix-key', default='matrixark:context:active_prefix')
     parser.add_argument('--rollback-job-id', default='', help='activation job id whose previous active prefix should be restored')
     parser.add_argument('--repair-active-prefix', default='')

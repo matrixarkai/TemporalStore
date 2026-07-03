@@ -45,6 +45,7 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             "confirm_rollback": "",
             "confirm_incremental_repair": "",
             "confirm_skip_validation": "",
+            "confirm_non_strict_validation": "",
             "active_prefix_key": "matrixark:context:active_prefix",
             "rollback_job_id": "",
             "repair_active_prefix": "",
@@ -468,6 +469,8 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(activation_audit["validation_status"], "ok")
             self.assertFalse(activation_audit["validation_skipped"])
             self.assertEqual(activation_audit["validation_skip_reason"], "")
+            self.assertTrue(activation_audit["validation_strict"])
+            self.assertFalse(activation_audit["non_strict_validation_confirmed"])
             self.assertEqual(activation_audit["validation_target_state"]["record_count"], 2)
             self.assertIn("matrixark:context_backfill:candidate", json.dumps(activation_audit, sort_keys=True))
 
@@ -539,8 +542,51 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(activation_audit["validation_status"], "skipped")
             self.assertTrue(activation_audit["validation_skipped"])
             self.assertEqual(activation_audit["validation_skip_reason"], "skip_validation_flag")
+            self.assertTrue(activation_audit["validation_strict"])
+            self.assertFalse(activation_audit["non_strict_validation_confirmed"])
             self.assertEqual(activation_audit["validation_source_range"], {})
             self.assertEqual(activation_audit["validation_target_state"], {})
+
+    def test_activate_shadow_non_strict_validation_requires_confirmation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            write_sharded(kv, "matrixark:mcp", 0, {"record_type": "context_event", "event_id_hash": 1})
+            kv.put_string("matrixark:mcp:record_count", "1")
+            kv.put_string("matrixark:context:active_prefix", "matrixark:context:old")
+            shadow = backfill.run_backfill(self.make_args(
+                path,
+                target_prefix="matrixark:context_backfill:candidate",
+                resume=False,
+            ))
+            self.assertEqual(shadow["metrics"]["written"], 1)
+
+            with self.assertRaisesRegex(backfill.BackfillError, "confirm-non-strict-validation=YES"):
+                backfill.run_activate_shadow(self.make_args(
+                    path,
+                    mode="activate_shadow",
+                    target_prefix="matrixark:context_backfill:candidate",
+                    confirm_activate="YES",
+                    validation_strict=False,
+                    dry_run=False,
+                ))
+
+            activated = backfill.run_activate_shadow(self.make_args(
+                path,
+                mode="activate_shadow",
+                target_prefix="matrixark:context_backfill:candidate",
+                confirm_activate="YES",
+                confirm_non_strict_validation="YES",
+                validation_strict=False,
+                dry_run=False,
+            ))
+
+            self.assertEqual(activated["status"], "ok")
+            self.assertEqual(activated["validation_status"], "ok")
+            kv_after = backfill.LocalJsonKV(path)
+            activation_audit = json.loads(kv_after.hget("matrixark:context:active_prefix:audit", "unit"))
+            self.assertFalse(activation_audit["validation_strict"])
+            self.assertTrue(activation_audit["non_strict_validation_confirmed"])
 
 
     def test_validate_shadow_fails_on_type_mismatch_even_when_count_matches(self):
@@ -684,6 +730,8 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(repair_audit["validation_status"], "ok")
             self.assertFalse(repair_audit["validation_skipped"])
             self.assertEqual(repair_audit["validation_skip_reason"], "")
+            self.assertTrue(repair_audit["validation_strict"])
+            self.assertFalse(repair_audit["non_strict_validation_confirmed"])
             self.assertEqual(repair_audit["validation_target_state"]["record_count"], 1)
             self.assertEqual(repair_audit["promotion_consistency"]["status"], "ok")
             self.assertIn("matrixark:context:active", json.dumps(repair_audit, sort_keys=True))
@@ -831,10 +879,60 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(repair_audit["validation_status"], "skipped")
             self.assertTrue(repair_audit["validation_skipped"])
             self.assertEqual(repair_audit["validation_skip_reason"], "skip_validation_flag")
+            self.assertTrue(repair_audit["validation_strict"])
+            self.assertFalse(repair_audit["non_strict_validation_confirmed"])
             self.assertEqual(repair_audit["validation_source_range"], {})
             self.assertEqual(repair_audit["validation_target_state"], {})
             active_records = read_target_records(kv_after, "matrixark:context:active")
             self.assertEqual([record["event_id_hash"] for record in active_records], [1])
+
+    def test_incremental_repair_non_strict_validation_requires_confirmation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            write_sharded(kv, "matrixark:mcp", 0, {"record_type": "context_event", "event_id_hash": 1})
+            kv.put_string("matrixark:mcp:record_count", "1")
+            kv.put_string("matrixark:context:active_prefix", "matrixark:context:active")
+            shadow = backfill.run_backfill(self.make_args(
+                path,
+                target_prefix="matrixark:context_repair:p1",
+                start_seq=0,
+                end_seq=1,
+                resume=False,
+            ))
+            self.assertEqual(shadow["metrics"]["written"], 1)
+
+            with self.assertRaisesRegex(backfill.BackfillError, "confirm-non-strict-validation=YES"):
+                backfill.run_incremental_repair(self.make_args(
+                    path,
+                    mode="incremental_repair",
+                    target_prefix="matrixark:context_repair:p1",
+                    start_seq=0,
+                    end_seq=1,
+                    confirm_incremental_repair="YES",
+                    validation_strict=False,
+                    resume=False,
+                    dry_run=False,
+                ))
+
+            repaired = backfill.run_incremental_repair(self.make_args(
+                path,
+                mode="incremental_repair",
+                target_prefix="matrixark:context_repair:p1",
+                start_seq=0,
+                end_seq=1,
+                confirm_incremental_repair="YES",
+                confirm_non_strict_validation="YES",
+                validation_strict=False,
+                resume=False,
+                dry_run=False,
+            ))
+
+            self.assertEqual(repaired["status"], "ok")
+            kv_after = backfill.LocalJsonKV(path)
+            repair_audit = json.loads(kv_after.hget("matrixark:context:active_prefix:incremental_repair_audit", "unit"))
+            self.assertFalse(repair_audit["validation_strict"])
+            self.assertTrue(repair_audit["non_strict_validation_confirmed"])
 
     def test_partial_backfill_filters_and_isolates_checkpoint(self):
         with tempfile.TemporaryDirectory() as tmp:
