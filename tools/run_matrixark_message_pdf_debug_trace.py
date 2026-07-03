@@ -12,6 +12,7 @@ import argparse
 import html
 import json
 import os
+import re
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -171,12 +172,40 @@ def short_source(value: Any) -> str:
     text = str(value or "")
     if not text:
         return ""
+    text = text.replace("\\", "/")
     marker = "/fixtures/"
     if marker in text:
-        text = text.split(marker, 1)[1]
-    else:
-        text = text.replace(str(REPO_ROOT), "<repo>")
+        return text.split(marker, 1)[1]
+    if str(REPO_ROOT).replace("\\", "/") in text:
+        text = text.replace(str(REPO_ROOT).replace("\\", "/"), "<repo>")
+    if re.search(r"\.(pdf|md|csv|txt|json|html)(#\S+)?$", text, flags=re.IGNORECASE):
+        base, sep, suffix = text.partition("#")
+        return Path(base).name + (sep + suffix if sep else "")
     return text
+
+
+def sanitize_debug_text(value: Any) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    text = text.replace("\\", "/")
+    text = text.replace(str(REPO_ROOT).replace("\\", "/"), "<repo>")
+    text = re.sub(
+        r"(?:[A-Za-z]:)?/?[^ \n\r\t\"']*?/fixtures/([^ \n\r\t\"']+)",
+        r"\1",
+        text,
+    )
+    return text
+
+
+def sanitize_compact_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: sanitize_compact_payload(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [sanitize_compact_payload(item) for item in value]
+    if isinstance(value, str):
+        return sanitize_debug_text(value)
+    return value
 
 
 def short_node_path(value: Any) -> str:
@@ -197,6 +226,59 @@ def first_present(record: Json, *fields: str) -> Any:
     return ""
 
 
+class ReportAliases:
+    """Stable short ids for one debug report.
+
+    The raw records still carry durable hashes. The default debug page should
+    not spend space on those long values, so it maps them to compact per-run
+    aliases such as n1/e2/c3.
+    """
+
+    def __init__(self) -> None:
+        self._values: dict[str, dict[str, str]] = defaultdict(dict)
+
+    def alias(self, namespace: str, value: Any) -> str:
+        if value in ("", None, [], {}):
+            return ""
+        key = str(value)
+        bucket = self._values[namespace]
+        if key not in bucket:
+            bucket[key] = f"{namespace}{len(bucket) + 1}"
+        return bucket[key]
+
+    def node(self, value: Any) -> str:
+        return self.alias("n", value)
+
+    def event(self, value: Any) -> str:
+        return self.alias("e", value)
+
+    def entity(self, value: Any) -> str:
+        return self.alias("x", value)
+
+    def summary(self, value: Any) -> str:
+        return self.alias("s", value)
+
+    def resource(self, value: Any) -> str:
+        return self.alias("r", value)
+
+    def chunk(self, value: Any) -> str:
+        return self.alias("c", value)
+
+    def ref(self, ref_type: Any, ref_hash: Any) -> str:
+        ref_type_text = str(ref_type or "")
+        if ref_type_text in {"event", "context_event"}:
+            return self.event(ref_hash)
+        if ref_type_text in {"entity", "context_entity"}:
+            return self.entity(ref_hash)
+        if ref_type_text in {"summary", "context_summary"}:
+            return self.summary(ref_hash)
+        if ref_type_text in {"resource", "resource_manifest"}:
+            return self.resource(ref_hash)
+        if ref_type_text in {"resource_chunk", "chunk"}:
+            return self.chunk(ref_hash)
+        return self.alias("ref", f"{ref_type_text}:{ref_hash}")
+
+
 def compact_resources(resources: list[Json]) -> list[Json]:
     rows = []
     for index, resource in enumerate(resources, start=1):
@@ -212,62 +294,74 @@ def compact_resources(resources: list[Json]) -> list[Json]:
     return rows
 
 
-def compact_resource_chunk(record: Json) -> Json:
+def compact_entity_name(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    parts = [part.strip() for part in text.split(":") if part.strip()]
+    if len(parts) >= 3 and any(("/" in part or "\\" in part or "<repo>" in part) for part in parts[1:-1]):
+        return parts[-1]
+    if len(parts) >= 2 and parts[0] in {"decision", "owner", "budget", "deadline", "blocker", "approval"}:
+        return parts[-1]
+    return short_source(text)
+
+
+def compact_resource_chunk(record: Json, aliases: ReportAliases) -> Json:
     metadata = record.get("metadata", {}) if isinstance(record.get("metadata"), dict) else {}
     return {
-        "chunk": record.get("chunk_hash"),
-        "resource": record.get("resource_hash"),
+        "chunk": aliases.chunk(record.get("chunk_hash")),
+        "resource": aliases.resource(record.get("resource_hash")),
         "source": short_source(record.get("source_ref") or metadata.get("citation") or record.get("source_locator")),
         "kind": metadata.get("unit_kind") or record.get("unit_kind") or record.get("resource_type"),
         "tokens": record.get("token_estimate", 0),
-        "text": record.get("text", ""),
+        "text": sanitize_debug_text(record.get("text", "")),
     }
 
 
-def compact_context_event(record: Json) -> Json:
+def compact_context_event(record: Json, aliases: ReportAliases) -> Json:
     event_type = first_present(record, "event_type", "internal_extraction.event_type")
     entity_type = first_present(record, "entity_type", "internal_extraction.entity_type")
     classification = record.get("classification")
     row: Json = {
-        "event": record.get("event_id_hash"),
-        "node": record.get("node_hash") or short_node_path(record.get("node_path")),
+        "event": aliases.event(record.get("event_id_hash")),
+        "node": aliases.node(record.get("node_hash")) or short_node_path(record.get("node_path")),
         "type": event_type,
         "entity": entity_type,
         "source": short_source(first_present(record, "source_ref", "source_locator")),
-        "text": first_present(record, "summary_text", "text"),
+        "text": sanitize_debug_text(first_present(record, "summary_text", "text")),
     }
     if classification not in ("", None, "NEW_EVENT"):
         row["class"] = classification
     return {key: value for key, value in row.items() if value not in ("", None, [], {})}
 
 
-def compact_context_entity(record: Json) -> Json:
+def compact_context_entity(record: Json, aliases: ReportAliases) -> Json:
     return {
-        "entity": record.get("entity_hash"),
-        "node": record.get("node_hash") or short_node_path(record.get("node_path")),
+        "entity": aliases.entity(record.get("entity_hash")),
+        "node": aliases.node(record.get("node_hash")) or short_node_path(record.get("node_path")),
         "type": record.get("entity_type", ""),
-        "name": record.get("entity_name", ""),
+        "name": compact_entity_name(record.get("entity_name", "")),
         "op": record.get("operator", ""),
-        "state": record.get("state", ""),
+        "state": sanitize_debug_text(record.get("state", "")),
         "source": short_source(first_present(record, "source_ref", "source_locator")),
     }
 
 
-def compact_context_summary(record: Json) -> Json:
+def compact_context_summary(record: Json, aliases: ReportAliases) -> Json:
     return {
         "type": record.get("summary_type", ""),
-        "summary": record.get("summary_hash"),
-        "node": record.get("node_hash") or short_node_path(record.get("node_path")),
-        "text": record.get("summary_text", ""),
+        "summary": aliases.summary(record.get("summary_hash")),
+        "node": aliases.node(record.get("node_hash")) or short_node_path(record.get("node_path")),
+        "text": sanitize_debug_text(record.get("summary_text", "")),
         "sources": len(record.get("source_chunk_hashes") or record.get("source_event_ids") or []),
     }
 
 
-def compact_context_embedding(record: Json) -> Json:
+def compact_context_embedding(record: Json, aliases: ReportAliases) -> Json:
     preview = vector_preview(record)
     return {
         "type": record.get("embedding_type", ""),
-        "ref": f"{record.get('ref_type', '')}:{record.get('ref_hash', '')}",
+        "ref": aliases.ref(record.get("ref_type"), record.get("ref_hash")),
         **preview,
     }
 
@@ -283,10 +377,10 @@ def compact_import_task(record: Json) -> Json:
     }
 
 
-def compact_summary_policy(record: Json) -> Json:
+def compact_summary_policy(record: Json, aliases: ReportAliases) -> Json:
     policy = record.get("summary_generation_policy", {}) if isinstance(record.get("summary_generation_policy"), dict) else {}
     return {
-        "node": record.get("node_hash") or short_node_path(record.get("node_path")),
+        "node": aliases.node(record.get("node_hash")) or short_node_path(record.get("node_path")),
         "types": record.get("generated_summary_types", []),
         "l1": policy.get("generate_l1", ""),
         "reason": policy.get("reason", ""),
@@ -296,14 +390,14 @@ def compact_summary_policy(record: Json) -> Json:
     }
 
 
-def compact_context_indexes(records: list[Json]) -> list[Json]:
+def compact_context_indexes(records: list[Json], aliases: ReportAliases) -> list[Json]:
     postings: dict[tuple[str, str, Any, Any], set[Any]] = {}
     for record in records:
         key = (
             str(record.get("data_model") or record.get("ref_type") or ""),
             str(record.get("index_name") or ""),
-            record.get("timestamp_key_ms") or record.get("updated_at_ms") or "",
             record.get("node_hash") or "",
+            record.get("ref_type") or "",
         )
         refs = postings.setdefault(key, set())
         for ref in record.get("ref_hashes") or []:
@@ -312,15 +406,14 @@ def compact_context_indexes(records: list[Json]) -> list[Json]:
         if ref_hash not in ("", None):
             refs.add(ref_hash)
     rows = []
-    for (model, index_name, timestamp_key, node_hash), refs in sorted(postings.items(), key=lambda item: (item[0][0], item[0][1], str(item[0][2]))):
+    for (model, index_name, node_hash, ref_type), refs in sorted(postings.items(), key=lambda item: (item[0][0], item[0][1], str(item[0][2]))):
         rows.append(
             {
                 "model": model,
                 "index": index_name,
-                "time": timestamp_key,
-                "node": node_hash,
+                "node": aliases.node(node_hash),
                 "refs": len(refs),
-                "sample": list(sorted(refs, key=str))[:3],
+                "sample": [aliases.ref(ref_type, ref) for ref in list(sorted(refs, key=str))[:3]],
             }
         )
     return rows
@@ -331,7 +424,7 @@ def compact_replay(result: Json) -> Json:
         return {}
     return {
         key: result.get(key)
-        for key in ("status", "context_pack_id", "event_count", "replay_event_count", "warning")
+        for key in ("status", "event_count", "replay_event_count", "warning")
         if result.get(key) not in ("", None, [], {})
     }
 
@@ -343,8 +436,6 @@ def compact_tool_result(result: Json) -> Json:
         key: result.get(key)
         for key in (
             "status",
-            "context_pack_id",
-            "pack_id",
             "record_count",
             "messages_ingested",
             "chunk_count",
@@ -448,21 +539,21 @@ def node_tree(records: list[Json]) -> list[Json]:
     return roots
 
 
-def render_node_html(node: Json) -> str:
-    label = "/".join(str(part) for part in node.get("path", [])) or str(node.get("name") or node.get("node_hash"))
+def render_node_html(node: Json, aliases: ReportAliases) -> str:
+    label = str(node.get("name") or aliases.node(node.get("node_hash")))
     record_obj = node.get("record", {}) if isinstance(node.get("record"), dict) else {}
     compact_record = {
-        "node": record_obj.get("node_hash"),
-        "parent": record_obj.get("parent_hash"),
+        "node": aliases.node(record_obj.get("node_hash")),
+        "parent": aliases.node(record_obj.get("parent_hash")),
         "name": record_obj.get("node_name"),
         "children": len(node.get("children", [])),
     }
     record = html.escape(json.dumps(compact_record, indent=2, sort_keys=True))
-    children = "\n".join(render_node_html(child) for child in sorted(node.get("children", []), key=lambda item: item["name"]))
+    children = "\n".join(render_node_html(child, aliases) for child in sorted(node.get("children", []), key=lambda item: item["name"]))
     return (
         "<details open class=\"node\">"
         f"<summary><span class=\"node-name\">{html.escape(label)}</span> "
-        f"<span class=\"muted\">hash={node.get('node_hash')}</span></summary>"
+        f"<span class=\"muted\">{html.escape(aliases.node(node.get('node_hash')))}</span></summary>"
         f"<pre>{record}</pre>{children}</details>"
     )
 
@@ -559,6 +650,13 @@ def write_outputs(
     for record in records:
         by_type[str(record.get("record_type", "unknown"))].append(record)
 
+    aliases = ReportAliases()
+    for record in by_type["context_node"]:
+        aliases.node(record.get("node_hash"))
+    for index, resource in enumerate(trace.get("resources", []), start=1):
+        if resource.get("resource_hash"):
+            aliases._values["r"][str(resource["resource_hash"])] = f"r{index}"
+
     current_embedding_records = latest_by_key(
         by_type["context_embedding"],
         ["embedding_type", "ref_type", "ref_hash"],
@@ -569,29 +667,31 @@ def write_outputs(
         for model, count in sorted(model_counts.items(), key=lambda item: (-item[1], item[0]))
     ]
     embeddings = [
-        compact_context_embedding(record)
+        compact_context_embedding(record, aliases)
         for record in current_embedding_records
     ]
-    summary_policy_rows = [compact_summary_policy(record) for record in by_type["context_summary_refresh_audit"]]
+    summary_policy_rows = [compact_summary_policy(record, aliases) for record in by_type["context_summary_refresh_audit"]]
     compact_records_by_type: dict[str, list[Json]] = {
         "context_node": [
             {
-                "node": record.get("node_hash"),
-                "parent": record.get("parent_hash"),
+                "node": aliases.node(record.get("node_hash")),
+                "parent": aliases.node(record.get("parent_hash")),
                 "name": record.get("node_name") or record.get("name"),
                 "path": short_node_path(record.get("node_path")),
             }
             for record in by_type["context_node"]
         ],
-        "context_event": [compact_context_event(record) for record in by_type["context_event"]],
-        "context_entity": [compact_context_entity(record) for record in by_type["context_entity"]],
-        "context_summary": [compact_context_summary(record) for record in latest_by_key(by_type["context_summary"], ["summary_type", "summary_hash", "node_hash"])],
+        "context_event": [compact_context_event(record, aliases) for record in by_type["context_event"]],
+        "context_entity": [compact_context_entity(record, aliases) for record in by_type["context_entity"]],
+        "context_summary": [compact_context_summary(record, aliases) for record in latest_by_key(by_type["context_summary"], ["summary_type", "summary_hash", "node_hash"])],
         "context_embedding": embeddings,
-        "context_index_postings": compact_context_indexes(by_type["context_index"]),
+        "context_index_postings": compact_context_indexes(by_type["context_index"], aliases),
         "resource_import_task": [compact_import_task(record) for record in by_type["resource_import_task"]],
-        "resource_chunk": [compact_resource_chunk(record) for record in by_type["resource_chunk"]],
+        "resource_chunk": [compact_resource_chunk(record, aliases) for record in by_type["resource_chunk"]],
     }
-    compact_pack = mcp_core.compact_context_pack_for_serving(retrieve_result)
+    compact_pack = sanitize_compact_payload(mcp_core.compact_context_pack_for_serving(retrieve_result))
+    if isinstance(compact_pack, dict):
+        compact_pack.pop("context_pack_id", None)
 
     exported = {
         "trace": compact_trace(trace),
@@ -599,7 +699,6 @@ def write_outputs(
         "context_pack": compact_pack,
         "replay": compact_replay(replay_result),
         "records_by_type": compact_records_by_type,
-        "raw_event_log": str(event_log),
         "embeddings": embeddings,
         "summary_generation_policy": summary_policy_rows,
     }
@@ -643,7 +742,6 @@ def write_outputs(
         "",
         "## Configuration",
         "",
-        f"- Event log: `{event_log}`",
         f"- Embedding model: `{trace['embedding_model']}`",
         f"- Embedding execution mode: `{trace['embedding_execution_mode']}`",
         f"- Query: `{QUERY}`",
@@ -699,7 +797,7 @@ def write_outputs(
         "",
         "## Secondary Index Postings",
         "",
-        markdown_table(compact_records_by_type["context_index_postings"], ["model", "index", "time", "node", "refs", "sample"], limit=120),
+        markdown_table(compact_records_by_type["context_index_postings"], ["model", "index", "node", "refs", "sample"], limit=120),
         "",
         "## Retrieval Scan",
         "",
@@ -711,7 +809,6 @@ def write_outputs(
         json.dumps(
             {
                 "query": QUERY,
-                "context_pack_id": retrieve_result.get("context_pack_id"),
                 "used_context_tokens": retrieve_result.get("used_context_tokens"),
                 "context_pack": compact_pack,
                 "quality_warnings": retrieve_result.get("quality_warnings"),
@@ -736,7 +833,7 @@ def write_outputs(
     md_path.write_text("\n".join(md) + "\n", encoding="utf-8")
 
     roots = node_tree(records)
-    graph_html = "\n".join(render_node_html(root) for root in roots) or "<p>No context_node records found.</p>"
+    graph_html = "\n".join(render_node_html(root, aliases) for root in roots) or "<p>No context_node records found.</p>"
     model_table_html = records_table(DATA_MODEL_ROWS, ["model", "purpose", "important_fields"])
     html_embedding_note = html.escape(embedding_note)
     html_doc = f"""<!doctype html>
@@ -796,7 +893,7 @@ def write_outputs(
     <section class="section"><h2>Node L0/L1 Generation Policy</h2>{records_table(summary_policy_rows, ['node', 'types', 'l1', 'reason', 'tokens', 'events', 'child_summaries'])}</section>
     <section class="section"><h2>Embedding Models</h2>{records_table(embedding_models, ['model', 'embedding_count'])}</section>
     <section class="section"><h2>Embeddings</h2><p class="muted">Latest serving embedding per ref. Full vectors stay out of the page.</p>{records_table(embeddings, ['type', 'ref', 'dim', 'preview'])}</section>
-    <section class="section"><h2>Secondary Index Postings</h2><p class="muted">Grouped postings view. The raw event log can still be opened when forensic detail is needed.</p>{records_table(compact_records_by_type['context_index_postings'], ['model', 'index', 'time', 'node', 'refs', 'sample'])}</section>
+    <section class="section"><h2>Secondary Index Postings</h2><p class="muted">Grouped postings view. Raw index rows stay out of this compact report.</p>{records_table(compact_records_by_type['context_index_postings'], ['model', 'index', 'node', 'refs', 'sample'])}</section>
     <section class="section"><h2>Retrieval Scan And ContextPack</h2><p class="muted">Serving view only: grouped refs, citations, token summary, and warnings. Planner/audit fields stay out of the token-facing report.</p><pre>{html.escape(json.dumps(compact_pack, indent=2, sort_keys=True)[:20000])}</pre></section>
     <section class="section"><h2>Replay</h2><pre>{html.escape(json.dumps(compact_replay(replay_result), indent=2, sort_keys=True)[:12000])}</pre></section>
     <section class="section"><h2>Compact JSON</h2><p><a href="./matrixark_message_resource_debug_trace.json">Open compact JSON artifact</a>. Raw append/event logs are intentionally kept out of this compact report by default.</p></section>
