@@ -262,6 +262,7 @@ REQUIRED_CONFIG_FIELDS = [
 REQUIRED_LIFECYCLE_TOP_LEVEL_KEYS = [
     "effective_storage_tuning",
     "public_storage_contract",
+    "public_storage_feature_shapes",
     "storage_write_contract",
     "storage_read_contract",
     "storage_cold_scan_contract",
@@ -411,6 +412,24 @@ CANONICAL_JSON_FIELDS = [
     "follower_cursor_safety",
 ]
 
+REQUIRED_PUBLIC_STORAGE_FEATURE_SHAPES = {
+    "page_address_fields": ["shard_id", "zone_id", "segment_id", "page_id", "offset", "length", "generation"],
+    "block_address_fields": ["shard_id", "zone_id", "block_id", "offset", "length", "checksum"],
+    "page_index_entry_fields": ["logical_key", "timestamp_range", "page_addresses", "append_watermark", "generation"],
+    "block_index_entry_fields": ["page_address", "block_address", "extent", "checksum", "generation"],
+    "object_index_entry_fields": ["model", "table", "object_key", "page_chain", "tombstone", "generation"],
+    "storage_zone_fields": ["zone_id", "total_bytes", "used_bytes", "stale_bytes", "segments"],
+    "stream_fields": ["stream_id", "segments", "rollover_count", "sealed_segment_count"],
+    "segment_fields": ["segment_id", "extent_id", "start_offset", "sealed", "generation"],
+    "extent_fields": ["extent_id", "block_range", "reclaim_state", "generation"],
+    "slot_fields": ["slot_id", "dirty_generation", "object_refs", "page_refs", "tombstones", "owner_mismatch_count"],
+    "append_watermark_fields": ["shard_id", "slot_id", "log_index", "timestamp_ms"],
+    "compaction_watermark_fields": ["shard_id", "safe_generation", "safe_timestamp_ms", "follower_floor"],
+    "tombstone_fields": ["ref", "generation", "deleted_at_ms", "reason"],
+    "gc_eligibility_fields": ["ref", "eligible_after_ms", "has_tombstone", "follower_safe", "reclaimable_bytes"],
+    "follower_cursor_safety_fields": ["min_follower_cursor", "blocked_reclaim_bytes", "safe_to_reclaim"],
+}
+
 LEGACY_ALIAS_MAP = {
     "page_store": "storage_zone",
     "block_store": "storage_zone",
@@ -449,6 +468,7 @@ REQUIRED_SCALE_REPORT_CONFIG_BINDINGS = {
     "required_storage_cache_metrics": "STORAGE_CACHE_METRIC_NAMES",
     "required_storage_cache_contract_fields": "STORAGE_CACHE_CONTRACT_FIELDS",
     "required_storage_lifecycle_metrics": "STORAGE_LIFECYCLE_METRIC_NAMES",
+    "required_public_storage_feature_shapes": "PUBLIC_STORAGE_FEATURE_SHAPES",
 }
 
 
@@ -710,6 +730,18 @@ def _normalize_public_storage_shape(report: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _dig_public_storage_feature_shapes(report: dict[str, Any]) -> dict[str, Any]:
+    candidates = [
+        report.get("public_storage_feature_shapes"),
+        report.get("storage_lifecycle", {}).get("public_feature_shapes") if isinstance(report.get("storage_lifecycle"), dict) else None,
+        report.get("storage_public_contract", {}).get("feature_shapes") if isinstance(report.get("storage_public_contract"), dict) else None,
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            return candidate
+    return {}
+
+
 def _metric_number(metrics: dict[str, Any], name: str) -> float:
     value = _as_number(metrics.get(name))
     return 0.0 if value is None else value
@@ -812,6 +844,12 @@ def validate_contract_and_runner() -> list[str]:
     for name in CANONICAL_PUBLIC_FIELDS + CANONICAL_JSON_FIELDS:
         if f"`{name}`" not in contract_text:
             failures.append(f"contract missing canonical public field `{name}`")
+    for shape_name, shape_fields in REQUIRED_PUBLIC_STORAGE_FEATURE_SHAPES.items():
+        if f"`{shape_name}`" not in contract_text:
+            failures.append(f"contract missing public storage feature shape `{shape_name}`")
+        for field in shape_fields:
+            if f"`{field}`" not in contract_text:
+                failures.append(f"contract missing public storage feature field `{field}`")
     if runner_metrics != REQUIRED_STORAGE_LIFECYCLE_METRICS:
         failures.append("runner:STORAGE_LIFECYCLE_METRIC_NAMES does not match the canonical lifecycle metric order")
     if runner_write_sequence != REQUIRED_STORAGE_WRITE_SEQUENCE:
@@ -933,6 +971,8 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
     rust_config = _dig_config(rust_report)
     cpp_public_shape = _normalize_public_storage_shape(cpp_report)
     rust_public_shape = _normalize_public_storage_shape(rust_report)
+    cpp_feature_shapes = _dig_public_storage_feature_shapes(cpp_report)
+    rust_feature_shapes = _dig_public_storage_feature_shapes(rust_report)
     cpp_write_contract = _dig_write_contract(cpp_report)
     rust_write_contract = _dig_write_contract(rust_report)
     cpp_read_contract = _dig_read_contract(cpp_report)
@@ -1280,6 +1320,14 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
                 f"public storage shape type drift `{field}`: cpp={type(cpp_public_shape[field]).__name__} "
                 f"rust={type(rust_public_shape[field]).__name__}"
             )
+
+    for shape_name, expected_fields in REQUIRED_PUBLIC_STORAGE_FEATURE_SHAPES.items():
+        cpp_fields = cpp_feature_shapes.get(shape_name)
+        rust_fields = rust_feature_shapes.get(shape_name)
+        if cpp_fields != expected_fields:
+            failures.append(f"cpp public_storage_feature_shapes.{shape_name} drift: {cpp_fields!r}")
+        if rust_fields != expected_fields:
+            failures.append(f"rust public_storage_feature_shapes.{shape_name} drift: {rust_fields!r}")
 
     for metric in [
         "cold_scan_no_cache_reads",
