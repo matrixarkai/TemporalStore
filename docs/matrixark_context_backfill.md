@@ -183,6 +183,17 @@ python3 tools/matrixark_context_backfill.py \
 
 When `--plan-output-dir` is set, the planner writes `plan.json`, `artifact_manifest.json`, `shadow_wave_*.sh`, `validate_wave_*.sh`, and `promote_serial.sh`. The wave scripts run independent chunk work in parallel inside each wave. The promotion script runs repairs sequentially. The manifest records SHA-256 and size for each generated file. The planner refuses to write into a non-empty output directory unless `--confirm-plan-output-overwrite=YES` is supplied, which prevents accidentally mixing evidence from different recovery runs. Review `plan.json` and the generated scripts before execution, then archive the directory with the recovery ticket or release evidence.
 
+Before executing or accepting an archived plan bundle, verify it:
+
+```bash
+python3 tools/matrixark_context_backfill.py \
+  --mode=verify_plan_artifacts \
+  --plan-output-dir=/var/tmp/matrixark_backfill_full_20260704 \
+  --job-id=full-20260704
+```
+
+The verifier returns `status="ok"` only when `artifact_manifest.json` is present, uses the supported schema, matches `--job-id` when provided, and every listed artifact still has the same size, SHA-256, and executable bit.
+
 ## Quick Start: Full Shadow Backfill
 
 Use the wrapper for Ubuntu 22 local or server-style operation:
