@@ -30,7 +30,7 @@ from validate_storage_lifecycle_parity import (
     REQUIRED_STORAGE_WRITE_SEQUENCE,
 )
 from validate_storage_parity_report_artifacts import REQUIRED_PUBLIC_STORAGE_CONTRACT, validate_artifacts
-from validate_storage_tuning_parity import EXPECTED_KNOBS
+from validate_storage_tuning_parity import EXPECTED_DEFAULTS
 
 
 def _zero_metrics() -> dict[str, int]:
@@ -44,10 +44,7 @@ def _contract_with_fields(fields: list[str]) -> dict[str, object]:
 def _valid_report(backend: str) -> dict[str, object]:
     return {
         "backend": backend,
-        "effective_storage_tuning": {
-            key: (True if key == "TS_COLD_SCAN_NO_CACHE_FILL" else 1)
-            for key in EXPECTED_KNOBS
-        },
+        "effective_storage_tuning": dict(EXPECTED_DEFAULTS),
         "public_storage_contract": dict(REQUIRED_PUBLIC_STORAGE_CONTRACT),
         "storage_write_sequence": list(REQUIRED_STORAGE_WRITE_SEQUENCE),
         "storage_write_contract": _contract_with_fields(
@@ -143,6 +140,26 @@ class StorageParityReportArtifactTest(unittest.TestCase):
         self.assertTrue(any("storage_write_contract missing `append_engine_ms`" in item for item in failures))
         self.assertTrue(
             any("storage_index_contract missing `restart_rebuild_verified`" in item for item in failures)
+        )
+
+    def test_rejects_effective_storage_tuning_value_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            report_dir = root / "parity_smoke"
+            report_dir.mkdir()
+            report = _valid_report("rust")
+            report["effective_storage_tuning"]["TS_STORAGE_ZONE_SIZE"] = 123  # type: ignore[index]
+            (report_dir / "rust.json").write_text(json.dumps(report), encoding="utf-8")
+
+            scanned, failures = validate_artifacts(root)
+
+        self.assertEqual(scanned, 1)
+        self.assertTrue(
+            any(
+                "effective storage tuning `TS_STORAGE_ZONE_SIZE` drift: expected 10485760 got 123"
+                in item
+                for item in failures
+            )
         )
 
 
