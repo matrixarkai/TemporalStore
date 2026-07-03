@@ -119,6 +119,7 @@ def make_backfill_args(
     end_seq: int | None = None,
     mode: str = "shadow",
     confirm_incremental_repair: str = "",
+    expect_active_prefix: str = "",
 ) -> argparse.Namespace:
     return argparse.Namespace(
         metaserver="unused",
@@ -132,8 +133,11 @@ def make_backfill_args(
         confirm_in_place="",
         confirm_activate="",
         confirm_incremental_repair=confirm_incremental_repair,
+        confirm_no_active_prefix_precondition="",
         confirm_skip_validation="",
+        confirm_non_strict_validation="",
         active_prefix_key="matrixark:context:active_prefix",
+        expect_active_prefix=expect_active_prefix,
         repair_active_prefix="",
         validation_strict=True,
         skip_validation=False,
@@ -172,7 +176,8 @@ def run_one_backend(args: argparse.Namespace, raw_backend: str) -> Json:
         seed_started = time.perf_counter()
         seed_raw_log(kv, prefix=source_prefix, records=args.records, payload_bytes=args.payload_bytes)
         seed_elapsed_s = max(0.000001, time.perf_counter() - seed_started)
-        kv.put_string("matrixark:context:active_prefix", f"matrixark:context:active:{raw_backend}")
+        active_prefix = f"matrixark:context:active:{raw_backend}"
+        kv.put_string("matrixark:context:active_prefix", active_prefix)
 
         full_summary, full_elapsed_s = timed_call(
             backfill.run_backfill,
@@ -214,6 +219,7 @@ def run_one_backend(args: argparse.Namespace, raw_backend: str) -> Json:
                 end_seq=incremental_end,
                 mode="incremental_repair",
                 confirm_incremental_repair="YES",
+                expect_active_prefix=active_prefix,
             ),
         )
 
@@ -232,7 +238,8 @@ def run_one_backend(args: argparse.Namespace, raw_backend: str) -> Json:
             "partial_session_ids": "session-hot",
             "partial_filter_json": json.dumps({"kind": "message", "scope": {"team": "search"}}, sort_keys=True),
         }
-        kv.put_string("matrixark:context:active_prefix", f"matrixark:context:active:{raw_backend}:partial")
+        partial_active_prefix = f"matrixark:context:active:{raw_backend}:partial"
+        kv.put_string("matrixark:context:active_prefix", partial_active_prefix)
         partial_shadow_args = make_backfill_args(
             kv_path=kv_path,
             source_prefix=partial_source_prefix,
@@ -255,6 +262,7 @@ def run_one_backend(args: argparse.Namespace, raw_backend: str) -> Json:
             end_seq=args.records,
             mode="incremental_repair",
             confirm_incremental_repair="YES",
+            expect_active_prefix=partial_active_prefix,
         )
         for key, value in partial_values.items():
             setattr(partial_repair_args, key, value)

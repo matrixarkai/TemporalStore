@@ -37,6 +37,7 @@ REQUIRED_DOC_MARKERS = [
     "--confirm-resume-range-change",
     "--confirm-active-target",
     "--expect-active-prefix",
+    "--confirm-no-active-prefix-precondition",
     "--dry-run-check-target",
     "matrixark_context_backfill_validation_check",
     "matrixark_context_backfill_incremental_repair_status",
@@ -73,6 +74,7 @@ def parser_support_checks() -> list[Json]:
         check("backfill_has_dry_run_target_check_option", "--dry-run-check-target" in backfill_options),
         check("backfill_has_active_target_confirmation", "--confirm-active-target" in backfill_options),
         check("backfill_has_expect_active_prefix_precondition", "--expect-active-prefix" in backfill_options),
+        check("backfill_has_active_prefix_precondition_bypass_confirmation", "--confirm-no-active-prefix-precondition" in backfill_options),
         check("backfill_has_skip_validation_confirmation", "--confirm-skip-validation" in backfill_options),
         check("backfill_has_non_strict_validation_confirmation", "--confirm-non-strict-validation" in backfill_options),
         check("backfill_has_resume_range_change_confirmation", "--confirm-resume-range-change" in backfill_options),
@@ -219,6 +221,7 @@ def run_cutover_gate(args: argparse.Namespace) -> Json:
                 mode="activate_shadow",
             )
             activate_args.confirm_activate = "YES"
+            activate_args.expect_active_prefix = f"matrixark:context:active:old:{raw_backend}"
             activated = backfill.run_activate_shadow(activate_args)
             kv_after_activate = backfill.LocalJsonKV(kv_path)
             activation_audit = kv_after_activate.hget(f"{active_key}:audit", job_id)
@@ -234,6 +237,7 @@ def run_cutover_gate(args: argparse.Namespace) -> Json:
             )
             rollback_args.confirm_rollback = "YES"
             rollback_args.rollback_job_id = job_id
+            rollback_args.expect_active_prefix = target_prefix
             rollback = backfill.run_rollback_activation(rollback_args)
             kv_after_rollback = backfill.LocalJsonKV(kv_path)
             rollback_audit = kv_after_rollback.hget(f"{active_key}:rollback_audit", f"{job_id}:rollback")
@@ -476,6 +480,7 @@ def run_partial_repair_gate(args: argparse.Namespace) -> Json:
                 end_seq=records,
                 mode="incremental_repair",
                 confirm_incremental_repair="YES",
+                expect_active_prefix=active_prefix,
             )
             for key, value in partial_values.items():
                 setattr(repair_args, key, value)
@@ -804,6 +809,7 @@ def run_prometheus_gate(args: argparse.Namespace) -> Json:
                 end_seq=records,
                 mode="incremental_repair",
                 confirm_incremental_repair="YES",
+                expect_active_prefix=f"matrixark:context:active:prometheus:{raw_backend}",
             )
             repair_args.prometheus_output = str(repair_prometheus)
             repair_summary = backfill.run_incremental_repair(repair_args)

@@ -1040,6 +1040,23 @@ def require_expected_active_prefix(args: argparse.Namespace, current_prefix: str
         raise BackfillError(f'active prefix precondition failed: expected {expected}, found {current_prefix or "<empty>"}')
 
 
+def active_prefix_precondition_bypassed(args: argparse.Namespace) -> bool:
+    return bool(
+        not str(getattr(args, 'expect_active_prefix', '') or '')
+        and getattr(args, 'confirm_no_active_prefix_precondition', '') == 'YES'
+    )
+
+
+def require_active_prefix_precondition(args: argparse.Namespace, *, mode: str) -> None:
+    if bool(getattr(args, 'dry_run', False)):
+        return
+    if str(getattr(args, 'expect_active_prefix', '') or ''):
+        return
+    if getattr(args, 'confirm_no_active_prefix_precondition', '') == 'YES':
+        return
+    raise BackfillError(f'{mode} requires --expect-active-prefix or --confirm-no-active-prefix-precondition=YES')
+
+
 def clone_args(args: argparse.Namespace, **overrides: Any) -> argparse.Namespace:
     values = vars(args).copy()
     values.update(overrides)
@@ -1692,6 +1709,7 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
     kv = make_kv(args)
     previous = kv.get_string(args.active_prefix_key)
     require_expected_active_prefix(args, previous)
+    require_active_prefix_precondition(args, mode='activate_shadow')
     if args.dry_run:
         return {
             'status': 'ok',
@@ -1706,6 +1724,7 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
             **validation_audit,
             'validation_strict': bool(args.validation_strict),
             'non_strict_validation_confirmed': bool(not args.validation_strict and args.confirm_non_strict_validation == 'YES'),
+            'active_prefix_precondition_bypassed': active_prefix_precondition_bypassed(args),
         }
     activated_at_ms = int(time.time() * 1000)
     audit = {
@@ -1724,6 +1743,7 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
         **validation_audit,
         'validation_strict': bool(args.validation_strict),
         'non_strict_validation_confirmed': bool(not args.validation_strict and args.confirm_non_strict_validation == 'YES'),
+        'active_prefix_precondition_bypassed': active_prefix_precondition_bypassed(args),
     }
     kv.put_string(f'{args.active_prefix_key}:previous:{args.job_id}', previous)
     kv.hset(f'{args.active_prefix_key}:audit', args.job_id, json.dumps(audit, sort_keys=True, separators=(',', ':')))
@@ -1740,6 +1760,7 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
         'job_id': args.job_id,
         'validation': validation,
         **validation_audit,
+        'active_prefix_precondition_bypassed': active_prefix_precondition_bypassed(args),
     }
 
 
@@ -1756,6 +1777,7 @@ def run_rollback_activation(args: argparse.Namespace) -> Json:
         raise BackfillError(f'rollback_activation could not find previous prefix at {previous_key}')
     current_prefix = kv.get_string(args.active_prefix_key)
     require_expected_active_prefix(args, current_prefix)
+    require_active_prefix_precondition(args, mode='rollback_activation')
     rolled_back_at_ms = int(time.time() * 1000)
     audit = {
         'job_id': args.job_id,
@@ -1767,6 +1789,7 @@ def run_rollback_activation(args: argparse.Namespace) -> Json:
         'to_prefix': previous_prefix,
         'previous_key': previous_key,
         'raw_backend': normalize_raw_backend(args.raw_backend),
+        'active_prefix_precondition_bypassed': active_prefix_precondition_bypassed(args),
     }
     if args.dry_run:
         return {
@@ -1779,6 +1802,7 @@ def run_rollback_activation(args: argparse.Namespace) -> Json:
             'to_prefix': previous_prefix,
             'rollback_job_id': rollback_job_id,
             'raw_backend': normalize_raw_backend(args.raw_backend),
+            'active_prefix_precondition_bypassed': active_prefix_precondition_bypassed(args),
         }
     kv.hset(f'{args.active_prefix_key}:rollback_audit', args.job_id, json.dumps(audit, sort_keys=True, separators=(',', ':')))
     kv.put_string(args.active_prefix_key, previous_prefix)
@@ -1793,6 +1817,7 @@ def run_rollback_activation(args: argparse.Namespace) -> Json:
         'raw_backend': normalize_raw_backend(args.raw_backend),
         'audit_key': f'{args.active_prefix_key}:rollback_audit',
         'job_id': args.job_id,
+        'active_prefix_precondition_bypassed': active_prefix_precondition_bypassed(args),
     }
 
 
@@ -1916,6 +1941,7 @@ def run_incremental_repair(args: argparse.Namespace) -> Json:
     kv = make_kv(args)
     current_active_prefix = kv.get_string(args.active_prefix_key)
     require_expected_active_prefix(args, current_active_prefix)
+    require_active_prefix_precondition(args, mode='incremental_repair')
     active_prefix = args.repair_active_prefix or current_active_prefix
     if not active_prefix:
         raise BackfillError('incremental_repair requires --repair-active-prefix or an active prefix stored under --active-prefix-key')
@@ -1960,6 +1986,7 @@ def run_incremental_repair(args: argparse.Namespace) -> Json:
             **validation_audit,
             'validation_strict': bool(args.validation_strict),
             'non_strict_validation_confirmed': bool(not args.validation_strict and args.confirm_non_strict_validation == 'YES'),
+            'active_prefix_precondition_bypassed': active_prefix_precondition_bypassed(args),
             'promotion_consistency': promotion_consistency,
             'promotion_metrics': promotion.get('metrics', {}),
         }
@@ -1984,6 +2011,7 @@ def run_incremental_repair(args: argparse.Namespace) -> Json:
         'promotion': promotion,
         'promotion_consistency': promotion_consistency,
         'audit_key': f'{args.active_prefix_key}:incremental_repair_audit',
+        'active_prefix_precondition_bypassed': active_prefix_precondition_bypassed(args),
     }
     if args.prometheus_output:
         Path(args.prometheus_output).write_text(incremental_repair_to_prometheus(summary), encoding='utf-8')
@@ -2011,6 +2039,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--confirm-incremental-repair', default='')
     parser.add_argument('--confirm-active-target', default='', help='required YES for direct non-dry-run shadow writes to the current active prefix')
     parser.add_argument('--expect-active-prefix', default='', help='optional active-prefix precondition for activation, rollback, and incremental repair')
+    parser.add_argument('--confirm-no-active-prefix-precondition', default='', help='required YES to mutate the active prefix without --expect-active-prefix')
     parser.add_argument('--confirm-skip-validation', default='', help='required YES when activate_shadow or incremental_repair uses --skip-validation=1')
     parser.add_argument('--confirm-non-strict-validation', default='', help='required YES when activate_shadow or incremental_repair uses --validation-strict=0')
     parser.add_argument('--active-prefix-key', default='matrixark:context:active_prefix')

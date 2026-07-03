@@ -118,7 +118,7 @@ Production use should prefer `shadow`, `validate_shadow`, `activate_shadow`, `ro
 
 Direct non-dry-run `shadow` writes to the current active prefix are guarded too. If `--target-prefix` equals the value stored under `--active-prefix-key`, the runner rejects the write unless `--confirm-active-target=YES` is supplied. For production repairs, prefer the validated `incremental_repair` flow; use `--confirm-active-target=YES` only as a break-glass path after a dry run and explicit incident review.
 
-For activation, rollback, and incremental repair, pass `--expect-active-prefix=<prefix>` when the operation is based on a reviewed active pointer. The command fails if the current value under `--active-prefix-key` has changed, preventing stale runbooks from switching or repairing the wrong live context prefix.
+For activation, rollback, and incremental repair, pass `--expect-active-prefix=<prefix>` from the reviewed active pointer. Non-dry-run live mutations now reject missing active-prefix preconditions unless `--confirm-no-active-prefix-precondition=YES` is supplied. The command fails if the current value under `--active-prefix-key` has changed, preventing stale runbooks from switching or repairing the wrong live context prefix.
 
 ## Quick Start: Full Shadow Backfill
 
@@ -1101,7 +1101,7 @@ Or set the active pointer under `--active-prefix-key` before promotion.
 - Use shadow mode by default.
 - Never point `--target-prefix` at the current active prefix for a normal shadow run; use `incremental_repair`, or pass `--confirm-active-target=YES` only for an explicit break-glass write.
 - Validate before activation or repair promotion.
-- Use `--expect-active-prefix` for activation, rollback, and incremental repair when another operator or automation could have changed the active pointer.
+- Use `--expect-active-prefix` for activation, rollback, and incremental repair. Use `--confirm-no-active-prefix-precondition=YES` only as a documented break-glass bypass when the active pointer cannot be pre-read.
 - Keep full rebuild activation separate from incremental repair promotion.
 - Use bounded ranges for incident repairs.
 - Preserve target manifests, audit records, and dead letters until the recovery review is complete.
@@ -1169,6 +1169,7 @@ Core flags:
 --confirm-resume-range-change=YES
 --confirm-active-target=YES
 --expect-active-prefix
+--confirm-no-active-prefix-precondition=YES
 --fail-fast
 --prometheus-output
 ```
