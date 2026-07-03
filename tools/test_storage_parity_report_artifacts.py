@@ -16,15 +16,18 @@ from validate_storage_lifecycle_parity import (
     REQUIRED_STORAGE_COLD_SCAN_SEQUENCE,
     REQUIRED_STORAGE_COLD_SCAN_METRICS,
     REQUIRED_STORAGE_COLD_SCAN_RESULT_FIELDS,
+    REQUIRED_STORAGE_INDEX_BEHAVIORS,
     REQUIRED_STORAGE_INDEX_CONTRACT_FIELDS,
     REQUIRED_STORAGE_LIFECYCLE_METRICS,
     REQUIRED_STORAGE_LIFECYCLE_PHASES,
     REQUIRED_STORAGE_MANAGER_CONTRACT_FIELDS,
+    REQUIRED_STORAGE_MANAGER_PHASE_METRICS,
     REQUIRED_STORAGE_READ_SEQUENCE,
     REQUIRED_STORAGE_READ_METRICS,
     REQUIRED_STORAGE_READ_RESULT_FIELDS,
     REQUIRED_STORAGE_RECLAIM_CONTRACT_FIELDS,
     REQUIRED_STORAGE_RECLAIM_SEMANTICS,
+    REQUIRED_STORAGE_RECLAIM_SCOPE,
     REQUIRED_STORAGE_WRITE_METRICS,
     REQUIRED_STORAGE_WRITE_RESULT_FIELDS,
     REQUIRED_STORAGE_WRITE_SEQUENCE,
@@ -39,6 +42,100 @@ def _zero_metrics() -> dict[str, int]:
 
 def _contract_with_fields(fields: list[str]) -> dict[str, object]:
     return {field: 0 for field in fields}
+
+
+def _manager_contract() -> dict[str, object]:
+    return {
+        "manager_identity": "StorageManager/StoreManager",
+        "cpp_public_name": "StorageManager",
+        "rust_public_name": "StoreManager",
+        "phase_order": list(REQUIRED_STORAGE_LIFECYCLE_PHASES),
+        "phase_metrics": dict(REQUIRED_STORAGE_MANAGER_PHASE_METRICS),
+        "phase_counts": {phase: 0 for phase in REQUIRED_STORAGE_LIFECYCLE_PHASES},
+        "loop_metric": "storage_manager_loop_ms",
+        "loop_ms": 0,
+        "phase_order_enforced": True,
+        "missing_phase_count": 0,
+    }
+
+
+def _index_contract() -> dict[str, object]:
+    return {
+        "page_address_codec": "PageAddress",
+        "block_address_codec": "BlockAddress",
+        "stable_order": ["shard_id", "zone_id", "segment_id", "page_id", "offset"],
+        "slot_index": "slot -> object/page refs",
+        "object_index_entry": "{model/table/object_key} -> current page chain",
+        "page_index": "logical timestamp/key ranges -> page addresses",
+        "block_index": "page addresses -> physical durable locations",
+        "required_behaviors": list(REQUIRED_STORAGE_INDEX_BEHAVIORS),
+        "page_address_encode_decode": True,
+        "block_address_encode_decode": True,
+        "stable_order_verified": True,
+        "timestamp_range_lookup_verified": True,
+        "slot_index_entry_count": 1,
+        "slot_object_ref_count": 1,
+        "slot_page_ref_count": 1,
+        "object_index_entry_count": 1,
+        "page_index_entry_count": 1,
+        "block_index_entry_count": 1,
+        "restart_rebuild_verified": True,
+        "unreadable_page_refs": 0,
+        "checksum_mismatches": 0,
+    }
+
+
+def _cache_contract() -> dict[str, object]:
+    return {
+        "layers": list(REQUIRED_STORAGE_CACHE_LAYERS),
+        "semantics": list(REQUIRED_STORAGE_CACHE_SEMANTICS),
+        "metrics": [
+            "memory_cache_hits",
+            "memory_cache_misses",
+            "page_index_cache_hits",
+            "page_index_cache_misses",
+            "block_index_cache_hits",
+            "block_index_cache_misses",
+            "disk_cache_hits",
+            "disk_cache_misses",
+            "shared_store_read_throughs",
+            "cache_refills",
+            "cache_invalidations",
+            "cache_writeback_queue_depth",
+            "cache_writeback_rejections",
+        ],
+        "hot_to_cold_lookup": True,
+        "durable_refill_on_miss": True,
+        "append_watermark_invalidation": True,
+        "compaction_watermark_invalidation": True,
+        "cold_scan_no_promote": True,
+        "writeback_backpressure_measured": True,
+        "cache_refills": 0,
+        "cache_invalidations": 0,
+        "cache_writeback_queue_depth": 0,
+        "cache_writeback_rejections": 0,
+        "hot_cache_promotions": 0,
+    }
+
+
+def _reclaim_contract() -> dict[str, object]:
+    return {
+        "cache_eviction_frees_memory_only": True,
+        "logical_gc_marks_expired_deletable": True,
+        "physical_reclaim_requires_compaction_or_safe_skip": True,
+        "cache_evictions": 0,
+        "tombstone_records": 0,
+        "stale_page_tombstones": 0,
+        "stale_block_tombstones": 0,
+        "stale_pages_rewritten": 0,
+        "stale_pages_skipped": 0,
+        "stale_blocks_rewritten": 0,
+        "stale_blocks_skipped": 0,
+        "reclaimable_bytes": 0,
+        "compaction_reclaimed_bytes": 0,
+        "physical_reclaimed_bytes": 0,
+        "physical_reclaim_errors": 0,
+    }
 
 
 def _valid_report(backend: str) -> dict[str, object]:
@@ -63,10 +160,11 @@ def _valid_report(backend: str) -> dict[str, object]:
         "storage_cache_layers": list(REQUIRED_STORAGE_CACHE_LAYERS),
         "storage_cache_semantics": list(REQUIRED_STORAGE_CACHE_SEMANTICS),
         "storage_reclaim_semantics": list(REQUIRED_STORAGE_RECLAIM_SEMANTICS),
-        "storage_cache_contract": _contract_with_fields(REQUIRED_STORAGE_CACHE_CONTRACT_FIELDS),
-        "storage_reclaim_contract": _contract_with_fields(REQUIRED_STORAGE_RECLAIM_CONTRACT_FIELDS),
-        "storage_manager_contract": _contract_with_fields(REQUIRED_STORAGE_MANAGER_CONTRACT_FIELDS),
-        "storage_index_contract": _contract_with_fields(REQUIRED_STORAGE_INDEX_CONTRACT_FIELDS),
+        "storage_reclaim_scope": dict(REQUIRED_STORAGE_RECLAIM_SCOPE),
+        "storage_cache_contract": _cache_contract(),
+        "storage_reclaim_contract": _reclaim_contract(),
+        "storage_manager_contract": _manager_contract(),
+        "storage_index_contract": _index_contract(),
     }
 
 
@@ -141,6 +239,28 @@ class StorageParityReportArtifactTest(unittest.TestCase):
         self.assertTrue(
             any("storage_index_contract missing `restart_rebuild_verified`" in item for item in failures)
         )
+
+    def test_rejects_semantic_contract_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            report_dir = root / "parity_smoke"
+            report_dir.mkdir()
+            report = _valid_report("rust")
+            report["storage_manager_contract"]["phase_order_enforced"] = False  # type: ignore[index]
+            report["storage_index_contract"]["required_behaviors"] = []  # type: ignore[index]
+            report["storage_cache_contract"]["cold_scan_no_promote"] = False  # type: ignore[index]
+            report["storage_reclaim_contract"]["physical_reclaim_errors"] = 1  # type: ignore[index]
+            (report_dir / "rust.json").write_text(json.dumps(report), encoding="utf-8")
+
+            scanned, failures = validate_artifacts(root)
+
+        self.assertEqual(scanned, 1)
+        self.assertTrue(
+            any("storage_manager_contract.phase_order_enforced must be true" in item for item in failures)
+        )
+        self.assertTrue(any("storage_index_contract.required_behaviors drift" in item for item in failures))
+        self.assertTrue(any("storage_cache_contract.cold_scan_no_promote must be true" in item for item in failures))
+        self.assertTrue(any("storage_reclaim_contract.physical_reclaim_errors must be zero" in item for item in failures))
 
     def test_rejects_effective_storage_tuning_value_drift(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
