@@ -32,6 +32,10 @@ REQUIRED_PLACEHOLDERS = {
     "--rust-cli": "<MATRIXARK_PARITY_RUST_CLI>",
     "--cd": "<WORKSPACE_ROOT_WSL>",
 }
+REQUIRED_RUN_WORKLOAD_FLAGS = (
+    "--require-perf-parity",
+    "--require-phase-scale-matrix",
+)
 
 
 def _walk_json(value: Any, path: str = "$") -> list[tuple[str, str]]:
@@ -73,6 +77,21 @@ def _validate_sensitive_flag_placeholders(path: Path, data: dict[str, Any]) -> l
     return failures
 
 
+def _validate_run_workload_flags(path: Path, data: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    for row_index, row in enumerate(data.get("results") or []):
+        if not isinstance(row, dict) or row.get("step") != "run_workload":
+            continue
+        argv = row.get("argv")
+        if not isinstance(argv, list):
+            failures.append(f"{path}: results[{row_index}].argv must be a list")
+            continue
+        for flag in REQUIRED_RUN_WORKLOAD_FLAGS:
+            if flag not in argv:
+                failures.append(f"{path}: results[{row_index}].argv missing {flag}")
+    return failures
+
+
 def validate_artifact(path: Path) -> list[str]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -86,6 +105,7 @@ def validate_artifact(path: Path) -> list[str]:
         for location, marker in _walk_json(data)
     ]
     failures.extend(_validate_sensitive_flag_placeholders(path, data))
+    failures.extend(_validate_run_workload_flags(path, data))
     return failures
 
 

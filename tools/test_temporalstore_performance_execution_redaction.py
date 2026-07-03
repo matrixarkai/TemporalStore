@@ -21,6 +21,7 @@ class PerformanceExecutionRedactionTest(unittest.TestCase):
                         "schema": "temporalstore_cpp_rust_next_performance_execution_v1",
                         "results": [
                             {
+                                "step": "run_workload",
                                 "argv": [
                                     "wsl",
                                     "-d",
@@ -33,6 +34,8 @@ class PerformanceExecutionRedactionTest(unittest.TestCase):
                                     "--cpp-lib",
                                     "<MATRIXARK_PARITY_CPP_LIB>",
                                     "--rust-cli=<MATRIXARK_PARITY_RUST_CLI>",
+                                    "--require-perf-parity",
+                                    "--require-phase-scale-matrix",
                                 ]
                             }
                         ],
@@ -52,6 +55,7 @@ class PerformanceExecutionRedactionTest(unittest.TestCase):
                         "schema": "temporalstore_cpp_rust_next_performance_execution_v1",
                         "results": [
                             {
+                                "step": "run_workload",
                                 "argv": [
                                     "wsl",
                                     "-d",
@@ -63,6 +67,7 @@ class PerformanceExecutionRedactionTest(unittest.TestCase):
                                     "tool.py",
                                     "--cpp-lib",
                                     "/mnt/c/Users/Deeproute/libbcache2.so",
+                                    "--require-perf-parity",
                                 ]
                             }
                         ],
@@ -75,6 +80,7 @@ class PerformanceExecutionRedactionTest(unittest.TestCase):
 
         self.assertTrue(any("unredacted local path marker" in failure for failure in failures))
         self.assertTrue(any("--cpp-lib value is not redacted" in failure for failure in failures))
+        self.assertTrue(any("missing --require-phase-scale-matrix" in failure for failure in failures))
 
 
 if __name__ == "__main__":

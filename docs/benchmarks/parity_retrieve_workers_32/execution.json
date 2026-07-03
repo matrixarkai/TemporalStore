@@ -18,7 +18,8 @@
         "rust",
         "--artifact-dir",
         "docs/benchmarks/parity_retrieve_workers_32",
-        "--require-perf-parity"
+        "--require-perf-parity",
+        "--require-phase-scale-matrix"
       ],
       "returncode": 3,
       "status": "failed"
