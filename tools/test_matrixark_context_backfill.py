@@ -214,6 +214,9 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(validation["status"], "ok")
             self.assertEqual(validation["expected_records"], 2)
             self.assertEqual(validation["actual_records"], 2)
+            self.assertEqual(validation["expected_type_counts"], {"context_event": 2})
+            self.assertEqual(validation["actual_type_counts"], {"context_event": 2})
+            self.assertTrue(validation["checks"]["exact_serving_type_counts_match"])
 
             with self.assertRaises(backfill.BackfillError):
                 backfill.run_activate_shadow(self.make_args(path, mode="activate_shadow", target_prefix="matrixark:context_backfill:candidate"))
@@ -258,6 +261,25 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             kv_rolled_back = backfill.LocalJsonKV(path)
             self.assertEqual(kv_rolled_back.get_string("matrixark:context:active_prefix"), "matrixark:context:old")
             self.assertIn("matrixark:context_backfill:candidate", kv_rolled_back.hget("matrixark:context:active_prefix:rollback_audit", "rollback-unit"))
+
+
+    def test_validate_shadow_fails_on_type_mismatch_even_when_count_matches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            write_sharded(kv, "matrixark:mcp", 0, {"record_type": "context_event", "event_id_hash": 1})
+            kv.put_string("matrixark:mcp:record_count", "1")
+            target = backfill.MatrixKVBackfillTarget(kv, prefix="matrixark:context_backfill:test")
+            target.append_many([{"record_type": "context_summary", "summary_text": "wrong type"}])
+
+            validation = backfill.run_validate_shadow(self.make_args(path, mode="validate_shadow"))
+
+            self.assertEqual(validation["expected_records"], 1)
+            self.assertEqual(validation["actual_records"], 1)
+            self.assertEqual(validation["status"], "failed")
+            self.assertEqual(validation["expected_type_counts"], {"context_event": 1})
+            self.assertEqual(validation["actual_type_counts"], {"context_summary": 1})
+            self.assertFalse(validation["checks"]["exact_serving_type_counts_match"])
 
 
     def test_incremental_repair_promotes_bounded_range_to_active_prefix(self):

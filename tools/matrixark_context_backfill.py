@@ -576,6 +576,22 @@ class MatrixKVBackfillTarget:
         except ValueError:
             return 0
 
+    def read_at(self, sequence: int) -> Json:
+        shard = sequence // self.shard_size
+        offset = sequence % self.shard_size
+        payload = self.kv.hget(f'{self.prefix}:records:{shard:06d}', f'{offset:020d}')
+        if not payload:
+            raise BackfillError(f'missing target record at sequence {sequence}')
+        return json.loads(payload)
+
+    def serving_type_counts(self) -> Json:
+        counts: Json = {}
+        for sequence in range(self.count()):
+            record = self.read_at(sequence)
+            record_type = str(record.get('record_type') or 'unknown')
+            counts[record_type] = int(counts.get(record_type, 0)) + 1
+        return dict(sorted(counts.items()))
+
     def append_dead_letter(self, item: Json) -> None:
         sequence = self.count_dead_letters()
         payload = json.dumps(item, sort_keys=True, separators=(',', ':'))
@@ -952,6 +968,29 @@ def run_backfill(args: argparse.Namespace) -> Json:
     return summary
 
 
+SERVING_TYPE_METRIC_MAP = {
+    'context_event': 'context_events',
+    'context_entity': 'context_entities',
+    'context_summary': 'context_summaries',
+    'context_embedding': 'context_embeddings',
+    'context_index': 'context_indexes',
+    'context_pack_audit': 'context_audits',
+}
+
+
+def expected_serving_type_counts(metrics: Json) -> Json:
+    counts = {
+        record_type: int(metrics.get(metric_name, 0) or 0)
+        for record_type, metric_name in SERVING_TYPE_METRIC_MAP.items()
+        if int(metrics.get(metric_name, 0) or 0) > 0
+    }
+    accounted = sum(counts.values())
+    written = int(metrics.get('written', 0) or 0)
+    if written > accounted:
+        counts['other'] = written - accounted
+    return dict(sorted(counts.items()))
+
+
 def run_validate_shadow(args: argparse.Namespace) -> Json:
     if not args.target_prefix:
         raise BackfillError('validate_shadow requires --target-prefix')
@@ -969,9 +1008,14 @@ def run_validate_shadow(args: argparse.Namespace) -> Json:
     actual_count = target.count()
     dead_letters = target.count_dead_letters()
     expected_count = int(expected_summary['metrics']['written'])
+    expected_type_counts = expected_serving_type_counts(expected_summary['metrics'])
+    actual_type_counts = target.serving_type_counts()
     exact_match = actual_count == expected_count
     enough_records = actual_count >= expected_count
-    passed = (exact_match if args.validation_strict else enough_records) and dead_letters == 0 and int(expected_summary['metrics']['failed']) == 0
+    exact_type_match = actual_type_counts == expected_type_counts
+    enough_type_records = all(int(actual_type_counts.get(record_type, 0)) >= int(count) for record_type, count in expected_type_counts.items())
+    type_counts_passed = exact_type_match if args.validation_strict else enough_type_records
+    passed = (exact_match if args.validation_strict else enough_records) and type_counts_passed and dead_letters == 0 and int(expected_summary['metrics']['failed']) == 0
     return {
         'status': 'ok' if passed else 'failed',
         'job_id': args.job_id,
@@ -985,11 +1029,15 @@ def run_validate_shadow(args: argparse.Namespace) -> Json:
         'validation_strict': bool(args.validation_strict),
         'expected_records': expected_count,
         'actual_records': actual_count,
+        'expected_type_counts': expected_type_counts,
+        'actual_type_counts': actual_type_counts,
         'dead_letters': dead_letters,
         'expected_scan': expected_summary['metrics'],
         'checks': {
             'exact_record_count_match': exact_match,
             'actual_records_at_least_expected': enough_records,
+            'exact_serving_type_counts_match': exact_type_match,
+            'actual_serving_type_counts_at_least_expected': enough_type_records,
             'no_shadow_dead_letters': dead_letters == 0,
             'source_scan_had_no_failures': int(expected_summary['metrics']['failed']) == 0,
         },

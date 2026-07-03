@@ -386,6 +386,7 @@ During the run:
 After the run:
 
 - run `validate_shadow` with the same source range and partial flags
+- confirm `expected_records`, `actual_records`, `expected_type_counts`, and `actual_type_counts` match in strict mode
 - preserve the manifest under `<target-prefix>:backfill_manifest`
 - activate only after validation and context-quality checks pass
 
@@ -472,6 +473,8 @@ python3 tools/matrixark_context_backfill.py \
   --dry-run=0 \
   --resume=1
 ```
+
+`validate_shadow` also compares serving record type counts, not only total record counts. A shadow prefix with the right total count but the wrong materialized record types fails strict validation.
 
 The summary includes:
 
