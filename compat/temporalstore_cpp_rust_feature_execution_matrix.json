@@ -26,7 +26,16 @@
       "native_cpp_executable": false,
       "blocker": "Native C++ storage/cache corpus runner is not wired yet; static C++ object/page/slot/storage harness paths remain required.",
       "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD=cpp-storage-corpus-runner python3 tools/run_temporalstore_unified_tests.py --cpp --corpus {corpus} --require-cpp-native",
-      "suites": ["cpp_storage_parity", "storage_proxy_client_parity"]
+      "suites": [
+        "cpp_storage_parity",
+        "storage_proxy_client_parity"
+      ],
+      "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+      "exit_criteria": [
+        "native C++ runner emits temporalstore_unified_case_report_v1 for all selected shared cases in storage/cache",
+        "C++ and Rust reports pass tools/compare_unified_cpp_rust_case_reports.py with matching case/step names and required output evidence",
+        "matrix row can move to native_executable only after no static surface gate remains for this family"
+      ]
     },
     {
       "family": "raft",
@@ -34,7 +43,15 @@
       "native_cpp_executable": false,
       "blocker": "Some legacy RustRaft/C++ source-surface gates remain static until a native C++ shared-case runner emits temporalstore_unified_case_report_v1 for every Raft case.",
       "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-raft-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
-      "suites": ["cpp_data_raft_parity"]
+      "suites": [
+        "cpp_data_raft_parity"
+      ],
+      "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+      "exit_criteria": [
+        "native C++ runner emits temporalstore_unified_case_report_v1 for all selected shared cases in raft",
+        "C++ and Rust reports pass tools/compare_unified_cpp_rust_case_reports.py with matching case/step names and required output evidence",
+        "matrix row can move to native_executable only after no static surface gate remains for this family"
+      ]
     },
     {
       "family": "context",
@@ -42,7 +59,16 @@
       "native_cpp_executable": false,
       "blocker": "Native C++ context pipeline corpus runner is not wired yet; C++ context source/debug paths remain required while Rust executes the shared cases.",
       "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
-      "suites": ["cpp_context_pipeline_parity", "cpp_context_query_debug_parity"]
+      "suites": [
+        "cpp_context_pipeline_parity",
+        "cpp_context_query_debug_parity"
+      ],
+      "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+      "exit_criteria": [
+        "native C++ runner emits temporalstore_unified_case_report_v1 for all selected shared cases in context",
+        "C++ and Rust reports pass tools/compare_unified_cpp_rust_case_reports.py with matching case/step names and required output evidence",
+        "matrix row can move to native_executable only after no static surface gate remains for this family"
+      ]
     },
     {
       "family": "client/proxy/control-plane",
@@ -50,7 +76,19 @@
       "native_cpp_executable": false,
       "blocker": "Native C++ control-plane corpus runner is not wired yet; client/proxy/data-node/metaserver source and harness paths remain required.",
       "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-control-plane-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
-      "suites": ["cpp_client_control_plane_parity", "cpp_proxy_control_plane_parity", "cpp_data_node_lifecycle_parity", "cpp_metaserver_control_plane_parity", "cpp_cross_subsystem_parity"]
+      "suites": [
+        "cpp_client_control_plane_parity",
+        "cpp_proxy_control_plane_parity",
+        "cpp_data_node_lifecycle_parity",
+        "cpp_metaserver_control_plane_parity",
+        "cpp_cross_subsystem_parity"
+      ],
+      "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+      "exit_criteria": [
+        "native C++ runner emits temporalstore_unified_case_report_v1 for all selected shared cases in client/proxy/control-plane",
+        "C++ and Rust reports pass tools/compare_unified_cpp_rust_case_reports.py with matching case/step names and required output evidence",
+        "matrix row can move to native_executable only after no static surface gate remains for this family"
+      ]
     },
     {
       "family": "ingestion",
@@ -58,7 +96,15 @@
       "native_cpp_executable": false,
       "blocker": "Native C++ Kafka/Flink/dead-letter ingestion corpus runner is not wired yet; static ingestion source/harness paths remain required.",
       "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-ingestion-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
-      "suites": ["cpp_ingestion_parity"]
+      "suites": [
+        "cpp_ingestion_parity"
+      ],
+      "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+      "exit_criteria": [
+        "native C++ runner emits temporalstore_unified_case_report_v1 for all selected shared cases in ingestion",
+        "C++ and Rust reports pass tools/compare_unified_cpp_rust_case_reports.py with matching case/step names and required output evidence",
+        "matrix row can move to native_executable only after no static surface gate remains for this family"
+      ]
     },
     {
       "family": "benchmarks",
@@ -66,7 +112,9 @@
       "native_cpp_executable": true,
       "blocker": "",
       "expected_runner_command": "compat/cpp_context_benchmark_report_adapter.h emits matrixark_vikingmem_context_benchmark_report_v1; python3 tools/compare_context_benchmark_reports.py compares Rust and C++ reports.",
-      "suites": ["cpp_context_benchmark_parity"]
+      "suites": [
+        "cpp_context_benchmark_parity"
+      ]
     },
     {
       "family": "ops/scale",
@@ -74,7 +122,15 @@
       "native_cpp_executable": false,
       "blocker": "Native C++ ops/scale SLO corpus runner is not wired yet; static readiness, external chaos, rolling restart, and scale report paths remain required.",
       "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-ops-scale-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
-      "suites": ["cpp_ops_scale_parity"]
+      "suites": [
+        "cpp_ops_scale_parity"
+      ],
+      "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+      "exit_criteria": [
+        "native C++ runner emits temporalstore_unified_case_report_v1 for all selected shared cases in ops/scale",
+        "C++ and Rust reports pass tools/compare_unified_cpp_rust_case_reports.py with matching case/step names and required output evidence",
+        "matrix row can move to native_executable only after no static surface gate remains for this family"
+      ]
     },
     {
       "family": "codex/mcp",
@@ -82,7 +138,15 @@
       "native_cpp_executable": false,
       "blocker": "Native C++ Codex/MCP parity runner is not wired yet; static MCP integration paths remain required.",
       "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-codex-mcp-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
-      "suites": ["cpp_rust_codex_mcp_parity"]
+      "suites": [
+        "cpp_rust_codex_mcp_parity"
+      ],
+      "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+      "exit_criteria": [
+        "native C++ runner emits temporalstore_unified_case_report_v1 for all selected shared cases in codex/mcp",
+        "C++ and Rust reports pass tools/compare_unified_cpp_rust_case_reports.py with matching case/step names and required output evidence",
+        "matrix row can move to native_executable only after no static surface gate remains for this family"
+      ]
     },
     {
       "family": "Redis/admin",
@@ -90,7 +154,15 @@
       "native_cpp_executable": false,
       "blocker": "Native C++ Redis/admin product command corpus runner is not wired yet; Rust executes the broad Redis engine command flow while C++ parity remains tied to Redis/admin/API product surface evidence.",
       "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-redis-admin-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
-      "suites": ["redis_admin_product_parity"]
+      "suites": [
+        "redis_admin_product_parity"
+      ],
+      "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+      "exit_criteria": [
+        "native C++ runner emits temporalstore_unified_case_report_v1 for all selected shared cases in Redis/admin",
+        "C++ and Rust reports pass tools/compare_unified_cpp_rust_case_reports.py with matching case/step names and required output evidence",
+        "matrix row can move to native_executable only after no static surface gate remains for this family"
+      ]
     },
     {
       "family": "client_proxy_control_plane",
@@ -98,7 +170,15 @@
       "native_cpp_executable": false,
       "blocker": "C++ executable shared adapter for client/proxy/data-node/metaserver control-plane workflows is still pending.",
       "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-control-plane-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
-      "suites": ["cpp_client_proxy_control_plane_parity"]
+      "suites": [
+        "cpp_client_proxy_control_plane_parity"
+      ],
+      "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+      "exit_criteria": [
+        "native C++ runner emits temporalstore_unified_case_report_v1 for all selected shared cases in client_proxy_control_plane",
+        "C++ and Rust reports pass tools/compare_unified_cpp_rust_case_reports.py with matching case/step names and required output evidence",
+        "matrix row can move to native_executable only after no static surface gate remains for this family"
+      ]
     },
     {
       "family": "product_api_models",
@@ -106,7 +186,15 @@
       "native_cpp_executable": false,
       "blocker": "C++ executable shared adapter for Redis/admin/Feature/Sequence/IPS/Risk command corpus is still pending.",
       "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-product-api-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
-      "suites": ["cpp_product_api_parity"]
+      "suites": [
+        "cpp_product_api_parity"
+      ],
+      "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+      "exit_criteria": [
+        "native C++ runner emits temporalstore_unified_case_report_v1 for all selected shared cases in product_api_models",
+        "C++ and Rust reports pass tools/compare_unified_cpp_rust_case_reports.py with matching case/step names and required output evidence",
+        "matrix row can move to native_executable only after no static surface gate remains for this family"
+      ]
     },
     {
       "family": "context_benchmark_report_contract",
@@ -114,7 +202,9 @@
       "native_cpp_executable": true,
       "blocker": "",
       "expected_runner_command": "compat/cpp_context_benchmark_report_adapter.h emits matrixark_vikingmem_context_benchmark_report_v1; tools/compare_context_benchmark_reports.py validates the C++ and Rust report pair.",
-      "suites": ["cpp_context_benchmark_parity"]
+      "suites": [
+        "cpp_context_benchmark_parity"
+      ]
     }
   ]
 }

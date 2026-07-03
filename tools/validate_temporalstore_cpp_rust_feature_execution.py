@@ -33,6 +33,18 @@ REQUIRED_STATIC_RUNNER_TOKENS = (
     "--require-cpp-native",
     "{corpus}",
 )
+REQUIRED_STATIC_COMPARISON_TOKENS = (
+    "tools/compare_unified_cpp_rust_case_reports.py",
+    "--rust-report",
+    "--cpp-report",
+    "temporalstore_unified_case_report_v1",
+)
+REQUIRED_STATIC_EXIT_CRITERIA_TOKENS = (
+    "native C++",
+    "temporalstore_unified_case_report_v1",
+    "selected shared cases",
+    "no static surface gate",
+)
 
 
 def _as_list(value: Any) -> list[Any]:
@@ -117,11 +129,26 @@ def main() -> int:
             for token in REQUIRED_STATIC_RUNNER_TOKENS:
                 if token not in expected_runner_command:
                     failures.append(f"{family} static gate expected_runner_command missing `{token}`")
+            comparison_command = str(row.get("comparison_command") or "")
+            if not comparison_command:
+                failures.append(f"{family} static gate requires comparison_command")
+            for token in REQUIRED_STATIC_COMPARISON_TOKENS:
+                if token not in comparison_command:
+                    failures.append(f"{family} static gate comparison_command missing `{token}`")
+            exit_criteria = _as_strings(row.get("exit_criteria"))
+            if not exit_criteria:
+                failures.append(f"{family} static gate requires exit_criteria")
+            joined_exit_criteria = " ".join(exit_criteria)
+            for token in REQUIRED_STATIC_EXIT_CRITERIA_TOKENS:
+                if token not in joined_exit_criteria:
+                    failures.append(f"{family} static gate exit_criteria missing `{token}`")
         if status in COMPLETION_STATUSES:
             if row.get("native_cpp_executable") is not True:
                 failures.append(f"{family} completion status requires native_cpp_executable=true")
             if row.get("blocker"):
                 failures.append(f"{family} completion status cannot have blocker")
+            if row.get("exit_criteria"):
+                failures.append(f"{family} completion status should not keep exit_criteria")
 
     unknown = sorted(set(by_family) - set(coverage))
     if unknown:
