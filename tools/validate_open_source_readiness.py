@@ -21,6 +21,7 @@ REQUIRED_FILES = [
     "CODE_OF_CONDUCT.md",
     ".gitignore",
     "docs/open_source_readiness.md",
+    ".github/workflows/matrixark-context-backfill-ci.yml",
     "tools/run_matrixark_context_backfill_ci_gate_ubuntu22.sh",
     "tools/verify_matrixark_context_backfill_ci_evidence.py",
 ]
@@ -90,6 +91,21 @@ BACKFILL_CI_GATE_TOKENS = [
     "dual_write_manifest_artifact_paths_readable",
     "dual_write_manifest_artifact_sizes_match",
     "dual_write_manifest_artifact_sha256_match",
+]
+
+BACKFILL_WORKFLOW_TOKENS = [
+    "MatrixArk Context Backfill CI",
+    "runs-on: ubuntu-22.04",
+    "actions/checkout@v4",
+    "actions/setup-python@v5",
+    "actions/upload-artifact@v4",
+    "tools/run_matrixark_context_backfill_ci_gate_ubuntu22.sh",
+    "MATRIXARK_BACKFILL_CI_RECORDS",
+    "MATRIXARK_BACKFILL_CI_BATCH_SIZES",
+    "MATRIXARK_BACKFILL_CI_INCREMENTAL_RECORDS",
+    "MATRIXARK_BACKFILL_CI_EVIDENCE_MANIFEST",
+    "matrixark_context_backfill_readiness.json",
+    "matrixark_context_backfill_evidence/",
 ]
 
 PRIVATE_PATH_TOKENS = [
@@ -220,8 +236,14 @@ def main() -> int:
         BACKFILL_CI_GATE_TOKENS,
     )
     require_tokens(
+        ".github/workflows/matrixark-context-backfill-ci.yml",
+        BACKFILL_WORKFLOW_TOKENS,
+    )
+    require_tokens(
         "docs/open_source_readiness.md",
         [
+            ".github/workflows/matrixark-context-backfill-ci.yml",
+            "MatrixArk Context Backfill CI",
             "brpc/thrift compatibility remains explicitly out of scope",
             "generated build outputs",
             "`workflow` scope",
