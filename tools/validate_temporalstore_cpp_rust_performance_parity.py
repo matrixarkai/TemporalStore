@@ -191,7 +191,13 @@ def _validate_missing_evidence_hint(row: dict[str, Any], failures: list[str]) ->
             failures.append(f"{workload} next_run_hint.required_result missing `{expected}`")
 
 
-def _validate_metric_block(row: dict[str, Any], side: str, failures: list[str]) -> dict[str, Any]:
+def _validate_metric_block(
+    row: dict[str, Any],
+    side: str,
+    failures: list[str],
+    *,
+    require_selected_ref_parity: bool = True,
+) -> dict[str, Any]:
     metrics = row.get(side)
     if not isinstance(metrics, dict):
         failures.append(f"{row.get('workload')} {side} metrics must be an object")
@@ -218,7 +224,11 @@ def _validate_metric_block(row: dict[str, Any], side: str, failures: list[str]) 
                 failures.append(f"{row.get('workload')} {side}.{numeric} must be non-negative")
     if "fallback_flags" in metrics and not isinstance(metrics.get("fallback_flags"), list):
         failures.append(f"{row.get('workload')} {side}.fallback_flags must be a list")
-    if "selected_ref_parity" in metrics and metrics.get("selected_ref_parity") is not True:
+    if (
+        require_selected_ref_parity
+        and "selected_ref_parity" in metrics
+        and metrics.get("selected_ref_parity") is not True
+    ):
         failures.append(f"{row.get('workload')} {side}.selected_ref_parity must be true")
     return metrics
 
@@ -327,8 +337,19 @@ def main() -> int:
         for key in SAME_CONFIG_KEYS:
             if row.get(key) in (None, "", "required_per_row"):
                 failures.append(f"{workload} missing same-config field `{key}`")
-        cpp = _validate_metric_block(row, "cpp", failures)
-        rust = _validate_metric_block(row, "rust", failures)
+        require_selected_ref_parity = thresholds.get("require_selected_ref_parity") is not False
+        cpp = _validate_metric_block(
+            row,
+            "cpp",
+            failures,
+            require_selected_ref_parity=require_selected_ref_parity,
+        )
+        rust = _validate_metric_block(
+            row,
+            "rust",
+            failures,
+            require_selected_ref_parity=require_selected_ref_parity,
+        )
         _validate_ratios(row, thresholds, failures)
         max_timeout = float(thresholds.get("max_timeout_count") or 0)
         max_error = float(thresholds.get("max_error_count") or 0)
