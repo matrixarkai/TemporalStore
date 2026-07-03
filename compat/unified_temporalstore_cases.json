@@ -12227,10 +12227,10 @@
         ]
       },
       {
-        "blocker": "C++ native benchmark adapter must emit matrixark_vikingmem_context_benchmark_report_v1 before static benchmark report contracts become executable shared cases.",
-        "expected_runner_command": "run_cpp_context_benchmark_shared_cases --corpus {corpus}",
+        "comparison_command": "python3 tools/compare_context_benchmark_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json>",
         "family": "context_benchmark_report_contract",
-        "status": "temporary_static_surface_gate",
+        "runner_command": "compat/cpp_context_benchmark_report_adapter.h emits matrixark_vikingmem_context_benchmark_report_v1; tools/compare_context_benchmark_reports.py validates the C++ and Rust report pair.",
+        "status": "native_adapter_contract",
         "suites": [
           "cpp_context_benchmark_parity"
         ]
