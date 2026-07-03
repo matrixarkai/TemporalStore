@@ -16,6 +16,7 @@ import os
 import shlex
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -287,6 +288,49 @@ def validate_corpus(path: Path) -> dict:
         raise SystemExit(f"{path}: missing required response kinds: {', '.join(missing_responses)}")
     validate_cpp_adapter_coverage(path, coverage, seen_cpp_suites, seen_static_cpp_suites)
     return corpus
+
+
+def case_matches_family(case: dict, family: str, family_suites: set[str]) -> bool:
+    if case.get("family") == family:
+        return True
+    for step in case.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        command = step.get("command") if isinstance(step.get("command"), dict) else {}
+        if command.get("suite") in family_suites:
+            return True
+    return False
+
+
+def filtered_corpus_for_family(corpus: dict, source_path: Path, family: str) -> Path:
+    coverage = corpus.get("coverage") if isinstance(corpus.get("coverage"), dict) else {}
+    family_suites: set[str] = set()
+    for entry in coverage.get("cpp_adapter_coverage") or []:
+        if isinstance(entry, dict) and entry.get("family") == family:
+            family_suites.update(str(suite) for suite in entry.get("suites") or [])
+    cases = [
+        case
+        for case in corpus.get("cases") or []
+        if isinstance(case, dict) and case_matches_family(case, family, family_suites)
+    ]
+    if not cases:
+        raise SystemExit(f"{source_path}: no shared corpus cases matched --family {family!r}")
+    filtered = dict(corpus)
+    filtered["name"] = f"{corpus.get('name', 'temporalstore_unified_corpus')}::{family}"
+    filtered["source_corpus"] = str(source_path)
+    filtered["family_filter"] = family
+    filtered["cases"] = cases
+    handle = tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        delete=False,
+        prefix=f"temporalstore-unified-{family.replace('/', '_')}-",
+        suffix=".json",
+    )
+    with handle:
+        json.dump(filtered, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    return Path(handle.name)
 
 
 def validate_cpp_adapter_coverage(
@@ -643,6 +687,10 @@ def main() -> int:
         action="store_true",
         help="fail unless a native C++ corpus executor is configured with TS_CPP_UNIFIED_TEST_CMD or TS_CPP_UNIFIED_NATIVE_CMD",
     )
+    parser.add_argument(
+        "--family",
+        help="run only shared corpus cases for one coverage.cpp_adapter_coverage family",
+    )
     parser.add_argument("--validate-only", action="store_true", help="only validate corpus JSON")
     parser.add_argument(
         "--install-cpp-runner",
@@ -667,10 +715,19 @@ def main() -> int:
 
     corpus = args.corpus.resolve()
     data = validate_corpus(corpus)
+    run_corpus = corpus
+    if args.family:
+        run_corpus = filtered_corpus_for_family(data, corpus, args.family)
     print(
         f"validated {data['name']} schema={data['schema_version']} "
         f"cases={len(data['cases'])} path={corpus}"
     )
+    if args.family:
+        filtered_data = json.loads(run_corpus.read_text(encoding="utf-8"))
+        print(
+            f"using family-filtered corpus family={args.family} "
+            f"cases={len(filtered_data['cases'])} path={run_corpus}"
+        )
 
     if args.validate_only:
         return 0
@@ -691,9 +748,9 @@ def main() -> int:
         if install_only:
             return 0
     if args.rust:
-        run_rust(corpus)
+        run_rust(run_corpus)
     if args.cpp:
-        run_cpp(corpus, args.require_cpp or args.require_cpp_native, args.require_cpp_native, cpp_repo)
+        run_cpp(run_corpus, args.require_cpp or args.require_cpp_native, args.require_cpp_native, cpp_repo)
     return 0
 
 
