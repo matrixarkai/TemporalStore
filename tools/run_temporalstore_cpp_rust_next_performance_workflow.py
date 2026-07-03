@@ -25,6 +25,7 @@ from audit_temporalstore_cpp_rust_performance_artifacts import (
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_WSL_DISTRO = "Ubuntu-22.04"
+WSL_DISTRO_ENV = "MATRIXARK_PARITY_WSL_DISTRO"
 
 
 CPP_LIB_ENV = "MATRIXARK_PARITY_CPP_LIB"
@@ -228,7 +229,11 @@ def main() -> int:
     parser.add_argument("--max-workloads", type=int, default=1)
     parser.add_argument("--execute", action="store_true", help="Run the generated commands. Default is dry-run JSON output.")
     parser.add_argument("--execute-in-wsl", action="store_true", help="With --execute, run workload commands through WSL so Linux libbcache2.so can load.")
-    parser.add_argument("--wsl-distro", default=DEFAULT_WSL_DISTRO, help="WSL distro used for generated workload commands.")
+    parser.add_argument(
+        "--wsl-distro",
+        default=os.environ.get(WSL_DISTRO_ENV, DEFAULT_WSL_DISTRO),
+        help=f"WSL distro used for generated workload commands. Defaults to ${WSL_DISTRO_ENV} or {DEFAULT_WSL_DISTRO}.",
+    )
     parser.add_argument("--continue-on-error", action="store_true", help="With --execute, keep running later commands after a failure.")
     parser.add_argument("--workflow-command-timeout-sec", type=int, default=900, help="With --execute, cap each generated workflow command and record timeout rows.")
     parser.add_argument("--execution-output", type=Path, help="With --execute, write the execution summary JSON here.")
