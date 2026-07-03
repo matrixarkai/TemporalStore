@@ -314,10 +314,16 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
                 dry_run=False,
             ))
             self.assertEqual(activated["status"], "ok")
+            self.assertEqual(activated["validation_status"], "ok")
+            self.assertEqual(activated["validation_source_range"]["source_high_watermark_seq"], 1)
+            self.assertEqual(activated["validation_target_state"]["record_count"], 2)
             kv_after = backfill.LocalJsonKV(path)
             self.assertEqual(kv_after.get_string("matrixark:context:active_prefix"), "matrixark:context_backfill:candidate")
             self.assertEqual(kv_after.get_string("matrixark:context:active_prefix:previous:unit"), "matrixark:context:old")
-            self.assertIn("matrixark:context_backfill:candidate", kv_after.hget("matrixark:context:active_prefix:audit", "unit"))
+            activation_audit = json.loads(kv_after.hget("matrixark:context:active_prefix:audit", "unit"))
+            self.assertEqual(activation_audit["validation_status"], "ok")
+            self.assertEqual(activation_audit["validation_target_state"]["record_count"], 2)
+            self.assertIn("matrixark:context_backfill:candidate", json.dumps(activation_audit, sort_keys=True))
 
             with self.assertRaises(backfill.BackfillError):
                 backfill.run_rollback_activation(self.make_args(path, mode="rollback_activation", rollback_job_id="unit"))
@@ -412,10 +418,16 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(repaired["status"], "ok")
             self.assertEqual(repaired["active_prefix"], "matrixark:context:active")
             self.assertEqual(repaired["promotion"]["metrics"]["written"], 1)
+            self.assertEqual(repaired["validation_status"], "ok")
+            self.assertEqual(repaired["validation_source_range"]["effective_start_seq"], 1)
+            self.assertEqual(repaired["validation_target_state"]["target_prefix"], "matrixark:context_repair:p1")
 
             kv_after = backfill.LocalJsonKV(path)
             self.assertEqual(kv_after.get_string("matrixark:context:active_prefix"), "matrixark:context:active")
-            self.assertIn("matrixark:context:active", kv_after.hget("matrixark:context:active_prefix:incremental_repair_audit", "unit"))
+            repair_audit = json.loads(kv_after.hget("matrixark:context:active_prefix:incremental_repair_audit", "unit"))
+            self.assertEqual(repair_audit["validation_status"], "ok")
+            self.assertEqual(repair_audit["validation_target_state"]["record_count"], 1)
+            self.assertIn("matrixark:context:active", json.dumps(repair_audit, sort_keys=True))
             active_records = read_target_records(kv_after, "matrixark:context:active")
             self.assertEqual([record["event_id_hash"] for record in active_records], [2])
 
