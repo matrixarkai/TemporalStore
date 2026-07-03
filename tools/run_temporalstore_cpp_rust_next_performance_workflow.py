@@ -67,6 +67,17 @@ def build_execution_plan(audit: dict[str, Any], max_workloads: int | None = None
     }
 
 
+def default_execution_output(plan: dict[str, Any]) -> Path | None:
+    commands = plan.get("commands") if isinstance(plan.get("commands"), list) else []
+    for command in commands:
+        if not isinstance(command, dict) or command.get("step") != "run_workload":
+            continue
+        output = command.get("recommended_execution_output")
+        if isinstance(output, str) and output:
+            return ROOT / output
+    return None
+
+
 def run_plan(
     plan: dict[str, Any],
     *,
@@ -148,11 +159,12 @@ def main() -> int:
     if not args.execute:
         print(json.dumps(plan, indent=2) + "\n", end="")
         return 0
+    execution_output = args.execution_output or default_execution_output(plan)
     execution = run_plan(
         plan,
         include_post_validation=not args.skip_post_validation,
         continue_on_error=args.continue_on_error,
-        execution_output=args.execution_output,
+        execution_output=execution_output,
     )
     print(json.dumps(execution, indent=2) + "\n", end="")
     return 0 if execution["status"] == "passed" else 1
