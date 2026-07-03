@@ -155,6 +155,15 @@ class PerformanceEvidenceImportTest(unittest.TestCase):
         self.assertFalse(updated["status"]["performance_candidate"])
         self.assertFalse(updated["status"]["production_performance_parity"])
 
+    def test_global_open_blockers_are_deduped_after_import(self) -> None:
+        matrix = _matrix()
+        matrix["rows"][1]["workload"] = "1K_event_ingestion"
+
+        updated = import_report(matrix, _report_with_bad_qps_ratio())
+
+        blockers = updated["status"]["open_blockers"]
+        self.assertEqual(len(blockers), len(set(blockers)))
+
     def test_missing_phase_scale_gate_blocks_otherwise_good_report(self) -> None:
         report = _report_with_good_parity()
         report.pop("phase_scale_matrix")

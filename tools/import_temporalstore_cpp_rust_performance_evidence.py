@@ -76,6 +76,17 @@ def _list(value: Any) -> list[str]:
     return []
 
 
+def _dedupe_preserve_order(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return deduped
+
+
 def _storage_mode(report: dict[str, Any]) -> Any:
     config = report.get("config") if isinstance(report.get("config"), dict) else {}
     options = config.get("storage_options") if isinstance(config.get("storage_options"), dict) else {}
@@ -401,7 +412,7 @@ def import_report(matrix: dict[str, Any], report: dict[str, Any]) -> dict[str, A
     out["status"] = {
         "performance_candidate": candidate_ready,
         "production_performance_parity": production_ready,
-        "open_blockers": open_blockers,
+        "open_blockers": _dedupe_preserve_order(open_blockers),
     }
     return out
 

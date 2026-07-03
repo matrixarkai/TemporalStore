@@ -207,6 +207,26 @@ class PerformanceParityValidatorTest(unittest.TestCase):
 
         self.assertIn("global open_blockers missing `1K_event_ingestion:rust_backend_not_passed`", failures)
 
+    def test_blocker_ledgers_must_be_unique(self) -> None:
+        failures: list[str] = []
+        status = {
+            "open_blockers": [
+                "1K_event_ingestion:cpp_backend_not_passed",
+                "1K_event_ingestion:cpp_backend_not_passed",
+            ]
+        }
+        rows = {
+            "1K_event_ingestion": {
+                "workload": "1K_event_ingestion",
+                "open_blockers": ["cpp_backend_not_passed", "cpp_backend_not_passed"],
+            }
+        }
+
+        _validate_global_blocker_ledger(status, rows, failures)
+
+        self.assertIn("global open_blockers must be unique", failures)
+        self.assertIn("1K_event_ingestion open_blockers must be unique", failures)
+
 
 if __name__ == "__main__":
     unittest.main()
