@@ -116,6 +116,8 @@ Backfill summaries and validation scans also include an ordered `serving_record_
 
 Production use should prefer `shadow`, `validate_shadow`, `activate_shadow`, `rollback_activation`, and `incremental_repair`. `in_place` is intentionally guarded and should be rare.
 
+Direct non-dry-run `shadow` writes to the current active prefix are guarded too. If `--target-prefix` equals the value stored under `--active-prefix-key`, the runner rejects the write unless `--confirm-active-target=YES` is supplied. For production repairs, prefer the validated `incremental_repair` flow; use `--confirm-active-target=YES` only as a break-glass path after a dry run and explicit incident review.
+
 ## Quick Start: Full Shadow Backfill
 
 Use the wrapper for Ubuntu 22 local or server-style operation:
@@ -1087,6 +1089,7 @@ Or set the active pointer under `--active-prefix-key` before promotion.
 
 - Never delete or rewrite the source raw log as part of backfill.
 - Use shadow mode by default.
+- Never point `--target-prefix` at the current active prefix for a normal shadow run; use `incremental_repair`, or pass `--confirm-active-target=YES` only for an explicit break-glass write.
 - Validate before activation or repair promotion.
 - Keep full rebuild activation separate from incremental repair promotion.
 - Use bounded ranges for incident repairs.
@@ -1153,6 +1156,7 @@ Core flags:
 --dry-run-check-target
 --resume
 --confirm-resume-range-change=YES
+--confirm-active-target=YES
 --fail-fast
 --prometheus-output
 ```

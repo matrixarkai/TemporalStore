@@ -1017,6 +1017,14 @@ def resolve_target_prefix(args: argparse.Namespace) -> str:
     return args.source_prefix if args.mode == 'in_place' else (args.target_prefix or default_target_prefix(args.job_id))
 
 
+def require_active_target_confirmation(args: argparse.Namespace, kv: Any, target_prefix: str) -> None:
+    if args.dry_run or args.mode != 'shadow':
+        return
+    active_prefix = kv.get_string(args.active_prefix_key) if getattr(args, 'active_prefix_key', '') else ''
+    if active_prefix and active_prefix == target_prefix and getattr(args, 'confirm_active_target', '') != 'YES':
+        raise BackfillError('shadow backfill target-prefix is the current active prefix; use incremental_repair for bounded active repairs or pass --confirm-active-target=YES')
+
+
 def clone_args(args: argparse.Namespace, **overrides: Any) -> argparse.Namespace:
     values = vars(args).copy()
     values.update(overrides)
@@ -1159,6 +1167,7 @@ def run_backfill(args: argparse.Namespace) -> Json:
     kv = make_kv(args)
 
     target_prefix = resolve_target_prefix(args)
+    require_active_target_confirmation(args, kv, target_prefix)
     source = MatrixKVRecordLog(kv, prefix=args.source_prefix)
     target = MatrixKVBackfillTarget(kv, prefix=target_prefix, raw_backend=raw_backend)
     metrics = BackfillMetrics()
@@ -1884,6 +1893,7 @@ def run_incremental_repair(args: argparse.Namespace) -> Json:
         mode='shadow',
         target_prefix=active_prefix,
         job_id=f'{args.job_id}:active',
+        confirm_active_target='YES',
     )
     promotion = run_backfill(promote_args)
     partial = build_partial_spec(args)
@@ -1959,6 +1969,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--confirm-activate', default='')
     parser.add_argument('--confirm-rollback', default='')
     parser.add_argument('--confirm-incremental-repair', default='')
+    parser.add_argument('--confirm-active-target', default='', help='required YES for direct non-dry-run shadow writes to the current active prefix')
     parser.add_argument('--confirm-skip-validation', default='', help='required YES when activate_shadow or incremental_repair uses --skip-validation=1')
     parser.add_argument('--confirm-non-strict-validation', default='', help='required YES when activate_shadow or incremental_repair uses --validation-strict=0')
     parser.add_argument('--active-prefix-key', default='matrixark:context:active_prefix')
