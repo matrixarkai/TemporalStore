@@ -9024,58 +9024,33 @@ impl RaftClusterInner {
             && election_prohibition_observed
             && offline_timeout_observed
             && transfer_timeout_observed;
-        let peer_admin_surface_complete = peer_pipeline_states.iter().all(|peer| {
-            peer.next_index > 0
-                && peer.append_queue_limit > 0
-                && peer.inflight_bytes_limit > 0
-                && peer.apply_inflight_limit > 0
-                && peer.apply_batch_bytes_limit > 0
-                && peer.snapshot_install_progress_per_mille <= 1_000
-        });
-        let quorum_peer_progress_observed = status.commit_index > 0
-            && peer_pipeline_states
-                .iter()
-                .filter(|peer| {
-                    peer.replica_role.participates_in_quorum()
-                        && peer.match_index >= status.commit_index
-                        && peer.next_index >= peer.match_index.saturating_add(1)
-                })
-                .count()
-                >= status.majority;
-        let peer_pipeline_runtime_activity_observed = peer_pipeline_states.iter().any(|peer| {
-            peer.append_requests > 0
-                || peer.append_accepted > 0
-                || peer.append_rejected > 0
-                || peer.match_index > 0
-                || peer.next_index > 1
-                || peer.append_queue_max_depth > 0
-                || peer.apply_queue_max_depth > 0
-                || peer.inflight_entries > 0
-                || peer.inflight_bytes > 0
-                || peer.snapshot_installed_index > 0
-                || peer.snapshot_send_attempts > 0
-                || peer.snapshot_install_progress_per_mille > 0
-                || peer.transfer_leader_accepted > 0
-                || peer.pre_vote_rejections > 0
-                || peer.election_rejections > 0
-        });
-        let peer_pipeline_limits_observed =
-            !peer_pipeline_states.is_empty() && peer_admin_surface_complete;
-        let admin_status_surface_complete = !peer_pipeline_states.is_empty()
-            && peer_admin_surface_complete
-            && quorum_peer_progress_observed
-            && peer_pipeline_runtime_activity_observed
-            && wal_segment_lifecycle_present
-            && wal_last_log_index >= status.commit_index
-            && peer_pipeline_states.iter().all(|peer| peer.next_index > 0)
-            && status.majority > 0
-            && status.commit_index
-                >= status
+        let quorum_peer_ids = peer_pipeline_states
+            .iter()
+            .filter(|peer| peer.replica_role.participates_in_quorum())
+            .map(|peer| peer.peer_id)
+            .collect::<Vec<_>>();
+        let admin_status_surface_evidence =
+            rustraft_admin_status_surface_evidence(&RustRaftAdminStatusSurfaceInput {
+                commit_index: status.commit_index,
+                max_observed_node_commit_index: status
                     .nodes
                     .iter()
                     .map(|node| node.commit_index)
                     .max()
-                    .unwrap_or_default();
+                    .unwrap_or_default(),
+                quorum_size: status.majority as u64,
+                quorum_peer_ids,
+                peer_pipeline: rustraft_peer_pipeline_states.clone(),
+                wal_last_log_index,
+                wal_segment_lifecycle_present,
+            });
+        let quorum_peer_progress_observed =
+            admin_status_surface_evidence.quorum_peer_progress_observed;
+        let peer_pipeline_runtime_activity_observed =
+            admin_status_surface_evidence.peer_pipeline_runtime_activity_observed;
+        let peer_pipeline_limits_observed =
+            admin_status_surface_evidence.peer_pipeline_limits_observed;
+        let admin_status_surface_complete = admin_status_surface_evidence.complete;
         let per_peer_pipeline_state_present =
             rustraft_pipeline_evidence.per_peer_pipeline_state_present;
         let capability_matrix = vec![
