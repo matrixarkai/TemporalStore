@@ -1516,7 +1516,7 @@ def run_export_dead_letters(args: argparse.Namespace) -> Json:
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(''.join(json.dumps(row, sort_keys=True) + '\n' for row in rows), encoding='utf-8')
-    return {
+    summary = {
         'status': 'ok',
         'mode': 'export_dead_letters',
         'job_id': args.job_id,
@@ -1532,6 +1532,40 @@ def run_export_dead_letters(args: argparse.Namespace) -> Json:
         'dead_letter_output': output_path,
         'dead_letters': rows,
     }
+    if args.prometheus_output:
+        Path(args.prometheus_output).write_text(dead_letter_export_to_prometheus(summary), encoding='utf-8')
+    return summary
+
+
+def dead_letter_export_to_prometheus(summary: Json) -> str:
+    base = {
+        'job_id': str(summary.get('job_id') or ''),
+        'raw_backend': str(summary.get('raw_backend') or ''),
+        'target_prefix': str(summary.get('target_prefix') or ''),
+        'mode': 'export_dead_letters',
+    }
+    fingerprint = str(summary.get('dead_letter_fingerprint') or '')
+    lines = [
+        '# HELP matrixark_context_backfill_dead_letter_export_status Dead-letter export status.',
+        '# TYPE matrixark_context_backfill_dead_letter_export_status gauge',
+        f'matrixark_context_backfill_dead_letter_export_status{{{_prom_labels(**base, status=str(summary.get("status") or "unknown"))}}} 1',
+        '# HELP matrixark_context_backfill_dead_letter_export_records Dead-letter export record counts.',
+        '# TYPE matrixark_context_backfill_dead_letter_export_records gauge',
+        f'matrixark_context_backfill_dead_letter_export_records{{{_prom_labels(**base, kind="total")}}} {int(summary.get("dead_letter_total", 0) or 0)}',
+        f'matrixark_context_backfill_dead_letter_export_records{{{_prom_labels(**base, kind="exported")}}} {int(summary.get("exported_count", 0) or 0)}',
+        '# HELP matrixark_context_backfill_dead_letter_export_page Dead-letter export pagination state.',
+        '# TYPE matrixark_context_backfill_dead_letter_export_page gauge',
+        f'matrixark_context_backfill_dead_letter_export_page{{{_prom_labels(**base, field="start")}}} {int(summary.get("dead_letter_start", 0) or 0)}',
+        f'matrixark_context_backfill_dead_letter_export_page{{{_prom_labels(**base, field="limit")}}} {int(summary.get("dead_letter_limit", 0) or 0)}',
+        f'matrixark_context_backfill_dead_letter_export_page{{{_prom_labels(**base, field="has_more")}}} {1 if summary.get("has_more") else 0}',
+        '# HELP matrixark_context_backfill_dead_letter_export_fingerprint_info Stable fingerprint of exported dead-letter rows.',
+        '# TYPE matrixark_context_backfill_dead_letter_export_fingerprint_info gauge',
+        f'matrixark_context_backfill_dead_letter_export_fingerprint_info{{{_prom_labels(**base, fingerprint=fingerprint)}}} 1',
+    ]
+    next_start = summary.get('next_start')
+    if next_start is not None:
+        lines.append(f'matrixark_context_backfill_dead_letter_export_page{{{_prom_labels(**base, field="next_start")}}} {int(next_start)}')
+    return '\n'.join(lines) + '\n'
 
 
 def build_plan_windows(args: argparse.Namespace, *, source_range: Json, target_prefix: str) -> Json:
@@ -2660,6 +2694,21 @@ def run_plan(args: argparse.Namespace) -> Json:
     expected_active_prefix = str(getattr(args, 'expect_active_prefix', '') or '')
     target_count = target.count()
     dead_letter_count = target.count_dead_letters()
+    dead_letter_export_command_args: list[str] = []
+    if dead_letter_count > 0:
+        dead_letter_export_command_args = [
+            '--mode=export_dead_letters',
+            _plan_arg('metaserver', args.metaserver),
+            _plan_arg('namespace', args.namespace),
+            _plan_arg('table', args.table),
+            _plan_arg('raw-backend', raw_backend),
+            _plan_arg('target-prefix', target_prefix),
+            _plan_arg('job-id', args.job_id),
+            '--dead-letter-start=0',
+            _plan_arg('dead-letter-limit', max(1, int(getattr(args, 'dead_letter_limit', 100) or 100))),
+        ]
+        _append_plan_arg(dead_letter_export_command_args, 'library-path', getattr(args, 'library_path', ''))
+        _append_plan_arg(dead_letter_export_command_args, 'local-kv', getattr(args, 'local_kv', ''))
     planned_source_records = estimate_source_window_records(source_range)
     chunk_plan = build_plan_windows(args, source_range=source_range, target_prefix=target_prefix)
     active_target = bool(current_active_prefix and current_active_prefix == target_prefix)
@@ -2733,6 +2782,8 @@ def run_plan(args: argparse.Namespace) -> Json:
             'dead_letter_count': dead_letter_count,
             'is_current_active_prefix': active_target,
             'raw_backend': raw_backend,
+            'dead_letter_export_command_args': dead_letter_export_command_args,
+            'dead_letter_export_recommended': dead_letter_count > 0,
         },
         'execution_modes': {
             'batch_shadow': {
