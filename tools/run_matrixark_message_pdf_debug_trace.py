@@ -25,8 +25,6 @@ if str(REPO_ROOT) not in sys.path:
 from tools.matrixark_mcp_server import (  # noqa: E402
     MatrixArkLocalAdapter,
     MatrixArkMcpServer,
-    embedding_execution_mode_name,
-    embedding_model_name,
 )
 from tools import matrixark_mcp_core as mcp_core  # noqa: E402
 
@@ -169,6 +167,233 @@ def compact(value: Any, limit: int = 180) -> str:
     return text
 
 
+def short_source(value: Any) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    marker = "/fixtures/"
+    if marker in text:
+        text = text.split(marker, 1)[1]
+    else:
+        text = text.replace(str(REPO_ROOT), "<repo>")
+    return text
+
+
+def short_node_path(value: Any) -> str:
+    if not isinstance(value, list):
+        return str(value or "")
+    if len(value) <= 2:
+        return "/".join(str(part) for part in value)
+    return "/".join(str(part) for part in value[-2:])
+
+
+def first_present(record: Json, *fields: str) -> Any:
+    for field in fields:
+        value: Any = record
+        for part in field.split("."):
+            value = value.get(part, "") if isinstance(value, dict) else ""
+        if value not in ("", None, [], {}):
+            return value
+    return ""
+
+
+def compact_resources(resources: list[Json]) -> list[Json]:
+    rows = []
+    for index, resource in enumerate(resources, start=1):
+        rows.append(
+            {
+                "rid": f"r{index}",
+                "type": resource.get("resource_type", ""),
+                "title": resource.get("title", ""),
+                "source": short_source(resource.get("raw_uri")),
+                "lines": resource.get("line_count", 0),
+            }
+        )
+    return rows
+
+
+def compact_resource_chunk(record: Json) -> Json:
+    metadata = record.get("metadata", {}) if isinstance(record.get("metadata"), dict) else {}
+    return {
+        "chunk": record.get("chunk_hash"),
+        "resource": record.get("resource_hash"),
+        "source": short_source(record.get("source_ref") or metadata.get("citation") or record.get("source_locator")),
+        "kind": metadata.get("unit_kind") or record.get("unit_kind") or record.get("resource_type"),
+        "tokens": record.get("token_estimate", 0),
+        "text": record.get("text", ""),
+    }
+
+
+def compact_context_event(record: Json) -> Json:
+    event_type = first_present(record, "event_type", "internal_extraction.event_type")
+    entity_type = first_present(record, "entity_type", "internal_extraction.entity_type")
+    classification = record.get("classification")
+    row: Json = {
+        "event": record.get("event_id_hash"),
+        "node": record.get("node_hash") or short_node_path(record.get("node_path")),
+        "type": event_type,
+        "entity": entity_type,
+        "source": short_source(first_present(record, "source_ref", "source_locator")),
+        "text": first_present(record, "summary_text", "text"),
+    }
+    if classification not in ("", None, "NEW_EVENT"):
+        row["class"] = classification
+    return {key: value for key, value in row.items() if value not in ("", None, [], {})}
+
+
+def compact_context_entity(record: Json) -> Json:
+    return {
+        "entity": record.get("entity_hash"),
+        "node": record.get("node_hash") or short_node_path(record.get("node_path")),
+        "type": record.get("entity_type", ""),
+        "name": record.get("entity_name", ""),
+        "op": record.get("operator", ""),
+        "state": record.get("state", ""),
+        "source": short_source(first_present(record, "source_ref", "source_locator")),
+    }
+
+
+def compact_context_summary(record: Json) -> Json:
+    return {
+        "type": record.get("summary_type", ""),
+        "summary": record.get("summary_hash"),
+        "node": record.get("node_hash") or short_node_path(record.get("node_path")),
+        "text": record.get("summary_text", ""),
+        "sources": len(record.get("source_chunk_hashes") or record.get("source_event_ids") or []),
+    }
+
+
+def compact_context_embedding(record: Json) -> Json:
+    preview = vector_preview(record)
+    return {
+        "type": record.get("embedding_type", ""),
+        "ref": f"{record.get('ref_type', '')}:{record.get('ref_hash', '')}",
+        **preview,
+    }
+
+
+def compact_import_task(record: Json) -> Json:
+    return {
+        "status": record.get("status", ""),
+        "type": record.get("resource_type", ""),
+        "source": short_source(record.get("raw_uri") or record.get("requested_raw_uri")),
+        "chunks": record.get("chunk_count", ""),
+        "facts": record.get("resource_fact_count", ""),
+        "entities": record.get("resource_entity_count", ""),
+    }
+
+
+def compact_summary_policy(record: Json) -> Json:
+    policy = record.get("summary_generation_policy", {}) if isinstance(record.get("summary_generation_policy"), dict) else {}
+    return {
+        "node": record.get("node_hash") or short_node_path(record.get("node_path")),
+        "types": record.get("generated_summary_types", []),
+        "l1": policy.get("generate_l1", ""),
+        "reason": policy.get("reason", ""),
+        "tokens": policy.get("token_estimate", ""),
+        "events": record.get("source_event_count", 0),
+        "child_summaries": record.get("source_summary_count", 0),
+    }
+
+
+def compact_context_indexes(records: list[Json]) -> list[Json]:
+    postings: dict[tuple[str, str, Any, Any], set[Any]] = {}
+    for record in records:
+        key = (
+            str(record.get("data_model") or record.get("ref_type") or ""),
+            str(record.get("index_name") or ""),
+            record.get("timestamp_key_ms") or record.get("updated_at_ms") or "",
+            record.get("node_hash") or "",
+        )
+        refs = postings.setdefault(key, set())
+        for ref in record.get("ref_hashes") or []:
+            refs.add(ref)
+        ref_hash = record.get("ref_hash") or record.get("event_id_hash") or record.get("chunk_hash")
+        if ref_hash not in ("", None):
+            refs.add(ref_hash)
+    rows = []
+    for (model, index_name, timestamp_key, node_hash), refs in sorted(postings.items(), key=lambda item: (item[0][0], item[0][1], str(item[0][2]))):
+        rows.append(
+            {
+                "model": model,
+                "index": index_name,
+                "time": timestamp_key,
+                "node": node_hash,
+                "refs": len(refs),
+                "sample": list(sorted(refs, key=str))[:3],
+            }
+        )
+    return rows
+
+
+def compact_replay(result: Json) -> Json:
+    if not result:
+        return {}
+    return {
+        key: result.get(key)
+        for key in ("status", "context_pack_id", "event_count", "replay_event_count", "warning")
+        if result.get(key) not in ("", None, [], {})
+    }
+
+
+def compact_tool_result(result: Json) -> Json:
+    if not isinstance(result, dict):
+        return {}
+    return {
+        key: result.get(key)
+        for key in (
+            "status",
+            "context_pack_id",
+            "pack_id",
+            "record_count",
+            "messages_ingested",
+            "chunk_count",
+            "resource_fact_count",
+            "resource_entity_count",
+            "committed",
+            "dirty_nodes_refreshed",
+            "summaries_refreshed",
+            "selected_refs",
+            "used_context_tokens",
+        )
+        if result.get(key) not in ("", None, [], {})
+    }
+
+
+def compact_trace(trace: Json) -> Json:
+    compacted = {
+        "scope": {
+            key: trace.get("scope", {}).get(key)
+            for key in ("account_id", "tenant_id", "user_id", "session_id", "agent_name")
+            if trace.get("scope", {}).get(key)
+        },
+        "query": trace.get("query", ""),
+        "embedding_model": trace.get("embedding_model", ""),
+        "embedding_execution_mode": trace.get("embedding_execution_mode", ""),
+        "summary_refresh_policy": trace.get("summary_refresh_policy", {}),
+        "resources": compact_resources(trace.get("resources", [])),
+        "calls": [],
+    }
+    for call in trace.get("calls", []):
+        if not isinstance(call, dict):
+            continue
+        compacted["calls"].append(
+            {
+                key: value
+                for key, value in {
+                    "tool": call.get("tool"),
+                    "kind": call.get("kind"),
+                    "message_index": call.get("message_index"),
+                    "resource_type": call.get("resource_type"),
+                    "resource": short_source(call.get("raw_uri")),
+                    "result": compact_tool_result(call.get("result", {})),
+                }.items()
+                if value not in ("", None, [], {})
+            }
+        )
+    return compacted
+
+
 def vector_preview(record: Json) -> Json:
     vector = record.get("vector")
     if not isinstance(vector, list):
@@ -225,7 +450,14 @@ def node_tree(records: list[Json]) -> list[Json]:
 
 def render_node_html(node: Json) -> str:
     label = "/".join(str(part) for part in node.get("path", [])) or str(node.get("name") or node.get("node_hash"))
-    record = html.escape(json.dumps(node.get("record", {}), indent=2, sort_keys=True))
+    record_obj = node.get("record", {}) if isinstance(node.get("record"), dict) else {}
+    compact_record = {
+        "node": record_obj.get("node_hash"),
+        "parent": record_obj.get("parent_hash"),
+        "name": record_obj.get("node_name"),
+        "children": len(node.get("children", [])),
+    }
+    record = html.escape(json.dumps(compact_record, indent=2, sort_keys=True))
     children = "\n".join(render_node_html(child) for child in sorted(node.get("children", []), key=lambda item: item["name"]))
     return (
         "<details open class=\"node\">"
@@ -283,16 +515,16 @@ PIPELINE_MERMAID = """flowchart TD
 
 
 DATA_MODEL_ROWS = [
-    {"model": "ContextNode", "purpose": "Filesystem-like topology. Messages/resources attach to a leaf node, parents are used for traversal.", "important_fields": "node_hash, parent_hash, node_name, node_path, depth, scope_key"},
-    {"model": "ContextEvent", "purpose": "Replayable extracted fact or raw conversational event.", "important_fields": "event_id_hash, node_hash, source_chunk_hash, resource_hash, source_locator, summary_text, event_type, entity_type, timestamp"},
-    {"model": "ContextSegment", "purpose": "Batch/session topic segment when a logical window is committed.", "important_fields": "segment_hash, node_hash, source_event_ids, summary_text, topic, time_range"},
-    {"model": "ContextEntity", "purpose": "Evolving state for current preference/status/owner/budget/deadline.", "important_fields": "entity_hash, entity_type, entity_name, state, source_chunk_hash, resource_hash, source_locator, valid_from, stale_blockers"},
-    {"model": "ResourceManifest", "purpose": "Logical imported file/resource version. Raw bytes stay outside TemporalStore.", "important_fields": "resource_hash, raw_uri, resource_type, resource_version, content_hash, scope_key"},
-    {"model": "ResourceChunk", "purpose": "Cited serving chunk from PDF/MD/etc. Full raw_uri lives on ResourceManifest; chunks carry resource_hash plus source_locator.", "important_fields": "chunk_hash, resource_hash, source_locator, text, token_estimate, unit_kind, page_number, heading_slug"},
-    {"model": "ContextSummary", "purpose": "L0/L1 node/resource summary used for preview and tree traversal.", "important_fields": "summary_hash, summary_type, node_hash, summary_text, source_event_ids, source_chunk_hashes"},
-    {"model": "ContextEmbedding", "purpose": "Vector stored separately for summaries, chunks, events, entities, and resources.", "important_fields": "embedding_type, ref_type, ref_hash, model, dim, vector"},
-    {"model": "ContextIndex", "purpose": "Bounded secondary filters before similarity scoring.", "important_fields": "data_model, index_name, timestamp_key_ms, ref_hashes, node_hash"},
-    {"model": "ContextPackAudit", "purpose": "Explains selected/dropped refs, scores, token costs, warnings, and replay path.", "important_fields": "context_pack_id, selected_refs, dropped_refs, used_context_tokens, quality_warnings"},
+    {"model": "ContextNode", "purpose": "Filesystem-like topology. Messages/resources attach to a leaf node, parents are used for traversal.", "important_fields": "node, parent, name, compact path"},
+    {"model": "ContextEvent", "purpose": "Replayable extracted fact or raw conversational event.", "important_fields": "event, node, type, entity, source, text"},
+    {"model": "ContextSegment", "purpose": "Batch/session topic segment when a logical window is committed.", "important_fields": "segment, node, source events, summary, time range"},
+    {"model": "ContextEntity", "purpose": "Evolving state for current preference/status/owner/budget/deadline.", "important_fields": "entity, node, type, name, operator, state, source"},
+    {"model": "ResourceManifest", "purpose": "Logical imported file/resource version. Raw bytes stay outside TemporalStore.", "important_fields": "resource, type, version, content digest, compact scope"},
+    {"model": "ResourceChunk", "purpose": "Cited serving chunk from PDF/MD/etc. The manifest owns full raw paths; chunks show compact source labels.", "important_fields": "chunk, resource, source, kind, tokens, text"},
+    {"model": "ContextSummary", "purpose": "L0/L1 node/resource summary used for preview and tree traversal.", "important_fields": "summary, type, node, source count, text"},
+    {"model": "ContextEmbedding", "purpose": "Vector stored separately for summaries, chunks, events, entities, and resources.", "important_fields": "type, ref, dim, preview"},
+    {"model": "ContextIndex", "purpose": "Bounded secondary filters before similarity scoring.", "important_fields": "model, index, time, node, ref count, sample"},
+    {"model": "ContextPackAudit", "purpose": "Optional observability record. Default report shows compact pack, not full audit payloads.", "important_fields": "pack id, grouped refs, token summary, warnings"},
 ]
 
 def markdown_table(records: list[Json], fields: list[str], limit: int = 24) -> str:
@@ -337,35 +569,39 @@ def write_outputs(
         for model, count in sorted(model_counts.items(), key=lambda item: (-item[1], item[0]))
     ]
     embeddings = [
-        {
-            "embedding_type": record.get("embedding_type"),
-            "ref_type": record.get("ref_type"),
-            "ref_hash": record.get("ref_hash"),
-            "node_path": record.get("node_path"),
-            **vector_preview(record),
-        }
+        compact_context_embedding(record)
         for record in current_embedding_records
     ]
-    summary_policy_rows = [
-        {
-            "node_path": record.get("node_path", []),
-            "generated_summary_types": record.get("generated_summary_types", []),
-            "l1_policy": record.get("summary_generation_policy", {}),
-            "source_event_count": record.get("source_event_count", 0),
-            "source_summary_count": record.get("source_summary_count", 0),
-        }
-        for record in by_type["context_summary_refresh_audit"]
-    ]
+    summary_policy_rows = [compact_summary_policy(record) for record in by_type["context_summary_refresh_audit"]]
+    compact_records_by_type: dict[str, list[Json]] = {
+        "context_node": [
+            {
+                "node": record.get("node_hash"),
+                "parent": record.get("parent_hash"),
+                "name": record.get("node_name") or record.get("name"),
+                "path": short_node_path(record.get("node_path")),
+            }
+            for record in by_type["context_node"]
+        ],
+        "context_event": [compact_context_event(record) for record in by_type["context_event"]],
+        "context_entity": [compact_context_entity(record) for record in by_type["context_entity"]],
+        "context_summary": [compact_context_summary(record) for record in latest_by_key(by_type["context_summary"], ["summary_type", "summary_hash", "node_hash"])],
+        "context_embedding": embeddings,
+        "context_index_postings": compact_context_indexes(by_type["context_index"]),
+        "resource_import_task": [compact_import_task(record) for record in by_type["resource_import_task"]],
+        "resource_chunk": [compact_resource_chunk(record) for record in by_type["resource_chunk"]],
+    }
+    compact_pack = mcp_core.compact_context_pack_for_serving(retrieve_result)
 
     exported = {
-        "trace": trace,
+        "trace": compact_trace(trace),
         "record_counts": dict(counts),
-        "retrieve_result": retrieve_result,
-        "replay_result": replay_result,
-        "records_by_type": by_type,
+        "context_pack": compact_pack,
+        "replay": compact_replay(replay_result),
+        "records_by_type": compact_records_by_type,
+        "raw_event_log": str(event_log),
         "embeddings": embeddings,
         "summary_generation_policy": summary_policy_rows,
-        "event_log": str(event_log),
     }
     json_path.write_text(json.dumps(exported, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -429,41 +665,41 @@ def write_outputs(
         "",
         "## Resources",
         "",
-        markdown_table(trace["resources"], ["raw_uri", "title", "line_count"], limit=20),
+        markdown_table(compact_resources(trace["resources"]), ["rid", "type", "title", "source", "lines"], limit=20),
         "",
         "## Resource Import Tasks",
         "",
-        markdown_table(by_type["resource_import_task"], ["status", "raw_uri", "resource_type", "chunk_count", "resource_fact_count", "resource_entity_count", "metrics"], limit=50),
+        markdown_table(compact_records_by_type["resource_import_task"], ["status", "type", "source", "chunks", "facts", "entities"], limit=50),
         "",
         "## Resource Chunks",
         "",
-        markdown_table(by_type["resource_chunk"], ["chunk_hash", "resource_hash", "source_locator", "token_estimate", "metadata.unit_kind", "metadata.content_hash", "text"], limit=80),
+        markdown_table(compact_records_by_type["resource_chunk"], ["chunk", "resource", "source", "kind", "tokens", "text"], limit=80),
         "",
         "## Extracted Events",
         "",
-        markdown_table(by_type["context_event"], ["event_id_hash", "node_path", "internal_extraction.event_type", "internal_extraction.entity_type", "summary_text", "source_chunk_hash", "resource_hash", "source_locator"], limit=80),
+        markdown_table(compact_records_by_type["context_event"], ["event", "node", "type", "entity", "source", "text"], limit=80),
         "",
         "## Extracted Entities",
         "",
-        markdown_table(by_type["context_entity"], ["entity_hash", "node_path", "entity_type", "entity_name", "operator", "state", "source_chunk_hash", "resource_hash", "source_locator"], limit=80),
+        markdown_table(compact_records_by_type["context_entity"], ["entity", "node", "type", "name", "op", "state", "source"], limit=80),
         "",
         "## Summaries",
         "",
-        markdown_table(by_type["context_summary"], ["summary_type", "summary_hash", "node_path", "summary_generation_policy.reason", "summary_text", "source_chunk_hashes"], limit=80),
+        markdown_table(compact_records_by_type["context_summary"], ["type", "summary", "node", "sources", "text"], limit=80),
         "",
         "## Node L0/L1 Generation Policy",
         "",
-        markdown_table(summary_policy_rows, ["node_path", "generated_summary_types", "l1_policy.generate_l1", "l1_policy.reason", "l1_policy.token_estimate", "source_event_count", "source_summary_count"], limit=80),
+        markdown_table(summary_policy_rows, ["node", "types", "l1", "reason", "tokens", "events", "child_summaries"], limit=80),
         "",
         "## Embeddings",
         "",
         markdown_table(embedding_models, ["model", "embedding_count"], limit=20),
         "",
-        markdown_table(embeddings, ["embedding_type", "ref_type", "ref_hash", "dim", "preview"], limit=120),
+        markdown_table(embeddings, ["type", "ref", "dim", "preview"], limit=120),
         "",
-        "## Secondary Indexes",
+        "## Secondary Index Postings",
         "",
-        markdown_table(by_type["context_index"], ["data_model", "index_name", "timestamp_key_ms", "ref_hashes", "node_hash"], limit=120),
+        markdown_table(compact_records_by_type["context_index_postings"], ["model", "index", "time", "node", "refs", "sample"], limit=120),
         "",
         "## Retrieval Scan",
         "",
@@ -477,9 +713,7 @@ def write_outputs(
                 "query": QUERY,
                 "context_pack_id": retrieve_result.get("context_pack_id"),
                 "used_context_tokens": retrieve_result.get("used_context_tokens"),
-                "recall_policy": retrieve_result.get("recall_policy"),
-                "selected_refs": retrieve_result.get("selected_refs"),
-                "dropped_refs": retrieve_result.get("dropped_refs"),
+                "context_pack": compact_pack,
                 "quality_warnings": retrieve_result.get("quality_warnings"),
             },
             indent=2,
@@ -490,13 +724,13 @@ def write_outputs(
         "## ContextPack",
         "",
         "```json",
-        json.dumps(retrieve_result, indent=2, sort_keys=True)[:20000],
+        json.dumps(compact_pack, indent=2, sort_keys=True)[:20000],
         "```",
         "",
         "## Replay",
         "",
         "```json",
-        json.dumps(replay_result, indent=2, sort_keys=True)[:12000],
+        json.dumps(compact_replay(replay_result), indent=2, sort_keys=True)[:12000],
         "```",
     ]
     md_path.write_text("\n".join(md) + "\n", encoding="utf-8")
@@ -553,19 +787,19 @@ def write_outputs(
     <section class="section"><h2>Data Model Field Guide</h2>{model_table_html}</section>
     <section class="section"><h2>ContextNode Graph</h2>{graph_html}</section>
     <section class="section"><h2>Messages</h2>{records_table([{'role': m['role'], 'content': m['content']} for m in MESSAGES], ['role', 'content'])}</section>
-    <section class="section"><h2>Resources</h2>{records_table(trace['resources'], ['raw_uri', 'title', 'line_count'])}</section>
-    <section class="section"><h2>Resource Import Tasks</h2>{records_table(by_type['resource_import_task'], ['status', 'raw_uri', 'resource_type', 'chunk_count', 'resource_fact_count', 'resource_entity_count', 'metrics'])}</section>
-    <section class="section"><h2>Resource Chunks</h2>{records_table(by_type['resource_chunk'], ['chunk_hash', 'resource_hash', 'source_locator', 'token_estimate', 'metadata.unit_kind', 'metadata.content_hash', 'text'])}</section>
-    <section class="section"><h2>Extracted Events</h2>{records_table(by_type['context_event'], ['event_id_hash', 'node_path', 'internal_extraction.event_type', 'internal_extraction.entity_type', 'summary_text', 'source_chunk_hash', 'resource_hash', 'source_locator'])}</section>
-    <section class="section"><h2>Extracted Entities</h2>{records_table(by_type['context_entity'], ['entity_hash', 'node_path', 'entity_type', 'entity_name', 'operator', 'state', 'source_chunk_hash', 'resource_hash', 'source_locator'])}</section>
-    <section class="section"><h2>Summaries</h2>{records_table(by_type['context_summary'], ['summary_type', 'summary_hash', 'node_path', 'summary_generation_policy.reason', 'summary_text', 'source_chunk_hashes'])}</section>
-    <section class="section"><h2>Node L0/L1 Generation Policy</h2>{records_table(summary_policy_rows, ['node_path', 'generated_summary_types', 'l1_policy.generate_l1', 'l1_policy.reason', 'l1_policy.token_estimate', 'source_event_count', 'source_summary_count'])}</section>
+    <section class="section"><h2>Resources</h2>{records_table(compact_resources(trace['resources']), ['rid', 'type', 'title', 'source', 'lines'])}</section>
+    <section class="section"><h2>Resource Import Tasks</h2>{records_table(compact_records_by_type['resource_import_task'], ['status', 'type', 'source', 'chunks', 'facts', 'entities'])}</section>
+    <section class="section"><h2>Resource Chunks</h2>{records_table(compact_records_by_type['resource_chunk'], ['chunk', 'resource', 'source', 'kind', 'tokens', 'text'])}</section>
+    <section class="section"><h2>Extracted Events</h2>{records_table(compact_records_by_type['context_event'], ['event', 'node', 'type', 'entity', 'source', 'text'])}</section>
+    <section class="section"><h2>Extracted Entities</h2>{records_table(compact_records_by_type['context_entity'], ['entity', 'node', 'type', 'name', 'op', 'state', 'source'])}</section>
+    <section class="section"><h2>Summaries</h2>{records_table(compact_records_by_type['context_summary'], ['type', 'summary', 'node', 'sources', 'text'])}</section>
+    <section class="section"><h2>Node L0/L1 Generation Policy</h2>{records_table(summary_policy_rows, ['node', 'types', 'l1', 'reason', 'tokens', 'events', 'child_summaries'])}</section>
     <section class="section"><h2>Embedding Models</h2>{records_table(embedding_models, ['model', 'embedding_count'])}</section>
-    <section class="section"><h2>Embeddings</h2><p class="muted">Latest serving embedding per embedding_type/ref_type/ref_hash. Historical refresh rows stay in audit/debug logs.</p>{records_table(embeddings, ['embedding_type', 'ref_type', 'ref_hash', 'dim', 'preview'])}</section>
-    <section class="section"><h2>Secondary Indexes</h2>{records_table(by_type['context_index'], ['data_model', 'index_name', 'timestamp_key_ms', 'ref_hashes', 'node_hash'])}</section>
-    <section class="section"><h2>Retrieval Scan And ContextPack</h2><p class="muted">Query understanding runs first, then scope and secondary-index filters, then ContextNode L0/L1 summary embeddings choose the folders. MatrixArk fetches leaf segments, events, entities, resource chunks, and skill sections from selected nodes before final packing.</p><pre>{html.escape(json.dumps(retrieve_result, indent=2, sort_keys=True)[:60000])}</pre></section>
-    <section class="section"><h2>Replay</h2><pre>{html.escape(json.dumps(replay_result, indent=2, sort_keys=True)[:30000])}</pre></section>
-    <section class="section"><h2>Raw Trace JSON</h2><p><a href="./matrixark_message_resource_debug_trace.json">Open JSON artifact</a></p></section>
+    <section class="section"><h2>Embeddings</h2><p class="muted">Latest serving embedding per ref. Full vectors stay out of the page.</p>{records_table(embeddings, ['type', 'ref', 'dim', 'preview'])}</section>
+    <section class="section"><h2>Secondary Index Postings</h2><p class="muted">Grouped postings view. The raw event log can still be opened when forensic detail is needed.</p>{records_table(compact_records_by_type['context_index_postings'], ['model', 'index', 'time', 'node', 'refs', 'sample'])}</section>
+    <section class="section"><h2>Retrieval Scan And ContextPack</h2><p class="muted">Serving view only: grouped refs, citations, token summary, and warnings. Planner/audit fields stay out of the token-facing report.</p><pre>{html.escape(json.dumps(compact_pack, indent=2, sort_keys=True)[:20000])}</pre></section>
+    <section class="section"><h2>Replay</h2><pre>{html.escape(json.dumps(compact_replay(replay_result), indent=2, sort_keys=True)[:12000])}</pre></section>
+    <section class="section"><h2>Compact JSON</h2><p><a href="./matrixark_message_resource_debug_trace.json">Open compact JSON artifact</a>. Raw append/event logs are intentionally kept out of this compact report by default.</p></section>
   </main>
 </body>
 </html>
@@ -575,9 +809,6 @@ def write_outputs(
 
 
 def main() -> int:
-    mcp_core.ENABLE_CONTEXT_DEBUG_RECORDS = True
-    mcp_core.ENABLE_CONTEXT_REPLAY = True
-    mcp_core.ENABLE_SUMMARY_REFRESH_AUDIT = True
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--output-dir",
@@ -585,7 +816,17 @@ def main() -> int:
         help="Directory for generated fixtures, event log, JSON, Markdown, and HTML.",
     )
     parser.add_argument("--max-context-tokens", type=int, default=1400)
+    parser.add_argument("--pdf-count", type=int, default=len(PDF_FIXTURES), help="Number of mocked PDF fixtures to ingest.")
+    parser.add_argument("--include-md-resources", action="store_true", help="Also ingest the Markdown fixtures.")
+    parser.add_argument(
+        "--include-debug-audit",
+        action="store_true",
+        help="Enable heavyweight context debug, replay, and summary-refresh audit records.",
+    )
     args = parser.parse_args()
+    mcp_core.ENABLE_CONTEXT_DEBUG_RECORDS = bool(args.include_debug_audit)
+    mcp_core.ENABLE_CONTEXT_REPLAY = bool(args.include_debug_audit)
+    mcp_core.ENABLE_SUMMARY_REFRESH_AUDIT = bool(args.include_debug_audit)
 
     output_dir = Path(args.output_dir).resolve()
     fixture_dir = output_dir / "fixtures"
@@ -622,8 +863,8 @@ def main() -> int:
         "message_node_path": message_node_path,
         "resource_node_path": resource_node_path,
         "query": QUERY,
-        "embedding_model": embedding_model_name(),
-        "embedding_execution_mode": embedding_execution_mode_name(),
+        "embedding_model": mcp_core.embedding_model_name(),
+        "embedding_execution_mode": mcp_core.embedding_execution_mode_name(),
         "summary_refresh_policy": {
             "background_interval_ms": int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_INTERVAL_MS", "1000")),
             "background_limit": int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_LIMIT", "64")),
@@ -667,7 +908,7 @@ def main() -> int:
     )
     trace["calls"].append({"tool": "matrixark_session_commit", "result": commit_result})
 
-    for fixture in PDF_FIXTURES:
+    for fixture in PDF_FIXTURES[: max(0, args.pdf_count)]:
         pdf_path = fixture_dir / fixture["filename"]
         write_pdf(pdf_path, str(fixture["title"]), list(fixture["lines"]))
         trace["resources"].append(
@@ -697,7 +938,7 @@ def main() -> int:
         )
         trace["calls"].append({"tool": "matrixark_ingest", "kind": "resource", "resource_type": "pdf", "raw_uri": str(pdf_path), "result": result})
 
-    for fixture in MD_FIXTURES:
+    for fixture in (MD_FIXTURES if args.include_md_resources else []):
         md_path = fixture_dir / fixture["filename"]
         md_path.write_text("\n".join(fixture["lines"]) + "\n", encoding="utf-8")
         trace["resources"].append(
@@ -741,7 +982,7 @@ def main() -> int:
             "query": QUERY,
             "scope": scope,
             "max_context_tokens": args.max_context_tokens,
-            "audit_mode": "full",
+            "audit_mode": "full" if args.include_debug_audit else "off",
             "debug_context_pack": True,
             "ranking": {
                 "weights": {"time": 0.15, "business": 0.1},
@@ -750,7 +991,12 @@ def main() -> int:
             },
         },
     )
-    trace["calls"].append({"tool": "matrixark_retrieve", "result": retrieve_result})
+    trace["calls"].append(
+        {
+            "tool": "matrixark_retrieve",
+            "result": retrieve_result if args.include_debug_audit else mcp_core.compact_context_pack_for_serving(retrieve_result),
+        }
+    )
 
     replay_result = call_tool(
         server,
@@ -781,8 +1027,8 @@ def main() -> int:
                 "markdown": str(md_path),
                 "html": str(html_path),
                 "record_count": len(records),
-                "selected_refs": len(retrieve_result.get("selected_refs", [])),
-                "used_context_tokens": retrieve_result.get("used_context_tokens"),
+                "selected_refs": mcp_core.selected_ref_count_from_pack(retrieve_result),
+                "used_context_tokens": retrieve_result.get("used_context_tokens") or retrieve_result.get("tokens", {}).get("remote"),
             },
             indent=2,
             sort_keys=True,

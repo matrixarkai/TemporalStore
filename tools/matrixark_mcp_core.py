@@ -3987,7 +3987,7 @@ def compact_context_pack_for_serving(pack: Json) -> Json:
     """
     compact: Json = {"context_pack_id": pack.get("context_pack_id", "")}
     selected_refs = pack.get("selected_refs", [])
-    if isinstance(selected_refs, list):
+    if isinstance(selected_refs, list) and (selected_refs or not isinstance(pack.get("groups"), list)):
         default_session_continuity = default_session_continuity_for_pack(selected_refs)
         compact["groups"] = serving_ref_groups_for_pack(selected_refs, default_session_continuity=default_session_continuity)
         if pack.get("selected_ref_counts"):
@@ -3996,6 +3996,14 @@ def compact_context_pack_for_serving(pack: Json) -> Json:
         if continuity_counts:
             compact.setdefault("defaults", {})["session_continuity"] = default_session_continuity
             compact.setdefault("counts", {})["session_continuity"] = continuity_counts
+    elif isinstance(pack.get("groups"), list):
+        # Some adapters already return the serving shape. Preserve it so a
+        # second compaction pass in the MCP entrypoint does not erase refs.
+        compact["groups"] = pack.get("groups", [])
+        if isinstance(pack.get("counts"), dict):
+            compact["counts"] = pack.get("counts", {})
+        if isinstance(pack.get("defaults"), dict):
+            compact["defaults"] = pack.get("defaults", {})
     local_refs = pack.get("local_context_refs", [])
     if isinstance(local_refs, list):
         local = [
@@ -4016,6 +4024,8 @@ def compact_context_pack_for_serving(pack: Json) -> Json:
         "remote_budget": pack.get("remote_context_budget_tokens", 0),
     }
     compact["tokens"] = {key: value for key, value in tokens_summary.items() if value not in (None, "", 0)}
+    if not compact["tokens"] and isinstance(pack.get("tokens"), dict):
+        compact["tokens"] = pack.get("tokens", {})
     if pack.get("quality_warnings"):
         compact["warnings"] = pack.get("quality_warnings", [])
     if pack.get("partial_context_pack"):
