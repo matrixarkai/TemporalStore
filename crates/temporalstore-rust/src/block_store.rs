@@ -329,7 +329,19 @@ pub struct BlockStoreZoneUsage {
     #[serde(alias = "zone_id")]
     pub extent_id: u64,
     pub page_segment_id: u64,
+    #[serde(default)]
+    pub storage_zone_id: u64,
+    #[serde(default)]
+    pub stream_segment_id: u64,
     pub state: BlockStoreExtentState,
+    #[serde(default)]
+    pub used_bytes: u64,
+    #[serde(default)]
+    pub live_bytes: u64,
+    #[serde(default)]
+    pub reclaimable_bytes: u64,
+    #[serde(default)]
+    pub purged_bytes: u64,
     pub page_store_used_bytes: u64,
     pub live_page_store_used_bytes: u64,
     pub reclaimable_page_store_used_bytes: u64,
@@ -1584,7 +1596,13 @@ fn extent_zone_usage(
             BlockStoreZoneUsage {
                 extent_id: extent.extent_id,
                 page_segment_id: extent.page_segment_id,
+                storage_zone_id: extent.extent_id,
+                stream_segment_id: extent.page_segment_id,
                 state: extent.state,
+                used_bytes: extent.physical_bytes,
+                live_bytes: live,
+                reclaimable_bytes: reclaimable,
+                purged_bytes: purged,
                 page_store_used_bytes: extent.physical_bytes,
                 live_page_store_used_bytes: live,
                 reclaimable_page_store_used_bytes: reclaimable,
