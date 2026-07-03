@@ -18,7 +18,8 @@
         "rust",
         "--artifact-dir",
         "docs/benchmarks/parity_1K_event_ingestion",
-        "--require-perf-parity"
+        "--require-perf-parity",
+        "--require-phase-scale-matrix"
       ],
       "returncode": 125,
       "status": "preflight_failed",
