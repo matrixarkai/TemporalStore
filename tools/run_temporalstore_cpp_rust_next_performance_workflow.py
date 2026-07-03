@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -24,6 +25,20 @@ from audit_temporalstore_cpp_rust_performance_artifacts import (
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_WSL_DISTRO = "Ubuntu-22.04"
+
+
+CPP_LIB_ENV = "MATRIXARK_PARITY_CPP_LIB"
+RUST_CLI_ENV = "MATRIXARK_PARITY_RUST_CLI"
+
+
+CPP_LIB_CANDIDATES = [
+    ROOT / "output-ubuntu22/release/sdk/lib/libbcache2.so",
+]
+
+
+RUST_CLI_CANDIDATES = [
+    ROOT / "sdk/rust/temporalstore/target/release/matrixark_record_log",
+]
 
 
 def _wsl_path(path: Path | str) -> str:
@@ -44,6 +59,31 @@ def _wslize(argv: list[str], *, distro: str) -> list[str]:
         return argv
     inner = ["python3" if argv[0] == "python" else argv[0], *argv[1:]]
     return ["wsl", "-d", distro, "--cd", _wsl_path(ROOT), "--", *inner]
+
+
+def _first_existing(env_name: str, candidates: list[Path]) -> Path | None:
+    override = os.environ.get(env_name)
+    if override:
+        path = Path(override)
+        if path.exists():
+            return path
+    existing = [path for path in candidates if path.exists()]
+    if not existing:
+        return None
+    return max(existing, key=lambda path: path.stat().st_mtime)
+
+
+def _with_backend_artifact_overrides(argv: list[str]) -> list[str]:
+    patched = list(argv)
+    if "--cpp-lib" not in patched:
+        cpp_lib = _first_existing(CPP_LIB_ENV, CPP_LIB_CANDIDATES)
+        if cpp_lib is not None:
+            patched.extend(["--cpp-lib", _wsl_path(cpp_lib)])
+    if "--rust-cli" not in patched:
+        rust_cli = _first_existing(RUST_CLI_ENV, RUST_CLI_CANDIDATES)
+        if rust_cli is not None:
+            patched.extend(["--rust-cli", _wsl_path(rust_cli)])
+    return patched
 
 
 def build_execution_plan(audit: dict[str, Any], max_workloads: int | None = None, *, wsl_distro: str = DEFAULT_WSL_DISTRO) -> dict[str, Any]:
@@ -76,7 +116,12 @@ def build_execution_plan(audit: dict[str, Any], max_workloads: int | None = None
                 "recommended_execution_output": command.get("recommended_execution_output"),
             }
             | (
-                {"wsl_argv": _wslize(command.get("argv"), distro=wsl_distro)}
+                {
+                    "wsl_argv": _wslize(
+                        _with_backend_artifact_overrides(command.get("argv")),
+                        distro=wsl_distro,
+                    )
+                }
                 if command.get("step") == "run_workload"
                 and isinstance(command.get("argv"), list)
                 and all(isinstance(item, str) for item in command.get("argv"))
@@ -107,6 +152,7 @@ def run_plan(
     continue_on_error: bool = False,
     execution_output: Path | None = None,
     execute_in_wsl: bool = False,
+    command_timeout_sec: int | None = None,
 ) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
 
@@ -126,17 +172,26 @@ def run_plan(
         return execution
 
     def run_one(step: str, argv: list[str], *, workload: str | None = None, reason: str | None = None) -> None:
-        completed = subprocess.run(_pythonize(argv), cwd=ROOT, check=False)
+        timeout = command_timeout_sec if command_timeout_sec and command_timeout_sec > 0 else None
+        try:
+            completed = subprocess.run(_pythonize(argv), cwd=ROOT, check=False, timeout=timeout)
+            returncode = completed.returncode
+            status = "passed" if returncode == 0 else "failed"
+        except subprocess.TimeoutExpired:
+            returncode = 124
+            status = "timeout"
         row = {
             "step": step,
             "workload": workload,
             "reason": reason,
             "argv": argv,
-            "returncode": completed.returncode,
-            "status": "passed" if completed.returncode == 0 else "failed",
+            "returncode": returncode,
+            "status": status,
         }
+        if status == "timeout":
+            row["timeout_sec"] = timeout
         results.append(row)
-        if completed.returncode != 0 and not continue_on_error:
+        if returncode != 0 and not continue_on_error:
             raise SystemExit(json.dumps(finish(), indent=2))
 
     commands = plan.get("commands") if isinstance(plan.get("commands"), list) else []
@@ -175,6 +230,7 @@ def main() -> int:
     parser.add_argument("--execute-in-wsl", action="store_true", help="With --execute, run workload commands through WSL so Linux libbcache2.so can load.")
     parser.add_argument("--wsl-distro", default=DEFAULT_WSL_DISTRO, help="WSL distro used for generated workload commands.")
     parser.add_argument("--continue-on-error", action="store_true", help="With --execute, keep running later commands after a failure.")
+    parser.add_argument("--workflow-command-timeout-sec", type=int, default=900, help="With --execute, cap each generated workflow command and record timeout rows.")
     parser.add_argument("--execution-output", type=Path, help="With --execute, write the execution summary JSON here.")
     parser.add_argument(
         "--skip-post-validation",
@@ -196,6 +252,7 @@ def main() -> int:
         continue_on_error=args.continue_on_error,
         execution_output=execution_output,
         execute_in_wsl=args.execute_in_wsl,
+        command_timeout_sec=args.workflow_command_timeout_sec,
     )
     print(json.dumps(execution, indent=2) + "\n", end="")
     return 0 if execution["status"] == "passed" else 1

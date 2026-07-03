@@ -3,14 +3,24 @@
 
 from __future__ import annotations
 
+import os
 import sys
+import subprocess
 import tempfile
 import unittest
 import json
 from pathlib import Path
 from unittest.mock import patch
 
-from run_temporalstore_cpp_rust_next_performance_workflow import DEFAULT_WSL_DISTRO, _pythonize, _wslize, build_execution_plan, default_execution_output, run_plan
+from run_temporalstore_cpp_rust_next_performance_workflow import (
+    DEFAULT_WSL_DISTRO,
+    _pythonize,
+    _with_backend_artifact_overrides,
+    _wslize,
+    build_execution_plan,
+    default_execution_output,
+    run_plan,
+)
 
 
 class NextPerformanceWorkflowTest(unittest.TestCase):
@@ -96,6 +106,45 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
         self.assertIn("--cd", command)
         self.assertEqual(command[-2:], ["python3", "tools/run_matrixark_cpp_rust_scale_report.py"])
 
+    def test_backend_artifact_overrides_respect_explicit_paths(self) -> None:
+        command = _with_backend_artifact_overrides(
+            [
+                "python",
+                "tools/run_matrixark_cpp_rust_scale_report.py",
+                "--cpp-lib",
+                "/custom/libbcache2.so",
+                "--rust-cli",
+                "/custom/matrixark_record_log",
+            ]
+        )
+        self.assertEqual(command.count("--cpp-lib"), 1)
+        self.assertEqual(command.count("--rust-cli"), 1)
+        self.assertIn("/custom/libbcache2.so", command)
+        self.assertIn("/custom/matrixark_record_log", command)
+
+    def test_backend_artifact_overrides_use_environment_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cpp_lib = root / "libbcache2.so"
+            rust_cli = root / "matrixark_record_log"
+            cpp_lib.write_text("", encoding="utf-8")
+            rust_cli.write_text("", encoding="utf-8")
+            with patch.dict(
+                os.environ,
+                {
+                    "MATRIXARK_PARITY_CPP_LIB": str(cpp_lib),
+                    "MATRIXARK_PARITY_RUST_CLI": str(rust_cli),
+                },
+            ):
+                command = _with_backend_artifact_overrides(
+                    ["python", "tools/run_matrixark_cpp_rust_scale_report.py"]
+                )
+
+        self.assertIn("--cpp-lib", command)
+        self.assertIn("--rust-cli", command)
+        self.assertIn("libbcache2.so", command[command.index("--cpp-lib") + 1])
+        self.assertIn("matrixark_record_log", command[command.index("--rust-cli") + 1])
+
     def test_run_plan_can_continue_after_failure(self) -> None:
         plan = {
             "commands": [
@@ -158,6 +207,34 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
         self.assertEqual(result["status"], "passed")
         self.assertEqual(run.call_args_list[0].args[0], ["wsl", "-d", "Ubuntu-22.04", "--", "python3", "first.py"])
         self.assertEqual(run.call_args_list[1].args[0], [sys.executable, "second.py"])
+
+    def test_run_plan_records_command_timeout(self) -> None:
+        plan = {
+            "commands": [
+                {"step": "run_workload", "workload": "10K", "reason": "missing", "argv": ["python", "first.py"]},
+                {"step": "import_evidence", "workload": "10K", "reason": "missing", "argv": ["python", "second.py"]},
+            ],
+            "post_import_validation": [],
+        }
+
+        class Result:
+            returncode = 0
+
+        with patch(
+            "run_temporalstore_cpp_rust_next_performance_workflow.subprocess.run",
+            side_effect=[subprocess.TimeoutExpired(cmd=["python", "first.py"], timeout=7), Result()],
+        ):
+            result = run_plan(
+                plan,
+                include_post_validation=False,
+                continue_on_error=True,
+                command_timeout_sec=7,
+            )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["results"][0]["status"], "timeout")
+        self.assertEqual(result["results"][0]["returncode"], 124)
+        self.assertEqual(result["results"][0]["timeout_sec"], 7)
 
     def test_run_plan_fails_fast_by_default(self) -> None:
         plan = {
