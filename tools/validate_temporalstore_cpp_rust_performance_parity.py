@@ -14,6 +14,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from validate_storage_tuning_parity import EXPECTED_DEFAULTS as REQUIRED_STORAGE_TUNING
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MATRIX = ROOT / "compat" / "temporalstore_cpp_rust_performance_parity_matrix.json"
@@ -272,6 +274,18 @@ def _validate_completed_same_config(row: dict[str, Any], failures: list[str]) ->
                 f"{workload} same-config field `{key}` drift: "
                 f"expected {expected!r} got {row.get(key)!r}"
             )
+    storage_tuning = row.get("storage_tuning")
+    if not isinstance(storage_tuning, dict):
+        failures.append(f"{workload} storage_tuning must be an object")
+    else:
+        for key, expected in REQUIRED_STORAGE_TUNING.items():
+            if key not in storage_tuning:
+                failures.append(f"{workload} storage_tuning missing `{key}`")
+            elif storage_tuning.get(key) != expected:
+                failures.append(
+                    f"{workload} storage_tuning `{key}` drift: "
+                    f"expected {expected!r} got {storage_tuning.get(key)!r}"
+                )
 
 
 def main() -> int:

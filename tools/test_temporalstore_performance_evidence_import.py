@@ -6,6 +6,7 @@ from __future__ import annotations
 import unittest
 
 from import_temporalstore_cpp_rust_performance_evidence import import_report
+from validate_storage_tuning_parity import EXPECTED_DEFAULTS as STORAGE_TUNING
 
 
 def _empty_row(workload: str) -> dict:
@@ -96,7 +97,7 @@ def _report_with_bad_qps_ratio() -> dict:
         "embedding_model": "matrixark-local-token-hash-v1",
         "reader_model": "matrixark-deterministic-reader",
         "judge_model": "matrixark-deterministic-judge",
-        "effective_storage_tuning": {"TS_CONTEXT_PAGE_TARGET_BYTES": 65536},
+        "effective_storage_tuning": dict(STORAGE_TUNING),
     }
     backend_template = {
         "status": "passed",
@@ -169,6 +170,18 @@ class PerformanceEvidenceImportTest(unittest.TestCase):
         self.assertFalse(row["same_config_match"])
         self.assertIn("same_config_drift:dataset", row["open_blockers"])
         self.assertIn("same_config_drift:batch_size", row["open_blockers"])
+
+    def test_storage_tuning_drift_blocks_otherwise_good_report(self) -> None:
+        report = _report_with_good_parity()
+        del report["config"]["effective_storage_tuning"]["TS_PAGE_INDEX_CACHE_BYTES"]
+        report["config"]["effective_storage_tuning"]["TS_STREAM_MAX_BLOB_SIZE"] = 20 * 1024 * 1024
+
+        updated = import_report(_matrix(), report)
+
+        row = next(row for row in updated["rows"] if row["workload"] == "1K_event_ingestion")
+        self.assertEqual(row["status"], "missing_live_evidence")
+        self.assertIn("storage_tuning_missing:TS_PAGE_INDEX_CACHE_BYTES", row["open_blockers"])
+        self.assertIn("storage_tuning_drift:TS_STREAM_MAX_BLOB_SIZE", row["open_blockers"])
 
     def test_phase_scale_gate_must_be_required_and_passed(self) -> None:
         report = _report_with_good_parity()

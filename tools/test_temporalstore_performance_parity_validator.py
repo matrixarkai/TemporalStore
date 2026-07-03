@@ -11,6 +11,7 @@ from validate_temporalstore_cpp_rust_performance_parity import (
     _validate_metric_block,
     _validate_ratios,
 )
+from validate_storage_tuning_parity import EXPECTED_DEFAULTS as STORAGE_TUNING
 
 
 class PerformanceParityValidatorTest(unittest.TestCase):
@@ -89,7 +90,7 @@ class PerformanceParityValidatorTest(unittest.TestCase):
             "embedding_model": "matrixark-local-token-hash-v1",
             "reader_model": "matrixark-deterministic-reader",
             "judge_model": "matrixark-deterministic-judge",
-            "storage_tuning": {"TS_CONTEXT_PAGE_TARGET_BYTES": 65536},
+            "storage_tuning": dict(STORAGE_TUNING),
         }
 
         _validate_completed_same_config(row, failures)
@@ -101,6 +102,32 @@ class PerformanceParityValidatorTest(unittest.TestCase):
         )
         self.assertIn(
             "1K_event_ingestion same-config field `batch_size` drift: expected 20 got 10",
+            failures,
+        )
+
+    def test_completed_same_config_rejects_missing_or_drifted_storage_tuning(self) -> None:
+        failures: list[str] = []
+        tuning = dict(STORAGE_TUNING)
+        del tuning["TS_BLOCK_INDEX_CACHE_BYTES"]
+        tuning["TS_STORAGE_ZONE_SIZE"] = 123
+        row = {
+            "workload": "1K_event_ingestion",
+            "dataset": "matrixark-scale-synthetic",
+            "storage_mode": "shared_store",
+            "topology": {"metaserver": "127.0.0.1:18000"},
+            "batch_size": 20,
+            "token_budget": 12000,
+            "embedding_model": "matrixark-local-token-hash-v1",
+            "reader_model": "matrixark-deterministic-reader",
+            "judge_model": "matrixark-deterministic-judge",
+            "storage_tuning": tuning,
+        }
+
+        _validate_completed_same_config(row, failures)
+
+        self.assertIn("1K_event_ingestion storage_tuning missing `TS_BLOCK_INDEX_CACHE_BYTES`", failures)
+        self.assertIn(
+            "1K_event_ingestion storage_tuning `TS_STORAGE_ZONE_SIZE` drift: expected 10485760 got 123",
             failures,
         )
 
