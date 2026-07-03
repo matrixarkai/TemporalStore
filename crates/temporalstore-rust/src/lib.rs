@@ -100,8 +100,8 @@ pub use control::{
     CheckedBatchExecuteRequest, CheckedBatchExecuteResponse, CheckedExecuteRequest,
     CheckedExecuteResponse, Config, GetConfigResponse, GetInfoResponse, GetStatsResponse,
     LoadShardRequest, LoadShardResponse, MembershipUpdateRequest, ScanStreamRequest,
-    ScanStreamResponse, SetConfigRequest, StreamKind, StreamReadRequest, StreamReadResponse,
-    UnloadShardRequest, UnloadShardResponse,
+    ScanStreamResponse, SetConfigRequest, ShardCanonicalStorageStats, StreamKind,
+    StreamReadRequest, StreamReadResponse, UnloadShardRequest, UnloadShardResponse,
 };
 pub use data_node::{
     CompactionRequest, CompactionResponse, DataNodeLifecycleReport, DataNodePreflightReport,

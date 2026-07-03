@@ -5975,6 +5975,35 @@ impl TemporalEngine {
                 storage_bytes: page_store.bytes_written,
                 object_manager: object_manager.clone(),
             };
+            let storage = crate::control::ShardCanonicalStorageStats {
+                page_index_entries: object_manager.page_ref_count as u64,
+                block_index_entries: page_store.writes,
+                object_index_entries: object_manager.object_count as u64,
+                slot_entries: object_manager.routing_slot_count as u64,
+                storage_zone_count: page_store_zones
+                    .active_extents
+                    .saturating_add(page_store_zones.sealed_extents)
+                    .saturating_add(page_store_zones.delayed_destroy_extents)
+                    .saturating_add(page_store_zones.purged_extents),
+                active_storage_zones: page_store_zones.active_extents,
+                sealed_storage_zones: page_store_zones.sealed_extents,
+                stream_segment_count: page_store_zones
+                    .active_extents
+                    .saturating_add(page_store_zones.sealed_extents)
+                    .saturating_add(page_store_zones.delayed_destroy_extents)
+                    .saturating_add(page_store_zones.purged_extents),
+                storage_zone_total_bytes: page_store_zones.total_known_physical_bytes,
+                storage_zone_used_bytes: page_store_zones.live_physical_bytes,
+                storage_zone_stale_bytes: page_store_zones.reclaimable_physical_bytes,
+                page_reads: page_store.reads,
+                page_writes: page_store.writes,
+                block_reads: page_store.reads,
+                block_writes: page_store.writes,
+                bytes_read: page_store.bytes_read,
+                bytes_written: page_store.bytes_written,
+                append_watermark: page_store.writes,
+                compaction_watermark: page_store_zones.reclaimable_physical_bytes,
+            };
             ShardStats {
                 shard_id,
                 loaded,
@@ -5991,6 +6020,7 @@ impl TemporalEngine {
                 storage_bytes: page_store.bytes_written,
                 object_manager,
                 partition_info,
+                storage,
                 cache: self.cache.stats(),
                 page_store: page_store.clone(),
                 page_store_zones: page_store_zones.clone(),
