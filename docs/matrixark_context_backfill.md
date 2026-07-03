@@ -172,6 +172,31 @@ python3 tools/matrixark_context_backfill.py \
 
 Use dry runs to estimate source volume, verify source readability, and inspect expected serving-record counts before writing anything.
 
+## Backfill Throughput Benchmark
+
+Use `tools/matrixark_context_backfill_benchmark.py` as the local repeatable speed gate for the backfill path itself. It seeds a local raw ingestion log, runs a full shadow backfill, builds a bounded incremental repair shadow, then promotes that repair into an active prefix. Run it for both raw-message store options before claiming a performance improvement.
+
+```bash
+python3 tools/matrixark_context_backfill_benchmark.py \
+  --records=10000 \
+  --batch-size=1024 \
+  --incremental-records=1000 \
+  --payload-bytes=128 \
+  --raw-backends=both \
+  --json-output=/tmp/matrixark_context_backfill_bench.json
+```
+
+Key output:
+
+| Field | Meaning |
+| --- | --- |
+| `results[].full_shadow.qps` | Materialized serving records written per second for a full shadow rebuild. |
+| `results[].incremental_shadow.qps` | Serving records written per second while creating a bounded repair shadow. |
+| `results[].incremental_repair.qps` | Active-prefix promotion throughput, including validation and bounded replay. |
+| `qps_summary` | Average full and incremental QPS across the selected raw backends. |
+
+Local mode is an in-process correctness and regression signal. For production capacity numbers, run the same batch sizes through `tools/matrixark_context_backfill.py` against a real TemporalStore/MatrixKV deployment and compare the resulting JSON summaries and Prometheus output.
+
 ## Resume And Checkpoints
 
 The checkpoint key is scoped to the job, source prefix, raw backend, target, and partial spec:
