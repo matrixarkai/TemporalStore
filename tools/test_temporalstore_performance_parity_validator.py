@@ -5,7 +5,11 @@ from __future__ import annotations
 
 import unittest
 
-from validate_temporalstore_cpp_rust_performance_parity import _exceeds_limit, _validate_metric_block
+from validate_temporalstore_cpp_rust_performance_parity import (
+    _exceeds_limit,
+    _validate_metric_block,
+    _validate_ratios,
+)
 
 
 class PerformanceParityValidatorTest(unittest.TestCase):
@@ -37,6 +41,40 @@ class PerformanceParityValidatorTest(unittest.TestCase):
         _validate_metric_block(row, "cpp", failures, require_selected_ref_parity=False)
 
         self.assertNotIn("1K_event_ingestion cpp.selected_ref_parity must be true", failures)
+
+    def test_qps_ratios_are_required_for_completed_rows(self) -> None:
+        failures: list[str] = []
+        row = {
+            "workload": "1K_event_ingestion",
+            "ratios": {
+                "p50_ratio": 1.0,
+                "p95_ratio": 1.0,
+                "p99_ratio": 1.0,
+            },
+        }
+
+        _validate_ratios(row, {"min_rust_cpp_qps_ratio": 0.8, "max_rust_cpp_latency_ratio": 2.0}, failures)
+
+        self.assertIn("1K_event_ingestion message_qps_ratio missing", failures)
+        self.assertIn("1K_event_ingestion retrieve_qps_ratio missing", failures)
+
+    def test_qps_ratios_below_threshold_are_rejected(self) -> None:
+        failures: list[str] = []
+        row = {
+            "workload": "1K_event_ingestion",
+            "ratios": {
+                "message_qps_ratio": 0.79,
+                "retrieve_qps_ratio": 0.8,
+                "p50_ratio": 1.0,
+                "p95_ratio": 1.0,
+                "p99_ratio": 1.0,
+            },
+        }
+
+        _validate_ratios(row, {"min_rust_cpp_qps_ratio": 0.8, "max_rust_cpp_latency_ratio": 2.0}, failures)
+
+        self.assertIn("1K_event_ingestion message_qps_ratio below 0.8", failures)
+        self.assertNotIn("1K_event_ingestion retrieve_qps_ratio below 0.8", failures)
 
 
 if __name__ == "__main__":
