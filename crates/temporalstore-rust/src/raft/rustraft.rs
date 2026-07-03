@@ -6,10 +6,11 @@ use rustraft::{
 use super::{distributed_raft_readiness, RaftDistributedReadiness};
 
 pub use rustraft::{
-    rustraft_byteraft_runtime_capability_prometheus, rustraft_byteraft_runtime_capability_report,
-    rustraft_pipeline_evidence, rustraft_production_readiness_report,
-    rustraft_read_safety_runtime_decision, rustraft_snapshot_lifecycle_evidence,
-    rustraft_wal_lifecycle_evidence, RaftCapabilityEvidence,
+    rustraft_admin_status_surface_evidence, rustraft_byteraft_runtime_capability_prometheus,
+    rustraft_byteraft_runtime_capability_report, rustraft_pipeline_evidence,
+    rustraft_production_readiness_report, rustraft_read_safety_runtime_decision,
+    rustraft_snapshot_lifecycle_evidence, rustraft_wal_lifecycle_evidence, RaftCapabilityEvidence,
+    RustRaftAdminStatusSurfaceEvidence, RustRaftAdminStatusSurfaceInput,
     RustRaftByteRaftRuntimeCapabilityReport, RustRaftParityContract, RustRaftParityReport,
     RustRaftPeerPipelineStatus, RustRaftPipelineEvidence, RustRaftPipelineLimits,
     RustRaftProductionReadinessInput, RustRaftProductionReadinessReport,
