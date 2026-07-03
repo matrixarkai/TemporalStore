@@ -55,6 +55,23 @@ REQUIRED_STORAGE_CACHE_METRICS = [
     "cache_writeback_rejections",
 ]
 
+REQUIRED_STORAGE_CACHE_CONTRACT_FIELDS = [
+    "layers",
+    "semantics",
+    "metrics",
+    "hot_to_cold_lookup",
+    "durable_refill_on_miss",
+    "append_watermark_invalidation",
+    "compaction_watermark_invalidation",
+    "cold_scan_no_promote",
+    "writeback_backpressure_measured",
+    "cache_refills",
+    "cache_invalidations",
+    "cache_writeback_queue_depth",
+    "cache_writeback_rejections",
+    "hot_cache_promotions",
+]
+
 REQUIRED_STORAGE_LIFECYCLE_METRICS = [
     "storage_manager_prepare_count",
     "storage_manager_reclaim_count",
@@ -232,6 +249,7 @@ REQUIRED_LIFECYCLE_TOP_LEVEL_KEYS = [
     "storage_cold_scan_contract",
     "storage_manager_contract",
     "storage_index_contract",
+    "storage_cache_contract",
     "storage_read_sequence",
     "storage_cold_scan_sequence",
     "storage_lifecycle_phases",
@@ -520,6 +538,18 @@ def _dig_index_contract(report: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _dig_cache_contract(report: dict[str, Any]) -> dict[str, Any]:
+    candidates = [
+        report.get("storage_cache_contract"),
+        report.get("storage_lifecycle", {}).get("cache_contract") if isinstance(report.get("storage_lifecycle"), dict) else None,
+        report.get("storage_cache", {}).get("contract") if isinstance(report.get("storage_cache"), dict) else None,
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            return candidate
+    return {}
+
+
 def _dig_lifecycle_phases(report: dict[str, Any]) -> list[str]:
     candidates = [
         report.get("storage_lifecycle_phases"),
@@ -724,6 +754,7 @@ def validate_contract_and_runner() -> list[str]:
     runner_cache_layers = _extract_runner_list("STORAGE_CACHE_LAYER_NAMES")
     runner_cache_semantics = _extract_runner_list("STORAGE_CACHE_SEMANTICS")
     runner_cache_metrics = _extract_runner_list("STORAGE_CACHE_METRIC_NAMES")
+    runner_cache_contract_fields = _extract_runner_list("STORAGE_CACHE_CONTRACT_FIELDS")
     runner_top_level_keys = _extract_runner_list("STORAGE_LIFECYCLE_TOP_LEVEL_KEYS")
     for name in CANONICAL_PUBLIC_FIELDS + CANONICAL_JSON_FIELDS:
         if f"`{name}`" not in contract_text:
@@ -762,6 +793,8 @@ def validate_contract_and_runner() -> list[str]:
         failures.append("runner:STORAGE_CACHE_SEMANTICS does not match the canonical cache semantics")
     if runner_cache_metrics != REQUIRED_STORAGE_CACHE_METRICS:
         failures.append("runner:STORAGE_CACHE_METRIC_NAMES does not match the canonical cache metrics")
+    if runner_cache_contract_fields != REQUIRED_STORAGE_CACHE_CONTRACT_FIELDS:
+        failures.append("runner:STORAGE_CACHE_CONTRACT_FIELDS does not match the canonical cache contract fields")
     expected_top_level = REQUIRED_LIFECYCLE_TOP_LEVEL_KEYS + OPTIONAL_CANONICAL_TOP_LEVEL_KEYS
     if runner_top_level_keys != expected_top_level:
         failures.append("runner:STORAGE_LIFECYCLE_TOP_LEVEL_KEYS does not match the canonical report shape")
@@ -820,6 +853,9 @@ def validate_contract_and_runner() -> list[str]:
     for metric in REQUIRED_STORAGE_CACHE_METRICS:
         if f"`{metric}`" not in contract_text:
             failures.append(f"contract missing cache metric `{metric}`")
+    for field in REQUIRED_STORAGE_CACHE_CONTRACT_FIELDS:
+        if f"`{field}`" not in contract_text:
+            failures.append(f"contract missing cache contract field `{field}`")
     for value in REQUIRED_STORAGE_RECLAIM_SCOPE.values():
         if isinstance(value, str) and f"`{value}`" not in contract_text and f'"{value}"' not in contract_text:
             failures.append(f"contract missing reclaim scope value `{value}`")
@@ -844,6 +880,8 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
     rust_manager_contract = _dig_manager_contract(rust_report)
     cpp_index_contract = _dig_index_contract(cpp_report)
     rust_index_contract = _dig_index_contract(rust_report)
+    cpp_cache_contract = _dig_cache_contract(cpp_report)
+    rust_cache_contract = _dig_cache_contract(rust_report)
     cpp_write_sequence = _dig_sequence(cpp_report, "storage_write_sequence")
     rust_write_sequence = _dig_sequence(rust_report, "storage_write_sequence")
     cpp_read_sequence = _dig_sequence(cpp_report, "storage_read_sequence")
@@ -1043,6 +1081,40 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
         for field in ["unreadable_page_refs", "checksum_mismatches"]:
             if _as_number(index_contract.get(field)) not in (0.0, None):
                 failures.append(f"{backend} index contract `{field}` must be zero")
+    for field in REQUIRED_STORAGE_CACHE_CONTRACT_FIELDS:
+        if field not in cpp_cache_contract:
+            failures.append(f"cpp cache contract missing field `{field}`")
+        if field not in rust_cache_contract:
+            failures.append(f"rust cache contract missing field `{field}`")
+    for backend, cache_contract in [("cpp", cpp_cache_contract), ("rust", rust_cache_contract)]:
+        if cache_contract.get("layers") != REQUIRED_STORAGE_CACHE_LAYERS:
+            failures.append(f"{backend} cache contract layers drift: {cache_contract.get('layers')!r}")
+        if cache_contract.get("semantics") != REQUIRED_STORAGE_CACHE_SEMANTICS:
+            failures.append(f"{backend} cache contract semantics drift: {cache_contract.get('semantics')!r}")
+        if cache_contract.get("metrics") != REQUIRED_STORAGE_CACHE_METRICS:
+            failures.append(f"{backend} cache contract metrics drift: {cache_contract.get('metrics')!r}")
+        for flag in [
+            "hot_to_cold_lookup",
+            "durable_refill_on_miss",
+            "append_watermark_invalidation",
+            "compaction_watermark_invalidation",
+            "cold_scan_no_promote",
+            "writeback_backpressure_measured",
+        ]:
+            if cache_contract.get(flag) is not True:
+                failures.append(f"{backend} cache contract {flag} must be true")
+        for field in [
+            "cache_refills",
+            "cache_invalidations",
+            "cache_writeback_queue_depth",
+            "cache_writeback_rejections",
+            "hot_cache_promotions",
+        ]:
+            value = _as_number(cache_contract.get(field))
+            if value is None or value < 0:
+                failures.append(f"{backend} cache contract `{field}` must be non-negative")
+        if _as_number(cache_contract.get("hot_cache_promotions")) not in (0.0, None):
+            failures.append(f"{backend} cache contract hot_cache_promotions must be zero for cold scan no-promote parity")
 
     if cpp_write_sequence != REQUIRED_STORAGE_WRITE_SEQUENCE:
         failures.append(f"cpp storage_write_sequence drift: {cpp_write_sequence!r}")
