@@ -40,6 +40,8 @@ REQUIRED_DOC_MARKERS = [
     "--dry-run-check-target",
     "matrixark_context_backfill_validation_check",
     "matrixark_context_backfill_incremental_repair_status",
+    "matrixark_context_backfill_data_quality_status",
+    "completed_with_errors",
     "--baseline-json",
     "append-time idempotency",
 ]
@@ -90,6 +92,7 @@ def append_accounting_checks() -> list[Json]:
     return [
         check("append_many_reports_attempted_written_duplicate", all(token in text for token in ["'attempted'", "'written'", "'duplicate'", "'appended_records'"])),
         check("run_backfill_uses_append_stats_for_written_metrics", all(token in text for token in ["append_stats = target.append_many(pending)", "metrics.written += append_written", "metrics.duplicate += append_duplicate", "metrics.observe_records(appended_records)"])),
+        check("run_backfill_reports_data_quality_status", all(token in text for token in ["data_quality_status", "completed_with_errors", "matrixark_context_backfill_data_quality_status"])),
     ]
 
 
@@ -583,6 +586,7 @@ def run_dead_letter_gate(args: argparse.Namespace) -> Json:
                 "records": records,
                 "missing_sequence": missing_sequence,
                 "status": summary.get("status"),
+                "data_quality_status": summary.get("data_quality_status"),
                 "failed": int(summary.get("metrics", {}).get("failed", 0) or 0),
                 "dead_letter": int(summary.get("metrics", {}).get("dead_letter", 0) or 0),
                 "written": int(summary.get("metrics", {}).get("written", 0) or 0),
@@ -595,6 +599,7 @@ def run_dead_letter_gate(args: argparse.Namespace) -> Json:
             })
     status = "ok" if all(
         item["status"] == "ok"
+        and item["data_quality_status"] == "completed_with_errors"
         and item["failed"] == 1
         and item["dead_letter"] == 1
         and item["dead_letter_count"] == 1
@@ -874,6 +879,7 @@ def dead_letter_checks(summary: Json) -> list[Json]:
         check("dead_letter_gate_status_ok", summary.get("status") == "ok"),
         check("dead_letter_gate_covers_temporalstore_and_matrixkv", {item.get("raw_backend") for item in results} == {"temporalstore", "matrixkv"}),
         check("dead_letter_gate_records_failure", all(int(item.get("failed", 0) or 0) == 1 for item in results)),
+        check("dead_letter_gate_marks_completed_with_errors", all(item.get("data_quality_status") == "completed_with_errors" for item in results)),
         check("dead_letter_gate_writes_dead_letter", all(int(item.get("dead_letter_count", 0) or 0) == 1 and bool(item.get("dead_letter_preview_has_error")) for item in results)),
         check("dead_letter_gate_continues_good_records", all(int(item.get("written", 0) or 0) == int(item.get("records", -1) or -1) - 1 for item in results)),
         check("dead_letter_gate_checkpoint_reaches_end", all(int(item.get("checkpoint_last_sequence", -1) or -1) == int(item.get("records", -2) or -2) - 1 for item in results)),

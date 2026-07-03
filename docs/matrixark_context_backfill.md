@@ -188,6 +188,7 @@ Set `--prometheus-output=<path>` on production runs and archive the emitted file
 ```text
 matrixark_context_backfill_run_elapsed_ms
 matrixark_context_backfill_scan_qps
+matrixark_context_backfill_data_quality_status
 matrixark_context_backfill_records_total
 matrixark_context_backfill_serving_records_total
 matrixark_context_backfill_serving_record_fingerprint_info
@@ -365,6 +366,8 @@ A corrupt, missing, or unreadable source record increments `failed` and `dead_le
 ```
 
 By default, a bad record does not stop the job. Use `--fail-fast` for debugging or for strict migration gates where any bad source record should stop the run.
+
+Backfill runs remain resumable and may return top-level `status="ok"` after writing dead letters, but the JSON summary also includes `data_quality_status`. Treat `data_quality_status="clean"` as the normal production success state. Treat `data_quality_status="completed_with_errors"` as requiring validation failure review, dead-letter triage, or an explicit incident-owner exception before promotion.
 
 
 ## Dual-Write Ingestion Performance Benchmark
@@ -873,6 +876,8 @@ Typical summary fields:
 ```json
 {
   "status": "ok",
+  "data_quality_status": "clean",
+  "has_failures": false,
   "job_id": "repair-session-42",
   "source_prefix": "matrixark:mcp:raw_ingestion",
   "target_prefix": "matrixark:context_repair:session-42",
@@ -941,7 +946,7 @@ matrixark_context_backfill_incremental_repair_promotion_consistency_check{job_id
 matrixark_context_backfill_incremental_repair_promotion_records{job_id="...",status="written"}
 ```
 
-`shadow` and `in_place` runs emit elapsed time, scan QPS, record counters, serving-record counters, ordered serving-record fingerprint info, batch counters, and source-range boundary gauges. `validate_shadow` emits validation status, expected/actual/dead-letter counts, per-check pass/fail gauges, target scan stats, expected/actual ordered serving-record fingerprint info, source-range boundary gauges, source-range boolean metadata, and the source scan mode when `--prometheus-output` is set. `incremental_repair` emits promotion consistency status/check gauges, active-promotion record counters, promotion source-range boundaries, and validation status. Dashboards should compare the validation source range with the target scan state before activation or incremental repair promotion, then alert on any failed promotion consistency check after active-prefix replay.
+`shadow` and `in_place` runs emit elapsed time, scan QPS, data-quality status, record counters, serving-record counters, ordered serving-record fingerprint info, batch counters, and source-range boundary gauges. `validate_shadow` emits validation status, expected/actual/dead-letter counts, per-check pass/fail gauges, target scan stats, expected/actual ordered serving-record fingerprint info, source-range boundary gauges, source-range boolean metadata, and the source scan mode when `--prometheus-output` is set. `incremental_repair` emits promotion consistency status/check gauges, active-promotion record counters, promotion source-range boundaries, and validation status. Dashboards should compare the validation source range with the target scan state before activation or incremental repair promotion, then alert on any failed promotion consistency check after active-prefix replay.
 
 Validation fingerprint metrics:
 
@@ -957,6 +962,7 @@ Recommended production alerts:
 
 - `failed > 0` for strict migrations
 - `dead_letter > 0` for any production repair
+- `matrixark_context_backfill_data_quality_status{status="completed_with_errors"}` for any run that completed with source failures or dead letters
 - `matrixark_context_backfill_incremental_repair_promotion_consistency_status{status!="ok"}` for active-prefix repair promotion
 - `matrixark_context_backfill_validation_check{check="serving_record_fingerprint_match"} == 0` before activation or incremental repair promotion
 - `written == 0` when a non-empty repair was expected
