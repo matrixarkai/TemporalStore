@@ -107,7 +107,7 @@ def _validate_run_workload_flags(path: Path, data: dict[str, Any]) -> list[str]:
 def _validate_phase_scale_coverage(path: Path, data: dict[str, Any]) -> list[str]:
     failures: list[str] = []
     for row_index, row in enumerate(data.get("results") or []):
-        if not isinstance(row, dict) or row.get("step") != "run_workload":
+        if not isinstance(row, dict) or row.get("step") not in {"run_workload", "import_evidence"}:
             continue
         coverage = row.get("phase_scale_coverage_required")
         if not isinstance(coverage, dict):

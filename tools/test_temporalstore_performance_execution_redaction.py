@@ -41,6 +41,11 @@ class PerformanceExecutionRedactionTest(unittest.TestCase):
                                     "--require-perf-parity",
                                     "--require-phase-scale-matrix",
                                 ]
+                            },
+                            {
+                                "step": "import_evidence",
+                                "phase_scale_coverage_required": REQUIRED_PHASE_SCALE_COVERAGE,
+                                "argv": ["python", "tools/import_temporalstore_cpp_rust_performance_evidence.py"],
                             }
                         ],
                     }
@@ -73,6 +78,10 @@ class PerformanceExecutionRedactionTest(unittest.TestCase):
                                     "/mnt/c/Users/Deeproute/libbcache2.so",
                                     "--require-perf-parity",
                                 ]
+                            },
+                            {
+                                "step": "import_evidence",
+                                "argv": ["python", "tools/import_temporalstore_cpp_rust_performance_evidence.py"],
                             }
                         ],
                     }
