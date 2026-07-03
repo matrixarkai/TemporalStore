@@ -59,6 +59,11 @@ sees matching config, zero errors/timeouts, no fallback flags, selected-ref
 parity, Rust/C++ QPS ratio at least `0.8`, and p50/p95/p99 latency ratio at
 most `2.0`.
 
+Use `tools/import_temporalstore_cpp_rust_performance_evidence.py --report <artifact>/comparison.json --validate`
+after each live C++/Rust scale run. The importer updates only the workload rows
+proven by that report; missing config, failed backends, non-empty fallbacks,
+timeouts, errors, selected-ref drift, or threshold misses keep the row blocked.
+
 This goal-level validator is also part of
 `tools/validate_storage_engine_9_phase_parity.py`, so the 9-phase loop now
 checks both storage contract parity and honest goal status.
