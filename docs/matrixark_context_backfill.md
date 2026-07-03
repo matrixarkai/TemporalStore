@@ -517,7 +517,7 @@ python3 tools/matrixark_context_backfill.py \
   --batch-size=1024
 ```
 
-Validation performs a dry-run source scan using the same range and partial filters. It compares expected materialized records to target record count and checks dead letters.
+Validation performs a dry-run source scan using the same range and partial filters. It compares expected materialized records to target record count and checks dead letters. The validation summary includes `source_range`, so promotion reviews can confirm the candidate prefix was checked against the same raw-log high-watermark boundary as the backfill run.
 
 Strict validation is enabled by default. Use `--validation-strict=0` only when the target prefix is expected to contain validated extra records from a compatible previous run.
 

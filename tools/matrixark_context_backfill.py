@@ -1215,6 +1215,7 @@ def run_validate_shadow(args: argparse.Namespace) -> Json:
         'actual_type_counts': actual_type_counts,
         'dead_letters': dead_letters,
         'expected_scan': expected_summary['metrics'],
+        'source_range': expected_summary.get('source_range', {}),
         'checks': {
             'exact_record_count_match': exact_match,
             'actual_records_at_least_expected': enough_records,
