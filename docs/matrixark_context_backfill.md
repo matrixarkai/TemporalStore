@@ -271,6 +271,7 @@ python3 tools/matrixark_dual_write_ingestion_benchmark.py \
   --batch-size=128 \
   --payload-bytes=128 \
   --raw-backend=temporalstore \
+  --require-dual-write-counts=1 \
   --json-output=/tmp/matrixark_dual_write_bench.json
 ```
 
@@ -284,7 +285,8 @@ python3 tools/matrixark_dual_write_ingestion_benchmark.py \
   --workers=4 \
   --batch-size=128 \
   --payload-bytes=128 \
-  --raw-backend=matrixkv
+  --raw-backend=matrixkv \
+  --require-dual-write-counts=1
 ```
 
 Direct TemporalStore/MatrixKV measurement against a running local cluster:
@@ -301,7 +303,9 @@ python3 tools/matrixark_dual_write_ingestion_benchmark.py \
   --workers=8 \
   --batch-size=256 \
   --payload-bytes=256 \
-  --raw-backend=temporalstore
+  --raw-backend=temporalstore \
+  --min-ingestion-qps=10000 \
+  --max-batch-p95-ms=250
 ```
 
 Key output fields:
@@ -316,6 +320,9 @@ Key output fields:
 | `serving_log_entries_observed` | Serving append-log entries. This can be lower than raw records because the serving path can bundle records and also writes secondary index entries. |
 | `local_native_call_counts` | Local-mode proof that both the selected raw append path and `native_append_queue` were called. |
 | `dual_write_return_policy` | Confirms the measured return boundary: raw append and serving append both finished before return. |
+| `performance_gate` | Optional pass/fail release gate for `--min-ingestion-qps`, `--max-batch-p95-ms`, and `--require-dual-write-counts`. The command exits with code `2` when the gate fails. |
+
+Use `--require-dual-write-counts=1` for local-mode CI smoke so the test proves both raw and serving append paths ran before return. Use `--min-ingestion-qps` and `--max-batch-p95-ms` for local or direct release gates. Direct mode should normally gate on QPS/latency; local synthetic call counts are only available in `--mode=local`.
 
 Recommended scale matrix:
 

@@ -147,6 +147,46 @@ def make_direct_adapter(args: argparse.Namespace, client: Any | None = None) -> 
     return adapter
 
 
+def evaluate_performance_gate(args: argparse.Namespace, summary: Json) -> Json:
+    min_qps = float(getattr(args, "min_ingestion_qps", 0.0) or 0.0)
+    max_p95_ms = float(getattr(args, "max_batch_p95_ms", 0.0) or 0.0)
+    require_counts = bool(getattr(args, "require_dual_write_counts", False))
+    checks: list[Json] = []
+    observed_qps = float(summary.get("ingestion_qps", 0.0) or 0.0)
+    checks.append({
+        "metric": "ingestion_qps",
+        "observed": round(observed_qps, 3),
+        "minimum": min_qps,
+        "passed": observed_qps >= min_qps,
+    })
+    p95_ms = float((summary.get("caller_visible_batch_latency_ms") or {}).get("p95", 0.0) or 0.0)
+    if max_p95_ms > 0.0:
+        checks.append({
+            "metric": "caller_visible_batch_latency_ms_p95",
+            "observed": round(p95_ms, 3),
+            "maximum": max_p95_ms,
+            "passed": p95_ms <= max_p95_ms,
+        })
+    if require_counts:
+        counts_validated = bool(summary.get("dual_write_counts_validated"))
+        checks.append({
+            "metric": "dual_write_counts_validated",
+            "observed": 1 if counts_validated else 0,
+            "minimum": 1,
+            "passed": counts_validated,
+        })
+    enabled = min_qps > 0.0 or max_p95_ms > 0.0 or require_counts
+    passed = all(bool(check["passed"]) for check in checks) if checks else True
+    return {
+        "enabled": enabled,
+        "passed": passed,
+        "min_ingestion_qps": min_qps,
+        "max_batch_p95_ms": max_p95_ms,
+        "require_dual_write_counts": require_counts,
+        "checks": checks,
+    }
+
+
 def run_benchmark(args: argparse.Namespace) -> Json:
     if args.records <= 0:
         raise BenchmarkError("--records must be positive")
@@ -154,6 +194,10 @@ def run_benchmark(args: argparse.Namespace) -> Json:
         raise BenchmarkError("--workers must be positive")
     if args.batch_size <= 0:
         raise BenchmarkError("--batch-size must be positive")
+    if float(getattr(args, "min_ingestion_qps", 0.0) or 0.0) < 0.0:
+        raise BenchmarkError("--min-ingestion-qps must be non-negative")
+    if float(getattr(args, "max_batch_p95_ms", 0.0) or 0.0) < 0.0:
+        raise BenchmarkError("--max-batch-p95-ms must be non-negative")
     client = InMemoryDualWriteClient(write_delay_us=args.local_write_delay_us) if args.mode == "local" else None
     adapter = make_direct_adapter(args, client)
     latencies_ms: list[float] = []
@@ -234,6 +278,9 @@ def run_benchmark(args: argparse.Namespace) -> Json:
             and client.calls_by_raw_backend.get(args.raw_backend, 0) > 0
             and client.calls_by_path.get("native_append_queue", 0) > 0
         )
+    performance_gate = evaluate_performance_gate(args, summary)
+    summary["performance_gate"] = performance_gate
+    summary["status"] = "ok" if performance_gate["passed"] else "failed"
     return summary
 
 
@@ -261,6 +308,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--library-path", default=os.environ.get("TEMPORALSTORE_LIBRARY_PATH", ""))
     parser.add_argument("--request-timeout-ms", type=int, default=int(os.environ.get("TEMPORALSTORE_REQUEST_TIMEOUT_MS", "20000")))
     parser.add_argument("--io-timeout-ms", type=int, default=int(os.environ.get("TEMPORALSTORE_IO_TIMEOUT_MS", "20000")))
+    parser.add_argument("--min-ingestion-qps", type=float, default=float(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_MIN_INGESTION_QPS", "0")), help="optional release gate for minimum caller-visible records per second")
+    parser.add_argument("--max-batch-p95-ms", type=float, default=float(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_MAX_BATCH_P95_MS", "0")), help="optional release gate for maximum p95 append_many latency in milliseconds, 0 disables")
+    parser.add_argument("--require-dual-write-counts", type=int, choices=[0, 1], default=int(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_REQUIRE_COUNTS", "0")), help="require local-mode proof that both raw and serving append paths completed before return")
     parser.add_argument("--json-output", default=os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_JSON", ""))
     return parser
 
@@ -272,7 +322,7 @@ def main(argv: list[str] | None = None) -> int:
     print(text)
     if args.json_output:
         Path(args.json_output).write_text(text + "\n")
-    return 0
+    return 0 if summary.get("status") == "ok" else 2
 
 
 if __name__ == "__main__":
