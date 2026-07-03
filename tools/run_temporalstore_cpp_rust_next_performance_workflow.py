@@ -23,6 +23,7 @@ from audit_temporalstore_cpp_rust_performance_artifacts import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_WSL_DISTRO = "Ubuntu-22.04"
 
 
 def _wsl_path(path: Path | str) -> str:
@@ -45,7 +46,7 @@ def _wslize(argv: list[str], *, distro: str) -> list[str]:
     return ["wsl", "-d", distro, "--cd", _wsl_path(ROOT), "--", *inner]
 
 
-def build_execution_plan(audit: dict[str, Any], max_workloads: int | None = None) -> dict[str, Any]:
+def build_execution_plan(audit: dict[str, Any], max_workloads: int | None = None, *, wsl_distro: str = DEFAULT_WSL_DISTRO) -> dict[str, Any]:
     workflow = audit.get("next_required_workflow") if isinstance(audit.get("next_required_workflow"), dict) else {}
     commands = workflow.get("commands") if isinstance(workflow.get("commands"), list) else []
     if max_workloads is not None:
@@ -75,7 +76,7 @@ def build_execution_plan(audit: dict[str, Any], max_workloads: int | None = None
                 "recommended_execution_output": command.get("recommended_execution_output"),
             }
             | (
-                {"wsl_argv": _wslize(command.get("argv"), distro="Ubuntu2204Deeproute")}
+                {"wsl_argv": _wslize(command.get("argv"), distro=wsl_distro)}
                 if command.get("step") == "run_workload"
                 and isinstance(command.get("argv"), list)
                 and all(isinstance(item, str) for item in command.get("argv"))
@@ -172,6 +173,7 @@ def main() -> int:
     parser.add_argument("--max-workloads", type=int, default=1)
     parser.add_argument("--execute", action="store_true", help="Run the generated commands. Default is dry-run JSON output.")
     parser.add_argument("--execute-in-wsl", action="store_true", help="With --execute, run workload commands through WSL so Linux libbcache2.so can load.")
+    parser.add_argument("--wsl-distro", default=DEFAULT_WSL_DISTRO, help="WSL distro used for generated workload commands.")
     parser.add_argument("--continue-on-error", action="store_true", help="With --execute, keep running later commands after a failure.")
     parser.add_argument("--execution-output", type=Path, help="With --execute, write the execution summary JSON here.")
     parser.add_argument(
@@ -183,7 +185,7 @@ def main() -> int:
 
     max_workloads = args.max_workloads if args.max_workloads > 0 else None
     audit = audit_artifacts(args.artifact_root, args.matrix)
-    plan = build_execution_plan(audit, max_workloads=max_workloads)
+    plan = build_execution_plan(audit, max_workloads=max_workloads, wsl_distro=args.wsl_distro)
     if not args.execute:
         print(json.dumps(plan, indent=2) + "\n", end="")
         return 0

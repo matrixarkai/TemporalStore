@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from run_temporalstore_cpp_rust_next_performance_workflow import _pythonize, _wslize, build_execution_plan, default_execution_output, run_plan
+from run_temporalstore_cpp_rust_next_performance_workflow import DEFAULT_WSL_DISTRO, _pythonize, _wslize, build_execution_plan, default_execution_output, run_plan
 
 
 class NextPerformanceWorkflowTest(unittest.TestCase):
@@ -59,7 +59,7 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
             plan["commands"][0]["recommended_execution_output"],
             "docs/benchmarks/parity_10K_event_ingestion/execution.json",
         )
-        self.assertEqual(plan["commands"][0]["wsl_argv"][:3], ["wsl", "-d", "Ubuntu2204Deeproute"])
+        self.assertEqual(plan["commands"][0]["wsl_argv"][:3], ["wsl", "-d", DEFAULT_WSL_DISTRO])
         self.assertIn("python3", plan["commands"][0]["wsl_argv"])
         self.assertNotIn("wsl_argv", plan["commands"][1])
         self.assertIn(
@@ -91,8 +91,8 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
         self.assertEqual(_pythonize(["custom-python", "tool.py"]), ["custom-python", "tool.py"])
 
     def test_wslize_wraps_python_workload_command(self) -> None:
-        command = _wslize(["python", "tools/run_matrixark_cpp_rust_scale_report.py"], distro="Ubuntu2204Deeproute")
-        self.assertEqual(command[:3], ["wsl", "-d", "Ubuntu2204Deeproute"])
+        command = _wslize(["python", "tools/run_matrixark_cpp_rust_scale_report.py"], distro="Ubuntu-22.04")
+        self.assertEqual(command[:3], ["wsl", "-d", "Ubuntu-22.04"])
         self.assertIn("--cd", command)
         self.assertEqual(command[-2:], ["python3", "tools/run_matrixark_cpp_rust_scale_report.py"])
 
@@ -139,7 +139,7 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
                     "workload": "10K",
                     "reason": "missing",
                     "argv": ["python", "first.py"],
-                    "wsl_argv": ["wsl", "-d", "Ubuntu2204Deeproute", "--", "python3", "first.py"],
+                    "wsl_argv": ["wsl", "-d", "Ubuntu-22.04", "--", "python3", "first.py"],
                 },
                 {"step": "import_evidence", "workload": "10K", "reason": "missing", "argv": ["python", "second.py"]},
             ],
@@ -156,7 +156,7 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
             result = run_plan(plan, include_post_validation=False, execute_in_wsl=True)
 
         self.assertEqual(result["status"], "passed")
-        self.assertEqual(run.call_args_list[0].args[0], ["wsl", "-d", "Ubuntu2204Deeproute", "--", "python3", "first.py"])
+        self.assertEqual(run.call_args_list[0].args[0], ["wsl", "-d", "Ubuntu-22.04", "--", "python3", "first.py"])
         self.assertEqual(run.call_args_list[1].args[0], [sys.executable, "second.py"])
 
     def test_run_plan_fails_fast_by_default(self) -> None:
