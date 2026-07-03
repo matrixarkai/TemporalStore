@@ -11,7 +11,7 @@
     "TS_STREAM_MAX_BLOB_SIZE": 10485760,
     "effective_block_segment_target_bytes": 10485760
   },
-  "error": "failed to load TemporalStore library: C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\output-ubuntu22\\release\\sdk\\lib\\libbcache2.so: Could not find module 'C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\output-ubuntu22\\release\\sdk\\lib\\libbcache2.so' (or one of its dependencies). Try using the full path with constructor syntax.; libbcache2.so: Could not find module 'libbcache2.so' (or one of its dependencies). Try using the full path with constructor syntax.; bcache2.dll: Could not find module 'bcache2.dll' (or one of its dependencies). Try using the full path with constructor syntax.; libbcache2.dylib: Could not find module 'libbcache2.dylib' (or one of its dependencies). Try using the full path with constructor syntax.",
+  "error": "failed to load TemporalStore library: REPO_ROOT\\output-ubuntu22\\release\\sdk\\lib\\libbcache2.so: Could not find module 'REPO_ROOT\\output-ubuntu22\\release\\sdk\\lib\\libbcache2.so' (or one of its dependencies). Try using the full path with constructor syntax.; libbcache2.so: Could not find module 'libbcache2.so' (or one of its dependencies). Try using the full path with constructor syntax.; bcache2.dll: Could not find module 'bcache2.dll' (or one of its dependencies). Try using the full path with constructor syntax.; libbcache2.dylib: Could not find module 'libbcache2.dylib' (or one of its dependencies). Try using the full path with constructor syntax.",
   "public_storage_contract": {
     "append_watermark": "AppendWatermark",
     "block_address": "BlockAddress",
@@ -422,8 +422,8 @@
   ],
   "worker": {
     "command": [
-      "C:\\Users\\Deeproute\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\python\\python.exe",
-      "C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\tools\\run_matrixark_cpp_rust_scale_report.py",
+      "python3",
+      "REPO_ROOT\\tools\\run_matrixark_cpp_rust_scale_report.py",
       "--backend-worker",
       "cpp",
       "--backend-worker-output",
@@ -461,9 +461,9 @@
       "--storage-prefix",
       "matrixark:scale",
       "--cpp-lib",
-      "C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\output-ubuntu22\\release\\sdk\\lib\\libbcache2.so",
+      "REPO_ROOT\\output-ubuntu22\\release\\sdk\\lib\\libbcache2.so",
       "--rust-cli",
-      "C:\\Users\\Deeproute\\Documents\\Codex\\temporalstore-main-storage-goal-loop\\sdk\\rust\\temporalstore\\target\\release\\matrixark_record_log",
+      "REPO_ROOT\\sdk\\rust\\temporalstore\\target\\release\\matrixark_record_log",
       "--python-ref-store",
       "",
       "--request-timeout-ms",
