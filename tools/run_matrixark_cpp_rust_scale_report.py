@@ -1426,6 +1426,9 @@ def phase0_correctness_gate(backends: dict[str, Json | None], args: argparse.Nam
                 }
             )
         if selected_avg < min_selected_refs:
+            evidence = backend_values[name].setdefault("correctness_evidence", {})
+            if isinstance(evidence, dict):
+                evidence["selected_ref_parity"] = False
             failures.append(
                 {
                     "backend": name,
@@ -1475,7 +1478,9 @@ def phase0_correctness_gate(backends: dict[str, Json | None], args: argparse.Nam
     signature_sources = {
         backend: values.get("selected_ref_signatures_by_query", {})
         for backend, values in backend_values.items()
-        if values.get("status") == "passed" and isinstance(values.get("selected_ref_signatures_by_query"), dict)
+        if backend in selected_for_drift
+        and values.get("status") == "passed"
+        and isinstance(values.get("selected_ref_signatures_by_query"), dict)
     }
     if len(signature_sources) >= 2:
         query_ids = sorted(set().union(*(set(value.keys()) for value in signature_sources.values())))
@@ -2141,6 +2146,11 @@ def comparison(cpp: Json | None, rust: Json | None, args: argparse.Namespace | N
         else:
             passed = True
             threshold_label = "informational"
+        if name == "selected_refs_avg":
+            min_selected_refs = float(phase0.get("minimum_selected_refs") or 1)
+            enough_refs = cpp_float >= min_selected_refs and rust_float >= min_selected_refs
+            passed = bool(passed and enough_refs)
+            threshold_label = f">= {min_selected_refs:g} on both backends and {threshold_label}"
         rows.append(
             {
                 "metric": name,
