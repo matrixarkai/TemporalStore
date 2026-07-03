@@ -177,6 +177,40 @@ REQUIRED_STORAGE_LIFECYCLE_EVIDENCE = [
     "compat/storage_lifecycle_report_pair_corpus.json",
 ]
 
+REQUIRED_AREA_VALIDATOR_EVIDENCE = {
+    "storage_manager_parity": [
+        "tools/validate_storage_lifecycle_parity.py",
+        "tools/validate_storage_parity_report_artifacts.py",
+        "compat/storage_lifecycle_report_pair_corpus.json",
+    ],
+    "store_manager_parity": [
+        "tools/validate_storage_lifecycle_parity.py",
+        "tools/validate_storage_parity_report_artifacts.py",
+        "compat/storage_lifecycle_report_pair_corpus.json",
+    ],
+    "gc_eviction_reclaim_parity": [
+        "tools/validate_storage_lifecycle_parity.py",
+        "tools/validate_storage_parity_report_artifacts.py",
+        "compat/storage_lifecycle_report_pair_corpus.json",
+    ],
+    "zone_stream_segment_slot_parity": [
+        "tools/validate_storage_lifecycle_parity.py",
+        "tools/validate_storage_parity_report_artifacts.py",
+        "compat/storage_lifecycle_report_pair_corpus.json",
+    ],
+    "page_block_page_address_index_parity": [
+        "tools/validate_page_address_compatibility_corpus.py",
+        "tools/validate_page_block_metrics_parity.py",
+        "tools/validate_storage_parity_report_artifacts.py",
+        "compat/storage_lifecycle_report_pair_corpus.json",
+    ],
+    "multi_layer_cache_parity": [
+        "tools/validate_storage_lifecycle_parity.py",
+        "tools/validate_storage_parity_report_artifacts.py",
+        "compat/storage_lifecycle_report_pair_corpus.json",
+    ],
+}
+
 
 def _as_strings(value: Any) -> list[str]:
     if isinstance(value, list):
@@ -263,6 +297,13 @@ def validate_status(data: dict[str, Any]) -> list[str]:
             failures.append(f"{area} cannot be `{status}` while open_blockers remain")
         if status == "production_performance_parity" and data["global_status"].get("production_performance_parity") is not True:
             failures.append(f"{area} cannot claim production performance parity before global parity is true")
+        if status == "feature_correct" and area in REQUIRED_AREA_VALIDATOR_EVIDENCE:
+            _require_contains(
+                evidence,
+                REQUIRED_AREA_VALIDATOR_EVIDENCE[area],
+                f"{area}.validator_evidence",
+                failures,
+            )
 
     if isinstance(areas.get("gc_eviction_reclaim_parity"), dict):
         _require_contains(

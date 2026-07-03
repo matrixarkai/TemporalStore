@@ -136,7 +136,10 @@
         "storage_manager_index_gc_count",
         "storage_manager_delayed_destroy_count",
         "storage_manager_follower_cursor_safety_count",
-        "storage_manager_watermark_progress_count"
+        "storage_manager_watermark_progress_count",
+        "tools/validate_storage_lifecycle_parity.py",
+        "tools/validate_storage_parity_report_artifacts.py",
+        "compat/storage_lifecycle_report_pair_corpus.json"
       ],
       "open_blockers": []
     },
@@ -146,7 +149,10 @@
         "storage_write_sequence",
         "storage_read_sequence",
         "storage_cold_scan_sequence",
-        "storage_reclaim_contract"
+        "storage_reclaim_contract",
+        "tools/validate_storage_lifecycle_parity.py",
+        "tools/validate_storage_parity_report_artifacts.py",
+        "compat/storage_lifecycle_report_pair_corpus.json"
       ],
       "open_blockers": []
     },
@@ -163,7 +169,10 @@
         "stale_blocks_skipped",
         "compaction_reclaimed_bytes",
         "physical_reclaimed_bytes",
-        "physical_reclaim_errors"
+        "physical_reclaim_errors",
+        "tools/validate_storage_lifecycle_parity.py",
+        "tools/validate_storage_parity_report_artifacts.py",
+        "compat/storage_lifecycle_report_pair_corpus.json"
       ],
       "open_blockers": []
     },
@@ -179,7 +188,10 @@
         "slot_dirty_generation_count",
         "slot_tombstone_count",
         "slot_stale_ref_count",
-        "slot_owner_mismatch_count"
+        "slot_owner_mismatch_count",
+        "tools/validate_storage_lifecycle_parity.py",
+        "tools/validate_storage_parity_report_artifacts.py",
+        "compat/storage_lifecycle_report_pair_corpus.json"
       ],
       "open_blockers": []
     },
@@ -192,7 +204,9 @@
         "BlockAddress",
         "PageIndexEntry",
         "BlockIndexEntry",
-        "ObjectIndexEntry"
+        "ObjectIndexEntry",
+        "tools/validate_storage_parity_report_artifacts.py",
+        "compat/storage_lifecycle_report_pair_corpus.json"
       ],
       "open_blockers": []
     },
@@ -205,7 +219,10 @@
         "disk_block_cache",
         "shared_store_read_through",
         "cache_writeback_rejections",
-        "hot_cache_promotions"
+        "hot_cache_promotions",
+        "tools/validate_storage_lifecycle_parity.py",
+        "tools/validate_storage_parity_report_artifacts.py",
+        "compat/storage_lifecycle_report_pair_corpus.json"
       ],
       "open_blockers": []
     }
