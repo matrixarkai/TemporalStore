@@ -103,6 +103,7 @@ PHASES: tuple[Phase, ...] = (
         9,
         "shared storage/proxy/Raft evidence",
         (
+            "validate_temporalstore_cpp_rust_feature_execution.py",
             "validate_storage_proxy_client_parity_coverage.py",
             "validate_raft_storage_parity_evidence.py",
             "validate_page_address_compatibility_corpus.py",

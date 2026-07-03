@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""Validate C++/Rust shared-corpus feature execution parity status.
+
+The shared corpus can temporarily prove some C++ families through static source
+surface gates. This validator keeps that honest: every static or mixed gate must
+have an explicit blocker and expected runner, and full feature parity cannot be
+claimed until all product-behavior families have native C++ execution or an
+approved native adapter contract.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+
+ROOT = Path(__file__).resolve().parents[1]
+MATRIX = ROOT / "compat" / "temporalstore_cpp_rust_feature_execution_matrix.json"
+CORPUS = ROOT / "compat" / "unified_temporalstore_cases.json"
+
+ALLOWED_STATUSES = {
+    "native_executable",
+    "native_adapter_contract",
+    "mixed_native_and_static_surface_gate",
+    "temporary_static_surface_gate",
+}
+COMPLETION_STATUSES = {"native_executable", "native_adapter_contract"}
+STATIC_STATUSES = {"mixed_native_and_static_surface_gate", "temporary_static_surface_gate"}
+
+
+def _as_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _as_strings(value: Any) -> list[str]:
+    return [str(item) for item in _as_list(value)]
+
+
+def _coverage_by_family(corpus: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    coverage = corpus.get("coverage") if isinstance(corpus.get("coverage"), dict) else {}
+    rows = coverage.get("cpp_adapter_coverage")
+    out: dict[str, dict[str, Any]] = {}
+    for row in _as_list(rows):
+        if not isinstance(row, dict):
+            continue
+        family = str(row.get("family") or "")
+        if not family:
+            continue
+        target = out.setdefault(
+            family,
+            {
+                "statuses": set(),
+                "suites": set(),
+                "has_blocker": False,
+                "has_expected_runner": False,
+            },
+        )
+        if row.get("status"):
+            target["statuses"].add(str(row.get("status")))
+        for suite in _as_strings(row.get("suites")):
+            target["suites"].add(suite)
+        if row.get("suite"):
+            target["suites"].add(str(row.get("suite")))
+        if row.get("blocker"):
+            target["has_blocker"] = True
+        if row.get("expected_runner_command") or row.get("runner_command"):
+            target["has_expected_runner"] = True
+    return out
+
+
+def main() -> int:
+    matrix = json.loads(MATRIX.read_text(encoding="utf-8"))
+    corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
+    failures: list[str] = []
+
+    if matrix.get("schema") != "temporalstore_cpp_rust_feature_execution_matrix_v1":
+        failures.append("unexpected schema")
+
+    coverage = _coverage_by_family(corpus)
+    rows = matrix.get("rows")
+    if not isinstance(rows, list):
+        rows = []
+        failures.append("rows must be a list")
+    by_family = {str(row.get("family")): row for row in rows if isinstance(row, dict)}
+    for family, source in coverage.items():
+        row = by_family.get(family)
+        if not isinstance(row, dict):
+            failures.append(f"matrix missing family `{family}` from corpus coverage")
+            continue
+        status = str(row.get("status") or "")
+        if status not in ALLOWED_STATUSES:
+            failures.append(f"{family} invalid status `{status}`")
+        corpus_statuses = source["statuses"]
+        if status not in corpus_statuses and not (
+            status == "native_executable" and corpus_statuses <= STATIC_STATUSES
+        ):
+            failures.append(f"{family} matrix status `{status}` does not match corpus statuses {sorted(corpus_statuses)}")
+        matrix_suites = set(_as_strings(row.get("suites")))
+        missing_suites = sorted(source["suites"] - matrix_suites)
+        if missing_suites:
+            failures.append(f"{family} missing suites from corpus coverage: {', '.join(missing_suites)}")
+        if status in STATIC_STATUSES:
+            if row.get("native_cpp_executable") is True:
+                failures.append(f"{family} static gate cannot claim native_cpp_executable=true")
+            if not row.get("blocker"):
+                failures.append(f"{family} static gate requires blocker")
+            if not row.get("expected_runner_command"):
+                failures.append(f"{family} static gate requires expected_runner_command")
+        if status in COMPLETION_STATUSES:
+            if row.get("native_cpp_executable") is not True:
+                failures.append(f"{family} completion status requires native_cpp_executable=true")
+            if row.get("blocker"):
+                failures.append(f"{family} completion status cannot have blocker")
+
+    unknown = sorted(set(by_family) - set(coverage))
+    if unknown:
+        failures.append(f"matrix has unknown families not present in corpus coverage: {', '.join(unknown)}")
+
+    status = matrix.get("status") if isinstance(matrix.get("status"), dict) else {}
+    blockers = _as_strings(status.get("open_blockers"))
+    feature_correct = status.get("feature_correct") is True
+    all_complete = all(
+        isinstance(row, dict) and row.get("status") in COMPLETION_STATUSES
+        for row in rows
+    ) and bool(rows)
+    if feature_correct and blockers:
+        failures.append("feature_correct cannot be true while open_blockers remain")
+    if feature_correct and not all_complete:
+        failures.append("feature_correct requires every row to be native_executable or native_adapter_contract")
+    if all_complete and not feature_correct:
+        failures.append("all rows complete but status.feature_correct is false")
+
+    if failures:
+        details = "\n".join(f"- {failure}" for failure in failures)
+        raise SystemExit(f"TemporalStore C++/Rust feature execution matrix failed:\n{details}")
+
+    static_count = sum(1 for row in rows if isinstance(row, dict) and row.get("status") in STATIC_STATUSES)
+    print("TemporalStore C++/Rust feature execution matrix is explicit and fail-closed")
+    print(f"- families={len(rows)}")
+    print(f"- static_or_mixed_gates={static_count}")
+    print(f"- feature_correct={feature_correct}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
