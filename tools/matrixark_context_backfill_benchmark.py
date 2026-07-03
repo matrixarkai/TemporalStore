@@ -278,6 +278,8 @@ def run_benchmark(args: argparse.Namespace) -> Json:
         raise BackfillBenchmarkError("--records must be positive")
     if args.batch_size <= 0:
         raise BackfillBenchmarkError("--batch-size must be positive")
+    if args.repeat <= 0:
+        raise BackfillBenchmarkError("--repeat must be positive")
     if args.incremental_records <= 0:
         raise BackfillBenchmarkError("--incremental-records must be positive")
     if float(getattr(args, "min_full_shadow_qps", 0.0) or 0.0) < 0.0:
@@ -289,7 +291,12 @@ def run_benchmark(args: argparse.Namespace) -> Json:
         raise BackfillBenchmarkError("--min-backend-qps-ratio must be between 0 and 1")
     raw_backends = ["temporalstore", "matrixkv"] if args.raw_backends == "both" else [args.raw_backends]
     started = time.perf_counter()
-    results = [run_one_backend(args, raw_backend) for raw_backend in raw_backends]
+    results: list[Json] = []
+    for repeat_index in range(1, args.repeat + 1):
+        for raw_backend in raw_backends:
+            result = run_one_backend(args, raw_backend)
+            result["repeat_index"] = repeat_index
+            results.append(result)
     elapsed_s = max(0.000001, time.perf_counter() - started)
     performance_gate = evaluate_performance_gate(args, results)
     summary = {
@@ -299,6 +306,7 @@ def run_benchmark(args: argparse.Namespace) -> Json:
         "batch_size": args.batch_size,
         "payload_bytes": args.payload_bytes,
         "incremental_records": min(args.incremental_records, args.records),
+        "repeat": args.repeat,
         "raw_backends": raw_backends,
         "elapsed_ms": round(elapsed_s * 1000.0, 3),
         "results": results,
@@ -316,6 +324,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=int(os.environ.get("MATRIXARK_BACKFILL_BENCH_BATCH_SIZE", "1024")))
     parser.add_argument("--payload-bytes", type=int, default=int(os.environ.get("MATRIXARK_BACKFILL_BENCH_PAYLOAD_BYTES", "128")))
     parser.add_argument("--incremental-records", type=int, default=int(os.environ.get("MATRIXARK_BACKFILL_BENCH_INCREMENTAL_RECORDS", "1000")))
+    parser.add_argument("--repeat", type=int, default=int(os.environ.get("MATRIXARK_BACKFILL_BENCH_REPEAT", "1")), help="number of samples to run for each selected raw backend")
     parser.add_argument("--raw-backends", choices=["both", "temporalstore", "matrixkv"], default=os.environ.get("MATRIXARK_BACKFILL_BENCH_RAW_BACKENDS", "both"))
     parser.add_argument("--min-full-shadow-qps", type=float, default=float(os.environ.get("MATRIXARK_BACKFILL_BENCH_MIN_FULL_SHADOW_QPS", "0")))
     parser.add_argument("--min-incremental-repair-qps", type=float, default=float(os.environ.get("MATRIXARK_BACKFILL_BENCH_MIN_INCREMENTAL_REPAIR_QPS", "0")))
