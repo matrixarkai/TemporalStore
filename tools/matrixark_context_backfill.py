@@ -1282,6 +1282,107 @@ def write_plan_artifacts(args: argparse.Namespace, summary: Json) -> Json:
     return artifact_summary
 
 
+def run_verify_plan_artifacts(args: argparse.Namespace) -> Json:
+    output_dir_arg = str(getattr(args, 'plan_output_dir', '') or '')
+    if not output_dir_arg:
+        raise BackfillError('verify_plan_artifacts requires --plan-output-dir')
+    output_dir = Path(output_dir_arg)
+    manifest_path = output_dir / 'artifact_manifest.json'
+    checks: Json = {
+        'output_dir_exists': output_dir.exists() and output_dir.is_dir(),
+        'manifest_found': manifest_path.exists(),
+        'manifest_json_valid': False,
+        'manifest_schema_supported': False,
+        'manifest_job_id_matches': False,
+        'all_files_exist': False,
+        'all_file_sizes_match': False,
+        'all_file_sha256_match': False,
+        'all_executable_bits_match': False,
+    }
+    manifest: Json = {}
+    errors: list[str] = []
+    if not checks['output_dir_exists']:
+        errors.append(f'plan output directory not found: {output_dir}')
+    if not checks['manifest_found']:
+        errors.append(f'artifact manifest not found: {manifest_path}')
+    if checks['manifest_found']:
+        try:
+            decoded = json.loads(manifest_path.read_text(encoding='utf-8'))
+            if isinstance(decoded, dict):
+                manifest = decoded
+                checks['manifest_json_valid'] = True
+            else:
+                errors.append('artifact manifest JSON is not an object')
+        except json.JSONDecodeError as exc:
+            errors.append(f'invalid artifact manifest JSON: {exc}')
+    checks['manifest_schema_supported'] = manifest.get('manifest_schema') == 'matrixark_context_backfill_plan_artifacts_v1'
+    if manifest and not checks['manifest_schema_supported']:
+        errors.append('unsupported artifact manifest schema')
+    expected_job_id = str(getattr(args, 'job_id', '') or '')
+    manifest_job_id = str(manifest.get('job_id') or '')
+    checks['manifest_job_id_matches'] = not expected_job_id or manifest_job_id == expected_job_id
+    if expected_job_id and manifest_job_id != expected_job_id:
+        errors.append(f'artifact manifest job_id mismatch: expected {expected_job_id}, found {manifest_job_id or "<empty>"}')
+    file_checks: list[Json] = []
+    files = manifest.get('files') if isinstance(manifest.get('files'), list) else []
+    for item in files:
+        if not isinstance(item, dict):
+            file_checks.append({'status': 'failed', 'error': 'file entry is not an object'})
+            continue
+        path = Path(str(item.get('path') or ''))
+        exists = path.exists()
+        size_matches = False
+        sha_matches = False
+        executable_matches = False
+        actual_sha = ''
+        actual_size = None
+        actual_executable = False
+        if exists:
+            info = _artifact_file_info(path)
+            actual_sha = str(info['sha256'])
+            actual_size = int(info['size_bytes'])
+            actual_executable = bool(info['executable'])
+            size_matches = actual_size == int(item.get('size_bytes', -1) or -1)
+            sha_matches = actual_sha == str(item.get('sha256') or '')
+            executable_matches = actual_executable == bool(item.get('executable'))
+        file_checks.append({
+            'path': str(path),
+            'exists': exists,
+            'size_matches': size_matches,
+            'sha256_matches': sha_matches,
+            'executable_matches': executable_matches,
+            'expected_size_bytes': item.get('size_bytes'),
+            'actual_size_bytes': actual_size,
+            'expected_sha256': item.get('sha256'),
+            'actual_sha256': actual_sha,
+            'expected_executable': bool(item.get('executable')),
+            'actual_executable': actual_executable,
+        })
+    checks['all_files_exist'] = bool(files) and all(bool(item.get('exists')) for item in file_checks)
+    checks['all_file_sizes_match'] = bool(files) and all(bool(item.get('size_matches')) for item in file_checks)
+    checks['all_file_sha256_match'] = bool(files) and all(bool(item.get('sha256_matches')) for item in file_checks)
+    checks['all_executable_bits_match'] = bool(files) and all(bool(item.get('executable_matches')) for item in file_checks)
+    for item in file_checks:
+        if not item.get('exists'):
+            errors.append(f'missing artifact file: {item.get("path")}')
+        elif not item.get('size_matches') or not item.get('sha256_matches') or not item.get('executable_matches'):
+            errors.append(f'artifact file mismatch: {item.get("path")}')
+    status = 'ok' if all(bool(value) for value in checks.values()) else 'failed'
+    return {
+        'status': status,
+        'mode': 'verify_plan_artifacts',
+        'job_id': expected_job_id or manifest_job_id,
+        'plan_output_dir': str(output_dir),
+        'artifact_manifest': str(manifest_path),
+        'artifact_manifest_sha256': hashlib.sha256(manifest_path.read_bytes()).hexdigest() if manifest_path.exists() else '',
+        'manifest_schema': manifest.get('manifest_schema', ''),
+        'manifest_file_count': len(files),
+        'checks': checks,
+        'file_checks': file_checks,
+        'errors': errors,
+    }
+
+
 def build_plan_windows(args: argparse.Namespace, *, source_range: Json, target_prefix: str) -> Json:
     window_size = int(getattr(args, 'plan_window_size', 0) or 0)
     max_windows = int(getattr(args, 'plan_max_windows', 0) or 0)
@@ -2726,7 +2827,7 @@ def build_parser() -> argparse.ArgumentParser:
         help='raw ingestion message store that owns source-prefix; affects checkpoints, idempotency, manifests, and metrics',
     )
     parser.add_argument('--target-prefix', default='')
-    parser.add_argument('--mode', choices=['plan', 'shadow', 'in_place', 'validate_shadow', 'activate_shadow', 'rollback_activation', 'incremental_repair', 'verify_manifest'], default='shadow')
+    parser.add_argument('--mode', choices=['plan', 'shadow', 'in_place', 'validate_shadow', 'activate_shadow', 'rollback_activation', 'incremental_repair', 'verify_manifest', 'verify_plan_artifacts'], default='shadow')
     parser.add_argument('--confirm-in-place', default='')
     parser.add_argument('--confirm-activate', default='')
     parser.add_argument('--confirm-rollback', default='')
@@ -2805,6 +2906,8 @@ def main() -> int:
             summary = run_incremental_repair(args)
         elif args.mode == 'verify_manifest':
             summary = run_verify_manifest(args)
+        elif args.mode == 'verify_plan_artifacts':
+            summary = run_verify_plan_artifacts(args)
         else:
             summary = run_backfill(args)
     except Exception as exc:
