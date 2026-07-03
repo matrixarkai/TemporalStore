@@ -226,6 +226,20 @@ def import_report(matrix: dict[str, Any], report: dict[str, Any]) -> dict[str, A
         rust_metrics = _metric_block(rust, mode, selected_ref_parity)
         ratios = _ratios(cpp_metrics, rust_metrics)
         status, blockers = _row_status(cpp_metrics, rust_metrics, ratios, thresholds)
+        if blockers:
+            row.update(
+                {
+                    "status": "missing_live_evidence",
+                    "same_config_match": False,
+                    **same_config,
+                    "cpp": cpp_metrics,
+                    "rust": rust_metrics,
+                    "ratios": ratios,
+                    "source_report": str(report.get("artifact_dir") or report.get("report_path") or "input_report"),
+                    "open_blockers": blockers,
+                }
+            )
+            continue
         row.update(
             {
                 "status": status,
