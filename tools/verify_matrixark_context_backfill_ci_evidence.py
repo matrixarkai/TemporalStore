@@ -87,6 +87,7 @@ def verify_manifest(manifest_path: Path, *, require_relative_paths: bool = False
         "manifest_status_ok": False,
         "required_artifacts_present": False,
         "artifact_paths_relative": not require_relative_paths,
+        "artifact_paths_within_dir": False,
         "artifact_paths_readable": False,
         "artifact_sizes_match": False,
         "artifact_sha256_match": False,
@@ -145,14 +146,17 @@ def verify_manifest(manifest_path: Path, *, require_relative_paths: bool = False
 
     readable = True
     paths_relative = True
+    paths_within_dir = True
     sizes_match = True
     hashes_match = True
     verified_artifacts: list[Json] = []
     resolved_artifacts: dict[str, Path] = {}
     manifest_dir = manifest_path.parent
+    resolved_manifest_dir = manifest_dir.resolve()
     for name, artifact in sorted(artifacts.items()):
         if not isinstance(artifact, dict):
             readable = False
+            paths_within_dir = False
             sizes_match = False
             hashes_match = False
             verified_artifacts.append({"name": name, "status": "invalid_artifact_metadata"})
@@ -162,12 +166,27 @@ def verify_manifest(manifest_path: Path, *, require_relative_paths: bool = False
         paths_relative = paths_relative and not artifact_path.is_absolute()
         if not artifact_path.is_absolute():
             artifact_path = manifest_dir / artifact_path
+        path_within_dir = True
+        try:
+            resolved_artifact_path = artifact_path.resolve()
+            resolved_artifact_path.relative_to(resolved_manifest_dir)
+        except (OSError, ValueError):
+            path_within_dir = False
+            paths_within_dir = False
         item: Json = {
             "name": name,
             "path": str(artifact_path),
             "stored_path": stored_path,
             "path_relative": not Path(stored_path).is_absolute(),
+            "path_within_manifest_dir": path_within_dir,
         }
+        if not path_within_dir:
+            readable = False
+            sizes_match = False
+            hashes_match = False
+            item["status"] = "outside_manifest_dir"
+            verified_artifacts.append(item)
+            continue
         if not artifact_path.exists() or not artifact_path.is_file():
             readable = False
             sizes_match = False
@@ -192,6 +211,7 @@ def verify_manifest(manifest_path: Path, *, require_relative_paths: bool = False
         verified_artifacts.append(item)
 
     checks["artifact_paths_relative"] = paths_relative if require_relative_paths else True
+    checks["artifact_paths_within_dir"] = bool(artifacts) and paths_within_dir
     checks["artifact_paths_readable"] = readable
     checks["artifact_sizes_match"] = sizes_match
     checks["artifact_sha256_match"] = hashes_match

@@ -96,7 +96,7 @@ class VerifyMatrixArkContextBackfillCiEvidenceTest(unittest.TestCase):
             evidence = source / "evidence"
             dual_write = evidence / "dual_write"
             dual_write.mkdir(parents=True)
-            readiness = source / "readiness.json"
+            readiness = evidence / "readiness.json"
             artifacts = {
                 "matrixark_context_backfill_readiness_json": write_artifact(readiness, readiness_payload()),
                 "dual_write_dual_write_readiness_json": write_artifact(dual_write / "dual_write_readiness.json", DUAL_WRITE_READINESS_CONTENT),
@@ -109,7 +109,7 @@ class VerifyMatrixArkContextBackfillCiEvidenceTest(unittest.TestCase):
                 artifact_path = Path(str(artifact["path"]))
                 portable_artifacts[name] = {
                     **artifact,
-                    "path": str(artifact_path.relative_to(evidence) if artifact_path.is_relative_to(evidence) else Path("..") / artifact_path.relative_to(source)),
+                    "path": str(artifact_path.relative_to(evidence)),
                 }
             manifest.write_text(json.dumps({
                 "schema": verifier.SCHEMA,
@@ -126,6 +126,50 @@ class VerifyMatrixArkContextBackfillCiEvidenceTest(unittest.TestCase):
             strict = verifier.verify_manifest(relocated / "evidence" / "manifest.json", require_relative_paths=True)
             self.assertEqual(strict["status"], "ok")
             self.assertTrue(strict["checks"]["artifact_paths_relative"])
+            self.assertTrue(strict["checks"]["artifact_paths_within_dir"])
+
+    def test_rejects_top_level_manifest_artifact_path_escape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            evidence = root / "evidence"
+            evidence.mkdir()
+            outside_readiness = root / "readiness.json"
+            artifacts = {
+                "matrixark_context_backfill_readiness_json": write_artifact(outside_readiness, readiness_payload()),
+                "dual_write_dual_write_readiness_json": write_artifact(evidence / "dual_write_readiness.json", DUAL_WRITE_READINESS_CONTENT),
+                "dual_write_dual_write_readiness_prom": write_artifact(evidence / "dual_write_readiness.prom", DUAL_WRITE_PROMETHEUS_CONTENT),
+                "dual_write_manifest_json": write_artifact(evidence / "dual_write_manifest.json", dual_write_manifest_payload()),
+            }
+            artifacts["matrixark_context_backfill_readiness_json"] = {
+                **artifacts["matrixark_context_backfill_readiness_json"],
+                "path": "../readiness.json",
+            }
+            for name, artifact in list(artifacts.items()):
+                if name == "matrixark_context_backfill_readiness_json":
+                    continue
+                artifact_path = Path(str(artifact["path"]))
+                artifacts[name] = {
+                    **artifact,
+                    "path": str(artifact_path.relative_to(evidence)),
+                }
+            manifest = evidence / "manifest.json"
+            manifest.write_text(json.dumps({
+                "schema": verifier.SCHEMA,
+                "status": "ok",
+                "artifacts": artifacts,
+            }, sort_keys=True), encoding="utf-8")
+
+            summary = verifier.verify_manifest(manifest, require_relative_paths=True)
+            self.assertEqual(summary["status"], "failed")
+            self.assertTrue(summary["checks"]["artifact_paths_relative"])
+            self.assertFalse(summary["checks"]["artifact_paths_within_dir"])
+            self.assertFalse(summary["checks"]["artifact_paths_readable"])
+            verified = {item["name"]: item for item in summary["verified_artifacts"]}
+            escaped = verified["matrixark_context_backfill_readiness_json"]
+            self.assertEqual(escaped["status"], "outside_manifest_dir")
+            self.assertFalse(escaped["path_within_manifest_dir"])
+            prom = verifier.to_prometheus(summary)
+            self.assertIn('check="artifact_paths_within_dir"} 0', prom)
 
     def test_rejects_tampered_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -264,7 +308,7 @@ class VerifyMatrixArkContextBackfillCiEvidenceTest(unittest.TestCase):
             dual_write.mkdir(parents=True)
             (evidence / "dual_write_readiness.json").write_text(DUAL_WRITE_READINESS_CONTENT, encoding="utf-8")
             artifacts = {
-                "matrixark_context_backfill_readiness_json": write_artifact(root / "readiness.json", readiness_payload()),
+                "matrixark_context_backfill_readiness_json": write_artifact(evidence / "readiness.json", readiness_payload()),
                 "dual_write_dual_write_readiness_json": write_artifact(evidence / "dual_write_readiness.json", DUAL_WRITE_READINESS_CONTENT),
                 "dual_write_dual_write_readiness_prom": write_artifact(dual_write / "dual_write_readiness.prom", DUAL_WRITE_PROMETHEUS_CONTENT),
                 "dual_write_manifest_json": write_artifact(
@@ -278,7 +322,7 @@ class VerifyMatrixArkContextBackfillCiEvidenceTest(unittest.TestCase):
                 artifact_path = Path(str(artifact["path"]))
                 portable_artifacts[name] = {
                     **artifact,
-                    "path": str(artifact_path.relative_to(evidence) if artifact_path.is_relative_to(evidence) else Path("..") / artifact_path.relative_to(root)),
+                    "path": str(artifact_path.relative_to(evidence)),
                 }
             manifest.write_text(json.dumps({
                 "schema": verifier.SCHEMA,
