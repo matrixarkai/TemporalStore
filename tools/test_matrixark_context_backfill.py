@@ -347,6 +347,26 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(checkpoint["source_range"]["effective_end_seq"], 3)
             self.assertEqual(checkpoint["source_range"]["discovered_record_count"], 2)
 
+    def test_scan_hash_uses_numeric_field_order_and_exact_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            shard_key = "matrixark:mcp:records:000000"
+            kv.hset(shard_key, "10", json.dumps({"record_type": "context_event", "event_id_hash": 10}))
+            kv.hset(shard_key, "2", json.dumps({"record_type": "context_event", "event_id_hash": 2}))
+            kv.hset(shard_key, "1", json.dumps({"record_type": "context_event", "event_id_hash": 1}))
+
+            summary = backfill.run_backfill(self.make_args(path, batch_size=8, resume=False))
+
+            self.assertEqual(summary["status"], "ok")
+            self.assertEqual(summary["metrics"]["scanned"], 3)
+            self.assertEqual(summary["metrics"]["written"], 3)
+            self.assertEqual(summary["source_range"]["scan_mode"], "scan_hash")
+            self.assertEqual(summary["source_range"]["discovered_start_seq"], 1)
+            self.assertEqual(summary["source_range"]["discovered_high_watermark_seq"], 10)
+            records = read_target_records(backfill.LocalJsonKV(path), "matrixark:context_backfill:test")
+            self.assertEqual([record["event_id_hash"] for record in records], [1, 2, 10])
+
     def test_scan_hash_respects_sequence_range(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "kv.json"
