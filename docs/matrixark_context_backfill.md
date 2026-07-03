@@ -206,6 +206,12 @@ matrixark_context_backfill_incremental_repair_validation_status
 
 The readiness validator generates Prometheus output for both `temporalstore` and `matrixkv` raw modes and fails if these metric families disappear.
 
+## CI Readiness Gate
+
+The open-source CI entrypoint is `tools/run_matrixark_context_backfill_ci_gate_ubuntu22.sh`. It is designed for Ubuntu 22 runners in GitHub Actions, local CI, Buildkite, Jenkins, or a release shell. The gate compiles the backfill tools, runs the backfill, benchmark, dual-write, and readiness unit tests, runs `tools/validate_open_source_readiness.py`, then runs `tools/validate_matrixark_context_backfill_readiness.py` with both raw-message backends. The gate writes `matrixark_context_backfill_readiness.json` as the release evidence artifact.
+
+Keep this gate green before changing backfill defaults, raw-message storage behavior, validation semantics, or benchmark thresholds. CI systems should call this script directly and upload `matrixark_context_backfill_readiness.json` as an artifact.
+
 ## Backfill Throughput Benchmark
 
 Use `tools/matrixark_context_backfill_benchmark.py` as the local repeatable speed gate for the backfill path itself. It seeds a local raw ingestion log, runs a full shadow backfill, builds a bounded incremental repair shadow, then promotes that repair into an active prefix. Run it for both raw-message store options before claiming a performance improvement.
