@@ -20,6 +20,7 @@ from import_temporalstore_cpp_rust_performance_evidence import (
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ARTIFACT_ROOT = ROOT / "docs" / "benchmarks"
 RUNNER = "tools/run_matrixark_cpp_rust_scale_report.py"
+IMPORTER = "tools/import_temporalstore_cpp_rust_performance_evidence.py"
 WORKLOAD_RUN_ARGS = {
     "1K_event_ingestion": ["--events", "1000"],
     "10K_event_ingestion": ["--events", "10000"],
@@ -29,6 +30,10 @@ WORKLOAD_RUN_ARGS = {
     "retrieve_workers_16": ["--retrieve-workers", "16"],
     "retrieve_workers_32": ["--retrieve-workers", "32"],
 }
+
+
+def _artifact_dir(workload: str) -> str:
+    return f"docs/benchmarks/parity_{workload}"
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -41,6 +46,7 @@ def _row_by_workload(matrix: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def _next_run_command(workload: str) -> list[str]:
+    artifact_dir = _artifact_dir(workload)
     return [
         "python",
         RUNNER,
@@ -49,9 +55,19 @@ def _next_run_command(workload: str) -> list[str]:
         "cpp",
         "rust",
         "--artifact-dir",
-        f"docs/benchmarks/parity_{workload}",
+        artifact_dir,
         "--require-phase-scale-matrix",
         "--require-perf-parity",
+    ]
+
+
+def _import_command(workload: str) -> list[str]:
+    return [
+        "python",
+        IMPORTER,
+        "--report",
+        f"{_artifact_dir(workload)}/comparison.json",
+        "--validate",
     ]
 
 
@@ -169,7 +185,10 @@ def audit_artifacts(artifact_root: Path, matrix_path: Path) -> dict[str, Any]:
             "blockers": row.get("blockers", []),
             "next_run_hint": {
                 "workload": workload,
+                "artifact_dir": _artifact_dir(workload),
+                "comparison_path": f"{_artifact_dir(workload)}/comparison.json",
                 "command": _next_run_command(workload),
+                "import_command": _import_command(workload),
                 "required_same_config_fields": SAME_CONFIG_KEYS,
                 "required_result": (
                     "same-config C++ and Rust comparison.json with passed backends, "
@@ -183,7 +202,10 @@ def audit_artifacts(artifact_root: Path, matrix_path: Path) -> dict[str, Any]:
             "workload": workload,
             "reason": details["status"],
             "blockers": details["blockers"],
+            "artifact_dir": details["next_run_hint"]["artifact_dir"],
+            "comparison_path": details["next_run_hint"]["comparison_path"],
             "command": details["next_run_hint"]["command"],
+            "import_command": details["next_run_hint"]["import_command"],
             "required_same_config_fields": details["next_run_hint"]["required_same_config_fields"],
             "required_result": details["next_run_hint"]["required_result"],
         }

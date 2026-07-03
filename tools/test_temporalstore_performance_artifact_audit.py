@@ -42,9 +42,21 @@ class PerformanceArtifactAuditTest(unittest.TestCase):
         next_runs = audit["next_required_runs"]
         self.assertEqual(next_runs[0]["workload"], "10K_event_ingestion")
         self.assertEqual(next_runs[0]["reason"], "missing_candidate")
+        self.assertEqual(next_runs[0]["artifact_dir"], "docs/benchmarks/parity_10K_event_ingestion")
+        self.assertEqual(next_runs[0]["comparison_path"], "docs/benchmarks/parity_10K_event_ingestion/comparison.json")
         self.assertIn("--events", next_runs[0]["command"])
         self.assertIn("10000", next_runs[0]["command"])
         self.assertIn("--require-perf-parity", next_runs[0]["command"])
+        self.assertEqual(
+            next_runs[0]["import_command"],
+            [
+                "python",
+                "tools/import_temporalstore_cpp_rust_performance_evidence.py",
+                "--report",
+                "docs/benchmarks/parity_10K_event_ingestion/comparison.json",
+                "--validate",
+            ],
+        )
         self.assertEqual(next_runs[-1]["workload"], "1K_event_ingestion")
         self.assertEqual(next_runs[-1]["reason"], "blocked_no_importable")
         self.assertIn("message_qps_ratio_below_0.8", next_runs[-1]["blockers"])
