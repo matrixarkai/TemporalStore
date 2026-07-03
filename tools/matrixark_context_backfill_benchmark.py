@@ -221,42 +221,97 @@ def summarize_backend_qps(results: list[Json]) -> Json:
     }
 
 
+def _qps_values_by_backend(results: list[Json], phase: str) -> dict[str, list[float]]:
+    grouped: dict[str, list[float]] = {}
+    for result in results:
+        grouped.setdefault(str(result["raw_backend"]), []).append(float(result[phase]["qps"]))
+    return grouped
+
+
+def _aggregate_qps(values: list[float], aggregation: str) -> float:
+    if not values:
+        return 0.0
+    if aggregation == "avg":
+        return statistics.fmean(values)
+    return min(values)
+
+
 def evaluate_performance_gate(args: argparse.Namespace, results: list[Json]) -> Json:
     min_full = float(getattr(args, "min_full_shadow_qps", 0.0) or 0.0)
     min_repair = float(getattr(args, "min_incremental_repair_qps", 0.0) or 0.0)
     min_backend_ratio = float(getattr(args, "min_backend_qps_ratio", 0.0) or 0.0)
+    gate_aggregation = str(getattr(args, "gate_aggregation", "min") or "min")
     checks: list[Json] = []
-    for result in results:
-        backend = result["raw_backend"]
-        full_qps = float(result["full_shadow"]["qps"])
-        repair_qps = float(result["incremental_repair"]["qps"])
-        checks.append({
-            "raw_backend": backend,
-            "metric": "full_shadow_qps",
-            "observed": round(full_qps, 3),
-            "minimum": min_full,
-            "passed": full_qps >= min_full,
-        })
-        checks.append({
-            "raw_backend": backend,
-            "metric": "incremental_repair_qps",
-            "observed": round(repair_qps, 3),
-            "minimum": min_repair,
-            "passed": repair_qps >= min_repair,
-        })
+    if gate_aggregation == "sample":
+        for result in results:
+            backend = result["raw_backend"]
+            repeat_index = int(result.get("repeat_index", 1))
+            full_qps = float(result["full_shadow"]["qps"])
+            repair_qps = float(result["incremental_repair"]["qps"])
+            checks.append({
+                "raw_backend": backend,
+                "metric": "full_shadow_qps",
+                "aggregation": "sample",
+                "repeat_index": repeat_index,
+                "observed": round(full_qps, 3),
+                "minimum": min_full,
+                "passed": full_qps >= min_full,
+            })
+            checks.append({
+                "raw_backend": backend,
+                "metric": "incremental_repair_qps",
+                "aggregation": "sample",
+                "repeat_index": repeat_index,
+                "observed": round(repair_qps, 3),
+                "minimum": min_repair,
+                "passed": repair_qps >= min_repair,
+            })
+    else:
+        for backend, values in _qps_values_by_backend(results, "full_shadow").items():
+            observed = _aggregate_qps(values, gate_aggregation)
+            checks.append({
+                "raw_backend": backend,
+                "metric": "full_shadow_qps",
+                "aggregation": gate_aggregation,
+                "samples": len(values),
+                "observed": round(observed, 3),
+                "minimum": min_full,
+                "passed": observed >= min_full,
+            })
+        for backend, values in _qps_values_by_backend(results, "incremental_repair").items():
+            observed = _aggregate_qps(values, gate_aggregation)
+            checks.append({
+                "raw_backend": backend,
+                "metric": "incremental_repair_qps",
+                "aggregation": gate_aggregation,
+                "samples": len(values),
+                "observed": round(observed, 3),
+                "minimum": min_repair,
+                "passed": observed >= min_repair,
+            })
     if min_backend_ratio > 0.0 and len(results) > 1:
         for metric, path in [
             ("full_shadow_qps_ratio", ("full_shadow", "qps")),
             ("incremental_shadow_qps_ratio", ("incremental_shadow", "qps")),
             ("incremental_repair_qps_ratio", ("incremental_repair", "qps")),
         ]:
-            values = [float(result[path[0]][path[1]]) for result in results]
+            if gate_aggregation == "sample":
+                values = [float(result[path[0]][path[1]]) for result in results]
+                samples = len(values)
+            else:
+                values = [
+                    _aggregate_qps(backend_values, gate_aggregation)
+                    for backend_values in _qps_values_by_backend(results, path[0]).values()
+                ]
+                samples = len(results)
             minimum = min(values)
             maximum = max(values)
             observed = (minimum / maximum) if maximum > 0.0 else 0.0
             checks.append({
                 "raw_backend": "all",
                 "metric": metric,
+                "aggregation": gate_aggregation,
+                "samples": samples,
                 "observed": round(observed, 6),
                 "minimum": min_backend_ratio,
                 "passed": observed >= min_backend_ratio,
@@ -269,6 +324,7 @@ def evaluate_performance_gate(args: argparse.Namespace, results: list[Json]) -> 
         "min_full_shadow_qps": min_full,
         "min_incremental_repair_qps": min_repair,
         "min_backend_qps_ratio": min_backend_ratio,
+        "gate_aggregation": gate_aggregation,
         "checks": checks,
     }
 
@@ -289,6 +345,9 @@ def run_benchmark(args: argparse.Namespace) -> Json:
     min_backend_ratio = float(getattr(args, "min_backend_qps_ratio", 0.0) or 0.0)
     if min_backend_ratio < 0.0 or min_backend_ratio > 1.0:
         raise BackfillBenchmarkError("--min-backend-qps-ratio must be between 0 and 1")
+    args.gate_aggregation = str(getattr(args, "gate_aggregation", "min") or "min")
+    if args.gate_aggregation not in {"sample", "min", "avg"}:
+        raise BackfillBenchmarkError("--gate-aggregation must be sample, min, or avg")
     raw_backends = ["temporalstore", "matrixkv"] if args.raw_backends == "both" else [args.raw_backends]
     started = time.perf_counter()
     results: list[Json] = []
@@ -329,6 +388,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-full-shadow-qps", type=float, default=float(os.environ.get("MATRIXARK_BACKFILL_BENCH_MIN_FULL_SHADOW_QPS", "0")))
     parser.add_argument("--min-incremental-repair-qps", type=float, default=float(os.environ.get("MATRIXARK_BACKFILL_BENCH_MIN_INCREMENTAL_REPAIR_QPS", "0")))
     parser.add_argument("--min-backend-qps-ratio", type=float, default=float(os.environ.get("MATRIXARK_BACKFILL_BENCH_MIN_BACKEND_QPS_RATIO", "0")), help="optional parity floor: slowest selected backend QPS divided by fastest selected backend QPS, 0 disables")
+    parser.add_argument("--gate-aggregation", choices=["sample", "min", "avg"], default=os.environ.get("MATRIXARK_BACKFILL_BENCH_GATE_AGGREGATION", "min"), help="how performance gates aggregate repeated samples: min is the conservative default, avg smooths noisy local runs, sample checks every sample")
     parser.add_argument("--json-output", default=os.environ.get("MATRIXARK_BACKFILL_BENCH_JSON", ""))
     return parser
 

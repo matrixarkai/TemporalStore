@@ -23,6 +23,7 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
             "min_full_shadow_qps": 0.0,
             "min_incremental_repair_qps": 0.0,
             "min_backend_qps_ratio": 0.0,
+            "gate_aggregation": "min",
             "json_output": "",
         }
         values.update(overrides)
@@ -66,8 +67,22 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
         self.assertEqual(summary["repeat"], 2)
         self.assertEqual(summary["raw_backends"], ["temporalstore"])
         self.assertEqual([result["repeat_index"] for result in summary["results"]], [1, 2])
-        self.assertEqual(len(summary["performance_gate"]["checks"]), 4)
+        self.assertEqual(summary["performance_gate"]["gate_aggregation"], "min")
+        self.assertEqual(len(summary["performance_gate"]["checks"]), 2)
+        self.assertTrue(all(check["samples"] == 2 for check in summary["performance_gate"]["checks"]))
 
+    def test_local_benchmark_can_gate_each_sample(self) -> None:
+        summary = bench.run_benchmark(self.make_args(
+            records=16,
+            incremental_records=4,
+            raw_backends="temporalstore",
+            repeat=2,
+            gate_aggregation="sample",
+        ))
+        self.assertEqual(summary["status"], "ok")
+        self.assertEqual(summary["performance_gate"]["gate_aggregation"], "sample")
+        self.assertEqual(len(summary["performance_gate"]["checks"]), 4)
+        self.assertEqual([check["repeat_index"] for check in summary["performance_gate"]["checks"]], [1, 1, 2, 2])
 
     def test_performance_gate_passes_and_fails_thresholds(self) -> None:
         passing = bench.run_benchmark(self.make_args(records=32, incremental_records=8, min_full_shadow_qps=1.0, min_incremental_repair_qps=1.0))
@@ -78,6 +93,7 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
         parity = bench.run_benchmark(self.make_args(records=32, incremental_records=8, min_backend_qps_ratio=0.000001))
         self.assertEqual(parity["status"], "ok")
         self.assertTrue(parity["performance_gate"]["enabled"])
+        self.assertEqual(parity["performance_gate"]["gate_aggregation"], "min")
         parity_checks = [check for check in parity["performance_gate"]["checks"] if check["metric"].endswith("_qps_ratio")]
         self.assertEqual(len(parity_checks), 3)
 
@@ -109,6 +125,10 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
     def test_rejects_invalid_backend_ratio(self) -> None:
         with self.assertRaises(bench.BackfillBenchmarkError):
             bench.run_benchmark(self.make_args(min_backend_qps_ratio=1.01))
+
+    def test_rejects_invalid_gate_aggregation(self) -> None:
+        with self.assertRaises(bench.BackfillBenchmarkError):
+            bench.run_benchmark(self.make_args(gate_aggregation="median"))
 
 
 if __name__ == "__main__":
