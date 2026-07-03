@@ -1233,6 +1233,20 @@ def run_backfill(args: argparse.Namespace) -> Json:
         })
         if source_range.get('effective_end_seq') is None and discovered_max_sequence is not None:
             source_range['effective_end_seq'] = discovered_max_sequence + 1
+        if not args.dry_run and checkpoint is not None and checkpoint.get('last_sequence') is not None:
+            checkpoint = build_checkpoint_metadata(
+                job_id=args.job_id,
+                source_prefix=args.source_prefix,
+                target_prefix=target_prefix,
+                raw_backend=raw_backend,
+                mode=args.mode,
+                partial=partial,
+                source_range=source_range,
+                batch_size=args.batch_size,
+                last_sequence=int(checkpoint['last_sequence']),
+                metrics=metrics,
+            )
+            kv.put_string(cp_key, json.dumps(checkpoint, sort_keys=True, separators=(',', ':')))
     summary = metrics.to_json(
         job_id=args.job_id,
         source_prefix=args.source_prefix,

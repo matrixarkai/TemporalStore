@@ -238,6 +238,8 @@ Every run summary and manifest includes a `resume_state` block with `resume_requ
 
 Checkpoints advance after the pending target batch is flushed and counted. After a restart, the runner may replay at most the last uncommitted batch. Target-side idempotency keys prevent duplicate appends for already written records.
 
+For scan-hash fallback jobs, the runner refreshes the final checkpoint after discovery completes so checkpoint `source_range` matches the JSON summary and manifest. This keeps resume audits accurate even though intermediate per-batch checkpoints are written before the final discovered high-watermark is known.
+
 Use `--resume=0` when intentionally rerunning a job from `--start-seq`.
 
 ## Dead Letters

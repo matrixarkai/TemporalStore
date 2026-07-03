@@ -215,6 +215,21 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertIn('property="source_record_count_estimated"} 1', prom_text)
             self.assertIn('property="user_bounded_end"} 0', prom_text)
             self.assertIn('scan_mode="scan_hash"} 1', prom_text)
+            cp_key = backfill.checkpoint_key(
+                "matrixark:context_backfill:test",
+                "unit",
+                source_prefix="matrixark:mcp",
+                raw_backend="temporalstore",
+                partial=summary["partial"],
+            )
+            checkpoint = json.loads(backfill.LocalJsonKV(path).get_string(cp_key))
+            self.assertEqual(checkpoint["last_sequence"], 2)
+            self.assertEqual(checkpoint["source_range"]["scan_mode"], "scan_hash")
+            self.assertEqual(checkpoint["source_range"]["source_record_count"], 2)
+            self.assertTrue(checkpoint["source_range"]["source_record_count_estimated"])
+            self.assertEqual(checkpoint["source_range"]["source_high_watermark_seq"], 2)
+            self.assertEqual(checkpoint["source_range"]["effective_end_seq"], 3)
+            self.assertEqual(checkpoint["source_range"]["discovered_record_count"], 2)
 
     def test_scan_hash_respects_sequence_range(self):
         with tempfile.TemporaryDirectory() as tmp:
