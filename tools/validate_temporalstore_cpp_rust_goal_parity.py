@@ -65,6 +65,31 @@ REQUIRED_SCALE_METRICS = [
     "error_count",
     "fallback_flags",
     "selected_ref_parity",
+    "scanned_records",
+    "cache_hit_rate",
+    "append_watermark",
+    "compaction_watermark",
+]
+
+REQUIRED_STORAGE_MANAGER_EVIDENCE = [
+    "storage_manager_prepare_count",
+    "storage_manager_reclaim_count",
+    "storage_manager_evict_count",
+    "storage_manager_expire_count",
+    "storage_manager_page_gc_count",
+    "storage_manager_block_gc_count",
+    "storage_manager_compaction_count",
+    "storage_manager_index_gc_count",
+    "storage_manager_delayed_destroy_count",
+    "storage_manager_follower_cursor_safety_count",
+    "storage_manager_watermark_progress_count",
+]
+
+REQUIRED_STORE_MANAGER_EVIDENCE = [
+    "storage_write_sequence",
+    "storage_read_sequence",
+    "storage_cold_scan_sequence",
+    "storage_reclaim_contract",
 ]
 
 REQUIRED_GC_RECLAIM_EVIDENCE = [
@@ -99,6 +124,19 @@ REQUIRED_INDEX_EVIDENCE = [
     "ObjectIndexEntry",
 ]
 
+REQUIRED_ZONE_STREAM_SEGMENT_SLOT_EVIDENCE = [
+    "stream_rollover_count",
+    "segment_open_count",
+    "segment_sealed_count",
+    "storage_zone_total_bytes",
+    "storage_zone_used_bytes",
+    "storage_zone_stale_bytes",
+    "slot_dirty_generation_count",
+    "slot_tombstone_count",
+    "slot_stale_ref_count",
+    "slot_owner_mismatch_count",
+]
+
 REQUIRED_GENERATED_FROM = [
     "tools/validate_storage_engine_9_phase_parity.py",
     "tools/validate_temporalstore_cpp_rust_performance_parity.py",
@@ -127,24 +165,7 @@ def _require_contains(haystack: list[str], needles: list[str], label: str, failu
         failures.append(f"{label} missing: {', '.join(missing)}")
 
 
-def main() -> int:
-    subprocess.run([sys.executable, str(FEATURE_EXECUTION_VALIDATOR)], cwd=ROOT, check=True)
-    subprocess.run([sys.executable, str(PERFORMANCE_VALIDATOR)], cwd=ROOT, check=True)
-    audit_fd, audit_path = tempfile.mkstemp(prefix="temporalstore-perf-artifact-audit-", suffix=".json")
-    try:
-        try:
-            os.close(audit_fd)
-        except OSError:
-            pass
-        Path(audit_path).unlink(missing_ok=True)
-        subprocess.run(
-            [sys.executable, str(PERFORMANCE_ARTIFACT_AUDIT), "--output", audit_path],
-            cwd=ROOT,
-            check=True,
-        )
-    finally:
-        Path(audit_path).unlink(missing_ok=True)
-    data = json.loads(STATUS.read_text(encoding="utf-8"))
+def validate_status(data: dict[str, Any]) -> list[str]:
     failures: list[str] = []
 
     if data.get("schema") != "temporalstore_cpp_rust_goal_parity_status_v1":
@@ -232,6 +253,20 @@ def main() -> int:
             "performance_parity.evidence",
             failures,
         )
+    if isinstance(areas.get("storage_manager_parity"), dict):
+        _require_contains(
+            _as_strings(areas["storage_manager_parity"].get("evidence")),
+            REQUIRED_STORAGE_MANAGER_EVIDENCE,
+            "storage_manager_parity.evidence",
+            failures,
+        )
+    if isinstance(areas.get("store_manager_parity"), dict):
+        _require_contains(
+            _as_strings(areas["store_manager_parity"].get("evidence")),
+            REQUIRED_STORE_MANAGER_EVIDENCE,
+            "store_manager_parity.evidence",
+            failures,
+        )
     if isinstance(areas.get("multi_layer_cache_parity"), dict):
         _require_contains(
             _as_strings(areas["multi_layer_cache_parity"].get("evidence")),
@@ -246,11 +281,44 @@ def main() -> int:
             "page_block_page_address_index_parity.evidence",
             failures,
         )
+    if isinstance(areas.get("zone_stream_segment_slot_parity"), dict):
+        _require_contains(
+            _as_strings(areas["zone_stream_segment_slot_parity"].get("evidence")),
+            REQUIRED_ZONE_STREAM_SEGMENT_SLOT_EVIDENCE,
+            "zone_stream_segment_slot_parity.evidence",
+            failures,
+        )
 
+    return failures
+
+
+def main() -> int:
+    subprocess.run([sys.executable, str(FEATURE_EXECUTION_VALIDATOR)], cwd=ROOT, check=True)
+    subprocess.run([sys.executable, str(PERFORMANCE_VALIDATOR)], cwd=ROOT, check=True)
+    audit_fd, audit_path = tempfile.mkstemp(prefix="temporalstore-perf-artifact-audit-", suffix=".json")
+    try:
+        try:
+            os.close(audit_fd)
+        except OSError:
+            pass
+        Path(audit_path).unlink(missing_ok=True)
+        subprocess.run(
+            [sys.executable, str(PERFORMANCE_ARTIFACT_AUDIT), "--output", audit_path],
+            cwd=ROOT,
+            check=True,
+        )
+    finally:
+        Path(audit_path).unlink(missing_ok=True)
+    data = json.loads(STATUS.read_text(encoding="utf-8"))
+    failures = validate_status(data)
     if failures:
         details = "\n".join(f"- {failure}" for failure in failures)
         raise SystemExit(f"TemporalStore C++/Rust goal parity status failed:\n{details}")
 
+    global_status = data.get("global_status")
+    if not isinstance(global_status, dict):
+        global_status = {}
+    global_blockers = _as_strings(global_status.get("open_blockers"))
     print("TemporalStore C++/Rust goal parity status is explicit and fail-closed")
     print(f"- goal_complete={global_status.get('goal_complete')}")
     print(f"- production_performance_parity={global_status.get('production_performance_parity')}")
