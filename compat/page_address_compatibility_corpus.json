@@ -444,6 +444,19 @@
           "storage_uri": "local://zone-11/segment-1",
           "checksum": "sha256:b1"
         }
+      ],
+      "slot_index_entries": [
+        {
+          "slot": "slot:7",
+          "object_keys": [
+            "feature:tenant=77:user=9:object=storage-feature"
+          ],
+          "page_address_ids": [
+            "a1",
+            "a2",
+            "b1"
+          ]
+        }
       ]
     },
     "expected_after_restart": {
@@ -457,7 +470,8 @@
         "b1"
       ],
       "unreadable_page_refs": 0,
-      "checksum_mismatches": 0
+      "checksum_mismatches": 0,
+      "slot_index_entry_count": 1
     }
   }
 }

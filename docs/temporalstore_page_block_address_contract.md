@@ -743,7 +743,10 @@ Shared C++/Rust parity cases must cover:
 - encode/decode `BlockAddress`;
 - stable address ordering;
 - timestamp range lookup through `PageIndex`;
+- slot lookup through `Slot` index;
 - object lookup through `ObjectIndexEntry`;
+- page address lookup through `PageIndexEntry`;
+- durable location lookup through `BlockIndexEntry`;
 - page split and page-chain update;
 - compaction rewrite preserving logical records;
 - stale generation rejection;
@@ -759,11 +762,51 @@ PageAddress and BlockAddress subset that both C++ and Rust must consume:
 - stable ordering by `{shard_id, zone_id, segment_id, page_id, offset}`;
 - stable `BlockAddress` ordering by `{shard_id, zone_id, block_id, offset}`;
 - timestamp range -> page address lookup;
+- slot index maps `Slot` -> object refs and page refs;
+- object index maps `{model/table/object_key}` -> current page chain;
+- page index maps logical timestamp/key ranges -> page addresses;
+- block index maps page addresses -> physical durable locations;
 - page split behavior;
 - page compaction rewrite preserving logical records;
 - tombstone filtering that skips stale records on normal reads;
 - cold scan reads that do not warm the serving cache;
 - crash/restart rebuild of `PageIndex`, `BlockIndex`, and `ObjectIndexEntry`.
+
+Lifecycle parity reports must also include `storage_index_contract` with these
+required fields:
+
+- `page_address_codec`
+- `block_address_codec`
+- `stable_order`
+- `slot_index`
+- `object_index_entry`
+- `page_index`
+- `block_index`
+- `required_behaviors`
+- `page_address_encode_decode`
+- `block_address_encode_decode`
+- `stable_order_verified`
+- `timestamp_range_lookup_verified`
+- `slot_index_entry_count`
+- `slot_object_ref_count`
+- `slot_page_ref_count`
+- `object_index_entry_count`
+- `page_index_entry_count`
+- `block_index_entry_count`
+- `restart_rebuild_verified`
+- `unreadable_page_refs`
+- `checksum_mismatches`
+
+Required `storage_index_contract.required_behaviors` values:
+
+- `page_address_encode_decode`
+- `page_address_stable_order`
+- `timestamp_range_page_lookup`
+- `slot_index_maps_slot_to_object_page_refs`
+- `object_index_maps_model_table_object_key_to_page_chain`
+- `page_index_maps_logical_ranges_to_page_addresses`
+- `block_index_maps_page_addresses_to_durable_locations`
+- `restart_rebuilds_page_block_object_indexes`
 
 `tools/validate_page_address_compatibility_corpus.py` is the lightweight
 fail-closed validator for this shared corpus. Native C++ and Rust tests should
@@ -967,6 +1010,7 @@ Rust before comparison tools accept them:
 - `storage_read_contract`
 - `storage_cold_scan_contract`
 - `storage_manager_contract`
+- `storage_index_contract`
 - `storage_read_sequence`
 - `storage_cold_scan_sequence`
 - `storage_lifecycle_phases`

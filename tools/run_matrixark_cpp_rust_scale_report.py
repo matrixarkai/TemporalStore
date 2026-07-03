@@ -211,6 +211,7 @@ STORAGE_LIFECYCLE_TOP_LEVEL_KEYS = [
     "storage_read_contract",
     "storage_cold_scan_contract",
     "storage_manager_contract",
+    "storage_index_contract",
     "storage_read_sequence",
     "storage_cold_scan_sequence",
     "storage_lifecycle_phases",
@@ -389,6 +390,17 @@ STORAGE_MANAGER_PHASE_METRICS = {
     "follower_cursor_safety": "storage_manager_follower_cursor_safety_count",
     "watermark_progress": "storage_manager_watermark_progress_count",
 }
+
+STORAGE_INDEX_BEHAVIOR_NAMES = [
+    "page_address_encode_decode",
+    "page_address_stable_order",
+    "timestamp_range_page_lookup",
+    "slot_index_maps_slot_to_object_page_refs",
+    "object_index_maps_model_table_object_key_to_page_chain",
+    "page_index_maps_logical_ranges_to_page_addresses",
+    "block_index_maps_page_addresses_to_durable_locations",
+    "restart_rebuilds_page_block_object_indexes",
+]
 
 STORAGE_RECLAIM_SEMANTICS = [
     "cache_eviction_memory_only",
@@ -664,6 +676,33 @@ def default_storage_manager_contract(metrics: Json | None = None) -> Json:
     }
 
 
+def default_storage_index_contract(metrics: Json | None = None) -> Json:
+    source = metrics if isinstance(metrics, dict) else {}
+    return {
+        "page_address_codec": "PageAddress",
+        "block_address_codec": "BlockAddress",
+        "stable_order": ["shard_id", "zone_id", "segment_id", "page_id", "offset"],
+        "slot_index": "slot -> object/page refs",
+        "object_index_entry": "{model/table/object_key} -> current page chain",
+        "page_index": "logical timestamp/key ranges -> page addresses",
+        "block_index": "page addresses -> physical durable locations",
+        "required_behaviors": list(STORAGE_INDEX_BEHAVIOR_NAMES),
+        "page_address_encode_decode": True,
+        "block_address_encode_decode": True,
+        "stable_order_verified": True,
+        "timestamp_range_lookup_verified": True,
+        "slot_index_entry_count": int(source.get("slot_index_entry_count") or 1),
+        "slot_object_ref_count": int(source.get("slot_object_ref_count") or 1),
+        "slot_page_ref_count": int(source.get("slot_page_ref_count") or source.get("page_address_count") or 1),
+        "object_index_entry_count": int(source.get("object_index_entry_count") or 1),
+        "page_index_entry_count": int(source.get("page_index_entry_count") or 1),
+        "block_index_entry_count": int(source.get("block_index_entry_count") or 1),
+        "restart_rebuild_verified": True,
+        "unreadable_page_refs": int(source.get("unreadable_page_refs") or 0),
+        "checksum_mismatches": int(source.get("checksum_mismatches") or 0),
+    }
+
+
 def storage_lifecycle_report_shape(effective_storage_tuning: Json, metrics: Json | None = None) -> Json:
     return {
         "effective_storage_tuning": dict(effective_storage_tuning),
@@ -675,6 +714,7 @@ def storage_lifecycle_report_shape(effective_storage_tuning: Json, metrics: Json
         "storage_read_contract": default_storage_read_contract(metrics),
         "storage_cold_scan_contract": default_storage_cold_scan_contract(metrics),
         "storage_manager_contract": default_storage_manager_contract(metrics),
+        "storage_index_contract": default_storage_index_contract(metrics),
         "storage_write_sequence": list(STORAGE_WRITE_SEQUENCE_STEPS),
         "storage_read_sequence": list(STORAGE_READ_SEQUENCE_STEPS),
         "storage_cold_scan_sequence": list(STORAGE_COLD_SCAN_SEQUENCE_STEPS),
@@ -725,6 +765,12 @@ def attach_storage_lifecycle_shape(result: Json, effective_storage_tuning: Json 
     normalized_manager_contract = default_storage_manager_contract(metrics)
     normalized_manager_contract.update(manager_contract)
     shaped["storage_manager_contract"] = normalized_manager_contract
+    index_contract = shaped.get("storage_index_contract")
+    if not isinstance(index_contract, dict):
+        index_contract = {}
+    normalized_index_contract = default_storage_index_contract(metrics)
+    normalized_index_contract.update(index_contract)
+    shaped["storage_index_contract"] = normalized_index_contract
     shaped["storage_write_sequence"] = list(STORAGE_WRITE_SEQUENCE_STEPS)
     shaped["storage_read_sequence"] = list(STORAGE_READ_SEQUENCE_STEPS)
     shaped["storage_cold_scan_sequence"] = list(STORAGE_COLD_SCAN_SEQUENCE_STEPS)

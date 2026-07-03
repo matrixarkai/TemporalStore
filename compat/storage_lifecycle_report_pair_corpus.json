@@ -276,6 +276,44 @@
       "loop_ms": 4.0,
       "phase_order_enforced": true,
       "missing_phase_count": 0
+    },
+    "storage_index_contract": {
+      "page_address_codec": "PageAddress",
+      "block_address_codec": "BlockAddress",
+      "stable_order": [
+        "shard_id",
+        "zone_id",
+        "segment_id",
+        "page_id",
+        "offset"
+      ],
+      "slot_index": "slot -> object/page refs",
+      "page_index": "logical timestamp/key ranges -> page addresses",
+      "block_index": "page addresses -> physical durable locations",
+      "required_behaviors": [
+        "page_address_encode_decode",
+        "page_address_stable_order",
+        "timestamp_range_page_lookup",
+        "slot_index_maps_slot_to_object_page_refs",
+        "object_index_maps_model_table_object_key_to_page_chain",
+        "page_index_maps_logical_ranges_to_page_addresses",
+        "block_index_maps_page_addresses_to_durable_locations",
+        "restart_rebuilds_page_block_object_indexes"
+      ],
+      "page_address_encode_decode": true,
+      "block_address_encode_decode": true,
+      "stable_order_verified": true,
+      "timestamp_range_lookup_verified": true,
+      "slot_index_entry_count": 2,
+      "slot_object_ref_count": 1,
+      "slot_page_ref_count": 3,
+      "object_index_entry_count": 1,
+      "page_index_entry_count": 1,
+      "block_index_entry_count": 1,
+      "restart_rebuild_verified": true,
+      "unreadable_page_refs": 0,
+      "checksum_mismatches": 0,
+      "object_index_entry": "{model/table/object_key} -> current page chain"
     }
   },
   "rust": {
@@ -551,6 +589,44 @@
       "loop_ms": 5.0,
       "phase_order_enforced": true,
       "missing_phase_count": 0
+    },
+    "storage_index_contract": {
+      "page_address_codec": "PageAddress",
+      "block_address_codec": "BlockAddress",
+      "stable_order": [
+        "shard_id",
+        "zone_id",
+        "segment_id",
+        "page_id",
+        "offset"
+      ],
+      "slot_index": "slot -> object/page refs",
+      "page_index": "logical timestamp/key ranges -> page addresses",
+      "block_index": "page addresses -> physical durable locations",
+      "required_behaviors": [
+        "page_address_encode_decode",
+        "page_address_stable_order",
+        "timestamp_range_page_lookup",
+        "slot_index_maps_slot_to_object_page_refs",
+        "object_index_maps_model_table_object_key_to_page_chain",
+        "page_index_maps_logical_ranges_to_page_addresses",
+        "block_index_maps_page_addresses_to_durable_locations",
+        "restart_rebuilds_page_block_object_indexes"
+      ],
+      "page_address_encode_decode": true,
+      "block_address_encode_decode": true,
+      "stable_order_verified": true,
+      "timestamp_range_lookup_verified": true,
+      "slot_index_entry_count": 2,
+      "slot_object_ref_count": 1,
+      "slot_page_ref_count": 3,
+      "object_index_entry_count": 1,
+      "page_index_entry_count": 1,
+      "block_index_entry_count": 1,
+      "restart_rebuild_verified": true,
+      "unreadable_page_refs": 0,
+      "checksum_mismatches": 0,
+      "object_index_entry": "{model/table/object_key} -> current page chain"
     }
   }
 }

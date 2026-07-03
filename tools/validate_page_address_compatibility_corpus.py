@@ -292,12 +292,15 @@ def validate_restart_rebuild_indexes(corpus: dict[str, Any]) -> None:
     page_entries = manifest["page_index_entries"]
     block_entries = manifest["block_index_entries"]
     object_entries = manifest["object_index_entries"]
+    slot_entries = manifest["slot_index_entries"]
     if len(page_entries) != int(expected["page_index_entry_count"]):
         raise AssertionError("restart page index entry count mismatch")
     if len(block_entries) != int(expected["block_index_entry_count"]):
         raise AssertionError("restart block index entry count mismatch")
     if len(object_entries) != int(expected["object_index_entry_count"]):
         raise AssertionError("restart object index entry count mismatch")
+    if len(slot_entries) != int(expected["slot_index_entry_count"]):
+        raise AssertionError("restart slot index entry count mismatch")
 
     address_by_id = {address["id"]: address for address in corpus["addresses"]}
     block_address_by_id = {address["id"]: address for address in corpus["block_addresses"]}
@@ -320,6 +323,17 @@ def validate_restart_rebuild_indexes(corpus: dict[str, Any]) -> None:
         referenced = set(entry["page_address_ids"])
         if not referenced.issubset(page_ids):
             raise AssertionError(f"object index references missing page addresses: {sorted(referenced - page_ids)}")
+
+    object_keys = {entry["object_key"] for entry in object_entries}
+    for entry in slot_entries:
+        if not entry.get("slot"):
+            raise AssertionError("slot index entry must include slot")
+        referenced_objects = set(entry["object_keys"])
+        referenced_pages = set(entry["page_address_ids"])
+        if not referenced_objects.issubset(object_keys):
+            raise AssertionError(f"slot index references missing object keys: {sorted(referenced_objects - object_keys)}")
+        if not referenced_pages.issubset(page_ids):
+            raise AssertionError(f"slot index references missing page addresses: {sorted(referenced_pages - page_ids)}")
 
     lookup_query_name = expected["lookup_query_name"]
     query = next(
@@ -367,6 +381,7 @@ def main() -> int:
     print("- stable ordering by shard/zone/segment/page/offset")
     print("- stable BlockAddress ordering by shard/zone/block/offset")
     print("- timestamp range to page address lookup")
+    print("- slot index maps slot to object/page refs")
     print("- page split behavior")
     print("- compaction rewrite preserves logical records")
     print("- tombstone skips stale records")
