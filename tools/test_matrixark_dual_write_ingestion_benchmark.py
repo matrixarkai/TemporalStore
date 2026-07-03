@@ -156,6 +156,7 @@ class MatrixArkDualWriteIngestionBenchmarkTest(unittest.TestCase):
     def test_cli_can_write_backend_sweep_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / "dual_write_sweep.json"
+            prom = Path(tmp) / "dual_write_sweep.prom"
             rc = bench.main([
                 "--mode=local",
                 "--records=20",
@@ -165,6 +166,7 @@ class MatrixArkDualWriteIngestionBenchmarkTest(unittest.TestCase):
                 "--min-backend-qps-ratio=0.000001",
                 "--require-dual-write-counts=1",
                 f"--json-output={output}",
+                f"--prometheus-output={prom}",
             ])
             self.assertEqual(rc, 0)
             summary = json.loads(output.read_text())
@@ -172,6 +174,20 @@ class MatrixArkDualWriteIngestionBenchmarkTest(unittest.TestCase):
             self.assertEqual(summary["total_records"], 40)
             self.assertTrue(summary["performance_gate"]["passed"])
             self.assertEqual(summary["performance_gate"]["min_backend_qps_ratio"], 0.000001)
+            prom_text = prom.read_text()
+            self.assertIn("matrixark_dual_write_ingestion_qps", prom_text)
+            self.assertIn('raw_backend="temporalstore"', prom_text)
+            self.assertIn('raw_backend="matrixkv"', prom_text)
+            self.assertIn("matrixark_dual_write_ingestion_backend_qps_ratio", prom_text)
+            self.assertIn('status="passed"', prom_text)
+
+    def test_prometheus_renderer_covers_single_backend(self) -> None:
+        summary = bench.run_benchmark(self.make_args(records=20, workers=1, batch_size=10, raw_backend="matrixkv", require_dual_write_counts=1))
+        prom_text = bench.render_prometheus(summary)
+        self.assertIn('matrixark_dual_write_ingestion_status{raw_backend="matrixkv",status="ok"} 1', prom_text)
+        self.assertIn("matrixark_dual_write_ingestion_qps", prom_text)
+        self.assertIn("matrixark_dual_write_ingestion_batch_latency_ms", prom_text)
+        self.assertIn("matrixark_dual_write_ingestion_counts_validated", prom_text)
 
 
 if __name__ == "__main__":
