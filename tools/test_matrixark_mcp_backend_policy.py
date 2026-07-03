@@ -913,6 +913,37 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertTrue(result["phase0_correctness"]["backend_values"]["cpp"]["correctness_evidence"]["selected_ref_parity"])
         self.assertTrue(result["phase0_correctness"]["backend_values"]["rust"]["correctness_evidence"]["selected_ref_parity"])
 
+    def test_scale_report_rejects_empty_selected_ref_parity(self) -> None:
+        base = {
+            "status": "passed",
+            "raw_storage": {"write": {"record_qps": 100, "p95_ms": 1}, "read": {"qps": 100, "p95_ms": 1}},
+            "ingest_messages": {"message_qps": 100},
+            "ingest": {"p50_ms": 1, "p95_ms": 1, "p99_ms": 1},
+            "retrieve": {
+                "qps": 100,
+                "p50_ms": 1,
+                "p95_ms": 1,
+                "p99_ms": 1,
+                "selected_refs_avg": 0,
+                "stage_metrics": {
+                    "selected_refs_avg": 0,
+                    "selected_refs_max": 0,
+                    "correctness_evidence": dict(_SHARED_CORRECTNESS_EVIDENCE),
+                    "selected_ref_signatures_by_query": {"0": []},
+                },
+            },
+        }
+        rust = json.loads(json.dumps(base))
+
+        result = comparison(base, rust)
+
+        self.assertEqual(result["phase0_correctness"]["status"], "failed")
+        self.assertFalse(result["phase0_correctness"]["backend_values"]["cpp"]["correctness_evidence"]["selected_ref_parity"])
+        self.assertFalse(result["phase0_correctness"]["backend_values"]["rust"]["correctness_evidence"]["selected_ref_parity"])
+        selected_row = next(row for row in result["rows"] if row["metric"] == "selected_refs_avg")
+        self.assertFalse(selected_row["parity_passed"])
+        self.assertIn(">= 1", selected_row["parity_threshold"])
+
     def test_scale_report_compares_retrieval_stage_metrics(self) -> None:
         stage_metrics = summarize_retrieval_metrics(
             [
