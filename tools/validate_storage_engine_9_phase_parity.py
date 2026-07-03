@@ -96,6 +96,7 @@ PHASES: tuple[Phase, ...] = (
         (
             "validate_page_block_metrics_parity.py",
             "validate_grafana_metrics_parity.py",
+            "validate_temporalstore_cpp_rust_performance_parity.py",
         ),
     ),
     Phase(

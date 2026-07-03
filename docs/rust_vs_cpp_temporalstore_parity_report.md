@@ -50,6 +50,15 @@ has explicit evidence, status, and blockers. It is deliberately fail-closed:
 scale matrix has p50/p95/p99, QPS, timeout/error/fallback, selected-ref, cache,
 append-watermark, and compaction-watermark evidence.
 
+`compat/temporalstore_cpp_rust_performance_parity_matrix.json` is the required
+same-config performance evidence ledger. It enumerates the required 1K, 10K,
+100K ingestion rows and 4/8/16/32 retrieval worker rows. Rows may stay
+`missing_live_evidence` only with explicit blockers; a row may claim
+`production_performance_parity` only when `tools/validate_temporalstore_cpp_rust_performance_parity.py`
+sees matching config, zero errors/timeouts, no fallback flags, selected-ref
+parity, Rust/C++ QPS ratio at least `0.8`, and p50/p95/p99 latency ratio at
+most `2.0`.
+
 This goal-level validator is also part of
 `tools/validate_storage_engine_9_phase_parity.py`, so the 9-phase loop now
 checks both storage contract parity and honest goal status.
