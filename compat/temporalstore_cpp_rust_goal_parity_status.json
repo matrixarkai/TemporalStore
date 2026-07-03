@@ -10,6 +10,7 @@
     "tools/validate_raft_storage_parity_evidence.py",
     "tools/validate_temporalstore_cpp_rust_performance_parity.py",
     "tools/import_temporalstore_cpp_rust_performance_evidence.py",
+    "tools/audit_temporalstore_cpp_rust_performance_artifacts.py",
     "tools/validate_temporalstore_cpp_rust_feature_execution.py"
   ],
   "status_labels": {
@@ -92,7 +93,8 @@
         "tools/run_matrixark_cpp_rust_scale_report.py",
         "compat/temporalstore_cpp_rust_performance_parity_matrix.json",
         "tools/validate_temporalstore_cpp_rust_performance_parity.py",
-        "tools/import_temporalstore_cpp_rust_performance_evidence.py"
+        "tools/import_temporalstore_cpp_rust_performance_evidence.py",
+        "tools/audit_temporalstore_cpp_rust_performance_artifacts.py"
       ],
       "open_blockers": [
         "Same-config live C++/Rust p50/p95/p99/QPS parity is not yet proven across the required scale matrix."

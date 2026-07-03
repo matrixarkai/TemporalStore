@@ -11,8 +11,10 @@ is still open.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 STATUS = ROOT / "compat" / "temporalstore_cpp_rust_goal_parity_status.json"
 PERFORMANCE_VALIDATOR = ROOT / "tools" / "validate_temporalstore_cpp_rust_performance_parity.py"
 FEATURE_EXECUTION_VALIDATOR = ROOT / "tools" / "validate_temporalstore_cpp_rust_feature_execution.py"
+PERFORMANCE_ARTIFACT_AUDIT = ROOT / "tools" / "audit_temporalstore_cpp_rust_performance_artifacts.py"
 
 
 REQUIRED_AREAS = [
@@ -96,6 +99,21 @@ REQUIRED_INDEX_EVIDENCE = [
     "ObjectIndexEntry",
 ]
 
+REQUIRED_GENERATED_FROM = [
+    "tools/validate_storage_engine_9_phase_parity.py",
+    "tools/validate_temporalstore_cpp_rust_performance_parity.py",
+    "tools/import_temporalstore_cpp_rust_performance_evidence.py",
+    "tools/audit_temporalstore_cpp_rust_performance_artifacts.py",
+    "tools/validate_temporalstore_cpp_rust_feature_execution.py",
+]
+
+REQUIRED_PERFORMANCE_EVIDENCE = [
+    "compat/temporalstore_cpp_rust_performance_parity_matrix.json",
+    "tools/validate_temporalstore_cpp_rust_performance_parity.py",
+    "tools/import_temporalstore_cpp_rust_performance_evidence.py",
+    "tools/audit_temporalstore_cpp_rust_performance_artifacts.py",
+]
+
 
 def _as_strings(value: Any) -> list[str]:
     if isinstance(value, list):
@@ -112,11 +130,32 @@ def _require_contains(haystack: list[str], needles: list[str], label: str, failu
 def main() -> int:
     subprocess.run([sys.executable, str(FEATURE_EXECUTION_VALIDATOR)], cwd=ROOT, check=True)
     subprocess.run([sys.executable, str(PERFORMANCE_VALIDATOR)], cwd=ROOT, check=True)
+    audit_fd, audit_path = tempfile.mkstemp(prefix="temporalstore-perf-artifact-audit-", suffix=".json")
+    try:
+        try:
+            os.close(audit_fd)
+        except OSError:
+            pass
+        Path(audit_path).unlink(missing_ok=True)
+        subprocess.run(
+            [sys.executable, str(PERFORMANCE_ARTIFACT_AUDIT), "--output", audit_path],
+            cwd=ROOT,
+            check=True,
+        )
+    finally:
+        Path(audit_path).unlink(missing_ok=True)
     data = json.loads(STATUS.read_text(encoding="utf-8"))
     failures: list[str] = []
 
     if data.get("schema") != "temporalstore_cpp_rust_goal_parity_status_v1":
         failures.append("unexpected or missing schema")
+
+    _require_contains(
+        _as_strings(data.get("generated_from")),
+        REQUIRED_GENERATED_FROM,
+        "generated_from",
+        failures,
+    )
 
     status_labels = data.get("status_labels")
     if not isinstance(status_labels, dict):
@@ -184,6 +223,13 @@ def main() -> int:
             _as_strings(areas["gc_eviction_reclaim_parity"].get("evidence")),
             REQUIRED_GC_RECLAIM_EVIDENCE,
             "gc_eviction_reclaim_parity.evidence",
+            failures,
+        )
+    if isinstance(areas.get("performance_parity"), dict):
+        _require_contains(
+            _as_strings(areas["performance_parity"].get("evidence")),
+            REQUIRED_PERFORMANCE_EVIDENCE,
+            "performance_parity.evidence",
             failures,
         )
     if isinstance(areas.get("multi_layer_cache_parity"), dict):
