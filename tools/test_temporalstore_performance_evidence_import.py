@@ -183,6 +183,40 @@ class PerformanceEvidenceImportTest(unittest.TestCase):
         self.assertTrue(row["same_config_match"])
         self.assertEqual(row["open_blockers"], [])
 
+    def test_threshold_config_controls_timeout_error_and_fallback_policy(self) -> None:
+        matrix = _matrix()
+        matrix["thresholds"]["max_timeout_count"] = 2
+        matrix["thresholds"]["max_error_count"] = 1
+        matrix["thresholds"]["allow_fallback_flags"] = True
+        matrix["thresholds"]["require_selected_ref_parity"] = False
+        report = _report_with_good_parity()
+        report["comparison"]["phase0_correctness"]["evidence"]["selected_ref_parity"] = False
+        report["backends"]["cpp"]["ingest"]["timeout_count"] = 2
+        report["backends"]["rust"]["ingest"]["timeout_count"] = 2
+        report["backends"]["cpp"]["errors"] = ["transient"]
+        report["backends"]["rust"]["fallback_flags"] = ["debug_pack_fallback"]
+
+        updated = import_report(matrix, report)
+
+        row = next(row for row in updated["rows"] if row["workload"] == "1K_event_ingestion")
+        self.assertEqual(row["status"], "production_performance_parity")
+        self.assertEqual(row["open_blockers"], [])
+
+    def test_threshold_config_blocks_counts_above_limits(self) -> None:
+        matrix = _matrix()
+        matrix["thresholds"]["max_timeout_count"] = 1
+        matrix["thresholds"]["max_error_count"] = 0
+        report = _report_with_good_parity()
+        report["backends"]["cpp"]["ingest"]["timeout_count"] = 2
+        report["backends"]["rust"]["errors"] = ["write_path_error"]
+
+        updated = import_report(matrix, report)
+
+        row = next(row for row in updated["rows"] if row["workload"] == "1K_event_ingestion")
+        self.assertEqual(row["status"], "missing_live_evidence")
+        self.assertIn("timeout_count_above_1", row["open_blockers"])
+        self.assertIn("error_count_above_0", row["open_blockers"])
+
 
 if __name__ == "__main__":
     unittest.main()
