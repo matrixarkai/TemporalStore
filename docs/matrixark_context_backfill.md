@@ -67,6 +67,8 @@ Live ingestion writes raw API, batch, stream, resource, and feedback envelopes t
 
 That dual-write contract keeps the raw log immutable and keeps serving scans free of raw envelopes.
 
+Pass the selected source store with `--raw-backend=temporalstore` or `--raw-backend=matrixkv`. The prefix layout is the same, but the backend label is part of checkpoint fingerprints, generated idempotency keys, manifests, Prometheus labels, and target append options. This prevents a MatrixKV repair job from accidentally resuming a TemporalStore raw-log job with the same source and target prefixes.
+
 The runner also supports the legacy index layout:
 
 ```text
@@ -116,6 +118,7 @@ Use the wrapper for Ubuntu 22 local or server-style operation:
 ```bash
 JOB_ID=context-backfill-001 \
 SOURCE_PREFIX=matrixark:mcp:raw_ingestion \
+RAW_BACKEND=temporalstore \
 TARGET_PREFIX=matrixark:context_backfill:context-backfill-001 \
 DRY_RUN=0 \
 BATCH_SIZE=1024 \
@@ -130,6 +133,7 @@ python3 tools/matrixark_context_backfill.py \
   --namespace=matrixark \
   --table=context \
   --source-prefix=matrixark:mcp:raw_ingestion \
+  --raw-backend=temporalstore \
   --target-prefix=matrixark:context_backfill:context-backfill-001 \
   --job-id=context-backfill-001 \
   --batch-size=1024 \
@@ -138,6 +142,20 @@ python3 tools/matrixark_context_backfill.py \
 ```
 
 The command prints a JSON summary. It also writes Prometheus-compatible metrics when `--prometheus-output` is set, or when the wrapper uses its default `/tmp/matrixark_context_backfill_<job_id>.prom` path.
+
+MatrixKV raw-log source option:
+
+```bash
+MATRIXARK_RAW_INGESTION_BACKEND=matrixkv \
+python3 tools/matrixark_context_backfill.py \
+  --source-prefix=matrixark:mcp:raw_ingestion \
+  --raw-backend=matrixkv \
+  --target-prefix=matrixark:context_backfill:matrixkv-source-trial \
+  --job-id=matrixkv-source-trial \
+  --batch-size=1024 \
+  --dry-run=0 \
+  --resume=1
+```
 
 ## Dry Run First
 
@@ -156,13 +174,13 @@ Use dry runs to estimate source volume, verify source readability, and inspect e
 
 ## Resume And Checkpoints
 
-The checkpoint key is scoped to the job, source, target, and partial spec:
+The checkpoint key is scoped to the job, source prefix, raw backend, target, and partial spec:
 
 ```text
-matrixark:backfill:<job_id>:checkpoint:<hash(source_prefix,target_prefix,partial_spec)>
+matrixark:backfill:<job_id>:checkpoint:<hash(source_prefix,raw_backend,target_prefix,partial_spec)>
 ```
 
-This prevents a partial repair from accidentally resuming from a full-backfill checkpoint. With `--resume=1`, the next run starts after the last successfully processed source sequence for the exact same source, target, and partial filter.
+This prevents a partial repair from accidentally resuming from a full-backfill checkpoint, and it prevents TemporalStore raw-source jobs from sharing checkpoint state with MatrixKV raw-source jobs. With `--resume=1`, the next run starts after the last successfully processed source sequence for the exact same source, raw backend, target, and partial filter.
 
 Checkpoints advance after the pending target batch is flushed. After a restart, the runner may replay at most the last uncommitted batch. Target-side idempotency keys prevent duplicate appends for already written records.
 

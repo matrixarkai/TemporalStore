@@ -83,7 +83,16 @@ class BackfillMetrics:
     def finish(self) -> None:
         self.finished_at_ms = int(time.time() * 1000)
 
-    def to_json(self, *, job_id: str, source_prefix: str, target_prefix: str, mode: str, partial: Json | None = None) -> Json:
+    def to_json(
+        self,
+        *,
+        job_id: str,
+        source_prefix: str,
+        target_prefix: str,
+        mode: str,
+        raw_backend: str,
+        partial: Json | None = None,
+    ) -> Json:
         elapsed_ms = max(0, (self.finished_at_ms or int(time.time() * 1000)) - self.started_at_ms)
         qps = (self.scanned * 1000.0 / elapsed_ms) if elapsed_ms else 0.0
         return {
@@ -92,6 +101,7 @@ class BackfillMetrics:
             'source_prefix': source_prefix,
             'target_prefix': target_prefix,
             'mode': mode,
+            'raw_backend': raw_backend,
             'partial': partial or {},
             'elapsed_ms': elapsed_ms,
             'scan_qps': round(qps, 3),
@@ -115,8 +125,8 @@ class BackfillMetrics:
             },
         }
 
-    def to_prometheus(self, *, job_id: str) -> str:
-        labels = f'job_id="{job_id}"'
+    def to_prometheus(self, *, job_id: str, raw_backend: str) -> str:
+        labels = f'job_id="{job_id}",raw_backend="{raw_backend}"'
         lines = [
             '# HELP matrixark_context_backfill_records_total Records processed by context backfill.',
             '# TYPE matrixark_context_backfill_records_total counter',
@@ -222,6 +232,7 @@ class LocalJsonKV:
         self.batch_hget_calls = 0
         self.batch_hset_calls = 0
         self.matrixark_append_records_calls = 0
+        self.matrixark_append_records_options: list[Json] = []
         self.scan_hash_calls = 0
         if path.exists():
             self.data = json.loads(path.read_text(encoding='utf-8'))
@@ -289,8 +300,8 @@ class LocalJsonKV:
         count_value: str | None = None,
         append_options: Json | None = None,
     ) -> None:
-        del append_options
         self.matrixark_append_records_calls += 1
+        self.matrixark_append_records_options.append(dict(append_options or {}))
         self.batch_hset(entries)
         if count_key is not None and count_value is not None:
             self.put_string(count_key, count_value)
@@ -444,9 +455,17 @@ class MatrixKVRecordLog:
 
 
 class MatrixKVBackfillTarget:
-    def __init__(self, kv: Any, *, prefix: str, shard_size: int = DIRECT_RECORD_LOG_SHARD_SIZE) -> None:
+    def __init__(
+        self,
+        kv: Any,
+        *,
+        prefix: str,
+        raw_backend: str = 'temporalstore',
+        shard_size: int = DIRECT_RECORD_LOG_SHARD_SIZE,
+    ) -> None:
         self.kv = kv
         self.prefix = prefix.rstrip(':')
+        self.raw_backend = normalize_raw_backend(raw_backend)
         self.shard_size = shard_size
         self._next_sequence: int | None = None
 
@@ -492,7 +511,16 @@ class MatrixKVBackfillTarget:
             append_records = getattr(self.kv, 'matrixark_append_records', None)
             all_entries = entries + idempotency_entries
             if callable(append_records):
-                append_records(all_entries, count_key=f'{self.prefix}:record_count', count_value=str(sequence), append_options={'source': 'matrixark_context_backfill'})
+                append_records(
+                    all_entries,
+                    count_key=f'{self.prefix}:record_count',
+                    count_value=str(sequence),
+                    append_options={
+                        'append_path': 'matrixark_context_backfill_target',
+                        'source': 'matrixark_context_backfill',
+                        'raw_storage_backend': self.raw_backend,
+                    },
+                )
             else:
                 batch_hset = getattr(self.kv, 'batch_hset', None)
                 if callable(batch_hset):
@@ -532,8 +560,31 @@ class CaptureAdapter(MatrixArkLocalAdapter):
         self.records.extend(materialize_serving_record_batch(records))
 
 
-def checkpoint_key(target_prefix: str, job_id: str, *, source_prefix: str = '', partial: Json | None = None) -> str:
-    fingerprint = partial_checkpoint_fingerprint(source_prefix, target_prefix, partial or {})
+def normalize_raw_backend(value: str) -> str:
+    backend = str(value or 'temporalstore').strip().lower().replace('-', '_')
+    if backend in {'', 'temporal', 'temporal_store', 'ts'}:
+        backend = 'temporalstore'
+    if backend in {'matrix_kv', 'kv'}:
+        backend = 'matrixkv'
+    if backend not in {'temporalstore', 'matrixkv'}:
+        raise BackfillError('--raw-backend must be temporalstore or matrixkv')
+    return backend
+
+
+def checkpoint_key(
+    target_prefix: str,
+    job_id: str,
+    *,
+    source_prefix: str = '',
+    raw_backend: str = 'temporalstore',
+    partial: Json | None = None,
+) -> str:
+    fingerprint = partial_checkpoint_fingerprint(
+        source_prefix,
+        target_prefix,
+        normalize_raw_backend(raw_backend),
+        partial or {},
+    )
     return f'matrixark:backfill:{job_id}:checkpoint:{fingerprint}'
 
 
@@ -637,26 +688,28 @@ def record_matches_partial(raw_record: Json, partial: Json) -> bool:
     return True
 
 
-def partial_checkpoint_fingerprint(source_prefix: str, target_prefix: str, partial: Json) -> str:
+def partial_checkpoint_fingerprint(source_prefix: str, target_prefix: str, raw_backend: str, partial: Json) -> str:
     seed = json.dumps({
         'source_prefix': source_prefix,
         'target_prefix': target_prefix,
+        'raw_backend': normalize_raw_backend(raw_backend),
         'partial': partial,
     }, sort_keys=True, separators=(',', ':'))
     return stable_hash(seed)
 
 
-def derive_backfill_record(source_prefix: str, sequence: int, raw_record: Json) -> Json:
+def derive_backfill_record(source_prefix: str, raw_backend: str, sequence: int, raw_record: Json) -> Json:
     record = dict(raw_record)
     backfill = dict(record.get('backfill') or {})
     backfill.update({
         'source_prefix': source_prefix,
+        'raw_backend': normalize_raw_backend(raw_backend),
         'source_sequence': sequence,
         'source_record_type': raw_record.get('record_type', ''),
     })
     record['backfill'] = backfill
     if 'idempotency_key' not in record:
-        seed = f'{source_prefix}:{sequence}:{json.dumps(raw_record, sort_keys=True)}'
+        seed = f'{normalize_raw_backend(raw_backend)}:{source_prefix}:{sequence}:{json.dumps(raw_record, sort_keys=True)}'
         record['idempotency_key'] = f'backfill:{stable_hash(seed)}'
     return record
 
@@ -685,13 +738,20 @@ def run_backfill(args: argparse.Namespace) -> Json:
 
     partial = build_partial_spec(args)
     validate_partial_args(args, partial)
+    raw_backend = normalize_raw_backend(args.raw_backend)
     kv = make_kv(args)
 
     target_prefix = resolve_target_prefix(args)
     source = MatrixKVRecordLog(kv, prefix=args.source_prefix)
-    target = MatrixKVBackfillTarget(kv, prefix=target_prefix)
+    target = MatrixKVBackfillTarget(kv, prefix=target_prefix, raw_backend=raw_backend)
     metrics = BackfillMetrics()
-    cp_key = checkpoint_key(target_prefix, args.job_id, source_prefix=args.source_prefix, partial=partial)
+    cp_key = checkpoint_key(
+        target_prefix,
+        args.job_id,
+        source_prefix=args.source_prefix,
+        raw_backend=raw_backend,
+        partial=partial,
+    )
     start_seq = max(0, args.start_seq)
     if args.resume:
         raw_checkpoint = kv.get_string(cp_key)
@@ -748,7 +808,7 @@ def run_backfill(args: argparse.Namespace) -> Json:
                 metrics.skipped += 1
                 checkpoint_pending_seq = sequence
                 return
-            record = derive_backfill_record(args.source_prefix, sequence, raw_record)
+            record = derive_backfill_record(args.source_prefix, raw_backend, sequence, raw_record)
             dedupe_id = str(record.get('idempotency_key') or f'{args.source_prefix}:{sequence}')
             if dedupe_id in seen_ids or (not args.dry_run and target.has_idempotency_key(dedupe_id)):
                 metrics.duplicate += 1
@@ -810,12 +870,14 @@ def run_backfill(args: argparse.Namespace) -> Json:
         source_prefix=args.source_prefix,
         target_prefix=target_prefix,
         mode=args.mode,
+        raw_backend=raw_backend,
         partial=partial,
     )
     manifest = {
         'job_id': args.job_id,
         'mode': args.mode,
         'source_prefix': args.source_prefix,
+        'raw_backend': raw_backend,
         'target_prefix': target_prefix,
         'start_seq': args.start_seq,
         'end_seq': args.end_seq,
@@ -827,7 +889,10 @@ def run_backfill(args: argparse.Namespace) -> Json:
     if not args.dry_run:
         kv.hset(summary['manifest_key'], args.job_id, json.dumps(manifest, sort_keys=True, separators=(',', ':')))
     if args.prometheus_output:
-        Path(args.prometheus_output).write_text(metrics.to_prometheus(job_id=args.job_id), encoding='utf-8')
+        Path(args.prometheus_output).write_text(
+            metrics.to_prometheus(job_id=args.job_id, raw_backend=raw_backend),
+            encoding='utf-8',
+        )
     return summary
 
 
@@ -843,7 +908,8 @@ def run_validate_shadow(args: argparse.Namespace) -> Json:
     validation_args.prometheus_output = ''
     expected_summary = run_backfill(validation_args)
     kv = make_kv(args)
-    target = MatrixKVBackfillTarget(kv, prefix=args.target_prefix)
+    raw_backend = normalize_raw_backend(args.raw_backend)
+    target = MatrixKVBackfillTarget(kv, prefix=args.target_prefix, raw_backend=raw_backend)
     actual_count = target.count()
     dead_letters = target.count_dead_letters()
     expected_count = int(expected_summary['metrics']['written'])
@@ -855,6 +921,7 @@ def run_validate_shadow(args: argparse.Namespace) -> Json:
         'job_id': args.job_id,
         'mode': 'validate_shadow',
         'source_prefix': args.source_prefix,
+        'raw_backend': raw_backend,
         'target_prefix': args.target_prefix,
         'start_seq': args.start_seq,
         'end_seq': args.end_seq,
@@ -892,6 +959,7 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
             'dry_run': True,
             'active_prefix_key': args.active_prefix_key,
             'target_prefix': args.target_prefix,
+            'raw_backend': normalize_raw_backend(args.raw_backend),
             'validation': validation,
         }
     kv = make_kv(args)
@@ -904,6 +972,7 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
         'previous_prefix': previous,
         'new_prefix': args.target_prefix,
         'source_prefix': args.source_prefix,
+        'raw_backend': normalize_raw_backend(args.raw_backend),
         'start_seq': args.start_seq,
         'end_seq': args.end_seq,
         'partial': build_partial_spec(args),
@@ -918,6 +987,7 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
         'active_prefix_key': args.active_prefix_key,
         'previous_prefix': previous,
         'new_prefix': args.target_prefix,
+        'raw_backend': normalize_raw_backend(args.raw_backend),
         'audit_key': f'{args.active_prefix_key}:audit',
         'job_id': args.job_id,
         'validation': validation,
@@ -962,6 +1032,7 @@ def run_incremental_repair(args: argparse.Namespace) -> Json:
             'job_id': args.job_id,
             'repaired_at_ms': repaired_at_ms,
             'source_prefix': args.source_prefix,
+            'raw_backend': normalize_raw_backend(args.raw_backend),
             'shadow_prefix': args.target_prefix,
             'active_prefix': active_prefix,
             'start_seq': args.start_seq,
@@ -977,6 +1048,7 @@ def run_incremental_repair(args: argparse.Namespace) -> Json:
         'mode': 'incremental_repair',
         'job_id': args.job_id,
         'source_prefix': args.source_prefix,
+        'raw_backend': normalize_raw_backend(args.raw_backend),
         'shadow_prefix': args.target_prefix,
         'active_prefix': active_prefix,
         'start_seq': args.start_seq,
@@ -989,12 +1061,18 @@ def run_incremental_repair(args: argparse.Namespace) -> Json:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description='Backfill MatrixArk context records from MatrixKV raw ingestion logs.')
+    parser = argparse.ArgumentParser(description='Backfill MatrixArk context records from MatrixArk raw ingestion logs.')
     parser.add_argument('--metaserver', default=os.environ.get('MATRIXARK_METASERVER', '127.0.0.1:65000'))
     parser.add_argument('--namespace', default=os.environ.get('MATRIXARK_NAMESPACE', 'matrixark'))
     parser.add_argument('--table', default=os.environ.get('MATRIXARK_TABLE', 'context'))
     parser.add_argument('--library-path', default=os.environ.get('TEMPORALSTORE_LIBRARY_PATH', ''))
     parser.add_argument('--source-prefix', default='matrixark:mcp:raw_ingestion')
+    parser.add_argument(
+        '--raw-backend',
+        choices=['temporalstore', 'matrixkv'],
+        default=os.environ.get('MATRIXARK_RAW_INGESTION_BACKEND', 'temporalstore'),
+        help='raw ingestion message store that owns source-prefix; affects checkpoints, idempotency, manifests, and metrics',
+    )
     parser.add_argument('--target-prefix', default='')
     parser.add_argument('--mode', choices=['shadow', 'in_place', 'validate_shadow', 'activate_shadow', 'incremental_repair'], default='shadow')
     parser.add_argument('--confirm-in-place', default='')
@@ -1033,6 +1111,7 @@ def main() -> int:
     args.skip_validation = bool(args.skip_validation)
     args.partial = bool(args.partial)
     args.partial_require_bounded = bool(args.partial_require_bounded)
+    args.raw_backend = normalize_raw_backend(args.raw_backend)
     if args.batch_size <= 0:
         parser.error('--batch-size must be positive')
     if args.source_scan_max_empty_shards <= 0:

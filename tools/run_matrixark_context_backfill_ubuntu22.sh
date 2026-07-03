@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 JOB_ID="${JOB_ID:-$(date +%Y%m%d%H%M%S)}"
 SOURCE_PREFIX="${SOURCE_PREFIX:-matrixark:mcp:raw_ingestion}"
+RAW_BACKEND="${RAW_BACKEND:-${MATRIXARK_RAW_INGESTION_BACKEND:-temporalstore}}"
 TARGET_PREFIX="${TARGET_PREFIX:-matrixark:context_backfill:${JOB_ID}}"
 MODE="${MODE:-shadow}"
 DRY_RUN="${DRY_RUN:-1}"
@@ -26,6 +27,7 @@ exec python3 "${ROOT}/tools/matrixark_context_backfill.py" \
   --namespace "${NAMESPACE}" \
   --table "${TABLE}" \
   --source-prefix "${SOURCE_PREFIX}" \
+  --raw-backend "${RAW_BACKEND}" \
   --target-prefix "${TARGET_PREFIX}" \
   --mode "${MODE}" \
   --job-id "${JOB_ID}" \
