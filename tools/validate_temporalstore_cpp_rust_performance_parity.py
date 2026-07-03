@@ -76,6 +76,23 @@ REQUIRED_MISSING_EVIDENCE_HINT_FIELDS = [
     "required_result",
 ]
 
+REQUIRED_SAME_CONFIG_COMMAND_ARGS = {
+    "--dataset": "matrixark-scale-synthetic",
+    "--messages-per-ingest": "20",
+    "--max-context-tokens": "12000",
+    "--embedding-model": "matrixark-local-token-hash-v1",
+    "--reader-model": "matrixark-deterministic-reader",
+    "--judge-model": "matrixark-deterministic-judge",
+    "--metaserver": "127.0.0.1:18000",
+    "--namespace": "deploy_ns",
+    "--table": "deploy_table",
+    "--storage-family": "shared_store",
+    "--storage-mode": "multi_node",
+    "--write-mode": "async",
+    "--oplog-mode": "async",
+    "--replication-mode": "shared_store",
+}
+
 VALID_ROW_STATUSES = {
     "missing_live_evidence",
     "performance_candidate",
@@ -133,6 +150,17 @@ def _validate_missing_evidence_hint(row: dict[str, Any], failures: list[str]) ->
                 failures.append(f"{workload} next_run_hint.command missing `{item}`")
         if "--require-phase-scale-matrix" not in command:
             failures.append(f"{workload} next_run_hint.command missing `--require-phase-scale-matrix`")
+        for flag, expected_value in REQUIRED_SAME_CONFIG_COMMAND_ARGS.items():
+            if flag not in command:
+                failures.append(f"{workload} next_run_hint.command missing `{flag}`")
+                continue
+            index = command.index(flag)
+            actual_value = command[index + 1] if index + 1 < len(command) else None
+            if actual_value != expected_value:
+                failures.append(
+                    f"{workload} next_run_hint.command {flag} drift: "
+                    f"expected {expected_value!r} got {actual_value!r}"
+                )
     import_command = hint.get("import_command")
     expected_import = [
         "python",
