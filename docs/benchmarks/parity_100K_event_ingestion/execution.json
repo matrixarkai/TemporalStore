@@ -87,6 +87,30 @@
           "audit_light_telemetry"
         ]
       }
+    },
+    {
+      "step": "post_import_validation",
+      "workload": null,
+      "reason": null,
+      "argv": [
+        "python",
+        "tools/validate_temporalstore_cpp_rust_goal_parity.py"
+      ],
+      "returncode": 0,
+      "status": "passed"
+    },
+    {
+      "step": "post_import_validation",
+      "workload": null,
+      "reason": null,
+      "argv": [
+        "python",
+        "tools/validate_storage_engine_9_phase_parity.py",
+        "--loops",
+        "9"
+      ],
+      "returncode": 0,
+      "status": "passed"
     }
   ]
 }

@@ -46,6 +46,17 @@ class PerformanceExecutionRedactionTest(unittest.TestCase):
                                 "step": "import_evidence",
                                 "phase_scale_coverage_required": REQUIRED_PHASE_SCALE_COVERAGE,
                                 "argv": ["python", "tools/import_temporalstore_cpp_rust_performance_evidence.py"],
+                                "status": "passed",
+                            },
+                            {
+                                "step": "post_import_validation",
+                                "argv": ["python", "tools/validate_temporalstore_cpp_rust_goal_parity.py"],
+                                "status": "passed",
+                            },
+                            {
+                                "step": "post_import_validation",
+                                "argv": ["python", "tools/validate_storage_engine_9_phase_parity.py", "--loops", "9"],
+                                "status": "passed",
                             }
                         ],
                     }
@@ -95,6 +106,42 @@ class PerformanceExecutionRedactionTest(unittest.TestCase):
         self.assertTrue(any("--cpp-lib value is not redacted" in failure for failure in failures))
         self.assertTrue(any("missing --require-phase-scale-matrix" in failure for failure in failures))
         self.assertTrue(any("missing phase_scale_coverage_required" in failure for failure in failures))
+
+    def test_rejects_successful_import_without_post_validators(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "execution.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema": "temporalstore_cpp_rust_next_performance_execution_v1",
+                        "results": [
+                            {
+                                "step": "run_workload",
+                                "phase_scale_coverage_required": REQUIRED_PHASE_SCALE_COVERAGE,
+                                "argv": [
+                                    "python",
+                                    "tools/run_matrixark_cpp_rust_scale_report.py",
+                                    "--require-perf-parity",
+                                    "--require-phase-scale-matrix",
+                                ],
+                                "status": "passed",
+                            },
+                            {
+                                "step": "import_evidence",
+                                "phase_scale_coverage_required": REQUIRED_PHASE_SCALE_COVERAGE,
+                                "argv": ["python", "tools/import_temporalstore_cpp_rust_performance_evidence.py"],
+                                "status": "passed",
+                            },
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            failures = validate_artifact(path)
+
+        self.assertTrue(any("validate_temporalstore_cpp_rust_goal_parity.py" in failure for failure in failures))
+        self.assertTrue(any("validate_storage_engine_9_phase_parity.py" in failure for failure in failures))
 
 
 if __name__ == "__main__":
