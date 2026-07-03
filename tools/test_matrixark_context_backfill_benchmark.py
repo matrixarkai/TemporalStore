@@ -21,6 +21,7 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
             "raw_backends": "both",
             "min_full_shadow_qps": 0.0,
             "min_incremental_repair_qps": 0.0,
+            "min_backend_qps_ratio": 0.0,
             "json_output": "",
         }
         values.update(overrides)
@@ -42,6 +43,10 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
             self.assertEqual(result["incremental_repair"]["summary"]["promotion"]["metrics"]["written"], 16)
             self.assertGreater(result["full_shadow"]["qps"], 0)
             self.assertGreater(result["incremental_repair"]["qps"], 0)
+        self.assertIn("full_shadow_qps", summary["qps_summary"])
+        self.assertIn("incremental_shadow_qps", summary["qps_summary"])
+        self.assertIn("incremental_repair_qps", summary["qps_summary"])
+        self.assertGreater(summary["qps_summary"]["full_shadow_qps"]["min_max_ratio"], 0)
 
     def test_local_benchmark_can_write_json_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -50,6 +55,7 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
             self.assertTrue(output.exists())
             self.assertEqual(summary["raw_backends"], ["temporalstore"])
             self.assertIn("full_shadow_qps_avg", summary["qps_summary"])
+            self.assertIn("incremental_shadow_qps_avg", summary["qps_summary"])
 
 
     def test_performance_gate_passes_and_fails_thresholds(self) -> None:
@@ -57,6 +63,12 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
         self.assertEqual(passing["status"], "ok")
         self.assertTrue(passing["performance_gate"]["enabled"])
         self.assertTrue(passing["performance_gate"]["passed"])
+
+        parity = bench.run_benchmark(self.make_args(records=32, incremental_records=8, min_backend_qps_ratio=0.000001))
+        self.assertEqual(parity["status"], "ok")
+        self.assertTrue(parity["performance_gate"]["enabled"])
+        parity_checks = [check for check in parity["performance_gate"]["checks"] if check["metric"].endswith("_qps_ratio")]
+        self.assertEqual(len(parity_checks), 3)
 
         failing = bench.run_benchmark(self.make_args(records=32, incremental_records=8, raw_backends="temporalstore", min_full_shadow_qps=10**12))
         self.assertEqual(failing["status"], "failed")
@@ -78,6 +90,10 @@ class MatrixArkContextBackfillBenchmarkTest(unittest.TestCase):
     def test_rejects_invalid_record_count(self) -> None:
         with self.assertRaises(bench.BackfillBenchmarkError):
             bench.run_benchmark(self.make_args(records=0))
+
+    def test_rejects_invalid_backend_ratio(self) -> None:
+        with self.assertRaises(bench.BackfillBenchmarkError):
+            bench.run_benchmark(self.make_args(min_backend_qps_ratio=1.01))
 
 
 if __name__ == "__main__":

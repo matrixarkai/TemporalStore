@@ -195,16 +195,36 @@ def run_one_backend(args: argparse.Namespace, raw_backend: str) -> Json:
 
 def summarize_backend_qps(results: list[Json]) -> Json:
     full = [float(item["full_shadow"]["qps"]) for item in results]
+    incremental_shadow = [float(item["incremental_shadow"]["qps"]) for item in results]
     repair = [float(item["incremental_repair"]["qps"]) for item in results]
+    def qps_stats(values: list[float]) -> Json:
+        if not values:
+            return {"avg": 0.0, "min": 0.0, "max": 0.0, "min_max_ratio": 1.0}
+        minimum = min(values)
+        maximum = max(values)
+        return {
+            "avg": round(statistics.fmean(values), 3),
+            "min": round(minimum, 3),
+            "max": round(maximum, 3),
+            "min_max_ratio": round((minimum / maximum) if maximum > 0.0 else 0.0, 6),
+        }
+    full_stats = qps_stats(full)
+    incremental_shadow_stats = qps_stats(incremental_shadow)
+    repair_stats = qps_stats(repair)
     return {
-        "full_shadow_qps_avg": round(statistics.fmean(full), 3) if full else 0.0,
-        "incremental_repair_qps_avg": round(statistics.fmean(repair), 3) if repair else 0.0,
+        "full_shadow_qps_avg": full_stats["avg"],
+        "incremental_shadow_qps_avg": incremental_shadow_stats["avg"],
+        "incremental_repair_qps_avg": repair_stats["avg"],
+        "full_shadow_qps": full_stats,
+        "incremental_shadow_qps": incremental_shadow_stats,
+        "incremental_repair_qps": repair_stats,
     }
 
 
 def evaluate_performance_gate(args: argparse.Namespace, results: list[Json]) -> Json:
     min_full = float(getattr(args, "min_full_shadow_qps", 0.0) or 0.0)
     min_repair = float(getattr(args, "min_incremental_repair_qps", 0.0) or 0.0)
+    min_backend_ratio = float(getattr(args, "min_backend_qps_ratio", 0.0) or 0.0)
     checks: list[Json] = []
     for result in results:
         backend = result["raw_backend"]
@@ -224,13 +244,31 @@ def evaluate_performance_gate(args: argparse.Namespace, results: list[Json]) -> 
             "minimum": min_repair,
             "passed": repair_qps >= min_repair,
         })
-    enabled = min_full > 0.0 or min_repair > 0.0
+    if min_backend_ratio > 0.0 and len(results) > 1:
+        for metric, path in [
+            ("full_shadow_qps_ratio", ("full_shadow", "qps")),
+            ("incremental_shadow_qps_ratio", ("incremental_shadow", "qps")),
+            ("incremental_repair_qps_ratio", ("incremental_repair", "qps")),
+        ]:
+            values = [float(result[path[0]][path[1]]) for result in results]
+            minimum = min(values)
+            maximum = max(values)
+            observed = (minimum / maximum) if maximum > 0.0 else 0.0
+            checks.append({
+                "raw_backend": "all",
+                "metric": metric,
+                "observed": round(observed, 6),
+                "minimum": min_backend_ratio,
+                "passed": observed >= min_backend_ratio,
+            })
+    enabled = min_full > 0.0 or min_repair > 0.0 or min_backend_ratio > 0.0
     passed = all(bool(check["passed"]) for check in checks) if checks else True
     return {
         "enabled": enabled,
         "passed": passed,
         "min_full_shadow_qps": min_full,
         "min_incremental_repair_qps": min_repair,
+        "min_backend_qps_ratio": min_backend_ratio,
         "checks": checks,
     }
 
@@ -246,6 +284,9 @@ def run_benchmark(args: argparse.Namespace) -> Json:
         raise BackfillBenchmarkError("--min-full-shadow-qps must be non-negative")
     if float(getattr(args, "min_incremental_repair_qps", 0.0) or 0.0) < 0.0:
         raise BackfillBenchmarkError("--min-incremental-repair-qps must be non-negative")
+    min_backend_ratio = float(getattr(args, "min_backend_qps_ratio", 0.0) or 0.0)
+    if min_backend_ratio < 0.0 or min_backend_ratio > 1.0:
+        raise BackfillBenchmarkError("--min-backend-qps-ratio must be between 0 and 1")
     raw_backends = ["temporalstore", "matrixkv"] if args.raw_backends == "both" else [args.raw_backends]
     started = time.perf_counter()
     results = [run_one_backend(args, raw_backend) for raw_backend in raw_backends]
@@ -278,6 +319,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--raw-backends", choices=["both", "temporalstore", "matrixkv"], default=os.environ.get("MATRIXARK_BACKFILL_BENCH_RAW_BACKENDS", "both"))
     parser.add_argument("--min-full-shadow-qps", type=float, default=float(os.environ.get("MATRIXARK_BACKFILL_BENCH_MIN_FULL_SHADOW_QPS", "0")))
     parser.add_argument("--min-incremental-repair-qps", type=float, default=float(os.environ.get("MATRIXARK_BACKFILL_BENCH_MIN_INCREMENTAL_REPAIR_QPS", "0")))
+    parser.add_argument("--min-backend-qps-ratio", type=float, default=float(os.environ.get("MATRIXARK_BACKFILL_BENCH_MIN_BACKEND_QPS_RATIO", "0")), help="optional parity floor: slowest selected backend QPS divided by fastest selected backend QPS, 0 disables")
     parser.add_argument("--json-output", default=os.environ.get("MATRIXARK_BACKFILL_BENCH_JSON", ""))
     return parser
 
