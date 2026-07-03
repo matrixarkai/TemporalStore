@@ -175,7 +175,7 @@ python3 tools/matrixark_context_backfill.py \
   --plan-max-windows=8
 ```
 
-`chunk_plan.windows[]` includes ready-to-run argument lists for `shadow`, `validate_shadow`, and `incremental_repair`. Shared target-prefix writes should be serialized. For faster preparation, use each window's independent `parallel_shadow_prefix` to build and validate chunk shadows concurrently, then serialize active-prefix promotion with `incremental_repair` so active serving state remains deterministic.
+`chunk_plan.windows[]` includes ready-to-run argument lists for `shadow`, `validate_shadow`, and `incremental_repair`. The emitted arguments preserve the selected raw backend, TemporalStore connection settings, bounded sequence range, batch size, source scan limits, partial filters, resume behavior, validation mode, and active-prefix preconditions from the plan command. Shared target-prefix writes should be serialized. For faster preparation, use each window's independent `parallel_shadow_prefix` to build and validate chunk shadows concurrently, then serialize active-prefix promotion with `incremental_repair` so active serving state remains deterministic.
 
 ## Quick Start: Full Shadow Backfill
 
