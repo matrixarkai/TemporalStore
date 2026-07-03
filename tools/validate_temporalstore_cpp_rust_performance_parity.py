@@ -112,6 +112,11 @@ def _as_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+def _exceeds_limit(value: Any, limit: float) -> bool:
+    number = _as_number(value)
+    return number is not None and number > limit
+
+
 def _require(condition: bool, message: str, failures: list[str]) -> None:
     if not condition:
         failures.append(message)
@@ -328,9 +333,9 @@ def main() -> int:
         max_timeout = float(thresholds.get("max_timeout_count") or 0)
         max_error = float(thresholds.get("max_error_count") or 0)
         for side, metrics in [("cpp", cpp), ("rust", rust)]:
-            if _as_number(metrics.get("timeout_count")) not in (None, max_timeout):
+            if _exceeds_limit(metrics.get("timeout_count"), max_timeout):
                 failures.append(f"{workload} {side}.timeout_count exceeds {max_timeout}")
-            if _as_number(metrics.get("error_count")) not in (None, max_error):
+            if _exceeds_limit(metrics.get("error_count"), max_error):
                 failures.append(f"{workload} {side}.error_count exceeds {max_error}")
             if thresholds.get("allow_fallback_flags") is False and _as_list(metrics.get("fallback_flags")):
                 failures.append(f"{workload} {side}.fallback_flags must be empty")
