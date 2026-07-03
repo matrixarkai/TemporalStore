@@ -835,7 +835,7 @@ For very large jobs:
 7. Monitor readers and context quality.
 8. Keep previous prefix for rollback until validation is complete.
 
-Activation audit records include both the nested validation response and flattened `validation_status`, `validation_source_range`, and `validation_target_state` fields so operators can query the cutover boundary and target evidence without parsing the full validation object.
+Activation audit records include both the nested validation response and flattened `validation_status`, `validation_skipped`, `validation_skip_reason`, `validation_source_range`, and `validation_target_state` fields so operators can query the cutover boundary and target evidence without parsing the full validation object. If `--skip-validation=1` is used, the audit explicitly records `validation_status=skipped`, `validation_skipped=true`, and `validation_skip_reason=skip_validation_flag`.
 
 ### Partial Repair Runbook
 
@@ -847,7 +847,7 @@ Activation audit records include both the nested validation response and flatten
 6. Inspect incremental repair audit.
 7. Retry the same command if needed; idempotency prevents duplicate active appends.
 
-Incremental repair audit records also include `validation_status`, `validation_source_range`, and `validation_target_state` alongside promotion metrics. Use those fields to prove which shadow repair prefix was validated before replaying into the active prefix.
+Incremental repair audit records also include `validation_status`, `validation_skipped`, `validation_skip_reason`, `validation_source_range`, and `validation_target_state` alongside promotion metrics. Use those fields to prove which shadow repair prefix was validated before replaying into the active prefix, or to make an emergency validation bypass explicit in the audit trail.
 
 ### Partition Restore Runbook
 
