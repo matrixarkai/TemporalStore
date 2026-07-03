@@ -83,6 +83,9 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(summary["metrics"]["written"], 2)
             self.assertEqual(summary["metrics"]["source_batches"], 1)
             self.assertEqual(summary["metrics"]["target_batches"], 1)
+            self.assertEqual(summary["resume_state"]["checkpoint_format"], "missing")
+            self.assertFalse(summary["resume_state"]["checkpoint_found"])
+            self.assertEqual(summary["resume_state"]["effective_start_seq"], 0)
             prom_text = prom.read_text()
             self.assertIn("matrixark_context_backfill_records_total", prom_text)
             self.assertIn("matrixark_context_backfill_batches_total", prom_text)
@@ -107,6 +110,9 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
 
             resumed = backfill.run_backfill(self.make_args(path, prometheus_output=str(prom)))
             self.assertEqual(resumed["metrics"]["scanned"], 0)
+            self.assertEqual(resumed["resume_state"]["checkpoint_format"], "json")
+            self.assertEqual(resumed["resume_state"]["checkpoint_last_sequence"], 1)
+            self.assertEqual(resumed["resume_state"]["effective_start_seq"], 2)
 
     def test_resume_accepts_legacy_integer_checkpoint(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -121,6 +127,9 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
 
             summary = backfill.run_backfill(self.make_args(path, batch_size=2, resume=True))
             self.assertEqual(summary["metrics"]["scanned"], 2)
+            self.assertEqual(summary["resume_state"]["checkpoint_format"], "legacy_integer")
+            self.assertEqual(summary["resume_state"]["checkpoint_last_sequence"], 0)
+            self.assertEqual(summary["resume_state"]["effective_start_seq"], 1)
             self.assertEqual([record["event_id_hash"] for record in read_target_records(backfill.LocalJsonKV(path), "matrixark:context_backfill:test")], [2, 3])
 
     def test_resume_accepts_structured_checkpoint_metadata(self):
@@ -135,6 +144,9 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
 
             summary = backfill.run_backfill(self.make_args(path, batch_size=2, resume=True))
             self.assertEqual(summary["metrics"]["scanned"], 1)
+            self.assertEqual(summary["resume_state"]["checkpoint_format"], "json")
+            self.assertEqual(summary["resume_state"]["checkpoint_last_sequence"], 0)
+            self.assertEqual(summary["resume_state"]["effective_start_seq"], 1)
             self.assertEqual([record["event_id_hash"] for record in read_target_records(backfill.LocalJsonKV(path), "matrixark:context_backfill:test")], [2])
 
 
