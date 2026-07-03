@@ -120,6 +120,8 @@ Direct non-dry-run `shadow` writes to the current active prefix are guarded too.
 
 For activation, rollback, and incremental repair, pass `--expect-active-prefix=<prefix>` from the reviewed active pointer. Non-dry-run live mutations now reject missing active-prefix preconditions unless `--confirm-no-active-prefix-precondition=YES` is supplied. The command fails if the current value under `--active-prefix-key` has changed, preventing stale runbooks from switching or repairing the wrong live context prefix.
 
+Rollback also rejects no-op restores where the recorded previous prefix already equals the current active prefix. Use `--confirm-rollback-noop=YES` only when intentionally writing an audit record for a reviewed no-op rollback.
+
 ## Quick Start: Full Shadow Backfill
 
 Use the wrapper for Ubuntu 22 local or server-style operation:
@@ -1102,6 +1104,7 @@ Or set the active pointer under `--active-prefix-key` before promotion.
 - Never point `--target-prefix` at the current active prefix for a normal shadow run; use `incremental_repair`, or pass `--confirm-active-target=YES` only for an explicit break-glass write.
 - Validate before activation or repair promotion.
 - Use `--expect-active-prefix` for activation, rollback, and incremental repair. Use `--confirm-no-active-prefix-precondition=YES` only as a documented break-glass bypass when the active pointer cannot be pre-read.
+- Use `--confirm-rollback-noop=YES` only to audit an intentional rollback where the previous prefix already equals the active prefix.
 - Keep full rebuild activation separate from incremental repair promotion.
 - Use bounded ranges for incident repairs.
 - Preserve target manifests, audit records, and dead letters until the recovery review is complete.
@@ -1145,7 +1148,7 @@ python3 tools/validate_open_source_readiness.py
 python3 tools/validate_codex_mcp_parity.py
 ```
 
-The backfill readiness validator performs static surface checks, confirms the manual documents the production-critical flags, runs the local batch/incremental benchmark for both raw-message storage options, executes a baseline-vs-candidate regression gate for both raw modes, validates shadow activation and rollback for both raw modes, proves missing active-prefix preconditions block live activation, verifies explicit bypass activation is audited, verifies dead-letter handling for missing source records in both raw modes, proves `record_count`, legacy `record_index`, and bounded `scan_hash` source discovery for both raw modes, verifies partial shadow repair plus `incremental_repair` promotion with `promotion_partial_matches_validation`, `promotion_data_quality_status="clean"`, and retry idempotency for both raw modes, verifies checkpoint resume for both `temporalstore` and `matrixkv` raw modes, and generates Prometheus output for shadow and incremental repair runs. A passing result means the local open-source gate exercised full shadow, bounded incremental repair, partial repair, batch-size sweep, latency/QPS gates, raw-backend parity, baseline regression checks, validation-backed cutover, active-prefix precondition enforcement, rollback auditability, source-scan compatibility, bounded dead-letter observability, serving-record fingerprints, resumable checkpoints, and scrapeable operator metrics.
+The backfill readiness validator performs static surface checks, confirms the manual documents the production-critical flags, runs the local batch/incremental benchmark for both raw-message storage options, executes a baseline-vs-candidate regression gate for both raw modes, validates shadow activation and rollback for both raw modes, proves missing active-prefix preconditions block live activation, verifies explicit bypass activation is audited, proves no-op rollback is blocked unless explicitly confirmed and audited, verifies dead-letter handling for missing source records in both raw modes, proves `record_count`, legacy `record_index`, and bounded `scan_hash` source discovery for both raw modes, verifies partial shadow repair plus `incremental_repair` promotion with `promotion_partial_matches_validation`, `promotion_data_quality_status="clean"`, and retry idempotency for both raw modes, verifies checkpoint resume for both `temporalstore` and `matrixkv` raw modes, and generates Prometheus output for shadow and incremental repair runs. A passing result means the local open-source gate exercised full shadow, bounded incremental repair, partial repair, batch-size sweep, latency/QPS gates, raw-backend parity, baseline regression checks, validation-backed cutover, active-prefix precondition enforcement, rollback no-op protection, rollback auditability, source-scan compatibility, bounded dead-letter observability, serving-record fingerprints, resumable checkpoints, and scrapeable operator metrics.
 
 ## CLI Reference
 
@@ -1168,6 +1171,7 @@ Core flags:
 --resume
 --confirm-resume-range-change=YES
 --confirm-active-target=YES
+--confirm-rollback-noop=YES
 --expect-active-prefix
 --confirm-no-active-prefix-precondition=YES
 --fail-fast

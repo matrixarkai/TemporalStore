@@ -43,6 +43,7 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             "confirm_in_place": "",
             "confirm_activate": "",
             "confirm_rollback": "",
+            "confirm_rollback_noop": "",
             "confirm_incremental_repair": "",
             "confirm_active_target": "",
             "confirm_no_active_prefix_precondition": "",
@@ -629,6 +630,41 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             kv_rolled_back = backfill.LocalJsonKV(path)
             self.assertEqual(kv_rolled_back.get_string("matrixark:context:active_prefix"), "matrixark:context:old")
             self.assertIn("matrixark:context_backfill:candidate", kv_rolled_back.hget("matrixark:context:active_prefix:rollback_audit", "rollback-unit"))
+
+    def test_rollback_activation_noop_requires_confirmation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            kv.put_string("matrixark:context:active_prefix", "matrixark:context:active")
+            kv.put_string("matrixark:context:active_prefix:previous:unit", "matrixark:context:active")
+
+            with self.assertRaisesRegex(backfill.BackfillError, "previous prefix equals current active prefix"):
+                backfill.run_rollback_activation(self.make_args(
+                    path,
+                    mode="rollback_activation",
+                    rollback_job_id="unit",
+                    job_id="rollback-noop",
+                    confirm_rollback="YES",
+                    expect_active_prefix="matrixark:context:active",
+                    dry_run=False,
+                ))
+
+            rollback = backfill.run_rollback_activation(self.make_args(
+                path,
+                mode="rollback_activation",
+                rollback_job_id="unit",
+                job_id="rollback-noop",
+                confirm_rollback="YES",
+                confirm_rollback_noop="YES",
+                expect_active_prefix="matrixark:context:active",
+                dry_run=False,
+            ))
+
+            self.assertEqual(rollback["status"], "ok")
+            self.assertTrue(rollback["rollback_noop_confirmed"])
+            kv_after = backfill.LocalJsonKV(path)
+            rollback_audit = json.loads(kv_after.hget("matrixark:context:active_prefix:rollback_audit", "rollback-noop"))
+            self.assertTrue(rollback_audit["rollback_noop_confirmed"])
 
     def test_activate_shadow_without_active_precondition_requires_explicit_bypass(self):
         with tempfile.TemporaryDirectory() as tmp:
