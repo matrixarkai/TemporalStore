@@ -17,6 +17,7 @@ from run_temporalstore_cpp_rust_next_performance_workflow import (
     _backend_artifact_preflight,
     _pythonize,
     _redact_sensitive_argv,
+    _wsl_path,
     _with_backend_artifact_overrides,
     _wslize,
     build_execution_plan,
@@ -123,6 +124,7 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
                     "--cpp-lib",
                     "/mnt/c/private/libbcache2.so",
                     "--rust-cli=/mnt/c/private/matrixark_record_log",
+                    _wsl_path(Path(__file__).resolve().parents[1]),
                 ]
             ),
             [
@@ -131,6 +133,7 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
                 "--cpp-lib",
                 "<MATRIXARK_PARITY_CPP_LIB>",
                 "--rust-cli=<MATRIXARK_PARITY_RUST_CLI>",
+                "<WORKSPACE_ROOT_WSL>",
             ],
         )
 
@@ -249,6 +252,10 @@ class NextPerformanceWorkflowTest(unittest.TestCase):
         artifacts = plan["execution_environment"]["backend_artifacts"]
         self.assertEqual(artifacts["cpp_lib"]["path"], "<MATRIXARK_PARITY_CPP_LIB>")
         self.assertEqual(artifacts["rust_cli"]["path"], "<MATRIXARK_PARITY_RUST_CLI>")
+        self.assertEqual(
+            plan["commands"][0]["wsl_argv"][3:5],
+            ["--cd", "<WORKSPACE_ROOT_WSL>"],
+        )
         self.assertEqual(
             plan["commands"][0]["wsl_argv"][-4:],
             [
