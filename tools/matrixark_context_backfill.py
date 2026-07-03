@@ -113,6 +113,9 @@ class BackfillMetrics:
     def serving_record_fingerprint(self) -> str:
         return self._serving_fingerprint.hexdigest()
 
+    def data_quality_status(self) -> str:
+        return 'clean' if self.failed == 0 and self.dead_letter == 0 else 'completed_with_errors'
+
     def to_json(
         self,
         *,
@@ -125,8 +128,11 @@ class BackfillMetrics:
     ) -> Json:
         elapsed_ms = max(0, (self.finished_at_ms or int(time.time() * 1000)) - self.started_at_ms)
         qps = (self.scanned * 1000.0 / elapsed_ms) if elapsed_ms else 0.0
+        quality_status = self.data_quality_status()
         return {
             'status': 'ok',
+            'data_quality_status': quality_status,
+            'has_failures': quality_status != 'clean',
             'job_id': job_id,
             'source_prefix': source_prefix,
             'target_prefix': target_prefix,
@@ -167,6 +173,9 @@ class BackfillMetrics:
             '# HELP matrixark_context_backfill_scan_qps Backfill source scan throughput in records per second.',
             '# TYPE matrixark_context_backfill_scan_qps gauge',
             f'matrixark_context_backfill_scan_qps{{{labels}}} {round(scan_qps, 3)}',
+            '# HELP matrixark_context_backfill_data_quality_status Backfill source processing quality status. Value is 1 for the observed status.',
+            '# TYPE matrixark_context_backfill_data_quality_status gauge',
+            f'matrixark_context_backfill_data_quality_status{{{labels},status="{self.data_quality_status()}"}} 1',
             '# HELP matrixark_context_backfill_records_total Records processed by context backfill.',
             '# TYPE matrixark_context_backfill_records_total counter',
         ]

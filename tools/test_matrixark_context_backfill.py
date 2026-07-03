@@ -86,6 +86,8 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             prom = Path(tmp) / "backfill.prom"
 
             summary = backfill.run_backfill(self.make_args(path, prometheus_output=str(prom)))
+            self.assertEqual(summary["data_quality_status"], "clean")
+            self.assertFalse(summary["has_failures"])
             self.assertEqual(summary["metrics"]["scanned"], 2)
             self.assertEqual(summary["metrics"]["written"], 2)
             self.assertEqual(summary["metrics"]["source_batches"], 1)
@@ -103,6 +105,8 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             prom_text = prom.read_text()
             self.assertIn("matrixark_context_backfill_run_elapsed_ms", prom_text)
             self.assertIn("matrixark_context_backfill_scan_qps", prom_text)
+            self.assertIn("matrixark_context_backfill_data_quality_status", prom_text)
+            self.assertIn('status="clean"} 1', prom_text)
             self.assertIn("matrixark_context_backfill_records_total", prom_text)
             self.assertIn("matrixark_context_backfill_batches_total", prom_text)
             self.assertIn("matrixark_context_backfill_serving_record_fingerprint_info", prom_text)
@@ -1175,6 +1179,8 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             summary = backfill.run_backfill(self.make_args(path))
             self.assertEqual(summary["metrics"]["failed"], 1)
             self.assertEqual(summary["metrics"]["dead_letter"], 1)
+            self.assertEqual(summary["data_quality_status"], "completed_with_errors")
+            self.assertTrue(summary["has_failures"])
             self.assertEqual(backfill.LocalJsonKV(path).get_string("matrixark:context_backfill:test:dead_letter_count"), "1")
 
             with self.assertRaises(backfill.BackfillError):
