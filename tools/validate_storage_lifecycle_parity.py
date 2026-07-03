@@ -145,6 +145,33 @@ REQUIRED_STORAGE_RECLAIM_SEMANTICS = [
     "physical_reclaim_errors_zero",
 ]
 
+REQUIRED_STORAGE_MANAGER_CONTRACT_FIELDS = [
+    "manager_identity",
+    "cpp_public_name",
+    "rust_public_name",
+    "phase_order",
+    "phase_metrics",
+    "phase_counts",
+    "loop_metric",
+    "loop_ms",
+    "phase_order_enforced",
+    "missing_phase_count",
+]
+
+REQUIRED_STORAGE_MANAGER_PHASE_METRICS = {
+    "prepare": "storage_manager_prepare_count",
+    "reclaim": "storage_manager_reclaim_count",
+    "evict": "storage_manager_evict_count",
+    "expire": "storage_manager_expire_count",
+    "page_gc": "storage_manager_page_gc_count",
+    "block_gc": "storage_manager_block_gc_count",
+    "compaction": "storage_manager_compaction_count",
+    "index_gc": "storage_manager_index_gc_count",
+    "delayed_destroy": "storage_manager_delayed_destroy_count",
+    "follower_cursor_safety": "storage_manager_follower_cursor_safety_count",
+    "watermark_progress": "storage_manager_watermark_progress_count",
+}
+
 REQUIRED_STORAGE_RECLAIM_SCOPE = {
     "owner": "temporalstore_storage_lifecycle",
     "matrixark_context_gc_role": "marks_logical_raw_event_eligibility_only",
@@ -168,6 +195,7 @@ REQUIRED_LIFECYCLE_TOP_LEVEL_KEYS = [
     "storage_write_contract",
     "storage_read_contract",
     "storage_cold_scan_contract",
+    "storage_manager_contract",
     "storage_read_sequence",
     "storage_cold_scan_sequence",
     "storage_lifecycle_phases",
@@ -343,6 +371,18 @@ def _extract_runner_list(name: str) -> list[str]:
     raise AssertionError(f"{name} not found in scale report runner")
 
 
+def _extract_runner_dict(name: str) -> dict[str, str]:
+    tree = ast.parse(SCALE_REPORT.read_text(encoding="utf-8"), filename=str(SCALE_REPORT))
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            if any(isinstance(target, ast.Name) and target.id == name for target in node.targets):
+                value = ast.literal_eval(node.value)
+                if not isinstance(value, dict) or not all(isinstance(key, str) and isinstance(item, str) for key, item in value.items()):
+                    raise AssertionError(f"{name} must be a dict[str, str]")
+                return value
+    raise AssertionError(f"{name} not found in scale report runner")
+
+
 def _load_json(path: pathlib.Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8-sig"))
 
@@ -412,6 +452,19 @@ def _dig_cold_scan_contract(report: dict[str, Any]) -> dict[str, Any]:
         report.get("storage_cold_scan_contract"),
         report.get("storage_lifecycle", {}).get("cold_scan_contract") if isinstance(report.get("storage_lifecycle"), dict) else None,
         report.get("cold_scan_path", {}).get("contract") if isinstance(report.get("cold_scan_path"), dict) else None,
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            return candidate
+    return {}
+
+
+def _dig_manager_contract(report: dict[str, Any]) -> dict[str, Any]:
+    candidates = [
+        report.get("storage_manager_contract"),
+        report.get("storage_lifecycle", {}).get("manager_contract") if isinstance(report.get("storage_lifecycle"), dict) else None,
+        report.get("storage_manager", {}).get("contract") if isinstance(report.get("storage_manager"), dict) else None,
+        report.get("store_manager", {}).get("contract") if isinstance(report.get("store_manager"), dict) else None,
     ]
     for candidate in candidates:
         if isinstance(candidate, dict):
@@ -617,6 +670,7 @@ def validate_contract_and_runner() -> list[str]:
     runner_cold_scan_result_fields = _extract_runner_list("STORAGE_COLD_SCAN_RESULT_FIELDS")
     runner_cold_scan_metrics = _extract_runner_list("STORAGE_COLD_SCAN_METRIC_NAMES")
     runner_lifecycle_phases = _extract_runner_list("STORAGE_LIFECYCLE_PHASE_NAMES")
+    runner_manager_phase_metrics = _extract_runner_dict("STORAGE_MANAGER_PHASE_METRICS")
     runner_reclaim_semantics = _extract_runner_list("STORAGE_RECLAIM_SEMANTICS")
     runner_cache_layers = _extract_runner_list("STORAGE_CACHE_LAYER_NAMES")
     runner_cache_semantics = _extract_runner_list("STORAGE_CACHE_SEMANTICS")
@@ -647,6 +701,8 @@ def validate_contract_and_runner() -> list[str]:
         failures.append("runner:STORAGE_COLD_SCAN_METRIC_NAMES does not match the canonical cold scan metrics")
     if runner_lifecycle_phases != REQUIRED_STORAGE_LIFECYCLE_PHASES:
         failures.append("runner:STORAGE_LIFECYCLE_PHASE_NAMES does not match the canonical lifecycle phase order")
+    if runner_manager_phase_metrics != REQUIRED_STORAGE_MANAGER_PHASE_METRICS:
+        failures.append("runner:STORAGE_MANAGER_PHASE_METRICS does not match the canonical manager phase metrics")
     if runner_reclaim_semantics != REQUIRED_STORAGE_RECLAIM_SEMANTICS:
         failures.append("runner:STORAGE_RECLAIM_SEMANTICS does not match the canonical reclaim semantics")
     if runner_cache_layers != REQUIRED_STORAGE_CACHE_LAYERS:
@@ -687,6 +743,14 @@ def validate_contract_and_runner() -> list[str]:
     for phase in REQUIRED_STORAGE_LIFECYCLE_PHASES:
         if f"`{phase}`" not in contract_text:
             failures.append(f"contract missing lifecycle phase `{phase}`")
+    for field in REQUIRED_STORAGE_MANAGER_CONTRACT_FIELDS:
+        if f"`{field}`" not in contract_text:
+            failures.append(f"contract missing manager contract field `{field}`")
+    for phase, metric in REQUIRED_STORAGE_MANAGER_PHASE_METRICS.items():
+        if f"`{phase}`" not in contract_text:
+            failures.append(f"contract missing manager phase `{phase}`")
+        if f"`{metric}`" not in contract_text:
+            failures.append(f"contract missing manager phase metric `{metric}`")
     for semantic in REQUIRED_STORAGE_RECLAIM_SEMANTICS:
         if f"`{semantic}`" not in contract_text:
             failures.append(f"contract missing reclaim semantic `{semantic}`")
@@ -719,6 +783,8 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
     rust_read_contract = _dig_read_contract(rust_report)
     cpp_cold_scan_contract = _dig_cold_scan_contract(cpp_report)
     rust_cold_scan_contract = _dig_cold_scan_contract(rust_report)
+    cpp_manager_contract = _dig_manager_contract(cpp_report)
+    rust_manager_contract = _dig_manager_contract(rust_report)
     cpp_write_sequence = _dig_sequence(cpp_report, "storage_write_sequence")
     rust_write_sequence = _dig_sequence(rust_report, "storage_write_sequence")
     cpp_read_sequence = _dig_sequence(cpp_report, "storage_read_sequence")
@@ -840,6 +906,39 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
             failures.append(f"{backend} cold scan contract hot_cache_promotions must be zero")
         if _as_number(cold_scan_contract.get("cold_scan_no_cache_reads")) is not None and _as_number(cold_scan_contract.get("cold_scan_no_cache_reads")) < 0:
             failures.append(f"{backend} cold scan contract cold_scan_no_cache_reads must be non-negative")
+    for field in REQUIRED_STORAGE_MANAGER_CONTRACT_FIELDS:
+        if field not in cpp_manager_contract:
+            failures.append(f"cpp manager contract missing field `{field}`")
+        if field not in rust_manager_contract:
+            failures.append(f"rust manager contract missing field `{field}`")
+    for backend, manager_contract in [("cpp", cpp_manager_contract), ("rust", rust_manager_contract)]:
+        if manager_contract.get("manager_identity") != "StorageManager/StoreManager":
+            failures.append(f"{backend} manager_identity must be StorageManager/StoreManager")
+        if manager_contract.get("cpp_public_name") != "StorageManager":
+            failures.append(f"{backend} cpp_public_name must be StorageManager")
+        if manager_contract.get("rust_public_name") != "StoreManager":
+            failures.append(f"{backend} rust_public_name must be StoreManager")
+        if manager_contract.get("phase_order") != REQUIRED_STORAGE_LIFECYCLE_PHASES:
+            failures.append(f"{backend} manager phase_order drift: {manager_contract.get('phase_order')!r}")
+        if manager_contract.get("phase_metrics") != REQUIRED_STORAGE_MANAGER_PHASE_METRICS:
+            failures.append(f"{backend} manager phase_metrics drift: {manager_contract.get('phase_metrics')!r}")
+        if manager_contract.get("loop_metric") != "storage_manager_loop_ms":
+            failures.append(f"{backend} manager loop_metric must be storage_manager_loop_ms")
+        if manager_contract.get("phase_order_enforced") is not True:
+            failures.append(f"{backend} manager phase_order_enforced must be true")
+        if _as_number(manager_contract.get("missing_phase_count")) not in (0.0, None):
+            failures.append(f"{backend} manager missing_phase_count must be zero")
+        phase_counts = manager_contract.get("phase_counts")
+        if not isinstance(phase_counts, dict):
+            failures.append(f"{backend} manager phase_counts must be an object")
+        else:
+            for phase in REQUIRED_STORAGE_LIFECYCLE_PHASES:
+                if phase not in phase_counts:
+                    failures.append(f"{backend} manager phase_counts missing `{phase}`")
+                elif _as_number(phase_counts.get(phase)) is not None and _as_number(phase_counts.get(phase)) < 0:
+                    failures.append(f"{backend} manager phase_counts `{phase}` must be non-negative")
+        if _as_number(manager_contract.get("loop_ms")) is not None and _as_number(manager_contract.get("loop_ms")) < 0:
+            failures.append(f"{backend} manager loop_ms must be non-negative")
 
     if cpp_write_sequence != REQUIRED_STORAGE_WRITE_SEQUENCE:
         failures.append(f"cpp storage_write_sequence drift: {cpp_write_sequence!r}")
