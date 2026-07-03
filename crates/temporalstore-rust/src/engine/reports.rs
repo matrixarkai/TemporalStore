@@ -1041,6 +1041,8 @@ pub struct StorageLifecycleReport {
     pub storage_safety_snapshot: StorageSafetySnapshot,
     #[serde(default = "default_storage_index_snapshot")]
     pub storage_index_snapshot: StorageIndexSnapshot,
+    #[serde(default = "default_storage_topology_snapshot")]
+    pub storage_topology_snapshot: StorageTopologySnapshot,
     #[serde(default = "default_storage_write_sequence")]
     pub storage_write_sequence: Vec<String>,
     #[serde(default = "default_storage_read_sequence")]
@@ -1095,6 +1097,7 @@ impl Default for StorageLifecycleReport {
             storage_reclaim_contract: default_storage_reclaim_contract_empty(),
             storage_safety_snapshot: default_storage_safety_snapshot(),
             storage_index_snapshot: default_storage_index_snapshot(),
+            storage_topology_snapshot: default_storage_topology_snapshot(),
             storage_write_sequence: default_storage_write_sequence(),
             storage_read_sequence: default_storage_read_sequence(),
             storage_cold_scan_sequence: default_storage_cold_scan_sequence(),
@@ -1192,6 +1195,21 @@ impl StorageLifecycleReport {
             &mut metrics,
             "storage_zone_stale_bytes",
             plan.reclaimable_physical_bytes,
+        );
+        put(
+            &mut metrics,
+            "storage_zone_count",
+            plan.live_page_segment_ids.len() as u64,
+        );
+        put(
+            &mut metrics,
+            "active_storage_zones",
+            plan.live_page_segment_ids.len() as u64,
+        );
+        put(
+            &mut metrics,
+            "stream_segment_count",
+            plan.live_page_segment_ids.len() as u64,
         );
         put(
             &mut metrics,
@@ -1375,6 +1393,8 @@ impl StorageLifecycleReport {
             storage_safety_snapshot_from_metrics(&self.storage_lifecycle_metrics);
         self.storage_index_snapshot =
             storage_index_snapshot_from_metrics(&self.storage_lifecycle_metrics);
+        self.storage_topology_snapshot =
+            storage_topology_snapshot_from_metrics(&self.storage_lifecycle_metrics);
         self.storage_reclaim_scope = default_storage_reclaim_scope();
     }
 }
@@ -1561,6 +1581,45 @@ pub fn default_storage_index_snapshot() -> StorageIndexSnapshot {
     storage_index_snapshot_from_metrics(&default_storage_lifecycle_metrics())
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageTopologySnapshot {
+    pub storage_zone_count: u64,
+    pub active_storage_zones: u64,
+    pub sealed_storage_zones: u64,
+    pub stream_segment_count: u64,
+    pub segment_open_count: u64,
+    pub segment_sealed_count: u64,
+    pub delayed_destroy_backlog: u64,
+    pub storage_zone_total_bytes: u64,
+    pub storage_zone_used_bytes: u64,
+    pub storage_zone_stale_bytes: u64,
+    pub append_log_replay_records: u64,
+    pub append_log_reclaimed_records: u64,
+}
+
+pub fn storage_topology_snapshot_from_metrics(
+    metrics: &BTreeMap<String, u64>,
+) -> StorageTopologySnapshot {
+    StorageTopologySnapshot {
+        storage_zone_count: metric(metrics, "storage_zone_count"),
+        active_storage_zones: metric(metrics, "active_storage_zones"),
+        sealed_storage_zones: metric(metrics, "sealed_storage_zones"),
+        stream_segment_count: metric(metrics, "stream_segment_count"),
+        segment_open_count: metric(metrics, "segment_open_count"),
+        segment_sealed_count: metric(metrics, "segment_sealed_count"),
+        delayed_destroy_backlog: metric(metrics, "delayed_destroy_backlog"),
+        storage_zone_total_bytes: metric(metrics, "storage_zone_total_bytes"),
+        storage_zone_used_bytes: metric(metrics, "storage_zone_used_bytes"),
+        storage_zone_stale_bytes: metric(metrics, "storage_zone_stale_bytes"),
+        append_log_replay_records: metric(metrics, "append_log_replay_records"),
+        append_log_reclaimed_records: metric(metrics, "append_log_reclaimed_records"),
+    }
+}
+
+pub fn default_storage_topology_snapshot() -> StorageTopologySnapshot {
+    storage_topology_snapshot_from_metrics(&default_storage_lifecycle_metrics())
+}
+
 pub fn default_storage_lifecycle_metrics() -> BTreeMap<String, u64> {
     let mut metrics = BTreeMap::new();
     for name in [
@@ -1579,6 +1638,10 @@ pub fn default_storage_lifecycle_metrics() -> BTreeMap<String, u64> {
         "stream_rollover_count",
         "segment_open_count",
         "segment_sealed_count",
+        "storage_zone_count",
+        "active_storage_zones",
+        "sealed_storage_zones",
+        "stream_segment_count",
         "storage_zone_total_bytes",
         "storage_zone_used_bytes",
         "storage_zone_stale_bytes",

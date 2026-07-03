@@ -262,6 +262,7 @@ STORAGE_LIFECYCLE_TOP_LEVEL_KEYS = [
     "storage_reclaim_contract",
     "storage_safety_snapshot",
     "storage_index_snapshot",
+    "storage_topology_snapshot",
     "storage_read_sequence",
     "storage_cold_scan_sequence",
     "storage_lifecycle_phases",
@@ -876,6 +877,24 @@ def default_storage_index_snapshot(metrics: Json | None = None) -> Json:
     }
 
 
+def default_storage_topology_snapshot(metrics: Json | None = None) -> Json:
+    source = metrics if isinstance(metrics, dict) else {}
+    return {
+        "storage_zone_count": int(source.get("storage_zone_count") or 0),
+        "active_storage_zones": int(source.get("active_storage_zones") or 0),
+        "sealed_storage_zones": int(source.get("sealed_storage_zones") or 0),
+        "stream_segment_count": int(source.get("stream_segment_count") or 0),
+        "segment_open_count": int(source.get("segment_open_count") or 0),
+        "segment_sealed_count": int(source.get("segment_sealed_count") or 0),
+        "delayed_destroy_backlog": int(source.get("delayed_destroy_backlog") or 0),
+        "storage_zone_total_bytes": int(source.get("storage_zone_total_bytes") or 0),
+        "storage_zone_used_bytes": int(source.get("storage_zone_used_bytes") or 0),
+        "storage_zone_stale_bytes": int(source.get("storage_zone_stale_bytes") or 0),
+        "append_log_replay_records": int(source.get("append_log_replay_records") or 0),
+        "append_log_reclaimed_records": int(source.get("append_log_reclaimed_records") or 0),
+    }
+
+
 def storage_lifecycle_report_shape(effective_storage_tuning: Json, metrics: Json | None = None) -> Json:
     return {
         "effective_storage_tuning": dict(effective_storage_tuning),
@@ -896,6 +915,7 @@ def storage_lifecycle_report_shape(effective_storage_tuning: Json, metrics: Json
         "storage_reclaim_contract": default_storage_reclaim_contract(metrics),
         "storage_safety_snapshot": default_storage_safety_snapshot(metrics),
         "storage_index_snapshot": default_storage_index_snapshot(metrics),
+        "storage_topology_snapshot": default_storage_topology_snapshot(metrics),
         "storage_write_sequence": list(STORAGE_WRITE_SEQUENCE_STEPS),
         "storage_read_sequence": list(STORAGE_READ_SEQUENCE_STEPS),
         "storage_cold_scan_sequence": list(STORAGE_COLD_SCAN_SEQUENCE_STEPS),
@@ -984,6 +1004,12 @@ def attach_storage_lifecycle_shape(result: Json, effective_storage_tuning: Json 
     normalized_index_snapshot = default_storage_index_snapshot(metrics)
     normalized_index_snapshot.update(index_snapshot)
     shaped["storage_index_snapshot"] = normalized_index_snapshot
+    topology_snapshot = shaped.get("storage_topology_snapshot")
+    if not isinstance(topology_snapshot, dict):
+        topology_snapshot = {}
+    normalized_topology_snapshot = default_storage_topology_snapshot(metrics)
+    normalized_topology_snapshot.update(topology_snapshot)
+    shaped["storage_topology_snapshot"] = normalized_topology_snapshot
     shaped["storage_write_sequence"] = list(STORAGE_WRITE_SEQUENCE_STEPS)
     shaped["storage_read_sequence"] = list(STORAGE_READ_SEQUENCE_STEPS)
     shaped["storage_cold_scan_sequence"] = list(STORAGE_COLD_SCAN_SEQUENCE_STEPS)
