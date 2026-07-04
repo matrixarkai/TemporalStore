@@ -31,6 +31,9 @@ from tools import matrixark_mcp_core as mcp_core  # noqa: E402
 
 
 Json = dict[str, Any]
+HIDDEN_COMPACT_REPORT_RECORD_TYPES = {
+    "context_batch_commit",
+}
 
 
 MESSAGES = [
@@ -393,6 +396,8 @@ def compact_summary_policy(record: Json, aliases: ReportAliases) -> Json:
 def compact_context_indexes(records: list[Json], aliases: ReportAliases) -> list[Json]:
     postings: dict[tuple[str, str, Any, Any], set[Any]] = {}
     for record in records:
+        if str(record.get("data_model") or "") in HIDDEN_COMPACT_REPORT_RECORD_TYPES:
+            continue
         key = (
             str(record.get("data_model") or record.get("ref_type") or ""),
             str(record.get("index_name") or ""),
@@ -407,13 +412,16 @@ def compact_context_indexes(records: list[Json], aliases: ReportAliases) -> list
             refs.add(ref_hash)
     rows = []
     for (model, index_name, node_hash, ref_type), refs in sorted(postings.items(), key=lambda item: (item[0][0], item[0][1], str(item[0][2]))):
+        sample_refs = []
+        if model not in {"resource_fact", "resource_entity_fact"}:
+            sample_refs = [aliases.ref(ref_type, ref) for ref in list(sorted(refs, key=str))[:3]]
         rows.append(
             {
                 "model": model,
                 "index": index_name,
                 "node": aliases.node(node_hash),
-                "refs": len(refs),
-                "sample": [aliases.ref(ref_type, ref) for ref in list(sorted(refs, key=str))[:3]],
+                "ref_count": len(refs),
+                "sample_refs": sample_refs,
             }
         )
     return rows
@@ -457,20 +465,22 @@ def compact_placement_routes(records: list[Json], aliases: ReportAliases) -> lis
             {
                 "record_type": record_type,
                 "node": aliases.node(node_hash) if node_hash else "",
-                "placement_key": compact(placement_key, 120),
+                "placement": aliases.alias("p", placement_key),
                 "placement_hash": placement_hash or "",
                 "example_shard_16": int(placement_hash) % 16 if str(placement_hash).isdigit() else "",
                 "records": 0,
             },
         )
         row["records"] += 1
-    return sorted(rows_by_key.values(), key=lambda item: (str(item["placement_key"]), str(item["record_type"])))[:80]
+    return sorted(rows_by_key.values(), key=lambda item: (str(item["placement"]), str(item["record_type"])))[:80]
 
 
 def data_field_inventory(records: list[Json]) -> list[Json]:
     fields_by_type: dict[str, set[str]] = defaultdict(set)
     for record in records:
         record_type = str(record.get("record_type") or "unknown")
+        if record_type in HIDDEN_COMPACT_REPORT_RECORD_TYPES:
+            continue
         for key, value in record.items():
             if isinstance(value, dict):
                 for child_key in value.keys():
@@ -714,7 +724,12 @@ def write_outputs(
     md_path = output_dir / "matrixark_message_resource_debug_trace.md"
     html_path = output_dir / "matrixark_message_resource_debug_trace.html"
 
-    counts = Counter(str(record.get("record_type", "unknown")) for record in records)
+    visible_records = [
+        record
+        for record in records
+        if str(record.get("record_type", "unknown")) not in HIDDEN_COMPACT_REPORT_RECORD_TYPES
+    ]
+    counts = Counter(str(record.get("record_type", "unknown")) for record in visible_records)
     by_type: dict[str, list[Json]] = defaultdict(list)
     for record in records:
         by_type[str(record.get("record_type", "unknown"))].append(record)
@@ -759,8 +774,8 @@ def write_outputs(
         "resource_import_task": [compact_import_task(record) for record in by_type["resource_import_task"]],
         "resource_chunk": [compact_resource_chunk(record, aliases) for record in by_type["resource_chunk"]],
     }
-    placement_routes = compact_placement_routes(records, aliases)
-    field_inventory = data_field_inventory(records)
+    placement_routes = compact_placement_routes(visible_records, aliases)
+    field_inventory = data_field_inventory(visible_records)
     compact_pack = sanitize_compact_payload(mcp_core.compact_context_pack_for_serving(retrieve_result))
     if isinstance(compact_pack, dict):
         compact_pack.pop("context_pack_id", None)
@@ -864,9 +879,10 @@ def write_outputs(
         "## Placement / Data-Node Mapping Examples",
         "",
         "Serving records carry a stable placement key so TemporalStore can colocate node-local records and route them to a shard/data node. "
+        "This compact report aliases the full key as `pN`; raw placement keys stay in audit/debug artifacts. "
         "`example_shard_16` is an illustrative modulo of the placement hash; a live topology maps the same placement hash through the metaserver slot table.",
         "",
-        markdown_table(placement_routes, ["record_type", "node", "placement_key", "placement_hash", "example_shard_16", "records"], limit=120),
+        markdown_table(placement_routes, ["record_type", "node", "placement", "placement_hash", "example_shard_16", "records"], limit=120),
         "",
         "## Extracted Events",
         "",
@@ -892,7 +908,9 @@ def write_outputs(
         "",
         "## Secondary Index Postings",
         "",
-        markdown_table(compact_records_by_type["context_index_postings"], ["model", "index", "node", "refs", "sample"], limit=120),
+        "Resource fact postings show counts only in the compact report; full fact ref lists are raw audit/debug data.",
+        "",
+        markdown_table(compact_records_by_type["context_index_postings"], ["model", "index", "node", "ref_count", "sample_refs"], limit=120),
         "",
         "## Retrieval Scan",
         "",
@@ -968,7 +986,7 @@ def write_outputs(
   </header>
   <main>
     <section class="grid">
-      <div class="metric"><span class="muted">Records</span><strong>{len(records)}</strong></div>
+      <div class="metric"><span class="muted">Visible Records</span><strong>{len(visible_records)}</strong></div>
       <div class="metric"><span class="muted">Events</span><strong>{counts.get('context_event', 0)}</strong></div>
       <div class="metric"><span class="muted">Entities</span><strong>{counts.get('context_entity', 0)}</strong></div>
       <div class="metric"><span class="muted">Chunks</span><strong>{counts.get('resource_chunk', 0)}</strong></div>
@@ -984,14 +1002,14 @@ def write_outputs(
     <section class="section"><h2>Resource Import Tasks</h2>{records_table(compact_records_by_type['resource_import_task'], ['status', 'type', 'source', 'chunks', 'facts', 'entities'])}</section>
     <section class="section"><h2>Resource Chunks</h2>{records_table(compact_records_by_type['resource_chunk'], ['chunk', 'resource', 'source', 'kind', 'tokens', 'text'])}</section>
     <section class="section"><h2>Parent-To-Child Index</h2><p class="muted">Children are discovered by the narrow adjacency key <code>ctx:child:{{tenant_hash}}:{{parent_hash}}</code>. ContextNode records do not persist child counts.</p>{records_table(compact_records_by_type['context_child_ref'], ['index_key', 'parent', 'child', 'child_name', 'updated_at_ms', 'ref'])}</section>
-    <section class="section"><h2>Placement / Data-Node Mapping Examples</h2><p class="muted">Placement keys route records to TemporalStore shards/data nodes. <code>example_shard_16</code> is an illustrative hash modulo; production uses metaserver slot placement.</p>{records_table(placement_routes, ['record_type', 'node', 'placement_key', 'placement_hash', 'example_shard_16', 'records'])}</section>
+    <section class="section"><h2>Placement / Data-Node Mapping Examples</h2><p class="muted">Placement keys route records to TemporalStore shards/data nodes. This compact report aliases full placement keys as <code>pN</code>; production uses metaserver slot placement.</p>{records_table(placement_routes, ['record_type', 'node', 'placement', 'placement_hash', 'example_shard_16', 'records'])}</section>
     <section class="section"><h2>Extracted Events</h2>{records_table(compact_records_by_type['context_event'], ['event', 'node', 'type', 'entity', 'source', 'text'])}</section>
     <section class="section"><h2>Extracted Entities</h2>{records_table(compact_records_by_type['context_entity'], ['entity', 'node', 'type', 'name', 'op', 'state', 'source'])}</section>
     <section class="section"><h2>Summaries</h2>{records_table(compact_records_by_type['context_summary'], ['type', 'summary', 'node', 'sources', 'text'])}</section>
     <section class="section"><h2>Node L0/L1 Generation Policy</h2>{records_table(summary_policy_rows, ['node', 'types', 'l1', 'reason', 'tokens', 'events', 'child_summaries'])}</section>
     <section class="section"><h2>Embedding Models</h2>{records_table(embedding_models, ['model', 'embedding_count'])}</section>
     <section class="section"><h2>Embeddings</h2><p class="muted">Latest serving embedding per ref. Full vectors stay out of the page.</p>{records_table(embeddings, ['type', 'ref', 'dim', 'preview'])}</section>
-    <section class="section"><h2>Secondary Index Postings</h2><p class="muted">Grouped postings view. Raw index rows stay out of this compact report.</p>{records_table(compact_records_by_type['context_index_postings'], ['model', 'index', 'node', 'refs', 'sample'])}</section>
+    <section class="section"><h2>Secondary Index Postings</h2><p class="muted">Grouped postings view. Resource fact postings show counts only; raw fact refs and batch-commit indexes stay out of this compact report.</p>{records_table(compact_records_by_type['context_index_postings'], ['model', 'index', 'node', 'ref_count', 'sample_refs'])}</section>
     <section class="section"><h2>Retrieval Scan And ContextPack</h2><p class="muted">Serving view only: grouped refs, citations, token summary, and warnings. Planner/audit fields stay out of the token-facing report.</p><pre>{html.escape(json.dumps(compact_pack, indent=2, sort_keys=True)[:20000])}</pre></section>
     <section class="section"><h2>Replay</h2><pre>{html.escape(json.dumps(compact_replay(replay_result), indent=2, sort_keys=True)[:12000])}</pre></section>
     <section class="section"><h2>Compact JSON</h2><p><a href="./matrixark_message_resource_debug_trace.json">Open compact JSON artifact</a>. Raw append/event logs are intentionally kept out of this compact report by default.</p></section>
