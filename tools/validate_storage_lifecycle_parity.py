@@ -425,8 +425,8 @@ REQUIRED_PUBLIC_STORAGE_FEATURE_SHAPES = {
     "object_index_entry_fields": ["model", "table", "object_key", "page_chain", "tombstone", "generation"],
     "storage_zone_fields": ["zone_id", "total_bytes", "used_bytes", "stale_bytes", "segments"],
     "stream_fields": ["stream_id", "segments", "rollover_count", "sealed_segment_count"],
-    "segment_fields": ["segment_id", "extent_id", "start_offset", "sealed", "generation"],
-    "extent_fields": ["extent_id", "block_range", "reclaim_state", "generation"],
+    "segment_fields": ["segment_id", "extent", "start_offset", "sealed", "generation"],
+    "extent_fields": ["extent", "block_range", "reclaim_state", "generation"],
     "slot_fields": ["slot_id", "dirty_generation", "object_refs", "page_refs", "tombstones", "owner_mismatch_count"],
     "append_watermark_fields": ["shard_id", "slot_id", "log_index", "timestamp_ms"],
     "compaction_watermark_fields": ["shard_id", "safe_generation", "safe_timestamp_ms", "follower_floor"],
@@ -505,6 +505,11 @@ REQUIRED_STORAGE_TOPOLOGY_SNAPSHOT_FIELDS = [
     "storage_zone_stale_bytes",
     "append_log_replay_records",
     "append_log_reclaimed_records",
+    "storage_zone_samples",
+    "stream_samples",
+    "segment_samples",
+    "extent_samples",
+    "slot_samples",
 ]
 
 LEGACY_ALIAS_MAP = {
@@ -1457,6 +1462,10 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
         ("rust", rust_topology_snapshot),
     ]:
         for field in REQUIRED_STORAGE_TOPOLOGY_SNAPSHOT_FIELDS:
+            if field.endswith("_samples"):
+                if not isinstance(topology_snapshot.get(field), list):
+                    failures.append(f"{backend} topology snapshot `{field}` must be a list")
+                continue
             value = _as_number(topology_snapshot.get(field))
             if value is None or value < 0:
                 failures.append(f"{backend} topology snapshot `{field}` must be non-negative")

@@ -959,13 +959,13 @@ impl Default for PublicStorageFeatureShapes {
             ]),
             segment_fields: public_storage_strings(&[
                 "segment_id",
-                "extent_id",
+                "extent",
                 "start_offset",
                 "sealed",
                 "generation",
             ]),
             extent_fields: public_storage_strings(&[
-                "extent_id",
+                "extent",
                 "block_range",
                 "reclaim_state",
                 "generation",
@@ -1767,6 +1767,50 @@ pub fn default_storage_index_snapshot() -> StorageIndexSnapshot {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageZoneSample {
+    pub zone_id: u64,
+    pub total_bytes: u64,
+    pub used_bytes: u64,
+    pub stale_bytes: u64,
+    pub segments: Vec<u64>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageStreamSample {
+    pub stream_id: String,
+    pub segments: Vec<u64>,
+    pub rollover_count: u64,
+    pub sealed_segment_count: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageSegmentSample {
+    pub segment_id: u64,
+    pub extent: u64,
+    pub start_offset: u64,
+    pub sealed: bool,
+    pub generation: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageExtentSample {
+    pub extent: u64,
+    pub block_range: Vec<u64>,
+    pub reclaim_state: String,
+    pub generation: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageSlotSample {
+    pub slot_id: u32,
+    pub dirty_generation: u64,
+    pub object_refs: Vec<u64>,
+    pub page_refs: Vec<StoragePageAddressSample>,
+    pub tombstones: Vec<String>,
+    pub owner_mismatch_count: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageTopologySnapshot {
     pub storage_zone_count: u64,
     pub active_storage_zones: u64,
@@ -1780,6 +1824,16 @@ pub struct StorageTopologySnapshot {
     pub storage_zone_stale_bytes: u64,
     pub append_log_replay_records: u64,
     pub append_log_reclaimed_records: u64,
+    #[serde(default)]
+    pub storage_zone_samples: Vec<StorageZoneSample>,
+    #[serde(default)]
+    pub stream_samples: Vec<StorageStreamSample>,
+    #[serde(default)]
+    pub segment_samples: Vec<StorageSegmentSample>,
+    #[serde(default)]
+    pub extent_samples: Vec<StorageExtentSample>,
+    #[serde(default)]
+    pub slot_samples: Vec<StorageSlotSample>,
 }
 
 pub fn storage_topology_snapshot_from_metrics(
@@ -1798,6 +1852,11 @@ pub fn storage_topology_snapshot_from_metrics(
         storage_zone_stale_bytes: metric(metrics, "storage_zone_stale_bytes"),
         append_log_replay_records: metric(metrics, "append_log_replay_records"),
         append_log_reclaimed_records: metric(metrics, "append_log_reclaimed_records"),
+        storage_zone_samples: Vec::new(),
+        stream_samples: Vec::new(),
+        segment_samples: Vec::new(),
+        extent_samples: Vec::new(),
+        slot_samples: Vec::new(),
     }
 }
 

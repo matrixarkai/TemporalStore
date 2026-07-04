@@ -2449,6 +2449,11 @@ impl TemporalEngine {
                 shard,
                 report.storage_gc_snapshot,
             );
+            report.storage_topology_snapshot = storage_topology_snapshot_with_samples(
+                request.shard_id,
+                shard,
+                report.storage_topology_snapshot,
+            );
         }
         report
     }
@@ -9846,6 +9851,216 @@ fn storage_gc_snapshot_with_samples(
         },
         safe_to_reclaim: follower_safe,
     }];
+    snapshot
+}
+
+fn storage_topology_snapshot_with_samples(
+    shard_id: ShardId,
+    shard: &ShardState,
+    mut snapshot: StorageTopologySnapshot,
+) -> StorageTopologySnapshot {
+    let mut entries = collect_live_page_entries(shard);
+    entries.sort_by(|left, right| {
+        (
+            left.address.extent_id.unwrap_or(left.address.page_segment_id),
+            left.address.page_segment_id,
+            left.address.offset,
+            left.kind.as_str(),
+            left.object_key.as_str(),
+        )
+            .cmp(&(
+                right.address.extent_id.unwrap_or(right.address.page_segment_id),
+                right.address.page_segment_id,
+                right.address.offset,
+                right.kind.as_str(),
+                right.object_key.as_str(),
+            ))
+    });
+
+    const MAX_STORAGE_TOPOLOGY_SAMPLES: usize = 8;
+    #[derive(Default)]
+    struct ZoneAcc {
+        used_bytes: u64,
+        stale_bytes: u64,
+        segments: BTreeSet<u64>,
+        generation: u64,
+    }
+    #[derive(Default)]
+    struct SegmentAcc {
+        extent_id: u64,
+        start_offset: u64,
+        generation: u64,
+        deleted_refs: u64,
+        live_refs: u64,
+    }
+    #[derive(Default)]
+    struct ExtentAcc {
+        min_offset: u64,
+        max_offset: u64,
+        generation: u64,
+        deleted_refs: u64,
+        live_refs: u64,
+    }
+    #[derive(Default)]
+    struct SlotAcc {
+        dirty_generation: u64,
+        object_refs: BTreeSet<u64>,
+        page_refs: Vec<StoragePageAddressSample>,
+        tombstones: BTreeSet<String>,
+    }
+
+    let mut zones = BTreeMap::<u64, ZoneAcc>::new();
+    let mut segments = BTreeMap::<u64, SegmentAcc>::new();
+    let mut extents = BTreeMap::<u64, ExtentAcc>::new();
+    let mut slots = BTreeMap::<u32, SlotAcc>::new();
+
+    for entry in &entries {
+        let zone_id = entry.address.extent_id.unwrap_or(entry.address.page_segment_id);
+        let segment_id = entry.address.page_segment_id;
+        let generation = entry.address.object_id.unwrap_or(0);
+        let zone = zones.entry(zone_id).or_default();
+        zone.segments.insert(segment_id);
+        zone.generation = zone.generation.max(generation);
+        if entry.deleted {
+            zone.stale_bytes = zone.stale_bytes.saturating_add(entry.address.length);
+        } else {
+            zone.used_bytes = zone.used_bytes.saturating_add(entry.address.length);
+        }
+
+        let segment = segments.entry(segment_id).or_insert_with(|| SegmentAcc {
+            extent_id: zone_id,
+            start_offset: entry.address.offset,
+            ..SegmentAcc::default()
+        });
+        segment.start_offset = segment.start_offset.min(entry.address.offset);
+        segment.generation = segment.generation.max(generation);
+        if entry.deleted {
+            segment.deleted_refs = segment.deleted_refs.saturating_add(1);
+        } else {
+            segment.live_refs = segment.live_refs.saturating_add(1);
+        }
+
+        let extent = extents.entry(zone_id).or_insert_with(|| ExtentAcc {
+            min_offset: entry.address.offset,
+            max_offset: entry.address.offset.saturating_add(entry.address.length),
+            ..ExtentAcc::default()
+        });
+        extent.min_offset = extent.min_offset.min(entry.address.offset);
+        extent.max_offset = extent
+            .max_offset
+            .max(entry.address.offset.saturating_add(entry.address.length));
+        extent.generation = extent.generation.max(generation);
+        if entry.deleted {
+            extent.deleted_refs = extent.deleted_refs.saturating_add(1);
+        } else {
+            extent.live_refs = extent.live_refs.saturating_add(1);
+        }
+
+        let slot_id = entry
+            .address
+            .routing_slot
+            .unwrap_or_else(|| slot_for_object(&entry.object_key, 0, u32::MAX));
+        let slot = slots.entry(slot_id).or_default();
+        slot.dirty_generation = slot.dirty_generation.max(generation);
+        slot.object_refs.insert(generation);
+        if slot.page_refs.len() < MAX_STORAGE_TOPOLOGY_SAMPLES {
+            slot.page_refs
+                .push(storage_page_address_sample(shard_id, &entry.address));
+        }
+        if entry.deleted {
+            slot.tombstones.insert(storage_gc_ref(entry));
+        }
+    }
+
+    for (slot_id, runtime_slot) in &shard.slot_index.slot_map {
+        let slot = slots.entry(*slot_id).or_default();
+        slot.dirty_generation = slot.dirty_generation.max(runtime_slot.dirty_generation);
+        slot.object_refs.extend(runtime_slot.object_index.iter().copied());
+        for page in runtime_slot.page_index.values() {
+            if slot.page_refs.len() >= MAX_STORAGE_TOPOLOGY_SAMPLES {
+                break;
+            }
+            slot.page_refs
+                .push(storage_page_address_sample(shard_id, &page.address));
+            if page.deleted {
+                slot.tombstones
+                    .insert(format!("{}:{}", page.model_id, page.object_key));
+            }
+        }
+    }
+
+    snapshot.storage_zone_samples = zones
+        .into_iter()
+        .take(MAX_STORAGE_TOPOLOGY_SAMPLES)
+        .map(|(zone_id, zone)| StorageZoneSample {
+            zone_id,
+            total_bytes: zone.used_bytes.saturating_add(zone.stale_bytes),
+            used_bytes: zone.used_bytes,
+            stale_bytes: zone.stale_bytes,
+            segments: zone.segments.into_iter().collect(),
+        })
+        .collect();
+    let stream_segments = segments.keys().copied().collect::<Vec<_>>();
+    snapshot.stream_samples = (!stream_segments.is_empty())
+        .then(|| StorageStreamSample {
+            stream_id: format!("shard:{shard_id}:page_stream"),
+            rollover_count: snapshot.segment_open_count.saturating_sub(1),
+            sealed_segment_count: snapshot.segment_sealed_count,
+            segments: stream_segments
+                .iter()
+                .copied()
+                .take(MAX_STORAGE_TOPOLOGY_SAMPLES)
+                .collect(),
+        })
+        .into_iter()
+        .collect();
+    snapshot.segment_samples = segments
+        .into_iter()
+        .take(MAX_STORAGE_TOPOLOGY_SAMPLES)
+        .map(|(segment_id, segment)| StorageSegmentSample {
+            segment_id,
+            extent: segment.extent_id,
+            start_offset: segment.start_offset,
+            sealed: segment.live_refs == 0 || segment.deleted_refs > 0,
+            generation: segment.generation,
+        })
+        .collect();
+    snapshot.extent_samples = extents
+        .into_iter()
+        .take(MAX_STORAGE_TOPOLOGY_SAMPLES)
+        .map(|(extent_id, extent)| StorageExtentSample {
+            extent: extent_id,
+            block_range: vec![extent.min_offset, extent.max_offset],
+            reclaim_state: if extent.deleted_refs > 0 && extent.live_refs == 0 {
+                "reclaimable".to_string()
+            } else if extent.deleted_refs > 0 {
+                "mixed_live_stale".to_string()
+            } else {
+                "live".to_string()
+            },
+            generation: extent.generation,
+        })
+        .collect();
+    snapshot.slot_samples = slots
+        .into_iter()
+        .take(MAX_STORAGE_TOPOLOGY_SAMPLES)
+        .map(|(slot_id, slot)| StorageSlotSample {
+            slot_id,
+            dirty_generation: slot.dirty_generation,
+            object_refs: slot
+                .object_refs
+                .into_iter()
+                .take(MAX_STORAGE_TOPOLOGY_SAMPLES)
+                .collect(),
+            page_refs: slot.page_refs.into_iter().take(MAX_STORAGE_TOPOLOGY_SAMPLES).collect(),
+            tombstones: slot
+                .tombstones
+                .into_iter()
+                .take(MAX_STORAGE_TOPOLOGY_SAMPLES)
+                .collect(),
+            owner_mismatch_count: 0,
+        })
+        .collect();
     snapshot
 }
 
