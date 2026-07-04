@@ -2444,6 +2444,11 @@ impl TemporalEngine {
                 shard,
                 report.storage_index_snapshot,
             );
+            report.storage_watermark_snapshot = storage_watermark_snapshot_with_samples(
+                request.shard_id,
+                shard,
+                report.storage_watermark_snapshot,
+            );
             report.storage_gc_snapshot = storage_gc_snapshot_with_samples(
                 request.shard_id,
                 shard,
@@ -9761,6 +9766,60 @@ fn storage_gc_ref(entry: &LivePageEntry) -> String {
         }
         _ => format!("{}:{}", entry.kind, entry.object_key),
     }
+}
+
+fn storage_watermark_snapshot_with_samples(
+    shard_id: ShardId,
+    shard: &ShardState,
+    mut snapshot: StorageWatermarkSnapshot,
+) -> StorageWatermarkSnapshot {
+    const MAX_STORAGE_WATERMARK_SAMPLES: usize = 8;
+    let timestamp_ms = now_ms();
+    let mut slot_watermarks = BTreeMap::<u32, u64>::new();
+
+    for (slot_id, runtime_slot) in &shard.slot_index.slot_map {
+        slot_watermarks.insert(*slot_id, runtime_slot.dirty_generation);
+    }
+    for entry in collect_live_page_entries(shard) {
+        let slot_id = entry
+            .address
+            .routing_slot
+            .unwrap_or_else(|| slot_for_object(&entry.object_key, 0, u32::MAX));
+        let generation = entry.address.object_id.unwrap_or(0);
+        slot_watermarks
+            .entry(slot_id)
+            .and_modify(|current| *current = (*current).max(generation))
+            .or_insert(generation);
+    }
+
+    snapshot.append_watermark_samples = slot_watermarks
+        .iter()
+        .take(MAX_STORAGE_WATERMARK_SAMPLES)
+        .map(|(slot_id, generation)| StorageAppendWatermarkSample {
+            shard_id,
+            slot_id: *slot_id,
+            log_index: (*generation).max(snapshot.append_watermark),
+            timestamp_ms,
+        })
+        .collect();
+    if snapshot.append_watermark_samples.is_empty() && snapshot.append_watermark > 0 {
+        snapshot
+            .append_watermark_samples
+            .push(StorageAppendWatermarkSample {
+                shard_id,
+                slot_id: 0,
+                log_index: snapshot.append_watermark,
+                timestamp_ms,
+            });
+    }
+
+    snapshot.compaction_watermark_samples = vec![StorageCompactionWatermarkSample {
+        shard_id,
+        safe_generation: snapshot.compaction_watermark,
+        safe_timestamp_ms: snapshot.follower_cursor_safe_watermark,
+        follower_floor: snapshot.follower_cursor_retention_floor,
+    }];
+    snapshot
 }
 
 fn storage_gc_snapshot_with_samples(

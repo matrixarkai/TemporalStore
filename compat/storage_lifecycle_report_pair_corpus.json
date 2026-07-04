@@ -410,7 +410,13 @@
       "follower_cursor_safe_watermark": 7,
       "page_index_rebuild_watermark": 1,
       "block_index_rebuild_watermark": 1,
-      "object_index_rebuild_watermark": 1
+      "object_index_rebuild_watermark": 1,
+      "append_watermark_samples": [
+        {"shard_id": 1, "slot_id": 7, "log_index": 42, "timestamp_ms": 1000}
+      ],
+      "compaction_watermark_samples": [
+        {"shard_id": 1, "safe_generation": 7, "safe_timestamp_ms": 7, "follower_floor": 0}
+      ]
     },
     "storage_index_snapshot": {
       "page_index_entry_count": 2,
@@ -941,7 +947,13 @@
       "follower_cursor_safe_watermark": 7,
       "page_index_rebuild_watermark": 1,
       "block_index_rebuild_watermark": 1,
-      "object_index_rebuild_watermark": 1
+      "object_index_rebuild_watermark": 1,
+      "append_watermark_samples": [
+        {"shard_id": 1, "slot_id": 7, "log_index": 42, "timestamp_ms": 1000}
+      ],
+      "compaction_watermark_samples": [
+        {"shard_id": 1, "safe_generation": 7, "safe_timestamp_ms": 7, "follower_floor": 0}
+      ]
     },
     "storage_index_snapshot": {
       "page_index_entry_count": 2,

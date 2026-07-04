@@ -472,6 +472,8 @@ REQUIRED_STORAGE_WATERMARK_SNAPSHOT_FIELDS = [
     "page_index_rebuild_watermark",
     "block_index_rebuild_watermark",
     "object_index_rebuild_watermark",
+    "append_watermark_samples",
+    "compaction_watermark_samples",
 ]
 
 REQUIRED_STORAGE_INDEX_SNAPSHOT_FIELDS = [
@@ -1400,9 +1402,29 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
         ("rust", rust_watermark_snapshot),
     ]:
         for field in REQUIRED_STORAGE_WATERMARK_SNAPSHOT_FIELDS:
+            if field.endswith("_samples"):
+                if not isinstance(watermark_snapshot.get(field), list):
+                    failures.append(f"{backend} watermark snapshot `{field}` must be a list")
+                continue
             value = _as_number(watermark_snapshot.get(field))
             if value is None or value < 0:
                 failures.append(f"{backend} watermark snapshot `{field}` must be non-negative")
+        for field, required_keys in [
+            ("append_watermark_samples", ("shard_id", "slot_id", "log_index", "timestamp_ms")),
+            (
+                "compaction_watermark_samples",
+                ("shard_id", "safe_generation", "safe_timestamp_ms", "follower_floor"),
+            ),
+        ]:
+            for index, sample in enumerate(watermark_snapshot.get(field) or []):
+                if not isinstance(sample, dict):
+                    failures.append(f"{backend} watermark sample `{field}[{index}]` must be an object")
+                    continue
+                for key in required_keys:
+                    if key not in sample:
+                        failures.append(f"{backend} watermark sample `{field}[{index}]` missing `{key}`")
+                    elif _as_number(sample.get(key)) is None:
+                        failures.append(f"{backend} watermark sample `{field}[{index}].{key}` must be numeric")
         safe = _as_number(watermark_snapshot.get("follower_cursor_safe_watermark"))
         compaction = _as_number(watermark_snapshot.get("compaction_watermark"))
         follower_floor = _as_number(watermark_snapshot.get("follower_cursor_retention_floor"))

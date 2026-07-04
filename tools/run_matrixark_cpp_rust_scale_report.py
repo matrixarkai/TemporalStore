@@ -903,6 +903,10 @@ def default_storage_watermark_snapshot(metrics: Json | None = None) -> Json:
         "page_index_rebuild_watermark": int(source.get("page_index_rebuild_count") or 0),
         "block_index_rebuild_watermark": int(source.get("block_index_rebuild_count") or 0),
         "object_index_rebuild_watermark": int(source.get("object_index_rebuild_count") or 0),
+        "append_watermark_samples": list(source.get("append_watermark_samples") or []),
+        "compaction_watermark_samples": list(
+            source.get("compaction_watermark_samples") or []
+        ),
     }
 
 

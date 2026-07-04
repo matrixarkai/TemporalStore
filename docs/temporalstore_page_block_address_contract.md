@@ -1092,6 +1092,10 @@ warming cold pages.
 and bounded `tombstone_samples`, `gc_eligibility_samples`, and
 `follower_cursor_safety_samples` prove public `Tombstone`, `GcEligibility`, and
 `FollowerCursorSafety` shape without materializing every reclaim candidate.
+`storage_watermark_snapshot` carries scalar watermarks plus bounded
+`append_watermark_samples` and `compaction_watermark_samples` so live reports
+prove public `AppendWatermark` and `CompactionWatermark` shape without dumping
+every slot or follower cursor.
 `storage_topology_snapshot` likewise carries bounded `storage_zone_samples`,
 `stream_samples`, `segment_samples`, `extent_samples`, and `slot_samples` so
 C++ and Rust prove the same public `StorageZone`, `Stream`, `Segment`, `Extent`,
