@@ -472,6 +472,18 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertTrue(plan["chunk_plan"]["enabled"])
             self.assertEqual(plan["chunk_plan"]["total_windows"], 2)
             self.assertEqual([(item["start_seq"], item["end_seq"]) for item in plan["chunk_plan"]["windows"]], [(1, 6), (6, 11)])
+            prom_path = Path(tmp) / "plan.prom"
+            backfill.run_plan(self.make_args(
+                path,
+                mode="plan",
+                plan_window_size=5,
+                plan_parallelism=2,
+                prometheus_output=str(prom_path),
+            ))
+            prom_text = prom_path.read_text(encoding="utf-8")
+            self.assertIn("matrixark_context_backfill_plan_status", prom_text)
+            self.assertIn('scan_mode="scan_hash"} 1', prom_text)
+            self.assertIn('field="total_windows"} 2', prom_text)
 
             disabled = backfill.run_plan(self.make_args(
                 path,
@@ -482,6 +494,21 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertFalse(disabled["plan_scan_hash_discovery_enabled"])
             self.assertIsNone(disabled["planned_source_records"])
             self.assertFalse(disabled["chunk_plan"]["enabled"])
+
+            kv.put_string("matrixark:context:active_prefix", "matrixark:context_backfill:test")
+            blocked_prom_path = Path(tmp) / "blocked_plan.prom"
+            blocked = backfill.run_plan(self.make_args(
+                path,
+                mode="plan",
+                plan_window_size=5,
+                target_prefix="matrixark:context_backfill:test",
+                prometheus_output=str(blocked_prom_path),
+            ))
+            self.assertEqual(blocked["status"], "needs_confirmation")
+            blocked_prom_text = blocked_prom_path.read_text(encoding="utf-8")
+            self.assertIn('status="needs_confirmation"} 1', blocked_prom_text)
+            self.assertIn('check="active_target_confirmed_if_needed"} 0', blocked_prom_text)
+            self.assertIn('blocker="active_target_confirmed_if_needed"} 1', blocked_prom_text)
 
     def test_legacy_index_backfill(self):
         with tempfile.TemporaryDirectory() as tmp:
