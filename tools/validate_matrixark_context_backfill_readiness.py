@@ -44,6 +44,7 @@ REQUIRED_DOC_MARKERS = [
     "--confirm-skip-validation",
     "--confirm-non-strict-validation",
     "--confirm-unvalidated-target-state",
+    "--confirm-empty-activation",
     "--confirm-resume-range-change",
     "--confirm-active-target",
     "--confirm-rollback-noop",
@@ -127,6 +128,7 @@ def parser_support_checks() -> list[Json]:
         check("backfill_has_skip_validation_confirmation", "--confirm-skip-validation" in backfill_options),
         check("backfill_has_non_strict_validation_confirmation", "--confirm-non-strict-validation" in backfill_options),
         check("backfill_has_unvalidated_target_state_confirmation", "--confirm-unvalidated-target-state" in backfill_options),
+        check("backfill_has_empty_activation_confirmation", "--confirm-empty-activation" in backfill_options),
         check("backfill_has_resume_range_change_confirmation", "--confirm-resume-range-change" in backfill_options),
     ]
 
@@ -252,9 +254,13 @@ def run_cutover_gate(args: argparse.Namespace) -> Json:
             old_prefix = f"matrixark:context:active:old:{raw_backend}"
             target_prefix = f"matrixark:context_backfill:readiness_cutover:{raw_backend}"
             bypass_target_prefix = f"matrixark:context_backfill:readiness_cutover:{raw_backend}:bypass"
+            empty_source_prefix = f"{source_prefix}:empty"
+            empty_target_prefix = f"{target_prefix}:empty"
             job_id = f"readiness-cutover-{raw_backend}"
             bypass_job_id = f"{job_id}:bypass"
+            empty_job_id = f"{job_id}:empty"
             kv.put_string(active_key, old_prefix)
+            kv.put_string(f"{empty_source_prefix}:record_count", "0")
             backfill.MatrixKVBackfillTarget(kv, prefix=old_prefix, raw_backend=raw_backend).append_many([
                 {"record_type": "context_event", "event_id_hash": f"old-{raw_backend}"}
             ])
@@ -309,6 +315,40 @@ def run_cutover_gate(args: argparse.Namespace) -> Json:
             kv_after_bypass = backfill.LocalJsonKV(kv_path)
             bypass_audit = kv_after_bypass.hget(f"{active_key}:audit", bypass_job_id)
             kv_after_bypass.put_string(active_key, old_prefix)
+            empty_activation_blocked = False
+            try:
+                empty_blocked_args = bench.make_backfill_args(
+                    kv_path=kv_path,
+                    source_prefix=empty_source_prefix,
+                    target_prefix=empty_target_prefix,
+                    raw_backend=raw_backend,
+                    job_id=f"{empty_job_id}:blocked",
+                    batch_size=args.batch_size,
+                    mode="activate_shadow",
+                    end_seq=0,
+                )
+                empty_blocked_args.confirm_activate = "YES"
+                empty_blocked_args.expect_active_prefix = old_prefix
+                backfill.run_activate_shadow(empty_blocked_args)
+            except backfill.BackfillError as exc:
+                empty_activation_blocked = "confirm-empty-activation=YES" in str(exc)
+            empty_confirmed_args = bench.make_backfill_args(
+                kv_path=kv_path,
+                source_prefix=empty_source_prefix,
+                target_prefix=empty_target_prefix,
+                raw_backend=raw_backend,
+                job_id=empty_job_id,
+                batch_size=args.batch_size,
+                mode="activate_shadow",
+                end_seq=0,
+            )
+            empty_confirmed_args.confirm_activate = "YES"
+            empty_confirmed_args.confirm_empty_activation = "YES"
+            empty_confirmed_args.expect_active_prefix = old_prefix
+            empty_activation = backfill.run_activate_shadow(empty_confirmed_args)
+            kv_after_empty = backfill.LocalJsonKV(kv_path)
+            empty_activation_audit = kv_after_empty.hget(f"{active_key}:audit", empty_job_id)
+            kv_after_empty.put_string(active_key, old_prefix)
             activate_args = bench.make_backfill_args(
                 kv_path=kv_path,
                 source_prefix=source_prefix,
@@ -421,6 +461,10 @@ def run_cutover_gate(args: argparse.Namespace) -> Json:
                 "bypass_activation_status": bypass_activation.get("status"),
                 "bypass_audit_written": bool(bypass_audit),
                 "bypass_audited": bool(bypass_activation.get("active_prefix_precondition_bypassed")) and "active_prefix_precondition_bypassed" in str(bypass_audit),
+                "empty_activation_blocked": empty_activation_blocked,
+                "empty_activation_confirmed": bool(empty_activation.get("empty_activation_confirmed")),
+                "empty_activation_audit_written": bool(empty_activation_audit),
+                "empty_activation_audited": "empty_activation_confirmed" in str(empty_activation_audit),
                 "activation_status": activated.get("status"),
                 "activation_validation_status": activated.get("validation_status"),
                 "activation_validation_skipped": bool(activated.get("validation_skipped")),
@@ -449,6 +493,10 @@ def run_cutover_gate(args: argparse.Namespace) -> Json:
         and item["bypass_activation_status"] == "ok"
         and item["bypass_audit_written"]
         and item["bypass_audited"]
+        and item["empty_activation_blocked"]
+        and item["empty_activation_confirmed"]
+        and item["empty_activation_audit_written"]
+        and item["empty_activation_audited"]
         and item["activation_status"] == "ok"
         and item["activation_validation_status"] == "ok"
         and not item["activation_validation_skipped"]
@@ -1417,6 +1465,8 @@ def cutover_checks(summary: Json) -> list[Json]:
         check("cutover_gate_shadow_wrote_records", all(int(item.get("shadow_written", 0) or 0) > 0 for item in results)),
         check("cutover_gate_blocks_missing_active_precondition", all(bool(item.get("missing_active_precondition_blocked")) for item in results)),
         check("cutover_gate_bypass_is_explicitly_audited", all(bool(item.get("bypass_audited")) for item in results)),
+        check("cutover_gate_blocks_empty_validated_activation", all(bool(item.get("empty_activation_blocked")) for item in results)),
+        check("cutover_gate_empty_activation_is_explicitly_audited", all(bool(item.get("empty_activation_confirmed")) and bool(item.get("empty_activation_audited")) for item in results)),
         check("cutover_gate_activation_validated_shadow", all(item.get("activation_validation_status") == "ok" and not item.get("activation_validation_skipped") for item in results)),
         check("cutover_gate_activation_updates_active_pointer", all(item.get("active_after_activation") == item.get("activation_new_prefix") for item in results)),
         check("cutover_gate_activation_audit_written", all(bool(item.get("activation_audit_written")) for item in results)),

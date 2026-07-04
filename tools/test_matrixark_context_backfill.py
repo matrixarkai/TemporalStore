@@ -52,6 +52,7 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             "confirm_skip_validation": "",
             "confirm_non_strict_validation": "",
             "confirm_unvalidated_target_state": "",
+            "confirm_empty_activation": "",
             "active_prefix_key": "matrixark:context:active_prefix",
             "expect_active_prefix": "",
             "rollback_job_id": "",
@@ -691,6 +692,7 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(activation_audit["validation_skip_reason"], "")
             self.assertTrue(activation_audit["validation_strict"])
             self.assertFalse(activation_audit["non_strict_validation_confirmed"])
+            self.assertFalse(activation_audit["empty_activation_confirmed"])
             self.assertFalse(activation_audit["active_prefix_precondition_bypassed"])
             self.assertEqual(activation_audit["validation_target_state"]["record_count"], 2)
             self.assertIn("matrixark:context_backfill:candidate", json.dumps(activation_audit, sort_keys=True))
@@ -823,6 +825,53 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             kv_after = backfill.LocalJsonKV(path)
             rollback_audit = json.loads(kv_after.hget("matrixark:context:active_prefix:rollback_audit", "rollback-noop"))
             self.assertTrue(rollback_audit["rollback_noop_confirmed"])
+
+    def test_activate_shadow_requires_confirmation_for_empty_validated_shadow(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            kv.put_string("matrixark:mcp:record_count", "0")
+            kv.put_string("matrixark:context:active_prefix", "matrixark:context:old")
+            backfill.MatrixKVBackfillTarget(kv, prefix="matrixark:context:old").append_many([
+                {"record_type": "context_event", "event_id_hash": 0}
+            ])
+
+            validation = backfill.run_validate_shadow(self.make_args(
+                path,
+                mode="validate_shadow",
+                target_prefix="matrixark:context_backfill:empty",
+            ))
+            self.assertEqual(validation["status"], "ok")
+            self.assertEqual(validation["expected_records"], 0)
+            self.assertEqual(validation["actual_records"], 0)
+
+            with self.assertRaisesRegex(backfill.BackfillError, "confirm-empty-activation=YES"):
+                backfill.run_activate_shadow(self.make_args(
+                    path,
+                    mode="activate_shadow",
+                    target_prefix="matrixark:context_backfill:empty",
+                    confirm_activate="YES",
+                    expect_active_prefix="matrixark:context:old",
+                    dry_run=False,
+                ))
+
+            activated = backfill.run_activate_shadow(self.make_args(
+                path,
+                mode="activate_shadow",
+                target_prefix="matrixark:context_backfill:empty",
+                confirm_activate="YES",
+                confirm_empty_activation="YES",
+                expect_active_prefix="matrixark:context:old",
+                dry_run=False,
+            ))
+
+            self.assertEqual(activated["status"], "ok")
+            self.assertTrue(activated["empty_activation_confirmed"])
+            kv_after = backfill.LocalJsonKV(path)
+            self.assertEqual(kv_after.get_string("matrixark:context:active_prefix"), "matrixark:context_backfill:empty")
+            activation_audit = json.loads(kv_after.hget("matrixark:context:active_prefix:audit", "unit"))
+            self.assertTrue(activation_audit["empty_activation_confirmed"])
+            self.assertEqual(activation_audit["validation_target_state"]["record_count"], 0)
 
     def test_activate_shadow_without_active_precondition_requires_explicit_bypass(self):
         with tempfile.TemporaryDirectory() as tmp:

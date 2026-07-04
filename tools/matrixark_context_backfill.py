@@ -2331,6 +2331,25 @@ def require_non_strict_validation_confirmation(args: argparse.Namespace, *, mode
         raise BackfillError(f'{mode} with --validation-strict=0 requires --confirm-non-strict-validation=YES')
 
 
+def empty_activation_confirmed(args: argparse.Namespace) -> bool:
+    return getattr(args, 'confirm_empty_activation', '') == 'YES'
+
+
+def require_non_empty_activation(args: argparse.Namespace, validation: Json | None) -> None:
+    if not isinstance(validation, dict):
+        return
+    expected_records = int(validation.get('expected_records', 0) or 0)
+    actual_records = int(validation.get('actual_records', 0) or 0)
+    if expected_records > 0 and actual_records > 0:
+        return
+    if empty_activation_confirmed(args):
+        return
+    raise BackfillError(
+        'activate_shadow validation found an empty source or target; '
+        'pass --confirm-empty-activation=YES only for an explicitly reviewed empty cutover'
+    )
+
+
 def run_validate_shadow(args: argparse.Namespace) -> Json:
     if not args.target_prefix:
         raise BackfillError('validate_shadow requires --target-prefix')
@@ -2429,6 +2448,7 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
         validation = run_validate_shadow(args)
         if validation.get('status') != 'ok':
             raise BackfillError(f'shadow validation failed: {json.dumps(validation, sort_keys=True)}')
+        require_non_empty_activation(args, validation)
     validation_audit = validation_audit_fields(validation, skip_validation=args.skip_validation)
     kv = make_kv(args)
     unvalidated_target_state = require_unvalidated_target_state(args, kv, mode='activate_shadow')
@@ -2451,6 +2471,7 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
             **validation_audit,
             'validation_strict': bool(args.validation_strict),
             'non_strict_validation_confirmed': bool(not args.validation_strict and args.confirm_non_strict_validation == 'YES'),
+            'empty_activation_confirmed': empty_activation_confirmed(args),
             'unvalidated_target_state_confirmed': bool(args.skip_validation and args.confirm_unvalidated_target_state == 'YES'),
             'active_prefix_precondition_bypassed': active_prefix_precondition_bypassed(args),
         }
@@ -2471,6 +2492,7 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
         **validation_audit,
         'validation_strict': bool(args.validation_strict),
         'non_strict_validation_confirmed': bool(not args.validation_strict and args.confirm_non_strict_validation == 'YES'),
+        'empty_activation_confirmed': empty_activation_confirmed(args),
         'unvalidated_target_state_confirmed': bool(args.skip_validation and args.confirm_unvalidated_target_state == 'YES'),
         'active_prefix_precondition_bypassed': active_prefix_precondition_bypassed(args),
     }
@@ -2489,6 +2511,7 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
         'job_id': args.job_id,
         'validation': validation,
         **validation_audit,
+        'empty_activation_confirmed': empty_activation_confirmed(args),
         'unvalidated_target_state_confirmed': bool(args.skip_validation and args.confirm_unvalidated_target_state == 'YES'),
         'active_prefix_precondition_bypassed': active_prefix_precondition_bypassed(args),
     }
@@ -3052,6 +3075,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--confirm-skip-validation', default='', help='required YES when activate_shadow or incremental_repair uses --skip-validation=1')
     parser.add_argument('--confirm-non-strict-validation', default='', help='required YES when activate_shadow or incremental_repair uses --validation-strict=0')
     parser.add_argument('--confirm-unvalidated-target-state', default='', help='required YES to activate an empty or unhealthy target while using --skip-validation=1')
+    parser.add_argument('--confirm-empty-activation', default='', help='required YES to activate a validated shadow whose expected or actual record count is zero')
     parser.add_argument('--active-prefix-key', default='matrixark:context:active_prefix')
     parser.add_argument('--rollback-job-id', default='', help='activation job id whose previous active prefix should be restored')
     parser.add_argument('--repair-active-prefix', default='')
