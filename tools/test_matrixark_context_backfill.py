@@ -472,6 +472,14 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertTrue(plan["chunk_plan"]["enabled"])
             self.assertEqual(plan["chunk_plan"]["total_windows"], 2)
             self.assertEqual([(item["start_seq"], item["end_seq"]) for item in plan["chunk_plan"]["windows"]], [(1, 6), (6, 11)])
+            self.assertTrue(plan["execution_readiness"]["ready"])
+            self.assertEqual(plan["execution_readiness"]["status"], "ready")
+            self.assertEqual(plan["execution_readiness"]["blockers"], [])
+            self.assertEqual(plan["execution_readiness"]["coverage_start_seq"], 1)
+            self.assertEqual(plan["execution_readiness"]["coverage_end_seq"], 11)
+            self.assertEqual(plan["execution_readiness"]["coverage_record_count"], 10)
+            self.assertEqual(plan["execution_readiness"]["wave_count"], 1)
+            self.assertEqual(plan["execution_readiness"]["promotion_step_count"], 2)
             prom_path = Path(tmp) / "plan.prom"
             backfill.run_plan(self.make_args(
                 path,
@@ -484,6 +492,21 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertIn("matrixark_context_backfill_plan_status", prom_text)
             self.assertIn('scan_mode="scan_hash"} 1', prom_text)
             self.assertIn('field="total_windows"} 2', prom_text)
+            self.assertIn("matrixark_context_backfill_plan_execution_readiness_status", prom_text)
+            self.assertIn('status="ready"} 1', prom_text)
+            self.assertIn('blocker="none"} 0', prom_text)
+            self.assertIn('field="coverage_record_count"} 10', prom_text)
+
+            truncated = backfill.run_plan(self.make_args(
+                path,
+                mode="plan",
+                plan_window_size=5,
+                plan_parallelism=2,
+                plan_max_windows=1,
+            ))
+            self.assertFalse(truncated["execution_readiness"]["ready"])
+            self.assertEqual(truncated["execution_readiness"]["status"], "blocked")
+            self.assertIn("chunk_plan_truncated", truncated["execution_readiness"]["blockers"])
 
             disabled = backfill.run_plan(self.make_args(
                 path,
@@ -494,6 +517,8 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertFalse(disabled["plan_scan_hash_discovery_enabled"])
             self.assertIsNone(disabled["planned_source_records"])
             self.assertFalse(disabled["chunk_plan"]["enabled"])
+            self.assertEqual(disabled["execution_readiness"]["status"], "disabled")
+            self.assertIn("chunk_plan_disabled", disabled["execution_readiness"]["blockers"])
 
             kv.put_string("matrixark:context:active_prefix", "matrixark:context_backfill:test")
             blocked_prom_path = Path(tmp) / "blocked_plan.prom"

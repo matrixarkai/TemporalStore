@@ -1168,6 +1168,9 @@ def run_prometheus_gate(args: argparse.Namespace) -> Json:
         "matrixark_context_backfill_plan_source_scan_mode",
         "matrixark_context_backfill_plan_target_records",
         "matrixark_context_backfill_plan_chunk_windows",
+        "matrixark_context_backfill_plan_execution_readiness_status",
+        "matrixark_context_backfill_plan_execution_readiness_blocker",
+        "matrixark_context_backfill_plan_execution_readiness_count",
     ]
     required_shadow_metrics = [
         "matrixark_context_backfill_run_elapsed_ms",
@@ -1336,6 +1339,8 @@ def run_prometheus_gate(args: argparse.Namespace) -> Json:
             results.append({
                 "raw_backend": raw_backend,
                 "plan_status": plan_summary.get("status"),
+                "plan_execution_readiness_status": (plan_summary.get("execution_readiness") or {}).get("status"),
+                "plan_execution_readiness_ready": bool((plan_summary.get("execution_readiness") or {}).get("ready")),
                 "shadow_status": shadow_summary.get("status"),
                 "validation_status": validation_summary.get("status"),
                 "activation_status": activation_summary.get("status"),
@@ -1362,6 +1367,8 @@ def run_prometheus_gate(args: argparse.Namespace) -> Json:
             })
     status = "ok" if all(
         item["plan_status"] == "ok"
+        and item["plan_execution_readiness_status"] == "ready"
+        and item["plan_execution_readiness_ready"]
         and item["shadow_status"] == "ok"
         and item["validation_status"] == "ok"
         and item["activation_status"] == "ok"
@@ -1667,6 +1674,7 @@ def prometheus_checks(summary: Json) -> list[Json]:
     return [
         check("prometheus_gate_status_ok", summary.get("status") == "ok"),
         check("prometheus_gate_covers_temporalstore_and_matrixkv", {item.get("raw_backend") for item in results} == {"temporalstore", "matrixkv"}),
+        check("prometheus_gate_plan_execution_readiness_ready", all(item.get("plan_execution_readiness_status") == "ready" and bool(item.get("plan_execution_readiness_ready")) for item in results)),
         check("prometheus_gate_plan_metrics_present", all(all((item.get("plan_metrics_present") or {}).values()) for item in results)),
         check("prometheus_gate_shadow_metrics_present", all(all((item.get("shadow_metrics_present") or {}).values()) for item in results)),
         check("prometheus_gate_validation_metrics_present", all(all((item.get("validation_metrics_present") or {}).values()) for item in results)),

@@ -1254,6 +1254,75 @@ def build_plan_execution(args: argparse.Namespace, windows: list[Json]) -> Json:
     }
 
 
+def build_plan_execution_readiness(chunk_plan: Json) -> Json:
+    if not chunk_plan.get('enabled'):
+        return {
+            'ready': False,
+            'status': 'disabled',
+            'blockers': ['chunk_plan_disabled'],
+            'total_windows': int(chunk_plan.get('total_windows', 0) or 0),
+            'emitted_windows': int(chunk_plan.get('emitted_windows', 0) or 0),
+            'coverage_record_count': 0,
+        }
+    windows = [window for window in (chunk_plan.get('windows') or []) if isinstance(window, dict)]
+    blockers: list[str] = []
+    total_windows = int(chunk_plan.get('total_windows', 0) or 0)
+    emitted_windows = int(chunk_plan.get('emitted_windows', len(windows)) or 0)
+    truncated = bool(chunk_plan.get('truncated'))
+    if truncated:
+        blockers.append('chunk_plan_truncated')
+    if total_windows != emitted_windows:
+        blockers.append('emitted_window_count_mismatch')
+    if not windows and total_windows > 0:
+        blockers.append('no_emitted_windows')
+    expected_start: int | None = None
+    expected_end: int | None = None
+    coverage_record_count = 0
+    contiguous = True
+    for index, window in enumerate(windows):
+        start = int(window.get('start_seq', 0) or 0)
+        end = int(window.get('end_seq', start) or start)
+        if index == 0:
+            expected_start = start
+        elif expected_end is not None and start != expected_end:
+            contiguous = False
+        if end < start:
+            blockers.append(f'window_{index}_negative_range')
+        coverage_record_count += max(0, end - start)
+        expected_end = end
+    if windows and not contiguous:
+        blockers.append('window_ranges_not_contiguous')
+    execution_plan = chunk_plan.get('execution_plan') if isinstance(chunk_plan.get('execution_plan'), dict) else {}
+    waves = [wave for wave in (execution_plan.get('shadow_validation_waves') or []) if isinstance(wave, dict)]
+    promotion_sequence = [item for item in (execution_plan.get('promotion_sequence') or []) if isinstance(item, dict)]
+    if len(promotion_sequence) != len(windows):
+        blockers.append('promotion_sequence_length_mismatch')
+    wave_window_indexes = [
+        int(index)
+        for wave in waves
+        for index in (wave.get('window_indexes') or [])
+    ]
+    expected_indexes = [int(window.get('index', offset) or offset) for offset, window in enumerate(windows)]
+    if sorted(wave_window_indexes) != expected_indexes:
+        blockers.append('shadow_validation_wave_coverage_mismatch')
+    ready = not blockers
+    return {
+        'ready': ready,
+        'status': 'ready' if ready else 'blocked',
+        'blockers': blockers,
+        'total_windows': total_windows,
+        'emitted_windows': emitted_windows,
+        'truncated': truncated,
+        'coverage_start_seq': expected_start,
+        'coverage_end_seq': expected_end,
+        'coverage_record_count': coverage_record_count,
+        'wave_count': len(waves),
+        'promotion_step_count': len(promotion_sequence),
+        'plan_parallelism': int(execution_plan.get('plan_parallelism', 0) or 0),
+        'parallel_write_safety': str(chunk_plan.get('parallel_write_safety') or ''),
+    }
+
+
 def _script_command(args_list: list[str]) -> str:
     command = ['python3', 'tools/matrixark_context_backfill.py', *args_list]
     return ' '.join(shlex.quote(part) for part in command)
@@ -2949,6 +3018,28 @@ def plan_to_prometheus(summary: Json) -> str:
     chunk_plan = summary.get('chunk_plan') if isinstance(summary.get('chunk_plan'), dict) else {}
     for field in ['total_windows', 'emitted_windows', 'window_size']:
         lines.append(f'matrixark_context_backfill_plan_chunk_windows{{{_prom_labels(**base, field=field)}}} {int(chunk_plan.get(field, 0) or 0)}')
+    execution_readiness = summary.get('execution_readiness') if isinstance(summary.get('execution_readiness'), dict) else {}
+    lines.extend([
+        '# HELP matrixark_context_backfill_plan_execution_readiness_status Chunked plan execution readiness status.',
+        '# TYPE matrixark_context_backfill_plan_execution_readiness_status gauge',
+        f'matrixark_context_backfill_plan_execution_readiness_status{{{_prom_labels(**base, status=str(execution_readiness.get("status") or "unknown"))}}} {1 if execution_readiness.get("ready") else 0}',
+        '# HELP matrixark_context_backfill_plan_execution_readiness_blocker Chunked plan execution readiness blocker.',
+        '# TYPE matrixark_context_backfill_plan_execution_readiness_blocker gauge',
+    ])
+    blockers = execution_readiness.get('blockers') if isinstance(execution_readiness.get('blockers'), list) else []
+    if blockers:
+        for blocker in blockers:
+            lines.append(f'matrixark_context_backfill_plan_execution_readiness_blocker{{{_prom_labels(**base, blocker=str(blocker))}}} 1')
+    else:
+        lines.append(f'matrixark_context_backfill_plan_execution_readiness_blocker{{{_prom_labels(**base, blocker="none")}}} 0')
+    lines.extend([
+        '# HELP matrixark_context_backfill_plan_execution_readiness_count Chunked plan execution readiness counts.',
+        '# TYPE matrixark_context_backfill_plan_execution_readiness_count gauge',
+    ])
+    for field in ['total_windows', 'emitted_windows', 'coverage_record_count', 'wave_count', 'promotion_step_count', 'plan_parallelism']:
+        value = execution_readiness.get(field)
+        if value is not None:
+            lines.append(f'matrixark_context_backfill_plan_execution_readiness_count{{{_prom_labels(**base, field=field)}}} {int(value)}')
     return '\n'.join(lines) + '\n'
 
 
@@ -3003,6 +3094,7 @@ def run_plan(args: argparse.Namespace) -> Json:
         _append_plan_arg(dead_letter_export_command_args, 'local-kv', getattr(args, 'local_kv', ''))
     planned_source_records = estimate_source_window_records(source_range)
     chunk_plan = build_plan_windows(args, source_range=source_range, target_prefix=target_prefix)
+    execution_readiness = build_plan_execution_readiness(chunk_plan)
     active_target = bool(current_active_prefix and current_active_prefix == target_prefix)
     incremental_window_bounded = args.end_seq is not None and args.end_seq > args.start_seq
     safety_checks: Json = {
@@ -3067,6 +3159,7 @@ def run_plan(args: argparse.Namespace) -> Json:
         'batch_size': args.batch_size,
         'source_scan_max_empty_shards': args.source_scan_max_empty_shards,
         'chunk_plan': chunk_plan,
+        'execution_readiness': execution_readiness,
         'resume_state': resume_state,
         'checkpoint_key': cp_key,
         'target_state': {
