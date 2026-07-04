@@ -1,0 +1,23 @@
+{
+  "base_url": "http://127.0.0.1:11434/v1",
+  "benchmark_report": "docs\\benchmark_archives\\oss_reader_validation_20260704_locomo_benchmark.json",
+  "blockers": [
+    "reader_gateway_unreachable"
+  ],
+  "checked_at_unix": 1783155396,
+  "dataset": "locomo",
+  "elapsed_seconds": 2.086,
+  "input": "C:\\root\\matrixark_benchmarks\\data\\locomo10.json",
+  "input_bytes": 2805274,
+  "min_case_count": 1,
+  "min_hit_rate": 0.9,
+  "misses": "docs\\benchmark_archives\\oss_reader_validation_20260704_locomo_misses.jsonl",
+  "model": "qwen2.5:0.5b",
+  "provider_name": "local-oss-reader",
+  "reader_probe": {
+    "error": "URLError: <urlopen error [WinError 10061] No connection could be made because the target machine actively refused it>",
+    "ok": false,
+    "url": "http://127.0.0.1:11434/v1/models"
+  },
+  "ready": false
+}

@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>MatrixArk OSS LOCOMO / LongMemEval Benchmark Report</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #18202a;
+      --muted: #5f6d7a;
+      --line: #d9e0e7;
+      --soft: #f6f8fa;
+      --warn: #a45500;
+      --bad: #9b1c1c;
+      --good: #146c43;
+      --blue: #1f5fbf;
+    }
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: #fff;
+      line-height: 1.45;
+    }
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 34px 28px 56px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 30px;
+      letter-spacing: 0;
+    }
+    h2 {
+      margin: 32px 0 10px;
+      font-size: 20px;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 8px;
+    }
+    h3 {
+      margin: 22px 0 8px;
+      font-size: 16px;
+    }
+    p {
+      margin: 9px 0;
+    }
+    code, pre {
+      font-family: "Cascadia Mono", Consolas, monospace;
+      font-size: 12.5px;
+    }
+    pre {
+      background: #101820;
+      color: #eef6ff;
+      padding: 14px;
+      border-radius: 6px;
+      overflow: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 10px 0 18px;
+      font-size: 13px;
+    }
+    th, td {
+      border: 1px solid var(--line);
+      padding: 8px 10px;
+      vertical-align: top;
+      text-align: left;
+    }
+    th {
+      background: var(--soft);
+      font-weight: 650;
+    }
+    .lede {
+      color: var(--muted);
+      font-size: 15px;
+      max-width: 930px;
+    }
+    .status {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .blocked {
+      color: var(--bad);
+      background: #fff1f1;
+      border: 1px solid #f3b8b8;
+    }
+    .passed {
+      color: var(--good);
+      background: #eefaf4;
+      border: 1px solid #bfe8d0;
+    }
+    .diagnostic {
+      color: var(--warn);
+      background: #fff7e8;
+      border: 1px solid #f5d092;
+    }
+    .callout {
+      border-left: 4px solid var(--blue);
+      background: #f3f7ff;
+      padding: 12px 14px;
+      margin: 14px 0;
+    }
+    .small {
+      font-size: 12px;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>MatrixArk OSS LOCOMO / LongMemEval Benchmark Report</h1>
+  <p class="lede">
+    Requested run: use OSS models for LOCOMO and LongMemEval, compare against VikingMem-style evidence,
+    and open a detailed browser report. This report records the fresh fail-closed OSS-reader preflight
+    from 2026-07-04 plus the latest checked-in deterministic full Rust TemporalStore replay baselines.
+  </p>
+
+  <h2>Executive Result</h2>
+  <table>
+    <tr>
+      <th>Gate</th>
+      <th>Status</th>
+      <th>Reason</th>
+    </tr>
+    <tr>
+      <td>Live OSS reader LOCOMO</td>
+      <td><span class="status blocked">blocked closed</span></td>
+      <td>The configured OpenAI-compatible endpoint <code>http://127.0.0.1:11434/v1/models</code> refused connection, so <code>reader_open_source_calls</code> stayed 0.</td>
+    </tr>
+    <tr>
+      <td>Live OSS reader LongMemEval_s</td>
+      <td><span class="status blocked">blocked closed</span></td>
+      <td>The same endpoint was unreachable for LongMemEval_s. The runner did not fall back to deterministic scoring.</td>
+    </tr>
+    <tr>
+      <td>MatrixArk deterministic engineering baseline</td>
+      <td><span class="status passed">available</span></td>
+      <td>Checked-in Rust TemporalStore full replay evidence exists for LOCOMO and LongMemEval_s, but it is deterministic-reader evidence, not VikingMem paper-comparable live OSS-reader evidence.</td>
+    </tr>
+    <tr>
+      <td>VikingMem / OpenViking paper-comparable claim</td>
+      <td><span class="status blocked">not claimable</span></td>
+      <td>Requires full dataset, live OSS reader/judge calls, no fallback, archived model metadata, and <code>paper_comparable_claim_ready=true</code>.</td>
+    </tr>
+  </table>
+
+  <div class="callout">
+    <strong>Important:</strong> I did not manufacture OSS benchmark scores. The fresh OSS-model run is blocked by local model endpoint readiness.
+    The useful comparison today is therefore: deterministic MatrixArk retrieval/replay baseline versus the VikingMem-compatible evidence contract.
+  </div>
+
+  <h2>Fresh OSS Model Preflight</h2>
+  <table>
+    <tr>
+      <th>Endpoint</th>
+      <th>Probe result</th>
+    </tr>
+    <tr><td><code>http://127.0.0.1:11434/v1/models</code></td><td>Connection refused in benchmark validation; timed out in broad PowerShell probe.</td></tr>
+    <tr><td><code>http://127.0.0.1:8000/v1/models</code></td><td>Timed out.</td></tr>
+    <tr><td><code>http://127.0.0.1:8005/v1/models</code></td><td>Timed out.</td></tr>
+    <tr><td><code>http://127.0.0.1:1234/v1/models</code></td><td>Timed out.</td></tr>
+  </table>
+
+  <table>
+    <tr>
+      <th>Local runtime check</th>
+      <th>Result</th>
+    </tr>
+    <tr><td><code>docker</code></td><td>Not found on PATH.</td></tr>
+    <tr><td><code>ollama</code></td><td>Not found on PATH.</td></tr>
+    <tr><td>Bundled Python <code>torch</code></td><td>Not installed.</td></tr>
+    <tr><td>Bundled Python <code>transformers</code></td><td>Not installed.</td></tr>
+    <tr><td>Bundled Python <code>sentence_transformers</code></td><td>Not installed.</td></tr>
+    <tr><td>Bundled Python <code>fastapi</code> / <code>uvicorn</code></td><td>Not installed.</td></tr>
+  </table>
+
+  <h3>Fresh blocker artifacts</h3>
+  <table>
+    <tr>
+      <th>Dataset</th>
+      <th>Artifact</th>
+      <th>Blocker</th>
+    </tr>
+    <tr>
+      <td>LOCOMO</td>
+      <td><code>docs/benchmark_archives/oss_reader_validation_20260704_locomo.json</code></td>
+      <td><code>reader_gateway_unreachable</code></td>
+    </tr>
+    <tr>
+      <td>LongMemEval_s</td>
+      <td><code>docs/benchmark_archives/oss_reader_validation_20260704_longmemeval.json</code></td>
+      <td><code>reader_gateway_unreachable</code></td>
+    </tr>
+  </table>
+
+  <h2>Dataset Inputs Confirmed</h2>
+  <table>
+    <tr>
+      <th>Dataset</th>
+      <th>Path</th>
+      <th>Bytes</th>
+      <th>SHA-256</th>
+    </tr>
+    <tr>
+      <td>LOCOMO</td>
+      <td><code>C:\root\matrixark_benchmarks\data\locomo10.json</code></td>
+      <td>2,805,274</td>
+      <td><code>79FA87E90F04081343B8C8DEBECB80A9A6842B76A7AA537DC9FDF651EA698FF4</code></td>
+    </tr>
+    <tr>
+      <td>LongMemEval_s</td>
+      <td><code>C:\root\matrixark_benchmarks\data\longmemeval_s_helamem.json</code></td>
+      <td>15,388,478</td>
+      <td><code>821A2034D219AB45846873DD14C14F12CFE7776E73527A483F9DAC095D38620C</code></td>
+    </tr>
+  </table>
+
+  <h2>MatrixArk Baseline Versus VikingMem-Compatible Contract</h2>
+  <p>
+    The latest checked-in status archive is
+    <code>docs/benchmark_archives/vikingmem_comparable_status_latest.json</code>. It says the deterministic
+    Rust TemporalStore full replay path is ready, but live OSS reader comparability is blocked.
+  </p>
+  <table>
+    <tr>
+      <th>Metric</th>
+      <th>LOCOMO deterministic full Rust replay</th>
+      <th>LongMemEval_s deterministic full Rust replay</th>
+      <th>VikingMem-compatible interpretation</th>
+    </tr>
+    <tr>
+      <td>Case count</td>
+      <td>1,542</td>
+      <td>500</td>
+      <td>Full dataset scale evidence exists for deterministic replay.</td>
+    </tr>
+    <tr>
+      <td>Hit@K</td>
+      <td>0.9533073930</td>
+      <td>1.0</td>
+      <td>Useful retrieval evidence, but not live OSS-reader quality.</td>
+    </tr>
+    <tr>
+      <td>Reader hit rate</td>
+      <td>0.8839169909</td>
+      <td>0.974</td>
+      <td>Deterministic reader/scorer, not OSS LLM reader.</td>
+    </tr>
+    <tr>
+      <td>Retrieval p95</td>
+      <td>46.160098043 ms</td>
+      <td>28.978386277 ms</td>
+      <td>Good engineering latency baseline.</td>
+    </tr>
+    <tr>
+      <td>Token reduction</td>
+      <td>83.984419157%</td>
+      <td>81.401652386%</td>
+      <td>Shows compact context packing, still needs live reader/judge confirmation.</td>
+    </tr>
+    <tr>
+      <td>Live OSS calls</td>
+      <td>0</td>
+      <td>0</td>
+      <td>Blocks VikingMem/OpenViking paper-comparable claim.</td>
+    </tr>
+  </table>
+
+  <h2>Why This Is Not Yet A VikingMem Score</h2>
+  <table>
+    <tr>
+      <th>Requirement</th>
+      <th>Status today</th>
+    </tr>
+    <tr><td>Full real LOCOMO and LongMemEval_s artifacts mounted</td><td><span class="status passed">passed</span></td></tr>
+    <tr><td>Rust TemporalStore full replay evidence</td><td><span class="status passed">passed in existing archives</span></td></tr>
+    <tr><td>OpenAI-compatible OSS reader endpoint available</td><td><span class="status blocked">blocked</span></td></tr>
+    <tr><td><code>reader_open_source_calls &gt; 0</code></td><td><span class="status blocked">0 calls</span></td></tr>
+    <tr><td>No deterministic fallback</td><td><span class="status passed">enforced by fail-closed validation</span></td></tr>
+    <tr><td>Full benchmark thresholds pass with live model</td><td><span class="status blocked">not run because endpoint unreachable</span></td></tr>
+  </table>
+
+  <h2>Commands Used For Fresh Validation</h2>
+  <pre>python tools/run_live_oss_reader_validation.py \
+  --dataset locomo \
+  --input C:\root\matrixark_benchmarks\data\locomo10.json \
+  --base-url http://127.0.0.1:11434/v1 \
+  --provider-name local-oss-reader \
+  --model qwen2.5:0.5b \
+  --min-case-count 1 \
+  --min-hit-rate 0.90 \
+  --report docs\benchmark_archives\oss_reader_validation_20260704_locomo.json \
+  --benchmark-report docs\benchmark_archives\oss_reader_validation_20260704_locomo_benchmark.json \
+  --misses docs\benchmark_archives\oss_reader_validation_20260704_locomo_misses.jsonl</pre>
+
+  <pre>python tools/run_live_oss_reader_validation.py \
+  --dataset longmemeval_s \
+  --input C:\root\matrixark_benchmarks\data\longmemeval_s_helamem.json \
+  --base-url http://127.0.0.1:11434/v1 \
+  --provider-name local-oss-reader \
+  --model qwen2.5:0.5b \
+  --min-case-count 1 \
+  --min-hit-rate 0.90 \
+  --report docs\benchmark_archives\oss_reader_validation_20260704_longmemeval.json \
+  --benchmark-report docs\benchmark_archives\oss_reader_validation_20260704_longmemeval_benchmark.json \
+  --misses docs\benchmark_archives\oss_reader_validation_20260704_longmemeval_misses.jsonl</pre>
+
+  <h2>Command To Produce Real OSS Scores After Endpoint Is Running</h2>
+  <p>
+    Once an OpenAI-compatible OSS model endpoint is live, run the existing fail-closed benchmark wrapper.
+    A successful report must show <code>reader_open_source_calls &gt; 0</code> and no deterministic fallback.
+  </p>
+  <pre>$env:TEMPORALSTORE_READER_BASE_URL="http://127.0.0.1:11434/v1"
+$env:TEMPORALSTORE_READER_PROVIDER_NAME="local-oss-reader"
+$env:TEMPORALSTORE_READER_MODEL="qwen2.5:0.5b"
+$env:TEMPORALSTORE_LOCOMO_INPUT="C:\root\matrixark_benchmarks\data\locomo10.json"
+$env:TEMPORALSTORE_LONGMEMEVAL_INPUT="C:\root\matrixark_benchmarks\data\longmemeval_s_helamem.json"
+bash tools/run_context_benchmarks_oss_reader_endpoint.sh</pre>
+
+  <h2>Verdict</h2>
+  <p>
+    MatrixArk has meaningful deterministic full-replay evidence on both datasets and a clean fail-closed OSS-reader gate.
+    The fresh requested OSS-model benchmark did not run to score because no local OSS reader endpoint is reachable in this environment.
+    The next real action is operational: start an OpenAI-compatible OSS endpoint, then rerun the wrapper above and compare the live-reader artifacts.
+  </p>
+  <p class="small">Generated in repo worktree <code>temporalstore-main-storage-next5</code> on 2026-07-04.</p>
+</main>
+</body>
+</html>
