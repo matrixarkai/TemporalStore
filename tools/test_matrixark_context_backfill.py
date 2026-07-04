@@ -1714,6 +1714,17 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(unsafe["status"], "failed")
             self.assertFalse(unsafe["checks"]["all_paths_safe"])
 
+            prom_path = Path(tmp) / "plan_artifacts.prom"
+            backfill.run_verify_plan_artifacts(argparse.Namespace(
+                plan_output_dir=str(restored_dir),
+                job_id="portable-plan",
+                prometheus_output=str(prom_path),
+            ))
+            prom_text = prom_path.read_text(encoding="utf-8")
+            self.assertIn("matrixark_context_backfill_plan_artifact_verification_status", prom_text)
+            self.assertIn('check="generated_scripts_match_plan"} 0', prom_text)
+            self.assertIn('file="shadow_wave_0000.sh",check="matches_plan"} 0', prom_text)
+
 
 if __name__ == "__main__":
     unittest.main()
