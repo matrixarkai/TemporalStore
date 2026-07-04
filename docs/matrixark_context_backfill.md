@@ -196,7 +196,7 @@ python3 tools/matrixark_context_backfill.py \
   --job-id=full-20260704
 ```
 
-The verifier returns `status="ok"` only when `artifact_manifest.json` is present, uses the supported schema, matches `--job-id` when provided, and every listed artifact still has the same size, SHA-256, and executable bit. It resolves `relative_path` entries against `--plan-output-dir` first, so archived bundles can be restored to another directory and verified before execution. Relative entries that escape the bundle are rejected. Older absolute-path manifests still verify in place.
+The verifier returns `status="ok"` only when `artifact_manifest.json` is present, uses the supported schema, matches `--job-id` when provided, every listed artifact still has the same size, SHA-256, and executable bit, and every generated script still matches the reviewed command arguments embedded in `plan.json`. It resolves `relative_path` entries against `--plan-output-dir` first, so archived bundles can be restored to another directory and verified before execution. Relative entries that escape the bundle are rejected. Older absolute-path manifests still verify in place.
 
 ## Quick Start: Full Shadow Backfill
 

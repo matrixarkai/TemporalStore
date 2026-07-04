@@ -1685,6 +1685,25 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             ))
             self.assertEqual(verified["status"], "ok")
             self.assertTrue(all(item["path_source"] == "relative_path" for item in verified["file_checks"]))
+            self.assertTrue(verified["checks"]["generated_scripts_match_plan"])
+
+            tampered_script = restored_dir / "shadow_wave_0000.sh"
+            tampered_script.write_text(
+                tampered_script.read_text(encoding="utf-8").replace("--mode=shadow", "--mode=validate_shadow"),
+                encoding="utf-8",
+            )
+            restored_manifest = json.loads(restored_manifest_path.read_text(encoding="utf-8"))
+            for item in restored_manifest["files"]:
+                if item["relative_path"] == "shadow_wave_0000.sh":
+                    item.update(backfill._artifact_file_info(tampered_script, output_dir=restored_dir))
+            restored_manifest_path.write_text(json.dumps(restored_manifest, sort_keys=True, indent=2), encoding="utf-8")
+            semantically_tampered = backfill.run_verify_plan_artifacts(argparse.Namespace(
+                plan_output_dir=str(restored_dir),
+                job_id="portable-plan",
+            ))
+            self.assertEqual(semantically_tampered["status"], "failed")
+            self.assertTrue(semantically_tampered["checks"]["all_file_sha256_match"])
+            self.assertFalse(semantically_tampered["checks"]["generated_scripts_match_plan"])
 
             restored_manifest["files"][0]["relative_path"] = "../plan.json"
             restored_manifest_path.write_text(json.dumps(restored_manifest, sort_keys=True, indent=2), encoding="utf-8")
