@@ -1225,7 +1225,9 @@ def build_plan_validation_args(args: argparse.Namespace) -> list[str]:
 
 
 def build_plan_execution(args: argparse.Namespace, windows: list[Json]) -> Json:
-    parallelism = max(1, int(getattr(args, 'plan_parallelism', 1) or 1))
+    requested_parallelism = max(1, int(getattr(args, 'plan_parallelism', 1) or 1))
+    local_kv_serialized = bool(str(getattr(args, 'local_kv', '') or ''))
+    parallelism = 1 if local_kv_serialized else requested_parallelism
     waves: list[Json] = []
     for offset in range(0, len(windows), parallelism):
         wave_windows = windows[offset:offset + parallelism]
@@ -1237,6 +1239,8 @@ def build_plan_execution(args: argparse.Namespace, windows: list[Json]) -> Json:
         })
     return {
         'plan_parallelism': parallelism,
+        'requested_plan_parallelism': requested_parallelism,
+        'local_kv_serialized': local_kv_serialized,
         'shadow_validation_waves': waves,
         'promotion_sequence': [
             {
@@ -1319,26 +1323,51 @@ def build_plan_execution_readiness(chunk_plan: Json) -> Json:
         'wave_count': len(waves),
         'promotion_step_count': len(promotion_sequence),
         'plan_parallelism': int(execution_plan.get('plan_parallelism', 0) or 0),
+        'requested_plan_parallelism': int(execution_plan.get('requested_plan_parallelism', 0) or 0),
+        'local_kv_serialized': bool(execution_plan.get('local_kv_serialized')),
         'parallel_write_safety': str(chunk_plan.get('parallel_write_safety') or ''),
     }
 
 
-def _script_command(args_list: list[str]) -> str:
+def _has_plan_arg(args_list: list[str], name: str) -> bool:
+    prefix = f'--{name}='
+    flag = f'--{name}'
+    return any(arg == flag or arg.startswith(prefix) for arg in args_list)
+
+
+def _safe_evidence_stem(value: str) -> str:
+    cleaned = ''.join(ch if ch.isalnum() or ch in {'-', '_', '.'} else '_' for ch in value)
+    return cleaned.strip('._') or 'command'
+
+
+def _script_command(args_list: list[str], *, evidence_stem: str = '') -> str:
     command = ['python3', 'tools/matrixark_context_backfill.py', *args_list]
-    return ' '.join(shlex.quote(part) for part in command)
+    rendered = ' '.join(shlex.quote(part) for part in command)
+    if evidence_stem:
+        stem = _safe_evidence_stem(evidence_stem)
+        if not _has_plan_arg(args_list, 'prometheus-output'):
+            rendered += f' --prometheus-output="${{PLAN_BUNDLE_DIR}}/execution_evidence/{stem}.prom"'
+        rendered += (
+            f' > "${{PLAN_BUNDLE_DIR}}/execution_evidence/{stem}.json"'
+            f' 2> "${{PLAN_BUNDLE_DIR}}/execution_evidence/{stem}.stderr.log"'
+        )
+    return rendered
 
 
-def _render_plan_script(commands: list[list[str]], *, parallel: bool) -> str:
+def _render_plan_script(commands: list[list[str]], *, parallel: bool, script_name: str = '') -> str:
     lines = [
         '#!/usr/bin/env bash',
         'set -euo pipefail',
         f'cd {shlex.quote(str(ROOT))}',
+        'PLAN_BUNDLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"',
+        'mkdir -p "${PLAN_BUNDLE_DIR}/execution_evidence"',
         '',
     ]
     if parallel:
         lines.append('pids=()')
-        for args_list in commands:
-            lines.append(f'{_script_command(args_list)} &')
+        for index, args_list in enumerate(commands):
+            stem = f'{script_name or "plan"}_cmd_{index:04d}'
+            lines.append(f'{_script_command(args_list, evidence_stem=stem)} &')
             lines.append('pids+=("$!")')
         lines.extend([
             'for pid in "${pids[@]}"; do',
@@ -1346,13 +1375,14 @@ def _render_plan_script(commands: list[list[str]], *, parallel: bool) -> str:
             'done',
         ])
     else:
-        for args_list in commands:
-            lines.append(_script_command(args_list))
+        for index, args_list in enumerate(commands):
+            stem = f'{script_name or "plan"}_cmd_{index:04d}'
+            lines.append(_script_command(args_list, evidence_stem=stem))
     return '\n'.join(lines) + '\n'
 
 
 def _write_plan_script(path: Path, commands: list[list[str]], *, parallel: bool) -> None:
-    path.write_text(_render_plan_script(commands, parallel=parallel), encoding='utf-8')
+    path.write_text(_render_plan_script(commands, parallel=parallel, script_name=path.stem), encoding='utf-8')
     path.chmod(0o755)
 
 
@@ -1401,15 +1431,17 @@ def _expected_plan_script_payloads(plan: Json) -> dict[str, str]:
             command for command in (wave.get('validate_command_args') or [])
             if isinstance(command, list)
         ]
-        expected[f'shadow_wave_{wave_id:04d}.sh'] = _render_plan_script(shadow_commands, parallel=True)
-        expected[f'validate_wave_{wave_id:04d}.sh'] = _render_plan_script(validate_commands, parallel=True)
+        shadow_name = f'shadow_wave_{wave_id:04d}'
+        validate_name = f'validate_wave_{wave_id:04d}'
+        expected[f'{shadow_name}.sh'] = _render_plan_script(shadow_commands, parallel=True, script_name=shadow_name)
+        expected[f'{validate_name}.sh'] = _render_plan_script(validate_commands, parallel=True, script_name=validate_name)
     promotion_commands = [
         item.get('incremental_repair_command_args')
         for item in (execution_plan.get('promotion_sequence') or [])
         if isinstance(item, dict) and isinstance(item.get('incremental_repair_command_args'), list)
     ]
     if promotion_commands:
-        expected['promote_serial.sh'] = _render_plan_script(promotion_commands, parallel=False)
+        expected['promote_serial.sh'] = _render_plan_script(promotion_commands, parallel=False, script_name='promote_serial')
     return expected
 
 
