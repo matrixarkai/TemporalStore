@@ -1259,7 +1259,7 @@ def _script_command(args_list: list[str]) -> str:
     return ' '.join(shlex.quote(part) for part in command)
 
 
-def _write_plan_script(path: Path, commands: list[list[str]], *, parallel: bool) -> None:
+def _render_plan_script(commands: list[list[str]], *, parallel: bool) -> str:
     lines = [
         '#!/usr/bin/env bash',
         'set -euo pipefail',
@@ -1279,7 +1279,11 @@ def _write_plan_script(path: Path, commands: list[list[str]], *, parallel: bool)
     else:
         for args_list in commands:
             lines.append(_script_command(args_list))
-    path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    return '\n'.join(lines) + '\n'
+
+
+def _write_plan_script(path: Path, commands: list[list[str]], *, parallel: bool) -> None:
+    path.write_text(_render_plan_script(commands, parallel=parallel), encoding='utf-8')
     path.chmod(0o755)
 
 
@@ -1310,6 +1314,64 @@ def _resolve_artifact_manifest_path(item: Json, output_dir: Path) -> tuple[Path,
     if not path.is_absolute():
         return output_dir / path, 'path_relative_to_output_dir'
     return path, 'absolute_path'
+
+
+def _expected_plan_script_payloads(plan: Json) -> dict[str, str]:
+    chunk_plan = plan.get('chunk_plan') if isinstance(plan.get('chunk_plan'), dict) else {}
+    execution_plan = chunk_plan.get('execution_plan') if isinstance(chunk_plan.get('execution_plan'), dict) else {}
+    expected: dict[str, str] = {}
+    for wave in execution_plan.get('shadow_validation_waves') or []:
+        if not isinstance(wave, dict):
+            continue
+        wave_id = int(wave.get('wave', len(expected)) or 0)
+        shadow_commands = [
+            command for command in (wave.get('shadow_command_args') or [])
+            if isinstance(command, list)
+        ]
+        validate_commands = [
+            command for command in (wave.get('validate_command_args') or [])
+            if isinstance(command, list)
+        ]
+        expected[f'shadow_wave_{wave_id:04d}.sh'] = _render_plan_script(shadow_commands, parallel=True)
+        expected[f'validate_wave_{wave_id:04d}.sh'] = _render_plan_script(validate_commands, parallel=True)
+    promotion_commands = [
+        item.get('incremental_repair_command_args')
+        for item in (execution_plan.get('promotion_sequence') or [])
+        if isinstance(item, dict) and isinstance(item.get('incremental_repair_command_args'), list)
+    ]
+    if promotion_commands:
+        expected['promote_serial.sh'] = _render_plan_script(promotion_commands, parallel=False)
+    return expected
+
+
+def _verify_plan_script_payloads(output_dir: Path) -> tuple[bool, list[Json], list[str]]:
+    plan_path = output_dir / 'plan.json'
+    if not plan_path.exists():
+        return False, [], ['plan.json not found for script semantic verification']
+    try:
+        plan = json.loads(plan_path.read_text(encoding='utf-8'))
+    except json.JSONDecodeError as exc:
+        return False, [], [f'invalid plan.json for script semantic verification: {exc}']
+    if not isinstance(plan, dict):
+        return False, [], ['plan.json is not an object']
+    expected = _expected_plan_script_payloads(plan)
+    checks: list[Json] = []
+    errors: list[str] = []
+    for relative_path, expected_payload in sorted(expected.items()):
+        path = output_dir / relative_path
+        exists = path.exists()
+        actual_payload = path.read_text(encoding='utf-8') if exists else ''
+        matches = exists and actual_payload == expected_payload
+        checks.append({
+            'relative_path': relative_path,
+            'exists': exists,
+            'matches_plan': matches,
+            'expected_sha256': hashlib.sha256(expected_payload.encode('utf-8')).hexdigest(),
+            'actual_sha256': hashlib.sha256(actual_payload.encode('utf-8')).hexdigest() if exists else '',
+        })
+        if not matches:
+            errors.append(f'generated plan script does not match plan.json execution arguments: {relative_path}')
+    return bool(expected) and all(bool(item.get('matches_plan')) for item in checks), checks, errors
 
 
 def _require_plan_output_dir_writable(args: argparse.Namespace, output_dir: Path) -> None:
@@ -1404,6 +1466,7 @@ def run_verify_plan_artifacts(args: argparse.Namespace) -> Json:
         'all_file_sizes_match': False,
         'all_file_sha256_match': False,
         'all_executable_bits_match': False,
+        'generated_scripts_match_plan': False,
     }
     manifest: Json = {}
     errors: list[str] = []
@@ -1481,6 +1544,9 @@ def run_verify_plan_artifacts(args: argparse.Namespace) -> Json:
             errors.append(f'missing artifact file: {item.get("path")}')
         elif not item.get('size_matches') or not item.get('sha256_matches') or not item.get('executable_matches'):
             errors.append(f'artifact file mismatch: {item.get("path")}')
+    script_semantics_match, script_checks, script_errors = _verify_plan_script_payloads(output_dir)
+    checks['generated_scripts_match_plan'] = script_semantics_match
+    errors.extend(script_errors)
     status = 'ok' if all(bool(value) for value in checks.values()) else 'failed'
     return {
         'status': status,
@@ -1493,6 +1559,7 @@ def run_verify_plan_artifacts(args: argparse.Namespace) -> Json:
         'manifest_file_count': len(files),
         'checks': checks,
         'file_checks': file_checks,
+        'script_semantic_checks': script_checks,
         'errors': errors,
     }
 
