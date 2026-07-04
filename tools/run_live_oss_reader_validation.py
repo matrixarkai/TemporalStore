@@ -28,7 +28,28 @@ def main() -> int:
     parser.add_argument("--benchmark-report", default="/tmp/temporalstore_live_oss_reader_benchmark.json")
     parser.add_argument("--misses", default="/tmp/temporalstore_live_oss_reader_misses.jsonl")
     parser.add_argument("--max-events", type=int, default=128)
+    parser.add_argument(
+        "--skip-rust-temporalstore",
+        action="store_true",
+        help=(
+            "Diagnostic-only reader run. This keeps the OpenAI-compatible OSS reader gate live "
+            "when the local Rust harness toolchain is unavailable; reports from this mode are "
+            "not full benchmark evidence."
+        ),
+    )
+    parser.add_argument(
+        "--allow-python-only-diagnostic",
+        action="store_true",
+        help="Required with --skip-rust-temporalstore so diagnostic reports are explicit.",
+    )
     args = parser.parse_args()
+    if args.skip_rust_temporalstore and not args.allow_python_only_diagnostic:
+        print(
+            "--skip-rust-temporalstore requires --allow-python-only-diagnostic; "
+            "full benchmark evidence still requires the Rust TemporalStore backend.",
+            file=sys.stderr,
+        )
+        return 2
 
     started = time.time()
     evidence: dict[str, Any] = {
@@ -43,6 +64,7 @@ def main() -> int:
         "benchmark_report": args.benchmark_report,
         "misses": args.misses,
         "checked_at_unix": int(started),
+        "python_only_diagnostic": bool(args.skip_rust_temporalstore),
         "blockers": [],
     }
 
@@ -99,6 +121,8 @@ def main() -> int:
             str(args.max_events),
         ]
     )
+    if args.skip_rust_temporalstore:
+        command.extend(["--skip-rust-temporalstore", "--allow-python-only-diagnostic"])
     result = subprocess.run(command, cwd=repo, text=True, capture_output=True)
     evidence["command"] = command
     evidence["returncode"] = result.returncode
