@@ -695,12 +695,14 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
                     dry_run=False,
                 ))
 
+            activation_prom = Path(tmp) / "activation.prom"
             activated = backfill.run_activate_shadow(self.make_args(
                 path,
                 mode="activate_shadow",
                 target_prefix="matrixark:context_backfill:candidate",
                 confirm_activate="YES",
                 expect_active_prefix="matrixark:context:old",
+                prometheus_output=str(activation_prom),
                 dry_run=False,
             ))
             self.assertEqual(activated["status"], "ok")
@@ -723,6 +725,14 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertFalse(activation_audit["active_prefix_precondition_bypassed"])
             self.assertEqual(activation_audit["validation_target_state"]["record_count"], 2)
             self.assertIn("matrixark:context_backfill:candidate", json.dumps(activation_audit, sort_keys=True))
+            activation_prom_text = activation_prom.read_text()
+            self.assertIn("matrixark_context_backfill_activation_status", activation_prom_text)
+            self.assertIn("matrixark_context_backfill_activation_validation_status", activation_prom_text)
+            self.assertIn("matrixark_context_backfill_activation_guard_status", activation_prom_text)
+            self.assertIn("matrixark_context_backfill_activation_target_records", activation_prom_text)
+            self.assertIn('status="ok"', activation_prom_text)
+            self.assertIn('skipped="false"', activation_prom_text)
+            self.assertIn('kind="record_count"} 2', activation_prom_text)
 
             with self.assertRaisesRegex(backfill.BackfillError, "active prefix precondition failed"):
                 backfill.run_activate_shadow(self.make_args(
@@ -758,6 +768,7 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
                     dry_run=False,
                 ))
 
+            rollback_prom = Path(tmp) / "rollback.prom"
             rollback = backfill.run_rollback_activation(self.make_args(
                 path,
                 mode="rollback_activation",
@@ -765,6 +776,7 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
                 job_id="rollback-unit",
                 confirm_rollback="YES",
                 expect_active_prefix="matrixark:context_backfill:candidate",
+                prometheus_output=str(rollback_prom),
                 dry_run=False,
             ))
             self.assertEqual(rollback["status"], "ok")
@@ -776,6 +788,13 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             kv_rolled_back = backfill.LocalJsonKV(path)
             self.assertEqual(kv_rolled_back.get_string("matrixark:context:active_prefix"), "matrixark:context:old")
             self.assertIn("matrixark:context_backfill:candidate", kv_rolled_back.hget("matrixark:context:active_prefix:rollback_audit", "rollback-unit"))
+            rollback_prom_text = rollback_prom.read_text()
+            self.assertIn("matrixark_context_backfill_rollback_status", rollback_prom_text)
+            self.assertIn("matrixark_context_backfill_rollback_guard_status", rollback_prom_text)
+            self.assertIn("matrixark_context_backfill_rollback_target_records", rollback_prom_text)
+            self.assertIn("matrixark_context_backfill_rollback_target_health", rollback_prom_text)
+            self.assertIn('status="ok"', rollback_prom_text)
+            self.assertIn('kind="record_count"} 1', rollback_prom_text)
 
     def test_rollback_activation_unhealthy_target_requires_confirmation(self):
         with tempfile.TemporaryDirectory() as tmp:
