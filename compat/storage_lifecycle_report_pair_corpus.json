@@ -439,6 +439,19 @@
       "storage_zone_stale_bytes": 1024,
       "append_log_replay_records": 4,
       "append_log_reclaimed_records": 1
+    },
+    "storage_gc_snapshot": {
+      "tombstone_records": 1,
+      "stale_page_tombstones": 1,
+      "stale_block_tombstones": 1,
+      "gc_eligible_record_count": 3,
+      "reclaimable_bytes": 1024,
+      "compaction_reclaimed_bytes": 512,
+      "physical_reclaimed_bytes": 512,
+      "physical_reclaim_errors": 0,
+      "follower_cursor_retention_floor": 0,
+      "follower_cursor_blocked_reclaim_count": 2,
+      "follower_cursor_safe_to_reclaim": false
     }
   },
   "rust": {
@@ -877,6 +890,19 @@
       "storage_zone_stale_bytes": 1024,
       "append_log_replay_records": 4,
       "append_log_reclaimed_records": 1
+    },
+    "storage_gc_snapshot": {
+      "tombstone_records": 1,
+      "stale_page_tombstones": 1,
+      "stale_block_tombstones": 1,
+      "gc_eligible_record_count": 3,
+      "reclaimable_bytes": 1024,
+      "compaction_reclaimed_bytes": 512,
+      "physical_reclaimed_bytes": 512,
+      "physical_reclaim_errors": 0,
+      "follower_cursor_retention_floor": 0,
+      "follower_cursor_blocked_reclaim_count": 2,
+      "follower_cursor_safe_to_reclaim": false
     }
   }
 }

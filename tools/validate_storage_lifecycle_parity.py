@@ -272,6 +272,7 @@ REQUIRED_LIFECYCLE_TOP_LEVEL_KEYS = [
     "storage_reclaim_contract",
     "storage_safety_snapshot",
     "storage_watermark_snapshot",
+    "storage_gc_snapshot",
     "storage_index_snapshot",
     "storage_topology_snapshot",
     "storage_read_sequence",
@@ -444,6 +445,20 @@ REQUIRED_STORAGE_SAFETY_FIELDS = [
     "follower_cursor_blocked_reclaim_count",
     "follower_cursor_safe_to_reclaim",
     "physical_reclaim_errors",
+]
+
+REQUIRED_STORAGE_GC_SNAPSHOT_FIELDS = [
+    "tombstone_records",
+    "stale_page_tombstones",
+    "stale_block_tombstones",
+    "gc_eligible_record_count",
+    "reclaimable_bytes",
+    "compaction_reclaimed_bytes",
+    "physical_reclaimed_bytes",
+    "physical_reclaim_errors",
+    "follower_cursor_retention_floor",
+    "follower_cursor_blocked_reclaim_count",
+    "follower_cursor_safe_to_reclaim",
 ]
 
 REQUIRED_STORAGE_WATERMARK_SNAPSHOT_FIELDS = [
@@ -727,6 +742,18 @@ def _dig_watermark_snapshot(report: dict[str, Any]) -> dict[str, Any]:
         report.get("storage_watermark_snapshot"),
         report.get("storage_lifecycle", {}).get("watermark_snapshot") if isinstance(report.get("storage_lifecycle"), dict) else None,
         report.get("storage_watermarks") if isinstance(report.get("storage_watermarks"), dict) else None,
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            return candidate
+    return {}
+
+
+def _dig_gc_snapshot(report: dict[str, Any]) -> dict[str, Any]:
+    candidates = [
+        report.get("storage_gc_snapshot"),
+        report.get("storage_lifecycle", {}).get("gc_snapshot") if isinstance(report.get("storage_lifecycle"), dict) else None,
+        report.get("storage_gc", {}).get("snapshot") if isinstance(report.get("storage_gc"), dict) else None,
     ]
     for candidate in candidates:
         if isinstance(candidate, dict):
@@ -1107,6 +1134,8 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
     rust_safety_snapshot = _dig_safety_snapshot(rust_report)
     cpp_watermark_snapshot = _dig_watermark_snapshot(cpp_report)
     rust_watermark_snapshot = _dig_watermark_snapshot(rust_report)
+    cpp_gc_snapshot = _dig_gc_snapshot(cpp_report)
+    rust_gc_snapshot = _dig_gc_snapshot(rust_report)
     cpp_index_snapshot = _dig_index_snapshot(cpp_report)
     rust_index_snapshot = _dig_index_snapshot(rust_report)
     cpp_topology_snapshot = _dig_topology_snapshot(cpp_report)
@@ -1370,6 +1399,25 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
             failures.append(f"{backend} watermark snapshot safe watermark must not exceed compaction watermark")
         if safe is not None and follower_floor is not None and follower_floor > 0 and safe > follower_floor:
             failures.append(f"{backend} watermark snapshot safe watermark must not exceed follower cursor floor")
+    for field in REQUIRED_STORAGE_GC_SNAPSHOT_FIELDS:
+        if field not in cpp_gc_snapshot:
+            failures.append(f"cpp gc snapshot missing field `{field}`")
+        if field not in rust_gc_snapshot:
+            failures.append(f"rust gc snapshot missing field `{field}`")
+    for backend, gc_snapshot in [("cpp", cpp_gc_snapshot), ("rust", rust_gc_snapshot)]:
+        for field in REQUIRED_STORAGE_GC_SNAPSHOT_FIELDS:
+            if field == "follower_cursor_safe_to_reclaim":
+                if not isinstance(gc_snapshot.get(field), bool):
+                    failures.append(f"{backend} gc snapshot `{field}` must be boolean")
+            else:
+                value = _as_number(gc_snapshot.get(field))
+                if value is None or value < 0:
+                    failures.append(f"{backend} gc snapshot `{field}` must be non-negative")
+        if _as_number(gc_snapshot.get("physical_reclaim_errors")) not in (0.0, None):
+            failures.append(f"{backend} gc snapshot physical_reclaim_errors must be zero")
+        blocked = _as_number(gc_snapshot.get("follower_cursor_blocked_reclaim_count"))
+        if blocked is not None and blocked > 0 and gc_snapshot.get("follower_cursor_safe_to_reclaim") is True:
+            failures.append(f"{backend} gc snapshot cannot be safe to reclaim while follower cursor blocks exist")
     for field in REQUIRED_STORAGE_INDEX_SNAPSHOT_FIELDS:
         if field not in cpp_index_snapshot:
             failures.append(f"cpp index snapshot missing field `{field}`")
