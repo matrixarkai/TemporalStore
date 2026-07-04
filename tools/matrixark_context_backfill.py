@@ -1548,7 +1548,7 @@ def run_verify_plan_artifacts(args: argparse.Namespace) -> Json:
     checks['generated_scripts_match_plan'] = script_semantics_match
     errors.extend(script_errors)
     status = 'ok' if all(bool(value) for value in checks.values()) else 'failed'
-    return {
+    summary = {
         'status': status,
         'mode': 'verify_plan_artifacts',
         'job_id': expected_job_id or manifest_job_id,
@@ -1562,6 +1562,53 @@ def run_verify_plan_artifacts(args: argparse.Namespace) -> Json:
         'script_semantic_checks': script_checks,
         'errors': errors,
     }
+    prometheus_output = str(getattr(args, 'prometheus_output', '') or '')
+    if prometheus_output:
+        Path(prometheus_output).write_text(verify_plan_artifacts_to_prometheus(summary), encoding='utf-8')
+    return summary
+
+
+def verify_plan_artifacts_to_prometheus(summary: Json) -> str:
+    base = {
+        'job_id': str(summary.get('job_id') or ''),
+        'mode': 'verify_plan_artifacts',
+    }
+    lines = [
+        '# HELP matrixark_context_backfill_plan_artifact_verification_status Plan artifact verification status.',
+        '# TYPE matrixark_context_backfill_plan_artifact_verification_status gauge',
+        f'matrixark_context_backfill_plan_artifact_verification_status{{{_prom_labels(**base, status=str(summary.get("status") or "unknown"))}}} 1',
+        '# HELP matrixark_context_backfill_plan_artifact_verification_check Plan artifact verification check result, 1 for pass and 0 for fail.',
+        '# TYPE matrixark_context_backfill_plan_artifact_verification_check gauge',
+    ]
+    checks = summary.get('checks') if isinstance(summary.get('checks'), dict) else {}
+    for check_name, passed in sorted(checks.items()):
+        lines.append(f'matrixark_context_backfill_plan_artifact_verification_check{{{_prom_labels(**base, check=check_name)}}} {1 if passed else 0}')
+    lines.extend([
+        '# HELP matrixark_context_backfill_plan_artifact_file_check Per-file plan artifact verification result, 1 for pass and 0 for fail.',
+        '# TYPE matrixark_context_backfill_plan_artifact_file_check gauge',
+    ])
+    for item in summary.get('file_checks') or []:
+        if not isinstance(item, dict):
+            continue
+        relative_path = str(item.get('manifest_relative_path') or Path(str(item.get('path') or '')).name)
+        for check_name in ['path_safe', 'exists', 'size_matches', 'sha256_matches', 'executable_matches']:
+            lines.append(
+                f'matrixark_context_backfill_plan_artifact_file_check{{{_prom_labels(**base, file=relative_path, check=check_name)}}} '
+                f'{1 if item.get(check_name) else 0}'
+            )
+    lines.extend([
+        '# HELP matrixark_context_backfill_plan_artifact_script_semantic_check Generated plan script semantic check, 1 when script matches plan.json.',
+        '# TYPE matrixark_context_backfill_plan_artifact_script_semantic_check gauge',
+    ])
+    for item in summary.get('script_semantic_checks') or []:
+        if not isinstance(item, dict):
+            continue
+        relative_path = str(item.get('relative_path') or '')
+        lines.append(
+            f'matrixark_context_backfill_plan_artifact_script_semantic_check{{{_prom_labels(**base, file=relative_path, check="matches_plan")}}} '
+            f'{1 if item.get("matches_plan") else 0}'
+        )
+    return '\n'.join(lines) + '\n'
 
 
 def run_export_dead_letters(args: argparse.Namespace) -> Json:

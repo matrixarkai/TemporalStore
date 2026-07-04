@@ -196,7 +196,7 @@ python3 tools/matrixark_context_backfill.py \
   --job-id=full-20260704
 ```
 
-The verifier returns `status="ok"` only when `artifact_manifest.json` is present, uses the supported schema, matches `--job-id` when provided, every listed artifact still has the same size, SHA-256, and executable bit, and every generated script still matches the reviewed command arguments embedded in `plan.json`. It resolves `relative_path` entries against `--plan-output-dir` first, so archived bundles can be restored to another directory and verified before execution. Relative entries that escape the bundle are rejected. Older absolute-path manifests still verify in place.
+The verifier returns `status="ok"` only when `artifact_manifest.json` is present, uses the supported schema, matches `--job-id` when provided, every listed artifact still has the same size, SHA-256, and executable bit, and every generated script still matches the reviewed command arguments embedded in `plan.json`. It resolves `relative_path` entries against `--plan-output-dir` first, so archived bundles can be restored to another directory and verified before execution. Relative entries that escape the bundle are rejected. Older absolute-path manifests still verify in place. Set `--prometheus-output` to emit per-check, per-file, and per-script semantic metrics for release dashboards.
 
 ## Quick Start: Full Shadow Backfill
 
@@ -283,6 +283,10 @@ matrixark_context_backfill_incremental_repair_promotion_consistency_check
 matrixark_context_backfill_incremental_repair_promotion_records
 matrixark_context_backfill_incremental_repair_promotion_source_range
 matrixark_context_backfill_incremental_repair_validation_status
+matrixark_context_backfill_plan_artifact_verification_status
+matrixark_context_backfill_plan_artifact_verification_check
+matrixark_context_backfill_plan_artifact_file_check
+matrixark_context_backfill_plan_artifact_script_semantic_check
 ```
 
 `validate_shadow` also emits a machine-readable `promotion_readiness` block in JSON and the `matrixark_context_backfill_promotion_readiness_status` Prometheus family. Treat `promotion_readiness.ready=true` and `status=ready` as the hard precondition for `activate_shadow` or `incremental_repair`. If it is blocked, `promotion_readiness.blockers` lists the failed validation checks such as `serving_record_fingerprint_match`, `target_records_readable`, or `source_scan_had_no_failures`.
