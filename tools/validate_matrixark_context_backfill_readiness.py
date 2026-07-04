@@ -1160,6 +1160,15 @@ def run_resume_gate(args: argparse.Namespace) -> Json:
 
 
 def run_prometheus_gate(args: argparse.Namespace) -> Json:
+    required_plan_metrics = [
+        "matrixark_context_backfill_plan_status",
+        "matrixark_context_backfill_plan_safety_check",
+        "matrixark_context_backfill_plan_readiness_blocker",
+        "matrixark_context_backfill_plan_source_range",
+        "matrixark_context_backfill_plan_source_scan_mode",
+        "matrixark_context_backfill_plan_target_records",
+        "matrixark_context_backfill_plan_chunk_windows",
+    ]
     required_shadow_metrics = [
         "matrixark_context_backfill_run_elapsed_ms",
         "matrixark_context_backfill_scan_qps",
@@ -1197,6 +1206,22 @@ def run_prometheus_gate(args: argparse.Namespace) -> Json:
             kv = backfill.LocalJsonKV(kv_path)
             bench.seed_raw_log(kv, prefix=source_prefix, records=records, payload_bytes=args.payload_bytes)
             kv.put_string("matrixark:context:active_prefix", f"matrixark:context:active:prometheus:{raw_backend}")
+
+            plan_prometheus = tmp_path / "plan.prom"
+            plan_args = bench.make_backfill_args(
+                kv_path=kv_path,
+                source_prefix=source_prefix,
+                target_prefix=f"matrixark:context_backfill:readiness_prometheus:{raw_backend}:full",
+                raw_backend=raw_backend,
+                job_id=f"readiness-prometheus-{raw_backend}-plan",
+                batch_size=args.batch_size,
+                mode="plan",
+                end_seq=records,
+            )
+            plan_args.plan_window_size = max(1, min(records, int(args.batch_size)))
+            plan_args.prometheus_output = str(plan_prometheus)
+            plan_summary = backfill.run_plan(plan_args)
+            plan_text = plan_prometheus.read_text(encoding="utf-8") if plan_prometheus.exists() else ""
 
             shadow_prometheus = tmp_path / "shadow.prom"
             shadow_args = bench.make_backfill_args(
@@ -1256,23 +1281,29 @@ def run_prometheus_gate(args: argparse.Namespace) -> Json:
 
             results.append({
                 "raw_backend": raw_backend,
+                "plan_status": plan_summary.get("status"),
                 "shadow_status": shadow_summary.get("status"),
                 "validation_status": validation_summary.get("status"),
                 "repair_status": repair_summary.get("status"),
+                "plan_prometheus_output": str(plan_prometheus),
                 "shadow_prometheus_output": str(shadow_prometheus),
                 "validation_prometheus_output": str(validation_prometheus),
                 "repair_prometheus_output": str(repair_prometheus),
+                "plan_metric_count": sum(1 for line in plan_text.splitlines() if line and not line.startswith("#")),
                 "shadow_metric_count": sum(1 for line in shadow_text.splitlines() if line and not line.startswith("#")),
                 "validation_metric_count": sum(1 for line in validation_text.splitlines() if line and not line.startswith("#")),
                 "repair_metric_count": sum(1 for line in repair_text.splitlines() if line and not line.startswith("#")),
+                "plan_metrics_present": {metric: metric in plan_text for metric in required_plan_metrics},
                 "shadow_metrics_present": {metric: metric in shadow_text for metric in required_shadow_metrics},
                 "validation_metrics_present": {metric: metric in validation_text for metric in required_validation_metrics},
                 "repair_metrics_present": {metric: metric in repair_text for metric in required_repair_metrics},
             })
     status = "ok" if all(
-        item["shadow_status"] == "ok"
+        item["plan_status"] == "ok"
+        and item["shadow_status"] == "ok"
         and item["validation_status"] == "ok"
         and item["repair_status"] == "ok"
+        and all(item["plan_metrics_present"].values())
         and all(item["shadow_metrics_present"].values())
         and all(item["validation_metrics_present"].values())
         and all(item["repair_metrics_present"].values())
@@ -1570,10 +1601,11 @@ def prometheus_checks(summary: Json) -> list[Json]:
     return [
         check("prometheus_gate_status_ok", summary.get("status") == "ok"),
         check("prometheus_gate_covers_temporalstore_and_matrixkv", {item.get("raw_backend") for item in results} == {"temporalstore", "matrixkv"}),
+        check("prometheus_gate_plan_metrics_present", all(all((item.get("plan_metrics_present") or {}).values()) for item in results)),
         check("prometheus_gate_shadow_metrics_present", all(all((item.get("shadow_metrics_present") or {}).values()) for item in results)),
         check("prometheus_gate_validation_metrics_present", all(all((item.get("validation_metrics_present") or {}).values()) for item in results)),
         check("prometheus_gate_incremental_repair_metrics_present", all(all((item.get("repair_metrics_present") or {}).values()) for item in results)),
-        check("prometheus_gate_emitted_samples", all(int(item.get("shadow_metric_count", 0) or 0) > 0 and int(item.get("validation_metric_count", 0) or 0) > 0 and int(item.get("repair_metric_count", 0) or 0) > 0 for item in results)),
+        check("prometheus_gate_emitted_samples", all(int(item.get("plan_metric_count", 0) or 0) > 0 and int(item.get("shadow_metric_count", 0) or 0) > 0 and int(item.get("validation_metric_count", 0) or 0) > 0 and int(item.get("repair_metric_count", 0) or 0) > 0 for item in results)),
     ]
 
 
