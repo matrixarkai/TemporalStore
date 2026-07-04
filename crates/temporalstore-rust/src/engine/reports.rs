@@ -1589,6 +1589,32 @@ pub fn default_storage_watermark_snapshot() -> StorageWatermarkSnapshot {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageTombstoneSample {
+    #[serde(rename = "ref")]
+    pub ref_id: String,
+    pub generation: u64,
+    pub deleted_at_ms: u64,
+    pub reason: String,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageGcEligibilitySample {
+    #[serde(rename = "ref")]
+    pub ref_id: String,
+    pub eligible_after_ms: u64,
+    pub has_tombstone: bool,
+    pub follower_safe: bool,
+    pub reclaimable_bytes: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageFollowerCursorSafetySample {
+    pub min_follower_cursor: u64,
+    pub blocked_reclaim_bytes: u64,
+    pub safe_to_reclaim: bool,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageGcSnapshot {
     pub tombstone_records: u64,
     pub stale_page_tombstones: u64,
@@ -1601,6 +1627,12 @@ pub struct StorageGcSnapshot {
     pub follower_cursor_retention_floor: u64,
     pub follower_cursor_blocked_reclaim_count: u64,
     pub follower_cursor_safe_to_reclaim: bool,
+    #[serde(default)]
+    pub tombstone_samples: Vec<StorageTombstoneSample>,
+    #[serde(default)]
+    pub gc_eligibility_samples: Vec<StorageGcEligibilitySample>,
+    #[serde(default)]
+    pub follower_cursor_safety_samples: Vec<StorageFollowerCursorSafetySample>,
 }
 
 pub fn storage_gc_snapshot_from_metrics(
@@ -1625,6 +1657,9 @@ pub fn storage_gc_snapshot_from_metrics(
         follower_cursor_retention_floor: metric(metrics, "follower_cursor_retention_floor"),
         follower_cursor_blocked_reclaim_count,
         follower_cursor_safe_to_reclaim: follower_cursor_blocked_reclaim_count == 0,
+        tombstone_samples: Vec::new(),
+        gc_eligibility_samples: Vec::new(),
+        follower_cursor_safety_samples: Vec::new(),
     }
 }
 

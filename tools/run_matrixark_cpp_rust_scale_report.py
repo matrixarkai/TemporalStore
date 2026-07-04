@@ -881,6 +881,11 @@ def default_storage_gc_snapshot(metrics: Json | None = None) -> Json:
         ),
         "follower_cursor_blocked_reclaim_count": follower_block_count,
         "follower_cursor_safe_to_reclaim": follower_block_count == 0,
+        "tombstone_samples": list(source.get("tombstone_samples") or []),
+        "gc_eligibility_samples": list(source.get("gc_eligibility_samples") or []),
+        "follower_cursor_safety_samples": list(
+            source.get("follower_cursor_safety_samples") or []
+        ),
     }
 
 

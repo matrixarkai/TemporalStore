@@ -1088,6 +1088,10 @@ view and must carry `tombstone_records`, `stale_page_tombstones`,
 `object_index_entry_samples`. These samples prove public `PageIndexEntry`,
 `BlockIndexEntry`, and `ObjectIndexEntry` shape without dumping full indexes or
 warming cold pages.
+`storage_gc_snapshot` must follow the same rule: counters remain authoritative,
+and bounded `tombstone_samples`, `gc_eligibility_samples`, and
+`follower_cursor_safety_samples` prove public `Tombstone`, `GcEligibility`, and
+`FollowerCursorSafety` shape without materializing every reclaim candidate.
 
 `tools/compare_storage_lifecycle_reports.py` is the operator-facing wrapper for
 live C++/Rust report comparison and uses the same fail-closed contract.
