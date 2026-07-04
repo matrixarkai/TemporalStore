@@ -24,20 +24,21 @@ use crate::engine::reports::{
     default_storage_manager_contract_empty, default_storage_read_contract,
     default_storage_read_contract_empty, default_storage_reclaim_contract,
     default_storage_read_sequence, default_storage_reclaim_contract_empty,
-    default_storage_reclaim_scope, default_storage_reclaim_semantics,
+    default_storage_gc_snapshot, default_storage_reclaim_scope, default_storage_reclaim_semantics,
     default_storage_index_snapshot, default_storage_write_contract,
     default_storage_write_contract_empty, default_storage_safety_snapshot,
     default_storage_topology_snapshot, default_storage_watermark_snapshot,
     default_storage_write_sequence,
     effective_storage_tuning_from_env,
     storage_index_snapshot_from_metrics, storage_safety_snapshot_from_metrics,
-    storage_topology_snapshot_from_metrics, storage_watermark_snapshot_from_metrics,
-    PublicStorageContract, PublicStorageFeatureShapes, ShardCompactionModelLayoutReport,
+    storage_gc_snapshot_from_metrics, storage_topology_snapshot_from_metrics,
+    storage_watermark_snapshot_from_metrics, PublicStorageContract, PublicStorageFeatureShapes,
+    ShardCompactionModelLayoutReport,
     ShardCompactionUtilityReport, SlotDumpManifest, StorageLifecyclePlan, StorageLifecycleReport,
     StorageLifecycleRequest, StorageManagerCycleReport, StorageManagerCycleRequest,
     StorageManagerStageReport, StorageProductionReadinessPolicy, StorageProductionReadinessReport,
-    StorageContractValue, StorageIndexSnapshot, StorageReclaimScope, StorageSafetySnapshot,
-    StorageTopologySnapshot, StorageWatermarkSnapshot,
+    StorageContractValue, StorageGcSnapshot, StorageIndexSnapshot, StorageReclaimScope,
+    StorageSafetySnapshot, StorageTopologySnapshot, StorageWatermarkSnapshot,
 };
 use crate::engine::TemporalEngine;
 use crate::meta::{
@@ -228,6 +229,8 @@ pub struct DataNodeLifecycleReport {
     pub storage_safety_snapshot: StorageSafetySnapshot,
     #[serde(default = "default_storage_watermark_snapshot")]
     pub storage_watermark_snapshot: StorageWatermarkSnapshot,
+    #[serde(default = "default_storage_gc_snapshot")]
+    pub storage_gc_snapshot: StorageGcSnapshot,
     #[serde(default = "default_storage_index_snapshot")]
     pub storage_index_snapshot: StorageIndexSnapshot,
     #[serde(default = "default_storage_topology_snapshot")]
@@ -277,6 +280,7 @@ impl Default for DataNodeLifecycleReport {
             storage_reclaim_contract: default_storage_reclaim_contract_empty(),
             storage_safety_snapshot: default_storage_safety_snapshot(),
             storage_watermark_snapshot: default_storage_watermark_snapshot(),
+            storage_gc_snapshot: default_storage_gc_snapshot(),
             storage_index_snapshot: default_storage_index_snapshot(),
             storage_topology_snapshot: default_storage_topology_snapshot(),
             storage_write_sequence: default_storage_write_sequence(),
@@ -2970,6 +2974,9 @@ impl DataNodeRuntime {
                 &storage_lifecycle_metrics,
             ),
             storage_watermark_snapshot: storage_watermark_snapshot_from_metrics(
+                &storage_lifecycle_metrics,
+            ),
+            storage_gc_snapshot: storage_gc_snapshot_from_metrics(
                 &storage_lifecycle_metrics,
             ),
             storage_index_snapshot: storage_index_snapshot_from_metrics(

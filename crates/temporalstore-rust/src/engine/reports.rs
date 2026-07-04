@@ -1041,6 +1041,8 @@ pub struct StorageLifecycleReport {
     pub storage_safety_snapshot: StorageSafetySnapshot,
     #[serde(default = "default_storage_watermark_snapshot")]
     pub storage_watermark_snapshot: StorageWatermarkSnapshot,
+    #[serde(default = "default_storage_gc_snapshot")]
+    pub storage_gc_snapshot: StorageGcSnapshot,
     #[serde(default = "default_storage_index_snapshot")]
     pub storage_index_snapshot: StorageIndexSnapshot,
     #[serde(default = "default_storage_topology_snapshot")]
@@ -1099,6 +1101,7 @@ impl Default for StorageLifecycleReport {
             storage_reclaim_contract: default_storage_reclaim_contract_empty(),
             storage_safety_snapshot: default_storage_safety_snapshot(),
             storage_watermark_snapshot: default_storage_watermark_snapshot(),
+            storage_gc_snapshot: default_storage_gc_snapshot(),
             storage_index_snapshot: default_storage_index_snapshot(),
             storage_topology_snapshot: default_storage_topology_snapshot(),
             storage_write_sequence: default_storage_write_sequence(),
@@ -1396,6 +1399,8 @@ impl StorageLifecycleReport {
             storage_safety_snapshot_from_metrics(&self.storage_lifecycle_metrics);
         self.storage_watermark_snapshot =
             storage_watermark_snapshot_from_metrics(&self.storage_lifecycle_metrics);
+        self.storage_gc_snapshot =
+            storage_gc_snapshot_from_metrics(&self.storage_lifecycle_metrics);
         self.storage_index_snapshot =
             storage_index_snapshot_from_metrics(&self.storage_lifecycle_metrics);
         self.storage_topology_snapshot =
@@ -1581,6 +1586,50 @@ pub fn storage_watermark_snapshot_from_metrics(
 
 pub fn default_storage_watermark_snapshot() -> StorageWatermarkSnapshot {
     storage_watermark_snapshot_from_metrics(&default_storage_lifecycle_metrics())
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageGcSnapshot {
+    pub tombstone_records: u64,
+    pub stale_page_tombstones: u64,
+    pub stale_block_tombstones: u64,
+    pub gc_eligible_record_count: u64,
+    pub reclaimable_bytes: u64,
+    pub compaction_reclaimed_bytes: u64,
+    pub physical_reclaimed_bytes: u64,
+    pub physical_reclaim_errors: u64,
+    pub follower_cursor_retention_floor: u64,
+    pub follower_cursor_blocked_reclaim_count: u64,
+    pub follower_cursor_safe_to_reclaim: bool,
+}
+
+pub fn storage_gc_snapshot_from_metrics(
+    metrics: &BTreeMap<String, u64>,
+) -> StorageGcSnapshot {
+    let stale_page_tombstones = metric(metrics, "stale_page_tombstones");
+    let stale_block_tombstones = metric(metrics, "stale_block_tombstones");
+    let tombstone_records = metric(metrics, "tombstone_records");
+    let follower_cursor_blocked_reclaim_count = metric(metrics, "stale_pages_skipped")
+        .saturating_add(metric(metrics, "stale_blocks_skipped"));
+    StorageGcSnapshot {
+        tombstone_records,
+        stale_page_tombstones,
+        stale_block_tombstones,
+        gc_eligible_record_count: tombstone_records
+            .saturating_add(stale_page_tombstones)
+            .saturating_add(stale_block_tombstones),
+        reclaimable_bytes: metric(metrics, "reclaimable_bytes"),
+        compaction_reclaimed_bytes: metric(metrics, "compaction_reclaimed_bytes"),
+        physical_reclaimed_bytes: metric(metrics, "physical_reclaimed_bytes"),
+        physical_reclaim_errors: metric(metrics, "physical_reclaim_errors"),
+        follower_cursor_retention_floor: metric(metrics, "follower_cursor_retention_floor"),
+        follower_cursor_blocked_reclaim_count,
+        follower_cursor_safe_to_reclaim: follower_cursor_blocked_reclaim_count == 0,
+    }
+}
+
+pub fn default_storage_gc_snapshot() -> StorageGcSnapshot {
+    storage_gc_snapshot_from_metrics(&default_storage_lifecycle_metrics())
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]

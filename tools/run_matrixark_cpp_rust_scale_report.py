@@ -262,6 +262,7 @@ STORAGE_LIFECYCLE_TOP_LEVEL_KEYS = [
     "storage_reclaim_contract",
     "storage_safety_snapshot",
     "storage_watermark_snapshot",
+    "storage_gc_snapshot",
     "storage_index_snapshot",
     "storage_topology_snapshot",
     "storage_read_sequence",
@@ -856,6 +857,33 @@ def default_storage_safety_snapshot(metrics: Json | None = None) -> Json:
     }
 
 
+def default_storage_gc_snapshot(metrics: Json | None = None) -> Json:
+    source = metrics if isinstance(metrics, dict) else {}
+    follower_block_count = int(source.get("stale_pages_skipped") or 0) + int(
+        source.get("stale_blocks_skipped") or 0
+    )
+    tombstone_records = int(source.get("tombstone_records") or 0)
+    stale_page_tombstones = int(source.get("stale_page_tombstones") or 0)
+    stale_block_tombstones = int(source.get("stale_block_tombstones") or 0)
+    return {
+        "tombstone_records": tombstone_records,
+        "stale_page_tombstones": stale_page_tombstones,
+        "stale_block_tombstones": stale_block_tombstones,
+        "gc_eligible_record_count": tombstone_records
+        + stale_page_tombstones
+        + stale_block_tombstones,
+        "reclaimable_bytes": int(source.get("reclaimable_bytes") or 0),
+        "compaction_reclaimed_bytes": int(source.get("compaction_reclaimed_bytes") or 0),
+        "physical_reclaimed_bytes": int(source.get("physical_reclaimed_bytes") or 0),
+        "physical_reclaim_errors": int(source.get("physical_reclaim_errors") or 0),
+        "follower_cursor_retention_floor": int(
+            source.get("follower_cursor_retention_floor") or 0
+        ),
+        "follower_cursor_blocked_reclaim_count": follower_block_count,
+        "follower_cursor_safe_to_reclaim": follower_block_count == 0,
+    }
+
+
 def default_storage_watermark_snapshot(metrics: Json | None = None) -> Json:
     source = metrics if isinstance(metrics, dict) else {}
     append_watermark = int(source.get("append_watermark") or 0)
@@ -933,6 +961,7 @@ def storage_lifecycle_report_shape(effective_storage_tuning: Json, metrics: Json
         "storage_reclaim_contract": default_storage_reclaim_contract(metrics),
         "storage_safety_snapshot": default_storage_safety_snapshot(metrics),
         "storage_watermark_snapshot": default_storage_watermark_snapshot(metrics),
+        "storage_gc_snapshot": default_storage_gc_snapshot(metrics),
         "storage_index_snapshot": default_storage_index_snapshot(metrics),
         "storage_topology_snapshot": default_storage_topology_snapshot(metrics),
         "storage_write_sequence": list(STORAGE_WRITE_SEQUENCE_STEPS),
@@ -1023,6 +1052,12 @@ def attach_storage_lifecycle_shape(result: Json, effective_storage_tuning: Json 
     normalized_watermark_snapshot = default_storage_watermark_snapshot(metrics)
     normalized_watermark_snapshot.update(watermark_snapshot)
     shaped["storage_watermark_snapshot"] = normalized_watermark_snapshot
+    gc_snapshot = shaped.get("storage_gc_snapshot")
+    if not isinstance(gc_snapshot, dict):
+        gc_snapshot = {}
+    normalized_gc_snapshot = default_storage_gc_snapshot(metrics)
+    normalized_gc_snapshot.update(gc_snapshot)
+    shaped["storage_gc_snapshot"] = normalized_gc_snapshot
     index_snapshot = shaped.get("storage_index_snapshot")
     if not isinstance(index_snapshot, dict):
         index_snapshot = {}

@@ -1052,6 +1052,7 @@ Rust before comparison tools accept them:
 
 - `effective_storage_tuning`
 - `public_storage_contract`
+- `public_storage_feature_shapes`
 - `storage_write_contract`
 - `storage_read_contract`
 - `storage_cold_scan_contract`
@@ -1059,6 +1060,11 @@ Rust before comparison tools accept them:
 - `storage_index_contract`
 - `storage_cache_contract`
 - `storage_reclaim_contract`
+- `storage_safety_snapshot`
+- `storage_watermark_snapshot`
+- `storage_gc_snapshot`
+- `storage_index_snapshot`
+- `storage_topology_snapshot`
 - `storage_read_sequence`
 - `storage_cold_scan_sequence`
 - `storage_lifecycle_phases`
@@ -1068,6 +1074,15 @@ Rust before comparison tools accept them:
 - `storage_reclaim_semantics`
 - `storage_write_sequence`
 - `storage_reclaim_scope`
+
+`storage_safety_snapshot` is the compact safety gate for append and compaction
+watermarks, tombstone evidence, reclaimable bytes, follower-cursor blockers, and
+physical reclaim errors. `storage_gc_snapshot` is the more specific GC/reclaim
+view and must carry `tombstone_records`, `stale_page_tombstones`,
+`stale_block_tombstones`, `gc_eligible_record_count`, `reclaimable_bytes`,
+`compaction_reclaimed_bytes`, `physical_reclaimed_bytes`,
+`physical_reclaim_errors`, `follower_cursor_retention_floor`,
+`follower_cursor_blocked_reclaim_count`, and `follower_cursor_safe_to_reclaim`.
 
 `tools/compare_storage_lifecycle_reports.py` is the operator-facing wrapper for
 live C++/Rust report comparison and uses the same fail-closed contract.
