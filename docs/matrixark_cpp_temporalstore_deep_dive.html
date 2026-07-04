@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>C++ TemporalStore Deep Dive: Storage Engine And Context</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --ink: #182230;
+      --muted: #607086;
+      --line: #d9e0e8;
+      --accent: #0f6b63;
+      --accent-soft: #e8f5f2;
+      --code-bg: #101828;
+      --code: #e6edf3;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+    }
+    header {
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+      padding: 28px 34px 24px;
+    }
+    main {
+      display: grid;
+      grid-template-columns: 260px minmax(0, 1fr);
+      gap: 24px;
+      padding: 24px 34px 48px;
+      max-width: 1500px;
+      margin: 0 auto;
+    }
+    nav {
+      position: sticky;
+      top: 16px;
+      align-self: start;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+    }
+    nav a {
+      display: block;
+      color: var(--ink);
+      text-decoration: none;
+      padding: 6px 8px;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+    nav a:hover { background: var(--accent-soft); color: var(--accent); }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 22px;
+      margin-bottom: 18px;
+    }
+    h1 { margin: 0 0 8px; font-size: 30px; letter-spacing: 0; }
+    h2 { margin: 0 0 14px; font-size: 22px; letter-spacing: 0; }
+    h3 { margin: 20px 0 8px; font-size: 16px; letter-spacing: 0; }
+    p { margin: 8px 0; }
+    ul { margin: 8px 0 8px 20px; padding: 0; }
+    li { margin: 5px 0; }
+    code {
+      background: #eef2f6;
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-family: "Cascadia Mono", Consolas, monospace;
+      font-size: 0.92em;
+    }
+    pre {
+      background: var(--code-bg);
+      color: var(--code);
+      border-radius: 8px;
+      padding: 14px;
+      overflow: auto;
+      font-family: "Cascadia Mono", Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0;
+      border: 1px solid var(--line);
+      background: #fff;
+    }
+    th, td {
+      text-align: left;
+      vertical-align: top;
+      padding: 8px 10px;
+      border-bottom: 1px solid #edf0f3;
+      font-size: 13px;
+    }
+    th {
+      background: #eef2f6;
+      color: #344054;
+      font-size: 12px;
+      text-transform: uppercase;
+    }
+    .muted { color: var(--muted); }
+    .pill {
+      display: inline-block;
+      background: var(--accent-soft);
+      color: var(--accent);
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      margin: 3px 4px 3px 0;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      background: #fbfcfd;
+    }
+    .callout {
+      border-left: 4px solid var(--accent);
+      background: var(--accent-soft);
+      padding: 12px 14px;
+      border-radius: 6px;
+      margin: 12px 0;
+    }
+    @media (max-width: 900px) {
+      main { grid-template-columns: 1fr; padding: 16px; }
+      nav { position: static; }
+      header { padding: 22px 18px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>C++ TemporalStore Deep Dive</h1>
+    <p class="muted">Storage engine internals and MatrixArk context internals, grounded in the current C++ source tree.</p>
+    <p>
+      <span class="pill">src/partition/storage</span>
+      <span class="pill">src/partition/index</span>
+      <span class="pill">src/stream</span>
+      <span class="pill">src/extension/context</span>
+      <span class="pill">src/client/temporalstore_client</span>
+    </p>
+  </header>
+  <main>
+    <nav>
+      <a href="#map">Source Map</a>
+      <a href="#mental-model">Mental Model</a>
+      <a href="#storage-structures">Storage Structures</a>
+      <a href="#write-path">Write Path</a>
+      <a href="#read-path">Read Path</a>
+      <a href="#lifecycle">StorageManager Lifecycle</a>
+      <a href="#zones-streams">Zones, Streams, Blobs</a>
+      <a href="#gc-compaction">GC And Compaction</a>
+      <a href="#context-models">Context Data Models</a>
+      <a href="#context-retrieve">Native Context Retrieve</a>
+      <a href="#client-sdk">Client And C ABI</a>
+      <a href="#gaps">Current Gaps</a>
+    </nav>
+    <div>
+      <section id="map">
+        <h2>Source Map</h2>
+        <table>
+          <thead><tr><th>Area</th><th>Files</th><th>What To Look For</th></tr></thead>
+          <tbody>
+            <tr><td>Page/index structures</td><td><code>src/partition/index/page_index.h</code>, <code>slot_node.h</code>, <code>index.h/.cc</code></td><td>Packed <code>PageIndex</code>, packed <code>SlotNode</code>, slot map, index log, zone stats, page delete/update callbacks.</td></tr>
+            <tr><td>Storage lifecycle</td><td><code>src/partition/storage/storage_manager.h/.cc</code></td><td>Periodic prepare, oplog reclaim, memory reclaim, page GC, index GC, page compaction, metrics.</td></tr>
+            <tr><td>Append/WAL</td><td><code>src/partition/storage/op_logger.h/.cc</code></td><td>KV/page/delete/TTL oplog records, commit, staged pages, log-to-page reads.</td></tr>
+            <tr><td>Durable pages</td><td><code>src/partition/storage/page_store.h/.cc</code></td><td>Zone management, page serialization, compression, block cache reads, stream-backed page writes.</td></tr>
+            <tr><td>Physical reclaim</td><td><code>src/partition/storage/page_gc.h/.cc</code>, <code>page_compactor.h/.cc</code></td><td>Frozen/recycled zone selection, slot scanning, page rewrite, tombstone removal hints.</td></tr>
+            <tr><td>Stream/blob layer</td><td><code>src/stream/log_based_stream.h/.cc</code></td><td>Record buffering, aggregate flush profiles, block footer, blob rollover, tail scan/recovery.</td></tr>
+            <tr><td>MatrixArk context</td><td><code>src/extension/context/interface.proto</code>, <code>implement.cc</code></td><td>ContextNode/Event/Index/Summary/Embedding/Entity, native retrieve pack, telemetry.</td></tr>
+            <tr><td>SDK boundary</td><td><code>src/client/temporalstore_client.cc</code>, <code>temporalstore_c_client.cc/.h</code></td><td>JSON request parsing, placement routing, C ABI for batch append and retrieve context pack.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="mental-model">
+        <h2>Mental Model</h2>
+        <div class="grid">
+          <div class="card">
+            <h3>Logical layer</h3>
+            <p>Models expose key/value, hash, feature/time-series, MatrixArk context, and other business views. Context models are just another set of TemporalStore models, not a separate storage engine.</p>
+          </div>
+          <div class="card">
+            <h3>Index layer</h3>
+            <p><code>Index</code> owns the in-memory <code>slot_id -> SlotNode</code> map and the durable index stream. It tracks object metadata, page references, dirty slots, zone metadata, TTL, and GC safety.</p>
+          </div>
+          <div class="card">
+            <h3>Page layer</h3>
+            <p><code>PageStore</code> writes durable page bytes into zone streams. <code>OpLogger</code> writes WAL/oplog records and can also temporarily hold page data when pages are still in the log.</p>
+          </div>
+          <div class="card">
+            <h3>Lifecycle layer</h3>
+            <p><code>StorageManager</code> is the background loop that moves data from hot memory/log state toward durable pages and reclaims stale space through GC and compaction.</p>
+          </div>
+        </div>
+        <pre>Client/API
+  -> Partition command executor
+  -> ObjectManager/Model code
+  -> OpLogger writes WAL records
+  -> Index marks slot/object/page dirty
+  -> StorageManager later dumps dirty slots/pages
+  -> PageStore writes zone streams
+  -> Index persists current page/object metadata
+  -> GC/compaction reclaims stale pages and oplog ranges</pre>
+      </section>
+
+      <section id="storage-structures">
+        <h2>Core Storage Data Structures</h2>
+        <h3><code>PageIndex</code></h3>
+        <p><code>PageIndex</code> is a packed 17-byte public-internal page reference. It is the C++ equivalent of the shared page address contract, but in current code it is compact and implementation-oriented.</p>
+        <table>
+          <thead><tr><th>Field</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td><code>object_id</code>, <code>model_id</code>, <code>page_id</code></td><td>Identify which object/model page the address belongs to inside a slot.</td></tr>
+            <tr><td><code>dirty</code></td><td>Page reference still needs dumping or index reconciliation.</td></tr>
+            <tr><td><code>page_in_log</code></td><td>If true, <code>address</code> points into the oplog. If false, it points into PageStore zone storage.</td></tr>
+            <tr><td><code>page_size</code></td><td>Page bytes. A value of zero means deleted/stale page.</td></tr>
+            <tr><td><code>address</code></td><td>Either oplog record id or encoded zone address, depending on <code>page_in_log</code>.</td></tr>
+          </tbody>
+        </table>
+        <h3><code>SlotNode</code></h3>
+        <p><code>SlotNode</code> is the compact per-slot index entry. It stores either a trivial single page/object inline or a pointer to a richer layout. Its flags track dirty state, loading state, memory residency, page deletion, and whether the page lives in the oplog.</p>
+        <h3><code>Index</code></h3>
+        <p><code>Index</code> keeps the hot <code>slot_map_</code>, writes durable index logs, tracks zone metadata, exposes slot iterators, and mediates page reference changes through <code>OnPageAppended</code> and <code>OnPageWillDelete</code>.</p>
+      </section>
+
+      <section id="write-path">
+        <h2>Write Path</h2>
+        <pre>write command
+  -> ObjectManager / model executor mutates object
+  -> OpLogger::WriteKvLog / WritePage / WriteTtlLog / DeleteObject
+  -> current_oplog_ accumulates storage::OpLog::LogItem
+  -> Index::MarkSlot*Dirty records first dirty log and sequence
+  -> OpLogger::Commit serializes current_oplog_ to stream
+  -> staged page logs become PageIndex entries with page_in_log=true
+  -> StorageManager::ReclaimOpLog later dumps dirty slots to PageStore
+  -> SlotStore::DumpSlots writes pages
+  -> Index::SetDumpedLogId advances safe oplog truncation watermark</pre>
+        <p>The write path is log-first. Page data can initially live in the oplog, then later be rewritten to PageStore. This is why <code>PageIndex.page_in_log</code> is critical: it tells reads whether to call <code>OpLogger::ReadPage</code> or <code>PageStore::ReadPage</code>.</p>
+        <div class="callout">
+          <strong>Important implementation detail:</strong> <code>OpLogger::Commit</code> writes one serialized <code>storage::OpLog</code> record to the stream and patches staged page metadata with the resulting log id, log size, and sequence.
+        </div>
+      </section>
+
+      <section id="read-path">
+        <h2>Read Path</h2>
+        <pre>logical key / model / timestamp lookup
+  -> model code maps logical key to slot/object/page refs
+  -> Index/SlotNode locates PageIndex records
+  -> SlotStore/ObjectManager load pages
+  -> if page_in_log: OpLogger::ReadPage
+  -> else: PageStore::ReadPage
+  -> decode PageHeader + page bytes
+  -> model decodes records and applies filters</pre>
+        <p><code>PageStore::ReadPage</code> and <code>OpLogger::ReadPage</code> have different physical sources but both return <code>PageInfo</code>. That gives upper layers one decoded page abstraction even when old data is still in the log.</p>
+        <p>For ContextEvent and ContextSummary, model-level filtering happens through feature/time-series style key ranges. The C++ context extension uses ingestion-time keys and timeline query ranges, then applies type/confidence/importance/ranking filters.</p>
+      </section>
+
+      <section id="lifecycle">
+        <h2>StorageManager Lifecycle</h2>
+        <p><code>StorageManager::LoopWorker</code> runs repeatedly and executes these phases:</p>
+        <table>
+          <thead><tr><th>Phase</th><th>C++ Method</th><th>Purpose</th></tr></thead>
+          <tbody>
+            <tr><td>prepare</td><td><code>Prepare</code></td><td>Create/freeze PageStore zones and periodically update index meta.</td></tr>
+            <tr><td>reclaim oplog</td><td><code>ReclaimOpLog</code>, <code>ReclaimOpLogWithLimit</code></td><td>Dump dirty slots after enough log has accumulated, then advance dumped log id.</td></tr>
+            <tr><td>memory eviction/expiration</td><td><code>ReclaimMemory</code></td><td>Run <code>Expirer</code> and <code>Evicter</code> when enabled.</td></tr>
+            <tr><td>page GC</td><td><code>ReclaimPage</code></td><td>Run <code>PageGc::Gc</code> over low-utility zones and oplog zones.</td></tr>
+            <tr><td>index GC</td><td><code>ReclaimIndex</code></td><td>Let index trim stale index-log records after safe commit points.</td></tr>
+            <tr><td>page compaction</td><td><code>CompactPages</code></td><td>Rewrite fragmented/stale page sets into cleaner pages and update index references.</td></tr>
+            <tr><td>metrics</td><td><code>ReapMetrics</code></td><td>Publish memory, slot, page, zone, oplog, and command metrics.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="zones-streams">
+        <h2>Zones, Streams, Blobs</h2>
+        <p>PageStore durable storage is organized into zones. Each zone owns a stream. The index stores zone metadata as <code>IndexLog::ZoneInfo</code> and treats zone state transitions as durable index metadata.</p>
+        <pre>CREATED zone
+  -> accepts PageStore writes until stream length reaches storage_zone_size
+  -> becomes FROZEN
+  -> PageGc chooses low-utility frozen zones
+  -> live pages are rewritten elsewhere
+  -> zone becomes RECYCLED
+  -> after delay and safety checks, DestroyZone deletes stream and index metadata</pre>
+        <p>The stream layer is log/blob based. <code>StreamImpl</code> buffers records, writes record headers and block footers, supports aggregate flush profiles, rolls to a new blob when <code>stream_max_blob_size</code> would be exceeded, and uses tail scan on load for recovery.</p>
+        <table>
+          <thead><tr><th>Config</th><th>Observed C++ location</th><th>Default/Behavior</th></tr></thead>
+          <tbody>
+            <tr><td><code>storage_zone_size</code></td><td><code>src/partition/storage/flags.cc</code></td><td>1 GiB default in C++ flags.</td></tr>
+            <tr><td><code>stream_max_blob_size</code></td><td><code>src/stream/flags.cc</code></td><td>1 GiB default max blob size.</td></tr>
+            <tr><td><code>stream_aggregate_flush_profile</code></td><td><code>src/stream/log_based_stream.cc</code></td><td>Profiles adjust loop interval and batch bytes for latency/throughput/batch ingest.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="gc-compaction">
+        <h2>GC And Compaction</h2>
+        <h3>Page GC</h3>
+        <p><code>PageGc</code> is zone based. It computes used bytes from <code>Index::GetZoneStats</code>, picks the lowest-utility frozen PageStore or oplog zone, scans slots for pages in that zone, and rewrites live pages through <code>SlotStore</code>. Empty or fully stale zones can be recycled and later destroyed.</p>
+        <h3>Page Compaction</h3>
+        <p><code>PageCompactor</code> scans slots, groups page indexes by object, asks <code>ModelManager::CompactPagesHint</code> which pages to compact, loads those pages, calls <code>ModelManager::CompactPages</code>, writes new pages, marks old pages deleted by setting size zero, and commits index updates.</p>
+        <h3>Eviction And Expiration</h3>
+        <p><code>Expirer</code> applies TTL cleanup through object metadata. <code>Evicter</code> chooses objects with an LRU-style policy and either deletes or dumps based on its actuator/config. Cache eviction frees memory; physical reclaim still depends on page/index/oplog lifecycle work.</p>
+      </section>
+
+      <section id="context-models">
+        <h2>MatrixArk Context Data Models In C++</h2>
+        <table>
+          <thead><tr><th>Proto</th><th>Storage Shape</th><th>Purpose</th></tr></thead>
+          <tbody>
+            <tr><td><code>ContextNode</code></td><td>Hash-like node metadata</td><td>Tree topology: node hash, parent hash, kind, canonical name, L0 text, last event time.</td></tr>
+            <tr><td><code>ContextChildRef</code></td><td>Adjacency refs</td><td>Parent to child lookup without storing child counts inside every node.</td></tr>
+            <tr><td><code>ContextEvent</code></td><td>Feature/time-series keyed by ingestion time plus hash suffix</td><td>Raw or extracted fact/event text with confidence, importance, source/event time, ingestion primary timeline.</td></tr>
+            <tr><td><code>ContextIndex</code> / <code>IndexRef</code></td><td>Feature/time-bucket postings</td><td>Secondary prefilter by event kind/entity/status/source/time bucket.</td></tr>
+            <tr><td><code>ContextSummary</code></td><td>Feature timeline by valid_from_ms</td><td>L0/L1 summary records, separate from events and nodes.</td></tr>
+            <tr><td><code>ContextEmbedding</code></td><td>Hash-like vector by ref hash and level</td><td>Vectors for nodes, summaries, events, resources, etc.</td></tr>
+            <tr><td><code>ContextEntity</code></td><td>Hash/time state</td><td>Evolving current state such as owner, approval, budget, preference, or status.</td></tr>
+            <tr><td><code>ContextCompressionEvent</code></td><td>Feature timeline by compressed time</td><td>Temporal compression summary over an older event window.</td></tr>
+          </tbody>
+        </table>
+        <p>The C++ proto intentionally removed/forbid several verbose fields with <code>reserved</code> declarations. For example, <code>ContextEvent</code> no longer stores actor hash or valid-until fields, <code>ContextEmbedding</code> does not store dim separately, and <code>ContextSummary</code> no longer stores a separate version hash.</p>
+      </section>
+
+      <section id="context-retrieve">
+        <h2>Native Context Retrieve Path</h2>
+        <p><code>RetrieveContextPack</code> in <code>src/extension/context/implement.cc</code> is the C++ native hot path. It validates request shape, traverses nodes, applies placement/index filters, fetches candidates, scores, ranks, packs under budget, and returns compact telemetry.</p>
+        <pre>RetrieveContextPack(request)
+  -> ValidateRetrieveContextPackRequest
+  -> CollectCandidateNodes
+       query_vector present: TraverseContextTree using embeddings
+       query_vector absent: QueryChildrenInternal breadth traversal
+  -> ApplyPlacementFilter
+  -> CollectIndexCandidates using compact buckets and IndexRef postings
+  -> CollectNodeEventCandidates when no index filters
+       candidate cache key includes scope, node, record type, append watermark, resource version
+  -> CollectNodeSummaryAndCompressionCandidates
+  -> NativeCandidateScore
+       temporal decay + index boost + embedding boost
+  -> score sort
+  -> token-budget pack into ContextPackRef
+  -> NativeRetrieveTelemetry</pre>
+        <h3>Telemetry fields</h3>
+        <p>The C++ response includes selected/dropped counts, scanned records, index postings read, candidate fetch count, placement partitions touched, candidate cache hit, broad scan flags, per-stage latency, and filter/drop buckets.</p>
+        <h3>Current serving posture</h3>
+        <p>The intended production path is placement-key and index driven. Broad scan is treated as explicit fallback/debug. Python should consume the compact ContextPack and telemetry rather than materializing thousands of raw records.</p>
+      </section>
+
+      <section id="client-sdk">
+        <h2>Client And C ABI Boundary</h2>
+        <p>The C++ client exposes MatrixArk-specific methods in <code>src/client/temporalstore_client.cc</code> and C ABI wrappers in <code>src/client/temporalstore_c_client.cc/.h</code>.</p>
+        <table>
+          <thead><tr><th>Function</th><th>Purpose</th></tr></thead>
+          <tbody>
+            <tr><td><code>temporalstore_matrixark_batch_append_records</code></td><td>Append a batch of MatrixArk records through the C client boundary.</td></tr>
+            <tr><td><code>temporalstore_matrixark_batch_append_records_v2</code></td><td>Extended batch append with runtime/storage options.</td></tr>
+            <tr><td><code>temporalstore_matrixark_retrieve_context_pack</code></td><td>Invoke native C++ context retrieve and return JSON response.</td></tr>
+            <tr><td><code>TemporalStoreClient::MatrixArkRetrieveContextPack</code></td><td>Parses request JSON, sets placement route, calls context extension, renders JSON.</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="gaps">
+        <h2>What Looks Strong And What Still Needs Work</h2>
+        <h3>Strong pieces</h3>
+        <ul>
+          <li>Mature storage lifecycle loop with prepare, dump/reclaim, evict, expire, page GC, index GC, compaction, and metrics.</li>
+          <li>Compact page references and packed slot metadata.</li>
+          <li>PageStore zone state machine and stream/blob rollover/recovery.</li>
+          <li>Native C++ MatrixArk retrieve path with candidate cache, compact index prefilter, placement filtering, scoring, budget pack, and telemetry.</li>
+        </ul>
+        <h3>Gaps to keep watching</h3>
+        <ul>
+          <li><strong>Public contract naming:</strong> C++ uses implementation names such as <code>PageIndex</code>, zone addresses, and oplog/page-store distinctions. Public reports should normalize these to <code>PageAddress</code>, <code>BlockAddress</code>, <code>AppendWatermark</code>, and <code>CompactionWatermark</code>.</li>
+          <li><strong>Context performance:</strong> correctness must remain first. If selected refs are empty or drift from Rust/Python, latency/QPS numbers are not meaningful.</li>
+          <li><strong>Physical reclaim:</strong> cache eviction is memory-only; durable reclaim depends on tombstones, index safety, follower cursor safety, page/block rewrite, and reclaimed-byte accounting.</li>
+          <li><strong>Cold scan semantics:</strong> context temporal compression and storage GC should use no-cache/no-promote cold reads so serving cache is not polluted by old raw pages.</li>
+          <li><strong>C++/Rust parity:</strong> reports should use the same top-level storage lifecycle, cache, stream, zone, page/block, and Raft shapes even if implementation internals differ.</li>
+        </ul>
+      </section>
+    </div>
+  </main>
+</body>
+</html>
