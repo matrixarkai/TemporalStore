@@ -135,7 +135,7 @@ Recommended debug graph display:
 
 ```text
 ContextNode
-  children: count from ContextChildRef
+  children: derived only when a debug UI explicitly queries ContextChildRef
   events: count from ctx:event:{tenant}:{node}
   segments: count from segment records
   entities: count from entity records
@@ -143,7 +143,11 @@ ContextNode
   chunks: count from resource chunk records
 ```
 
-This avoids a graph with thousands of event children while still making attached evidence visible.
+Do not persist or return a child count on every node. That count costs an extra
+child-list read on writes and becomes stale under concurrent updates. If a UI
+needs it, derive it from the narrow `ctx:child:{tenant_hash}:{parent_hash}` lookup.
+This avoids a graph with thousands of event children while still making attached
+evidence visible.
 
 ## How To Scan Children Efficiently
 

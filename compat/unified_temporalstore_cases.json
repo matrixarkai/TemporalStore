@@ -11497,8 +11497,7 @@
             "kind": "context_child_refs",
             "object_key": "ctx:child:99:700",
             "refs": [],
-            "created": true,
-            "parent_child_count": 1
+            "created": true
           }
         },
         {

@@ -84,17 +84,17 @@ candidate_refs_after_filter</code></pre>
   <pre><code>parent_hash
 -&gt; ctx:child:{tenant_hash}:{parent_hash}
 -&gt; child node refs
--&gt; fetch child summaries / embeddings / counts</code></pre>
+-&gt; fetch child summaries / embeddings / attached evidence</code></pre>
 
   <h2>Debug Graph Rule</h2>
   <pre><code>ContextNode
-  children: count from ContextChildRef
+  children: derived only when a debug UI explicitly queries ContextChildRef
   events: count from ctx:event:{tenant}:{node}
   segments: count from segment records
   entities: count from entity records
   summaries: count from summary records
   chunks: count from resource chunk records</code></pre>
-  <p>Events and segments are attached evidence, not structural graph children.</p>
+  <p>Do not persist or return a child count on every node. That count costs an extra child-list read on writes and becomes stale under concurrent updates. If a UI needs it, derive it from the narrow <code>ctx:child:{tenant_hash}:{parent_hash}</code> lookup. Events and segments are attached evidence, not structural graph children.</p>
 
   <h2>Resource Link Resolution</h2>
   <p>Chunks should carry compact locators, not repeated absolute paths. The UI resolves a compact ref through the resource manifest.</p>

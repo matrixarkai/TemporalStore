@@ -642,8 +642,8 @@ fn context_tree_embedding_summary_and_compression_match_cpp_round_trip() {
         child_hash: GPU,
         updated_at_ms: EVENT_TIME,
     };
-    for (child_ref, created, count) in [
-        (child_gpu.clone(), true, 1),
+    for (child_ref, created) in [
+        (child_gpu.clone(), true),
         (
             ContextChildRef {
                 parent_hash: ROOT,
@@ -651,9 +651,8 @@ fn context_tree_embedding_summary_and_compression_match_cpp_round_trip() {
                 updated_at_ms: EVENT_TIME,
             },
             true,
-            2,
         ),
-        (child_gpu.clone(), false, 2),
+        (child_gpu.clone(), false),
     ] {
         let response = engine.execute(ExecuteRequest {
             shard_id: 1,
@@ -667,11 +666,9 @@ fn context_tree_embedding_summary_and_compression_match_cpp_round_trip() {
             CommandResponse::ContextChildRefs {
                 ref object_key,
                 created: Some(actual_created),
-                parent_child_count: Some(actual_count),
                 ..
             } if object_key == "ctx:child:1001:10"
                 && actual_created == created
-                && actual_count == count
         ));
     }
     let children = engine.execute(ExecuteRequest {

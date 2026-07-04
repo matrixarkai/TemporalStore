@@ -1786,8 +1786,6 @@ pub enum CommandResponse {
         refs: Vec<ContextChildRef>,
         #[serde(default)]
         created: Option<bool>,
-        #[serde(default)]
-        parent_child_count: Option<u32>,
     },
     ContextEmbeddings {
         embeddings: Vec<ContextEmbedding>,

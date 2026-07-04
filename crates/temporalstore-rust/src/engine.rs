@@ -8816,13 +8816,10 @@ fn execute_on_shard(
                 }
             }
             invalidate_record_all(cache, shard_id, &object_key);
-            let count =
-                load_context_children(cache, page_store, shard_id, shard, &object_key).len();
             CommandResponse::ContextChildRefs {
                 object_key,
                 refs: Vec::new(),
                 created: Some(created),
-                parent_child_count: Some(count as u32),
             }
         }
         Command::ContextQueryChildren {
@@ -8838,7 +8835,6 @@ fn execute_on_shard(
                 object_key,
                 refs,
                 created: None,
-                parent_child_count: None,
             }
         }
         Command::ContextUpsertEmbedding {
