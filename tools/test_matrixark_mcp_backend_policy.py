@@ -25,6 +25,7 @@ try:
         summarize_retrieval_metrics,
         timeout_count,
         validate_cpp_runtime_host,
+        validate_rust_runtime_path,
     )
     from tools.validate_storage_lifecycle_parity import REPORT_PAIR_CORPUS, _load_json, validate_report_pair
 except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
@@ -41,6 +42,7 @@ except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
         summarize_retrieval_metrics,
         timeout_count,
         validate_cpp_runtime_host,
+        validate_rust_runtime_path,
     )
     from validate_storage_lifecycle_parity import REPORT_PAIR_CORPUS, _load_json, validate_report_pair
 
@@ -66,6 +68,7 @@ class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
                 "MATRIXARK_RUST_PROXY_READ_LANES",
                 "MATRIXARK_RUST_PROXY_PACK_LANES",
                 "MATRIXARK_RUST_PROXY_CONTROL_LANES",
+                "MATRIXARK_RUST_PROXY_SHARED_PROCESS",
             )
         }
         for key in old_env:
@@ -87,16 +90,55 @@ class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
                 else:
                     os.environ[key] = value
 
-        self.assertEqual(snapshot["lane_pool"], {"write": 4, "read": 4, "pack": 2, "control": 1})
-        self.assertEqual(snapshot["max_inflight"], 11)
-        self.assertTrue(snapshot["write_pool_enabled"])
-        self.assertTrue(snapshot["read_pool_enabled"])
-        self.assertTrue(snapshot["pack_pool_enabled"])
+        self.assertTrue(snapshot["shared_process_mode"])
+        self.assertEqual(snapshot["lane_pool"], {"write": 1, "read": 1, "pack": 1, "control": 1})
+        self.assertEqual(snapshot["max_inflight"], 1)
+        self.assertFalse(snapshot["write_pool_enabled"])
+        self.assertFalse(snapshot["read_pool_enabled"])
+        self.assertFalse(snapshot["pack_pool_enabled"])
         self.assertEqual(client._lane_group_for_op("matrixark_batch_append_records"), "write")
         self.assertEqual(client._lane_group_for_op("matrixark_batch_append_raw_ingestion_records"), "write")
         self.assertEqual(client._lane_group_for_op("batch_hget"), "read")
         self.assertEqual(client._lane_group_for_op("matrixark_retrieve_context_pack"), "pack")
         self.assertEqual(client._lane_group_for_op("readiness"), "control")
+
+    def test_rust_bridge_can_opt_into_separate_read_write_pack_lanes(self) -> None:
+        old_env = {
+            key: os.environ.get(key)
+            for key in (
+                "MATRIXARK_RUST_PROXY_WRITE_LANES",
+                "MATRIXARK_RUST_PROXY_READ_LANES",
+                "MATRIXARK_RUST_PROXY_PACK_LANES",
+                "MATRIXARK_RUST_PROXY_CONTROL_LANES",
+                "MATRIXARK_RUST_PROXY_SHARED_PROCESS",
+            )
+        }
+        os.environ["MATRIXARK_RUST_PROXY_SHARED_PROCESS"] = "0"
+        for key in ("MATRIXARK_RUST_PROXY_WRITE_LANES", "MATRIXARK_RUST_PROXY_READ_LANES", "MATRIXARK_RUST_PROXY_PACK_LANES", "MATRIXARK_RUST_PROXY_CONTROL_LANES"):
+            os.environ.pop(key, None)
+        try:
+            client = mcp.MatrixArkRustCliClient(
+                cli_path="matrixark_rust_proxy",
+                metaserver="127.0.0.1:18000",
+                namespace="ns",
+                table="table",
+                request_timeout_ms=10000,
+                io_timeout_ms=10000,
+            )
+            snapshot = client.metrics_snapshot()
+        finally:
+            for key, value in old_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.assertFalse(snapshot["shared_process_mode"])
+        self.assertEqual(snapshot["lane_pool"], {"write": 4, "read": 4, "pack": 2, "control": 1})
+        self.assertEqual(snapshot["max_inflight"], 11)
+        self.assertTrue(snapshot["write_pool_enabled"])
+        self.assertTrue(snapshot["read_pool_enabled"])
+        self.assertTrue(snapshot["pack_pool_enabled"])
 
 
 class _NativeAppendClient:
@@ -768,6 +810,48 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 validate_cpp_runtime_host("C:\\repo\\output-ubuntu22\\release\\sdk\\lib\\libbcache2.so")
         finally:
             validate_cpp_runtime_host.__globals__["_is_windows_host"] = original
+
+    def test_rust_parity_preflight_requires_proxy_or_explicit_compat(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="matrixark-rust-cli-policy-") as tmpdir:
+            release_dir = Path(tmpdir) / "target" / "release"
+            release_dir.mkdir(parents=True)
+            compat = release_dir / "matrixark_record_log"
+            compat.write_text("", encoding="utf-8")
+            proxy = release_dir / "matrixark_rust_proxy"
+            proxy.write_text("", encoding="utf-8")
+
+            args = argparse.Namespace(
+                rust_cli=str(compat),
+                allow_rust_record_log_compat=False,
+                allow_rust_debug_cli=False,
+            )
+            with self.assertRaisesRegex(RuntimeError, "matrixark_rust_proxy"):
+                validate_rust_runtime_path(args)
+
+            args.allow_rust_record_log_compat = True
+            validate_rust_runtime_path(args)
+
+            args.rust_cli = str(proxy)
+            args.allow_rust_record_log_compat = False
+            validate_rust_runtime_path(args)
+
+    def test_rust_parity_preflight_rejects_debug_cli_by_default(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="matrixark-rust-cli-policy-") as tmpdir:
+            debug_dir = Path(tmpdir) / "target" / "debug"
+            debug_dir.mkdir(parents=True)
+            proxy = debug_dir / "matrixark_rust_proxy"
+            proxy.write_text("", encoding="utf-8")
+            args = argparse.Namespace(
+                rust_cli=str(proxy),
+                allow_rust_record_log_compat=False,
+                allow_rust_debug_cli=False,
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "debug artifacts"):
+                validate_rust_runtime_path(args)
+
+            args.allow_rust_debug_cli = True
+            validate_rust_runtime_path(args)
 
     def test_production_policy_gate_passes_native_index_driven_context_path(self) -> None:
         metrics = {

@@ -13,10 +13,14 @@ from matrixark_mcp_server import MatrixArkRustCliClient
 class MatrixArkRustServeReadinessTest(unittest.TestCase):
     def _cli_path(self) -> Path:
         repo = Path(__file__).resolve().parents[1]
-        return Path(os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_CLI", repo / "target/release/matrixark_record_log"))
+        return Path(os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_CLI", repo / "target/release/matrixark_rust_proxy"))
+
+    def _compat_cli_path(self) -> Path:
+        repo = Path(__file__).resolve().parents[1]
+        return Path(os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_COMPAT_CLI", repo / "target/release/matrixark_record_log"))
 
     def test_single_shot_mode_is_debug_only(self) -> None:
-        cli_path = self._cli_path()
+        cli_path = self._compat_cli_path()
         if not cli_path.exists():
             self.skipTest(f"Rust matrixark_record_log binary is not built: {cli_path}")
         completed = subprocess.run(
@@ -106,15 +110,13 @@ class MatrixArkRustServeReadinessTest(unittest.TestCase):
                 self.assertEqual(client_metrics.get("gateway_mode"), "rust_direct_sdk_bridge")
                 self.assertEqual(client_metrics.get("sdk_mode"), "rust_direct_sdk_via_long_lived_bridge")
                 self.assertEqual(client_metrics.get("transport"), "stdio")
+                self.assertTrue(client_metrics.get("shared_process_mode"))
                 self.assertGreaterEqual(client_metrics.get("read_pool_size", 0), 1)
                 self.assertEqual(
                     client_metrics.get("read_pool_enabled"),
                     client_metrics.get("read_pool_size", 0) > 1,
                 )
-                self.assertEqual(
-                    client_metrics.get("max_inflight"),
-                    client_metrics.get("read_pool_size", 0) + 1,
-                )
+                self.assertEqual(client_metrics.get("max_inflight"), 1)
                 self.assertFalse(client_metrics.get("process_per_operation_enabled"))
                 self.assertEqual(client_metrics.get("single_shot_mode"), "debug_only")
                 self.assertTrue(client_metrics.get("direct_sdk_bridge"))

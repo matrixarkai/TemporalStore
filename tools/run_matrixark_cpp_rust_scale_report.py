@@ -76,6 +76,30 @@ def validate_cpp_runtime_host(cpp_lib: str) -> None:
         raise RuntimeError(_linux_so_on_windows_error(cpp_lib))
 
 
+def validate_rust_runtime_path(args: argparse.Namespace) -> None:
+    path = Path(str(args.rust_cli))
+    lowered = str(path).replace("\\", "/").lower()
+    if not path.exists():
+        raise RuntimeError(
+            "Rust TemporalStore proxy binary is missing. Build the production proxy first, for example: "
+            "`cargo build --release -p temporalstore-rust --bin matrixark_rust_proxy`. "
+            f"Configured path: {path}"
+        )
+    if "/debug/" in lowered and not getattr(args, "allow_rust_debug_cli", False):
+        raise RuntimeError(
+            "Rust parity runs must not use debug artifacts. Use target/release/matrixark_rust_proxy "
+            "or pass --allow-rust-debug-cli only for diagnostics. "
+            f"Configured path: {path}"
+        )
+    if path.name == "matrixark_record_log" and not getattr(args, "allow_rust_record_log_compat", False):
+        raise RuntimeError(
+            "Rust parity runs must use the production-named matrixark_rust_proxy/direct SDK bridge. "
+            "matrixark_record_log is retained only as a compatibility/debug wrapper. "
+            "Pass --allow-rust-record-log-compat only for diagnostics. "
+            f"Configured path: {path}"
+        )
+
+
 def percentile(values: list[float], pct: float) -> float:
     if not values:
         return 0.0
@@ -1748,6 +1772,7 @@ def make_adapter(backend: str, args: argparse.Namespace, storage_prefix: str):
         validate_cpp_runtime_host(args.cpp_lib)
         return MatrixArkTemporalStoreDirectAdapter(library_path=args.cpp_lib, **common)
     if backend == "rust":
+        validate_rust_runtime_path(args)
         return MatrixArkTemporalStoreRustAdapter(rust_cli=args.rust_cli, **common)
     if backend == "python_ref":
         store_path = Path(args.python_ref_store) if args.python_ref_store else Path("/tmp") / "matrixark_phase0_python_ref.jsonl"
@@ -1773,6 +1798,7 @@ def make_raw_client(backend: str, args: argparse.Namespace):
         )
         return Client(options, library_path=args.cpp_lib or None)
     if backend == "rust":
+        validate_rust_runtime_path(args)
         return MatrixArkRustCliClient(
             cli_path=args.rust_cli,
             metaserver=args.metaserver,
@@ -2171,6 +2197,10 @@ def run_backend_isolated(backend: str, args: argparse.Namespace, run_id: str, ar
         "--phase0-max-selected-ref-drift-ratio",
         str(args.phase0_max_selected_ref_drift_ratio),
     ]
+    if args.allow_rust_record_log_compat:
+        cmd.append("--allow-rust-record-log-compat")
+    if args.allow_rust_debug_cli:
+        cmd.append("--allow-rust-debug-cli")
     if args.skip_context_pipeline:
         cmd.append("--skip-context-pipeline")
     started = time.perf_counter()
@@ -3023,7 +3053,9 @@ def main() -> int:
     parser.add_argument("--replication-mode", default=os.environ.get("MATRIXARK_REPLICATION_MODE", "shared_store"))
     parser.add_argument("--storage-prefix", default="matrixark:scale")
     parser.add_argument("--cpp-lib", default=str(ROOT / "output-ubuntu22/release/sdk/lib/libbcache2.so"))
-    parser.add_argument("--rust-cli", default=str(ROOT / "sdk/rust/temporalstore/target/release/matrixark_record_log"))
+    parser.add_argument("--rust-cli", default=str(ROOT / "target/release/matrixark_rust_proxy"))
+    parser.add_argument("--allow-rust-record-log-compat", action="store_true")
+    parser.add_argument("--allow-rust-debug-cli", action="store_true")
     parser.add_argument("--request-timeout-ms", type=int, default=60000)
     parser.add_argument("--io-timeout-ms", type=int, default=60000)
     parser.add_argument("--readiness-timeout-ms", type=int, default=60000)
@@ -3117,6 +3149,12 @@ def main() -> int:
                 "metaserver": parsed.metaserver,
                 "namespace": parsed.namespace,
                 "table": parsed.table,
+            },
+            "rust_cli": parsed.rust_cli,
+            "rust_cli_policy": {
+                "production_default": "matrixark_rust_proxy",
+                "record_log_compat_allowed": parsed.allow_rust_record_log_compat,
+                "debug_cli_allowed": parsed.allow_rust_debug_cli,
             },
             "storage_options": parsed.storage_options,
             "effective_storage_tuning": effective_storage_tuning_from_env(),
