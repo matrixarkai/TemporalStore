@@ -1551,6 +1551,22 @@ pub fn default_storage_safety_snapshot() -> StorageSafetySnapshot {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageAppendWatermarkSample {
+    pub shard_id: ShardId,
+    pub slot_id: u32,
+    pub log_index: u64,
+    pub timestamp_ms: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageCompactionWatermarkSample {
+    pub shard_id: ShardId,
+    pub safe_generation: u64,
+    pub safe_timestamp_ms: u64,
+    pub follower_floor: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageWatermarkSnapshot {
     pub append_watermark: u64,
     pub compaction_watermark: u64,
@@ -1559,6 +1575,10 @@ pub struct StorageWatermarkSnapshot {
     pub page_index_rebuild_watermark: u64,
     pub block_index_rebuild_watermark: u64,
     pub object_index_rebuild_watermark: u64,
+    #[serde(default)]
+    pub append_watermark_samples: Vec<StorageAppendWatermarkSample>,
+    #[serde(default)]
+    pub compaction_watermark_samples: Vec<StorageCompactionWatermarkSample>,
 }
 
 pub fn storage_watermark_snapshot_from_metrics(
@@ -1581,6 +1601,8 @@ pub fn storage_watermark_snapshot_from_metrics(
         page_index_rebuild_watermark: metric(metrics, "page_index_rebuild_count"),
         block_index_rebuild_watermark: metric(metrics, "block_index_rebuild_count"),
         object_index_rebuild_watermark: metric(metrics, "object_index_rebuild_count"),
+        append_watermark_samples: Vec::new(),
+        compaction_watermark_samples: Vec::new(),
     }
 }
 
