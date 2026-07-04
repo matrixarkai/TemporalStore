@@ -484,6 +484,9 @@ REQUIRED_STORAGE_INDEX_SNAPSHOT_FIELDS = [
     "missing_owner_ref_count",
     "owner_mismatch_count",
     "restart_rebuild_verified",
+    "page_index_entry_samples",
+    "block_index_entry_samples",
+    "object_index_entry_samples",
 ]
 
 REQUIRED_STORAGE_TOPOLOGY_SNAPSHOT_FIELDS = [
@@ -1428,6 +1431,9 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
             if field == "restart_rebuild_verified":
                 if not isinstance(index_snapshot.get(field), bool):
                     failures.append(f"{backend} index snapshot `{field}` must be boolean")
+            elif field.endswith("_samples"):
+                if not isinstance(index_snapshot.get(field), list):
+                    failures.append(f"{backend} index snapshot `{field}` must be a list")
             else:
                 value = _as_number(index_snapshot.get(field))
                 if value is None or value < 0:

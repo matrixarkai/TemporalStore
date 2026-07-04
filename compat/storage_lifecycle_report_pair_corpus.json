@@ -424,7 +424,39 @@
       "checksum_mismatches": 0,
       "missing_owner_ref_count": 0,
       "owner_mismatch_count": 0,
-      "restart_rebuild_verified": true
+      "restart_rebuild_verified": true,
+      "page_index_entry_samples": [
+        {
+          "logical_key": "model/table/object-a",
+          "timestamp_range": [1000, 1999],
+          "page_addresses": [
+            {"shard_id": 1, "zone_id": 2, "segment_id": 3, "page_id": 4, "offset": 128, "length": 512, "generation": 7}
+          ],
+          "append_watermark": 42,
+          "generation": 7
+        }
+      ],
+      "block_index_entry_samples": [
+        {
+          "page_address": {"shard_id": 1, "zone_id": 2, "segment_id": 3, "page_id": 4, "offset": 128, "length": 512, "generation": 7},
+          "block_address": {"shard_id": 1, "zone_id": 2, "block_id": 3, "offset": 128, "length": 512, "checksum": "sha256:cpp-sample"},
+          "extent": 2,
+          "checksum": "sha256:cpp-sample",
+          "generation": 7
+        }
+      ],
+      "object_index_entry_samples": [
+        {
+          "model": "model",
+          "table": "table",
+          "object_key": "object-a",
+          "page_chain": [
+            {"shard_id": 1, "zone_id": 2, "segment_id": 3, "page_id": 4, "offset": 128, "length": 512, "generation": 7}
+          ],
+          "tombstone": false,
+          "generation": 7
+        }
+      ]
     },
     "storage_topology_snapshot": {
       "storage_zone_count": 2,
@@ -875,7 +907,39 @@
       "checksum_mismatches": 0,
       "missing_owner_ref_count": 0,
       "owner_mismatch_count": 0,
-      "restart_rebuild_verified": true
+      "restart_rebuild_verified": true,
+      "page_index_entry_samples": [
+        {
+          "logical_key": "model/table/object-a",
+          "timestamp_range": [1000, 1999],
+          "page_addresses": [
+            {"shard_id": 1, "zone_id": 2, "segment_id": 3, "page_id": 4, "offset": 128, "length": 512, "generation": 7}
+          ],
+          "append_watermark": 42,
+          "generation": 7
+        }
+      ],
+      "block_index_entry_samples": [
+        {
+          "page_address": {"shard_id": 1, "zone_id": 2, "segment_id": 3, "page_id": 4, "offset": 128, "length": 512, "generation": 7},
+          "block_address": {"shard_id": 1, "zone_id": 2, "block_id": 3, "offset": 128, "length": 512, "checksum": "sha256:rust-sample"},
+          "extent": 2,
+          "checksum": "sha256:rust-sample",
+          "generation": 7
+        }
+      ],
+      "object_index_entry_samples": [
+        {
+          "model": "model",
+          "table": "table",
+          "object_key": "object-a",
+          "page_chain": [
+            {"shard_id": 1, "zone_id": 2, "segment_id": 3, "page_id": 4, "offset": 128, "length": 512, "generation": 7}
+          ],
+          "tombstone": false,
+          "generation": 7
+        }
+      ]
     },
     "storage_topology_snapshot": {
       "storage_zone_count": 2,

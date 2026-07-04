@@ -1083,6 +1083,11 @@ view and must carry `tombstone_records`, `stale_page_tombstones`,
 `compaction_reclaimed_bytes`, `physical_reclaimed_bytes`,
 `physical_reclaim_errors`, `follower_cursor_retention_floor`,
 `follower_cursor_blocked_reclaim_count`, and `follower_cursor_safe_to_reclaim`.
+`storage_index_snapshot` must carry both counters and bounded examples:
+`page_index_entry_samples`, `block_index_entry_samples`, and
+`object_index_entry_samples`. These samples prove public `PageIndexEntry`,
+`BlockIndexEntry`, and `ObjectIndexEntry` shape without dumping full indexes or
+warming cold pages.
 
 `tools/compare_storage_lifecycle_reports.py` is the operator-facing wrapper for
 live C++/Rust report comparison and uses the same fail-closed contract.
