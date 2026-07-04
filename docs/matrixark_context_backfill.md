@@ -674,6 +674,8 @@ Every successful `activate_shadow` stores the old active prefix under:
 
 If a newly activated shadow needs to be backed out, use `rollback_activation` with the activation job id. The command is metadata-only: it restores the active prefix pointer and writes a rollback audit record. It does not delete the shadow prefix or rewrite source raw records. By default rollback verifies that the saved previous prefix is non-empty, readable, and has no dead letters. If the previous prefix was intentionally evacuated or is being restored separately, `--confirm-rollback-target-state=YES` is required and audited with `rollback_target_state_confirmed=true` plus the inspected `rollback_target_state`.
 
+Set `--prometheus-output=<path>` on both `activate_shadow` and `rollback_activation`. Activation emits status, validation status, guard confirmations, target record counts, and validated source-range boundaries. Rollback emits status, guard confirmations, inspected previous-prefix counts, and previous-prefix health. Archive these files with the activation and rollback JSON summaries so cutover dashboards can alert on skipped validation, empty activation confirmation, precondition bypass, no-op rollback confirmation, unhealthy rollback targets, or missing metric samples.
+
 Dry run first:
 
 ```bash
@@ -1075,13 +1077,20 @@ matrixark_context_backfill_validation_check{job_id="...",check="target_records_r
 matrixark_context_backfill_validation_target_scan{job_id="...",stat="read_errors"}
 matrixark_context_backfill_validation_source_range{job_id="...",boundary="effective_end_seq"}
 matrixark_context_backfill_validation_source_scan_mode{job_id="...",scan_mode="record_count"}
+matrixark_context_backfill_activation_status{job_id="...",status="ok"}
+matrixark_context_backfill_activation_validation_status{job_id="...",status="ok",skipped="false"}
+matrixark_context_backfill_activation_guard_status{job_id="...",guard="active_prefix_precondition_bypassed"}
+matrixark_context_backfill_activation_target_records{job_id="...",kind="record_count"}
+matrixark_context_backfill_rollback_status{job_id="...",status="ok"}
+matrixark_context_backfill_rollback_guard_status{job_id="...",guard="rollback_target_state_confirmed"}
+matrixark_context_backfill_rollback_target_health{job_id="..."}
 matrixark_context_backfill_incremental_repair_promotion_consistency_status{job_id="...",status="ok"}
 matrixark_context_backfill_incremental_repair_promotion_consistency_check{job_id="...",check="promotion_source_range_matches_validation"}
 matrixark_context_backfill_incremental_repair_promotion_records{job_id="...",status="written"}
 matrixark_context_backfill_incremental_repair_promotion_data_quality_status{job_id="...",status="clean"}
 ```
 
-`shadow` and `in_place` runs emit elapsed time, scan QPS, data-quality status, record counters, serving-record counters, ordered serving-record fingerprint info, batch counters, and source-range boundary gauges. `validate_shadow` emits validation status, expected/actual/dead-letter counts, per-check pass/fail gauges, target scan stats, expected/actual ordered serving-record fingerprint info, source-range boundary gauges, source-range boolean metadata, and the source scan mode when `--prometheus-output` is set. `incremental_repair` emits promotion consistency status/check gauges, active-promotion data-quality status, active-promotion record counters, promotion source-range boundaries, and validation status. Dashboards should compare the validation source range with the target scan state before activation or incremental repair promotion, then alert on any failed promotion consistency check after active-prefix replay. Active-prefix repair promotion must report `promotion_data_quality_status="clean"`; `completed_with_errors` is not acceptable for promotion into the live prefix.
+`shadow` and `in_place` runs emit elapsed time, scan QPS, data-quality status, record counters, serving-record counters, ordered serving-record fingerprint info, batch counters, and source-range boundary gauges. `validate_shadow` emits validation status, expected/actual/dead-letter counts, per-check pass/fail gauges, target scan stats, expected/actual ordered serving-record fingerprint info, source-range boundary gauges, source-range boolean metadata, and the source scan mode when `--prometheus-output` is set. `activate_shadow` and `rollback_activation` emit cutover status, guard-confirmation gauges, and target-state counts so production cutovers remain observable even when they are metadata-only. `incremental_repair` emits promotion consistency status/check gauges, active-promotion data-quality status, active-promotion record counters, promotion source-range boundaries, and validation status. Dashboards should compare the validation source range with the target scan state before activation or incremental repair promotion, then alert on any failed activation guard, rollback guard, rollback target health, or promotion consistency check after active-prefix replay. Active-prefix repair promotion must report `promotion_data_quality_status="clean"`; `completed_with_errors` is not acceptable for promotion into the live prefix.
 
 Validation fingerprint metrics:
 

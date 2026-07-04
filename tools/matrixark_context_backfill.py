@@ -2572,7 +2572,7 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
     require_expected_active_prefix(args, previous)
     require_active_prefix_precondition(args, mode='activate_shadow')
     if args.dry_run:
-        return {
+        summary = {
             'status': 'ok',
             'mode': 'activate_shadow',
             'dry_run': True,
@@ -2589,6 +2589,9 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
             'unvalidated_target_state_confirmed': bool(args.skip_validation and args.confirm_unvalidated_target_state == 'YES'),
             'active_prefix_precondition_bypassed': active_prefix_precondition_bypassed(args),
         }
+        if args.prometheus_output:
+            Path(args.prometheus_output).write_text(activation_to_prometheus(summary), encoding='utf-8')
+        return summary
     activated_at_ms = int(time.time() * 1000)
     audit = {
         'job_id': args.job_id,
@@ -2613,7 +2616,7 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
     kv.put_string(f'{args.active_prefix_key}:previous:{args.job_id}', previous)
     kv.hset(f'{args.active_prefix_key}:audit', args.job_id, json.dumps(audit, sort_keys=True, separators=(',', ':')))
     kv.put_string(args.active_prefix_key, args.target_prefix)
-    return {
+    summary = {
         'status': 'ok',
         'mode': 'activate_shadow',
         'active_prefix_key': args.active_prefix_key,
@@ -2629,6 +2632,9 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
         'unvalidated_target_state_confirmed': bool(args.skip_validation and args.confirm_unvalidated_target_state == 'YES'),
         'active_prefix_precondition_bypassed': active_prefix_precondition_bypassed(args),
     }
+    if args.prometheus_output:
+        Path(args.prometheus_output).write_text(activation_to_prometheus(summary), encoding='utf-8')
+    return summary
 
 
 def run_rollback_activation(args: argparse.Namespace) -> Json:
@@ -2664,7 +2670,7 @@ def run_rollback_activation(args: argparse.Namespace) -> Json:
         'rollback_target_state_confirmed': bool(getattr(args, 'confirm_rollback_target_state', '') == 'YES'),
     }
     if args.dry_run:
-        return {
+        summary = {
             'status': 'ok',
             'mode': 'rollback_activation',
             'dry_run': True,
@@ -2679,9 +2685,12 @@ def run_rollback_activation(args: argparse.Namespace) -> Json:
             'rollback_noop_confirmed': rollback_noop_bypassed(args),
             'rollback_target_state_confirmed': bool(getattr(args, 'confirm_rollback_target_state', '') == 'YES'),
         }
+        if args.prometheus_output:
+            Path(args.prometheus_output).write_text(rollback_activation_to_prometheus(summary), encoding='utf-8')
+        return summary
     kv.hset(f'{args.active_prefix_key}:rollback_audit', args.job_id, json.dumps(audit, sort_keys=True, separators=(',', ':')))
     kv.put_string(args.active_prefix_key, previous_prefix)
-    return {
+    summary = {
         'status': 'ok',
         'mode': 'rollback_activation',
         'active_prefix_key': args.active_prefix_key,
@@ -2697,6 +2706,81 @@ def run_rollback_activation(args: argparse.Namespace) -> Json:
         'rollback_noop_confirmed': rollback_noop_bypassed(args),
         'rollback_target_state_confirmed': bool(getattr(args, 'confirm_rollback_target_state', '') == 'YES'),
     }
+    if args.prometheus_output:
+        Path(args.prometheus_output).write_text(rollback_activation_to_prometheus(summary), encoding='utf-8')
+    return summary
+
+
+def activation_to_prometheus(summary: Json) -> str:
+    base = {
+        'job_id': str(summary.get('job_id') or ''),
+        'raw_backend': str(summary.get('raw_backend') or ''),
+        'active_prefix_key': str(summary.get('active_prefix_key') or ''),
+        'previous_prefix': str(summary.get('previous_prefix') or ''),
+        'new_prefix': str(summary.get('new_prefix') or summary.get('target_prefix') or ''),
+        'mode': 'activate_shadow',
+    }
+    lines = [
+        '# HELP matrixark_context_backfill_activation_status Shadow activation status.',
+        '# TYPE matrixark_context_backfill_activation_status gauge',
+        f'matrixark_context_backfill_activation_status{{{_prom_labels(**base, status=str(summary.get("status") or "unknown"), dry_run=str(bool(summary.get("dry_run"))).lower())}}} 1',
+        '# HELP matrixark_context_backfill_activation_validation_status Validation status observed before activation.',
+        '# TYPE matrixark_context_backfill_activation_validation_status gauge',
+        f'matrixark_context_backfill_activation_validation_status{{{_prom_labels(**base, status=str(summary.get("validation_status") or "unknown"), skipped=str(bool(summary.get("validation_skipped"))).lower())}}} 1',
+        '# HELP matrixark_context_backfill_activation_guard_status Activation guard status. Value is 1 when the guard was explicitly bypassed or confirmed.',
+        '# TYPE matrixark_context_backfill_activation_guard_status gauge',
+        f'matrixark_context_backfill_activation_guard_status{{{_prom_labels(**base, guard="active_prefix_precondition_bypassed")}}} {1 if summary.get("active_prefix_precondition_bypassed") else 0}',
+        f'matrixark_context_backfill_activation_guard_status{{{_prom_labels(**base, guard="empty_activation_confirmed")}}} {1 if summary.get("empty_activation_confirmed") else 0}',
+        f'matrixark_context_backfill_activation_guard_status{{{_prom_labels(**base, guard="unvalidated_target_state_confirmed")}}} {1 if summary.get("unvalidated_target_state_confirmed") else 0}',
+        '# HELP matrixark_context_backfill_activation_target_records Target state record counts observed during activation validation.',
+        '# TYPE matrixark_context_backfill_activation_target_records gauge',
+    ]
+    target_state = summary.get('validation_target_state') if isinstance(summary.get('validation_target_state'), dict) else {}
+    lines.append(f'matrixark_context_backfill_activation_target_records{{{_prom_labels(**base, kind="record_count")}}} {int(target_state.get("record_count", 0) or 0)}')
+    lines.append(f'matrixark_context_backfill_activation_target_records{{{_prom_labels(**base, kind="dead_letter_count")}}} {int(target_state.get("dead_letter_count", 0) or 0)}')
+    source_range = summary.get('validation_source_range') if isinstance(summary.get('validation_source_range'), dict) else {}
+    lines.extend([
+        '# HELP matrixark_context_backfill_activation_source_range Source range validated before activation.',
+        '# TYPE matrixark_context_backfill_activation_source_range gauge',
+    ])
+    for name in ['effective_start_seq', 'effective_end_seq', 'source_high_watermark_seq', 'source_record_count']:
+        value = source_range.get(name)
+        if value is not None:
+            lines.append(f'matrixark_context_backfill_activation_source_range{{{_prom_labels(**base, boundary=name)}}} {int(value)}')
+    return '\n'.join(lines) + '\n'
+
+
+def rollback_activation_to_prometheus(summary: Json) -> str:
+    base = {
+        'job_id': str(summary.get('job_id') or ''),
+        'rollback_job_id': str(summary.get('rollback_job_id') or ''),
+        'raw_backend': str(summary.get('raw_backend') or ''),
+        'active_prefix_key': str(summary.get('active_prefix_key') or ''),
+        'from_prefix': str(summary.get('from_prefix') or ''),
+        'to_prefix': str(summary.get('to_prefix') or ''),
+        'mode': 'rollback_activation',
+    }
+    lines = [
+        '# HELP matrixark_context_backfill_rollback_status Activation rollback status.',
+        '# TYPE matrixark_context_backfill_rollback_status gauge',
+        f'matrixark_context_backfill_rollback_status{{{_prom_labels(**base, status=str(summary.get("status") or "unknown"), dry_run=str(bool(summary.get("dry_run"))).lower())}}} 1',
+        '# HELP matrixark_context_backfill_rollback_guard_status Rollback guard status. Value is 1 when the guard was explicitly bypassed or confirmed.',
+        '# TYPE matrixark_context_backfill_rollback_guard_status gauge',
+        f'matrixark_context_backfill_rollback_guard_status{{{_prom_labels(**base, guard="active_prefix_precondition_bypassed")}}} {1 if summary.get("active_prefix_precondition_bypassed") else 0}',
+        f'matrixark_context_backfill_rollback_guard_status{{{_prom_labels(**base, guard="rollback_noop_confirmed")}}} {1 if summary.get("rollback_noop_confirmed") else 0}',
+        f'matrixark_context_backfill_rollback_guard_status{{{_prom_labels(**base, guard="rollback_target_state_confirmed")}}} {1 if summary.get("rollback_target_state_confirmed") else 0}',
+        '# HELP matrixark_context_backfill_rollback_target_records Previous active-prefix record counts inspected before rollback.',
+        '# TYPE matrixark_context_backfill_rollback_target_records gauge',
+    ]
+    target_state = summary.get('rollback_target_state') if isinstance(summary.get('rollback_target_state'), dict) else {}
+    lines.append(f'matrixark_context_backfill_rollback_target_records{{{_prom_labels(**base, kind="record_count")}}} {int(target_state.get("record_count", 0) or 0)}')
+    lines.append(f'matrixark_context_backfill_rollback_target_records{{{_prom_labels(**base, kind="dead_letter_count")}}} {int(target_state.get("dead_letter_count", 0) or 0)}')
+    lines.extend([
+        '# HELP matrixark_context_backfill_rollback_target_health Previous active-prefix rollback health. Value is 1 when healthy.',
+        '# TYPE matrixark_context_backfill_rollback_target_health gauge',
+        f'matrixark_context_backfill_rollback_target_health{{{_prom_labels(**base)}}} {1 if target_state.get("healthy_for_rollback") else 0}',
+    ])
+    return '\n'.join(lines) + '\n'
 
 
 def incremental_promotion_consistency(validation: Json | None, promotion: Json, partial: Json, *, skip_validation: bool = False) -> Json:

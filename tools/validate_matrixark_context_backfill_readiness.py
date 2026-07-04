@@ -1194,6 +1194,19 @@ def run_prometheus_gate(args: argparse.Namespace) -> Json:
         "matrixark_context_backfill_validation_source_range",
         "matrixark_context_backfill_validation_source_scan_mode",
     ]
+    required_activation_metrics = [
+        "matrixark_context_backfill_activation_status",
+        "matrixark_context_backfill_activation_validation_status",
+        "matrixark_context_backfill_activation_guard_status",
+        "matrixark_context_backfill_activation_target_records",
+        "matrixark_context_backfill_activation_source_range",
+    ]
+    required_rollback_metrics = [
+        "matrixark_context_backfill_rollback_status",
+        "matrixark_context_backfill_rollback_guard_status",
+        "matrixark_context_backfill_rollback_target_records",
+        "matrixark_context_backfill_rollback_target_health",
+    ]
     results: list[Json] = []
     source_prefix = "matrixark:mcp:readiness_prometheus"
     records = max(2, int(args.records))
@@ -1206,6 +1219,14 @@ def run_prometheus_gate(args: argparse.Namespace) -> Json:
             kv = backfill.LocalJsonKV(kv_path)
             bench.seed_raw_log(kv, prefix=source_prefix, records=records, payload_bytes=args.payload_bytes)
             kv.put_string("matrixark:context:active_prefix", f"matrixark:context:active:prometheus:{raw_backend}")
+            backfill.MatrixKVBackfillTarget(
+                kv,
+                prefix=f"matrixark:context:active:prometheus:{raw_backend}",
+                raw_backend=raw_backend,
+            ).append_many([{
+                "record_type": "context_event",
+                "event_id_hash": f"previous-active-{raw_backend}",
+            }])
 
             plan_prometheus = tmp_path / "plan.prom"
             plan_args = bench.make_backfill_args(
@@ -1249,6 +1270,39 @@ def run_prometheus_gate(args: argparse.Namespace) -> Json:
             validation_summary = backfill.run_validate_shadow(validation_args)
             validation_text = validation_prometheus.read_text(encoding="utf-8") if validation_prometheus.exists() else ""
 
+            activation_prometheus = tmp_path / "activation.prom"
+            activation_args = bench.make_backfill_args(
+                kv_path=kv_path,
+                source_prefix=source_prefix,
+                target_prefix=f"matrixark:context_backfill:readiness_prometheus:{raw_backend}:full",
+                raw_backend=raw_backend,
+                job_id=f"readiness-prometheus-{raw_backend}-activate",
+                batch_size=args.batch_size,
+                mode="activate_shadow",
+                expect_active_prefix=f"matrixark:context:active:prometheus:{raw_backend}",
+            )
+            activation_args.confirm_activate = "YES"
+            activation_args.prometheus_output = str(activation_prometheus)
+            activation_summary = backfill.run_activate_shadow(activation_args)
+            activation_text = activation_prometheus.read_text(encoding="utf-8") if activation_prometheus.exists() else ""
+
+            rollback_prometheus = tmp_path / "rollback.prom"
+            rollback_args = bench.make_backfill_args(
+                kv_path=kv_path,
+                source_prefix=source_prefix,
+                target_prefix=f"matrixark:context_backfill:readiness_prometheus:{raw_backend}:full",
+                raw_backend=raw_backend,
+                job_id=f"readiness-prometheus-{raw_backend}-rollback",
+                batch_size=args.batch_size,
+                mode="rollback_activation",
+                expect_active_prefix=f"matrixark:context_backfill:readiness_prometheus:{raw_backend}:full",
+            )
+            rollback_args.rollback_job_id = f"readiness-prometheus-{raw_backend}-activate"
+            rollback_args.confirm_rollback = "YES"
+            rollback_args.prometheus_output = str(rollback_prometheus)
+            rollback_summary = backfill.run_rollback_activation(rollback_args)
+            rollback_text = rollback_prometheus.read_text(encoding="utf-8") if rollback_prometheus.exists() else ""
+
             repair_prefix = f"matrixark:context_repair:readiness_prometheus:{raw_backend}"
             repair_shadow_args = bench.make_backfill_args(
                 kv_path=kv_path,
@@ -1284,28 +1338,40 @@ def run_prometheus_gate(args: argparse.Namespace) -> Json:
                 "plan_status": plan_summary.get("status"),
                 "shadow_status": shadow_summary.get("status"),
                 "validation_status": validation_summary.get("status"),
+                "activation_status": activation_summary.get("status"),
+                "rollback_status": rollback_summary.get("status"),
                 "repair_status": repair_summary.get("status"),
                 "plan_prometheus_output": str(plan_prometheus),
                 "shadow_prometheus_output": str(shadow_prometheus),
                 "validation_prometheus_output": str(validation_prometheus),
+                "activation_prometheus_output": str(activation_prometheus),
+                "rollback_prometheus_output": str(rollback_prometheus),
                 "repair_prometheus_output": str(repair_prometheus),
                 "plan_metric_count": sum(1 for line in plan_text.splitlines() if line and not line.startswith("#")),
                 "shadow_metric_count": sum(1 for line in shadow_text.splitlines() if line and not line.startswith("#")),
                 "validation_metric_count": sum(1 for line in validation_text.splitlines() if line and not line.startswith("#")),
+                "activation_metric_count": sum(1 for line in activation_text.splitlines() if line and not line.startswith("#")),
+                "rollback_metric_count": sum(1 for line in rollback_text.splitlines() if line and not line.startswith("#")),
                 "repair_metric_count": sum(1 for line in repair_text.splitlines() if line and not line.startswith("#")),
                 "plan_metrics_present": {metric: metric in plan_text for metric in required_plan_metrics},
                 "shadow_metrics_present": {metric: metric in shadow_text for metric in required_shadow_metrics},
                 "validation_metrics_present": {metric: metric in validation_text for metric in required_validation_metrics},
+                "activation_metrics_present": {metric: metric in activation_text for metric in required_activation_metrics},
+                "rollback_metrics_present": {metric: metric in rollback_text for metric in required_rollback_metrics},
                 "repair_metrics_present": {metric: metric in repair_text for metric in required_repair_metrics},
             })
     status = "ok" if all(
         item["plan_status"] == "ok"
         and item["shadow_status"] == "ok"
         and item["validation_status"] == "ok"
+        and item["activation_status"] == "ok"
+        and item["rollback_status"] == "ok"
         and item["repair_status"] == "ok"
         and all(item["plan_metrics_present"].values())
         and all(item["shadow_metrics_present"].values())
         and all(item["validation_metrics_present"].values())
+        and all(item["activation_metrics_present"].values())
+        and all(item["rollback_metrics_present"].values())
         and all(item["repair_metrics_present"].values())
         for item in results
     ) else "failed"
@@ -1604,8 +1670,10 @@ def prometheus_checks(summary: Json) -> list[Json]:
         check("prometheus_gate_plan_metrics_present", all(all((item.get("plan_metrics_present") or {}).values()) for item in results)),
         check("prometheus_gate_shadow_metrics_present", all(all((item.get("shadow_metrics_present") or {}).values()) for item in results)),
         check("prometheus_gate_validation_metrics_present", all(all((item.get("validation_metrics_present") or {}).values()) for item in results)),
+        check("prometheus_gate_activation_metrics_present", all(all((item.get("activation_metrics_present") or {}).values()) for item in results)),
+        check("prometheus_gate_rollback_metrics_present", all(all((item.get("rollback_metrics_present") or {}).values()) for item in results)),
         check("prometheus_gate_incremental_repair_metrics_present", all(all((item.get("repair_metrics_present") or {}).values()) for item in results)),
-        check("prometheus_gate_emitted_samples", all(int(item.get("plan_metric_count", 0) or 0) > 0 and int(item.get("shadow_metric_count", 0) or 0) > 0 and int(item.get("validation_metric_count", 0) or 0) > 0 and int(item.get("repair_metric_count", 0) or 0) > 0 for item in results)),
+        check("prometheus_gate_emitted_samples", all(int(item.get("plan_metric_count", 0) or 0) > 0 and int(item.get("shadow_metric_count", 0) or 0) > 0 and int(item.get("validation_metric_count", 0) or 0) > 0 and int(item.get("activation_metric_count", 0) or 0) > 0 and int(item.get("rollback_metric_count", 0) or 0) > 0 and int(item.get("repair_metric_count", 0) or 0) > 0 for item in results)),
     ]
 
 
