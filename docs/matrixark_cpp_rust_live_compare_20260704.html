@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>MatrixArk Live C++ vs Rust TemporalStore Comparison</title>
+  <style>
+    :root {
+      --ink: #17202a;
+      --muted: #637181;
+      --line: #d9e1ea;
+      --soft: #f6f8fb;
+      --bad: #9b1c1c;
+      --good: #146c43;
+      --warn: #9a5b00;
+    }
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: #fff;
+      line-height: 1.45;
+    }
+    main {
+      max-width: 1160px;
+      margin: 0 auto;
+      padding: 34px 28px 56px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 30px;
+      letter-spacing: 0;
+    }
+    h2 {
+      margin: 30px 0 10px;
+      font-size: 20px;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 8px;
+    }
+    p {
+      margin: 9px 0;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 10px 0 18px;
+      font-size: 13px;
+    }
+    th, td {
+      border: 1px solid var(--line);
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: var(--soft);
+      font-weight: 650;
+    }
+    code, pre {
+      font-family: "Cascadia Mono", Consolas, monospace;
+      font-size: 12.5px;
+    }
+    pre {
+      background: #101820;
+      color: #eef6ff;
+      padding: 14px;
+      border-radius: 6px;
+      overflow: auto;
+    }
+    .lede {
+      color: var(--muted);
+      max-width: 900px;
+    }
+    .status {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .failed {
+      color: var(--bad);
+      background: #fff1f1;
+      border: 1px solid #f3b8b8;
+    }
+    .passed {
+      color: var(--good);
+      background: #eefaf4;
+      border: 1px solid #bfe8d0;
+    }
+    .diagnostic {
+      color: var(--warn);
+      background: #fff7e8;
+      border: 1px solid #f5d092;
+    }
+    .callout {
+      border-left: 4px solid #2f65c8;
+      background: #f3f7ff;
+      padding: 12px 14px;
+      margin: 14px 0;
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>MatrixArk Live C++ vs Rust TemporalStore Comparison</h1>
+  <p class="lede">
+    Fresh bounded run on 2026-07-04 using the live local metaserver/data-node topology
+    at <code>127.0.0.1:18000/18001</code>. The run used the repository scale report harness and wrote
+    raw artifacts under <code>docs/benchmarks/live_cpp_rust_compare_20260704/</code>.
+  </p>
+
+  <h2>Result</h2>
+  <table>
+    <tr><th>Gate</th><th>Status</th><th>Meaning</th></tr>
+    <tr>
+      <td>Run completed</td>
+      <td><span class="status passed">yes</span></td>
+      <td>Both C++ and Rust backends executed through the same bounded harness without process timeout.</td>
+    </tr>
+    <tr>
+      <td>Feature correctness</td>
+      <td><span class="status failed">failed</span></td>
+      <td>Both backends returned <code>selected_refs_avg=0</code>. The report correctly treats this as a correctness failure before performance claims.</td>
+    </tr>
+    <tr>
+      <td>Performance candidate</td>
+      <td><span class="status passed">yes</span></td>
+      <td>Same-config metrics were produced, so this is useful diagnostic performance evidence.</td>
+    </tr>
+    <tr>
+      <td>Production performance parity</td>
+      <td><span class="status failed">failed</span></td>
+      <td>Rust missed the configured QPS and latency thresholds on raw write, raw read, message ingest, and retrieval p95/p99.</td>
+    </tr>
+  </table>
+
+  <div class="callout">
+    <strong>Read this as diagnostic, not final parity:</strong> the Rust side used an older/debug
+    <code>matrixark_record_log</code> bridge from the previous worktree, while C++ used an older reusable
+    release <code>libbcache2.so</code>. This was the best available local live run, but the next clean run should
+    use freshly rebuilt release artifacts from the same commit.
+  </div>
+
+  <h2>Configuration</h2>
+  <table>
+    <tr><th>Field</th><th>Value</th></tr>
+    <tr><td>Events</td><td>100</td></tr>
+    <tr><td>Raw ops / raw read ops</td><td>100 / 50</td></tr>
+    <tr><td>Raw batch / read batch</td><td>20 / 10</td></tr>
+    <tr><td>Ingest workers / retrieve workers</td><td>2 / 4</td></tr>
+    <tr><td>Retrieve queries</td><td>20</td></tr>
+    <tr><td>Max context tokens</td><td>12,000</td></tr>
+    <tr><td>Storage</td><td><code>shared_store</code>, <code>multi_node</code>, async write/oplog/replication</td></tr>
+    <tr><td>C++ artifact</td><td><code>.../TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so</code></td></tr>
+    <tr><td>Rust artifact</td><td><code>.../TemporalStore/target/debug/matrixark_record_log</code></td></tr>
+  </table>
+
+  <h2>Key Metrics</h2>
+  <table>
+    <tr>
+      <th>Metric</th>
+      <th>C++</th>
+      <th>Rust</th>
+      <th>Rust / C++</th>
+      <th>Parity</th>
+    </tr>
+    <tr><td>Raw write record QPS</td><td>2635.91</td><td>21.237</td><td>0.008x</td><td><span class="status failed">fail</span></td></tr>
+    <tr><td>Raw write p95</td><td>16.534 ms</td><td>1749.747 ms</td><td>105.827x</td><td><span class="status failed">fail</span></td></tr>
+    <tr><td>Raw read QPS</td><td>2794.385</td><td>372.806</td><td>0.133x</td><td><span class="status failed">fail</span></td></tr>
+    <tr><td>Raw read p95</td><td>7.096 ms</td><td>77.052 ms</td><td>10.859x</td><td><span class="status failed">fail</span></td></tr>
+    <tr><td>Message QPS</td><td>74.732</td><td>5.731</td><td>0.077x</td><td><span class="status failed">fail</span></td></tr>
+    <tr><td>Ingest p50</td><td>196.907 ms</td><td>2663.581 ms</td><td>13.527x</td><td><span class="status failed">fail</span></td></tr>
+    <tr><td>Ingest p95</td><td>394.853 ms</td><td>5319.846 ms</td><td>13.473x</td><td><span class="status failed">fail</span></td></tr>
+    <tr><td>Retrieve QPS</td><td>1551.743</td><td>629.169</td><td>0.405x</td><td><span class="status failed">fail</span></td></tr>
+    <tr><td>Retrieve p50</td><td>1.769 ms</td><td>3.437 ms</td><td>1.943x</td><td><span class="status passed">pass</span></td></tr>
+    <tr><td>Retrieve p95</td><td>3.373 ms</td><td>12.722 ms</td><td>3.772x</td><td><span class="status failed">fail</span></td></tr>
+    <tr><td>Retrieve p99</td><td>4.043 ms</td><td>15.109 ms</td><td>3.737x</td><td><span class="status failed">fail</span></td></tr>
+    <tr><td>Selected refs avg</td><td>0.0</td><td>0.0</td><td>1.0x</td><td><span class="status failed">correctness fail</span></td></tr>
+  </table>
+
+  <h2>Correctness Findings</h2>
+  <table>
+    <tr><th>Finding</th><th>Details</th></tr>
+    <tr>
+      <td>Selected refs are empty</td>
+      <td>Both C++ and Rust had <code>selected_refs_avg=0</code> and <code>selected_refs_max=0</code>. The harness marks this as a correctness failure.</td>
+    </tr>
+    <tr>
+      <td>Missing correctness evidence</td>
+      <td>Both backends lacked evidence for scope filtering, placement filtering, compact secondary-index prefilter, stale/superseded exclusion, shared resource/skill quota, and cross-session quota/rerank.</td>
+    </tr>
+    <tr>
+      <td>Broad scan policy</td>
+      <td>C++ reported <code>broad_scan_blocked_count=20</code> and <code>broad_scan_used_count=0</code>. Rust reported <code>broad_scan_used_count=0</code>.</td>
+    </tr>
+  </table>
+
+  <h2>Interpretation</h2>
+  <p>
+    C++ is much faster in this run, but the result should not be treated as final C++ superiority or final Rust regression
+    until both sides use fresh same-commit release artifacts. The Rust artifact here is a debug bridge binary, and the raw
+    write path is where the gap explodes first. The context correctness gate also failed because selected refs were empty.
+  </p>
+  <p>
+    The immediate next step is to rebuild both artifacts from the current commit in release mode, rerun the same bounded
+    command, then only scale to 1K/10K/100K after selected refs are non-empty and parity evidence exists.
+  </p>
+
+  <h2>Artifacts</h2>
+  <table>
+    <tr><th>Artifact</th><th>Path</th></tr>
+    <tr><td>Comparison JSON</td><td><code>docs/benchmarks/live_cpp_rust_compare_20260704/comparison.json</code></td></tr>
+    <tr><td>Markdown summary</td><td><code>docs/benchmarks/live_cpp_rust_compare_20260704/comparison.md</code></td></tr>
+    <tr><td>C++ backend report</td><td><code>docs/benchmarks/live_cpp_rust_compare_20260704/cpp.json</code></td></tr>
+    <tr><td>Rust backend report</td><td><code>docs/benchmarks/live_cpp_rust_compare_20260704/rust.json</code></td></tr>
+    <tr><td>Worker logs</td><td><code>cpp.worker.log</code>, <code>rust.worker.log</code></td></tr>
+  </table>
+
+  <h2>Run Command</h2>
+  <pre>python3 tools/run_matrixark_cpp_rust_scale_report.py \
+  --events 100 \
+  --raw-ops 100 \
+  --raw-read-ops 50 \
+  --raw-batch-size 20 \
+  --raw-read-batch-size 10 \
+  --raw-workers 2 \
+  --messages-per-ingest 10 \
+  --ingest-workers 2 \
+  --retrieve-queries 20 \
+  --retrieve-workers 4 \
+  --max-context-tokens 12000 \
+  --backends cpp rust \
+  --artifact-dir docs/benchmarks/live_cpp_rust_compare_20260704 \
+  --run-id live_cpp_rust_compare_20260704 \
+  --metaserver 127.0.0.1:18000 \
+  --namespace deploy_ns \
+  --table deploy_table \
+  --storage-family shared_store \
+  --storage-mode multi_node \
+  --write-mode async \
+  --oplog-mode async \
+  --replication-mode shared_store \
+  --allow-phase0-correctness-failure</pre>
+</main>
+</body>
+</html>
