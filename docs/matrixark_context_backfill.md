@@ -302,6 +302,8 @@ matrixark_context_backfill_incremental_repair_promotion_consistency_check
 matrixark_context_backfill_incremental_repair_promotion_records
 matrixark_context_backfill_incremental_repair_promotion_source_range
 matrixark_context_backfill_incremental_repair_validation_status
+matrixark_context_backfill_incremental_repair_promotion_manifest_status
+matrixark_context_backfill_incremental_repair_promotion_manifest_check
 matrixark_context_backfill_plan_artifact_verification_status
 matrixark_context_backfill_plan_artifact_verification_check
 matrixark_context_backfill_plan_artifact_file_check
@@ -1093,9 +1095,11 @@ matrixark_context_backfill_incremental_repair_promotion_consistency_status{job_i
 matrixark_context_backfill_incremental_repair_promotion_consistency_check{job_id="...",check="promotion_source_range_matches_validation"}
 matrixark_context_backfill_incremental_repair_promotion_records{job_id="...",status="written"}
 matrixark_context_backfill_incremental_repair_promotion_data_quality_status{job_id="...",status="clean"}
+matrixark_context_backfill_incremental_repair_promotion_manifest_status{job_id="...",status="ok",skipped="false"}
+matrixark_context_backfill_incremental_repair_promotion_manifest_check{job_id="...",check="manifest_payload_sha256_match"}
 ```
 
-`shadow` and `in_place` runs emit elapsed time, scan QPS, data-quality status, record counters, serving-record counters, ordered serving-record fingerprint info, batch counters, and source-range boundary gauges. `validate_shadow` emits validation status, expected/actual/dead-letter counts, per-check pass/fail gauges, target scan stats, expected/actual ordered serving-record fingerprint info, source-range boundary gauges, source-range boolean metadata, and the source scan mode when `--prometheus-output` is set. `activate_shadow` and `rollback_activation` emit cutover status, guard-confirmation gauges, and target-state counts so production cutovers remain observable even when they are metadata-only. `incremental_repair` emits promotion consistency status/check gauges, active-promotion data-quality status, active-promotion record counters, promotion source-range boundaries, and validation status. Dashboards should compare the validation source range with the target scan state before activation or incremental repair promotion, then alert on any failed activation guard, rollback guard, rollback target health, or promotion consistency check after active-prefix replay. Active-prefix repair promotion must report `promotion_data_quality_status="clean"`; `completed_with_errors` is not acceptable for promotion into the live prefix.
+`shadow` and `in_place` runs emit elapsed time, scan QPS, data-quality status, record counters, serving-record counters, ordered serving-record fingerprint info, batch counters, and source-range boundary gauges. `validate_shadow` emits validation status, expected/actual/dead-letter counts, per-check pass/fail gauges, target scan stats, expected/actual ordered serving-record fingerprint info, source-range boundary gauges, source-range boolean metadata, and the source scan mode when `--prometheus-output` is set. `activate_shadow` and `rollback_activation` emit cutover status, guard-confirmation gauges, and target-state counts so production cutovers remain observable even when they are metadata-only. `incremental_repair` emits promotion consistency status/check gauges, active-promotion data-quality status, active-promotion record counters, promotion source-range boundaries, validation status, and active-prefix promotion manifest verification status/check gauges. Dashboards should compare the validation source range with the target scan state before activation or incremental repair promotion, then alert on any failed activation guard, rollback guard, rollback target health, promotion consistency check, or active promotion manifest check after active-prefix replay. Active-prefix repair promotion must report `promotion_data_quality_status="clean"` and `promotion_manifest_status="ok"`; `completed_with_errors` is not acceptable for promotion into the live prefix.
 
 Validation fingerprint metrics:
 

@@ -2894,6 +2894,32 @@ def incremental_promotion_consistency(validation: Json | None, promotion: Json, 
     }
 
 
+def verify_incremental_promotion_manifest(args: argparse.Namespace, active_prefix: str, promotion: Json) -> Json:
+    if bool(getattr(args, 'dry_run', False)):
+        return {
+            'status': 'skipped',
+            'skipped': True,
+            'skip_reason': 'dry_run',
+            'target_prefix': active_prefix,
+            'job_id': str(promotion.get('job_id') or f'{args.job_id}:active'),
+            'checks': {},
+        }
+    manifest_args = clone_args(
+        args,
+        mode='verify_manifest',
+        target_prefix=active_prefix,
+        job_id=str(promotion.get('job_id') or f'{args.job_id}:active'),
+        dry_run=False,
+        prometheus_output='',
+    )
+    verification = run_verify_manifest(manifest_args)
+    verification['skipped'] = False
+    verification['skip_reason'] = ''
+    if verification.get('status') != 'ok':
+        raise BackfillError(f'incremental repair promotion manifest verification failed: {json.dumps(verification, sort_keys=True)}')
+    return verification
+
+
 def incremental_repair_to_prometheus(summary: Json) -> str:
     job_id = str(summary.get('job_id') or '')
     raw_backend = str(summary.get('raw_backend') or '')
@@ -2947,6 +2973,21 @@ def incremental_repair_to_prometheus(summary: Json) -> str:
         '# TYPE matrixark_context_backfill_incremental_repair_validation_status gauge',
         f'matrixark_context_backfill_incremental_repair_validation_status{{{_prom_labels(**base, status=str(summary.get("validation_status") or "unknown"), skipped=str(bool(summary.get("validation_skipped"))).lower())}}} 1',
     ])
+    manifest_verification = summary.get('promotion_manifest_verification') if isinstance(summary.get('promotion_manifest_verification'), dict) else {}
+    manifest_status = str(manifest_verification.get('status') or 'unknown')
+    lines.extend([
+        '# HELP matrixark_context_backfill_incremental_repair_promotion_manifest_status Promotion manifest verification status for the active-prefix write.',
+        '# TYPE matrixark_context_backfill_incremental_repair_promotion_manifest_status gauge',
+        f'matrixark_context_backfill_incremental_repair_promotion_manifest_status{{{_prom_labels(**base, status=manifest_status, skipped=str(bool(manifest_verification.get("skipped"))).lower())}}} 1',
+        '# HELP matrixark_context_backfill_incremental_repair_promotion_manifest_check Promotion manifest verification check result, 1 for pass and 0 for fail.',
+        '# TYPE matrixark_context_backfill_incremental_repair_promotion_manifest_check gauge',
+    ])
+    manifest_checks = manifest_verification.get('checks') if isinstance(manifest_verification.get('checks'), dict) else {}
+    if manifest_checks:
+        for check_name, passed in sorted(manifest_checks.items()):
+            lines.append(f'matrixark_context_backfill_incremental_repair_promotion_manifest_check{{{_prom_labels(**base, check=check_name)}}} {1 if passed else 0}')
+    else:
+        lines.append(f'matrixark_context_backfill_incremental_repair_promotion_manifest_check{{{_prom_labels(**base, check="not_checked")}}} {1 if manifest_status == "skipped" else 0}')
     return '\n'.join(lines) + '\n'
 
 
@@ -3255,6 +3296,7 @@ def run_incremental_repair(args: argparse.Namespace) -> Json:
     )
     if promotion_consistency.get('status') != 'ok':
         raise BackfillError(f'incremental repair promotion consistency failed: {json.dumps(promotion_consistency, sort_keys=True)}')
+    promotion_manifest_verification = verify_incremental_promotion_manifest(args, active_prefix, promotion)
 
     if not args.dry_run:
         kv = make_kv(args)
@@ -3279,6 +3321,7 @@ def run_incremental_repair(args: argparse.Namespace) -> Json:
             'unvalidated_target_state_confirmed': bool(args.skip_validation and args.confirm_unvalidated_target_state == 'YES'),
             'active_prefix_precondition_bypassed': active_prefix_precondition_bypassed(args),
             'promotion_consistency': promotion_consistency,
+            'promotion_manifest_verification': promotion_manifest_verification,
             'promotion_metrics': promotion.get('metrics', {}),
         }
         kv.hset(f'{args.active_prefix_key}:incremental_repair_audit', args.job_id, json.dumps(audit, sort_keys=True, separators=(',', ':')))
@@ -3301,6 +3344,7 @@ def run_incremental_repair(args: argparse.Namespace) -> Json:
         **validation_audit,
         'promotion': promotion,
         'promotion_consistency': promotion_consistency,
+        'promotion_manifest_verification': promotion_manifest_verification,
         'audit_key': f'{args.active_prefix_key}:incremental_repair_audit',
         'unvalidated_target_state_confirmed': bool(args.skip_validation and args.confirm_unvalidated_target_state == 'YES'),
         'active_prefix_precondition_bypassed': active_prefix_precondition_bypassed(args),
