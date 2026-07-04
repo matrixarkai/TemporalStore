@@ -2114,7 +2114,6 @@ Status UpsertChildRef(ExecuteEnv* env, const UpsertChildRefRequest& request,
     if (!created) {
         response->set_object_key(key);
         response->set_created(false);
-        response->set_parent_child_count(static_cast<uint32_t>(existing_refs.size()));
         return Status::OK();
     }
 
@@ -2134,15 +2133,8 @@ Status UpsertChildRef(ExecuteEnv* env, const UpsertChildRefRequest& request,
         return status;
     }
 
-    std::vector<ContextChildRef> current_refs;
-    status = QueryChildrenInternal(env, request.tenant_hash(), request.ref().parent_hash(),
-                                   kMaxLimit, &current_refs, nullptr);
-    if (!status.ok()) {
-        return status;
-    }
     response->set_object_key(key);
     response->set_created(created);
-    response->set_parent_child_count(static_cast<uint32_t>(current_refs.size()));
     return Status::OK();
 }
 REGISTER_FUNCTION(CONTEXT, UPSERT_CHILD_REF, UpsertChildRef, Write);

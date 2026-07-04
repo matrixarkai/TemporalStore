@@ -655,7 +655,6 @@ const fallbackHealth = {
           label: "company_a",
           type: "tenant root",
           depth: 0,
-          child_count: 1,
           updated_at_ms: "1781500000100",
           status: "scope",
           score: "-",
@@ -678,7 +677,6 @@ const fallbackHealth = {
           label: "infra_team",
           type: "team",
           depth: 1,
-          child_count: 1,
           updated_at_ms: "1781500000200",
           status: "scope",
           score: "-",
@@ -701,7 +699,6 @@ const fallbackHealth = {
           label: "project_1",
           type: "project",
           depth: 2,
-          child_count: 1,
           updated_at_ms: "1781500000300",
           status: "scope",
           score: "-",
@@ -724,7 +721,6 @@ const fallbackHealth = {
           label: "approvals",
           type: "collection",
           depth: 3,
-          child_count: 5,
           updated_at_ms: "1781500000500",
           status: "parent updated",
           score: "0.96",
@@ -753,7 +749,6 @@ const fallbackHealth = {
           label: "gpu_purchase_request_8891",
           type: "event leaf",
           depth: 4,
-          child_count: 0,
           updated_at_ms: "1781500000500",
           status: "deduped child ref",
           score: "0.92",
@@ -804,7 +799,6 @@ const fallbackHealth = {
           label: "incident_77_postmortem",
           type: "pdf resource",
           depth: 4,
-          child_count: 3,
           updated_at_ms: "1781509300000",
           status: "selected",
           score: "0.98",
@@ -853,7 +847,6 @@ const fallbackHealth = {
           label: "incident_77.pdf#page=1:L0",
           type: "chunk",
           depth: 5,
-          child_count: 0,
           updated_at_ms: "1781509300000",
           status: "packed",
           score: "0.94",
@@ -2292,7 +2285,6 @@ function renderTopologyNode(node, selected, inSelectedPath) {
     { label: "node hash", value: node.id },
     { label: "parent", value: node.parent || "root" },
     { label: "type", value: node.type || "node" },
-    { label: "children", value: text(node.child_count, "0") },
     { label: "updated", value: text(node.updated_at_ms) },
     { label: "score", value: text(node.score) },
     { label: "object key", value: metadata.object_key },
@@ -2357,7 +2349,6 @@ function renderNodeDetail(node, topology) {
     </div>
     <dl class="node-detail-grid">
       ${renderDetailCell("Parent", node.parent || "root")}
-      ${renderDetailCell("Children", text(node.child_count, "0"))}
       ${renderDetailCell("Updated", text(node.updated_at_ms))}
       ${renderDetailCell("Score", text(node.score))}
       ${renderDetailCell("Object Key", metadata.object_key)}
@@ -2575,7 +2566,7 @@ function wireContextTreeControls(topology) {
       } else {
         const activeTopology = hydrateContextTopology(tree.__matrixarkTopology || topology || {});
         asArray(activeTopology.nodes)
-          .filter((node) => Number(node.child_count) > 0 || asArray(activeTopology.nodes).some((candidate) => String(candidate.parent) === String(node.id)))
+          .filter((node) => asArray(activeTopology.nodes).some((candidate) => String(candidate.parent) === String(node.id)))
           .forEach((node) => contextTreeUiState.collapsedNodeIds.add(String(node.id)));
         const roots = asArray(activeTopology.nodes).filter((node) => !node.parent);
         roots.forEach((node) => contextTreeUiState.collapsedNodeIds.delete(String(node.id)));
@@ -2667,7 +2658,6 @@ function renderFilesystemExplorer(filesystem, topology) {
         node_hash: node.id,
         model: node.metadata?.model || node.type || "ContextNode",
         storage: node.metadata?.object_key || "-",
-        children: text(node.child_count, "0"),
         events: node.metadata?.event_key || "-",
         summary: node.metadata?.summary || node.metadata?.embedding_ref || "-",
         status: node.status || "ready",
@@ -2688,7 +2678,6 @@ function renderFilesystemExplorer(filesystem, topology) {
             <th>Node Hash</th>
             <th>Model</th>
             <th>Storage</th>
-            <th>Children</th>
             <th>Events</th>
             <th>Summary</th>
             <th>Status</th>
@@ -2703,7 +2692,6 @@ function renderFilesystemExplorer(filesystem, topology) {
                   <td>${escapeHtml(text(row.node_hash))}</td>
                   <td>${escapeHtml(row.model || "-")}</td>
                   <td>${escapeHtml(row.storage || "-")}</td>
-                  <td>${escapeHtml(text(row.children, "0"))}</td>
                   <td>${escapeHtml(text(row.events, "-"))}</td>
                   <td>${escapeHtml(row.summary || "-")}</td>
                   <td>${badge(row.status || "ready")}</td>

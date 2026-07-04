@@ -412,7 +412,14 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
         self.assertTrue(any(row["role"] == "Reranker" for row in context["model_registry"]))
         self.assertTrue(any(row["role"] == "PDF/VLM parser" for row in context["model_registry"]))
         self.assertEqual("1001000", context["topology"]["selected_path"][0])
-        self.assertTrue(any(node["label"] == "approvals" and node["child_count"] == 5 for node in context["topology"]["nodes"]))
+        self.assertTrue(any(node["label"] == "approvals" for node in context["topology"]["nodes"]))
+        self.assertTrue(
+            any(
+                node["label"] == "gpu_purchase_request_8891"
+                and node.get("parent") == "1001300"
+                for node in context["topology"]["nodes"]
+            )
+        )
         self.assertTrue(any(node["status"] == "deduped child ref" for node in context["topology"]["nodes"]))
         self.assertTrue(any(node["metadata"].get("object_key") == "ctx:node:1001:1001300" for node in context["topology"]["nodes"]))
         self.assertTrue(any(node["metadata"].get("raw_uri") == "incident_77.pdf" for node in context["topology"]["nodes"]))

@@ -400,7 +400,8 @@ message UpsertChildRefRequest {
 message UpsertChildRefResponse {
     string object_key = 1;
     bool created = 2;
-    uint32 parent_child_count = 3;
+    reserved 3;
+    reserved "parent_child_count";
 }
 
 message QueryChildrenRequest {

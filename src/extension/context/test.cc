@@ -1326,8 +1326,7 @@ TEST_F(ContextModuleTest, TreeEmbeddingSummaryAndCompressionRoundTrip) {
         Execute(context::UPSERT_NODE, "ctx-node", request, &response);
     }
 
-    auto write_child = [&](uint64_t child_hash, bool expect_created,
-                           uint32_t expect_parent_child_count) {
+    auto write_child = [&](uint64_t child_hash, bool expect_created) {
         context::UpsertChildRefRequest request;
         request.set_tenant_hash(kTenant);
         auto* ref = request.mutable_ref();
@@ -1339,11 +1338,10 @@ TEST_F(ContextModuleTest, TreeEmbeddingSummaryAndCompressionRoundTrip) {
         Execute(context::UPSERT_CHILD_REF, "ctx-child", request, &response);
         ASSERT_EQ(response.object_key(), "ctx:child:1001:10");
         ASSERT_EQ(response.created(), expect_created);
-        ASSERT_EQ(response.parent_child_count(), expect_parent_child_count);
     };
-    write_child(kGpuNode, true, 1);
-    write_child(kCostNode, true, 2);
-    write_child(kGpuNode, false, 2);
+    write_child(kGpuNode, true);
+    write_child(kCostNode, true);
+    write_child(kGpuNode, false);
 
     {
         context::QueryChildrenRequest request;

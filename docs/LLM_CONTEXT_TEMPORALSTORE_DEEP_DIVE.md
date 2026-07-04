@@ -267,7 +267,7 @@ resource metadata                -> chunk ref, raw_uri, or optional resource sto
 ```text
 UPSERT_NODE(tenant_hash, ContextNode) -> object_key
 GET_NODE(tenant_hash, node_hash) -> exist, object_key, ContextNode
-UPSERT_CHILD_REF(tenant_hash, ContextChildRef) -> object_key, created, parent_child_count
+UPSERT_CHILD_REF(tenant_hash, ContextChildRef) -> object_key, created
 QUERY_CHILDREN(tenant_hash, parent_hash, limit) -> child refs
 ```
 
