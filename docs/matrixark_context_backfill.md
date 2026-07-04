@@ -187,6 +187,8 @@ python3 tools/matrixark_context_backfill.py \
 
 `chunk_plan.execution_plan` groups independent shadow and validation commands into waves of up to `--plan-parallelism` windows. Treat those waves as the fast preparation phase. The same plan also emits `promotion_sequence`, which should be run one command at a time in sequence because it updates the active serving prefix.
 
+`execution_readiness` summarizes whether the emitted chunk plan fully covers the planned source range and is safe to execute as generated. It reports `status="ready"` only when the plan is not truncated, emitted window count matches total window count, window ranges are contiguous, every window appears in a shadow/validation wave, and the serialized promotion sequence has one step per window. Treat any blocker such as `chunk_plan_truncated`, `emitted_window_count_mismatch`, `window_ranges_not_contiguous`, `promotion_sequence_length_mismatch`, or `shadow_validation_wave_coverage_mismatch` as a hard stop before running generated scripts.
+
 When `--plan-output-dir` is set, the planner writes `plan.json`, `artifact_manifest.json`, `shadow_wave_*.sh`, `validate_wave_*.sh`, and `promote_serial.sh`. The wave scripts run independent chunk work in parallel inside each wave. The promotion script runs repairs sequentially. The manifest records bundle-relative paths, original paths, SHA-256, size, and executable bit for each generated file. The planner refuses to write into a non-empty output directory unless `--confirm-plan-output-overwrite=YES` is supplied, which prevents accidentally mixing evidence from different recovery runs. Review `plan.json` and the generated scripts before execution, then archive the whole directory with the recovery ticket or release evidence.
 
 Before executing or accepting an archived plan bundle, verify it:
@@ -286,6 +288,9 @@ matrixark_context_backfill_plan_source_range
 matrixark_context_backfill_plan_source_scan_mode
 matrixark_context_backfill_plan_target_records
 matrixark_context_backfill_plan_chunk_windows
+matrixark_context_backfill_plan_execution_readiness_status
+matrixark_context_backfill_plan_execution_readiness_blocker
+matrixark_context_backfill_plan_execution_readiness_count
 ```
 
 Incremental repair emits a separate promotion-focused surface so on-call can prove the bounded shadow validated and the active-prefix replay stayed consistent:
