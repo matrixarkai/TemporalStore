@@ -2433,6 +2433,18 @@ impl TemporalEngine {
             object_lifecycle,
         };
         report.refresh_public_lifecycle_metrics();
+        if let Some(shard) = self
+            .shards
+            .read()
+            .expect("shards lock poisoned")
+            .get(&request.shard_id)
+        {
+            report.storage_index_snapshot = storage_index_snapshot_with_samples(
+                request.shard_id,
+                shard,
+                report.storage_index_snapshot,
+            );
+        }
         report
     }
 
@@ -9615,6 +9627,121 @@ fn live_page_entry(
         deleted: false,
         log_backed: true,
     }
+}
+
+fn storage_page_address_sample(
+    shard_id: ShardId,
+    address: &PageAddress,
+) -> StoragePageAddressSample {
+    StoragePageAddressSample {
+        shard_id,
+        zone_id: address.extent_id.unwrap_or(address.page_segment_id),
+        segment_id: address.page_segment_id,
+        page_id: address.page_id.unwrap_or(address.page_segment_id),
+        offset: address.offset,
+        length: address.length,
+        generation: address.object_id.unwrap_or(0),
+    }
+}
+
+fn storage_block_address_sample(
+    shard_id: ShardId,
+    address: &PageAddress,
+) -> StorageBlockAddressSample {
+    StorageBlockAddressSample {
+        shard_id,
+        zone_id: address.extent_id.unwrap_or(address.page_segment_id),
+        block_id: address.page_segment_id,
+        offset: address.offset,
+        length: address.length,
+        checksum: address.sha256.clone().unwrap_or_default(),
+    }
+}
+
+fn storage_index_snapshot_with_samples(
+    shard_id: ShardId,
+    shard: &ShardState,
+    mut snapshot: StorageIndexSnapshot,
+) -> StorageIndexSnapshot {
+    let mut entries = collect_live_page_entries(shard);
+    entries.sort_by(|left, right| {
+        (
+            left.kind.as_str(),
+            left.object_key.as_str(),
+            left.component.as_deref().unwrap_or(""),
+            left.address.page_segment_id,
+            left.address.offset,
+        )
+            .cmp(&(
+                right.kind.as_str(),
+                right.object_key.as_str(),
+                right.component.as_deref().unwrap_or(""),
+                right.address.page_segment_id,
+                right.address.offset,
+            ))
+    });
+
+    const MAX_STORAGE_INDEX_SAMPLES: usize = 8;
+    snapshot.page_index_entry_samples = entries
+        .iter()
+        .take(MAX_STORAGE_INDEX_SAMPLES)
+        .map(|entry| {
+            let page_address = storage_page_address_sample(shard_id, &entry.address);
+            StoragePageIndexEntrySample {
+                logical_key: entry.object_key.clone(),
+                timestamp_range: None,
+                page_addresses: vec![page_address],
+                append_watermark: entry.address.offset,
+                generation: entry.address.object_id.unwrap_or(0),
+            }
+        })
+        .collect();
+    snapshot.block_index_entry_samples = entries
+        .iter()
+        .take(MAX_STORAGE_INDEX_SAMPLES)
+        .map(|entry| {
+            let page_address = storage_page_address_sample(shard_id, &entry.address);
+            let block_address = storage_block_address_sample(shard_id, &entry.address);
+            StorageBlockIndexEntrySample {
+                extent: entry.address.extent_id.unwrap_or(entry.address.page_segment_id),
+                checksum: entry.address.sha256.clone().unwrap_or_default(),
+                generation: entry.address.object_id.unwrap_or(0),
+                page_address,
+                block_address,
+            }
+        })
+        .collect();
+
+    let mut object_entries: BTreeMap<(String, String, String), StorageObjectIndexEntrySample> =
+        BTreeMap::new();
+    for entry in entries.iter().take(MAX_STORAGE_INDEX_SAMPLES.saturating_mul(4)) {
+        let key = (
+            entry.kind.clone(),
+            entry.kind.clone(),
+            entry.object_key.clone(),
+        );
+        let sample = object_entries.entry(key).or_insert_with(|| StorageObjectIndexEntrySample {
+            model: entry.kind.clone(),
+            table: entry.kind.clone(),
+            object_key: entry.object_key.clone(),
+            page_chain: Vec::new(),
+            tombstone: entry.deleted,
+            generation: entry.address.object_id.unwrap_or(0),
+        });
+        if sample.page_chain.len() < MAX_STORAGE_INDEX_SAMPLES {
+            sample
+                .page_chain
+                .push(storage_page_address_sample(shard_id, &entry.address));
+        }
+        sample.tombstone |= entry.deleted;
+        sample.generation = sample.generation.max(entry.address.object_id.unwrap_or(0));
+    }
+    snapshot.object_index_entry_samples = object_entries
+        .into_iter()
+        .map(|(_, sample)| sample)
+        .take(MAX_STORAGE_INDEX_SAMPLES)
+        .collect();
+    snapshot
 }
 
 fn collect_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {

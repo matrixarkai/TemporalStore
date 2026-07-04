@@ -920,6 +920,9 @@ def default_storage_index_snapshot(metrics: Json | None = None) -> Json:
             or source.get("block_index_rebuild_count")
             or source.get("object_index_rebuild_count")
         ),
+        "page_index_entry_samples": list(source.get("page_index_entry_samples") or []),
+        "block_index_entry_samples": list(source.get("block_index_entry_samples") or []),
+        "object_index_entry_samples": list(source.get("object_index_entry_samples") or []),
     }
 
 

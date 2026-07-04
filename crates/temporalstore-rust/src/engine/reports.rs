@@ -1633,6 +1633,55 @@ pub fn default_storage_gc_snapshot() -> StorageGcSnapshot {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoragePageAddressSample {
+    pub shard_id: u64,
+    pub zone_id: u64,
+    pub segment_id: u64,
+    pub page_id: u64,
+    pub offset: u64,
+    pub length: u64,
+    pub generation: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageBlockAddressSample {
+    pub shard_id: u64,
+    pub zone_id: u64,
+    pub block_id: u64,
+    pub offset: u64,
+    pub length: u64,
+    pub checksum: String,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoragePageIndexEntrySample {
+    pub logical_key: String,
+    pub timestamp_range: Option<(u64, u64)>,
+    pub page_addresses: Vec<StoragePageAddressSample>,
+    pub append_watermark: u64,
+    pub generation: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageBlockIndexEntrySample {
+    pub page_address: StoragePageAddressSample,
+    pub block_address: StorageBlockAddressSample,
+    pub extent: u64,
+    pub checksum: String,
+    pub generation: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageObjectIndexEntrySample {
+    pub model: String,
+    pub table: String,
+    pub object_key: String,
+    pub page_chain: Vec<StoragePageAddressSample>,
+    pub tombstone: bool,
+    pub generation: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageIndexSnapshot {
     pub page_index_entry_count: u64,
     pub block_index_entry_count: u64,
@@ -1646,6 +1695,12 @@ pub struct StorageIndexSnapshot {
     pub missing_owner_ref_count: u64,
     pub owner_mismatch_count: u64,
     pub restart_rebuild_verified: bool,
+    #[serde(default)]
+    pub page_index_entry_samples: Vec<StoragePageIndexEntrySample>,
+    #[serde(default)]
+    pub block_index_entry_samples: Vec<StorageBlockIndexEntrySample>,
+    #[serde(default)]
+    pub object_index_entry_samples: Vec<StorageObjectIndexEntrySample>,
 }
 
 pub fn storage_index_snapshot_from_metrics(
@@ -1666,6 +1721,9 @@ pub fn storage_index_snapshot_from_metrics(
         restart_rebuild_verified: metric(metrics, "page_index_rebuild_count") > 0
             || metric(metrics, "block_index_rebuild_count") > 0
             || metric(metrics, "object_index_rebuild_count") > 0,
+        page_index_entry_samples: Vec::new(),
+        block_index_entry_samples: Vec::new(),
+        object_index_entry_samples: Vec::new(),
     }
 }
 
