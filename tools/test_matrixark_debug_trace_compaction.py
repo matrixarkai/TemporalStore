@@ -142,6 +142,51 @@ class MatrixArkDebugTraceCompactionTest(unittest.TestCase):
         self.assertNotIn("/tmp/fixtures", payload)
         self.assertNotIn("timestamp_key_ms", payload)
 
+    def test_index_and_placement_rows_are_sampled_and_aliased(self) -> None:
+        aliases = trace_runner.ReportAliases()
+        indexes = trace_runner.compact_context_indexes(
+            [
+                {
+                    "data_model": "resource_fact",
+                    "index_name": "entity_type:resource_owner",
+                    "node_hash": 7,
+                    "ref_type": "resource_fact",
+                    "ref_hashes": list(range(20, 29)),
+                },
+                {
+                    "data_model": "context_batch_commit",
+                    "index_name": "event_type:confirmation",
+                    "node_hash": 7,
+                    "ref_hashes": [1, 2, 3],
+                },
+            ],
+            aliases,
+        )
+        placements = trace_runner.compact_placement_routes(
+            [
+                {
+                    "record_type": "context_event",
+                    "node_hash": 7,
+                    "placement_key": "context:t=2466697514329931826|u=7836037686236352053|s=7498925135890267938|:node=7",
+                    "placement_hash": 33,
+                }
+            ],
+            aliases,
+        )
+        inventory = trace_runner.data_field_inventory(
+            [
+                {"record_type": "context_event", "event_id_hash": 1},
+                {"record_type": "context_batch_commit", "commit_hash": 2},
+            ]
+        )
+
+        self.assertEqual(indexes, [{"model": "resource_fact", "index": "entity_type:resource_owner", "node": "n1", "ref_count": 9, "sample_refs": []}])
+        self.assertEqual(placements[0]["placement"], "p1")
+        self.assertNotIn("placement_key", placements[0])
+        self.assertNotIn("context:", json.dumps(placements))
+        self.assertNotIn("context_batch_commit", json.dumps(indexes))
+        self.assertNotIn("context_batch_commit", json.dumps(inventory))
+
 
 if __name__ == "__main__":
     unittest.main()
