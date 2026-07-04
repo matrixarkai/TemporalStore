@@ -1,0 +1,144 @@
+{
+  "archive_required_fields_ready": false,
+  "category_breakdown": {
+    "category_1": {
+      "answer_term_coverage": 0.4041916167664671,
+      "case_count": 282,
+      "deterministic_reader_answer_coverage": 0.7395209580838323,
+      "deterministic_reader_hit_rate": 0.7446808510638298,
+      "hit_rate": 0.8014184397163121,
+      "mean_reciprocal_rank": 0.3492783720814437,
+      "reader_answer_coverage": 0.7395209580838323,
+      "reader_hit_rate": 0.7446808510638298,
+      "zero_hit_queries": 56
+    },
+    "category_2": {
+      "answer_term_coverage": 0.8103448275862069,
+      "case_count": 321,
+      "deterministic_reader_answer_coverage": 0.8505747126436781,
+      "deterministic_reader_hit_rate": 0.838006230529595,
+      "hit_rate": 0.9127725856697819,
+      "mean_reciprocal_rank": 0.6624848997741417,
+      "reader_answer_coverage": 0.8505747126436781,
+      "reader_hit_rate": 0.838006230529595,
+      "zero_hit_queries": 28
+    },
+    "category_3": {
+      "answer_term_coverage": 0.3798449612403101,
+      "case_count": 96,
+      "deterministic_reader_answer_coverage": 0.6666666666666666,
+      "deterministic_reader_hit_rate": 0.6770833333333334,
+      "hit_rate": 0.7604166666666666,
+      "mean_reciprocal_rank": 0.31352933584419174,
+      "reader_answer_coverage": 0.6666666666666666,
+      "reader_hit_rate": 0.6770833333333334,
+      "zero_hit_queries": 23
+    },
+    "category_4": {
+      "answer_term_coverage": 0.7940503432494279,
+      "case_count": 841,
+      "deterministic_reader_answer_coverage": 0.8718535469107551,
+      "deterministic_reader_hit_rate": 0.8727705112960761,
+      "hit_rate": 0.8596908442330559,
+      "mean_reciprocal_rank": 0.5570026634149463,
+      "reader_answer_coverage": 0.8718535469107551,
+      "reader_hit_rate": 0.8727705112960761,
+      "zero_hit_queries": 118
+    },
+    "category_5": {
+      "answer_term_coverage": 0.5,
+      "case_count": 2,
+      "deterministic_reader_answer_coverage": 0.5,
+      "deterministic_reader_hit_rate": 0.5,
+      "hit_rate": 1.0,
+      "mean_reciprocal_rank": 0.5333333333333333,
+      "reader_answer_coverage": 0.5,
+      "reader_hit_rate": 0.5,
+      "zero_hit_queries": 0
+    }
+  },
+  "claim_level": "live_tiny_oss_reader_diagnostic",
+  "created_at_unix": 1783157546,
+  "dataset": {
+    "bytes": 2805274,
+    "case_count": 1542,
+    "conversation_count": 10,
+    "input": "C:\\root\\matrixark_benchmarks\\data\\locomo10.json",
+    "name": "locomo",
+    "record_counts": {
+      "locomo": 10
+    },
+    "sha256": "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4",
+    "source_count": 9363
+  },
+  "metrics": {
+    "answer_term_coverage": 0.6882039122703023,
+    "avg_retrieved_blocks_per_query": 31.99740596627756,
+    "avg_retrieved_tokens_per_query": 1571.4727626459144,
+    "avg_source_tokens_per_query": 33044.17120622568,
+    "evidence_ref_coverage": 0.5418427726120034,
+    "hit_at_k": 0.8540856031128404,
+    "mean_reciprocal_rank": 0.5257839666628712,
+    "reader_answer_coverage": 0.8251333728512151,
+    "reader_hit_rate": 0.8294422827496758,
+    "reader_p50_ms": 6.301749963313341,
+    "reader_p95_ms": 27.322335122153163,
+    "recall_at_k": 0.8540856031128404,
+    "retrieval_p50_ms": 18.1148499250412,
+    "retrieval_p95_ms": 31.98148511582986,
+    "token_reduction_percent": 95.24432689554084
+  },
+  "model": {
+    "provider_name": "matrixark-tiny-live-reader",
+    "reader_error_count": 0,
+    "reader_fallback_count": 0,
+    "reader_mode_effective": "open-source",
+    "reader_mode_requested": "open-source",
+    "reader_model": "matrixark-tiny-oss-reader",
+    "reader_open_source_calls": 1542
+  },
+  "paper_name": "VikingMem/OpenViking long-memory benchmark",
+  "prompt": {
+    "max_context_chars": 12000,
+    "system": "You are an extractive long-memory benchmark reader. Answer only from the supplied context. Prefer short spans, names, dates, yes/no, or comma-separated lists. If the context is insufficient, say not enough context.",
+    "user_template": "Question: {question}\n\nContext:\n{context}\n\nAnswer:"
+  },
+  "quality_gate": {
+    "gold_evidence_window_used": false,
+    "paper_comparable_claim_ready": false,
+    "passed": true,
+    "quality_ready": true,
+    "violation_count": 0,
+    "violations": []
+  },
+  "report_contract_format": "matrixark_vikingmem_context_benchmark_report_v1",
+  "report_path": "docs\\benchmark_archives\\oss_reader_validation_20260704_tiny_locomo_benchmark.json",
+  "rust_temporalstore_backend": {
+    "all_pipelines_use_rust_temporalstore": false,
+    "case_count": null,
+    "context_event_ingest_ready": false,
+    "converted_jsonl": null,
+    "direct_source_scoring": false,
+    "full_replay_ready": false,
+    "full_replay_required": false,
+    "ingested_source_sets": 0,
+    "python_only_diagnostic": true,
+    "ready": false,
+    "report_path": null,
+    "required": false,
+    "retrieved_source_sets": 0,
+    "score_parity": null,
+    "strict_external_ready": false
+  },
+  "schema": "matrixark_vikingmem_paper_comparable_report_v1",
+  "source_report": "docs\\benchmark_archives\\oss_reader_validation_20260704_tiny_locomo_benchmark.json",
+  "thresholds": {
+    "max_reader_p95_ms": 30000.0,
+    "max_retrieval_p95_ms": 1000.0,
+    "min_case_count": 1,
+    "min_hit_at_k": 0.1,
+    "min_reader_hit_rate": 0.0,
+    "min_token_reduction_percent": 0.0,
+    "require_open_source_reader": true
+  }
+}
