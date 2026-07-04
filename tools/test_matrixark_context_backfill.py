@@ -478,8 +478,12 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(plan["execution_readiness"]["coverage_start_seq"], 1)
             self.assertEqual(plan["execution_readiness"]["coverage_end_seq"], 11)
             self.assertEqual(plan["execution_readiness"]["coverage_record_count"], 10)
-            self.assertEqual(plan["execution_readiness"]["wave_count"], 1)
+            self.assertEqual(plan["execution_readiness"]["wave_count"], 2)
             self.assertEqual(plan["execution_readiness"]["promotion_step_count"], 2)
+            self.assertEqual(plan["execution_readiness"]["requested_plan_parallelism"], 2)
+            self.assertEqual(plan["execution_readiness"]["plan_parallelism"], 1)
+            self.assertTrue(plan["execution_readiness"]["local_kv_serialized"])
+            self.assertTrue(plan["chunk_plan"]["execution_plan"]["local_kv_serialized"])
             prom_path = Path(tmp) / "plan.prom"
             backfill.run_plan(self.make_args(
                 path,
@@ -1753,6 +1757,11 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             artifacts = backfill.write_plan_artifacts(args, summary)
             manifest = json.loads(Path(artifacts["artifact_manifest"]).read_text(encoding="utf-8"))
             self.assertTrue(all(item.get("relative_path") for item in manifest["files"]))
+            shadow_script = (output_dir / "shadow_wave_0000.sh").read_text(encoding="utf-8")
+            self.assertIn('PLAN_BUNDLE_DIR=', shadow_script)
+            self.assertIn('execution_evidence/shadow_wave_0000_cmd_0000.json', shadow_script)
+            self.assertIn('execution_evidence/shadow_wave_0000_cmd_0000.prom', shadow_script)
+            self.assertIn('execution_evidence/shadow_wave_0000_cmd_0000.stderr.log', shadow_script)
 
             shutil.copytree(output_dir, restored_dir)
             restored_manifest_path = restored_dir / "artifact_manifest.json"
