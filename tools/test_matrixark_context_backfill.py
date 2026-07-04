@@ -1242,6 +1242,11 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertTrue(repaired["promotion_consistency"]["checks"]["promotion_had_no_failures"])
             self.assertTrue(repaired["promotion_consistency"]["checks"]["promotion_source_range_matches_validation"])
             self.assertTrue(repaired["promotion_consistency"]["checks"]["promotion_covered_expected_records"])
+            self.assertEqual(repaired["promotion_manifest_verification"]["status"], "ok")
+            self.assertFalse(repaired["promotion_manifest_verification"]["skipped"])
+            self.assertTrue(repaired["promotion_manifest_verification"]["checks"]["manifest_payload_sha256_match"])
+            self.assertEqual(repaired["promotion_manifest_verification"]["target_prefix"], "matrixark:context:active")
+            self.assertEqual(repaired["promotion_manifest_verification"]["job_id"], "unit:active")
 
             kv_after = backfill.LocalJsonKV(path)
             self.assertEqual(kv_after.get_string("matrixark:context:active_prefix"), "matrixark:context:active")
@@ -1255,6 +1260,8 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(repair_audit["expected_active_prefix"], "matrixark:context:active")
             self.assertEqual(repair_audit["current_active_prefix"], "matrixark:context:active")
             self.assertEqual(repair_audit["promotion_consistency"]["status"], "ok")
+            self.assertEqual(repair_audit["promotion_manifest_verification"]["status"], "ok")
+            self.assertTrue(repair_audit["promotion_manifest_verification"]["checks"]["manifest_payload_sha256_match"])
             self.assertIn("matrixark:context:active", json.dumps(repair_audit, sort_keys=True))
             active_records = read_target_records(kv_after, "matrixark:context:active")
             self.assertEqual([record["event_id_hash"] for record in active_records], [2])
@@ -1286,6 +1293,10 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertIn('status="duplicate"} 1', prom_text)
             self.assertIn('boundary="effective_start_seq"} 1', prom_text)
             self.assertIn('matrixark_context_backfill_incremental_repair_validation_status', prom_text)
+            self.assertIn("matrixark_context_backfill_incremental_repair_promotion_manifest_status", prom_text)
+            self.assertIn('status="ok",skipped="false"} 1', prom_text)
+            self.assertIn("matrixark_context_backfill_incremental_repair_promotion_manifest_check", prom_text)
+            self.assertIn('check="manifest_payload_sha256_match"} 1', prom_text)
 
     def test_incremental_repair_rejects_inconsistent_promotion(self):
         partial = {"enabled": False, "record_types": [], "tenant_ids": [], "user_ids": [], "session_ids": [], "filter_json": {}}

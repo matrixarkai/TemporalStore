@@ -1189,6 +1189,8 @@ def run_prometheus_gate(args: argparse.Namespace) -> Json:
         "matrixark_context_backfill_incremental_repair_promotion_data_quality_status",
         "matrixark_context_backfill_incremental_repair_promotion_source_range",
         "matrixark_context_backfill_incremental_repair_validation_status",
+        "matrixark_context_backfill_incremental_repair_promotion_manifest_status",
+        "matrixark_context_backfill_incremental_repair_promotion_manifest_check",
     ]
     required_validation_metrics = [
         "matrixark_context_backfill_validation_status",
@@ -1346,6 +1348,7 @@ def run_prometheus_gate(args: argparse.Namespace) -> Json:
                 "activation_status": activation_summary.get("status"),
                 "rollback_status": rollback_summary.get("status"),
                 "repair_status": repair_summary.get("status"),
+                "repair_manifest_verification_status": (repair_summary.get("promotion_manifest_verification") or {}).get("status"),
                 "plan_prometheus_output": str(plan_prometheus),
                 "shadow_prometheus_output": str(shadow_prometheus),
                 "validation_prometheus_output": str(validation_prometheus),
@@ -1374,6 +1377,7 @@ def run_prometheus_gate(args: argparse.Namespace) -> Json:
         and item["activation_status"] == "ok"
         and item["rollback_status"] == "ok"
         and item["repair_status"] == "ok"
+        and item["repair_manifest_verification_status"] == "ok"
         and all(item["plan_metrics_present"].values())
         and all(item["shadow_metrics_present"].values())
         and all(item["validation_metrics_present"].values())
@@ -1681,6 +1685,7 @@ def prometheus_checks(summary: Json) -> list[Json]:
         check("prometheus_gate_activation_metrics_present", all(all((item.get("activation_metrics_present") or {}).values()) for item in results)),
         check("prometheus_gate_rollback_metrics_present", all(all((item.get("rollback_metrics_present") or {}).values()) for item in results)),
         check("prometheus_gate_incremental_repair_metrics_present", all(all((item.get("repair_metrics_present") or {}).values()) for item in results)),
+        check("prometheus_gate_incremental_repair_manifest_verified", all(item.get("repair_manifest_verification_status") == "ok" for item in results)),
         check("prometheus_gate_emitted_samples", all(int(item.get("plan_metric_count", 0) or 0) > 0 and int(item.get("shadow_metric_count", 0) or 0) > 0 and int(item.get("validation_metric_count", 0) or 0) > 0 and int(item.get("activation_metric_count", 0) or 0) > 0 and int(item.get("rollback_metric_count", 0) or 0) > 0 and int(item.get("repair_metric_count", 0) or 0) > 0 for item in results)),
     ]
 
