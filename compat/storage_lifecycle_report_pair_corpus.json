@@ -44,8 +44,8 @@
       "object_index_entry_fields": ["model", "table", "object_key", "page_chain", "tombstone", "generation"],
       "storage_zone_fields": ["zone_id", "total_bytes", "used_bytes", "stale_bytes", "segments"],
       "stream_fields": ["stream_id", "segments", "rollover_count", "sealed_segment_count"],
-      "segment_fields": ["segment_id", "extent_id", "start_offset", "sealed", "generation"],
-      "extent_fields": ["extent_id", "block_range", "reclaim_state", "generation"],
+      "segment_fields": ["segment_id", "extent", "start_offset", "sealed", "generation"],
+      "extent_fields": ["extent", "block_range", "reclaim_state", "generation"],
       "slot_fields": ["slot_id", "dirty_generation", "object_refs", "page_refs", "tombstones", "owner_mismatch_count"],
       "append_watermark_fields": ["shard_id", "slot_id", "log_index", "timestamp_ms"],
       "compaction_watermark_fields": ["shard_id", "safe_generation", "safe_timestamp_ms", "follower_floor"],
@@ -470,7 +470,31 @@
       "storage_zone_used_bytes": 3072,
       "storage_zone_stale_bytes": 1024,
       "append_log_replay_records": 4,
-      "append_log_reclaimed_records": 1
+      "append_log_reclaimed_records": 1,
+      "storage_zone_samples": [
+        {"zone_id": 2, "total_bytes": 4096, "used_bytes": 3072, "stale_bytes": 1024, "segments": [3, 4]}
+      ],
+      "stream_samples": [
+        {"stream_id": "cpp:page_stream", "segments": [3, 4], "rollover_count": 1, "sealed_segment_count": 1}
+      ],
+      "segment_samples": [
+        {"segment_id": 3, "extent": 2, "start_offset": 128, "sealed": false, "generation": 7}
+      ],
+      "extent_samples": [
+        {"extent": 2, "block_range": [128, 640], "reclaim_state": "mixed_live_stale", "generation": 7}
+      ],
+      "slot_samples": [
+        {
+          "slot_id": 7,
+          "dirty_generation": 7,
+          "object_refs": [7],
+          "page_refs": [
+            {"shard_id": 1, "zone_id": 2, "segment_id": 3, "page_id": 4, "offset": 128, "length": 512, "generation": 7}
+          ],
+          "tombstones": ["cpp:model:object-7"],
+          "owner_mismatch_count": 0
+        }
+      ]
     },
     "storage_gc_snapshot": {
       "tombstone_records": 1,
@@ -551,8 +575,8 @@
       "object_index_entry_fields": ["model", "table", "object_key", "page_chain", "tombstone", "generation"],
       "storage_zone_fields": ["zone_id", "total_bytes", "used_bytes", "stale_bytes", "segments"],
       "stream_fields": ["stream_id", "segments", "rollover_count", "sealed_segment_count"],
-      "segment_fields": ["segment_id", "extent_id", "start_offset", "sealed", "generation"],
-      "extent_fields": ["extent_id", "block_range", "reclaim_state", "generation"],
+      "segment_fields": ["segment_id", "extent", "start_offset", "sealed", "generation"],
+      "extent_fields": ["extent", "block_range", "reclaim_state", "generation"],
       "slot_fields": ["slot_id", "dirty_generation", "object_refs", "page_refs", "tombstones", "owner_mismatch_count"],
       "append_watermark_fields": ["shard_id", "slot_id", "log_index", "timestamp_ms"],
       "compaction_watermark_fields": ["shard_id", "safe_generation", "safe_timestamp_ms", "follower_floor"],
@@ -977,7 +1001,31 @@
       "storage_zone_used_bytes": 3072,
       "storage_zone_stale_bytes": 1024,
       "append_log_replay_records": 4,
-      "append_log_reclaimed_records": 1
+      "append_log_reclaimed_records": 1,
+      "storage_zone_samples": [
+        {"zone_id": 2, "total_bytes": 4096, "used_bytes": 3072, "stale_bytes": 1024, "segments": [3, 4]}
+      ],
+      "stream_samples": [
+        {"stream_id": "rust:page_stream", "segments": [3, 4], "rollover_count": 1, "sealed_segment_count": 1}
+      ],
+      "segment_samples": [
+        {"segment_id": 3, "extent": 2, "start_offset": 128, "sealed": false, "generation": 7}
+      ],
+      "extent_samples": [
+        {"extent": 2, "block_range": [128, 640], "reclaim_state": "mixed_live_stale", "generation": 7}
+      ],
+      "slot_samples": [
+        {
+          "slot_id": 7,
+          "dirty_generation": 7,
+          "object_refs": [7],
+          "page_refs": [
+            {"shard_id": 1, "zone_id": 2, "segment_id": 3, "page_id": 4, "offset": 128, "length": 512, "generation": 7}
+          ],
+          "tombstones": ["rust:model:object-7"],
+          "owner_mismatch_count": 0
+        }
+      ]
     },
     "storage_gc_snapshot": {
       "tombstone_records": 1,

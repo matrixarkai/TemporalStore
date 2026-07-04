@@ -596,8 +596,8 @@ Public feature shape keys:
 - `object_index_entry_fields`: `model`, `table`, `object_key`, `page_chain`, `tombstone`, `generation`
 - `storage_zone_fields`: `zone_id`, `total_bytes`, `used_bytes`, `stale_bytes`, `segments`
 - `stream_fields`: `stream_id`, `segments`, `rollover_count`, `sealed_segment_count`
-- `segment_fields`: `segment_id`, `extent_id`, `start_offset`, `sealed`, `generation`
-- `extent_fields`: `extent_id`, `block_range`, `reclaim_state`, `generation`
+- `segment_fields`: `segment_id`, `extent`, `start_offset`, `sealed`, `generation`
+- `extent_fields`: `extent`, `block_range`, `reclaim_state`, `generation`
 - `slot_fields`: `slot_id`, `dirty_generation`, `object_refs`, `page_refs`, `tombstones`, `owner_mismatch_count`
 - `append_watermark_fields`: `shard_id`, `slot_id`, `log_index`, `timestamp_ms`
 - `compaction_watermark_fields`: `shard_id`, `safe_generation`, `safe_timestamp_ms`, `follower_floor`
@@ -1092,6 +1092,10 @@ warming cold pages.
 and bounded `tombstone_samples`, `gc_eligibility_samples`, and
 `follower_cursor_safety_samples` prove public `Tombstone`, `GcEligibility`, and
 `FollowerCursorSafety` shape without materializing every reclaim candidate.
+`storage_topology_snapshot` likewise carries bounded `storage_zone_samples`,
+`stream_samples`, `segment_samples`, `extent_samples`, and `slot_samples` so
+C++ and Rust prove the same public `StorageZone`, `Stream`, `Segment`, `Extent`,
+and `Slot` shape while keeping topology reports compact.
 
 `tools/compare_storage_lifecycle_reports.py` is the operator-facing wrapper for
 live C++/Rust report comparison and uses the same fail-closed contract.

@@ -233,8 +233,8 @@ PUBLIC_STORAGE_FEATURE_SHAPES: Json = {
     "object_index_entry_fields": ["model", "table", "object_key", "page_chain", "tombstone", "generation"],
     "storage_zone_fields": ["zone_id", "total_bytes", "used_bytes", "stale_bytes", "segments"],
     "stream_fields": ["stream_id", "segments", "rollover_count", "sealed_segment_count"],
-    "segment_fields": ["segment_id", "extent_id", "start_offset", "sealed", "generation"],
-    "extent_fields": ["extent_id", "block_range", "reclaim_state", "generation"],
+    "segment_fields": ["segment_id", "extent", "start_offset", "sealed", "generation"],
+    "extent_fields": ["extent", "block_range", "reclaim_state", "generation"],
     "slot_fields": ["slot_id", "dirty_generation", "object_refs", "page_refs", "tombstones", "owner_mismatch_count"],
     "append_watermark_fields": ["shard_id", "slot_id", "log_index", "timestamp_ms"],
     "compaction_watermark_fields": ["shard_id", "safe_generation", "safe_timestamp_ms", "follower_floor"],
@@ -946,6 +946,11 @@ def default_storage_topology_snapshot(metrics: Json | None = None) -> Json:
         "storage_zone_stale_bytes": int(source.get("storage_zone_stale_bytes") or 0),
         "append_log_replay_records": int(source.get("append_log_replay_records") or 0),
         "append_log_reclaimed_records": int(source.get("append_log_reclaimed_records") or 0),
+        "storage_zone_samples": list(source.get("storage_zone_samples") or []),
+        "stream_samples": list(source.get("stream_samples") or []),
+        "segment_samples": list(source.get("segment_samples") or []),
+        "extent_samples": list(source.get("extent_samples") or []),
+        "slot_samples": list(source.get("slot_samples") or []),
     }
 
 
