@@ -459,6 +459,9 @@ REQUIRED_STORAGE_GC_SNAPSHOT_FIELDS = [
     "follower_cursor_retention_floor",
     "follower_cursor_blocked_reclaim_count",
     "follower_cursor_safe_to_reclaim",
+    "tombstone_samples",
+    "gc_eligibility_samples",
+    "follower_cursor_safety_samples",
 ]
 
 REQUIRED_STORAGE_WATERMARK_SNAPSHOT_FIELDS = [
@@ -1412,6 +1415,9 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
             if field == "follower_cursor_safe_to_reclaim":
                 if not isinstance(gc_snapshot.get(field), bool):
                     failures.append(f"{backend} gc snapshot `{field}` must be boolean")
+            elif field.endswith("_samples"):
+                if not isinstance(gc_snapshot.get(field), list):
+                    failures.append(f"{backend} gc snapshot `{field}` must be a list")
             else:
                 value = _as_number(gc_snapshot.get(field))
                 if value is None or value < 0:

@@ -483,7 +483,31 @@
       "physical_reclaim_errors": 0,
       "follower_cursor_retention_floor": 0,
       "follower_cursor_blocked_reclaim_count": 2,
-      "follower_cursor_safe_to_reclaim": false
+      "follower_cursor_safe_to_reclaim": false,
+      "tombstone_samples": [
+        {
+          "ref": "cpp:model:object-7",
+          "generation": 7,
+          "deleted_at_ms": 1782600000000,
+          "reason": "object_tombstone"
+        }
+      ],
+      "gc_eligibility_samples": [
+        {
+          "ref": "cpp:model:object-7",
+          "eligible_after_ms": 1782600000000,
+          "has_tombstone": true,
+          "follower_safe": false,
+          "reclaimable_bytes": 0
+        }
+      ],
+      "follower_cursor_safety_samples": [
+        {
+          "min_follower_cursor": 0,
+          "blocked_reclaim_bytes": 4096,
+          "safe_to_reclaim": false
+        }
+      ]
     }
   },
   "rust": {
@@ -966,7 +990,31 @@
       "physical_reclaim_errors": 0,
       "follower_cursor_retention_floor": 0,
       "follower_cursor_blocked_reclaim_count": 2,
-      "follower_cursor_safe_to_reclaim": false
+      "follower_cursor_safe_to_reclaim": false,
+      "tombstone_samples": [
+        {
+          "ref": "rust:model:object-7",
+          "generation": 7,
+          "deleted_at_ms": 1782600000000,
+          "reason": "object_tombstone"
+        }
+      ],
+      "gc_eligibility_samples": [
+        {
+          "ref": "rust:model:object-7",
+          "eligible_after_ms": 1782600000000,
+          "has_tombstone": true,
+          "follower_safe": false,
+          "reclaimable_bytes": 0
+        }
+      ],
+      "follower_cursor_safety_samples": [
+        {
+          "min_follower_cursor": 0,
+          "blocked_reclaim_bytes": 4096,
+          "safe_to_reclaim": false
+        }
+      ]
     }
   }
 }

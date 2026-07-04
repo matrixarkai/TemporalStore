@@ -2444,6 +2444,11 @@ impl TemporalEngine {
                 shard,
                 report.storage_index_snapshot,
             );
+            report.storage_gc_snapshot = storage_gc_snapshot_with_samples(
+                request.shard_id,
+                shard,
+                report.storage_gc_snapshot,
+            );
         }
         report
     }
@@ -9741,6 +9746,106 @@ fn storage_index_snapshot_with_samples(
         .map(|(_, sample)| sample)
         .take(MAX_STORAGE_INDEX_SAMPLES)
         .collect();
+    snapshot
+}
+
+fn storage_gc_ref(entry: &LivePageEntry) -> String {
+    match entry.component.as_deref() {
+        Some(component) if !component.is_empty() => {
+            format!("{}:{}:{}", entry.kind, entry.object_key, component)
+        }
+        _ => format!("{}:{}", entry.kind, entry.object_key),
+    }
+}
+
+fn storage_gc_snapshot_with_samples(
+    _shard_id: ShardId,
+    shard: &ShardState,
+    mut snapshot: StorageGcSnapshot,
+) -> StorageGcSnapshot {
+    let mut entries = collect_live_page_entries(shard);
+    entries.sort_by(|left, right| {
+        (
+            left.deleted,
+            left.kind.as_str(),
+            left.object_key.as_str(),
+            left.component.as_deref().unwrap_or(""),
+            left.address.page_segment_id,
+            left.address.offset,
+        )
+            .cmp(&(
+                right.deleted,
+                right.kind.as_str(),
+                right.object_key.as_str(),
+                right.component.as_deref().unwrap_or(""),
+                right.address.page_segment_id,
+                right.address.offset,
+            ))
+    });
+
+    const MAX_STORAGE_GC_SAMPLES: usize = 8;
+    let now = now_ms();
+    snapshot.tombstone_samples = entries
+        .iter()
+        .filter(|entry| entry.deleted)
+        .take(MAX_STORAGE_GC_SAMPLES)
+        .map(|entry| StorageTombstoneSample {
+            ref_id: storage_gc_ref(entry),
+            generation: entry.address.object_id.unwrap_or(0),
+            deleted_at_ms: now,
+            reason: "object_tombstone".to_string(),
+        })
+        .collect();
+
+    let follower_safe = snapshot.follower_cursor_safe_to_reclaim;
+    let mut eligibility_samples: Vec<StorageGcEligibilitySample> = entries
+        .iter()
+        .filter_map(|entry| {
+            let eligible_after_ms = shard
+                .expires_at_ms
+                .get(&entry.object_key)
+                .copied()
+                .unwrap_or(0);
+            let has_tombstone = entry.deleted;
+            let ttl_eligible = eligible_after_ms > 0 && eligible_after_ms <= now;
+            if !has_tombstone && !ttl_eligible {
+                return None;
+            }
+            Some(StorageGcEligibilitySample {
+                ref_id: storage_gc_ref(entry),
+                eligible_after_ms,
+                has_tombstone,
+                follower_safe,
+                reclaimable_bytes: if follower_safe { entry.address.length } else { 0 },
+            })
+        })
+        .take(MAX_STORAGE_GC_SAMPLES)
+        .collect();
+
+    if eligibility_samples.is_empty() && snapshot.gc_eligible_record_count > 0 {
+        eligibility_samples.push(StorageGcEligibilitySample {
+            ref_id: "aggregate:gc_eligible_records".to_string(),
+            eligible_after_ms: 0,
+            has_tombstone: snapshot.tombstone_records > 0,
+            follower_safe,
+            reclaimable_bytes: if follower_safe {
+                snapshot.reclaimable_bytes
+            } else {
+                0
+            },
+        });
+    }
+    snapshot.gc_eligibility_samples = eligibility_samples;
+
+    snapshot.follower_cursor_safety_samples = vec![StorageFollowerCursorSafetySample {
+        min_follower_cursor: snapshot.follower_cursor_retention_floor,
+        blocked_reclaim_bytes: if follower_safe {
+            0
+        } else {
+            snapshot.reclaimable_bytes
+        },
+        safe_to_reclaim: follower_safe,
+    }];
     snapshot
 }
 
