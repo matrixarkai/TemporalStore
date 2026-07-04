@@ -1,0 +1,673 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Rust TemporalStore Deep Dive And C++ Comparison</title>
+  <style>
+    :root {
+      --bg: #f7f8fb;
+      --panel: #ffffff;
+      --ink: #18202f;
+      --muted: #5d6878;
+      --line: #d9dee8;
+      --accent: #116d6e;
+      --accent-2: #7a4e12;
+      --code: #101724;
+      --soft: #eef6f6;
+      --warn: #fff6e6;
+      --good: #edf8ef;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 15px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      background: linear-gradient(120deg, #0e4f56 0%, #1d6f69 50%, #8b6b2f 100%);
+      color: white;
+      padding: 42px 48px 34px;
+    }
+    header h1 {
+      margin: 0 0 10px;
+      font-size: clamp(30px, 4vw, 52px);
+      line-height: 1.02;
+      letter-spacing: 0;
+    }
+    header p {
+      max-width: 1120px;
+      margin: 0;
+      color: #eef8f8;
+      font-size: 18px;
+    }
+    main {
+      max-width: 1320px;
+      margin: 0 auto;
+      padding: 28px 24px 64px;
+    }
+    nav {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      padding: 16px 18px;
+      margin-bottom: 24px;
+    }
+    nav a {
+      color: var(--accent);
+      display: inline-block;
+      margin: 4px 16px 4px 0;
+      text-decoration: none;
+      font-weight: 650;
+    }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      margin: 18px 0;
+      padding: 24px;
+    }
+    h2 {
+      margin: 0 0 14px;
+      font-size: 25px;
+      letter-spacing: 0;
+    }
+    h3 {
+      margin: 22px 0 10px;
+      font-size: 18px;
+      letter-spacing: 0;
+    }
+    p { margin: 10px 0; }
+    ul { padding-left: 22px; }
+    li { margin: 6px 0; }
+    code {
+      background: #edf0f5;
+      color: #18202f;
+      padding: 2px 5px;
+      border-radius: 4px;
+      font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      font-size: 0.92em;
+    }
+    pre {
+      background: var(--code);
+      color: #e7edf8;
+      padding: 16px;
+      overflow-x: auto;
+      border-radius: 6px;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0 4px;
+      font-size: 14px;
+    }
+    th, td {
+      border: 1px solid var(--line);
+      padding: 10px 12px;
+      vertical-align: top;
+      text-align: left;
+    }
+    th {
+      background: #eef2f7;
+      color: #172033;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      padding: 16px;
+      background: #fbfcfe;
+    }
+    .note {
+      background: var(--soft);
+      border-left: 4px solid var(--accent);
+      padding: 12px 14px;
+      margin: 14px 0;
+    }
+    .warn {
+      background: var(--warn);
+      border-left: 4px solid var(--accent-2);
+      padding: 12px 14px;
+      margin: 14px 0;
+    }
+    .good {
+      background: var(--good);
+      border-left: 4px solid #2d7a3d;
+      padding: 12px 14px;
+      margin: 14px 0;
+    }
+    .small { color: var(--muted); font-size: 13px; }
+    @media (max-width: 880px) {
+      header { padding: 30px 22px; }
+      main { padding: 18px 12px 44px; }
+      section { padding: 18px; }
+      .grid { grid-template-columns: 1fr; }
+      table { font-size: 13px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Rust TemporalStore Deep Dive</h1>
+    <p>Storage engine internals, MatrixArk context workflow, and a direct comparison with the C++ TemporalStore implementation.</p>
+  </header>
+
+  <main>
+    <nav>
+      <a href="#summary">Summary</a>
+      <a href="#source-map">Source Map</a>
+      <a href="#storage-model">Storage Model</a>
+      <a href="#write-read">Write/Read Paths</a>
+      <a href="#cache">Cache</a>
+      <a href="#lifecycle">Lifecycle</a>
+      <a href="#context">Context</a>
+      <a href="#comparison">Rust vs C++</a>
+      <a href="#gaps">Gaps</a>
+    </nav>
+
+    <section id="summary">
+      <h2>Executive Summary</h2>
+      <p>
+        Rust TemporalStore is no longer just a client or proxy shell. The core runtime has a real storage engine made of
+        <code>TemporalEngine</code>, slot-first indexes, page/block address aliases, packed timestamp pages, a write-ahead
+        log, a multi-layer cache, storage lifecycle reports, and data-node schedulers. MatrixArk context records are stored
+        on the same engine primitives as other data models: model maps point to <code>PageAddress</code> values, timestamped
+        maps point to packed pages, and context-specific retrieval uses engine commands plus workflow code.
+      </p>
+      <div class="note">
+        The deepest Rust storage engine code currently lives in
+        <code>crates/temporalstore-rust/src/engine.rs</code>,
+        <code>engine/state.rs</code>,
+        <code>engine/context.rs</code>,
+        <code>engine/packed_pages.rs</code>,
+        <code>block_store.rs</code>,
+        <code>cache.rs</code>,
+        <code>wal.rs</code>,
+        and <code>data_node.rs</code>.
+      </div>
+      <p>
+        The C++ engine remains the mature reference for tightly packed page indexes, coroutine-driven
+        <code>StorageManager</code>, page GC, page compaction, zones, stream/blob rollover, and production path behavior.
+        Rust has caught up on public contract shape and much of the runtime machinery, but it still carries more report
+        scaffolding and compatibility aliases, and its page/block layer is less compact than the C++ packed structures.
+      </p>
+    </section>
+
+    <section id="source-map">
+      <h2>Rust Source Map</h2>
+      <table>
+        <thead>
+          <tr><th>Area</th><th>Rust files</th><th>What to read there</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Engine facade</td>
+            <td><code>crates/temporalstore-rust/src/engine.rs</code></td>
+            <td><code>TemporalEngine</code>, shard map, command execution, admission, durable write override, stream read/scan, compaction, storage lifecycle.</td>
+          </tr>
+          <tr>
+            <td>Shard state and indexes</td>
+            <td><code>engine/state.rs</code>, <code>engine/slot_store.rs</code></td>
+            <td><code>ShardState</code>, model maps, context maps, <code>CoreIndex</code>, <code>SlotNode</code>, <code>PageIndex</code>, slot runtime reports.</td>
+          </tr>
+          <tr>
+            <td>Page/block store</td>
+            <td><code>block_store.rs</code>, <code>block_store/record.rs</code>, <code>lib.rs</code></td>
+            <td><code>BlockAddress</code>, <code>LocalBlockStore</code>, delayed destroy, extent/segment summaries, compression envelope, and aliases that expose <code>LocalPageStore</code>/<code>PageAddress</code>.</td>
+          </tr>
+          <tr>
+            <td>Timestamp pages</td>
+            <td><code>engine/packed_pages.rs</code></td>
+            <td>Chunking timestamped values into page-sized encoded feature pages and reading one timestamp back from a packed page.</td>
+          </tr>
+          <tr>
+            <td>WAL/index log</td>
+            <td><code>wal.rs</code>, <code>index_log.rs</code></td>
+            <td>Durable command log, append/replay/idempotence, scan ranges, flush and GC reports.</td>
+          </tr>
+          <tr>
+            <td>Cache</td>
+            <td><code>cache.rs</code></td>
+            <td><code>MultiLayerCache</code>, memory/pmem/SSD tiers, disk index, pinned entries, async writeback, invalidation, refill, backpressure.</td>
+          </tr>
+          <tr>
+            <td>Lifecycle</td>
+            <td><code>data_node.rs</code>, <code>engine/reports.rs</code>, <code>engine.rs</code></td>
+            <td>Schedulers, storage manager options, pressure snapshots, phase reports, canonical parity reports and effective tuning.</td>
+          </tr>
+          <tr>
+            <td>MatrixArk context</td>
+            <td><code>types.rs</code>, <code>engine/context.rs</code>, <code>context_workflow.rs</code>, <code>proxy.rs</code></td>
+            <td>Context data models, timestamp key fanout, child refs, secondary indexes, native retrieval workflow, resource/skill fanout.</td>
+          </tr>
+          <tr>
+            <td>Raft integration</td>
+            <td><code>raft.rs</code>, <code>raft/rustraft.rs</code>, <code>crates/rustraft/src/lib.rs</code></td>
+            <td>Data-node Raft backend, metaserver Raft runtime, membership/read safety reports, and the separate RustRaft public library surface.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="storage-model">
+      <h2>Rust Storage Model</h2>
+      <div class="grid">
+        <div class="card">
+          <h3>1. Engine owns loaded shards</h3>
+          <p>
+            <code>TemporalEngine</code> stores loaded shard state in
+            <code>Arc&lt;RwLock&lt;HashMap&lt;ShardId, ShardState&gt;&gt;&gt;</code>. A command first resolves the shard,
+            validates admission and readonly state, then executes against the in-memory model maps and page store.
+          </p>
+        </div>
+        <div class="card">
+          <h3>2. Model maps point to pages</h3>
+          <p>
+            <code>ShardState</code> keeps maps such as strings, hashes, sets, features, sequences, IPS, risk, and context
+            records. Most values are not stored inline; they point to <code>PageAddress</code>, which is currently an alias
+            for <code>BlockAddress</code>.
+          </p>
+        </div>
+        <div class="card">
+          <h3>3. Slot index is the runtime authority</h3>
+          <p>
+            <code>CoreIndex</code> contains a <code>SlotMap</code>. Each <code>SlotNode</code> records object ids, deleted
+            object ids, dirty generation, in-memory/loading flags, TTL, and a <code>PageIndexMap</code>. The shape mirrors
+            the C++ <code>Index -&gt; SlotMap -&gt; SlotNode -&gt; PageIndex/ObjectIndex</code> hierarchy, but uses Rust maps
+            rather than packed structs.
+          </p>
+        </div>
+        <div class="card">
+          <h3>4. Pages are durable segments</h3>
+          <p>
+            <code>LocalBlockStore</code> appends encoded page records and returns <code>BlockAddress</code>. The public
+            page-store compatibility module reexports <code>BlockAddress as PageAddress</code> and
+            <code>LocalBlockStore as LocalPageStore</code>, so newer code can use canonical block names while older engine
+            code still compiles with page-store terms.
+          </p>
+        </div>
+      </div>
+
+      <h3>Key Rust Data Structures</h3>
+      <table>
+        <thead>
+          <tr><th>Struct</th><th>Where</th><th>Important fields</th><th>Role</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>TemporalEngine</code></td>
+            <td><code>engine.rs</code></td>
+            <td><code>shards</code>, <code>cache</code>, <code>page_store</code>, <code>wal_store</code>, <code>index_log_store</code>, <code>configs</code>, <code>infos</code>, <code>admissions</code></td>
+            <td>Single-process engine facade for commands, storage, lifecycle and metrics.</td>
+          </tr>
+          <tr>
+            <td><code>ShardState</code></td>
+            <td><code>engine/state.rs</code></td>
+            <td>Model maps, context maps, <code>slot_index</code>, <code>dirty_objects</code></td>
+            <td>In-memory shard object/index authority.</td>
+          </tr>
+          <tr>
+            <td><code>SlotNode</code></td>
+            <td><code>engine/state.rs</code></td>
+            <td><code>routing_slot</code>, <code>layout</code>, <code>dirty</code>, <code>deleted</code>, <code>object_index</code>, <code>page_index</code></td>
+            <td>Slot-local ownership, dirtiness and page references.</td>
+          </tr>
+          <tr>
+            <td><code>PageIndex</code></td>
+            <td><code>engine/state.rs</code></td>
+            <td><code>object_key</code>, <code>model_id</code>, <code>component</code>, <code>object_id</code>, <code>address</code>, <code>dirty</code>, <code>deleted</code>, <code>log_backed</code></td>
+            <td>Logical object/component to durable page address.</td>
+          </tr>
+          <tr>
+            <td><code>BlockAddress</code></td>
+            <td><code>block_store.rs</code></td>
+            <td><code>page_segment_id</code>, <code>offset</code>, <code>length</code>, optional <code>page_id</code>, <code>object_id</code>, <code>routing_slot</code>, <code>extent_id</code>, <code>sha256</code></td>
+            <td>Physical durable location and optional ownership metadata.</td>
+          </tr>
+          <tr>
+            <td><code>StorageTuningConfig</code></td>
+            <td><code>storage_config.rs</code></td>
+            <td><code>context_page_target_bytes</code>, <code>block_segment_target_bytes</code>, <code>storage_zone_size</code>, <code>stream_max_blob_size</code>, <code>cold_scan_no_cache_fill</code></td>
+            <td>Rust public config surface aligned with C++ benchmark/report knobs.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="write-read">
+      <h2>Write And Read Paths</h2>
+      <h3>Rust write path</h3>
+      <pre>ExecuteRequest
+  -&gt; TemporalEngine::execute_with_storage_override
+  -&gt; shard lookup and admission
+  -&gt; validate command preconditions
+  -&gt; execute_on_shard(cache, page_store, async_storage, command)
+  -&gt; append value/page through LocalPageStore alias
+  -&gt; update model map and slot-first index
+  -&gt; mark dirty_objects
+  -&gt; if sync durable:
+       wal_store.append(command)
+       index_log_store.append_json(serialized ShardState)
+       persist index bytes</pre>
+      <p>
+        In Rust, the loaded <code>ShardState</code> is both the current logical object index and the source for rebuilding
+        secondary views. The <code>promote_model_maps_to_slot_index_authority</code> and
+        <code>reconcile_secondary_views_from_slot_index</code> calls keep the slot-first index and model maps aligned.
+      </p>
+
+      <h3>Rust read path</h3>
+      <pre>Command query
+  -&gt; model map lookup or slot_index_page_address
+  -&gt; PageAddress / BlockAddress
+  -&gt; read_page_bytes(cache, page_store, shard_id, address)
+  -&gt; MultiLayerCache get/refill or LocalBlockStore read
+  -&gt; decode bytes into object, feature point, or ContextWire value
+  -&gt; filter by timestamp/status/kind/score where needed</pre>
+      <p>
+        Timestamped models use <code>BTreeMap&lt;u64, PageAddress&gt;</code>. For packed timestamp pages, several logical
+        timestamps can point to the same durable page. <code>read_feature_point_cached</code> keeps a per-query decoded page
+        cache so repeated reads from the same packed page avoid repeated JSON decode.
+      </p>
+
+      <h3>Cold scan path</h3>
+      <pre>Cold timestamp/page range
+  -&gt; page index scan
+  -&gt; no-cache page read
+  -&gt; bounded decode
+  -&gt; no hot-cache promotion</pre>
+      <p>
+        The canonical cold-scan contract is defined in <code>engine/reports.rs</code> and exposed through
+        <code>storage_cold_scan_contract</code>. The Rust runtime has the <code>TS_COLD_SCAN_NO_CACHE_FILL</code> knob and
+        report fields such as <code>cold_scan_no_cache_reads</code> and <code>hot_cache_promotions</code>. The intended
+        production invariant is that temporal compression or GC scans do not warm serving cache unless a user-facing
+        retrieval explicitly asks for raw evidence.
+      </p>
+    </section>
+
+    <section id="cache">
+      <h2>Multi-Layer Cache</h2>
+      <p>
+        Rust's <code>MultiLayerCache</code> is a real tiered cache, not just a map. It contains memory and pmem maps,
+        an SSD/disk index, pin tracking, an access order, async writeback queue, admission metadata, and detailed stats.
+      </p>
+      <table>
+        <thead>
+          <tr><th>Layer/Feature</th><th>Rust implementation</th><th>Why it matters</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Memory object cache</td>
+            <td><code>memory: HashMap&lt;CacheKey, Arc&lt;[u8]&gt;&gt;</code>, byte capacity, access order</td>
+            <td>Fast hot-page path; evicted under memory pressure.</td>
+          </tr>
+          <tr>
+            <td>Persistent-memory style tier</td>
+            <td><code>pmem</code> map, pmem capacity, pmem order</td>
+            <td>Intermediate warm tier before disk.</td>
+          </tr>
+          <tr>
+            <td>Disk block cache</td>
+            <td><code>disk_index</code>, disk order, encoded cache blocks</td>
+            <td>Durable-ish read-through fallback for cache misses.</td>
+          </tr>
+          <tr>
+            <td>Async writeback</td>
+            <td><code>async_writeback_queue</code>, queue limit, drain report, rejection counter</td>
+            <td>Backpressure evidence for production write path.</td>
+          </tr>
+          <tr>
+            <td>Invalidation</td>
+            <td><code>invalidate</code>, <code>invalidate_memory_only</code>, shard/slot invalidation helpers</td>
+            <td>Append/compaction watermark changes can prevent stale page hits.</td>
+          </tr>
+          <tr>
+            <td>Pinning</td>
+            <td><code>get_pinned_handle</code>, <code>pin</code>, <code>unpin</code></td>
+            <td>Protects active readers during page lifecycle operations.</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="good">
+        Rust is strong here because cache behavior is visible in code and metrics: memory hits, disk hits, refills,
+        invalidations, async writeback queue depth, writeback rejections, compressed hits, and zero-copy handle hits.
+      </div>
+    </section>
+
+    <section id="lifecycle">
+      <h2>Storage Lifecycle And StoreManager</h2>
+      <p>
+        The Rust lifecycle path is split between <code>TemporalEngine</code> and <code>DataNodeRuntime</code>. The engine
+        computes lifecycle plans and can apply them. The data node owns schedulers and runtime reports for dirty dumps,
+        expiry sweeps, storage lifecycle, and storage manager cycles.
+      </p>
+
+      <h3>Rust lifecycle plan</h3>
+      <pre>storage_lifecycle_plan(request)
+  -&gt; slot_storage_summaries
+  -&gt; dirty slots and undumped WAL records
+  -&gt; live page segment ids
+  -&gt; stale page segment ids
+  -&gt; recovery report and reclaim candidates
+  -&gt; delayed-destroy segments
+  -&gt; page GC dependency plan
+  -&gt; follower cursor / snapshot retention checks
+  -&gt; lifecycle reasons and selected dump slots</pre>
+
+      <h3>Rust storage manager cycle</h3>
+      <pre>run_storage_manager_cycle(request)
+  -&gt; prepare
+  -&gt; expire
+  -&gt; page reclaim guarded by dependency plan
+  -&gt; apply lifecycle
+  -&gt; eviction
+  -&gt; WAL/index-log reclaim
+  -&gt; index GC
+  -&gt; page compaction
+  -&gt; metrics reap
+  -&gt; StorageManagerCycleReport</pre>
+      <p>
+        The cycle intentionally keeps a C++ stage order in the report:
+        <code>prepare</code>, <code>reclaim_oplog</code>, <code>expire</code>, <code>evict</code>,
+        <code>reclaim_page</code>, <code>index_gc</code>, <code>compact</code>, <code>reap_metrics</code>.
+        The canonical public contract maps these to the broader parity phase names:
+        <code>prepare</code>, <code>reclaim</code>, <code>evict</code>, <code>expire</code>, <code>page_gc</code>,
+        <code>block_gc</code>, <code>compaction</code>, <code>index_gc</code>, <code>delayed_destroy</code>,
+        <code>follower_cursor_safety</code>, and <code>watermark_progress</code>.
+      </p>
+
+      <h3>Physical reclaim semantics</h3>
+      <p>
+        Rust distinguishes cache eviction from physical reclaim. Eviction removes cache entries and optionally drops
+        cold objects under policy. Physical reclaim is gated by <code>storage_page_gc_dependency_plan</code>, which refuses
+        reclaim when live page refs, slot dump manifests, shared-store replay cursors, snapshot refs, checkpoint floors,
+        Raft install floors, or delayed-destroy grace periods still retain a segment.
+      </p>
+      <div class="warn">
+        This is the right semantic model, but C++ still has the more mature production background loop and compact packed
+        metadata. Rust has strong reporting and explicit dependency checks; the remaining parity work is proving the same
+        behavior under long-running live load, restart, follower cursor, and compaction scenarios.
+      </div>
+    </section>
+
+    <section id="context">
+      <h2>MatrixArk Context On Rust TemporalStore</h2>
+      <p>
+        Context management uses normal TemporalStore primitives. In <code>ShardState</code>, context records are stored as
+        separate maps:
+      </p>
+      <ul>
+        <li><code>context_nodes: HashMap&lt;String, PageAddress&gt;</code></li>
+        <li><code>context_events: HashMap&lt;String, BTreeMap&lt;u64, PageAddress&gt;&gt;</code></li>
+        <li><code>context_indexes: HashMap&lt;String, BTreeMap&lt;u64, PageAddress&gt;&gt;</code></li>
+        <li><code>context_children: HashMap&lt;String, BTreeMap&lt;u64, PageAddress&gt;&gt;</code></li>
+        <li><code>context_embeddings</code>, <code>context_summaries</code>, <code>context_compressions</code>, <code>context_entities</code></li>
+      </ul>
+      <p>
+        Context events are timestamp-keyed with a fanout disambiguator:
+      </p>
+      <pre>context_timeline_key(timestamp_ms, disambiguator)
+  = timestamp_ms * CONTEXT_TIMELINE_FANOUT
+    + (disambiguator % CONTEXT_TIMELINE_FANOUT)</pre>
+      <p>
+        That means several events created from the same agent message do not overwrite each other as long as their event
+        ids differ. <code>context_event_timeline_key_for_write</code> searches the timestamp fanout window and either
+        finds the existing event or chooses a free timeline slot.
+      </p>
+
+      <h3>Rust context retrieval</h3>
+      <pre>ContextRetrieveRequest
+  -&gt; require tenant_hash and node_hashes
+  -&gt; embed query
+  -&gt; query summary embeddings for node_l0/node_l1 refs
+  -&gt; reorder node traversal by summary score
+  -&gt; fetch ContextNode
+  -&gt; fetch ContextEvent time range
+  -&gt; secondary-index/lexical prefilter debug
+  -&gt; rank blocks by relevance, tier, event time
+  -&gt; return ContextRetrieveReport
+
+ContextInjectRequest
+  -&gt; retrieve_context
+  -&gt; token-budget select blocks
+  -&gt; emit compact prompt and ContextPackAudit</pre>
+      <p>
+        Rust has the key native behavior needed to keep Python thin: query understanding, summary embedding traversal,
+        context-event filtering, ordering, injection, and audit assembly live in Rust workflow code. The main difference
+        from the C++ path is product shape: Rust exposes this through the Rust library/proxy workflow today, while C++ has
+        a native extension/API surface tied to the existing C++ server and SDK.
+      </p>
+    </section>
+
+    <section id="comparison">
+      <h2>Rust vs C++ TemporalStore</h2>
+      <table>
+        <thead>
+          <tr><th>Subsystem</th><th>Rust TemporalStore</th><th>C++ TemporalStore</th><th>Assessment</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Core engine</td>
+            <td><code>TemporalEngine</code> with RwLock shard map, command execution, page store, WAL, index log, admission.</td>
+            <td>Partition, command executor, object manager, index, page store, op logger, storage manager.</td>
+            <td>Feature shape is close. C++ is more mature under production server lifecycle.</td>
+          </tr>
+          <tr>
+            <td>Page address</td>
+            <td><code>PageAddress</code> is reexported from <code>BlockAddress</code>; includes segment, offset, length, optional ownership and checksum.</td>
+            <td><code>PageIndex</code> stores a compact address word plus page size and flags; page address is tightly packed.</td>
+            <td>Rust is more explicit/readable; C++ is more memory compact.</td>
+          </tr>
+          <tr>
+            <td>Page index</td>
+            <td>Rust <code>PageIndex</code> stores strings for model/object/component plus <code>PageAddress</code>.</td>
+            <td>C++ <code>PageIndex</code> is 17 bytes packed: object id, model id, page id, flags, size, address.</td>
+            <td>C++ wins compactness; Rust wins schema clarity and reportability.</td>
+          </tr>
+          <tr>
+            <td>Slot index</td>
+            <td><code>SlotNode</code> has layout state, object index, page index map, dirty generation, deleted flags, TTL.</td>
+            <td><code>SlotNode</code> and <code>SlotPageIndex</code> are integrated with slot store, dirty slots, and storage manager dumps.</td>
+            <td>Semantics align; Rust needs more live scale proof for dump/load/rebuild parity.</td>
+          </tr>
+          <tr>
+            <td>Write-ahead log</td>
+            <td><code>LocalWriteAheadLogStore</code> appends JSON-line records with rich metadata, replay idempotence, scan, flush, GC reports.</td>
+            <td><code>OpLogger</code> writes KV/page/delete logs and participates deeply in slot dump and page reclaim.</td>
+            <td>Rust is clear and inspectable; C++ is more tightly optimized and lifecycle-integrated.</td>
+          </tr>
+          <tr>
+            <td>Block/page store</td>
+            <td><code>LocalBlockStore</code> stores encoded page records, compression, segments, extents, delayed destroy, utility GC reports.</td>
+            <td><code>PageStore</code> handles zones, stream-backed page blobs, zone prepare/destroy, page GC, page compaction.</td>
+            <td>Rust has equivalent concepts; C++ is the production maturity baseline.</td>
+          </tr>
+          <tr>
+            <td>Cache</td>
+            <td>Explicit <code>MultiLayerCache</code> with memory/pmem/SSD, disk index, pinning, writeback queue, refill/invalidation metrics.</td>
+            <td>C++ uses object/page/block cache mechanics integrated with allocator and storage manager pressure.</td>
+            <td>Rust reportability is strong; C++ integration is mature.</td>
+          </tr>
+          <tr>
+            <td>Storage manager</td>
+            <td><code>run_storage_manager_cycle</code> and <code>DataNodeRuntime</code> schedulers produce detailed pressure and phase reports.</td>
+            <td><code>StorageManager::LoopWorker</code> runs a production coroutine loop through prepare, reclaim, evict, page GC, index reclaim, compaction, metrics.</td>
+            <td>C++ is older and battle-tested; Rust has detailed parity scaffolding and runtime cycle support.</td>
+          </tr>
+          <tr>
+            <td>Compaction/reclaim</td>
+            <td>Rust plans stale segments, delayed destroy, follower cursor/snapshot blockers, page GC dependency plans, page compaction reports.</td>
+            <td>C++ has page GC and page compactor wired directly to index, model manager and storage manager.</td>
+            <td>Rust has the right safety model; C++ has deeper production integration.</td>
+          </tr>
+          <tr>
+            <td>Context management</td>
+            <td>Native Rust workflow has extraction, resource/skill parsing, secondary indexes, summary traversal, retrieve/inject reports.</td>
+            <td>C++ extension has proto/API and native context retrieval work, with server/SDK integration.</td>
+            <td>Both are converging; Rust is often faster to iterate, C++ needs correctness/perf parity on context retrieve.</td>
+          </tr>
+          <tr>
+            <td>Public parity reports</td>
+            <td>Strong: canonical storage contract, tuning, read/write/cold scan, cache and reclaim contracts in <code>engine/reports.rs</code>.</td>
+            <td>Reports are being normalized from mature internal metrics/gflags.</td>
+            <td>Rust currently has clearer public parity output; C++ remains behavior reference.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="gaps">
+      <h2>Practical Gaps And Next Fixes</h2>
+      <h3>Rust gaps to close against C++</h3>
+      <ul>
+        <li>Make public reports use canonical names only, with compatibility aliases kept out of parity gates.</li>
+        <li>Keep reducing string-heavy Rust <code>PageIndex</code>/<code>SlotNode</code> reports for hot paths; compact structs should be used internally for native retrieval.</li>
+        <li>Run longer live storage lifecycle loops to prove WAL reclaim, index GC, delayed destroy, compaction and follower-cursor safety under restart and load.</li>
+        <li>Prove cold scan no-promote behavior with real page/block reads, not just report fields.</li>
+        <li>Move more Raft and membership implementation into the standalone RustRaft library while TemporalStore consumes it as a dependency.</li>
+      </ul>
+
+      <h3>C++ gaps to close against Rust</h3>
+      <ul>
+        <li>Normalize reports to the Rust-style canonical storage contract so comparison tools see identical shapes.</li>
+        <li>Make C++ context retrieval return non-empty, logically equivalent selected refs before treating latency as meaningful.</li>
+        <li>Use placement/index/cache driven fetch for context, avoiding broad scan/score paths.</li>
+        <li>Add native candidate cache and compact ContextPack assembly parity with Rust workflow behavior.</li>
+      </ul>
+
+      <h3>Most important parity gate</h3>
+      <pre>Same corpus + same storage mode + same topology + same config
+  -&gt; Rust and C++ expose the same public storage contract
+  -&gt; page/block indexes rebuild after restart
+  -&gt; cache eviction != physical reclaim
+  -&gt; cold scan does not warm hot cache
+  -&gt; context retrieval selected refs are non-empty and equivalent
+  -&gt; latency/QPS comparison is allowed only after correctness passes</pre>
+    </section>
+
+    <section>
+      <h2>Referenced Local Code Paths</h2>
+      <ul class="small">
+        <li><code>crates/temporalstore-rust/src/engine.rs</code></li>
+        <li><code>crates/temporalstore-rust/src/engine/state.rs</code></li>
+        <li><code>crates/temporalstore-rust/src/engine/context.rs</code></li>
+        <li><code>crates/temporalstore-rust/src/engine/packed_pages.rs</code></li>
+        <li><code>crates/temporalstore-rust/src/engine/slot_store.rs</code></li>
+        <li><code>crates/temporalstore-rust/src/engine/reports.rs</code></li>
+        <li><code>crates/temporalstore-rust/src/block_store.rs</code></li>
+        <li><code>crates/temporalstore-rust/src/cache.rs</code></li>
+        <li><code>crates/temporalstore-rust/src/wal.rs</code></li>
+        <li><code>crates/temporalstore-rust/src/data_node.rs</code></li>
+        <li><code>crates/temporalstore-rust/src/context_workflow.rs</code></li>
+        <li><code>src/partition/index/page_index.h</code></li>
+        <li><code>src/partition/index/slot_node.h</code></li>
+        <li><code>src/partition/storage/storage_manager.h</code> and <code>.cc</code></li>
+        <li><code>src/partition/storage/page_store.h</code>, <code>page_gc.h</code>, <code>page_compactor.h</code>, <code>op_logger.h</code></li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>
