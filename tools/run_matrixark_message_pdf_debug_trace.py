@@ -419,6 +419,76 @@ def compact_context_indexes(records: list[Json], aliases: ReportAliases) -> list
     return rows
 
 
+def compact_context_child_refs(records: list[Json], aliases: ReportAliases) -> list[Json]:
+    rows = []
+    for record in records:
+        parent_hash = record.get("parent_hash")
+        child_hash = record.get("child_hash")
+        rows.append(
+            {
+                "index_key": f"ctx:child:{first_present(record, 'scope.tenant_hash', 'tenant_hash')}:{parent_hash}",
+                "parent": aliases.node(parent_hash),
+                "child": aliases.node(child_hash),
+                "child_name": record.get("child_name", ""),
+                "updated_at_ms": record.get("updated_at_ms") or record.get("created_at_ms") or "",
+                "ref": aliases.ref("child_ref", record.get("child_ref_hash")),
+            }
+        )
+    return sorted(rows, key=lambda item: (str(item["parent"]), str(item["child_name"]), str(item["child"])))
+
+
+def compact_placement_routes(records: list[Json], aliases: ReportAliases) -> list[Json]:
+    rows_by_key: dict[tuple[str, str, str], Json] = {}
+    for record in records:
+        route = record.get("storage_route") if isinstance(record.get("storage_route"), dict) else {}
+        placement_key = record.get("placement_key") or route.get("placement_key") or route.get("routing_key") or route.get("partition_key")
+        placement_hash = record.get("placement_hash") or route.get("placement_hash")
+        node_hash = record.get("node_hash") or record.get("node_id")
+        if not placement_key and node_hash:
+            scope_key = record.get("scope_key") or first_present(record, "scope.scope_key")
+            if scope_key:
+                placement_key = f"context:{scope_key}:node={node_hash}"
+        if placement_key in ("", None):
+            continue
+        record_type = str(record.get("record_type") or "")
+        key = (str(placement_key), record_type, str(node_hash or ""))
+        row = rows_by_key.setdefault(
+            key,
+            {
+                "record_type": record_type,
+                "node": aliases.node(node_hash) if node_hash else "",
+                "placement_key": compact(placement_key, 120),
+                "placement_hash": placement_hash or "",
+                "example_shard_16": int(placement_hash) % 16 if str(placement_hash).isdigit() else "",
+                "records": 0,
+            },
+        )
+        row["records"] += 1
+    return sorted(rows_by_key.values(), key=lambda item: (str(item["placement_key"]), str(item["record_type"])))[:80]
+
+
+def data_field_inventory(records: list[Json]) -> list[Json]:
+    fields_by_type: dict[str, set[str]] = defaultdict(set)
+    for record in records:
+        record_type = str(record.get("record_type") or "unknown")
+        for key, value in record.items():
+            if isinstance(value, dict):
+                for child_key in value.keys():
+                    fields_by_type[record_type].add(f"{key}.{child_key}")
+            else:
+                fields_by_type[record_type].add(key)
+    rows = []
+    for record_type, fields in sorted(fields_by_type.items()):
+        rows.append(
+            {
+                "record_type": record_type,
+                "field_count": len(fields),
+                "fields": ", ".join(sorted(fields)),
+            }
+        )
+    return rows
+
+
 def compact_replay(result: Json) -> Json:
     if not result:
         return {}
@@ -546,7 +616,6 @@ def render_node_html(node: Json, aliases: ReportAliases) -> str:
         "node": aliases.node(record_obj.get("node_hash")),
         "parent": aliases.node(record_obj.get("parent_hash")),
         "name": record_obj.get("node_name"),
-        "children": len(node.get("children", [])),
     }
     record = html.escape(json.dumps(compact_record, indent=2, sort_keys=True))
     children = "\n".join(render_node_html(child, aliases) for child in sorted(node.get("children", []), key=lambda item: item["name"]))
@@ -686,9 +755,12 @@ def write_outputs(
         "context_summary": [compact_context_summary(record, aliases) for record in latest_by_key(by_type["context_summary"], ["summary_type", "summary_hash", "node_hash"])],
         "context_embedding": embeddings,
         "context_index_postings": compact_context_indexes(by_type["context_index"], aliases),
+        "context_child_ref": compact_context_child_refs(by_type["context_child_ref"], aliases),
         "resource_import_task": [compact_import_task(record) for record in by_type["resource_import_task"]],
         "resource_chunk": [compact_resource_chunk(record, aliases) for record in by_type["resource_chunk"]],
     }
+    placement_routes = compact_placement_routes(records, aliases)
+    field_inventory = data_field_inventory(records)
     compact_pack = sanitize_compact_payload(mcp_core.compact_context_pack_for_serving(retrieve_result))
     if isinstance(compact_pack, dict):
         compact_pack.pop("context_pack_id", None)
@@ -701,6 +773,9 @@ def write_outputs(
         "records_by_type": compact_records_by_type,
         "embeddings": embeddings,
         "summary_generation_policy": summary_policy_rows,
+        "parent_child_index": compact_records_by_type["context_child_ref"],
+        "placement_routes": placement_routes,
+        "data_field_inventory": field_inventory,
     }
     json_path.write_text(json.dumps(exported, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -757,6 +832,12 @@ def write_outputs(
         "",
         markdown_table([{"record_type": key, "count": value} for key, value in sorted(counts.items())], ["record_type", "count"]),
         "",
+        "## Data Field Inventory",
+        "",
+        "Observed compact/raw fields by data model for this run. This is for debugging schema shape; token-facing ContextPack still stays compact.",
+        "",
+        markdown_table(field_inventory, ["record_type", "field_count", "fields"], limit=120),
+        "",
         "## Input Messages",
         "",
         markdown_table([{"role": item["role"], "content": item["content"]} for item in MESSAGES], ["role", "content"], limit=50),
@@ -772,6 +853,20 @@ def write_outputs(
         "## Resource Chunks",
         "",
         markdown_table(compact_records_by_type["resource_chunk"], ["chunk", "resource", "source", "kind", "tokens", "text"], limit=80),
+        "",
+        "## Parent-To-Child Index",
+        "",
+        "ContextNode children are scanned through the narrow adjacency key `ctx:child:{tenant_hash}:{parent_hash}`. "
+        "The node record does not persist a child count; the UI derives graph edges from these refs.",
+        "",
+        markdown_table(compact_records_by_type["context_child_ref"], ["index_key", "parent", "child", "child_name", "updated_at_ms", "ref"], limit=120),
+        "",
+        "## Placement / Data-Node Mapping Examples",
+        "",
+        "Serving records carry a stable placement key so TemporalStore can colocate node-local records and route them to a shard/data node. "
+        "`example_shard_16` is an illustrative modulo of the placement hash; a live topology maps the same placement hash through the metaserver slot table.",
+        "",
+        markdown_table(placement_routes, ["record_type", "node", "placement_key", "placement_hash", "example_shard_16", "records"], limit=120),
         "",
         "## Extracted Events",
         "",
@@ -882,11 +977,14 @@ def write_outputs(
     </section>
     <section class="section"><h2>Pipeline</h2><pre>{html.escape(PIPELINE_MERMAID)}</pre></section>
     <section class="section"><h2>Data Model Field Guide</h2>{model_table_html}</section>
+    <section class="section"><h2>Data Field Inventory</h2><p class="muted">Observed fields by data model for this run. Token-facing ContextPack remains compact.</p>{records_table(field_inventory, ['record_type', 'field_count', 'fields'])}</section>
     <section class="section"><h2>ContextNode Graph</h2>{graph_html}</section>
     <section class="section"><h2>Messages</h2>{records_table([{'role': m['role'], 'content': m['content']} for m in MESSAGES], ['role', 'content'])}</section>
     <section class="section"><h2>Resources</h2>{records_table(compact_resources(trace['resources']), ['rid', 'type', 'title', 'source', 'lines'])}</section>
     <section class="section"><h2>Resource Import Tasks</h2>{records_table(compact_records_by_type['resource_import_task'], ['status', 'type', 'source', 'chunks', 'facts', 'entities'])}</section>
     <section class="section"><h2>Resource Chunks</h2>{records_table(compact_records_by_type['resource_chunk'], ['chunk', 'resource', 'source', 'kind', 'tokens', 'text'])}</section>
+    <section class="section"><h2>Parent-To-Child Index</h2><p class="muted">Children are discovered by the narrow adjacency key <code>ctx:child:{{tenant_hash}}:{{parent_hash}}</code>. ContextNode records do not persist child counts.</p>{records_table(compact_records_by_type['context_child_ref'], ['index_key', 'parent', 'child', 'child_name', 'updated_at_ms', 'ref'])}</section>
+    <section class="section"><h2>Placement / Data-Node Mapping Examples</h2><p class="muted">Placement keys route records to TemporalStore shards/data nodes. <code>example_shard_16</code> is an illustrative hash modulo; production uses metaserver slot placement.</p>{records_table(placement_routes, ['record_type', 'node', 'placement_key', 'placement_hash', 'example_shard_16', 'records'])}</section>
     <section class="section"><h2>Extracted Events</h2>{records_table(compact_records_by_type['context_event'], ['event', 'node', 'type', 'entity', 'source', 'text'])}</section>
     <section class="section"><h2>Extracted Entities</h2>{records_table(compact_records_by_type['context_entity'], ['entity', 'node', 'type', 'name', 'op', 'state', 'source'])}</section>
     <section class="section"><h2>Summaries</h2>{records_table(compact_records_by_type['context_summary'], ['type', 'summary', 'node', 'sources', 'text'])}</section>

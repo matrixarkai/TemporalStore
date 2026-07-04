@@ -126,7 +126,7 @@ This supports efficient child scans:
 parent_hash
 -> ctx:child:{tenant_hash}:{parent_hash}
 -> child node refs
--> fetch child summaries / embeddings / counts
+-> fetch child summaries / embeddings when needed
 ```
 
 Events, segments, entities, summaries, chunks, and skills are attached records under selected nodes. They do not need to be graph children themselves.
@@ -135,7 +135,7 @@ Recommended debug graph display:
 
 ```text
 ContextNode
-  children: derived only when a debug UI explicitly queries ContextChildRef
+  child edges: rendered only from explicit ContextChildRef adjacency lookups
   events: count from ctx:event:{tenant}:{node}
   segments: count from segment records
   entities: count from entity records
