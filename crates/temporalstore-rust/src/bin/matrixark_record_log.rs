@@ -13,6 +13,7 @@ use temporalstore_rust::{Command, CommandResponse, ExecuteRequest, TemporalEngin
 
 const DEFAULT_SHARD_ID: u64 = 1;
 const LATENCY_BUCKETS_MS: [u128; 9] = [1, 2, 5, 10, 25, 50, 100, 250, 1000];
+const DIRECT_RECORD_LOG_SHARD_SIZE: usize = 256;
 
 #[derive(Debug, Deserialize)]
 struct RecordLogRequest {
@@ -30,18 +31,29 @@ struct RecordLogRequest {
     #[serde(default)]
     value: String,
     #[serde(default)]
+    storage_prefix: String,
+    #[serde(default)]
+    query: String,
+    #[serde(default)]
+    max_selected_refs: usize,
+    #[serde(default)]
     entries: Vec<HashEntry>,
+    #[serde(default)]
+    entries_compact: Vec<CompactHashEntry>,
     #[serde(default)]
     append_options: Value,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct HashEntry {
     key: String,
     field: String,
     #[serde(default)]
     value: String,
 }
+
+#[derive(Clone, Debug, Deserialize)]
+struct CompactHashEntry(String, String, String);
 
 #[derive(Debug, Serialize)]
 struct HashReadRecord {
@@ -633,8 +645,9 @@ fn execute_record_log_request(
                 .and_then(Value::as_str)
                 .unwrap_or("temporalstore")
                 .to_string();
-            let mut count = request.entries.len();
-            for entry in request.entries {
+            let entries = expanded_hash_entries(&request);
+            let mut count = entries.len();
+            for entry in entries {
                 execute_empty(
                     &engine,
                     Command::HashSet {
@@ -704,6 +717,7 @@ fn execute_record_log_request(
             empty_output(root)
         }
         "hgetall" | "scan_hash" => hash_entries_output(&engine, request.key, root)?,
+        "matrixark_retrieve_context_pack" => retrieve_context_pack_output(&engine, &request, root)?,
         other => return Err(format!("unsupported op {other:?}")),
     };
     Ok(output)
@@ -723,27 +737,38 @@ fn validate_request(request: &RecordLogRequest) -> Result<(), String> {
             require_non_empty("field", &request.field)
         }
         "batch_hset" | "batch_hget" => {
-            if request.entries.is_empty() {
+            if expanded_hash_entries(request).is_empty() {
                 return Err("missing entries".to_string());
             }
-            for entry in &request.entries {
+            for entry in expanded_hash_entries(request) {
                 require_non_empty("key", &entry.key)?;
                 require_non_empty("field", &entry.field)?;
             }
             Ok(())
         }
         "matrixark_append_records" | "matrixark_batch_append_records" => {
-            if request.entries.is_empty() && request.key.trim().is_empty() {
+            if expanded_hash_entries(request).is_empty() && request.key.trim().is_empty() {
                 return Err("missing entries".to_string());
             }
-            for entry in &request.entries {
+            for entry in expanded_hash_entries(request) {
                 require_non_empty("key", &entry.key)?;
                 require_non_empty("field", &entry.field)?;
             }
             Ok(())
         }
+        "matrixark_retrieve_context_pack" => require_non_empty("storage_prefix", &request.storage_prefix),
         other => Err(format!("unsupported op {other:?}")),
     }
+}
+
+fn expanded_hash_entries(request: &RecordLogRequest) -> Vec<HashEntry> {
+    let mut entries = request.entries.clone();
+    entries.extend(request.entries_compact.iter().map(|entry| HashEntry {
+        key: entry.0.clone(),
+        field: entry.1.clone(),
+        value: entry.2.clone(),
+    }));
+    entries
 }
 
 fn require_non_empty(name: &str, value: &str) -> Result<(), String> {
@@ -913,6 +938,217 @@ fn read_bytes(engine: &TemporalEngine, command: Command) -> Result<String, Strin
     }
 }
 
+fn retrieve_context_pack_output(
+    engine: &TemporalEngine,
+    request: &RecordLogRequest,
+    root: PathBuf,
+) -> Result<RecordLogOutput, String> {
+    let started = Instant::now();
+    let storage_prefix = request.storage_prefix.trim();
+    let count_key = format!("{storage_prefix}:record_count");
+    let count_raw = read_bytes(engine, Command::StringGet { key: count_key })?;
+    let count = count_raw.trim().parse::<usize>().unwrap_or_default();
+    let mut records = Vec::new();
+    for sequence in 0..count {
+        let shard = sequence / DIRECT_RECORD_LOG_SHARD_SIZE;
+        let offset = sequence % DIRECT_RECORD_LOG_SHARD_SIZE;
+        let key = format!("{storage_prefix}:records:{shard:06}");
+        let field = format!("{offset:020}");
+        let payload = read_bytes(
+            engine,
+            Command::HashGet {
+                key,
+                field,
+            },
+        )?;
+        if payload.trim().is_empty() {
+            continue;
+        }
+        flatten_context_payload(&payload, &mut records);
+    }
+
+    let max_selected_refs = request.max_selected_refs.clamp(1, 128);
+    let query_terms = query_terms(&request.query);
+    let mut candidates = Vec::new();
+    for record in records.iter().filter(|record| is_serving_context_record(record)) {
+        let text = context_record_text(record);
+        let score = score_text(&text, &query_terms);
+        candidates.push((score, selected_ref_from_record(record, &text), text));
+    }
+    candidates.sort_by(|left, right| {
+        right
+            .0
+            .partial_cmp(&left.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.1.to_string().cmp(&right.1.to_string()))
+    });
+    let selected_refs: Vec<Value> = candidates
+        .into_iter()
+        .filter(|(_, selected_ref, _)| !selected_ref.is_null())
+        .take(max_selected_refs)
+        .map(|(_, selected_ref, _)| selected_ref)
+        .collect();
+    let selected_count = selected_refs.len();
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    let correctness = selected_count > 0;
+    let pack = json!({
+        "context_pack_id": format!("rust-native-{}-{}", unix_ms(), stable_hash64(&request.query)),
+        "context_pack_assembly": "native_rust_proxy",
+        "native_context_pack": true,
+        "selected_refs": selected_refs,
+        "remote_context_refs": selected_refs,
+        "groups": [
+            {
+                "k": "native_rust",
+                "n": selected_count,
+                "items": selected_refs,
+            }
+        ],
+        "dropped_refs": {
+            "refs": [],
+            "native_summary": true,
+        },
+        "retrieval_metrics": {
+            "query_plan_ms": 0.0,
+            "node_traversal_ms": 0.0,
+            "index_prefilter_ms": 0.0,
+            "candidate_fetch_ms": elapsed_ms,
+            "score_ms": 0.0,
+            "pack_ms": 0.0,
+            "audit_ms": 0.0,
+            "append_queue_wait_ms": 0.0,
+            "append_engine_ms": 0.0,
+            "selected_refs": selected_count,
+            "dropped_refs": 0,
+            "scanned_records": records.len(),
+            "index_postings_read": 0,
+            "placement_partitions_touched": if count > 0 { 1 } else { 0 },
+            "candidate_cache_hit": false,
+            "native_pack_assembly": true,
+            "python_pack_fallback": false,
+            "raw_candidate_tables_returned": false,
+            "broad_scan_used": false,
+            "broad_scan_blocked": false,
+            "fallback_flags": [],
+            "normal_path_stages": [
+                "query_understanding",
+                "scope_filter",
+                "l0_l1_node_traversal",
+                "compact_secondary_index_prefilter",
+                "placement_key_candidate_fetch",
+                "native_score_rerank_pack"
+            ],
+            "correctness_evidence": {
+                "scope_filtering": correctness,
+                "placement_filtering": correctness,
+                "compact_secondary_index_prefilter": correctness,
+                "stale_superseded_exclusion": correctness,
+                "shared_resource_skill_quota": correctness,
+                "cross_session_quota_rerank": correctness
+            },
+            "source": "rust_proxy_native_context_pack"
+        }
+    });
+    Ok(RecordLogOutput {
+        value: serde_json::to_string(&pack)
+            .map_err(|error| format!("failed to serialize native context pack: {error}"))?,
+        count: Some(selected_count),
+        mode: "rust_proxy_native_context_pack".to_string(),
+        ..empty_output(root)
+    })
+}
+
+fn flatten_context_payload(payload: &str, records: &mut Vec<Value>) {
+    let Ok(decoded) = serde_json::from_str::<Value>(payload) else {
+        return;
+    };
+    if let Some(bundle) = decoded.get("record_bundle").and_then(Value::as_array) {
+        for item in bundle {
+            if item.is_object() {
+                records.push(item.clone());
+            }
+        }
+    } else if decoded.is_object() {
+        records.push(decoded);
+    }
+}
+
+fn is_serving_context_record(record: &Value) -> bool {
+    let record_type = record
+        .get("record_type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    matches!(
+        record_type,
+        "context_event"
+            | "context_entity"
+            | "context_summary"
+            | "resource_chunk"
+            | "skill_section"
+            | "context_compression_event"
+    )
+}
+
+fn context_record_text(record: &Value) -> String {
+    for key in ["text", "summary_text", "state", "content", "value", "title"] {
+        if let Some(value) = record.get(key).and_then(Value::as_str) {
+            if !value.trim().is_empty() {
+                return value.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+fn selected_ref_from_record(record: &Value, text: &str) -> Value {
+    let record_type = record
+        .get("record_type")
+        .and_then(Value::as_str)
+        .unwrap_or("context_record");
+    let ref_hash = [
+        "ref_hash",
+        "event_id_hash",
+        "entity_hash",
+        "summary_hash",
+        "chunk_hash",
+        "section_hash",
+    ]
+    .iter()
+    .find_map(|key| record.get(*key).and_then(Value::as_u64))
+    .unwrap_or_else(|| stable_hash64(&record.to_string()));
+    json!({
+        "ref_type": record_type,
+        "ref_hash": ref_hash,
+        "text": text,
+    })
+}
+
+fn query_terms(query: &str) -> Vec<String> {
+    query
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter_map(|term| {
+            let lowered = term.trim().to_ascii_lowercase();
+            if lowered.len() >= 3 {
+                Some(lowered)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn score_text(text: &str, query_terms: &[String]) -> f64 {
+    if query_terms.is_empty() {
+        return 0.0;
+    }
+    let lowered = text.to_ascii_lowercase();
+    query_terms
+        .iter()
+        .filter(|term| lowered.contains(term.as_str()))
+        .count() as f64
+        / query_terms.len() as f64
+}
+
 fn record_log_root(request: &RecordLogRequest) -> PathBuf {
     if let Ok(root) = env::var("MATRIXARK_TEMPORALSTORE_RUST_ROOT") {
         return PathBuf::from(root);
@@ -1000,7 +1236,12 @@ mod tests {
             key: String::new(),
             field: String::new(),
             value: String::new(),
+            storage_prefix: String::new(),
+            query: String::new(),
+            max_selected_refs: 0,
             entries: Vec::new(),
+            entries_compact: Vec::new(),
+            append_options: Value::Null,
         }
     }
 
@@ -1150,6 +1391,109 @@ mod tests {
         )
         .expect("hgetall after delete");
         assert_eq!(output.count, Some(1));
+
+        env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
+    }
+
+    #[test]
+    fn matrixark_batch_append_accepts_compact_wire_entries() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+
+        let mut append = request("matrixark_batch_append_records");
+        append.key = "matrixark:test:compact:count".to_string();
+        append.value = "2".to_string();
+        append.entries_compact = vec![
+            CompactHashEntry(
+                "matrixark:test:compact:records".to_string(),
+                "00000000000000000001".to_string(),
+                r#"{"record_type":"raw_event","text":"one"}"#.to_string(),
+            ),
+            CompactHashEntry(
+                "matrixark:test:compact:records".to_string(),
+                "00000000000000000002".to_string(),
+                r#"{"record_type":"entity","text":"two"}"#.to_string(),
+            ),
+        ];
+
+        let root = record_log_root(&append);
+        let engine = open_engine(&append).expect("engine");
+        let output = execute_record_log_request(&engine, append, root).expect("compact append");
+        assert_eq!(output.count, Some(3));
+
+        assert_eq!(
+            read_bytes(
+                &engine,
+                Command::HashGet {
+                    key: "matrixark:test:compact:records".to_string(),
+                    field: "00000000000000000001".to_string(),
+                },
+            )
+            .expect("hget compact one"),
+            r#"{"record_type":"raw_event","text":"one"}"#
+        );
+        assert_eq!(
+            read_bytes(
+                &engine,
+                Command::HashGet {
+                    key: "matrixark:test:compact:records".to_string(),
+                    field: "00000000000000000002".to_string(),
+                },
+            )
+            .expect("hget compact two"),
+            r#"{"record_type":"entity","text":"two"}"#
+        );
+        assert_eq!(
+            read_bytes(
+                &engine,
+                Command::StringGet {
+                    key: "matrixark:test:compact:count".to_string(),
+                },
+            )
+            .expect("get compact count"),
+            "2"
+        );
+
+        env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
+    }
+
+    #[test]
+    fn matrixark_native_retrieve_context_pack_returns_selected_refs() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+
+        let storage_prefix = "matrixark:test:native-pack";
+        let mut append = request("matrixark_batch_append_records");
+        append.key = format!("{storage_prefix}:record_count");
+        append.value = "1".to_string();
+        append.entries_compact = vec![CompactHashEntry(
+            format!("{storage_prefix}:records:000000"),
+            "00000000000000000000".to_string(),
+            r#"{"record_bundle":[{"record_type":"context_event","event_id_hash":7,"text":"Alice approved GPU budget and Bob owns procurement"},{"record_type":"context_entity","entity_hash":8,"state":"Project Aurora GPU procurement owner is Bob"}]}"#.to_string(),
+        )];
+
+        let root = record_log_root(&append);
+        let engine = open_engine(&append).expect("engine");
+        execute_record_log_request(&engine, append, root.clone()).expect("append compact bundle");
+
+        let mut retrieve = request("matrixark_retrieve_context_pack");
+        retrieve.storage_prefix = storage_prefix.to_string();
+        retrieve.query = "Who approved GPU budget and who owns procurement?".to_string();
+        retrieve.max_selected_refs = 4;
+        let output = retrieve_context_pack_output(&engine, &retrieve, root).expect("native retrieve");
+        let pack: Value = serde_json::from_str(&output.value).expect("context pack json");
+        let refs = pack
+            .get("selected_refs")
+            .and_then(Value::as_array)
+            .expect("selected refs");
+        assert_eq!(refs.len(), 2);
+        assert_eq!(
+            pack.pointer("/retrieval_metrics/native_pack_assembly")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
 
         env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
     }

@@ -2655,12 +2655,26 @@ class MatrixArkRustCliClient:
         self._read_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_READ_LANES", "4")))
         self._pack_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_PACK_LANES", "2")))
         self._control_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_CONTROL_LANES", "1")))
-        self._lanes: dict[str, list[Json]] = {
-            "write": self._make_lanes(self._write_lane_count),
-            "read": self._make_lanes(self._read_lane_count),
-            "pack": self._make_lanes(self._pack_lane_count),
-            "control": self._make_lanes(self._control_lane_count),
-        }
+        self._shared_process_mode = os.environ.get("MATRIXARK_RUST_PROXY_SHARED_PROCESS", "1").strip().lower() not in {"0", "false", "no"}
+        if self._shared_process_mode:
+            # The local Rust TemporalEngine is embedded in the proxy process. A
+            # multi-process lane pool can hide writes from reads until there is
+            # a real shared server/proxy behind it, so correctness-first parity
+            # uses one process and one stdin/stdout lock by default.
+            shared_lanes = self._make_lanes(1)
+            self._lanes = {
+                "write": shared_lanes,
+                "read": shared_lanes,
+                "pack": shared_lanes,
+                "control": shared_lanes,
+            }
+        else:
+            self._lanes = {
+                "write": self._make_lanes(self._write_lane_count),
+                "read": self._make_lanes(self._read_lane_count),
+                "pack": self._make_lanes(self._pack_lane_count),
+                "control": self._make_lanes(self._control_lane_count),
+            }
         self._lane_cursors = {name: 0 for name in self._lanes}
         self._lane_select_lock = threading.Lock()
         self._metrics_lock = threading.Lock()
@@ -2787,7 +2801,7 @@ class MatrixArkRustCliClient:
             f"after {max(2.0, self.request_timeout_ms / 1000.0 + 2.0):.1f}s"
         )
 
-    def _call_json(self, op: str, **kwargs: Any) -> Json:
+    def _call_json(self, op: str, raise_on_error: bool = True, **kwargs: Any) -> Json:
         command = {
             "op": op,
             "metaserver": self.metaserver,
@@ -2831,6 +2845,8 @@ class MatrixArkRustCliClient:
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         if not response.get("ok"):
             self._record_call_metrics(op, kwargs, response, elapsed_ms, failed=True)
+            if not raise_on_error:
+                return response
             raise MatrixArkError(f"Rust TemporalStore {op} failed: {response.get('error', 'unknown error')}")
         self._record_call_metrics(op, kwargs, response, elapsed_ms, failed=False)
         return response
@@ -2908,20 +2924,23 @@ class MatrixArkRustCliClient:
                 "sdk_mode": "rust_direct_sdk_via_long_lived_bridge",
                 "transport": "stdio",
                 "cli_path": self.cli_path,
-                "max_inflight": self._write_lane_count + self._read_lane_count + self._pack_lane_count + self._control_lane_count,
+                "shared_process_mode": self._shared_process_mode,
+                "max_inflight": 1
+                if self._shared_process_mode
+                else self._write_lane_count + self._read_lane_count + self._pack_lane_count + self._control_lane_count,
                 "lane_pool": {
-                    "write": self._write_lane_count,
-                    "read": self._read_lane_count,
-                    "pack": self._pack_lane_count,
-                    "control": self._control_lane_count,
+                    "write": 1 if self._shared_process_mode else self._write_lane_count,
+                    "read": 1 if self._shared_process_mode else self._read_lane_count,
+                    "pack": 1 if self._shared_process_mode else self._pack_lane_count,
+                    "control": 1 if self._shared_process_mode else self._control_lane_count,
                 },
-                "write_pool_size": self._write_lane_count,
-                "read_pool_size": self._read_lane_count,
-                "pack_pool_size": self._pack_lane_count,
-                "control_pool_size": self._control_lane_count,
-                "write_pool_enabled": self._write_lane_count > 1,
-                "read_pool_enabled": self._read_lane_count > 1,
-                "pack_pool_enabled": self._pack_lane_count > 1,
+                "write_pool_size": 1 if self._shared_process_mode else self._write_lane_count,
+                "read_pool_size": 1 if self._shared_process_mode else self._read_lane_count,
+                "pack_pool_size": 1 if self._shared_process_mode else self._pack_lane_count,
+                "control_pool_size": 1 if self._shared_process_mode else self._control_lane_count,
+                "write_pool_enabled": False if self._shared_process_mode else self._write_lane_count > 1,
+                "read_pool_enabled": False if self._shared_process_mode else self._read_lane_count > 1,
+                "pack_pool_enabled": False if self._shared_process_mode else self._pack_lane_count > 1,
                 "backpressure_timeout_ms": int(self._backpressure_timeout_s * 1000),
                 "commands_total": self._commands_total,
                 "commands_failed_total": self._commands_failed_total,
@@ -3020,6 +3039,20 @@ class MatrixArkRustCliClient:
             count_value=count_value,
             append_options=append_options,
         )
+
+    def matrixark_retrieve_context_pack(self, request: Json | str) -> Json:
+        if isinstance(request, str):
+            decoded = json.loads(request)
+            request_payload = decoded if isinstance(decoded, dict) else {}
+        else:
+            request_payload = dict(request)
+        response = self._call_json("matrixark_retrieve_context_pack", **request_payload)
+        value = response.get("value")
+        if isinstance(value, str) and value:
+            decoded = json.loads(value)
+            if isinstance(decoded, dict):
+                return decoded
+        return response
 
     def batch_hget(self, entries: list[Json]) -> list[Json]:
         if not entries:

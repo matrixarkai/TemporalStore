@@ -2962,7 +2962,7 @@ impl DataNodeRuntime {
             public_storage_contract: PublicStorageContract::default(),
             public_storage_feature_shapes: PublicStorageFeatureShapes::default(),
             effective_storage_tuning: effective_storage_tuning_from_env(),
-            storage_lifecycle_metrics,
+            storage_lifecycle_metrics: storage_lifecycle_metrics.clone(),
             storage_write_contract,
             storage_read_contract,
             storage_cold_scan_contract,
