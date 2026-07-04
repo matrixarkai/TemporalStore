@@ -163,6 +163,8 @@ The returned JSON includes `status`, `source_range`, `planned_source_records`, `
 
 If a raw log does not expose `record_count` or legacy `record_index`, `plan` uses scan-hash discovery by default (`--plan-discover-scan-hash=1`). This is still read-only: it scans raw-log hash fields to estimate the source count, first discovered sequence, high watermark, and effective end sequence, then uses those bounds for `planned_source_records` and chunk windows. Set `--plan-discover-scan-hash=0` for a metadata-only preflight when the source is very large and you do not want planning to scan shard keys yet.
 
+Set `--prometheus-output` on `plan` to archive preflight metrics before a production run. The output includes plan status, safety checks, readiness blockers, source range boundaries, source scan mode, target record/dead-letter counts, and chunk window counts.
+
 For large ranges, add `--plan-window-size=<records>` to emit bounded execution windows:
 
 ```bash
@@ -272,6 +274,18 @@ matrixark_context_backfill_serving_records_total
 matrixark_context_backfill_serving_record_fingerprint_info
 matrixark_context_backfill_source_range
 matrixark_context_backfill_source_scan_mode
+```
+
+Read-only planning emits a preflight surface for runbooks and release evidence:
+
+```text
+matrixark_context_backfill_plan_status
+matrixark_context_backfill_plan_safety_check
+matrixark_context_backfill_plan_readiness_blocker
+matrixark_context_backfill_plan_source_range
+matrixark_context_backfill_plan_source_scan_mode
+matrixark_context_backfill_plan_target_records
+matrixark_context_backfill_plan_chunk_windows
 ```
 
 Incremental repair emits a separate promotion-focused surface so on-call can prove the bounded shadow validated and the active-prefix replay stayed consistent:

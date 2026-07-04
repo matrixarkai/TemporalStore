@@ -2797,6 +2797,77 @@ def incremental_repair_to_prometheus(summary: Json) -> str:
     return '\n'.join(lines) + '\n'
 
 
+def plan_to_prometheus(summary: Json) -> str:
+    base = {
+        'job_id': str(summary.get('job_id') or ''),
+        'raw_backend': str(summary.get('raw_backend') or ''),
+        'source_prefix': str(summary.get('source_prefix') or ''),
+        'target_prefix': str(summary.get('target_prefix') or ''),
+        'mode': 'plan',
+    }
+    lines = [
+        '# HELP matrixark_context_backfill_plan_status Read-only backfill plan status.',
+        '# TYPE matrixark_context_backfill_plan_status gauge',
+        f'matrixark_context_backfill_plan_status{{{_prom_labels(**base, status=str(summary.get("status") or "unknown"))}}} 1',
+        '# HELP matrixark_context_backfill_plan_safety_check Backfill plan safety check result, 1 for pass and 0 for fail.',
+        '# TYPE matrixark_context_backfill_plan_safety_check gauge',
+    ]
+    safety_checks = summary.get('safety_checks') if isinstance(summary.get('safety_checks'), dict) else {}
+    for check_name, passed in sorted(safety_checks.items()):
+        lines.append(f'matrixark_context_backfill_plan_safety_check{{{_prom_labels(**base, check=check_name)}}} {1 if passed else 0}')
+    lines.extend([
+        '# HELP matrixark_context_backfill_plan_readiness_blocker Readiness blocker observed during read-only planning.',
+        '# TYPE matrixark_context_backfill_plan_readiness_blocker gauge',
+    ])
+    blockers = summary.get('readiness_blockers') if isinstance(summary.get('readiness_blockers'), list) else []
+    if blockers:
+        for blocker in blockers:
+            lines.append(f'matrixark_context_backfill_plan_readiness_blocker{{{_prom_labels(**base, blocker=str(blocker))}}} 1')
+    else:
+        lines.append(f'matrixark_context_backfill_plan_readiness_blocker{{{_prom_labels(**base, blocker="none")}}} 0')
+    lines.extend([
+        '# HELP matrixark_context_backfill_plan_source_range Source range boundary discovered during read-only planning.',
+        '# TYPE matrixark_context_backfill_plan_source_range gauge',
+    ])
+    source_range = summary.get('source_range') if isinstance(summary.get('source_range'), dict) else {}
+    for name in [
+        'effective_start_seq',
+        'effective_end_seq',
+        'source_high_watermark_seq',
+        'source_record_count',
+        'discovered_record_count',
+        'discovered_start_seq',
+        'discovered_high_watermark_seq',
+        'scan_hash_max_empty_shards',
+    ]:
+        value = source_range.get(name)
+        if value is not None:
+            lines.append(f'matrixark_context_backfill_plan_source_range{{{_prom_labels(**base, boundary=name)}}} {int(value)}')
+    lines.extend([
+        '# HELP matrixark_context_backfill_plan_source_range_info Source range boolean metadata from read-only planning.',
+        '# TYPE matrixark_context_backfill_plan_source_range_info gauge',
+        f'matrixark_context_backfill_plan_source_range_info{{{_prom_labels(**base, property="planned_source_records_estimated")}}} {1 if summary.get("planned_source_records_estimated") else 0}',
+        f'matrixark_context_backfill_plan_source_range_info{{{_prom_labels(**base, property="plan_scan_hash_discovery_used")}}} {1 if summary.get("plan_scan_hash_discovery_used") else 0}',
+        f'matrixark_context_backfill_plan_source_range_info{{{_prom_labels(**base, property="user_bounded_end")}}} {1 if source_range.get("user_bounded_end") else 0}',
+        '# HELP matrixark_context_backfill_plan_source_scan_mode Source scan mode discovered during read-only planning.',
+        '# TYPE matrixark_context_backfill_plan_source_scan_mode gauge',
+        f'matrixark_context_backfill_plan_source_scan_mode{{{_prom_labels(**base, scan_mode=str(source_range.get("scan_mode") or "unknown"))}}} 1',
+        '# HELP matrixark_context_backfill_plan_target_records Target-prefix record state observed during read-only planning.',
+        '# TYPE matrixark_context_backfill_plan_target_records gauge',
+    ])
+    target_state = summary.get('target_state') if isinstance(summary.get('target_state'), dict) else {}
+    lines.append(f'matrixark_context_backfill_plan_target_records{{{_prom_labels(**base, kind="record_count")}}} {int(target_state.get("record_count", 0) or 0)}')
+    lines.append(f'matrixark_context_backfill_plan_target_records{{{_prom_labels(**base, kind="dead_letter_count")}}} {int(target_state.get("dead_letter_count", 0) or 0)}')
+    lines.extend([
+        '# HELP matrixark_context_backfill_plan_chunk_windows Chunk execution window counts emitted by read-only planning.',
+        '# TYPE matrixark_context_backfill_plan_chunk_windows gauge',
+    ])
+    chunk_plan = summary.get('chunk_plan') if isinstance(summary.get('chunk_plan'), dict) else {}
+    for field in ['total_windows', 'emitted_windows', 'window_size']:
+        lines.append(f'matrixark_context_backfill_plan_chunk_windows{{{_prom_labels(**base, field=field)}}} {int(chunk_plan.get(field, 0) or 0)}')
+    return '\n'.join(lines) + '\n'
+
+
 def run_plan(args: argparse.Namespace) -> Json:
     partial = build_partial_spec(args)
     validate_partial_args(args, partial)
@@ -2952,6 +3023,9 @@ def run_plan(args: argparse.Namespace) -> Json:
     artifacts = write_plan_artifacts(args, summary)
     if artifacts:
         summary['plan_artifacts'] = artifacts
+    prometheus_output = str(getattr(args, 'prometheus_output', '') or '')
+    if prometheus_output:
+        Path(prometheus_output).write_text(plan_to_prometheus(summary), encoding='utf-8')
     return summary
 
 
