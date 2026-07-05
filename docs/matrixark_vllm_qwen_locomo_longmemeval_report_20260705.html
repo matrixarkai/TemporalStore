@@ -1,0 +1,38 @@
+<!doctype html>
+<html><head><meta charset='utf-8'><title>MatrixArk vLLM Qwen LoCoMo/LongMemEval Report 20260705</title>
+<style>body{font-family:Inter,Segoe UI,Arial,sans-serif;margin:28px;line-height:1.45;color:#17202a} table{border-collapse:collapse;width:100%;margin:14px 0 26px} th,td{border:1px solid #d6dde5;padding:7px 9px;vertical-align:top;font-size:13px} th{background:#eef3f8;text-align:left} code{background:#f4f6f8;padding:2px 4px;border-radius:4px} .ok{color:#126b33;font-weight:700} .warn{color:#8a5a00;font-weight:700} .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px} .card{border:1px solid #d6dde5;border-radius:8px;padding:14px;background:#fbfcfe} pre{white-space:pre-wrap;background:#f6f8fa;padding:10px;border-radius:6px;overflow:auto}</style></head>
+<body>
+<h1>MatrixArk OSS Benchmark Rerun With vLLM CPU Qwen</h1>
+<p>Generated 2026-07-05T08:18:18. vLLM CPU is installed and serving <code>qwen2.5-0.5b-vllm</code> on <code>http://127.0.0.1:8008/v1</code>. This rerun uses the proxy-installed local CPU vLLM path, not Ollama, with Rust TemporalStore backend proof enabled.</p>
+<div class='grid'>
+<div class='card'><h2>Install/runtime proof</h2><ul><li><span class='ok'>vllm-cpu 0.24.0 installed</span></li><li><span class='ok'>torch 2.11.0+cpu installed</span></li><li><span class='ok'>OpenAI-compatible chat probe succeeded</span></li><li>Model: <code>Qwen/Qwen2.5-0.5B-Instruct</code></li><li>Served name: <code>qwen2.5-0.5b-vllm</code></li></ul></div>
+<div class='card'><h2>Run caveats</h2><ul><li>Local WSL has no visible CUDA device, so this is CPU vLLM.</li><li>Qwen 0.5B is a small local reader; answer quality is not a final model-quality claim.</li><li>vLLM max model length is 2048. The benchmark harness now supports <code>MATRIXARK_READER_MAX_TOKENS</code>; this run used 64 output tokens and 6000 reader context chars.</li><li>Rust TemporalStore proof used release mode with score tolerance 1.0, matching the prior successful local proof profile.</li></ul></div>
+</div>
+<h2>Metrics</h2>
+<table><thead><tr><th>Dataset</th><th>Cases</th><th>Hit@K</th><th>MRR</th><th>Reader Hit</th><th>Answer Term Coverage</th><th>Avg Retrieved Tokens</th><th>Token Reduction</th><th>Retrieval p50 ms</th><th>Retrieval p95 ms</th><th>Reader p50 ms</th><th>Reader p95 ms</th><th>Rust Ready</th></tr></thead><tbody>
+<tr><td>LoCoMo slice</td><td>8</td><td>1.000</td><td>0.531</td><td>0.000</td><td>0.875</td><td>5232.5</td><td>79.10%</td><td>15.77</td><td>18.23</td><td>6126.02</td><td>11604.88</td><td>True</td></tr>
+<tr><td>LongMemEval_s slice</td><td>8</td><td>1.000</td><td>0.844</td><td>0.250</td><td>1.000</td><td>994.4</td><td>98.94%</td><td>80.01</td><td>210.91</td><td>4619.28</td><td>5199.91</td><td>True</td></tr>
+</tbody></table>
+<h2>Rust Backend Proof</h2>
+<table><thead><tr><th>Dataset</th><th>Proof summary</th><th>Converted JSONL</th></tr></thead><tbody>
+<tr><td>LoCoMo</td><td>ready=True, on_par=None, no_regression=None, hit_delta=None, mrr_delta=None</td><td><code>None</code></td></tr>
+<tr><td>LongMemEval_s</td><td>ready=True, on_par=None, no_regression=None, hit_delta=None, mrr_delta=None</td><td><code>None</code></td></tr>
+</tbody></table>
+<h2>Reader Samples</h2>
+<h3>LoCoMo</h3><table><thead><tr><th>Query</th><th>vLLM answer</th><th>Reader hit</th><th>Gold rank</th><th>Retrieval ms</th><th>Reader ms</th></tr></thead><tbody><tr><td>conv_26-q1</td><td>August 14, 2023. D14:19 Caroline: Hi Melanie! I&#x27;ve been thinking a lot about what I can do to make a difference. I&#x27;m planning to start a campaign to raise awareness about LGBTQ+ rights and support organizations. I also want to volunteer at </td><td>False</td><td>1</td><td>17.09</td><td>13918.34</td></tr>
+<tr><td>conv_26-q2</td><td>2023</td><td>False</td><td>18</td><td>14.23</td><td>6366.18</td></tr>
+<tr><td>conv_26-q3</td><td>Yes</td><td>False</td><td>9</td><td>18.84</td><td>5217.52</td></tr>
+<tr><td>conv_26-q4</td><td>research, preparing emotionally, and gathering necessary documents when starting the adoption process.</td><td>False</td><td>3</td><td>8.92</td><td>7308.44</td></tr>
+<tr><td>conv_26-q5</td><td>Yes</td><td>False</td><td>4</td><td>9.17</td><td>5080.57</td></tr></tbody></table>
+<h3>LongMemEval_s</h3><table><thead><tr><th>Query</th><th>vLLM answer</th><th>Reader hit</th><th>Gold rank</th><th>Retrieval ms</th><th>Reader ms</th></tr></thead><tbody><tr><td>conversation_1-q1</td><td>degree</td><td>False</td><td>2</td><td>8.77</td><td>2948.65</td></tr>
+<tr><td>conversation_2-q1</td><td>not enough context</td><td>False</td><td>4</td><td>11.57</td><td>4352.93</td></tr>
+<tr><td>conversation_3-q1</td><td>Not enough context provided.</td><td>False</td><td>1</td><td>12.19</td><td>4029.14</td></tr>
+<tr><td>conversation_4-q1</td><td>The play I attended was &quot;The Glass Menagerie.&quot;</td><td>True</td><td>1</td><td>14.79</td><td>5248.31</td></tr>
+<tr><td>conversation_5-q1</td><td>Summer Vibes</td><td>True</td><td>1</td><td>203.82</td><td>4914.85</td></tr></tbody></table>
+<h2>Artifacts</h2><pre>{
+  &quot;locomo_report&quot;: &quot;docs/benchmark_archives/vllm_qwen_20260705/locomo_vllm_report.json&quot;,
+  &quot;longmemeval_report&quot;: &quot;docs/benchmark_archives/vllm_qwen_20260705/longmemeval_vllm_report.json&quot;,
+  &quot;locomo_rust_backend_report&quot;: &quot;docs/benchmark_archives/vllm_qwen_20260705/locomo_rust_backend_report.json&quot;,
+  &quot;longmemeval_rust_backend_report&quot;: &quot;docs/benchmark_archives/vllm_qwen_20260705/longmemeval_rust_backend_report.json&quot;
+}</pre>
+</body></html>
