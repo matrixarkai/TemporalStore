@@ -1578,10 +1578,11 @@ class BenchmarkReader:
             endpoint = f"{endpoint}/chat/completions"
         context = evidence_bundle([block.get("body", "") for block in blocks])
         context = context[: max(512, self.config.max_context_chars)]
+        max_tokens = int(os.environ.get("MATRIXARK_READER_MAX_TOKENS", "160"))
         payload = {
             "model": self.config.model,
             "temperature": 0,
-            "max_tokens": 160,
+            "max_tokens": max_tokens,
             "messages": [
                 {
                     "role": "system",
