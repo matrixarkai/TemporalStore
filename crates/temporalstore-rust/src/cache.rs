@@ -314,8 +314,6 @@ pub struct CacheStats {
     pub put_latency_total_us: u64,
     #[serde(default)]
     pub put_latency_max_us: u64,
-    #[serde(default)]
-    pub writeback_backpressure_events: u64,
     pub memory_bytes: u64,
     #[serde(default)]
     pub pmem_bytes: u64,
@@ -1281,21 +1279,6 @@ impl CacheInner {
         Ok(())
     }
 
-    fn record_get_latency(&mut self, started: Instant) {
-        let elapsed_us = elapsed_us(started);
-        self.stats.get_latency_count = self.stats.get_latency_count.saturating_add(1);
-        self.stats.get_latency_total_us =
-            self.stats.get_latency_total_us.saturating_add(elapsed_us);
-        self.stats.get_latency_max_us = self.stats.get_latency_max_us.max(elapsed_us);
-    }
-
-    fn record_put_latency(&mut self, started: Instant) {
-        let elapsed_us = elapsed_us(started);
-        self.stats.put_latency_count = self.stats.put_latency_count.saturating_add(1);
-        self.stats.put_latency_total_us =
-            self.stats.put_latency_total_us.saturating_add(elapsed_us);
-        self.stats.put_latency_max_us = self.stats.put_latency_max_us.max(elapsed_us);
-    }
 }
 
 impl MultiLayerCache {
@@ -2030,7 +2013,6 @@ impl CacheInner {
             }
             self.stats.memory_bytes = self.memory_bytes as u64;
             self.refresh_pin_stats();
-            return true;
         }
     }
 
@@ -2485,26 +2467,6 @@ fn extract_routing_slot(key: &CacheKey) -> Option<u32> {
     slot.parse::<u32>().ok()
 }
 
-fn infer_block_kind(key: &CacheKey) -> CacheBlockKind {
-    match key.namespace.as_str() {
-        "page" => CacheBlockKind::Page,
-        "index" => CacheBlockKind::Index,
-        "oplog" => CacheBlockKind::Oplog,
-        "string" | "hash" | "set" | "feature" => CacheBlockKind::Object,
-        _ => CacheBlockKind::Other,
-    }
-}
-
-fn eviction_reason_for(score: EvictionScore) -> EvictionReason {
-    if score.hotness == 0 {
-        EvictionReason::Cold
-    } else if score.hits == 0 {
-        EvictionReason::LowHit
-    } else {
-        EvictionReason::Stale
-    }
-}
-
 fn elapsed_us(started: Instant) -> u64 {
     started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64
 }
@@ -2515,23 +2477,6 @@ fn avg_latency_us(total_us: u64, count: u64) -> u64 {
     } else {
         total_us / count
     }
-}
-
-fn initial_hotness(block_kind: CacheBlockKind, block_bytes: usize) -> u32 {
-    match block_kind {
-        CacheBlockKind::Page => 2,
-        CacheBlockKind::Index => 3,
-        CacheBlockKind::Oplog => 1,
-        CacheBlockKind::Object if block_bytes <= 4096 => 2,
-        CacheBlockKind::Object => 1,
-        CacheBlockKind::Other => 0,
-    }
-}
-
-fn extract_routing_slot(key: &CacheKey) -> Option<u32> {
-    let suffix = key.selector.strip_prefix("slot-")?;
-    let (slot, _) = suffix.split_once(':')?;
-    slot.parse::<u32>().ok()
 }
 
 fn dir_size(path: &Path) -> Result<u64, std::io::Error> {

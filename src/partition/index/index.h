@@ -5,6 +5,9 @@
 #include <absl/container/btree_map.h>
 #include <absl/container/flat_hash_map.h>
 #include <absl/container/node_hash_map.h>
+#ifdef BLOCK_SIZE
+#undef BLOCK_SIZE
+#endif
 #include <bvar/bvar.h>
 #include <byte/container/intrusive_list.h>
 #include <byte/governance/token_bucket.h>

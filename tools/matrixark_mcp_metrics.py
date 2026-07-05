@@ -18,6 +18,7 @@ class MatrixArkServiceMetrics:
         self._started_at = time.time()
         self._ops: dict[str, Json] = {}
         self._model: dict[str, Json] = {}
+        self._pool: dict[str, Json] = {}
         self._timeout_count = 0
         self._backpressure_count = 0
         self._partial_context_pack_count = 0
@@ -30,6 +31,15 @@ class MatrixArkServiceMetrics:
         self._last_dirty_summary_lag_ms = 0
         self._last_audit_write_failures = 0
         self._last_model_fallback_flags: dict[str, int] = {}
+        self._selected_refs_total = 0
+        self._dropped_refs_total = 0
+        self._last_selected_refs = 0
+        self._last_dropped_refs = 0
+        self._retrieve_scan_count = 0
+        self._retrieve_scanned_records_total = 0
+        self._last_scan_count = 0
+        self._retrieve_cache_hits = 0
+        self._retrieve_cache_misses = 0
 
     def observe_operation(self, operation: str, status: str, elapsed_ms: float, *, timeout: bool = False) -> None:
         with self._lock:
@@ -315,4 +325,3 @@ class MatrixArkServiceMetrics:
                 le = "+Inf" if bucket == float("inf") else str(int(bucket))
                 lines.append(f'matrixark_model_latency_ms_bucket{{{base_labels},stage="{stage_label}",le="{le}"}} {int(count)}')
         return "\n".join(lines) + "\n"
-

@@ -1114,10 +1114,11 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 continue
             if record.get("event_id_hash") is None:
                 continue
+            enriched = attach_context_event_time_key(record)
             payload = (
-                json.dumps(record, sort_keys=True, separators=(",", ":"))
+                json.dumps(enriched, sort_keys=True, separators=(",", ":"))
                 if full_payload
-                else self._context_event_time_index_payload(record)
+                else self._context_event_time_index_payload(enriched)
             )
             entries.append(
                 {
@@ -2086,6 +2087,15 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 _DIRECT_RECORD_CACHE.pop(oldest, None)
             _DIRECT_RECORD_CACHE[self._storage_prefix] = (count, list(records))
 
+    def _drop_direct_record_cache(self) -> None:
+        self._entry_count_cache = None
+        self._records_cache = None
+        self._index_cache = None
+        with _DIRECT_RECORD_CACHE_LOCK:
+            _DIRECT_RECORD_CACHE.pop(self._storage_prefix, None)
+        with self._retrieval_candidate_cache_lock:
+            self._retrieval_candidate_cache.clear()
+
     def _retrieval_candidate_cache_key(
         self,
         *,
@@ -2597,9 +2607,12 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         }
         started_perf = time.perf_counter()
         try:
-            response = native_retrieve(request)
-        except TypeError:
-            response = native_retrieve(json.dumps(request, sort_keys=True, separators=(",", ":")))
+            response = native_retrieve(
+                count_key=self._count_key,
+                record_hash_key=self._record_hash_key,
+                shard_size=self._shard_size,
+                request=request,
+            )
         except Exception as exc:
             _mcp_debug_log(f"matrixark native context pack failed: {exc}")
             if not native_retrieve_fallback_allowed(args):
@@ -2616,6 +2629,20 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             if not native_retrieve_fallback_allowed(args):
                 return self._native_context_pack_fallback_blocker(args, reason="native_context_pack_not_object")
             return None
+        native_envelope = dict(pack)
+        if isinstance(pack.get("context_pack"), dict):
+            inner_pack = dict(pack["context_pack"])
+            if isinstance(native_envelope.get("scan_stats"), dict):
+                recall_policy = inner_pack.get("recall_policy") if isinstance(inner_pack.get("recall_policy"), dict) else {}
+                recall_policy.setdefault("scan_stats", native_envelope["scan_stats"])
+                inner_pack["recall_policy"] = recall_policy
+            if isinstance(native_envelope.get("retrieval_metrics"), dict) and not isinstance(inner_pack.get("retrieval_metrics"), dict):
+                inner_pack["retrieval_metrics"] = native_envelope["retrieval_metrics"]
+            if native_envelope.get("selected_ref_count") is not None:
+                inner_pack.setdefault("selected_ref_count", native_envelope.get("selected_ref_count"))
+            if native_envelope.get("dropped_ref_count") is not None:
+                inner_pack.setdefault("dropped_ref_count", native_envelope.get("dropped_ref_count"))
+            pack = inner_pack
         selected_refs = pack.get("selected_refs", [])
         groups = pack.get("groups", [])
         if not isinstance(selected_refs, list) and not isinstance(groups, (list, dict)):
@@ -3470,6 +3497,8 @@ class MatrixArkRustProxyClient:
                 "pack": self._make_lanes(self._pack_lane_count),
                 "control": self._make_lanes(self._control_lane_count),
             }
+        self._lane_worker_counts = {name: len(lanes) for name, lanes in self._lanes.items()}
+        self._lane_worker_counts["retrieve"] = self._lane_worker_counts.get("pack", 0)
         self._lane_cursors = {name: 0 for name in self._lanes}
         self._lane_select_lock = threading.Lock()
         self._metrics_lock = threading.Lock()
@@ -3549,6 +3578,10 @@ class MatrixArkRustProxyClient:
             return proc
         if proc is not None:
             self._close_proc(proc)
+        env = os.environ.copy()
+        proxy_dir = str(Path(self.cli_path).resolve().parent)
+        existing_ld_path = env.get("LD_LIBRARY_PATH", "")
+        env["LD_LIBRARY_PATH"] = proxy_dir if not existing_ld_path else f"{proxy_dir}:{existing_ld_path}"
         lane["proc"] = subprocess.Popen(
             [self.cli_path, "--serve"],
             stdin=subprocess.PIPE,
@@ -3622,18 +3655,19 @@ class MatrixArkRustProxyClient:
         }
         payload = json.dumps(command, separators=(",", ":")) + "\n"
         started = time.perf_counter()
-        _group, lane = self._choose_lane(op)
+        group, lane = self._choose_lane(op)
         semaphore: threading.BoundedSemaphore = lane["semaphore"]
+        wait_started = time.perf_counter()
         acquired = semaphore.acquire(timeout=self._backpressure_timeout_s)
+        wait_ms = (time.perf_counter() - wait_started) * 1000.0
         if not acquired:
             elapsed_ms = (time.perf_counter() - started) * 1000.0
-            self._record_call_metrics(op, kwargs, None, elapsed_ms, failed=True, backpressure=True, lane=lane, wait_ms=wait_ms)
+            self._record_call_metrics(op, kwargs, None, elapsed_ms, failed=True, backpressure=True, lane=group, wait_ms=wait_ms)
             raise MatrixArkError(
-                f"Rust TemporalStore {op} rejected by {lane} proxy lane backpressure after "
+                f"Rust TemporalStore {op} rejected by {group} proxy lane backpressure after "
                 f"{self._backpressure_timeout_s:.3f}s with "
-                f"{self._lane_worker_counts.get(lane, 1)} workers"
+                f"{self._lane_worker_counts.get(group, 1)} workers"
             )
-        slot = self._next_slot(lane)
         try:
             lock: threading.Lock = lane["lock"]
             with lock:
@@ -3649,17 +3683,17 @@ class MatrixArkRustProxyClient:
                 response = self._read_json_line(proc, op)
         except Exception:
             elapsed_ms = (time.perf_counter() - started) * 1000.0
-            self._record_call_metrics(op, kwargs, None, elapsed_ms, failed=True, lane=lane, wait_ms=wait_ms)
+            self._record_call_metrics(op, kwargs, None, elapsed_ms, failed=True, lane=group, wait_ms=wait_ms)
             raise
         finally:
             semaphore.release()
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         if not response.get("ok"):
-            self._record_call_metrics(op, kwargs, response, elapsed_ms, failed=True)
+            self._record_call_metrics(op, kwargs, response, elapsed_ms, failed=True, lane=group, wait_ms=wait_ms)
             if not raise_on_error:
                 return response
             raise MatrixArkError(f"Rust TemporalStore {op} failed: {response.get('error', 'unknown error')}")
-        self._record_call_metrics(op, kwargs, response, elapsed_ms, failed=False, lane=lane, wait_ms=wait_ms)
+        self._record_call_metrics(op, kwargs, response, elapsed_ms, failed=False, lane=group, wait_ms=wait_ms)
         return response
 
     def _record_call_metrics(
@@ -3992,13 +4026,34 @@ class MatrixArkRustProxyClient:
             append_options=append_options,
         )
 
-    def matrixark_retrieve_context_pack(self, request: Json | str) -> Json:
-        if isinstance(request, str):
-            decoded = json.loads(request)
-            request_payload = decoded if isinstance(decoded, dict) else {}
-        else:
-            request_payload = dict(request)
-        response = self._call_json("matrixark_retrieve_context_pack", **request_payload)
+    def matrixark_retrieve_context_pack(
+        self,
+        *,
+        count_key: str,
+        record_hash_key: str,
+        shard_size: int,
+        request: Json,
+    ) -> Json:
+        response = self._call_json(
+            "matrixark_retrieve_context_pack",
+            count_key=count_key,
+            record_hash_key=record_hash_key,
+            shard_size=shard_size,
+            record_types=[
+                "context_compression_event",
+                "context_entity",
+                "context_event",
+                "context_index",
+                "context_segment",
+                "context_summary",
+                "resource_chunk",
+                "skill_section",
+            ],
+            return_index_records=False,
+            scope=request.get("scope", {}),
+            secondary_index_groups=request.get("secondary_index_groups", []),
+            record=request,
+        )
         value = response.get("value")
         if isinstance(value, str) and value:
             decoded = json.loads(value)
@@ -4112,6 +4167,10 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         self._summary_client: Any | None = None
         self._retrieve_client_lock = threading.RLock()
         self._summary_client_lock = threading.RLock()
+        self._dedicated_proxy_clients_enabled = os.environ.get(
+            "MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS",
+            "0",
+        ).strip().lower() in {"1", "true", "yes"}
         self._rust_proxy_path = proxy_path
         self._rust_request_timeout_ms = request_timeout_ms
         self._rust_io_timeout_ms = io_timeout_ms
@@ -4163,7 +4222,7 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
     def _native_summary_client(self) -> Any:
         """Return a dedicated summary/audit lane when the backend transport needs one."""
 
-        if getattr(self, "_rust_direct_cdylib_enabled", False):
+        if getattr(self, "_rust_direct_cdylib_enabled", False) or not getattr(self, "_dedicated_proxy_clients_enabled", False):
             return self._client
         with self._summary_client_lock:
             if self._summary_client is None:
@@ -4213,7 +4272,7 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         blocking behind writes or audit flushes.
         """
 
-        if getattr(self, "_rust_direct_cdylib_enabled", False):
+        if getattr(self, "_rust_direct_cdylib_enabled", False) or not getattr(self, "_dedicated_proxy_clients_enabled", False):
             return self._client
         with self._retrieve_client_lock:
             if self._retrieve_client is None:
@@ -4270,7 +4329,7 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         contract.setdefault("python_hot_path_records", 0)
         contract.setdefault("python_role", "dispatch_request_receive_context_pack")
         contract.setdefault("backend_role", "scan_filter_score_pack")
-        contract.setdefault("rust_proxy_dedicated_retrieve_lane", True)
+        contract.setdefault("rust_proxy_dedicated_retrieve_lane", bool(getattr(self, "_dedicated_proxy_clients_enabled", False)))
         recall_policy["native_response_contract"] = contract
         pack["recall_policy"] = recall_policy
         return pack

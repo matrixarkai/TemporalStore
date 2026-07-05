@@ -4072,7 +4072,6 @@ class MatrixArkLocalAdapter:
                 "rich_replay_audit": False,
                 "reason": "service_backpressure_uses_access_audit_only",
             }
-        )
         return compact_context_pack_for_serving(pack)
 
     def supports_native_candidate_prefilter(self) -> bool:

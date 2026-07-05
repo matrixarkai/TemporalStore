@@ -14,6 +14,9 @@
 #include <vector>
 
 #include "common/coclosure.h"
+#ifdef BLOCK_SIZE
+#undef BLOCK_SIZE
+#endif
 #include "common/controller.h"
 #include "common/data.h"
 #include "common/time.h"

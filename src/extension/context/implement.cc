@@ -32,6 +32,7 @@ constexpr uint32_t kMaxLimit = 1000;
 constexpr uint32_t kMaxTraversalDepth = 16;
 constexpr uint32_t kDefaultTopKPerDepth = 5;
 constexpr uint32_t kDefaultTraversalCandidates = 24;
+constexpr uint32_t kDefaultTraversalChildren = 64;
 constexpr uint32_t kMaxChildrenScoredPerParent = 256;
 constexpr uint32_t kMaxFilterValues = 32;
 constexpr uint32_t kMaxIndexBucketsPerFilter = 64;
@@ -1321,6 +1322,9 @@ Status ValidateRetrieveContextPackRequest(const RetrieveContextPackRequest& requ
     }
     return Status::OK();
 }
+
+Status TraverseContextTree(ExecuteEnv* env, const TraverseContextTreeRequest& request,
+                           TraverseContextTreeResponse* response);
 
 Status LoadEventByIndexRef(ExecuteEnv* env, uint64_t tenant_hash, const IndexRef& ref,
                            ContextEvent* event, bool* found) {

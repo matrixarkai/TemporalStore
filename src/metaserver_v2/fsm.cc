@@ -230,7 +230,7 @@ byte::Status StateMachine::Apply(uint64_t index, const std::string& data) {
         && !status.IsFailedPrecondition()  //
         && !status.IsAlreadyExists()       //
         && !status.IsNotFound()) {
-        MS_METRIC(fsm_apply_fail_count)->Increment();
+        MS_METRIC(fsm_apply_fail_count).get()->Increment();
         if (FLAGS_metaserver_crash_on_fsm_failure) {
             CHECK(false) << status;
             *reinterpret_cast<char*>(-1) = 'c';  // to avoid CHECK skip

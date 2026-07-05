@@ -716,14 +716,14 @@ bcache2::Status LoadMatrixArkScopedServingRecords(
     for (uint64_t shard = 0; shard <= max_shard; ++shard) {
         char suffix[32];
         std::snprintf(suffix, sizeof(suffix), ":%06llu", static_cast<unsigned long long>(shard));
-        std::vector<std::pair<std::string, std::string>> fields;
+        std::vector<bcache2::client::HashEntry> fields;
         bcache2::Status status = impl->HGetAll(record_hash_key + suffix, &fields);
         if (!status.ok()) {
             return status;
         }
-        for (const auto& pair : fields) {
+        for (const auto& entry : fields) {
             std::vector<std::string> decoded;
-            DecodeMatrixArkPayload(pair.second, &decoded);
+            DecodeMatrixArkPayload(entry.value, &decoded);
             for (const auto& record_json : decoded) {
                 rapidjson::Document record;
                 if (record.Parse(record_json.c_str()).HasParseError() || !record.IsObject()) {
@@ -1722,40 +1722,6 @@ int temporalstore_hdel(temporalstore_client_t* client, const char* key, const ch
     return Finish(status, error_message);
 }
 
-int temporalstore_hgetall(temporalstore_client_t* client, const char* key,
-                          temporalstore_string_array_t* field_values,
-                          char** error_message) {
-    if (field_values == nullptr) {
-        return Finish(NullError("field_values"), error_message);
-    }
-    ClearStringArray(field_values);
-    bcache2::Status status = CheckClient(client);
-    std::vector<std::pair<std::string, std::string>> values;
-    if (status.ok()) {
-        status = client->impl->HGetAll(key ? key : "", &values);
-    }
-    if (status.ok()) {
-        const size_t output_count = values.size() * 2;
-        field_values->values = static_cast<char**>(std::calloc(output_count, sizeof(char*)));
-        if (field_values->values == nullptr && output_count != 0) {
-            status = bcache2::Status::ResourceExhausted("failed to allocate string array");
-        } else {
-            field_values->count = output_count;
-            for (size_t i = 0; i < values.size(); ++i) {
-                field_values->values[i * 2] = CopyCString(values[i].first);
-                field_values->values[i * 2 + 1] = CopyCString(values[i].second);
-                if (field_values->values[i * 2] == nullptr ||
-                    field_values->values[i * 2 + 1] == nullptr) {
-                    status = bcache2::Status::ResourceExhausted("failed to allocate array value");
-                    ClearStringArray(field_values);
-                    break;
-                }
-            }
-        }
-    }
-    return Finish(status, error_message);
-}
-
 int temporalstore_sadd(temporalstore_client_t* client, const char* key, const char* member,
                        char** error_message) {
     bcache2::Status status = CheckClient(client);
@@ -1807,30 +1773,6 @@ int temporalstore_matrixark_batch_append_records_v2(temporalstore_client_t* clie
     }
     return Finish(status, error_message);
 }
-
-int temporalstore_matrixark_retrieve_context_pack(temporalstore_client_t* client,
-                                                  const char* request_json,
-                                                  char** response_json,
-                                                  char** error_message) {
-    if (response_json == nullptr) {
-        return Finish(NullError("response_json"), error_message);
-    }
-    *response_json = nullptr;
-    bcache2::Status status = CheckClient(client);
-    std::string out;
-    if (status.ok()) {
-        status = client->impl->MatrixArkRetrieveContextPack(
-            request_json ? request_json : "", &out);
-    }
-    if (status.ok()) {
-        *response_json = CopyCString(out);
-        if (*response_json == nullptr) {
-            status = bcache2::Status::ResourceExhausted("failed to allocate response_json");
-        }
-    }
-    return Finish(status, error_message);
-}
-
 
 int temporalstore_matrixark_scan_candidates(temporalstore_client_t* client,
                                              const char* count_key,

@@ -124,7 +124,7 @@ void MetaCheckRoutine::HandleServerHeartbeat(const ServerHeartbeatEvent* e) {
                 LOG_INFO("partition not found in server")
                     .put("partition", *partition)
                     .put("server", ep);
-                MS_METRIC(missing_partition_count)->Add(1);
+                MS_METRIC(missing_partition_count).get()->Add(1);
                 if (!table->CanFreezePartitionSafely(id)) {
                     LOG_WARNING("partition is the last considered healthy one, freeze it by force")
                         .put("partition", *partition);
@@ -281,7 +281,7 @@ Status MetaCheckRoutine::FreezePartition(const PartitionPtr& partition) {
         return Status::FailedPrecondition("rate limited");
     }
 
-    MS_METRIC(freeze_partition_count)->Add(1);
+    MS_METRIC(freeze_partition_count).get()->Add(1);
     FreezePartitionRequest request;
     InitRequestId(request.mutable_id());
     request.set_partition_id(partition->GetId());
@@ -317,7 +317,7 @@ void MetaCheckRoutine::PatrolPartition(const PartitionPtr& partition) {
             LOG_INFO("found long loading partition, try to freeze")
                 .put("partition", *partition)
                 .put("created_at", created_at);
-            MS_METRIC(long_time_loading_partition_count)->Add(1);
+            MS_METRIC(long_time_loading_partition_count).get()->Add(1);
             FreezePartition(partition);
         }
     } else if (state == PartitionState::P_NORMAL) {
@@ -337,7 +337,7 @@ void MetaCheckRoutine::PatrolPartition(const PartitionPtr& partition) {
             if (!replicator_status.ok()) {
                 LOG_WARNING("replicator status error, try to freeze it")
                     .put("partition", *partition);
-                MS_METRIC(replicator_error_partition_count)->Add(1);
+                MS_METRIC(replicator_error_partition_count).get()->Add(1);
                 FreezePartition(partition);
             }
         }  // if role == secondary

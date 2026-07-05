@@ -11,7 +11,7 @@ use crate::storage_config::{
     TS_COLD_SCAN_NO_CACHE_FILL, TS_COMPACTION_WATERMARK_BYTES, TS_CONTEXT_PAGE_TARGET_BYTES,
     TS_PAGE_INDEX_CACHE_BYTES, TS_STORAGE_ZONE_SIZE, TS_STREAM_MAX_BLOB_SIZE,
 };
-use crate::types::ShardId;
+use crate::types::{ShardId, Status};
 
 fn public_storage_strings(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| (*value).to_string()).collect()
@@ -89,24 +89,6 @@ pub struct ShardCompactionReport {
     pub after: ShardCompactionUtilityReport,
     #[serde(default)]
     pub model_rewrite_policies: Vec<ModelCompactionRewriteReport>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SlotLayoutStateCount {
-    pub state: String,
-    pub object_count: u64,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ShardCompactionModelLayoutReport {
-    pub kind: String,
-    pub object_count: usize,
-    pub index_refs: usize,
-    pub unique_page_refs: usize,
-    pub packed_timestamped_pages: usize,
-    pub legacy_value_pages: usize,
-    pub stale_page_estimate: u64,
-    pub live_ref_density_basis_points: u64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -498,37 +480,6 @@ pub struct StoragePhysicalIndexReport {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ObjectManagerRuntimeReport {
-    pub shard_id: ShardId,
-    pub runtime_ready: bool,
-    pub routing_slot_count: u64,
-    pub object_count: u64,
-    pub page_ref_count: u64,
-    pub hot_object_count: u64,
-    pub cold_object_count: u64,
-    pub mixed_residency_object_count: u64,
-    pub tombstone_object_count: u64,
-    pub dirty_object_count: u64,
-    pub loading_object_count: u64,
-    pub meta_object_count: u64,
-    pub ttl_object_count: u64,
-    pub dirty_slot_count: u64,
-    pub max_dirty_generation: u64,
-    pub layout_transition_count: u64,
-    pub object_page_transition_count: u64,
-    #[serde(default)]
-    pub layout_states: Vec<SlotLayoutStateCount>,
-    pub object_page_count: u64,
-    pub packed_timestamped_page_count: u64,
-    pub multi_page_object_count: u64,
-    pub missing_owner_page_ref_count: usize,
-    pub owner_mismatch_page_ref_count: usize,
-    pub reused_object_id_conflict_count: u64,
-    pub evidence: Vec<String>,
-    pub blockers: Vec<String>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlotObjectPageOwnershipReport {
     pub shard_id: ShardId,
     pub first_class_index_present: bool,
@@ -555,7 +506,11 @@ pub struct ObjectManagerRuntimeReport {
     pub ttl_object_count: u64,
     pub dirty_slot_count: u64,
     pub max_dirty_generation: u64,
+    #[serde(default)]
+    pub object_page_transition_count: u64,
     pub layout_transition_count: u64,
+    #[serde(default)]
+    pub layout_states: Vec<SlotLayoutStateCount>,
     pub object_page_count: u64,
     pub packed_timestamped_page_count: u64,
     pub multi_page_object_count: u64,
@@ -2961,119 +2916,6 @@ pub struct StorageDataStructureApiParityReport {
     pub storage_manager_stage_order: Vec<String>,
     pub blockers: Vec<String>,
     pub evidence: Vec<String>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorageMergedDumpLoadPolicyReport {
-    pub shard_id: ShardId,
-    pub dry_run: bool,
-    pub production_slice_ready: bool,
-    #[serde(default)]
-    pub policy_ready: bool,
-    pub dirty_slot_count: usize,
-    pub selected_dump_slot_count: usize,
-    pub dumped_slot_count: usize,
-    #[serde(default)]
-    pub dump_manifest_created: bool,
-    #[serde(default)]
-    pub load_preflight_safe: bool,
-    #[serde(default)]
-    pub replay_boundary_safe: bool,
-    #[serde(default)]
-    pub manifest_chain_valid: bool,
-    #[serde(default)]
-    pub follower_retention_safe: bool,
-    #[serde(default)]
-    pub index_gc_ready: bool,
-    #[serde(default)]
-    pub manifest_slot_ids: Vec<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub manifest_id: Option<String>,
-    pub manifest_checksum_validated: bool,
-    pub manifest_generation_validated: bool,
-    pub sequence_boundaries_validated: bool,
-    pub page_segments_validated: bool,
-    pub live_page_refs_validated: bool,
-    pub object_lifecycle_validated: bool,
-    pub install_preflight_safe: bool,
-    pub install_marker_policy_checked: bool,
-    pub install_roll_forward_checked: bool,
-    pub page_reclaim_policy_applied: bool,
-    pub compaction_policy_applied: bool,
-    pub index_gc_policy_applied: bool,
-    pub cache_policy_applied: bool,
-    #[serde(default)]
-    pub merged_manifest_validated: bool,
-    #[serde(default)]
-    pub source_manifest_count: usize,
-    #[serde(default)]
-    pub source_slot_coverage_validated: bool,
-    #[serde(default)]
-    pub rollback_marker_policy_checked: bool,
-    #[serde(default)]
-    pub load_version_handoff_validated: bool,
-    #[serde(default)]
-    pub stale_object_conflict_reported: bool,
-    #[serde(default)]
-    pub stale_page_conflict_reported: bool,
-    #[serde(default)]
-    pub stale_object_conflict_count: usize,
-    #[serde(default)]
-    pub stale_page_conflict_count: usize,
-    #[serde(default)]
-    pub interrupted_install_count: usize,
-    #[serde(default)]
-    pub roll_forward_recovery_count: usize,
-    #[serde(default)]
-    pub rollback_marker_count: usize,
-    #[serde(default)]
-    pub interruption_recovery_validated: bool,
-    #[serde(default)]
-    pub blockers: Vec<String>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorageMergedDumpLoadPolicyRequest {
-    pub lifecycle: StorageLifecycleRequest,
-    #[serde(default)]
-    pub create_dump_manifest: bool,
-    #[serde(default)]
-    pub install_dump_manifest: bool,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorageManagerLoopRequest {
-    pub shard_id: ShardId,
-    #[serde(default)]
-    pub apply: bool,
-    #[serde(default)]
-    pub expire_records: bool,
-    #[serde(default)]
-    pub compact_pages: bool,
-    #[serde(default)]
-    pub lifecycle: StorageLifecycleRequest,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorageManagerLoopPhaseReport {
-    pub phase: String,
-    pub attempted: bool,
-    pub applied: bool,
-    pub evidence: Vec<String>,
-    pub blockers: Vec<String>,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StorageManagerLoopReport {
-    pub shard_id: ShardId,
-    pub loop_ready: bool,
-    pub phases: Vec<StorageManagerLoopPhaseReport>,
-    pub lifecycle: StorageLifecycleReport,
-    pub expiry_sweep: ShardExpirySweepReport,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub compaction: Option<ShardCompactionReport>,
-    pub evidence: Vec<String>,
-    pub blockers: Vec<String>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]

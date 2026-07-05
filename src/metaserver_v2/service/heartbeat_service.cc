@@ -45,7 +45,7 @@ void HeartbeatServiceImpl::ServerHeartbeat(google::protobuf::RpcController* cont
             response->set_forbid_auto_register(true);
         }
     }
-    MS_METRIC(server_heartbeat_count)->Add(1);
+    MS_METRIC(server_heartbeat_count).get()->Add(1);
     event_harbor_->Publish(new ServerHeartbeatEvent(clone_req));
 }
 

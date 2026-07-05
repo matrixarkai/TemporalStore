@@ -37,8 +37,11 @@ target_link_libraries(bcache2-server
     /usr/lib/x86_64-linux-gnu/libabsl_throw_delegate.so
     /usr/lib/x86_64-linux-gnu/libabsl_time_zone.so
     /usr/lib/x86_64-linux-gnu/libabsl_raw_logging_internal.so
-    /usr/lib/x86_64-linux-gnu/libabsl_log_severity.so)
+    /usr/lib/x86_64-linux-gnu/libabsl_log_severity.so
+    /usr/lib/x86_64-linux-gnu/libabsl_time_zone.so)
 target_compile_options(bcache2-server PUBLIC "-DBRPC_ENABLE_CPU_PROFILER")
+target_link_options(bcache2-server PRIVATE "-Wl,--no-as-needed")
+target_link_libraries(bcache2-server /usr/lib/x86_64-linux-gnu/libabsl_time_zone.so)
 if (CYGWIN)
     target_link_options(bcache2-server PRIVATE
         "-fuse-ld=lld"
