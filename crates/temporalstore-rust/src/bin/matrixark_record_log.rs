@@ -43,6 +43,24 @@ struct RecordLogRequest {
     entries_compact: Vec<CompactHashEntry>,
     #[serde(default)]
     append_options: Value,
+    #[serde(default)]
+    count_key: Option<String>,
+    #[serde(default)]
+    record_hash_key: Option<String>,
+    #[serde(default)]
+    shard_size: Option<u64>,
+    #[serde(default)]
+    record_types: Option<Vec<String>>,
+    #[serde(default)]
+    selected_node_hashes: Option<Vec<u64>>,
+    #[serde(default)]
+    secondary_index_groups: Option<Vec<Vec<String>>>,
+    #[serde(default)]
+    scope: Option<Value>,
+    #[serde(default)]
+    return_index_records: bool,
+    #[serde(default)]
+    record: Option<Value>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -102,6 +120,8 @@ struct RecordLogResponse {
     error_code: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     retryable: Option<bool>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, Value>,
 }
 
 #[derive(Debug)]
@@ -177,6 +197,7 @@ fn response_from_result(
             error: String::new(),
             error_code: String::new(),
             retryable: None,
+            extra: output.extra,
         },
         Err((op, error)) => {
             let (error_code, retryable) = classify_error(&error);
@@ -195,12 +216,23 @@ fn response_from_result(
                 prometheus: String::new(),
                 cached_clients: None,
                 elapsed_ms: Some(elapsed_ms),
+                rust_engine_time_ms: Some(elapsed_ms),
+                serialization_time_ms: None,
                 error,
                 error_code,
                 retryable: Some(retryable),
+                extra: BTreeMap::new(),
             }
         }
     }
+}
+
+fn serialize_response_with_metrics(response: &mut RecordLogResponse) -> String {
+    let started = Instant::now();
+    let serialized = serde_json::to_string(response)
+        .unwrap_or_else(|error| json!({"ok": false, "error": error.to_string()}).to_string());
+    response.serialization_time_ms = Some(started.elapsed().as_millis());
+    serialized
 }
 
 fn classify_error(error: &str) -> (String, bool) {
@@ -522,6 +554,7 @@ fn render_prometheus_metrics(
         records_written,
         cached_clients,
         cached_clients,
+        cached_clients,
         records_written,
         records_read,
         records_written.saturating_add(records_read)
@@ -719,6 +752,8 @@ fn json_output(value: Value, root: PathBuf) -> Result<RecordLogOutput, String> {
         root,
         status: String::new(),
         mode: String::new(),
+        append_path: String::new(),
+        raw_storage_backend: String::new(),
         prometheus: String::new(),
         cached_clients: None,
         extra,
@@ -1963,45 +1998,6 @@ fn execute_record_log_request(
             empty_output(root)
         }
         "batch_hset" | "matrixark_append_records" | "matrixark_batch_append_records" => {
-            let append_path = request
-                .append_options
-                .get("append_path")
-                .and_then(Value::as_str)
-                .unwrap_or("native_batch_append_records")
-                .to_string();
-            let raw_storage_backend = request
-                .append_options
-                .get("raw_storage_backend")
-                .and_then(Value::as_str)
-                .unwrap_or("temporalstore")
-                .to_string();
-            let entries = expanded_hash_entries(&request);
-            let mut count = entries.len();
-            for entry in entries {
-                execute_empty(
-                    &engine,
-                    Command::HashMultiSet {
-                        key,
-                        entries,
-                    },
-                )?;
-            }
-            if !request.key.trim().is_empty() {
-                commands.push(Command::StringSet {
-                    key: request.key,
-                    value: request.value.into_bytes(),
-                });
-                count += 1;
-            }
-            execute_empty_batch_runtime(&engine, commands)?;
-            RecordLogOutput {
-                count: Some(count),
-                append_path,
-                raw_storage_backend,
-                ..empty_output(root)
-            }
-        }
-        "matrixark_append_records" | "matrixark_batch_append_records" => {
             let mut count = request.entries.len() + request.entries_compact.len();
             let mut grouped: BTreeMap<String, Vec<(String, Vec<u8>)>> = BTreeMap::new();
             for entry in request.entries {
@@ -2027,6 +2023,18 @@ fn execute_record_log_request(
             execute_empty_batch_runtime(&engine, commands)?;
             let mut output = empty_output(root);
             output.count = Some(count);
+            output.append_path = request
+                .append_options
+                .get("append_path")
+                .and_then(Value::as_str)
+                .unwrap_or("native_batch_append_records")
+                .to_string();
+            output.raw_storage_backend = request
+                .append_options
+                .get("raw_storage_backend")
+                .and_then(Value::as_str)
+                .unwrap_or("temporalstore")
+                .to_string();
             output.extra.insert(
                 "matrixark_append_write_path".to_string(),
                 json!("rust_proxy_matrixark_batch_runtime_default"),
@@ -2084,7 +2092,12 @@ fn execute_record_log_request(
             empty_output(root)
         }
         "hgetall" | "scan_hash" => hash_entries_output(&engine, request.key, root)?,
-        "matrixark_retrieve_context_pack" => retrieve_context_pack_output(&engine, &request, root)?,
+        "matrixark_scan_candidates" => {
+            json_output(scan_matrixark_candidates(&engine, &request)?, root)?
+        }
+        "matrixark_retrieve_context_pack" => {
+            json_output(retrieve_context_pack_native(&engine, &request)?, root)?
+        }
         other => return Err(format!("unsupported op {other:?}")),
     };
     Ok(output)
@@ -2138,7 +2151,6 @@ fn validate_request(request: &RecordLogRequest) -> Result<(), String> {
             }
             Ok(())
         }
-        "matrixark_retrieve_context_pack" => require_non_empty("storage_prefix", &request.storage_prefix),
         other => Err(format!("unsupported op {other:?}")),
     }
 }

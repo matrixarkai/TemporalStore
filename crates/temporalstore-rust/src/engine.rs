@@ -263,8 +263,7 @@ impl TemporalEngine {
                             end_routing_slot,
                         );
                     } else {
-                        sync_slot_page_ownership_for_object(
-                            request.shard_id,
+                        mark_async_dirty_object(
                             shard,
                             &object_key,
                             start_routing_slot,
@@ -331,7 +330,7 @@ impl TemporalEngine {
                     response: cached_response(&self.cache, CacheKey::string(request.shard_id, key), || {
                         CommandResponse::Bytes {
                             value: shard.strings.get(key).and_then(|address| {
-                                read_page_bytes(&self.cache, &self.block_store, request.shard_id, address)
+                                read_page_bytes(&self.cache, &self.page_store, request.shard_id, address)
                             }),
                         }
                     }),
@@ -353,7 +352,7 @@ impl TemporalEngine {
                         let mut entries = fields
                             .iter()
                             .filter_map(|(field, address)| {
-                                read_page_bytes(&self.cache, &self.block_store, request.shard_id, address)
+                                read_page_bytes(&self.cache, &self.page_store, request.shard_id, address)
                                     .map(|value| (field.clone(), value))
                             })
                             .collect::<Vec<_>>();
@@ -3286,7 +3285,7 @@ impl TemporalEngine {
         let lifecycle_report = if request.dry_run {
             None
         } else {
-            let mut lifecycle_request = plan_request;
+            let mut lifecycle_request = plan_request.clone();
             lifecycle_request.purge_delayed_destroy =
                 lifecycle_request.purge_delayed_destroy && page_gc_dependency_plan.safe_to_reclaim;
             Some(self.apply_storage_lifecycle(lifecycle_request))
@@ -3760,13 +3759,12 @@ impl TemporalEngine {
             ..StorageManagerStageReport::default()
         });
 
-        let mut merged_dump_load_policy = self.storage_merged_dump_load_policy_report_internal(
-            request.shard_id,
-            request.dry_run,
-            &plan,
-            lifecycle_report.as_ref(),
-            None,
-        );
+        let mut merged_dump_load_policy =
+            self.storage_merged_dump_load_policy_report(StorageMergedDumpLoadPolicyRequest {
+                lifecycle: plan_request.clone(),
+                create_dump_manifest: request.enable_oplog_reclaim,
+                install_dump_manifest: false,
+            });
 
         let should_compact = request.enable_page_compaction
             && !request.dry_run
@@ -3833,9 +3831,9 @@ impl TemporalEngine {
             ..StorageManagerStageReport::default()
         });
 
-        merged_dump_load_policy.compaction_policy_applied =
+        let compaction_policy_applied =
             request.dry_run || plan.reclaim_candidates.is_empty() || compaction_report.is_some();
-        if merged_dump_load_policy.compaction_policy_applied {
+        if compaction_policy_applied {
             merged_dump_load_policy
                 .blockers
                 .retain(|blocker| blocker != "compaction");
@@ -3848,8 +3846,7 @@ impl TemporalEngine {
                 .blockers
                 .push("compaction".to_string());
         }
-        merged_dump_load_policy.production_slice_ready =
-            merged_dump_load_policy.blockers.is_empty();
+        merged_dump_load_policy.policy_ready = merged_dump_load_policy.blockers.is_empty();
 
         stages.push(StorageManagerStageReport {
             stage: "reap_metrics".to_string(),
@@ -3891,7 +3888,7 @@ impl TemporalEngine {
                 .iter()
                 .all(|stage| stages.iter().any(|report| &report.stage == stage))
             && stages.iter().all(|stage| stage.enabled)
-            && merged_dump_load_policy.production_slice_ready;
+            && merged_dump_load_policy.policy_ready;
         StorageManagerCycleReport {
             shard_id: request.shard_id,
             dry_run: request.dry_run,
@@ -3912,236 +3909,6 @@ impl TemporalEngine {
             page_gc_dependency_plan,
             errors,
         }
-    }
-
-    pub fn storage_merged_dump_load_policy_report(
-        &self,
-        request: StorageMergedDumpLoadPolicyRequest,
-    ) -> StorageMergedDumpLoadPolicyReport {
-        let plan = self.storage_lifecycle_plan(request.lifecycle.clone());
-        let lifecycle = if request.create_dump_manifest || request.install_dump_manifest {
-            Some(self.apply_storage_lifecycle(request.lifecycle.clone()))
-        } else {
-            None
-        };
-        self.storage_merged_dump_load_policy_report_internal(
-            request.lifecycle.shard_id,
-            false,
-            &plan,
-            lifecycle.as_ref(),
-            None,
-        )
-    }
-
-    fn storage_merged_dump_load_policy_report_internal(
-        &self,
-        shard_id: ShardId,
-        dry_run: bool,
-        plan: &StorageLifecyclePlan,
-        lifecycle_report: Option<&StorageLifecycleReport>,
-        compaction_report: Option<&ShardCompactionReport>,
-    ) -> StorageMergedDumpLoadPolicyReport {
-        let mut report = StorageMergedDumpLoadPolicyReport {
-            shard_id,
-            dry_run,
-            dirty_slot_count: plan.dirty_slots.len(),
-            selected_dump_slot_count: plan.selected_dump_slots.len(),
-            page_reclaim_policy_applied: dry_run
-                || plan.reclaim_candidates.is_empty()
-                || lifecycle_report
-                    .map(|lifecycle| !lifecycle.delayed_destroy_purged_segments.is_empty())
-                    .unwrap_or(false),
-            compaction_policy_applied: dry_run
-                || plan.reclaim_candidates.is_empty()
-                || compaction_report.is_some(),
-            index_gc_policy_applied: dry_run
-                || lifecycle_report
-                    .map(|lifecycle| lifecycle.manifest_prune_report.is_some())
-                    .unwrap_or(false),
-            cache_policy_applied: dry_run
-                || lifecycle_report
-                    .map(|lifecycle| {
-                        lifecycle.cache_entries_removed > 0
-                            || lifecycle.cache_disk_bytes_removed > 0
-                            || lifecycle.cache_warmup_page_refs > 0
-                    })
-                    .unwrap_or(false),
-            ..StorageMergedDumpLoadPolicyReport::default()
-        };
-        let Some(lifecycle) = lifecycle_report else {
-            if !dry_run {
-                report.blockers.push("lifecycle_report_missing".to_string());
-            }
-            report.production_slice_ready = dry_run;
-            return report;
-        };
-        let interrupted_installs = self.interrupted_slot_dump_installs(shard_id);
-        report.interrupted_install_count = interrupted_installs.len();
-        report.roll_forward_recovery_count = lifecycle.install_roll_forward_reports.len();
-        report.rollback_marker_count = lifecycle
-            .install_roll_forward_reports
-            .iter()
-            .filter(|roll_forward| {
-                roll_forward.completed_install
-                    || roll_forward.completed_commit
-                    || roll_forward.obsolete_marker_files_removed > 0
-            })
-            .count();
-        report.interruption_recovery_validated =
-            report.interrupted_install_count == 0 || report.roll_forward_recovery_count > 0;
-        report.install_marker_policy_checked = true;
-        report.install_roll_forward_checked =
-            !lifecycle.install_roll_forward_reports.is_empty() || interrupted_installs.is_empty();
-        let Some(manifest) = lifecycle.dump_manifest.as_ref() else {
-            if !plan.selected_dump_slots.is_empty() {
-                report.blockers.push("dump_manifest_missing".to_string());
-            }
-            report.production_slice_ready = plan.selected_dump_slots.is_empty()
-                && report.page_reclaim_policy_applied
-                && report.compaction_policy_applied
-                && report.index_gc_policy_applied;
-            return report;
-        };
-        report.manifest_id = Some(manifest.manifest_id.clone());
-        report.dumped_slot_count = manifest.slot_ids.len();
-        let restored = serde_json::from_slice::<ShardState>(&manifest.index_bytes).ok();
-        let manifest_slots = manifest.slot_ids.iter().copied().collect::<BTreeSet<_>>();
-        let live_page_entries = restored
-            .as_ref()
-            .map(|restored| {
-                collect_live_page_entries(restored)
-                    .into_iter()
-                    .filter(|entry| {
-                        let routing_slot = entry.address.routing_slot.unwrap_or_else(|| {
-                            self.routing_slot_for_key(manifest.shard_id, &entry.object_key)
-                        });
-                        manifest_slots.is_empty() || manifest_slots.contains(&routing_slot)
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let expected_slot_summaries = restored
-            .as_ref()
-            .map(|restored| slot_dump_manifest_comparable_summaries(restored, &manifest_slots))
-            .unwrap_or_default();
-        let actual_slot_summaries = comparable_slot_dump_summaries(manifest.slot_summaries.clone());
-        let expected_object_lifecycle = restored.as_ref().map(|restored| {
-            storage_object_lifecycle_report_for_slots(
-                manifest.shard_id,
-                restored,
-                &manifest_slots,
-                |key| self.routing_slot_for_key(manifest.shard_id, key),
-            )
-        });
-        let checksum_ok = slot_dump_manifest_checksum(manifest)
-            .map(|checksum| checksum == manifest.checksum)
-            .unwrap_or(false);
-        let index_checksum_ok = !manifest.index_bytes.is_empty()
-            && manifest.index_sha256 == sha256_hex_bytes(&manifest.index_bytes);
-        report.manifest_checksum_validated = checksum_ok
-            && index_checksum_ok
-            && restored.is_some()
-            && actual_slot_summaries == expected_slot_summaries;
-        report.manifest_generation_validated = !manifest.dump_generation_id.is_empty()
-            && manifest.dump_generation_id == slot_dump_generation_id(manifest);
-        report.sequence_boundaries_validated = manifest.oplog_sequence
-            >= plan.undumped_oplog_records
-            && manifest.index_log_sequence > 0
-            && manifest.index_sha256 == sha256_hex_bytes(&manifest.index_bytes);
-        let preflight = self.slot_dump_install_preflight_report(manifest);
-        report.page_segments_validated = preflight.missing_page_segment_ids.is_empty()
-            && preflight.corrupt_page_segment_ids.is_empty();
-        report.live_page_refs_validated = live_page_entries.len() as u64 == manifest.live_page_refs
-            && preflight.unreadable_page_ref_count == 0
-            && preflight.unreadable_page_bytes == 0;
-        let merged_manifest = manifest.manifest_kind == "merged_slot_dump";
-        report.source_manifest_count = preflight.source_manifest_count;
-        report.merged_manifest_validated = !merged_manifest
-            || (!manifest.source_manifest_ids.is_empty()
-                && preflight.source_manifest_count == manifest.source_manifest_ids.len()
-                && preflight.missing_source_manifest_ids.is_empty());
-        report.source_slot_coverage_validated =
-            !merged_manifest || preflight.source_slot_coverage_missing_slot_ids.is_empty();
-        report.rollback_marker_policy_checked = report.install_marker_policy_checked;
-        report.load_version_handoff_validated = manifest
-            .load_version_handoff
-            .as_ref()
-            .map(|handoff| {
-                handoff.next_load_version > handoff.previous_load_version
-                    && !preflight
-                        .blockers
-                        .iter()
-                        .any(|blocker| blocker == "load_version_handoff_mismatch")
-            })
-            .unwrap_or(true);
-        report.stale_object_conflict_reported = preflight.stale_object_conflict_count > 0;
-        report.stale_page_conflict_reported =
-            preflight.stale_manifest || preflight.stale_page_conflict_count > 0;
-        report.stale_object_conflict_count = preflight.stale_object_conflict_count;
-        report.stale_page_conflict_count = preflight.stale_page_conflict_count
-            + usize::from(preflight.stale_manifest && preflight.stale_page_conflict_count == 0);
-        report.object_lifecycle_validated = expected_object_lifecycle
-            .map(|expected| {
-                expected.live_object_ids == manifest.object_lifecycle.live_object_ids
-                    && expected.live_page_refs == manifest.object_lifecycle.live_page_refs
-                    && manifest.object_lifecycle.missing_owner_page_refs == 0
-                    && manifest.object_lifecycle.owner_mismatch_page_refs == 0
-                    && manifest.object_lifecycle.reused_object_id_conflicts == 0
-            })
-            .unwrap_or(false);
-        report.install_preflight_safe = preflight.install_safe;
-        for (ready, blocker) in [
-            (report.manifest_checksum_validated, "manifest_checksum"),
-            (report.manifest_generation_validated, "manifest_generation"),
-            (report.sequence_boundaries_validated, "sequence_boundaries"),
-            (report.page_segments_validated, "page_segments"),
-            (report.live_page_refs_validated, "live_page_refs"),
-            (report.object_lifecycle_validated, "object_lifecycle"),
-            (report.install_preflight_safe, "install_preflight"),
-            (report.install_marker_policy_checked, "install_markers"),
-            (report.install_roll_forward_checked, "install_roll_forward"),
-            (report.page_reclaim_policy_applied, "page_reclaim"),
-            (report.compaction_policy_applied, "compaction"),
-            (report.index_gc_policy_applied, "index_gc"),
-            (report.cache_policy_applied, "cache_policy"),
-            (report.merged_manifest_validated, "merged_manifest"),
-            (
-                report.source_slot_coverage_validated,
-                "source_slot_coverage",
-            ),
-            (
-                report.rollback_marker_policy_checked,
-                "rollback_marker_policy",
-            ),
-            (
-                report.load_version_handoff_validated,
-                "load_version_handoff",
-            ),
-            (
-                report.interruption_recovery_validated,
-                "interruption_recovery",
-            ),
-        ] {
-            if !ready {
-                report.blockers.push(blocker.to_string());
-            }
-        }
-        report.production_slice_ready = report.blockers.is_empty();
-        report.policy_ready = report.production_slice_ready;
-        report.dump_manifest_created = report.manifest_id.is_some();
-        report.load_preflight_safe = report.install_preflight_safe;
-        report.replay_boundary_safe = report.sequence_boundaries_validated;
-        report.manifest_chain_valid =
-            report.manifest_checksum_validated && report.manifest_generation_validated;
-        report.follower_retention_safe =
-            report.live_page_refs_validated && report.object_lifecycle_validated;
-        report.index_gc_ready = report.index_gc_policy_applied;
-        report.manifest_slot_ids = lifecycle
-            .dump_manifest
-            .as_ref()
-            .map(|manifest| manifest.slot_ids.clone())
-            .unwrap_or_default();
-        report
     }
 
     pub fn storage_merged_dump_load_policy_report(
@@ -4347,11 +4114,13 @@ impl TemporalEngine {
                 .unwrap_or_else(|_| ShardExpirySweepReport {
                     shard_id: request.shard_id,
                     expired_records_removed: 0,
+                    ..ShardExpirySweepReport::default()
                 })
         } else {
             ShardExpirySweepReport {
                 shard_id: request.shard_id,
                 expired_records_removed: 0,
+                ..ShardExpirySweepReport::default()
             }
         };
         phases.push(StorageManagerLoopPhaseReport {
@@ -4695,9 +4464,9 @@ impl TemporalEngine {
             object_ids_embedded: true,
             routing_slots_embedded: true,
             compression_supported: true,
-            active_zones: zones.active_extents,
-            sealed_zones: zones.sealed_extents,
-            delayed_destroy_zones: zones.delayed_destroy_extents,
+            active_extents: zones.active_extents,
+            sealed_extents: zones.sealed_extents,
+            delayed_destroy_extents: zones.delayed_destroy_extents,
             live_physical_bytes: zones.live_physical_bytes,
             reclaimable_physical_bytes: zones.reclaimable_physical_bytes,
             page_store_writes: stats.writes,
@@ -4738,7 +4507,7 @@ impl TemporalEngine {
         let Some(shard) = shards.get(&shard_id) else {
             return report;
         };
-        for entry in collect_live_page_entries_from_model_maps(shard) {
+        for entry in collect_live_page_entries(shard) {
             let routing_slot = entry
                 .address
                 .routing_slot
@@ -5747,8 +5516,8 @@ impl TemporalEngine {
             index_log_records,
             active_page_segment_ids,
             live_page_segment_ids,
-            extent_descriptors,
-            extent_summary,
+            zone_descriptors,
+            zone_summary,
             page_segment_reports,
             page_segment_live_reports,
             total_page_refs,
@@ -6104,8 +5873,6 @@ impl TemporalEngine {
         let after_segments = collect_live_page_segment_ids(shard);
         let after = compaction_utility_report(&self.page_store, shard);
         rebuild_slot_page_ownership(shard_id, shard, start_routing_slot, end_routing_slot);
-        let slot_layout_transition_count_after = slot_layout_transition_count(shard);
-        let slot_layout_states_after = slot_layout_state_counts(shard);
         let tombstoned_object_ids_after =
             storage_object_lifecycle_report(shard_id, shard).tombstoned_object_ids;
         let object_manager_after =
@@ -10558,184 +10325,6 @@ fn model_id_for_kind(kind: &str) -> u16 {
     }
 }
 
-fn slot_page_ref_from_entry(entry: LivePageEntry, dirty: bool) -> SlotObjectPageRef {
-    let size_bytes = entry.address.length;
-    SlotObjectPageRef {
-        model_id: model_id_for_kind(&entry.kind),
-        page_id: entry.address.page_id,
-        dirty,
-        deleted: false,
-        log: false,
-        size_bytes,
-        logical_bytes: size_bytes,
-        physical_bytes: size_bytes,
-        address: entry.address,
-    }
-}
-
-fn remove_slot_object_refs_for_key(
-    shard: &mut ShardState,
-    object_key: &str,
-) -> Vec<SlotObjectEntry> {
-    let mut removed = Vec::new();
-    let mut empty_slots = Vec::new();
-    for (routing_slot, objects) in &mut shard.slot_objects {
-        let removed_ids = objects
-            .iter()
-            .filter_map(|(object_id, object)| {
-                (object.object_key == object_key).then_some(*object_id)
-            })
-            .collect::<Vec<_>>();
-        for object_id in removed_ids {
-            if let Some(object) = objects.remove(&object_id) {
-                removed.push(object);
-            }
-        }
-        if objects.is_empty() {
-            empty_slots.push(*routing_slot);
-        }
-    }
-    for routing_slot in empty_slots {
-        shard.slot_objects.remove(&routing_slot);
-    }
-    removed
-}
-
-fn timestamped_layout_kind(kind: &str) -> bool {
-    matches!(
-        kind,
-        "feature"
-            | "sequence"
-            | "ips"
-            | "context_event"
-            | "context_index"
-            | "context_audit"
-            | "context_dirty"
-            | "context_child"
-            | "context_summary"
-            | "context_compression"
-    )
-}
-
-fn slot_layout_state_for_object(object: &SlotObjectEntry) -> SlotLayoutState {
-    if object.pages.is_empty() {
-        return SlotLayoutState::Tombstone;
-    }
-    if object
-        .pages
-        .iter()
-        .all(|page| page.address.page_segment_id == HOT_PAGE_SEGMENT_ID)
-    {
-        return SlotLayoutState::MemoryHot;
-    }
-    if timestamped_layout_kind(&object.kind) && object.pages.len() == 1 {
-        return SlotLayoutState::PackedTimestampedPage;
-    }
-    if object.pages.len() == 1 {
-        return SlotLayoutState::ObjectPage;
-    }
-    SlotLayoutState::MultiPageObject
-}
-
-fn apply_slot_layout_transition(
-    object: &mut SlotObjectEntry,
-    previous: Option<&SlotObjectEntry>,
-    reason: &str,
-) {
-    let previous_state = previous
-        .map(|entry| entry.layout_state.clone())
-        .filter(|state| *state != SlotLayoutState::Unknown)
-        .unwrap_or_else(|| {
-            previous
-                .map(slot_layout_state_for_object)
-                .unwrap_or(SlotLayoutState::Unknown)
-        });
-    let previous_count = previous
-        .map(|entry| entry.layout_transition_count)
-        .unwrap_or_default();
-    let previous_generation = previous
-        .map(|entry| entry.layout_generation)
-        .unwrap_or_default();
-    let current_state = slot_layout_state_for_object(object);
-    object.layout_state = current_state.clone();
-    if previous_state == SlotLayoutState::Unknown {
-        object.layout_generation = previous_generation.max(1);
-        object.layout_transition_count = previous_count;
-        object.last_layout_transition =
-            previous.and_then(|entry| entry.last_layout_transition.clone());
-        return;
-    }
-    if previous_state != current_state {
-        object.layout_generation = previous_generation.saturating_add(1).max(1);
-        object.layout_transition_count = previous_count.saturating_add(1);
-        object.last_layout_transition = Some(SlotLayoutTransition {
-            from: previous_state,
-            to: current_state,
-            reason: reason.to_string(),
-            generation: object.layout_generation,
-        });
-    } else {
-        object.layout_generation = previous_generation.max(1);
-        object.layout_transition_count = previous_count;
-        object.last_layout_transition =
-            previous.and_then(|entry| entry.last_layout_transition.clone());
-    }
-}
-
-fn previous_slot_object_by_id<'a>(
-    previous: &'a BTreeMap<u32, BTreeMap<u64, SlotObjectEntry>>,
-    object_id: u64,
-) -> Option<&'a SlotObjectEntry> {
-    previous
-        .values()
-        .find_map(|objects| objects.get(&object_id))
-}
-
-fn slot_layout_state_counts(shard: &ShardState) -> Vec<SlotLayoutStateCount> {
-    let mut counts = BTreeMap::<String, u64>::new();
-    for object in shard
-        .slot_objects
-        .values()
-        .flat_map(|objects| objects.values())
-    {
-        let state = if object.layout_state == SlotLayoutState::Unknown {
-            slot_layout_state_for_object(object)
-        } else {
-            object.layout_state.clone()
-        };
-        *counts
-            .entry(slot_layout_state_name(&state).to_string())
-            .or_default() += 1;
-    }
-    counts
-        .into_iter()
-        .map(|(state, object_count)| SlotLayoutStateCount {
-            state,
-            object_count,
-        })
-        .collect()
-}
-
-fn slot_layout_state_name(state: &SlotLayoutState) -> &'static str {
-    match state {
-        SlotLayoutState::Unknown => "unknown",
-        SlotLayoutState::MemoryHot => "memory_hot",
-        SlotLayoutState::ObjectPage => "object_page",
-        SlotLayoutState::PackedTimestampedPage => "packed_timestamped_page",
-        SlotLayoutState::MultiPageObject => "multi_page_object",
-        SlotLayoutState::Tombstone => "tombstone",
-    }
-}
-
-fn slot_layout_transition_count(shard: &ShardState) -> u64 {
-    shard
-        .slot_objects
-        .values()
-        .flat_map(|objects| objects.values())
-        .map(|object| object.layout_transition_count)
-        .sum()
-}
-
 fn mark_async_dirty_object(
     shard: &mut ShardState,
     object_key: &str,
@@ -10743,117 +10332,18 @@ fn mark_async_dirty_object(
     end_routing_slot: u32,
 ) {
     let routing_slot = page_routing_slot(object_key, start_routing_slot, end_routing_slot);
-    shard.dirty_slots.insert(routing_slot);
-    shard
-        .slot_dirty_generations
+    shard.dirty_objects.insert(object_key.to_string());
+    let slot = shard
+        .slot_index
+        .slot_map
         .entry(routing_slot)
-        .and_modify(|generation| *generation = generation.saturating_add(1))
-        .or_insert(1);
-}
-
-fn sync_slot_page_ownership_for_object(
-    shard_id: ShardId,
-    shard: &mut ShardState,
-    object_key: &str,
-    start_routing_slot: u32,
-    end_routing_slot: u32,
-) {
-    let previous_objects = remove_slot_object_refs_for_key(shard, object_key);
-    let mut entries = collect_live_page_entries_from_model_maps(shard)
-        .into_iter()
-        .filter(|entry| entry.object_key == object_key)
-        .collect::<Vec<_>>();
-    if entries.is_empty() {
-        let routing_slot = page_routing_slot(object_key, start_routing_slot, end_routing_slot);
-        shard.dirty_slots.insert(routing_slot);
-        let dirty_generation = *shard
-            .slot_dirty_generations
-            .entry(routing_slot)
-            .and_modify(|generation| *generation = generation.saturating_add(1))
-            .or_insert(1);
-        if let Some(previous) = previous_objects.first() {
-            let mut tombstone = previous.clone();
-            tombstone.pages.clear();
-            tombstone.dirty = true;
-            tombstone.dirty_generation = dirty_generation;
-            tombstone.in_memory = false;
-            apply_slot_layout_transition(&mut tombstone, Some(previous), "delete_tombstone");
-            shard
-                .slot_objects
-                .entry(routing_slot)
-                .or_default()
-                .insert(tombstone.object_id, tombstone);
-        }
-        return;
-    }
-    entries.sort_by(|left, right| {
-        left.kind
-            .cmp(&right.kind)
-            .then(left.component.cmp(&right.component))
-            .then(
-                left.address
-                    .page_segment_id
-                    .cmp(&right.address.page_segment_id),
-            )
-            .then(left.address.offset.cmp(&right.address.offset))
-            .then(left.address.length.cmp(&right.address.length))
-    });
-    for entry in entries {
-        let object_id = expected_live_page_object_id(shard_id, &entry);
-        let routing_slot = entry
-            .address
-            .routing_slot
-            .unwrap_or_else(|| page_routing_slot(object_key, start_routing_slot, end_routing_slot));
-        shard.dirty_slots.insert(routing_slot);
-        let dirty_generation = *shard
-            .slot_dirty_generations
-            .entry(routing_slot)
-            .and_modify(|generation| *generation = generation.saturating_add(1))
-            .or_insert(1);
-        let ttl_expires_at_ms = shard.expires_at_ms.get(object_key).copied();
-        let in_memory = entry.address.page_segment_id == HOT_PAGE_SEGMENT_ID;
-        let page_ref = slot_page_ref_from_entry(entry.clone(), true);
-        let previous_object = previous_objects
-            .iter()
-            .find(|object| object.object_id == object_id);
-        let object = shard
-            .slot_objects
-            .entry(routing_slot)
-            .or_default()
-            .entry(object_id)
-            .or_insert_with(|| SlotObjectEntry {
-                object_id,
-                object_key: entry.object_key.clone(),
-                kind: entry.kind.clone(),
-                component: entry.component.clone(),
-                dirty_generation,
-                dirty: true,
-                meta: entry.kind.starts_with("context_"),
-                loading: false,
-                in_memory,
-                ttl_expires_at_ms,
-                layout_generation: 1,
-                layout_state: SlotLayoutState::Unknown,
-                layout_transition_count: 0,
-                last_layout_transition: None,
-                pages: Vec::new(),
-            });
-        object.dirty_generation = dirty_generation;
-        object.dirty = true;
-        object.in_memory |= in_memory;
-        object.ttl_expires_at_ms = ttl_expires_at_ms;
-        object.layout_generation = object.layout_generation.max(1);
-        object.pages.push(page_ref);
-        object.pages.sort_by(|left, right| {
-            left.address
-                .page_segment_id
-                .cmp(&right.address.page_segment_id)
-                .then(left.address.offset.cmp(&right.address.offset))
-                .then(left.address.length.cmp(&right.address.length))
-                .then(left.model_id.cmp(&right.model_id))
+        .or_insert_with(|| SlotNode {
+            routing_slot,
+            meta_loaded: true,
+            ..SlotNode::default()
         });
-        apply_slot_layout_transition(object, previous_object, "object_write");
-    }
+    slot.dirty = true;
+    slot.dirty_generation = slot.dirty_generation.saturating_add(1).max(1);
 }
 
 fn rebuild_slot_page_ownership(
@@ -10964,8 +10454,6 @@ fn collect_slot_index_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry
                 deleted: page.deleted,
                 log_backed: page.log_backed,
             });
-            let previous = previous_slot_object_by_id(&previous_slot_objects, object.object_id);
-            apply_slot_layout_transition(object, previous, "slot_rebuild");
         }
     }
     entries
@@ -11652,7 +11140,7 @@ fn validate_slot_ownership_index(
     end_routing_slot: u32,
 ) -> StoragePageOwnershipValidation {
     let mut validation = StoragePageOwnershipValidation::default();
-    for entry in collect_live_page_entries_from_model_maps(shard) {
+    for entry in collect_live_page_entries(shard) {
         let expected_object_id = expected_live_page_object_id(shard_id, &entry);
         let expected_routing_slot =
             page_routing_slot(&entry.object_key, start_routing_slot, end_routing_slot);
@@ -11669,24 +11157,23 @@ fn validate_slot_ownership_index(
             validation.missing_owner_page_refs =
                 validation.missing_owner_page_refs.saturating_add(1);
         }
-        if !shard.slot_objects.is_empty() {
-            let slot_page_present = shard
-                .slot_objects
-                .get(&expected_routing_slot)
-                .and_then(|objects| objects.get(&expected_object_id))
-                .is_some_and(|object| {
-                    object.pages.iter().any(|page| {
+        let slot_page_present = shard
+            .slot_index
+            .slot_map
+            .get(&expected_routing_slot)
+            .is_some_and(|slot| {
+                slot.object_index.contains(&expected_object_id)
+                    && slot.page_index.values().any(|page| {
                         page.address.page_segment_id == entry.address.page_segment_id
                             && page.address.offset == entry.address.offset
                             && page.address.length == entry.address.length
-                            && page.page_id == expected_page_id
-                            && page.model_id == model_id_for_kind(&entry.kind)
+                            && page.address.page_id == expected_page_id
+                            && page.model_id == entry.kind
                     })
-                });
-            if !slot_page_present {
-                validation.missing_owner_page_refs =
-                    validation.missing_owner_page_refs.saturating_add(1);
-            }
+            });
+        if !slot_page_present {
+            validation.missing_owner_page_refs =
+                validation.missing_owner_page_refs.saturating_add(1);
         }
         if object_mismatch || slot_mismatch {
             validation
@@ -11718,7 +11205,7 @@ fn storage_object_lifecycle_report_for_slots(
     selected_slots: &BTreeSet<u32>,
     routing_slot_for_key: impl Fn(&str) -> u32,
 ) -> StorageObjectLifecycleReport {
-    let entries = collect_live_page_entries_from_model_maps(shard)
+    let entries = collect_live_page_entries(shard)
         .into_iter()
         .filter(|entry| {
             let routing_slot = entry
@@ -11846,33 +11333,25 @@ fn slot_storage_summaries(
             );
         }
     }
-    if !shard.slot_objects.is_empty() {
-        for routing_slot in &shard.dirty_slots {
-            let summary = slots.entry(*routing_slot).or_insert(SlotStorageSummary {
-                routing_slot: *routing_slot,
-                ..SlotStorageSummary::default()
-            });
-            summary.dirty_object_count = shard
-                .slot_objects
-                .get(routing_slot)
-                .map(|objects| objects.values().filter(|object| object.dirty).count() as u64)
-                .unwrap_or_default();
-            summary.dirty_generation = shard
-                .slot_dirty_generations
-                .get(routing_slot)
-                .copied()
-                .unwrap_or_default();
+    for (routing_slot, slot) in &shard.slot_index.slot_map {
+        if !slot.dirty {
+            continue;
         }
-    } else {
-        for key in &shard.dirty_objects {
-            let routing_slot = page_routing_slot(key, start_routing_slot, end_routing_slot);
-            let summary = slots.entry(routing_slot).or_insert(SlotStorageSummary {
-                routing_slot,
-                ..SlotStorageSummary::default()
-            });
-            summary.dirty_object_count = summary.dirty_object_count.saturating_add(1);
-            summary.dirty_generation = summary.dirty_generation.saturating_add(1);
-        }
+        let summary = slots.entry(*routing_slot).or_insert(SlotStorageSummary {
+            routing_slot: *routing_slot,
+            ..SlotStorageSummary::default()
+        });
+        summary.dirty_object_count = slot.object_index.len() as u64;
+        summary.dirty_generation = slot.dirty_generation;
+    }
+    for key in &shard.dirty_objects {
+        let routing_slot = page_routing_slot(key, start_routing_slot, end_routing_slot);
+        let summary = slots.entry(routing_slot).or_insert(SlotStorageSummary {
+            routing_slot,
+            ..SlotStorageSummary::default()
+        });
+        summary.dirty_object_count = summary.dirty_object_count.saturating_add(1);
+        summary.dirty_generation = summary.dirty_generation.saturating_add(1);
     }
     for (routing_slot, summary) in &mut slots {
         summary.page_segment_ids = page_segments_by_slot
@@ -12292,129 +11771,6 @@ fn slot_object_page_ownership_report(
                 report.owner_mismatch_page_ref_count.saturating_add(1);
         }
     }
-    report
-}
-
-fn object_manager_runtime_report(
-    shard_id: ShardId,
-    shard: &ShardState,
-    start_routing_slot: u32,
-    end_routing_slot: u32,
-) -> ObjectManagerRuntimeReport {
-    let ownership =
-        slot_object_page_ownership_report(shard_id, shard, start_routing_slot, end_routing_slot);
-    let lifecycle = storage_object_lifecycle_report(shard_id, shard);
-    let mut report = ObjectManagerRuntimeReport {
-        shard_id,
-        routing_slot_count: shard.slot_objects.len() as u64,
-        dirty_slot_count: shard.dirty_slots.len() as u64,
-        max_dirty_generation: shard
-            .slot_dirty_generations
-            .values()
-            .copied()
-            .max()
-            .unwrap_or_default(),
-        missing_owner_page_ref_count: ownership.missing_owner_page_ref_count,
-        owner_mismatch_page_ref_count: ownership.owner_mismatch_page_ref_count,
-        reused_object_id_conflict_count: lifecycle.reused_object_id_conflicts,
-        evidence: vec![
-            "runtime owns hot/cold/tombstone object state in slot_objects".to_string(),
-            "runtime tracks dirty generations and dirty routing slots".to_string(),
-            "runtime tracks model layout state and transitions per object".to_string(),
-            "runtime validates owner refs before reporting ready".to_string(),
-        ],
-        ..ObjectManagerRuntimeReport::default()
-    };
-
-    for objects in shard.slot_objects.values() {
-        for object in objects.values() {
-            report.object_count = report.object_count.saturating_add(1);
-            report.page_ref_count = report
-                .page_ref_count
-                .saturating_add(object.pages.len() as u64);
-            if object.dirty {
-                report.dirty_object_count = report.dirty_object_count.saturating_add(1);
-            }
-            if object.loading {
-                report.loading_object_count = report.loading_object_count.saturating_add(1);
-            }
-            if object.meta {
-                report.meta_object_count = report.meta_object_count.saturating_add(1);
-            }
-            if object.ttl_expires_at_ms.is_some() {
-                report.ttl_object_count = report.ttl_object_count.saturating_add(1);
-            }
-            report.layout_transition_count = report
-                .layout_transition_count
-                .saturating_add(object.layout_transition_count);
-
-            let state = if object.layout_state == SlotLayoutState::Unknown {
-                slot_layout_state_for_object(object)
-            } else {
-                object.layout_state.clone()
-            };
-            match state {
-                SlotLayoutState::MemoryHot => {
-                    report.hot_object_count = report.hot_object_count.saturating_add(1);
-                }
-                SlotLayoutState::ObjectPage => {
-                    report.cold_object_count = report.cold_object_count.saturating_add(1);
-                    report.object_page_count = report.object_page_count.saturating_add(1);
-                }
-                SlotLayoutState::PackedTimestampedPage => {
-                    report.cold_object_count = report.cold_object_count.saturating_add(1);
-                    report.packed_timestamped_page_count =
-                        report.packed_timestamped_page_count.saturating_add(1);
-                }
-                SlotLayoutState::MultiPageObject => {
-                    let has_hot = object
-                        .pages
-                        .iter()
-                        .any(|page| page.address.page_segment_id == HOT_PAGE_SEGMENT_ID);
-                    let has_cold = object
-                        .pages
-                        .iter()
-                        .any(|page| page.address.page_segment_id != HOT_PAGE_SEGMENT_ID);
-                    if has_hot && has_cold {
-                        report.mixed_residency_object_count =
-                            report.mixed_residency_object_count.saturating_add(1);
-                    } else if has_hot {
-                        report.hot_object_count = report.hot_object_count.saturating_add(1);
-                    } else {
-                        report.cold_object_count = report.cold_object_count.saturating_add(1);
-                    }
-                    report.multi_page_object_count =
-                        report.multi_page_object_count.saturating_add(1);
-                }
-                SlotLayoutState::Tombstone => {
-                    report.tombstone_object_count = report.tombstone_object_count.saturating_add(1);
-                }
-                SlotLayoutState::Unknown => {}
-            }
-        }
-    }
-
-    if !ownership.first_class_index_present {
-        report
-            .blockers
-            .push("first-class slot_objects runtime index is empty".to_string());
-    }
-    if ownership.missing_owner_page_ref_count > 0 {
-        report
-            .blockers
-            .push("page refs are missing object/routing-slot ownership metadata".to_string());
-    }
-    if ownership.owner_mismatch_page_ref_count > 0 {
-        report
-            .blockers
-            .push("page refs disagree with expected object owners".to_string());
-    }
-    if lifecycle.reused_object_id_conflicts > 0 {
-        report
-            .blockers
-            .push("object id reuse conflicts are present".to_string());
-    }
-    report.runtime_ready = report.blockers.is_empty();
     report
 }
 
@@ -13283,199 +12639,6 @@ impl CompactionLayoutIndexRefs for ShardCompactionModelLayoutReport {
     }
 }
 
-fn compaction_model_layout_reports(
-    page_store: &LocalPageStore,
-    shard: &ShardState,
-) -> Vec<ShardCompactionModelLayoutReport> {
-    let segment_page_counts = page_store
-        .segment_reports()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|report| (report.page_segment_id, report.page_count))
-        .collect::<BTreeMap<_, _>>();
-    let mut reports = Vec::new();
-    reports.push(compaction_layout_from_addresses(
-        "string",
-        shard.strings.len(),
-        shard.strings.values().cloned(),
-        &segment_page_counts,
-        None,
-    ));
-    reports.push(compaction_layout_from_addresses(
-        "hash",
-        shard.hashes.len(),
-        shard
-            .hashes
-            .values()
-            .flat_map(|fields| fields.values().cloned()),
-        &segment_page_counts,
-        None,
-    ));
-    reports.push(compaction_layout_from_addresses(
-        "set",
-        shard.sets.len(),
-        shard
-            .sets
-            .values()
-            .flat_map(|members| members.values().cloned()),
-        &segment_page_counts,
-        None,
-    ));
-    reports.push(compaction_timestamped_layout(
-        "feature",
-        &shard.features,
-        &segment_page_counts,
-    ));
-    reports.push(compaction_timestamped_layout(
-        "sequence",
-        &shard.sequences,
-        &segment_page_counts,
-    ));
-    reports.push(compaction_timestamped_layout(
-        "ips",
-        &shard.ips,
-        &segment_page_counts,
-    ));
-    reports.push(compaction_layout_from_addresses(
-        "context_node",
-        shard.context_nodes.len(),
-        shard.context_nodes.values().cloned(),
-        &segment_page_counts,
-        None,
-    ));
-    reports.push(compaction_timestamped_layout(
-        "context_event",
-        &shard.context_events,
-        &segment_page_counts,
-    ));
-    reports.push(compaction_timestamped_layout(
-        "context_index",
-        &shard.context_indexes,
-        &segment_page_counts,
-    ));
-    reports.push(compaction_timestamped_layout(
-        "context_audit",
-        &shard.context_audits,
-        &segment_page_counts,
-    ));
-    reports.push(compaction_timestamped_layout(
-        "context_dirty",
-        &shard.context_dirty,
-        &segment_page_counts,
-    ));
-    reports.push(compaction_layout_from_addresses(
-        "context_entity",
-        shard.context_entities.len(),
-        shard.context_entities.values().cloned(),
-        &segment_page_counts,
-        None,
-    ));
-    reports.push(compaction_timestamped_layout(
-        "context_child",
-        &shard.context_children,
-        &segment_page_counts,
-    ));
-    reports.push(compaction_layout_from_addresses(
-        "context_embedding",
-        shard.context_embeddings.len(),
-        shard.context_embeddings.values().cloned(),
-        &segment_page_counts,
-        None,
-    ));
-    reports.push(compaction_timestamped_layout(
-        "context_summary",
-        &shard.context_summaries,
-        &segment_page_counts,
-    ));
-    reports.push(compaction_timestamped_layout(
-        "context_compression",
-        &shard.context_compressions,
-        &segment_page_counts,
-    ));
-    reports.retain(|report| report.object_count > 0 || report.index_refs > 0);
-    reports
-}
-
-fn compaction_timestamped_layout(
-    kind: &str,
-    timelines: &HashMap<String, BTreeMap<u64, PageAddress>>,
-    segment_page_counts: &BTreeMap<u64, u64>,
-) -> ShardCompactionModelLayoutReport {
-    let mut ref_counts = HashMap::<PageAddress, usize>::new();
-    for address in timelines
-        .values()
-        .flat_map(|series| series.values().cloned())
-    {
-        *ref_counts.entry(address).or_default() += 1;
-    }
-    let packed_pages = ref_counts.values().filter(|count| **count > 1).count();
-    compaction_layout_from_addresses(
-        kind,
-        timelines.len(),
-        ref_counts.keys().cloned(),
-        segment_page_counts,
-        Some(packed_pages),
-    )
-    .with_index_refs(ref_counts.values().sum())
-}
-
-fn compaction_layout_from_addresses(
-    kind: &str,
-    object_count: usize,
-    addresses: impl IntoIterator<Item = PageAddress>,
-    segment_page_counts: &BTreeMap<u64, u64>,
-    packed_pages: Option<usize>,
-) -> ShardCompactionModelLayoutReport {
-    let addresses = addresses.into_iter().collect::<Vec<_>>();
-    let unique_addresses = addresses
-        .iter()
-        .cloned()
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    let live_segment_ids = unique_addresses
-        .iter()
-        .map(|address| address.page_segment_id)
-        .collect::<BTreeSet<_>>();
-    let total_pages_in_live_segments = live_segment_ids
-        .iter()
-        .map(|segment_id| {
-            segment_page_counts
-                .get(segment_id)
-                .copied()
-                .unwrap_or_default()
-        })
-        .sum::<u64>();
-    let unique_page_refs = unique_addresses.len();
-    let packed_timestamped_pages = packed_pages.unwrap_or_default();
-    let live_ref_density_basis_points = if total_pages_in_live_segments == 0 {
-        0
-    } else {
-        (unique_page_refs as u64).saturating_mul(10_000) / total_pages_in_live_segments
-    };
-    ShardCompactionModelLayoutReport {
-        kind: kind.to_string(),
-        object_count,
-        index_refs: addresses.len(),
-        unique_page_refs,
-        packed_timestamped_pages,
-        legacy_value_pages: unique_page_refs.saturating_sub(packed_timestamped_pages),
-        stale_page_estimate: total_pages_in_live_segments.saturating_sub(unique_page_refs as u64),
-        live_ref_density_basis_points,
-    }
-}
-
-trait CompactionLayoutIndexRefs {
-    fn with_index_refs(self, index_refs: usize) -> Self;
-}
-
-impl CompactionLayoutIndexRefs for ShardCompactionModelLayoutReport {
-    fn with_index_refs(mut self, index_refs: usize) -> Self {
-        self.index_refs = index_refs;
-        self
-    }
-}
-
 fn compact_page_addresses<'a>(
     page_store: &LocalPageStore,
     cache: &MultiLayerCache,
@@ -13896,15 +13059,18 @@ fn object_manager_stats(
             .map(BTreeMap::len)
             .sum::<usize>();
     let routing_slot_count = routing_slot_count(start_routing_slot, end_routing_slot);
-    let dirty_slots = if !shard.slot_objects.is_empty() {
-        shard.dirty_slots.clone()
-    } else {
+    let mut dirty_slots = shard
+        .slot_index
+        .slot_map
+        .iter()
+        .filter_map(|(slot, node)| node.dirty.then_some(*slot))
+        .collect::<BTreeSet<_>>();
+    dirty_slots.extend(
         shard
             .dirty_objects
             .iter()
-            .map(|key| slot_for_object(key, start_routing_slot, routing_slot_count))
-            .collect::<BTreeSet<_>>()
-    };
+            .map(|key| slot_for_object(key, start_routing_slot, routing_slot_count)),
+    );
     ObjectManagerStats {
         object_count,
         page_ref_count,

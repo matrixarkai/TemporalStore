@@ -65,13 +65,13 @@ Status PlacementManager::PlacePartition(const PartitionPtr& partition, NodePtr* 
         }
     }
     if (!status.ok()) {
-        MS_METRIC(placement_fail_count)->Add(1);
+        MS_METRIC(placement_fail_count).get()->Add(1);
         return status;
     }
 
     status = ctx.AutoAward();
     if (!status.ok()) {
-        MS_METRIC(placement_fail_count)->Add(1);
+        MS_METRIC(placement_fail_count).get()->Add(1);
         return status;
     }
     *node = ctx.Champion();

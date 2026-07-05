@@ -128,7 +128,7 @@ void EventHarbor::MaybeSweepLegacyEvents(uint64_t suber_id, size_t gap) {
         iter = events_.erase(iter);
         cnt++;
     }
-    MS_METRIC(event_harbor_queue_length)->Set(events_.size());
+    MS_METRIC(event_harbor_queue_length).get()->Set(events_.size());
     LOG_DEBUG("sweep legacy events").put("id", suber_id).put("count", cnt).put("got_min", min_ack);
 }
 

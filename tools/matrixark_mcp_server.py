@@ -194,6 +194,9 @@ class MatrixArkMcpServer:
         self._summary_refresh_interval_s = max(0.0, SUMMARY_REFRESH_INTERVAL_MS / 1000.0)
         self._summary_refresh_limit = max(1, SUMMARY_REFRESH_LIMIT)
         self._operation_backpressure_timeout_ms = max(0, int(os.environ.get("MATRIXARK_BACKPRESSURE_TIMEOUT_MS", "100")))
+        self._retrieve_shed_cooldown_ms = max(0, int(os.environ.get("MATRIXARK_RETRIEVE_SHED_COOLDOWN_MS", "0")))
+        self._retrieve_shed_until_perf = 0.0
+        self._retrieve_shed_lock = threading.Lock()
         self._audit_mode_default = os.environ.get("MATRIXARK_AUDIT_MODE", "async").strip().lower() or "async"
         self._audit_executor = ThreadPoolExecutor(max_workers=max(1, int(os.environ.get("MATRIXARK_AUDIT_WORKERS", "2"))))
         self._operation_limiters = {

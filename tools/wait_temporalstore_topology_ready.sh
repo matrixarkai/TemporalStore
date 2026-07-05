@@ -88,11 +88,11 @@ python3 - "$BACKEND" "$METASERVER" "$NAMESPACE" "$TABLE" "$PREFIX" "$TEMPORALSTO
 import json
 import sys
 
-from tools.matrixark_mcp_server import (
+from tools.matrixark_mcp_core import metaserver_reachable
+from tools.matrixark_mcp_temporal_adapters import (
     MatrixArkTemporalStoreDirectAdapter,
     MatrixArkTemporalStoreRustAdapter,
     MatrixArkTemporalStoreRustDirectAdapter,
-    metaserver_reachable,
 )
 
 backend, metaserver, namespace, table, prefix, temporalstore_lib, rust_cli, request_timeout_ms, io_timeout_ms = sys.argv[1:]

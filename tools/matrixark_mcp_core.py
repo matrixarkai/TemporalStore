@@ -723,6 +723,26 @@ COMPACT_TOPOLOGY_SCOPE_STRING_FIELDS = {
 }
 
 
+def compact_record_scope(record: Json) -> Json:
+    record_type = str(record.get("record_type") or "")
+    if record_type not in COMPACT_SCOPE_RECORD_TYPES:
+        return record
+    compacted = dict(record)
+    scope = compacted.get("scope") if isinstance(compacted.get("scope"), dict) else {}
+    existing_scope_key = str(compacted.get("scope_key") or "")
+    scope_key = existing_scope_key or (canonical_scope_key(scope) if scope else "")
+    if scope_key:
+        compacted["scope_key"] = scope_key
+        compacted.pop("scope", None)
+    if str(compacted.get("scope_key") or ""):
+        for field in COMPACT_DERIVED_SCOPE_FIELDS:
+            compacted.pop(field, None)
+        if record_type in COMPACT_TOPOLOGY_SCOPE_STRING_RECORD_TYPES:
+            for field in COMPACT_TOPOLOGY_SCOPE_STRING_FIELDS:
+                compacted.pop(field, None)
+    return compacted
+
+
 def _record_debug_ref(record: Json) -> tuple[str, Any]:
     record_type = str(record.get("record_type") or "")
     if record_type == "context_event":
@@ -763,6 +783,26 @@ def context_event_time_key(timestamp_ms: int, event_id_hash: Any) -> int:
         event_hash = 0
     disambiguator = stable_hash(f"context_event_time_key:{event_hash}") if event_hash else 0
     return int(timestamp_ms) * CONTEXT_TIMELINE_FANOUT + (disambiguator % CONTEXT_TIMELINE_FANOUT)
+
+
+def attach_context_event_time_key(record: Json) -> Json:
+    if str(record.get("record_type") or "") != "context_event":
+        return record
+    enriched = dict(record)
+    event_hash = enriched.get("event_id_hash") or stable_hash(json.dumps(enriched, sort_keys=True, separators=(",", ":")))
+    timestamp_ms = context_event_timestamp_ms(enriched)
+    time_key = context_event_time_key(timestamp_ms, event_hash)
+    enriched.setdefault("event_id_hash", event_hash)
+    enriched.setdefault("timestamp_key_ms", timestamp_ms)
+    enriched.setdefault("context_event_key", f"{time_key:020d}:{event_hash}")
+    segment_hash = enriched.get("segment_hash")
+    if segment_hash:
+        enriched.setdefault("context_event_parent_type", "context_segment")
+        enriched.setdefault("context_event_parent_hash", segment_hash)
+    else:
+        enriched.setdefault("context_event_parent_type", "context_node")
+        enriched.setdefault("context_event_parent_hash", enriched.get("node_hash") or 0)
+    return enriched
 
 
 def attach_storage_route(record: Json) -> Json:
@@ -904,6 +944,7 @@ def materialize_serving_records(record: Json) -> list[Json]:
     serving.pop("node_id", None)
     if record_type in NODE_PATH_HEAVY_RECORD_TYPES:
         serving.pop("node_path", None)
+    node_hash = serving.get("node_hash") or serving.get("node_id") or 0
     serving = attach_context_placement(serving, scope_key=scope_key, node_hash=node_hash)
 
     debug_payload: Json = {}

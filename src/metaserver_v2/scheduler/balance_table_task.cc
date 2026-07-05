@@ -160,7 +160,7 @@ void BalanceTableTask::ExecuteBalance() {
         if (used_pids.count(pid) > 0) {
             continue;
         }
-        MS_METRIC(balance_partition_count)->Add(1);
+        MS_METRIC(balance_partition_count).get()->Add(1);
         ++balance_count;
         used_pids.insert(pid);
 
@@ -174,7 +174,7 @@ void BalanceTableTask::ExecuteBalance() {
         LOG_INFO("propose to raft to freeze partition due to blanace policy")
             .put("log_id", log_id)
             .put("pid", pid);
-        MS_METRIC(freeze_partition_count)->Add(1);
+        MS_METRIC(freeze_partition_count).get()->Add(1);
         request.set_partition_id(pid);
         Status status =
             schd_mgr_->GetRaftConnector()->Propose(log_id, MS_LOG_PARTITION_FREEZE, &request);

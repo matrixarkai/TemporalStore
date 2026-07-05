@@ -106,7 +106,7 @@ void ConvictRoutine::HandleServerHeartbeat(const ServerHeartbeatEvent* e) {
             .put("record", reported_boot_time_us)
             .put("report", e->request.boot_time_us());
         stats->MarkRebootDetected();
-        MS_METRIC(reboot_server_count)->Add(1);
+        MS_METRIC(reboot_server_count).get()->Add(1);
     }
 }
 

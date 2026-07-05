@@ -12,6 +12,9 @@
 #include <utility>
 #include <vector>
 
+#ifdef BLOCK_SIZE
+#undef BLOCK_SIZE
+#endif
 #include "bvar/bvar.h"
 #include "common/status.h"
 #include "common/time.h"

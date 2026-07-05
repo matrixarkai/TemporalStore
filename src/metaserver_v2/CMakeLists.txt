@@ -95,7 +95,10 @@ target_link_libraries(bcache2-metaserver
     /usr/lib/x86_64-linux-gnu/libabsl_throw_delegate.so
     /usr/lib/x86_64-linux-gnu/libabsl_time_zone.so
     /usr/lib/x86_64-linux-gnu/libabsl_raw_logging_internal.so
-    /usr/lib/x86_64-linux-gnu/libabsl_log_severity.so)
+    /usr/lib/x86_64-linux-gnu/libabsl_log_severity.so
+    /usr/lib/x86_64-linux-gnu/libabsl_hash.so
+    /usr/lib/x86_64-linux-gnu/libabsl_raw_hash_set.so
+    /usr/lib/x86_64-linux-gnu/libabsl_city.so)
 
 list(APPEND FE_SRC
     fe/api_gateway.cc
@@ -132,7 +135,10 @@ target_link_libraries(bcache2-metaserver-fe
     /usr/lib/x86_64-linux-gnu/libabsl_throw_delegate.so
     /usr/lib/x86_64-linux-gnu/libabsl_time_zone.so
     /usr/lib/x86_64-linux-gnu/libabsl_raw_logging_internal.so
-    /usr/lib/x86_64-linux-gnu/libabsl_log_severity.so)
+    /usr/lib/x86_64-linux-gnu/libabsl_log_severity.so
+    /usr/lib/x86_64-linux-gnu/libabsl_hash.so
+    /usr/lib/x86_64-linux-gnu/libabsl_raw_hash_set.so
+    /usr/lib/x86_64-linux-gnu/libabsl_city.so)
 
 if (BCACHE2_BUILD_TESTS)
     file(GLOB TEST_FILES "test/*_test.cc")
