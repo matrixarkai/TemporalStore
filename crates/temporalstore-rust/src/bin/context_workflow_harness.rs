@@ -255,6 +255,9 @@ struct ResourceSkillConversationScaleSummary {
     fanout_colocation_scope_keys: Vec<String>,
     fanout_source_class_candidate_counts: BTreeMap<String, usize>,
     fanout_selected_source_class_counts: BTreeMap<String, usize>,
+    fanout_requested_source_classes: Vec<String>,
+    fanout_selected_requested_source_class_counts: BTreeMap<String, usize>,
+    fanout_requested_source_class_coverage_ready: bool,
     fanout_required_scan_scope_keys: Vec<String>,
     fanout_scan_policy_current_agent_scope_key: String,
     fanout_scan_policy_owner_scope_key: String,
@@ -1581,7 +1584,11 @@ fn run_resource_skill_conversation_scale(
     );
     push_context_scan_blocker(
         &mut multi_agent_scan_blockers,
-        selected_source_class_coverage_ready && fanout_injection_source_class_coverage_ready,
+        selected_source_class_coverage_ready
+            && fanout_injection_source_class_coverage_ready
+            && combined_retrieve
+                .fanout_plan
+                .requested_source_class_coverage_ready,
         "source_class_coverage_incomplete",
     );
     push_context_scan_blocker(
@@ -1827,6 +1834,17 @@ fn run_resource_skill_conversation_scale(
             .fanout_plan
             .selected_source_class_counts
             .clone(),
+        fanout_requested_source_classes: combined_retrieve
+            .fanout_plan
+            .requested_source_classes
+            .clone(),
+        fanout_selected_requested_source_class_counts: combined_retrieve
+            .fanout_plan
+            .selected_requested_source_class_counts
+            .clone(),
+        fanout_requested_source_class_coverage_ready: combined_retrieve
+            .fanout_plan
+            .requested_source_class_coverage_ready,
         fanout_required_scan_scope_keys: combined_retrieve
             .fanout_plan
             .required_scan_scope_keys

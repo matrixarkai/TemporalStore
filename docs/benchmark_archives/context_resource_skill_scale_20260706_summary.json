@@ -200,6 +200,15 @@
     "resource": 2,
     "skill": 1
   },
+  "fanout_requested_source_classes": [
+    "resource",
+    "skill"
+  ],
+  "fanout_selected_requested_source_class_counts": {
+    "resource": 2,
+    "skill": 1
+  },
+  "fanout_requested_source_class_coverage_ready": true,
   "fanout_required_scan_scope_keys": [
     "agent:codex",
     "workspace:context",
@@ -381,7 +390,7 @@
     "global"
   ],
   "fanout_injection_current_agent_first": true,
-  "ingest_ms": 11321,
-  "retrieve_ms": 4283,
-  "secondary_index_validation_ms": 1737
+  "ingest_ms": 10835,
+  "retrieve_ms": 3426,
+  "secondary_index_validation_ms": 1390
 }

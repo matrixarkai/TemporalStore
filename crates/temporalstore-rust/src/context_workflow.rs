@@ -1123,6 +1123,12 @@ pub struct ContextFanoutPlanReport {
     #[serde(default)]
     pub selected_source_class_counts: BTreeMap<String, usize>,
     #[serde(default)]
+    pub requested_source_classes: Vec<String>,
+    #[serde(default)]
+    pub selected_requested_source_class_counts: BTreeMap<String, usize>,
+    #[serde(default)]
+    pub requested_source_class_coverage_ready: bool,
+    #[serde(default)]
     pub required_scan_scope_keys: Vec<String>,
     #[serde(default)]
     pub current_agent_id: String,
@@ -4367,6 +4373,11 @@ pub fn retrieve_context(
         .iter()
         .map(context_scope_reservation_key)
         .collect();
+    fanout_plan.requested_source_classes = ["resource", "skill"]
+        .iter()
+        .filter(|source_class| query_requests_source_class(&request.query, source_class))
+        .map(|source_class| (*source_class).to_string())
+        .collect();
     let tiers = if request.tiers.is_empty() {
         default_tiers()
     } else {
@@ -4663,6 +4674,16 @@ pub fn retrieve_context(
                 .selected_source_class_counts
                 .entry(source_class.clone())
                 .or_default() += 1;
+            if fanout_plan
+                .requested_source_classes
+                .iter()
+                .any(|requested| requested == source_class)
+            {
+                *fanout_plan
+                    .selected_requested_source_class_counts
+                    .entry(source_class.clone())
+                    .or_default() += 1;
+            }
         }
         if let Some(scope) = node_scope_by_hash.get(node_hash) {
             match scope.layer {
@@ -4720,6 +4741,17 @@ pub fn retrieve_context(
     fanout_plan.summary_lookup_batches = usize::from(!summary_scores.is_empty());
     fanout_plan.selected_node_hashes = event_node_hashes.clone();
     fanout_plan.skipped_node_hashes = skipped_node_hashes;
+    fanout_plan.requested_source_class_coverage_ready = fanout_plan
+        .requested_source_classes
+        .iter()
+        .all(|source_class| {
+            fanout_plan
+                .selected_requested_source_class_counts
+                .get(source_class)
+                .copied()
+                .unwrap_or_default()
+                > 0
+        });
     fanout_plan.skipped_colocation_group_counts = fanout_plan
         .skipped_node_hashes
         .iter()

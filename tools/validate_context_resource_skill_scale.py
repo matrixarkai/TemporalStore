@@ -20,6 +20,7 @@ REQUIRED_SKILL_TRIGGER_TERMS = {"checkout", "context", "injection", "latency", "
 REQUIRED_RESOURCE_IMPORT_KINDS = {"git_repo", "markdown", "pdf", "url"}
 REQUIRED_RESOURCE_OWNER_SCOPES = {"team:benchmarks", "team:context", "team:payments", "team:platform"}
 REQUIRED_RESOURCE_PARSERS = {"context-scale-harness"}
+REQUIRED_REQUESTED_SOURCE_CLASSES = {"resource", "skill"}
 
 
 def fail(message: str) -> int:
@@ -327,6 +328,12 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
     require_bool(report, "fanout_layer_quota_applied")
     source_candidates = require_int_map(report, "fanout_source_class_candidate_counts")
     selected_source_nodes = require_int_map(report, "fanout_selected_source_class_counts")
+    requested_source_classes = require_string_set(
+        report, "fanout_requested_source_classes", REQUIRED_REQUESTED_SOURCE_CLASSES
+    )
+    requested_selected_nodes = require_int_map(
+        report, "fanout_selected_requested_source_class_counts"
+    )
     for field, counts in [
         ("fanout_source_class_candidate_counts", source_candidates),
         ("fanout_selected_source_class_counts", selected_source_nodes),
@@ -334,6 +341,13 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
         for source_class in ["conversation", "resource", "skill"]:
             if counts.get(source_class, 0) < 1:
                 raise ValueError(f"{field} must include {source_class!r}, got {counts!r}")
+    for source_class in sorted(requested_source_classes):
+        if requested_selected_nodes.get(source_class, 0) < 1:
+            raise ValueError(
+                "fanout_selected_requested_source_class_counts must include selected "
+                f"requested class {source_class!r}, got {requested_selected_nodes!r}"
+            )
+    require_bool(report, "fanout_requested_source_class_coverage_ready")
     require_int_at_least(report, "retrieved_block_count", 8)
     require_int_at_least(report, "retrieved_current_agent_block_count", 1)
     require_int_at_least(report, "retrieved_user_shared_block_count", 1)
