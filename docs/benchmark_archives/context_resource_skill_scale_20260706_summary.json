@@ -106,6 +106,14 @@
   "fanout_avoided_namespace_replication_nodes": 28,
   "fanout_reduction_percent": 63,
   "fanout_namespace_replication_avoided": true,
+  "fanout_candidate_current_agent_nodes": 24,
+  "fanout_candidate_peer_agent_nodes": 4,
+  "fanout_candidate_user_shared_nodes": 1,
+  "fanout_candidate_workspace_shared_nodes": 14,
+  "fanout_candidate_global_shared_nodes": 1,
+  "fanout_candidate_shared_node_count": 16,
+  "fanout_candidate_shared_scope_coverage_count": 3,
+  "fanout_candidate_scope_pressure_ready": true,
   "fanout_selected_current_agent_nodes": 11,
   "fanout_peer_agent_nodes": 4,
   "fanout_selected_peer_agent_nodes": 0,
@@ -274,7 +282,7 @@
     "global"
   ],
   "fanout_injection_current_agent_first": true,
-  "ingest_ms": 8374,
-  "retrieve_ms": 2813,
-  "secondary_index_validation_ms": 1202
+  "ingest_ms": 8274,
+  "retrieve_ms": 2679,
+  "secondary_index_validation_ms": 1141
 }

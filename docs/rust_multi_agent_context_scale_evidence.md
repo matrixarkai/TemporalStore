@@ -97,6 +97,14 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
   "fanout_avoided_namespace_replication_nodes": 28,
   "fanout_reduction_percent": 63,
   "fanout_namespace_replication_avoided": true,
+  "fanout_candidate_current_agent_nodes": 24,
+  "fanout_candidate_peer_agent_nodes": 4,
+  "fanout_candidate_user_shared_nodes": 1,
+  "fanout_candidate_workspace_shared_nodes": 14,
+  "fanout_candidate_global_shared_nodes": 1,
+  "fanout_candidate_shared_node_count": 16,
+  "fanout_candidate_shared_scope_coverage_count": 3,
+  "fanout_candidate_scope_pressure_ready": true,
   "fanout_selected_current_agent_nodes": 11,
   "fanout_peer_agent_nodes": 4,
   "fanout_selected_peer_agent_nodes": 0,
@@ -174,6 +182,7 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
 - The scan reduces fanout from namespace candidates to bounded expanded nodes.
 - Peer-agent capping now happens before summary embedding lookup: 4 peer-agent nodes are pruned from summary scoring in this scale run.
 - The scale scan avoids full namespace replication: 28 candidate nodes are left unexpanded, a 63% fanout reduction across 4 selected colocation groups.
+- Candidate pressure is scope-aware before selection: 24 current-agent nodes, 4 peer-agent nodes, and 16 shared nodes across user/workspace/global are classified before fanout pruning.
 - Current-agent context is selected with agent-aware locality while user, workspace, and global shared resources remain visible.
 - Current-agent boost is explicit and bounded: 11 of 16 expanded nodes are `agent:codex`, giving a 68% current-agent boost while 5 shared nodes still satisfy the shared-layer quota.
 - Shared-scope coverage is explicit: user, workspace, and global layers are all represented in the selected node set.
