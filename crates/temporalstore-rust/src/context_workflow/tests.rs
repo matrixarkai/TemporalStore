@@ -632,10 +632,7 @@ fn context_retrieval_limits_namespace_fanout_with_summary_and_locality_plan() {
             .skipped_node_count,
         4
     );
-    assert!(report
-        .blocks
-        .iter()
-        .any(|block| block.tier == ContextTier::L2));
+    assert!(report.blocks.iter().any(|block| block.tier == ContextTier::L2));
 }
 
 // shared-corpus: context_benchmark_injection_entity_segment_index
@@ -1878,7 +1875,6 @@ fn context_skill_registry_supports_updates_and_retrieval_selection() {
     let selection = select_context_skills_for_retrieval(ContextSkillSelectionRequest {
         query: "payment retrieval trace".to_string(),
         owner_scope: "team:context".to_string(),
-        allowed_scope_layers: Vec::new(),
         tool_name: "context_workflow_harness".to_string(),
         include_disabled: false,
         limit: 4,
@@ -1897,98 +1893,6 @@ fn context_skill_registry_supports_updates_and_retrieval_selection() {
     assert!(selection
         .skipped_disabled
         .contains(&"context-debug".to_string()));
-}
-
-// shared-corpus: context_scope_layered_agent_producer_shared_graph
-#[test]
-fn context_scope_layers_share_user_graph_with_agent_producers() {
-    let global = parse_context_skill_markdown(
-        "skills/global/SKILL.md",
-        r#"---
-name: global-context-debug
-description: Global context debug skill
-owner_scope: global
-triggers: context,debug
-allowed_tools: context_workflow_harness
-precedence: high
----
-# Instructions
-- Inspect shared graph summaries.
-"#,
-    );
-    let workspace = parse_context_skill_markdown(
-        "skills/workspace/SKILL.md",
-        r#"---
-name: workspace-context-debug
-description: Workspace context debug skill
-owner_scope: workspace:payments
-triggers: payment,context
-allowed_tools: context_workflow_harness
-precedence: normal
----
-# Instructions
-- Inspect payment workspace evidence.
-"#,
-    );
-    let agent = parse_context_skill_markdown(
-        "skills/codex/SKILL.md",
-        r#"---
-name: codex-context-producer
-description: Codex contributes context evidence to the shared graph
-owner_scope: agent:codex
-triggers: codex,context
-allowed_tools: context_workflow_harness
-precedence: critical
----
-# Instructions
-- Use Codex-produced context as graph evidence, not a private namespace.
-"#,
-    );
-
-    assert_eq!(agent.scope.layer, ContextScopeLayer::Agent);
-    assert_eq!(agent.scope.producer_agent_id, "codex");
-    assert_eq!(agent.resource.lifecycle.scope.producer_agent_id, "codex");
-    assert_eq!(
-        agent.resource.chunks[0].metadata["producer_agent_id"],
-        "codex"
-    );
-    assert_eq!(workspace.scope.shared_graph_scope, "workspace:payments");
-
-    let registry = context_skill_registry_from_parsed(&[global, workspace, agent], 42);
-    assert_eq!(registry.producer_agent_count, 1);
-    assert_eq!(registry.scope_layers.get("global"), Some(&1));
-    assert_eq!(registry.scope_layers.get("workspace"), Some(&1));
-    assert_eq!(registry.scope_layers.get("agent"), Some(&1));
-    assert!(registry.shared_graph_scope_count >= 2);
-
-    let selection = select_context_skills_for_retrieval(ContextSkillSelectionRequest {
-        query: "codex payment context debug".to_string(),
-        owner_scope: "workspace:payments".to_string(),
-        allowed_scope_layers: Vec::new(),
-        tool_name: "context_workflow_harness".to_string(),
-        include_disabled: false,
-        limit: 8,
-        registry: registry.entries,
-    });
-    assert!(selection.status.ok, "{:?}", selection);
-    let selected = selection
-        .selected
-        .iter()
-        .map(|candidate| candidate.skill_name.as_str())
-        .collect::<Vec<_>>();
-    assert!(selected.contains(&"global-context-debug"));
-    assert!(selected.contains(&"workspace-context-debug"));
-    assert!(selected.contains(&"codex-context-producer"));
-    assert!(selection.agent_producers.contains(&"codex".to_string()));
-    assert!(selection
-        .scope_resolution_order
-        .contains(&"global".to_string()));
-    assert!(selection
-        .scope_resolution_order
-        .contains(&"workspace".to_string()));
-    assert!(selection
-        .scope_resolution_order
-        .contains(&"agent".to_string()));
 }
 
 // shared-corpus: context_resource_skill_parser_openviking_parity

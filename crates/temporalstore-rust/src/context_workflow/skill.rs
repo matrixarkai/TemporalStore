@@ -29,12 +29,6 @@ pub fn parse_context_skill_markdown(
         parse_skill_front_matter_list(&front_matter, &["triggers", "trigger", "activation"]);
     let model_refs =
         parse_skill_front_matter_list(&front_matter, &["models", "model", "providers", "provider"]);
-    let owner_scope = front_matter
-        .get("owner_scope")
-        .or_else(|| front_matter.get("owner"))
-        .cloned()
-        .unwrap_or_else(|| "user".to_string());
-    let scope = context_scope_descriptor(&owner_scope);
     let enabled = parse_skill_enabled(&front_matter);
     let precedence = parse_skill_precedence(
         front_matter
@@ -57,7 +51,7 @@ pub fn parse_context_skill_markdown(
         max_chunk_chars: default_resource_max_chunk_chars(),
         overlap_chars: default_resource_overlap_chars(),
         chunk_hash_base: None,
-        owner_scope: owner_scope.clone(),
+        owner_scope: "skill".to_string(),
         version: front_matter
             .get("version")
             .cloned()
@@ -92,8 +86,11 @@ pub fn parse_context_skill_markdown(
             .get("version")
             .cloned()
             .unwrap_or_else(|| "unknown".to_string()),
-        owner_scope,
-        scope,
+        owner_scope: front_matter
+            .get("owner_scope")
+            .or_else(|| front_matter.get("owner"))
+            .cloned()
+            .unwrap_or_else(|| "user".to_string()),
         enabled,
         precedence,
         front_matter,
@@ -123,7 +120,6 @@ pub fn context_skill_registry_from_parsed(
             description: skill.description.clone(),
             version: skill.version.clone(),
             owner_scope: skill.owner_scope.clone(),
-            scope: skill.scope.clone(),
             enabled: skill.enabled,
             precedence: skill.precedence,
             triggers: normalized_unique_strings(skill.triggers.clone()),
@@ -154,7 +150,6 @@ pub fn update_context_skill_registry(
             }
             if let Some(owner_scope) = update.owner_scope {
                 entry.owner_scope = owner_scope;
-                entry.scope = context_scope_descriptor(&entry.owner_scope);
             }
             if let Some(triggers) = update.triggers {
                 entry.triggers = normalized_unique_strings(triggers);
@@ -183,33 +178,23 @@ pub fn select_context_skills_for_retrieval(
     request: ContextSkillSelectionRequest,
 ) -> ContextSkillSelectionReport {
     let query_terms = context_query_terms(&request.query);
-    let requested_scope = context_scope_descriptor(&request.owner_scope);
-    let owner_scope_filter_enabled = !request.owner_scope.trim().is_empty();
+    let owner_scope = request.owner_scope.trim();
     let tool_name = request.tool_name.trim();
     let mut selected = Vec::new();
     let mut skipped_disabled = Vec::new();
     let mut skipped_owner_scope = Vec::new();
     let mut skipped_tool = Vec::new();
-    let mut scope_resolution_order = Vec::new();
-    let mut agent_producers = Vec::new();
-    let mut shared_graph_scopes = BTreeSet::new();
 
     for entry in request.registry {
         if !entry.enabled && !request.include_disabled {
             skipped_disabled.push(entry.skill_name);
             continue;
         }
-        let entry_scope = context_skill_entry_scope(&entry);
-        if !request.allowed_scope_layers.is_empty()
-            && !request
-                .allowed_scope_layers
-                .iter()
-                .any(|layer| *layer == entry_scope.layer)
+        if !owner_scope.is_empty()
+            && entry.owner_scope != owner_scope
+            && entry.owner_scope != "global"
+            && entry.owner_scope != "all"
         {
-            skipped_owner_scope.push(entry.skill_name);
-            continue;
-        }
-        if owner_scope_filter_enabled && !context_scope_matches(&requested_scope, &entry_scope) {
             skipped_owner_scope.push(entry.skill_name);
             continue;
         }
@@ -254,25 +239,14 @@ pub fn select_context_skills_for_retrieval(
                         .any(|tag| tag.to_ascii_lowercase().contains(term.as_str()))
             })
             .count() as i64;
-        let scope_bonus = 60_i64.saturating_sub(i64::from(entry_scope.precedence_rank));
         let score = context_skill_precedence_weight(entry.precedence)
-            + scope_bonus
             + (matched_triggers.len() as i64 * 25)
             + (lexical_matches * 5)
             + i64::from(allowed_tool_match);
-        push_unique_string(
-            &mut scope_resolution_order,
-            context_scope_layer_name(entry_scope.layer).to_string(),
-        );
-        if !entry_scope.producer_agent_id.is_empty() {
-            push_unique_string(&mut agent_producers, entry_scope.producer_agent_id.clone());
-        }
-        shared_graph_scopes.insert(entry_scope.shared_graph_scope.clone());
         selected.push(ContextSkillSelectionCandidate {
             skill_name: entry.skill_name,
             version: entry.version,
             owner_scope: entry.owner_scope,
-            scope: entry_scope,
             precedence: entry.precedence,
             score,
             matched_triggers,
@@ -284,7 +258,6 @@ pub fn select_context_skills_for_retrieval(
         (
             Reverse(candidate.score),
             Reverse(context_skill_precedence_weight(candidate.precedence)),
-            candidate.scope.precedence_rank,
             candidate.skill_name.clone(),
         )
     });
@@ -304,9 +277,6 @@ pub fn select_context_skills_for_retrieval(
         skipped_disabled,
         skipped_owner_scope,
         skipped_tool,
-        scope_resolution_order,
-        agent_producers,
-        shared_graph_scope_count: shared_graph_scopes.len(),
     }
 }
 
@@ -528,19 +498,6 @@ fn context_skill_registry_report(
         .map(|entry| entry.precedence)
         .max()
         .unwrap_or_default();
-    let mut scope_layers = BTreeMap::new();
-    let mut shared_graph_scopes = BTreeSet::new();
-    let mut producer_agents = BTreeSet::new();
-    for entry in &entries {
-        let scope = context_skill_entry_scope(entry);
-        *scope_layers
-            .entry(context_scope_layer_name(scope.layer).to_string())
-            .or_insert(0) += 1;
-        shared_graph_scopes.insert(scope.shared_graph_scope);
-        if !scope.producer_agent_id.is_empty() {
-            producer_agents.insert(scope.producer_agent_id);
-        }
-    }
     ContextSkillRegistryReport {
         status: Status::ok(),
         entries,
@@ -548,28 +505,6 @@ fn context_skill_registry_report(
         disabled_count,
         highest_precedence,
         version_updates,
-        scope_layers,
-        shared_graph_scope_count: shared_graph_scopes.len(),
-        producer_agent_count: producer_agents.len(),
-    }
-}
-
-fn context_skill_entry_scope(entry: &ContextSkillRegistryEntry) -> ContextScopeDescriptor {
-    if entry.owner_scope.trim().is_empty()
-        || entry
-            .scope
-            .raw_scope
-            .eq_ignore_ascii_case(entry.owner_scope.trim())
-    {
-        entry.scope.clone()
-    } else {
-        context_scope_descriptor(&entry.owner_scope)
-    }
-}
-
-fn push_unique_string(values: &mut Vec<String>, value: String) {
-    if !value.is_empty() && !values.iter().any(|existing| existing == &value) {
-        values.push(value);
     }
 }
 
