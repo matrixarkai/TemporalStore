@@ -144,12 +144,14 @@ REQUIRED_GENERATED_FROM = [
     "tools/validate_page_block_metrics_parity.py",
     "tools/validate_storage_tuning_parity.py",
     "tools/validate_storage_proxy_client_parity_coverage.py",
+    "tools/validate_storage_unified_case_report_pair.py",
     "tools/validate_grafana_metrics_parity.py",
     "tools/validate_raft_storage_parity_evidence.py",
     "tools/validate_temporalstore_cpp_rust_performance_parity.py",
     "tools/import_temporalstore_cpp_rust_performance_evidence.py",
     "tools/audit_temporalstore_cpp_rust_performance_artifacts.py",
     "tools/validate_temporalstore_cpp_rust_feature_execution.py",
+    "compat/storage_unified_case_report_pair.json",
     "tools/test_temporalstore_feature_execution_validator.py",
     "tools/validate_storage_parity_report_artifacts.py",
     "tools/test_storage_parity_report_artifacts.py",
@@ -176,6 +178,8 @@ REQUIRED_STORAGE_LIFECYCLE_EVIDENCE = [
     "tools/validate_storage_lifecycle_parity.py",
     "tools/validate_storage_parity_report_artifacts.py",
     "compat/storage_lifecycle_report_pair_corpus.json",
+    "tools/validate_storage_unified_case_report_pair.py",
+    "compat/storage_unified_case_report_pair.json",
 ]
 
 REQUIRED_AREA_VALIDATOR_EVIDENCE = {
