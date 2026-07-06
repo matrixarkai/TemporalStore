@@ -1141,6 +1141,12 @@ pub struct ContextFanoutPlanReport {
     #[serde(default)]
     pub selected_shared_layer_nodes: usize,
     #[serde(default)]
+    pub selected_current_agent_percent: u32,
+    #[serde(default)]
+    pub selected_shared_layer_percent: u32,
+    #[serde(default)]
+    pub selected_peer_agent_percent: u32,
+    #[serde(default)]
     pub required_shared_scope_count: usize,
     #[serde(default)]
     pub selected_shared_scope_coverage_count: usize,
@@ -4661,6 +4667,23 @@ pub fn retrieve_context(
         .selected_user_shared_nodes
         .saturating_add(fanout_plan.selected_workspace_shared_nodes)
         .saturating_add(fanout_plan.selected_global_shared_nodes);
+    if fanout_plan.event_expanded_nodes > 0 {
+        fanout_plan.selected_current_agent_percent = fanout_plan
+            .selected_current_agent_nodes
+            .saturating_mul(100)
+            .checked_div(fanout_plan.event_expanded_nodes)
+            .unwrap_or_default() as u32;
+        fanout_plan.selected_shared_layer_percent = fanout_plan
+            .selected_shared_layer_nodes
+            .saturating_mul(100)
+            .checked_div(fanout_plan.event_expanded_nodes)
+            .unwrap_or_default() as u32;
+        fanout_plan.selected_peer_agent_percent = fanout_plan
+            .selected_peer_agent_nodes
+            .saturating_mul(100)
+            .checked_div(fanout_plan.event_expanded_nodes)
+            .unwrap_or_default() as u32;
+    }
     let required_shared_scope_keys = context_required_scan_scopes(&request)
         .iter()
         .map(context_scope_reservation_key)
