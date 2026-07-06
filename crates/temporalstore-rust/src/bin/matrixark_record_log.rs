@@ -883,37 +883,75 @@ fn session_scope_mode(query: &Value) -> &str {
     }
 }
 
-fn scope_matches_record(record: &Value, query_scope: Option<&Value>) -> bool {
-    let Some(query) = query_scope.filter(|value| value.is_object()) else {
-        return true;
-    };
-    let Some(record_scope) = record_scope_value(record) else {
-        return true;
-    };
-    for key in [
-        "scope_key",
-        "account_id",
-        "tenant_id",
-        "user_id",
-        "team",
-        "project",
-    ] {
-        let Some(query_value) = query.get(key) else {
-            continue;
-        };
-        if query_value.is_null() || query_value.as_str() == Some("") {
-            continue;
+fn scope_key_explicit(scope: &Value, field: &str) -> bool {
+    scope
+        .get("_explicit_scope_keys")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().any(|item| item.as_str() == Some(field)))
+        .unwrap_or(false)
+}
+
+fn parse_scope_key(scope_key: &str) -> HashMap<String, u64> {
+    scope_key
+        .split('|')
+        .filter_map(|part| {
+            let (key, value) = part.split_once('=')?;
+            if key.is_empty() || value.is_empty() {
+                return None;
+            }
+            value.parse::<u64>().ok().map(|parsed| (key.to_string(), parsed))
+        })
+        .collect()
+}
+
+fn scoped_string_value(scope: Option<&Value>, field: &str) -> Option<String> {
+    scope
+        .filter(|value| value.is_object())
+        .and_then(|value| value.get(field))
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+fn record_scope_sources(record: &Value) -> [Option<&Value>; 5] {
+    [
+        Some(record),
+        record.get("access_scope").filter(|value| value.is_object()),
+        json_field(record, &["metadata", "access_scope"]).filter(|value| value.is_object()),
+        record.get("scope").filter(|value| value.is_object()),
+        json_field(record, &["envelope", "scope"]).filter(|value| value.is_object()),
+    ]
+}
+
+fn candidate_scope_key(record: &Value) -> String {
+    for source in record_scope_sources(record) {
+        if let Some(value) = scoped_string_value(source, "scope_key") {
+            return value;
         }
-        if record_scope.get(key) != Some(query_value) && record.get(key) != Some(query_value) {
+    }
+    String::new()
+}
+
+fn scope_key_matches_query(record_scope_key: &str, query_scope: &Value) -> bool {
+    if record_scope_key.is_empty() {
+        return true;
+    }
+    let parts = parse_scope_key(record_scope_key);
+    if let Some(tenant_hash) = query_scope.get("tenant_hash").and_then(Value::as_u64) {
+        if tenant_hash != 0 && parts.get("t").copied() != Some(tenant_hash) {
             return false;
         }
     }
-    if session_scope_mode(query) == "only" {
-        if let Some(query_session) = query.get("session_id").filter(|value| !value.is_null()) {
-            if query_session.as_str() != Some("")
-                && record_scope.get("session_id") != Some(query_session)
-                && record.get("session_id") != Some(query_session)
-            {
+    if scope_key_explicit(query_scope, "user_id") {
+        if let Some(user_hash) = query_scope.get("user_hash").and_then(Value::as_u64) {
+            if user_hash != 0 && parts.get("u").copied() != Some(user_hash) {
+                return false;
+            }
+        }
+    }
+    if scope_key_explicit(query_scope, "session_id") && session_scope_mode(query_scope) == "only" {
+        if let Some(session_hash) = query_scope.get("session_hash").and_then(Value::as_u64) {
+            if session_hash != 0 && parts.get("s").copied() != Some(session_hash) {
                 return false;
             }
         }
@@ -921,21 +959,63 @@ fn scope_matches_record(record: &Value, query_scope: Option<&Value>) -> bool {
     true
 }
 
-fn record_scope_string(record: &Value, field: &str) -> Option<String> {
-    for source in [record_scope_value(record), record.get("scope")] {
-        if let Some(value) = source
-            .and_then(|scope| scope.get(field))
-            .and_then(Value::as_str)
-            .filter(|text| !text.is_empty())
+fn scope_matches_record(record: &Value, query_scope: Option<&Value>) -> bool {
+    let Some(query) = query_scope.filter(|value| value.is_object()) else {
+        return true;
+    };
+    if !scope_key_matches_query(&candidate_scope_key(record), query) {
+        return false;
+    }
+    for key in [
+        "scope_key",
+        "account_id",
+        "tenant_id",
+        "user_id",
+        "session_id",
+        "team",
+        "project",
+        "agent_name",
+    ] {
+        if key == "scope_key" {
+            continue;
+        }
+        if matches!(key, "account_id" | "tenant_id" | "user_id" | "session_id")
+            && !scope_key_explicit(query, key)
         {
-            return Some(value.to_string());
+            continue;
+        }
+        if key == "session_id" && session_scope_mode(query) == "prefer" {
+            continue;
+        }
+        if matches!(key, "team" | "project" | "agent_name") && !scope_key_explicit(query, key) {
+            continue;
+        }
+        let Some(query_value) = query.get(key) else {
+            continue;
+        };
+        if query_value.is_null() || query_value.as_str() == Some("") {
+            continue;
+        }
+        let actual = record_scope_sources(record)
+            .into_iter()
+            .find_map(|source| scoped_string_value(source, key));
+        if actual
+            .as_deref()
+            .is_some_and(|value| Some(value) != query_value.as_str())
+        {
+            return false;
         }
     }
-    record
-        .get(field)
-        .and_then(Value::as_str)
-        .filter(|text| !text.is_empty())
-        .map(str::to_string)
+    true
+}
+
+fn record_scope_string(record: &Value, field: &str) -> Option<String> {
+    for source in record_scope_sources(record) {
+        if let Some(value) = scoped_string_value(source, field) {
+            return Some(value);
+        }
+    }
+    None
 }
 
 fn session_continuity_status(record: &Value, query_scope: Option<&Value>) -> String {
@@ -1226,7 +1306,15 @@ fn parse_cross_session_policy(
 }
 
 fn record_ref_hash(record: &Value) -> Option<String> {
-    for field in ["ref_hash", "chunk_hash", "section_hash", "skill_hash"] {
+    for field in [
+        "ref_hash",
+        "chunk_hash",
+        "section_hash",
+        "skill_hash",
+        "event_id_hash",
+        "entity_hash",
+        "summary_hash",
+    ] {
         if let Some(value) = record.get(field) {
             if let Some(number) = value.as_u64() {
                 return Some(number.to_string());
@@ -1543,7 +1631,16 @@ fn scan_matrixark_candidates(
 }
 
 fn candidate_text(record: &Value) -> String {
-    for field in ["text", "content", "summary_text", "state", "observation"] {
+    for field in [
+        "text",
+        "content",
+        "summary_text",
+        "state",
+        "observation",
+        "entity_value",
+        "description",
+        "value",
+    ] {
         if let Some(text) = record.get(field).and_then(Value::as_str) {
             if !text.is_empty() {
                 return text.to_string();
@@ -1561,8 +1658,7 @@ fn candidate_text(record: &Value) -> String {
 }
 
 fn token_estimate(text: &str) -> u64 {
-    let words = text.split_whitespace().count() as u64;
-    words.max((text.len() as u64 + 3) / 4).max(1)
+    ((text.len() as u64 + 3) / 4).max(1)
 }
 
 fn sparse_query_score(query_terms: &HashSet<String>, text: &str) -> f64 {
