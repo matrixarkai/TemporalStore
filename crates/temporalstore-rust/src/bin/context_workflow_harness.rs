@@ -195,6 +195,7 @@ struct ResourceSkillConversationScaleSummary {
     fanout_secondary_index_count: usize,
     fanout_ready: bool,
     multi_agent_scan_ready: bool,
+    multi_agent_scan_blockers: Vec<String>,
     fanout_namespace_node_candidates: usize,
     fanout_summary_embedding_query_nodes: usize,
     fanout_summary_pruned_peer_agent_nodes: usize,
@@ -252,6 +253,8 @@ struct ResourceSkillConversationScaleSummary {
     fanout_colocation_groups: Vec<String>,
     fanout_colocation_group_candidate_counts: BTreeMap<String, usize>,
     fanout_colocation_scope_keys: Vec<String>,
+    fanout_source_class_candidate_counts: BTreeMap<String, usize>,
+    fanout_selected_source_class_counts: BTreeMap<String, usize>,
     fanout_required_scan_scope_keys: Vec<String>,
     fanout_scan_policy_current_agent_scope_key: String,
     fanout_scan_policy_owner_scope_key: String,
@@ -271,10 +274,22 @@ struct ResourceSkillConversationScaleSummary {
     summary_embedding_selected_count: usize,
     verbose_filter_group_count: usize,
     selected_ref_count: usize,
+    selected_ref_source_ref_samples: Vec<String>,
+    selected_ref_source_class_counts: BTreeMap<String, usize>,
+    selected_conversation_ref_count: usize,
+    selected_resource_ref_count: usize,
+    selected_skill_ref_count: usize,
+    selected_source_class_coverage_ready: bool,
     fanout_selected_ref_scope_keys: Vec<String>,
     fanout_selected_ref_scope_order: Vec<String>,
     fanout_selected_ref_current_agent_first: bool,
     fanout_selected_peer_agent_ref_count: usize,
+    fanout_injection_source_ref_samples: Vec<String>,
+    fanout_injection_source_class_counts: BTreeMap<String, usize>,
+    fanout_injection_conversation_ref_count: usize,
+    fanout_injection_resource_ref_count: usize,
+    fanout_injection_skill_ref_count: usize,
+    fanout_injection_source_class_coverage_ready: bool,
     fanout_injection_scope_order: Vec<String>,
     fanout_injection_current_agent_first: bool,
     ingest_ms: u128,
@@ -1275,12 +1290,35 @@ fn run_resource_skill_conversation_scale(
             .iter()
             .map(|selected| selected.source_ref.as_str()),
     );
+    let selected_ref_source_ref_samples = source_ref_class_diverse_samples(
+        combined_retrieve
+            .query_understanding_debug
+            .selected_refs
+            .iter()
+            .map(|selected| selected.source_ref.as_str()),
+        12,
+    );
     let fanout_selected_ref_scope_keys = sorted_unique_strings(&fanout_selected_ref_scope_order);
     let fanout_selected_peer_agent_ref_count =
         peer_agent_scope_count(&fanout_selected_ref_scope_order);
     let fanout_selected_ref_current_agent_first = fanout_selected_ref_scope_order
         .first()
         .is_some_and(|scope| scope == "agent:codex");
+    let selected_ref_source_class_counts = source_ref_class_counts(
+        combined_retrieve
+            .query_understanding_debug
+            .selected_refs
+            .iter()
+            .map(|selected| selected.source_ref.as_str()),
+    );
+    let selected_conversation_ref_count =
+        source_class_count(&selected_ref_source_class_counts, "conversation");
+    let selected_resource_ref_count =
+        source_class_count(&selected_ref_source_class_counts, "resource");
+    let selected_skill_ref_count = source_class_count(&selected_ref_source_class_counts, "skill");
+    let selected_source_class_coverage_ready = selected_conversation_ref_count > 0
+        && selected_resource_ref_count > 0
+        && selected_skill_ref_count > 0;
     let fanout_injection_scope_order = collect_source_ref_scope_order(
         combined_retrieve
             .query_understanding_debug
@@ -1288,6 +1326,30 @@ fn run_resource_skill_conversation_scale(
             .iter()
             .map(|selected| selected.source_ref.as_str()),
     );
+    let fanout_injection_source_ref_samples = source_ref_class_diverse_samples(
+        combined_retrieve
+            .query_understanding_debug
+            .injection_ordering
+            .iter()
+            .map(|selected| selected.source_ref.as_str()),
+        12,
+    );
+    let fanout_injection_source_class_counts = source_ref_class_counts(
+        combined_retrieve
+            .query_understanding_debug
+            .injection_ordering
+            .iter()
+            .map(|selected| selected.source_ref.as_str()),
+    );
+    let fanout_injection_conversation_ref_count =
+        source_class_count(&fanout_injection_source_class_counts, "conversation");
+    let fanout_injection_resource_ref_count =
+        source_class_count(&fanout_injection_source_class_counts, "resource");
+    let fanout_injection_skill_ref_count =
+        source_class_count(&fanout_injection_source_class_counts, "skill");
+    let fanout_injection_source_class_coverage_ready = fanout_injection_conversation_ref_count > 0
+        && fanout_injection_resource_ref_count > 0
+        && fanout_injection_skill_ref_count > 0;
     let fanout_injection_current_agent_first = fanout_injection_scope_order
         .first()
         .is_some_and(|scope| scope == "agent:codex");
@@ -1407,70 +1469,131 @@ fn run_resource_skill_conversation_scale(
             && combined_retrieve.fanout_plan.peer_agent_nodes > 0
             && fanout_candidate_shared_scope_coverage_count == 3
             && fanout_candidate_shared_node_count > 0;
-    let multi_agent_scan_ready = combined_retrieve.fanout_plan.fanout_reduced
-        && combined_retrieve.fanout_plan.layer_quota_applied
-        && combined_retrieve.fanout_plan.selected_current_agent_nodes > 0
-        && combined_retrieve.fanout_plan.current_agent_first_selected
-        && combined_retrieve.fanout_plan.peer_agent_nodes > 0
-        && combined_retrieve.fanout_plan.selected_peer_agent_nodes == 0
-        && combined_retrieve.fanout_plan.skipped_peer_agent_nodes > 0
-        && combined_retrieve.fanout_plan.peer_agent_limit_applied
-        && combined_retrieve.fanout_plan.selected_user_shared_nodes > 0
-        && combined_retrieve
-            .fanout_plan
-            .selected_workspace_shared_nodes
-            > 0
-        && combined_retrieve.fanout_plan.selected_global_shared_nodes > 0
-        && combined_retrieve.fanout_plan.shared_layer_quota_nodes >= 4
-        && fanout_shared_scope_coverage_ready
-        && fanout_current_agent_boost_bounded
-        && fanout_scan_policy_ready
-        && fanout_candidate_scope_pressure_ready
-        && combined_retrieve
+    let mut multi_agent_scan_blockers = Vec::new();
+    push_context_scan_blocker(
+        &mut multi_agent_scan_blockers,
+        combined_retrieve.fanout_plan.namespace_replication_avoided,
+        "namespace_replication_not_avoided",
+    );
+    push_context_scan_blocker(
+        &mut multi_agent_scan_blockers,
+        combined_retrieve.fanout_plan.event_expanded_nodes
+            < combined_retrieve.fanout_plan.namespace_node_candidates,
+        "fanout_not_reduced",
+    );
+    push_context_scan_blocker(
+        &mut multi_agent_scan_blockers,
+        combined_retrieve.fanout_plan.layer_quota_applied,
+        "layer_quota_not_applied",
+    );
+    push_context_scan_blocker(
+        &mut multi_agent_scan_blockers,
+        combined_retrieve.fanout_plan.selected_current_agent_nodes > 0,
+        "missing_current_agent_selection",
+    );
+    push_context_scan_blocker(
+        &mut multi_agent_scan_blockers,
+        combined_retrieve.fanout_plan.current_agent_first_selected,
+        "current_agent_not_first",
+    );
+    push_context_scan_blocker(
+        &mut multi_agent_scan_blockers,
+        combined_retrieve.fanout_plan.peer_agent_nodes > 0
+            && combined_retrieve.fanout_plan.selected_peer_agent_nodes == 0
+            && combined_retrieve.fanout_plan.skipped_peer_agent_nodes > 0
+            && combined_retrieve.fanout_plan.peer_agent_limit_applied,
+        "peer_agent_cap_not_enforced",
+    );
+    push_context_scan_blocker(
+        &mut multi_agent_scan_blockers,
+        combined_retrieve.fanout_plan.selected_user_shared_nodes > 0
+            && combined_retrieve
+                .fanout_plan
+                .selected_workspace_shared_nodes
+                > 0
+            && combined_retrieve.fanout_plan.selected_global_shared_nodes > 0
+            && combined_retrieve.fanout_plan.shared_layer_quota_nodes >= 4
+            && fanout_shared_scope_coverage_ready,
+        "shared_scope_coverage_incomplete",
+    );
+    push_context_scan_blocker(
+        &mut multi_agent_scan_blockers,
+        fanout_current_agent_boost_bounded,
+        "current_agent_boost_unbounded",
+    );
+    push_context_scan_blocker(
+        &mut multi_agent_scan_blockers,
+        fanout_scan_policy_ready,
+        "scan_policy_incomplete",
+    );
+    push_context_scan_blocker(
+        &mut multi_agent_scan_blockers,
+        fanout_candidate_scope_pressure_ready,
+        "candidate_scope_pressure_missing",
+    );
+    push_context_scan_blocker(
+        &mut multi_agent_scan_blockers,
+        combined_retrieve
             .fanout_plan
             .locality_keys
             .iter()
             .all(|key| key.contains(":scope:"))
-        && combined_retrieve
-            .fanout_plan
-            .locality_keys
-            .iter()
-            .any(|key| key.contains(":scope:agent:codex:"))
-        && combined_retrieve.fanout_plan.locality_keys.len()
-            == combined_retrieve.fanout_plan.event_expanded_nodes
-        && fanout_peer_locality_key_count == 0
-        && fanout_locality_scope_keys
-            .iter()
-            .any(|scope| scope == "agent:codex")
-        && fanout_locality_scope_keys
-            .iter()
-            .any(|scope| scope == "user:user")
-        && fanout_locality_scope_keys
-            .iter()
-            .any(|scope| scope == "workspace:context")
-        && fanout_locality_scope_keys
-            .iter()
-            .any(|scope| scope == "global")
-        && fanout_selected_ref_current_agent_first
-        && fanout_injection_current_agent_first
-        && fanout_selected_peer_agent_ref_count == 0
-        && fanout_selected_ref_scope_keys
-            .iter()
-            .any(|scope| scope == "agent:codex")
-        && fanout_selected_ref_scope_keys
-            .iter()
-            .any(|scope| scope == "user:user")
-        && fanout_selected_ref_scope_keys
-            .iter()
-            .any(|scope| scope == "workspace:context")
-        && fanout_selected_ref_scope_keys
-            .iter()
-            .any(|scope| scope == "global")
-        && combined_retrieve
+            && combined_retrieve
+                .fanout_plan
+                .locality_keys
+                .iter()
+                .any(|key| key.contains(":scope:agent:codex:"))
+            && combined_retrieve.fanout_plan.locality_keys.len()
+                == combined_retrieve.fanout_plan.event_expanded_nodes
+            && fanout_peer_locality_key_count == 0
+            && fanout_locality_scope_keys
+                .iter()
+                .any(|scope| scope == "agent:codex")
+            && fanout_locality_scope_keys
+                .iter()
+                .any(|scope| scope == "user:user")
+            && fanout_locality_scope_keys
+                .iter()
+                .any(|scope| scope == "workspace:context")
+            && fanout_locality_scope_keys
+                .iter()
+                .any(|scope| scope == "global"),
+        "locality_evidence_incomplete",
+    );
+    push_context_scan_blocker(
+        &mut multi_agent_scan_blockers,
+        fanout_selected_ref_current_agent_first
+            && fanout_injection_current_agent_first
+            && fanout_selected_peer_agent_ref_count == 0
+            && fanout_selected_ref_scope_keys
+                .iter()
+                .any(|scope| scope == "agent:codex")
+            && fanout_selected_ref_scope_keys
+                .iter()
+                .any(|scope| scope == "user:user")
+            && fanout_selected_ref_scope_keys
+                .iter()
+                .any(|scope| scope == "workspace:context")
+            && fanout_selected_ref_scope_keys
+                .iter()
+                .any(|scope| scope == "global"),
+        "selected_ref_scope_evidence_incomplete",
+    );
+    push_context_scan_blocker(
+        &mut multi_agent_scan_blockers,
+        selected_source_class_coverage_ready && fanout_injection_source_class_coverage_ready,
+        "source_class_coverage_incomplete",
+    );
+    push_context_scan_blocker(
+        &mut multi_agent_scan_blockers,
+        combined_retrieve
             .fanout_plan
             .colocation_scope_keys
             .iter()
-            .any(|scope| scope == "agent:claude");
+            .any(|scope| scope == "agent:claude"),
+        "peer_agent_candidate_missing",
+    );
+    let multi_agent_scan_ready = multi_agent_scan_blockers.is_empty();
     let ready = resource_skill_report.status.ok
         && conversation_report.status.ok
         && combined_retrieve.status.ok
@@ -1563,6 +1686,7 @@ fn run_resource_skill_conversation_scale(
         fanout_secondary_index_count: resource_skill_report.fanout.secondary_index_count,
         fanout_ready,
         multi_agent_scan_ready,
+        multi_agent_scan_blockers,
         fanout_namespace_node_candidates: combined_retrieve.fanout_plan.namespace_node_candidates,
         fanout_summary_embedding_query_nodes: combined_retrieve
             .fanout_plan
@@ -1695,6 +1819,14 @@ fn run_resource_skill_conversation_scale(
             .colocation_group_candidate_counts
             .clone(),
         fanout_colocation_scope_keys: combined_retrieve.fanout_plan.colocation_scope_keys.clone(),
+        fanout_source_class_candidate_counts: combined_retrieve
+            .fanout_plan
+            .source_class_candidate_counts
+            .clone(),
+        fanout_selected_source_class_counts: combined_retrieve
+            .fanout_plan
+            .selected_source_class_counts
+            .clone(),
         fanout_required_scan_scope_keys: combined_retrieve
             .fanout_plan
             .required_scan_scope_keys
@@ -1723,10 +1855,22 @@ fn run_resource_skill_conversation_scale(
             .query_understanding_debug
             .selected_refs
             .len(),
+        selected_ref_source_ref_samples,
+        selected_ref_source_class_counts,
+        selected_conversation_ref_count,
+        selected_resource_ref_count,
+        selected_skill_ref_count,
+        selected_source_class_coverage_ready,
         fanout_selected_ref_scope_keys,
         fanout_selected_ref_scope_order,
         fanout_selected_ref_current_agent_first,
         fanout_selected_peer_agent_ref_count,
+        fanout_injection_source_ref_samples,
+        fanout_injection_source_class_counts,
+        fanout_injection_conversation_ref_count,
+        fanout_injection_resource_ref_count,
+        fanout_injection_skill_ref_count,
+        fanout_injection_source_class_coverage_ready,
         fanout_injection_scope_order,
         fanout_injection_current_agent_first,
         ingest_ms,
@@ -2144,6 +2288,87 @@ fn source_ref_scope_key(source_ref: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn source_ref_class_counts<'a>(
+    source_refs: impl IntoIterator<Item = &'a str>,
+) -> BTreeMap<String, usize> {
+    source_refs.into_iter().map(source_ref_evidence_class).fold(
+        BTreeMap::<String, usize>::new(),
+        |mut counts, class| {
+            *counts.entry(class.to_string()).or_default() += 1;
+            counts
+        },
+    )
+}
+
+fn source_ref_evidence_class(source_ref: &str) -> &'static str {
+    let lower = source_ref.to_ascii_lowercase();
+    if lower.starts_with("skills/") || lower.contains("/skill") || lower.contains("skill:") {
+        "skill"
+    } else if lower.starts_with("resource:")
+        || lower.contains("|resource:")
+        || lower.contains("#resource:")
+        || lower.starts_with("viking://")
+        || lower.contains("|viking://")
+        || lower.starts_with("https://")
+        || lower.contains("|https://")
+        || lower.starts_with("http://")
+        || lower.contains("|http://")
+        || lower.starts_with("git://")
+        || lower.contains("|git://")
+        || lower.ends_with(".pdf")
+        || lower.ends_with(".md")
+    {
+        "resource"
+    } else if source_ref_scope_key(source_ref).is_some() {
+        "conversation"
+    } else {
+        "other"
+    }
+}
+
+fn source_class_count(counts: &BTreeMap<String, usize>, class: &str) -> usize {
+    counts.get(class).copied().unwrap_or_default()
+}
+
+fn source_ref_class_diverse_samples<'a>(
+    source_refs: impl IntoIterator<Item = &'a str>,
+    limit: usize,
+) -> Vec<String> {
+    let refs = source_refs.into_iter().collect::<Vec<_>>();
+    let mut selected = Vec::new();
+    for class in ["conversation", "resource", "skill", "other"] {
+        if selected.len() >= limit {
+            break;
+        }
+        if let Some(source_ref) = refs
+            .iter()
+            .copied()
+            .find(|source_ref| source_ref_evidence_class(source_ref) == class)
+        {
+            push_unique_context_harness_string(&mut selected, source_ref.to_string());
+        }
+    }
+    for source_ref in refs {
+        if selected.len() >= limit {
+            break;
+        }
+        push_unique_context_harness_string(&mut selected, source_ref.to_string());
+    }
+    selected
+}
+
+fn push_unique_context_harness_string(values: &mut Vec<String>, value: String) {
+    if !value.is_empty() && !values.iter().any(|existing| existing == &value) {
+        values.push(value);
+    }
+}
+
+fn push_context_scan_blocker(blockers: &mut Vec<String>, ready: bool, blocker: &str) {
+    if !ready {
+        blockers.push(blocker.to_string());
+    }
 }
 
 fn sorted_unique_strings(values: &[String]) -> Vec<String> {

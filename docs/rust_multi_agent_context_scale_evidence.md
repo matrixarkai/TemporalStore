@@ -70,6 +70,7 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
     "context-scale-harness"
   ],
   "multi_agent_scan_ready": true,
+  "multi_agent_scan_blockers": [],
   "fanout_namespace_node_candidates": 44,
   "fanout_summary_embedding_query_nodes": 40,
   "fanout_summary_pruned_peer_agent_nodes": 4,
@@ -180,6 +181,16 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
     "user:user",
     "workspace:context"
   ],
+  "fanout_source_class_candidate_counts": {
+    "conversation": 31,
+    "resource": 7,
+    "skill": 6
+  },
+  "fanout_selected_source_class_counts": {
+    "conversation": 13,
+    "resource": 2,
+    "skill": 1
+  },
   "fanout_required_scan_scope_keys": [
     "agent:codex",
     "workspace:context",
@@ -210,8 +221,25 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
     "user:user",
     "workspace:context"
   ],
+  "selected_ref_source_class_counts": {
+    "conversation": 37,
+    "resource": 6,
+    "skill": 2
+  },
+  "selected_source_class_coverage_ready": true,
+  "selected_ref_source_ref_samples": [
+    "agent:codex:scale-conversation-18",
+    "scope:workspace:context|https://docs.example.com/context/openviking-debug#paragraph=1",
+    "scope:workspace:context|skills/benchmark-reader/SKILL.md#heading=document"
+  ],
   "fanout_selected_ref_current_agent_first": true,
   "fanout_selected_peer_agent_ref_count": 0,
+  "fanout_injection_source_class_counts": {
+    "conversation": 37,
+    "resource": 6,
+    "skill": 2
+  },
+  "fanout_injection_source_class_coverage_ready": true,
   "fanout_injection_current_agent_first": true
 }
 ```
@@ -228,6 +256,7 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
 - The phase split is explicit: 4 peer-agent nodes are pruned before summary scoring and 24 remaining nodes are skipped by the summary/event budget.
 - Configured and effective scan budgets are explicit: scale scan uses summary node limit 32, event node limit 16, and peer-agent node limit 0.
 - Candidate pressure is scope-aware before selection: 24 current-agent nodes, 4 peer-agent nodes, and 16 shared nodes across user/workspace/global are classified before fanout pruning.
+- Source-class pressure is explicit: fanout sees 31 conversation nodes, 7 resource nodes, and 6 skill nodes, then expands a bounded mix of 13 conversation, 2 resource, and 1 skill nodes.
 - Shared-layer coverage is now enforced from the core retrieval report: all 3 required shared scopes are covered while the fill phase can select extra high-value workspace nodes.
 - Current-agent context is selected with agent-aware locality while user, workspace, and global shared resources remain visible.
 - Selection percentages are explicit in the core report: this scale scan is 68% current-agent, 31% shared-layer, and 0% peer-agent.
@@ -237,6 +266,7 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
 - The selected colocation scope set proves the expanded scale scan covers `agent:codex`, `user:user`, `workspace:context`, and `global`.
 - Locality key count equals expanded nodes: 16 expanded nodes produce 16 locality keys, covering exactly `agent:codex`, `user:user`, `workspace:context`, and `global` with zero peer-agent locality keys.
 - Selected refs and injection ordering start with `agent:codex`, proving current-agent context stays first after final retrieval scoring, not only during fanout planning.
+- Selected refs and injection both include all source classes: 37 conversation refs, 6 resource refs, and 2 skill refs, with samples showing a current-agent conversation, an OpenViking debug resource URL, and a benchmark-reader skill file.
 - Required scan scopes are policy-derived: `agent:codex` is added implicitly for the current agent, `workspace:context` is included from owner scope, and `user:user`/`global` come from the shared resource policy.
 - Peer-agent candidates are present but capped out of expansion in this current-agent scan.
 - Secondary indexes and selected references remain active in the same scale run.

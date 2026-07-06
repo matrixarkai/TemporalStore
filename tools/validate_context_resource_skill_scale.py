@@ -124,6 +124,9 @@ def require_distribution_count(report: dict[str, Any], field: str, key: str, exp
 def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int) -> None:
     require_bool(report, "ready")
     require_bool(report, "multi_agent_scan_ready")
+    blockers = report.get("multi_agent_scan_blockers")
+    if blockers != []:
+        raise ValueError(f"multi_agent_scan_blockers must be empty, got {blockers!r}")
     require_bool(report, "fanout_ready")
     require_bool(report, "secondary_index_ready")
     require_bool(report, "fanout_namespace_replication_avoided")
@@ -322,6 +325,15 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
     require_int_between(report, "fanout_current_agent_boost_percent", 40, 75)
     require_bool(report, "fanout_current_agent_boost_bounded")
     require_bool(report, "fanout_layer_quota_applied")
+    source_candidates = require_int_map(report, "fanout_source_class_candidate_counts")
+    selected_source_nodes = require_int_map(report, "fanout_selected_source_class_counts")
+    for field, counts in [
+        ("fanout_source_class_candidate_counts", source_candidates),
+        ("fanout_selected_source_class_counts", selected_source_nodes),
+    ]:
+        for source_class in ["conversation", "resource", "skill"]:
+            if counts.get(source_class, 0) < 1:
+                raise ValueError(f"{field} must include {source_class!r}, got {counts!r}")
     require_int_at_least(report, "retrieved_block_count", 8)
     require_int_at_least(report, "retrieved_current_agent_block_count", 1)
     require_int_at_least(report, "retrieved_user_shared_block_count", 1)
@@ -343,6 +355,27 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
     require_string_set(report, "resource_owner_scopes", REQUIRED_RESOURCE_OWNER_SCOPES)
     require_string_set(report, "resource_parser_names", REQUIRED_RESOURCE_PARSERS)
     require_int_at_least(report, "selected_ref_count", 8)
+    selected_ref_classes = require_int_map(report, "selected_ref_source_class_counts")
+    injection_ref_classes = require_int_map(report, "fanout_injection_source_class_counts")
+    for field, counts in [
+        ("selected_ref_source_class_counts", selected_ref_classes),
+        ("fanout_injection_source_class_counts", injection_ref_classes),
+    ]:
+        for source_class in ["conversation", "resource", "skill"]:
+            if counts.get(source_class, 0) < 1:
+                raise ValueError(f"{field} must include {source_class!r}, got {counts!r}")
+    require_int_at_least(report, "selected_conversation_ref_count", 1)
+    require_int_at_least(report, "selected_resource_ref_count", 1)
+    require_int_at_least(report, "selected_skill_ref_count", 1)
+    require_bool(report, "selected_source_class_coverage_ready")
+    require_int_at_least(report, "fanout_injection_conversation_ref_count", 1)
+    require_int_at_least(report, "fanout_injection_resource_ref_count", 1)
+    require_int_at_least(report, "fanout_injection_skill_ref_count", 1)
+    require_bool(report, "fanout_injection_source_class_coverage_ready")
+    if not report.get("selected_ref_source_ref_samples"):
+        raise ValueError("selected_ref_source_ref_samples must be non-empty")
+    if not report.get("fanout_injection_source_ref_samples"):
+        raise ValueError("fanout_injection_source_ref_samples must be non-empty")
     require_bool(report, "fanout_selected_ref_current_agent_first")
     require_bool(report, "fanout_injection_current_agent_first")
     require_int_equal(report, "fanout_selected_peer_agent_ref_count", 0)

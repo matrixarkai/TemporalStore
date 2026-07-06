@@ -1119,6 +1119,10 @@ pub struct ContextFanoutPlanReport {
     #[serde(default)]
     pub colocation_scope_keys: Vec<String>,
     #[serde(default)]
+    pub source_class_candidate_counts: BTreeMap<String, usize>,
+    #[serde(default)]
+    pub selected_source_class_counts: BTreeMap<String, usize>,
+    #[serde(default)]
     pub required_scan_scope_keys: Vec<String>,
     #[serde(default)]
     pub current_agent_id: String,
@@ -4093,7 +4097,7 @@ fn push_unique_context_string(values: &mut Vec<String>, value: String) {
     }
 }
 
-type ContextSummaryScore = (u64, i64, usize, i64, ContextScopeDescriptor);
+type ContextSummaryScore = (u64, i64, usize, i64, ContextScopeDescriptor, String);
 
 fn context_scope_reservation_key(scope: &ContextScopeDescriptor) -> String {
     match scope.layer {
@@ -4115,6 +4119,44 @@ fn context_scope_qualified_source_ref(source_ref: &str, scope: &ContextScopeDesc
         format!("scope:{scope_key}")
     } else {
         format!("scope:{scope_key}|{source_ref}")
+    }
+}
+
+fn context_source_ref_class(source_ref: &str) -> &'static str {
+    let lower = source_ref.to_ascii_lowercase();
+    if lower.starts_with("skills/") || lower.contains("/skill") || lower.contains("skill:") {
+        "skill"
+    } else if lower.starts_with("resource:")
+        || lower.contains("|resource:")
+        || lower.contains("#resource:")
+        || lower.starts_with("viking://")
+        || lower.contains("|viking://")
+        || lower.starts_with("https://")
+        || lower.contains("|https://")
+        || lower.starts_with("http://")
+        || lower.contains("|http://")
+        || lower.starts_with("git://")
+        || lower.contains("|git://")
+        || lower.ends_with(".pdf")
+        || lower.ends_with(".md")
+    {
+        "resource"
+    } else {
+        "conversation"
+    }
+}
+
+fn query_requests_source_class(query: &str, class: &str) -> bool {
+    let lower = query.to_ascii_lowercase();
+    match class {
+        "resource" => {
+            lower.contains("resource")
+                || lower.contains("runbook")
+                || lower.contains("document")
+                || lower.contains("docs")
+        }
+        "skill" => lower.contains("skill") || lower.contains("tool"),
+        _ => false,
     }
 }
 
@@ -4237,7 +4279,7 @@ fn context_select_layered_event_nodes(
         if selected.len() >= limit {
             break;
         }
-        if let Some((node_hash, _, _, _, scope)) = summary_scores.iter().find(|candidate| {
+        if let Some((node_hash, _, _, _, scope, _)) = summary_scores.iter().find(|candidate| {
             !selected_set.contains(&candidate.0)
                 && context_scope_reservation_matches(&required_scope, &candidate.4)
         }) {
@@ -4254,7 +4296,27 @@ fn context_select_layered_event_nodes(
             quota_nodes = quota_nodes.saturating_add(1);
         }
     }
-    for (node_hash, _, _, _, scope) in summary_scores {
+    for required_class in ["skill", "resource"] {
+        if selected.len() >= limit || !query_requests_source_class(&request.query, required_class) {
+            continue;
+        }
+        if let Some((node_hash, _, _, _, scope, _)) = summary_scores
+            .iter()
+            .find(|candidate| !selected_set.contains(&candidate.0) && candidate.5 == required_class)
+        {
+            selected_set.insert(*node_hash);
+            selected.push(*node_hash);
+            if scope.layer == ContextScopeLayer::Agent
+                && !request.current_agent_id.trim().is_empty()
+                && !scope
+                    .producer_agent_id
+                    .eq_ignore_ascii_case(request.current_agent_id.trim())
+            {
+                selected_peer_agents = selected_peer_agents.saturating_add(1);
+            }
+        }
+    }
+    for (node_hash, _, _, _, scope, _) in summary_scores {
         if selected.len() >= limit {
             break;
         }
@@ -4331,6 +4393,7 @@ pub fn retrieve_context(
     };
     fanout_plan.namespace_node_candidates = node_hashes.len();
     let mut node_scope_by_hash = BTreeMap::<u64, ContextScopeDescriptor>::new();
+    let mut node_source_class_by_hash = BTreeMap::<u64, String>::new();
     for node_hash in &node_hashes {
         let node_response = engine.execute(ExecuteRequest {
             shard_id: request.shard_id,
@@ -4372,6 +4435,12 @@ pub fn retrieve_context(
                 }
             }
             let scope = context_scope_descriptor_from_source_ref(&scope_source_ref, &request);
+            let source_class = context_source_ref_class(&scope_source_ref).to_string();
+            *fanout_plan
+                .source_class_candidate_counts
+                .entry(source_class.clone())
+                .or_default() += 1;
+            node_source_class_by_hash.insert(*node_hash, source_class);
             push_unique_context_string(
                 &mut fanout_plan.scan_layers,
                 context_scope_layer_name(scope.layer).to_string(),
@@ -4521,10 +4590,21 @@ pub fn retrieve_context(
             if scope_boost > 0 {
                 fanout_plan.scope_boosted_nodes = fanout_plan.scope_boosted_nodes.saturating_add(1);
             }
-            (*node_hash, best_score, found, scope_boost, scope)
+            let source_class = node_source_class_by_hash
+                .get(node_hash)
+                .cloned()
+                .unwrap_or_else(|| "conversation".to_string());
+            (
+                *node_hash,
+                best_score,
+                found,
+                scope_boost,
+                scope,
+                source_class,
+            )
         })
         .collect::<Vec<_>>();
-    summary_scores.sort_by_key(|(node_hash, score, _, scope_boost, scope)| {
+    summary_scores.sort_by_key(|(node_hash, score, _, scope_boost, scope, _)| {
         (
             Reverse(score.saturating_add(*scope_boost)),
             scope.precedence_rank,
@@ -4557,7 +4637,7 @@ pub fn retrieve_context(
             node_hashes.push(*node_hash);
         }
     }
-    for (node_hash, _, _, _, _) in &summary_scores {
+    for (node_hash, _, _, _, _, _) in &summary_scores {
         if node_hashes.len() >= summary_node_limit {
             break;
         }
@@ -4568,8 +4648,8 @@ pub fn retrieve_context(
     let event_node_set = event_node_hashes.iter().copied().collect::<BTreeSet<_>>();
     let skipped_node_hashes = summary_scores
         .iter()
-        .filter(|(node_hash, _, _, _, _)| !event_node_set.contains(node_hash))
-        .map(|(node_hash, _, _, _, _)| *node_hash)
+        .filter(|(node_hash, _, _, _, _, _)| !event_node_set.contains(node_hash))
+        .map(|(node_hash, _, _, _, _, _)| *node_hash)
         .collect::<Vec<_>>();
     fanout_plan.summary_candidate_nodes = summary_scores.len();
     fanout_plan.summary_selected_nodes = node_hashes.len();
@@ -4578,6 +4658,12 @@ pub fn retrieve_context(
     fanout_plan.layer_quota_applied = layer_quota_applied;
     fanout_plan.peer_agent_limit_applied = peer_agent_limit_applied;
     for node_hash in &event_node_hashes {
+        if let Some(source_class) = node_source_class_by_hash.get(node_hash) {
+            *fanout_plan
+                .selected_source_class_counts
+                .entry(source_class.clone())
+                .or_default() += 1;
+        }
         if let Some(scope) = node_scope_by_hash.get(node_hash) {
             match scope.layer {
                 ContextScopeLayer::Agent
@@ -4773,7 +4859,7 @@ pub fn retrieve_context(
         .tree_traversal_summary
         .summary_embedding_selected_count = summary_scores
         .iter()
-        .filter(|(_, _, found, _, _)| *found > 0)
+        .filter(|(_, _, found, _, _, _)| *found > 0)
         .count();
     query_understanding_debug
         .tree_traversal_summary
@@ -4797,9 +4883,9 @@ pub fn retrieve_context(
         .tree_traversal_summary
         .summary_embeddings = summary_scores
         .iter()
-        .map(|(node_hash, score, found, scope_boost, scope)| {
+        .map(|(node_hash, score, found, scope_boost, scope, source_class)| {
             format!(
-                "node:{node_hash}:score:{score}:boost:{scope_boost}:layer:{}:refs:{found}",
+                "node:{node_hash}:score:{score}:boost:{scope_boost}:layer:{}:class:{source_class}:refs:{found}",
                 context_scope_layer_name(scope.layer)
             )
         })

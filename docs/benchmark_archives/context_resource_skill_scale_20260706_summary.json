@@ -68,6 +68,7 @@
   "fanout_secondary_index_count": 65,
   "fanout_ready": true,
   "multi_agent_scan_ready": true,
+  "multi_agent_scan_blockers": [],
   "fanout_namespace_node_candidates": 44,
   "fanout_summary_embedding_query_nodes": 40,
   "fanout_summary_pruned_peer_agent_nodes": 4,
@@ -117,14 +118,14 @@
     "workspace:context",
     "user:user",
     "global",
-    "agent:codex",
-    "agent:codex",
+    "workspace:context",
     "workspace:context",
     "agent:codex",
     "agent:codex",
     "agent:codex",
     "agent:codex",
-    "workspace:context",
+    "agent:codex",
+    "agent:codex",
     "agent:codex",
     "agent:codex",
     "agent:codex",
@@ -189,6 +190,16 @@
     "user:user",
     "workspace:context"
   ],
+  "fanout_source_class_candidate_counts": {
+    "conversation": 31,
+    "resource": 7,
+    "skill": 6
+  },
+  "fanout_selected_source_class_counts": {
+    "conversation": 13,
+    "resource": 2,
+    "skill": 1
+  },
   "fanout_required_scan_scope_keys": [
     "agent:codex",
     "workspace:context",
@@ -221,6 +232,29 @@
   "summary_embedding_selected_count": 40,
   "verbose_filter_group_count": 1,
   "selected_ref_count": 45,
+  "selected_ref_source_ref_samples": [
+    "agent:codex:scale-conversation-18",
+    "scope:workspace:context|https://docs.example.com/context/openviking-debug#paragraph=1",
+    "scope:workspace:context|skills/benchmark-reader/SKILL.md#heading=document",
+    "agent:codex:scale-conversation-0",
+    "agent:codex:scale-conversation-7",
+    "agent:codex:scale-conversation-22",
+    "agent:codex:scale-conversation-4",
+    "agent:codex:scale-conversation-17",
+    "agent:codex:scale-conversation-11",
+    "agent:codex:scale-conversation-20",
+    "agent:codex:scale-conversation-8",
+    "agent:codex:scale-conversation-9"
+  ],
+  "selected_ref_source_class_counts": {
+    "conversation": 37,
+    "resource": 6,
+    "skill": 2
+  },
+  "selected_conversation_ref_count": 37,
+  "selected_resource_ref_count": 6,
+  "selected_skill_ref_count": 2,
+  "selected_source_class_coverage_ready": true,
   "fanout_selected_ref_scope_keys": [
     "agent:codex",
     "global",
@@ -276,6 +310,29 @@
   ],
   "fanout_selected_ref_current_agent_first": true,
   "fanout_selected_peer_agent_ref_count": 0,
+  "fanout_injection_source_ref_samples": [
+    "agent:codex:scale-conversation-18",
+    "scope:workspace:context|https://docs.example.com/context/openviking-debug#paragraph=1",
+    "scope:workspace:context|skills/benchmark-reader/SKILL.md#heading=document",
+    "agent:codex:scale-conversation-0",
+    "agent:codex:scale-conversation-7",
+    "agent:codex:scale-conversation-22",
+    "agent:codex:scale-conversation-4",
+    "agent:codex:scale-conversation-17",
+    "agent:codex:scale-conversation-11",
+    "agent:codex:scale-conversation-20",
+    "agent:codex:scale-conversation-8",
+    "agent:codex:scale-conversation-9"
+  ],
+  "fanout_injection_source_class_counts": {
+    "conversation": 37,
+    "resource": 6,
+    "skill": 2
+  },
+  "fanout_injection_conversation_ref_count": 37,
+  "fanout_injection_resource_ref_count": 6,
+  "fanout_injection_skill_ref_count": 2,
+  "fanout_injection_source_class_coverage_ready": true,
   "fanout_injection_scope_order": [
     "agent:codex",
     "agent:codex",
@@ -324,7 +381,7 @@
     "global"
   ],
   "fanout_injection_current_agent_first": true,
-  "ingest_ms": 27418,
-  "retrieve_ms": 5224,
-  "secondary_index_validation_ms": 2694
+  "ingest_ms": 11321,
+  "retrieve_ms": 4283,
+  "secondary_index_validation_ms": 1737
 }
