@@ -190,6 +190,7 @@ struct ResourceSkillConversationScaleSummary {
     fanout_peer_agent_nodes: usize,
     fanout_selected_peer_agent_nodes: usize,
     fanout_skipped_peer_agent_nodes: usize,
+    fanout_peer_agent_limit_applied: bool,
     fanout_selected_user_shared_nodes: usize,
     fanout_selected_workspace_shared_nodes: usize,
     fanout_selected_global_shared_nodes: usize,
@@ -222,6 +223,7 @@ struct MultiAgentContextScanHarnessSummary {
     peer_agent_nodes: usize,
     selected_peer_agent_nodes: usize,
     skipped_peer_agent_nodes: usize,
+    peer_agent_limit_applied: bool,
     selected_user_shared_nodes: usize,
     selected_workspace_shared_nodes: usize,
     selected_global_shared_nodes: usize,
@@ -450,6 +452,7 @@ fn main() {
         owner_scope: String::new(),
         current_agent_id: String::new(),
         shared_resource_scopes: Vec::new(),
+        max_peer_agent_nodes: usize::MAX,
         provider: ContextModelProviderConfig::default(),
     };
     let retrieve = retrieve_context(&engine, retrieve_request.clone());
@@ -1042,6 +1045,7 @@ fn run_resource_skill_conversation_scale(
             owner_scope: "workspace:context".to_string(),
             current_agent_id: "codex".to_string(),
             shared_resource_scopes: vec!["global".to_string(), "user:user".to_string()],
+            max_peer_agent_nodes: usize::MAX,
             provider: ContextModelProviderConfig::default(),
         },
     );
@@ -1175,6 +1179,7 @@ fn run_resource_skill_conversation_scale(
         fanout_peer_agent_nodes: combined_retrieve.fanout_plan.peer_agent_nodes,
         fanout_selected_peer_agent_nodes: combined_retrieve.fanout_plan.selected_peer_agent_nodes,
         fanout_skipped_peer_agent_nodes: combined_retrieve.fanout_plan.skipped_peer_agent_nodes,
+        fanout_peer_agent_limit_applied: combined_retrieve.fanout_plan.peer_agent_limit_applied,
         fanout_selected_user_shared_nodes: combined_retrieve.fanout_plan.selected_user_shared_nodes,
         fanout_selected_workspace_shared_nodes: combined_retrieve
             .fanout_plan
@@ -1303,6 +1308,7 @@ fn run_multi_agent_context_scan_harness(
             owner_scope: "workspace:context".to_string(),
             current_agent_id: "codex".to_string(),
             shared_resource_scopes: vec!["user:user".to_string(), "global".to_string()],
+            max_peer_agent_nodes: 0,
             provider: ContextModelProviderConfig::default(),
         },
     );
@@ -1313,6 +1319,7 @@ fn run_multi_agent_context_scan_harness(
         && report.fanout_plan.peer_agent_nodes > 0
         && report.fanout_plan.selected_peer_agent_nodes == 0
         && report.fanout_plan.skipped_peer_agent_nodes > 0
+        && report.fanout_plan.peer_agent_limit_applied
         && report.fanout_plan.selected_user_shared_nodes > 0
         && report.fanout_plan.selected_workspace_shared_nodes > 0
         && report.fanout_plan.selected_global_shared_nodes > 0
@@ -1350,6 +1357,7 @@ fn run_multi_agent_context_scan_harness(
         peer_agent_nodes: report.fanout_plan.peer_agent_nodes,
         selected_peer_agent_nodes: report.fanout_plan.selected_peer_agent_nodes,
         skipped_peer_agent_nodes: report.fanout_plan.skipped_peer_agent_nodes,
+        peer_agent_limit_applied: report.fanout_plan.peer_agent_limit_applied,
         selected_user_shared_nodes: report.fanout_plan.selected_user_shared_nodes,
         selected_workspace_shared_nodes: report.fanout_plan.selected_workspace_shared_nodes,
         selected_global_shared_nodes: report.fanout_plan.selected_global_shared_nodes,
@@ -1565,6 +1573,7 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
                         owner_scope: String::new(),
                         current_agent_id: String::new(),
                         shared_resource_scopes: vec!["global".to_string()],
+                        max_peer_agent_nodes: usize::MAX,
                         provider: ContextModelProviderConfig::default(),
                     },
                 );

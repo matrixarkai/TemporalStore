@@ -6628,7 +6628,7 @@
       ]
     },
     {
-      "description": "Archived Rust harness evidence for multi-agent scan colocation: current-agent, user, workspace, and global layers are selected from a larger namespace while peer-agent candidates are observed and skipped under the bounded fanout quota.",
+      "description": "Archived Rust harness evidence for multi-agent scan colocation: current-agent, user, workspace, and global layers are selected from a larger namespace while peer-agent candidates are observed and capped by max_peer_agent_nodes.",
       "family": "context",
       "name": "context_multi_agent_scan_harness_evidence",
       "shard_id": 60,

@@ -83,6 +83,7 @@ def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: i
             f"got {selected_peer}"
         )
     require_int_at_least(report, "skipped_peer_agent_nodes", 1)
+    require_bool(report, "peer_agent_limit_applied")
     require_int_at_least(report, "selected_user_shared_nodes", 1)
     require_int_at_least(report, "selected_workspace_shared_nodes", 1)
     require_int_at_least(report, "selected_global_shared_nodes", 1)
