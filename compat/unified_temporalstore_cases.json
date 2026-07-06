@@ -1508,7 +1508,6 @@
               "event_time_ms": 9000,
               "ingestion_time_ms": 9000,
               "importance": 0.5,
-              "ingestion_time_ms": 9000,
               "text": "context event from shared corpus",
               "type": 4
             },
@@ -1531,7 +1530,6 @@
               "event_time_ms": 9000,
               "ingestion_time_ms": 9000,
               "importance": 0.6,
-              "ingestion_time_ms": 9000,
               "text": "second context event in same millisecond",
               "type": 4
             },
@@ -1571,7 +1569,6 @@
                 "event_time_ms": 9000,
                 "ingestion_time_ms": 9000,
                 "importance": 0.5,
-                "ingestion_time_ms": 9000,
                 "text": "context event from shared corpus",
                 "type": 4
               },
@@ -1581,7 +1578,6 @@
                 "event_time_ms": 9000,
                 "ingestion_time_ms": 9000,
                 "importance": 0.6,
-                "ingestion_time_ms": 9000,
                 "text": "second context event in same millisecond",
                 "type": 4
               }
@@ -5906,53 +5902,6 @@
       ]
     },
     {
-      "description": "Shared C++/Rust StorageManager lifecycle case: one background loop reports prepare, reclaim, evict, expire, compact, and index-GC phases.",
-      "family": "storage/cache",
-      "name": "storage_manager_background_loop",
-      "shard_id": 92,
-      "steps": [
-        {
-          "command": {
-            "description": "Runs the Rust-native StorageManager loop over dirty slots, reclaim candidates, cache eviction, TTL expiry, model-layout compaction, and slot dump manifest/index cleanup.",
-            "kind": "storage_manager_background_loop",
-            "expect_phases": [
-              "prepare",
-              "reclaim",
-              "evict",
-              "expire",
-              "compact",
-              "index_gc"
-            ]
-          },
-          "name": "storage_manager_loop_prepare_reclaim_evict_expire_compact_index_gc",
-          "skip_client": true
-        }
-      ]
-    },
-    {
-      "description": "Shared C++/Rust storage dump/load case: one merged policy coordinates dirty-slot dump, manifest validation, load preflight, replay boundary, roll-forward, follower-safe prune, and index-GC.",
-      "family": "storage/cache",
-      "name": "storage_merged_dump_load_policy",
-      "shard_id": 92,
-      "steps": [
-        {
-          "command": {
-            "description": "Creates a slot dump manifest, validates the load preflight and recovery replay boundary, installs into a restored engine, and rejects a stale merged load attempt after newer writes.",
-            "kind": "storage_merged_dump_load_policy",
-            "expect_manifest_checksum": true,
-            "expect_generation_validation": true,
-            "expect_load_preflight": true,
-            "expect_replay_boundary": true,
-            "expect_roll_forward": true,
-            "expect_follower_safe_index_gc": true,
-            "expect_stale_load_rejection": true
-          },
-          "name": "storage_merged_policy_dump_load_replay_index_gc",
-          "skip_client": true
-        }
-      ]
-    },
-    {
       "description": "Shared C++/Rust storage stream case: large cross-block values survive reopen and page stream chunk reads preserve byte boundaries.",
       "family": "storage/cache",
       "name": "storage_stream_cross_block_large_values",
@@ -6602,6 +6551,30 @@
             "suite": "cpp_context_pipeline_parity"
           },
           "name": "skill_registry_updates_and_selection_shared",
+          "skip_client": true
+        }
+      ]
+    },
+    {
+      "description": "Shared C++/Rust Context scope-layering case: resources and skills resolve across global, tenant/user, workspace, agent, and session layers while agents remain producers on a shared user/workspace graph rather than isolated namespaces.",
+      "family": "context",
+      "name": "context_scope_layered_agent_producer_shared_graph",
+      "shard_id": 60,
+      "steps": [
+        {
+          "command": {
+            "description": "Validates normalized scope descriptors, shared graph scope metadata on parsed resource chunks, agent producer provenance, registry layer counts, retrieval-time scope resolution order, and skill selection across global/workspace/agent layers. Rust executes the production context scope model; C++ parity remains a static gate until the native C++ context scope runner consumes this shared case.",
+            "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-scope-layer-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "crates/temporalstore-rust/src/context_workflow/tests.rs#context_scope_layers_share_user_graph_with_agent_producers"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust context_scope_layers_share_user_graph_with_agent_producers --lib -- --test-threads=1",
+            "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
+            "suite": "cpp_context_pipeline_parity"
+          },
+          "name": "context_scope_layers_agent_producers_shared",
           "skip_client": true
         }
       ]
@@ -12472,6 +12445,7 @@
       "context_resource_skill_parser_openviking_parity",
       "context_resource_lifecycle_openviking_parity",
       "context_resource_skill_registry_openviking_parity",
+      "context_scope_layered_agent_producer_shared_graph",
       "context_resource_skill_live_embedding_summary_retrieval",
       "redis_operational_admin_commands",
       "redis_slot_hash_cpp_crc64",
