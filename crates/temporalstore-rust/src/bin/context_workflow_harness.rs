@@ -186,6 +186,10 @@ struct ResourceSkillConversationScaleSummary {
     multi_agent_scan_ready: bool,
     fanout_namespace_node_candidates: usize,
     fanout_event_expanded_nodes: usize,
+    fanout_selected_colocation_group_count: usize,
+    fanout_avoided_namespace_replication_nodes: usize,
+    fanout_reduction_percent: u32,
+    fanout_namespace_replication_avoided: bool,
     fanout_selected_current_agent_nodes: usize,
     fanout_peer_agent_nodes: usize,
     fanout_selected_peer_agent_nodes: usize,
@@ -218,6 +222,10 @@ struct MultiAgentContextScanHarnessSummary {
     ready: bool,
     namespace_node_candidates: usize,
     event_expanded_nodes: usize,
+    selected_colocation_group_count: usize,
+    avoided_namespace_replication_nodes: usize,
+    fanout_reduction_percent: u32,
+    namespace_replication_avoided: bool,
     fanout_reduced: bool,
     layer_quota_applied: bool,
     shared_layer_quota_nodes: usize,
@@ -1217,6 +1225,16 @@ fn run_resource_skill_conversation_scale(
         multi_agent_scan_ready,
         fanout_namespace_node_candidates: combined_retrieve.fanout_plan.namespace_node_candidates,
         fanout_event_expanded_nodes: combined_retrieve.fanout_plan.event_expanded_nodes,
+        fanout_selected_colocation_group_count: combined_retrieve
+            .fanout_plan
+            .selected_colocation_group_count,
+        fanout_avoided_namespace_replication_nodes: combined_retrieve
+            .fanout_plan
+            .avoided_namespace_replication_nodes,
+        fanout_reduction_percent: combined_retrieve.fanout_plan.fanout_reduction_percent,
+        fanout_namespace_replication_avoided: combined_retrieve
+            .fanout_plan
+            .namespace_replication_avoided,
         fanout_selected_current_agent_nodes: combined_retrieve
             .fanout_plan
             .selected_current_agent_nodes,
@@ -1404,6 +1422,10 @@ fn run_multi_agent_context_scan_harness(
         ready,
         namespace_node_candidates: report.fanout_plan.namespace_node_candidates,
         event_expanded_nodes: report.fanout_plan.event_expanded_nodes,
+        selected_colocation_group_count: report.fanout_plan.selected_colocation_group_count,
+        avoided_namespace_replication_nodes: report.fanout_plan.avoided_namespace_replication_nodes,
+        fanout_reduction_percent: report.fanout_plan.fanout_reduction_percent,
+        namespace_replication_avoided: report.fanout_plan.namespace_replication_avoided,
         fanout_reduced: report.fanout_plan.fanout_reduced,
         layer_quota_applied: report.fanout_plan.layer_quota_applied,
         shared_layer_quota_nodes: report.fanout_plan.shared_layer_quota_nodes,

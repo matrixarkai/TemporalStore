@@ -62,6 +62,7 @@ def require_string_set(report: dict[str, Any], field: str, required: set[str]) -
 def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: int) -> None:
     require_bool(report, "ready")
     require_bool(report, "fanout_reduced")
+    require_bool(report, "namespace_replication_avoided")
     require_bool(report, "layer_quota_applied")
     candidates = require_int_at_least(report, "namespace_node_candidates", min_candidates)
     expanded = require_int_at_least(report, "event_expanded_nodes", 1)
@@ -71,6 +72,14 @@ def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: i
         raise ValueError(
             f"fanout did not reduce candidates: candidates={candidates} expanded={expanded}"
         )
+    avoided = require_int_at_least(report, "avoided_namespace_replication_nodes", 1)
+    if avoided != candidates - expanded:
+        raise ValueError(
+            "avoided_namespace_replication_nodes must equal candidates-expanded, "
+            f"got {avoided} vs {candidates - expanded}"
+        )
+    require_int_at_least(report, "fanout_reduction_percent", 40)
+    require_int_at_least(report, "selected_colocation_group_count", 4)
     require_int_at_least(report, "shared_layer_quota_nodes", 4)
     require_int_at_least(report, "selected_current_agent_nodes", 1)
     require_int_at_least(report, "peer_agent_nodes", 1)

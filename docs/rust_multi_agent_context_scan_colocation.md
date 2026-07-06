@@ -28,6 +28,10 @@ Archived report: `docs/benchmark_archives/context_multiagent_scan_20260706_summa
   "ready": true,
   "namespace_node_candidates": 13,
   "event_expanded_nodes": 4,
+  "selected_colocation_group_count": 4,
+  "avoided_namespace_replication_nodes": 9,
+  "fanout_reduction_percent": 69,
+  "namespace_replication_avoided": true,
   "fanout_reduced": true,
   "layer_quota_applied": true,
   "shared_layer_quota_nodes": 4,
@@ -80,6 +84,7 @@ Archived report: `docs/benchmark_archives/context_multiagent_scan_20260706_summa
 
 - The retrieval path uses Rust TemporalStore ingestion, extraction, storage, summary embeddings, and retrieval.
 - Fanout is reduced from namespace candidates to bounded selected nodes.
+- The scan avoids full namespace replication: 9 candidate nodes are left unexpanded, a 69% fanout reduction across 4 selected colocation groups.
 - The selected nodes include current-agent, user-shared, workspace-shared, and global-shared layers.
 - Required scan scopes are derived from the current agent and owner scope, so user and global shared layers stay visible even when callers do not manually pass every shared scope.
 - Locality keys are producer-aware: current-agent context is scoped as `agent:codex`, while shared resources stay in `user:user`, `workspace:context`, and `global` groups instead of colocating the whole namespace.

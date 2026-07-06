@@ -66,6 +66,7 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
     require_bool(report, "multi_agent_scan_ready")
     require_bool(report, "fanout_ready")
     require_bool(report, "secondary_index_ready")
+    require_bool(report, "fanout_namespace_replication_avoided")
     total = require_int_at_least(report, "total_source_count", min_sources)
     accepted = require_int_at_least(report, "accepted_sources", min_sources)
     if accepted != total:
@@ -77,6 +78,14 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
         raise ValueError(f"fanout_event_expanded_nodes must be <= {max_expanded}, got {expanded}")
     if expanded >= candidates:
         raise ValueError(f"fanout did not reduce candidates: {expanded}/{candidates}")
+    avoided = require_int_at_least(report, "fanout_avoided_namespace_replication_nodes", 1)
+    if avoided != candidates - expanded:
+        raise ValueError(
+            "fanout_avoided_namespace_replication_nodes must equal candidates-expanded, "
+            f"got {avoided} vs {candidates - expanded}"
+        )
+    require_int_at_least(report, "fanout_reduction_percent", 40)
+    require_int_at_least(report, "fanout_selected_colocation_group_count", 4)
     require_int_at_least(report, "fanout_selected_current_agent_nodes", 1)
     require_int_at_least(report, "fanout_peer_agent_nodes", 1)
     require_int_equal(report, "fanout_selected_peer_agent_nodes", 0)
