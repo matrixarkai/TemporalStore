@@ -187,6 +187,9 @@ struct ResourceSkillConversationScaleSummary {
     fanout_namespace_node_candidates: usize,
     fanout_event_expanded_nodes: usize,
     fanout_selected_current_agent_nodes: usize,
+    fanout_peer_agent_nodes: usize,
+    fanout_selected_peer_agent_nodes: usize,
+    fanout_skipped_peer_agent_nodes: usize,
     fanout_selected_user_shared_nodes: usize,
     fanout_selected_workspace_shared_nodes: usize,
     fanout_selected_global_shared_nodes: usize,
@@ -216,6 +219,9 @@ struct MultiAgentContextScanHarnessSummary {
     layer_quota_applied: bool,
     shared_layer_quota_nodes: usize,
     selected_current_agent_nodes: usize,
+    peer_agent_nodes: usize,
+    selected_peer_agent_nodes: usize,
+    skipped_peer_agent_nodes: usize,
     selected_user_shared_nodes: usize,
     selected_workspace_shared_nodes: usize,
     selected_global_shared_nodes: usize,
@@ -1166,6 +1172,9 @@ fn run_resource_skill_conversation_scale(
         fanout_selected_current_agent_nodes: combined_retrieve
             .fanout_plan
             .selected_current_agent_nodes,
+        fanout_peer_agent_nodes: combined_retrieve.fanout_plan.peer_agent_nodes,
+        fanout_selected_peer_agent_nodes: combined_retrieve.fanout_plan.selected_peer_agent_nodes,
+        fanout_skipped_peer_agent_nodes: combined_retrieve.fanout_plan.skipped_peer_agent_nodes,
         fanout_selected_user_shared_nodes: combined_retrieve.fanout_plan.selected_user_shared_nodes,
         fanout_selected_workspace_shared_nodes: combined_retrieve
             .fanout_plan
@@ -1222,6 +1231,26 @@ fn run_multi_agent_context_scan_harness(
         assert!(extract.status.ok, "{:?}", extract.status);
         node_hashes.push(extract.node.node_hash);
     }
+    for idx in 0..2u64 {
+        let extract = extract_context(
+            engine,
+            ContextExtractRequest {
+                shard_id,
+                tenant_hash,
+                source_kind: ContextSourceKind::Chat,
+                source_id: format!("agent:claude:multi-agent-peer-{idx}"),
+                title: format!("Claude peer-agent scan note {idx}"),
+                body: format!(
+                    "Claude peer-agent context {idx} also mentions checkout rollback, p95 latency, and payment dependency evidence."
+                ),
+                timestamp_ms: 55_000 + idx,
+                provider: ContextModelProviderConfig::default(),
+            },
+        );
+        assert!(extract.status.ok, "{:?}", extract.status);
+        node_hashes.push(extract.node.node_hash);
+    }
+
     for (source_id, title, body) in [
         (
             "user:user:shared-checkout-resource",
@@ -1281,6 +1310,9 @@ fn run_multi_agent_context_scan_harness(
     let ready = report.fanout_plan.fanout_reduced
         && report.fanout_plan.layer_quota_applied
         && report.fanout_plan.selected_current_agent_nodes > 0
+        && report.fanout_plan.peer_agent_nodes > 0
+        && report.fanout_plan.selected_peer_agent_nodes == 0
+        && report.fanout_plan.skipped_peer_agent_nodes > 0
         && report.fanout_plan.selected_user_shared_nodes > 0
         && report.fanout_plan.selected_workspace_shared_nodes > 0
         && report.fanout_plan.selected_global_shared_nodes > 0
@@ -1315,6 +1347,9 @@ fn run_multi_agent_context_scan_harness(
         layer_quota_applied: report.fanout_plan.layer_quota_applied,
         shared_layer_quota_nodes: report.fanout_plan.shared_layer_quota_nodes,
         selected_current_agent_nodes: report.fanout_plan.selected_current_agent_nodes,
+        peer_agent_nodes: report.fanout_plan.peer_agent_nodes,
+        selected_peer_agent_nodes: report.fanout_plan.selected_peer_agent_nodes,
+        skipped_peer_agent_nodes: report.fanout_plan.skipped_peer_agent_nodes,
         selected_user_shared_nodes: report.fanout_plan.selected_user_shared_nodes,
         selected_workspace_shared_nodes: report.fanout_plan.selected_workspace_shared_nodes,
         selected_global_shared_nodes: report.fanout_plan.selected_global_shared_nodes,
