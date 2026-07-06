@@ -6580,6 +6580,30 @@
       ]
     },
     {
+      "description": "Shared C++/Rust Context retrieval case for multi-agent layered scans: current-agent context is boosted while user, workspace, and global shared resources remain eligible through scoped colocation groups.",
+      "family": "context",
+      "name": "context_multi_agent_layered_scan_colocation",
+      "shard_id": 60,
+      "steps": [
+        {
+          "name": "multi_agent_layered_scan_colocation_shared",
+          "skip_client": true,
+          "command": {
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "suite": "cpp_context_pipeline_parity",
+            "description": "Validates scope-aware summary ranking, current-agent boost, user/workspace/global shared resource eligibility, scoped locality keys, and fanout reduction without colocating a whole namespace on every node.",
+            "required_paths": [
+              "crates/temporalstore-rust/src/context_workflow/tests.rs#context_multi_agent_scan_boosts_current_agent_and_colocates_shared_scopes"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust context_multi_agent_scan_boosts_current_agent_and_colocates_shared_scopes --lib -- --test-threads=1",
+            "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
+            "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-layered-scan-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
+          }
+        }
+      ]
+    },
+    {
       "description": "Shared C++/Rust Context resource/skill ingest case for live model-backed embeddings and summary-embedding-driven coarse retrieval expansion.",
       "family": "context",
       "name": "context_resource_skill_live_embedding_summary_retrieval",
@@ -12669,5 +12693,8 @@
   },
   "description": "Shared behavioral corpus for validating Rust and C++ TemporalStore implementations with the same ordered operations and expected responses.",
   "name": "temporalstore-unified-cpp-rust-corpus",
-  "schema_version": 1
+  "schema_version": 1,
+  "required_case_names": [
+    "context_multi_agent_layered_scan_colocation"
+  ]
 }

@@ -311,6 +311,9 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
             tiers: default_tiers(),
             max_summary_nodes: 32,
             max_event_nodes: 16,
+            owner_scope: String::new(),
+            current_agent_id: String::new(),
+            shared_resource_scopes: Vec::new(),
             provider: ContextModelProviderConfig::default(),
         },
     );
@@ -397,6 +400,9 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
                 tiers: default_tiers(),
                 max_summary_nodes: 32,
                 max_event_nodes: 16,
+                owner_scope: String::new(),
+                current_agent_id: String::new(),
+                shared_resource_scopes: Vec::new(),
                 provider: ContextModelProviderConfig::default(),
             },
             prompt: "Explain current risk.".to_string(),
@@ -462,6 +468,9 @@ fn context_query_debug_reports_filter_groups_drops_and_injection_order() {
             tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
             max_summary_nodes: 32,
             max_event_nodes: 16,
+            owner_scope: String::new(),
+            current_agent_id: String::new(),
+            shared_resource_scopes: Vec::new(),
             provider: ContextModelProviderConfig::default(),
         },
     );
@@ -595,6 +604,9 @@ fn context_retrieval_limits_namespace_fanout_with_summary_and_locality_plan() {
             tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
             max_summary_nodes: 5,
             max_event_nodes: 1,
+            owner_scope: String::new(),
+            current_agent_id: String::new(),
+            shared_resource_scopes: Vec::new(),
             provider: ContextModelProviderConfig::default(),
         },
     );
@@ -636,6 +648,119 @@ fn context_retrieval_limits_namespace_fanout_with_summary_and_locality_plan() {
         .blocks
         .iter()
         .any(|block| block.tier == ContextTier::L2));
+}
+
+// shared-corpus: context_multi_agent_layered_scan_colocation
+#[test]
+fn context_multi_agent_scan_boosts_current_agent_and_colocates_shared_scopes() {
+    let engine = test_engine();
+    let tenant_hash = 606061;
+    let mut node_hashes = Vec::new();
+    for (source_id, title, body) in [
+        (
+            "agent:codex:checkout-risk",
+            "Codex checkout risk trace",
+            "Checkout payment risk score is 97 and Codex traced the gateway timeout.",
+        ),
+        (
+            "agent:claude:checkout-risk",
+            "Claude checkout risk note",
+            "Checkout payment risk score is 72 and Claude summarized the timeout.",
+        ),
+        (
+            "user:alice:checkout-preference",
+            "Alice checkout preference",
+            "Checkout payment should prefer the saved corporate card for Alice.",
+        ),
+        (
+            "workspace:payments:runbook",
+            "Payments workspace runbook",
+            "Checkout payment incidents use the payments workspace runbook.",
+        ),
+        (
+            "global:skills:payment-debug",
+            "Global payment debug skill",
+            "Checkout payment debugging can use the global payment skill.",
+        ),
+    ] {
+        let extract = extract_context(
+            &engine,
+            ContextExtractRequest {
+                shard_id: 1,
+                tenant_hash,
+                source_kind: ContextSourceKind::Document,
+                source_id: source_id.to_string(),
+                title: title.to_string(),
+                body: body.to_string(),
+                timestamp_ms: 30_000 + node_hashes.len() as u64,
+                provider: ContextModelProviderConfig::default(),
+            },
+        );
+        assert!(extract.status.ok, "{:?}", extract.status);
+        node_hashes.push(extract.node.node_hash);
+    }
+
+    let report = retrieve_context(
+        &engine,
+        ContextRetrieveRequest {
+            shard_id: 1,
+            tenant_hash,
+            node_hashes,
+            query: "checkout payment risk".to_string(),
+            start_time_ms: 0,
+            end_time_ms: 40_000,
+            max_events: 8,
+            min_confidence: 0.0,
+            min_importance: 0.0,
+            tiers: vec![ContextTier::L2],
+            max_summary_nodes: 5,
+            max_event_nodes: 2,
+            owner_scope: "workspace:payments".to_string(),
+            current_agent_id: "codex".to_string(),
+            shared_resource_scopes: vec!["user:alice".to_string(), "global".to_string()],
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    assert!(report.status.ok, "{:?}", report.status);
+    assert_eq!(report.fanout_plan.namespace_node_candidates, 5);
+    assert_eq!(report.fanout_plan.event_expanded_nodes, 2);
+    assert!(report.fanout_plan.fanout_reduced);
+    assert_eq!(report.fanout_plan.current_agent_id, "codex");
+    assert_eq!(report.fanout_plan.current_agent_boosted_nodes, 1);
+    assert_eq!(report.fanout_plan.user_shared_nodes, 1);
+    assert_eq!(report.fanout_plan.workspace_shared_nodes, 1);
+    assert_eq!(report.fanout_plan.global_shared_nodes, 1);
+    assert!(report.fanout_plan.scope_boosted_nodes >= 5);
+    assert!(report
+        .fanout_plan
+        .scan_layers
+        .iter()
+        .any(|layer| layer == "agent"));
+    assert!(report
+        .fanout_plan
+        .scan_layers
+        .iter()
+        .any(|layer| layer == "global"));
+    assert!(report
+        .fanout_plan
+        .colocation_groups
+        .iter()
+        .any(|group| group == "workspace:payments"));
+    assert!(report
+        .fanout_plan
+        .locality_keys
+        .iter()
+        .all(|key| key.contains(":scope:")));
+    let selected_text = report
+        .blocks
+        .iter()
+        .map(|block| block.text.as_str())
+        .collect::<Vec<_>>()
+        .join(
+            "
+",
+        );
+    assert!(selected_text.contains("Codex traced"), "{selected_text}");
 }
 
 // shared-corpus: context_benchmark_injection_entity_segment_index
@@ -701,6 +826,9 @@ fn context_benchmark_injection_uses_entity_segment_l0_l1_and_secondary_index() {
         tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
         max_summary_nodes: 32,
         max_event_nodes: 16,
+        owner_scope: String::new(),
+        current_agent_id: String::new(),
+        shared_resource_scopes: Vec::new(),
         provider: ContextModelProviderConfig::default(),
     };
     let retrieved = retrieve_context(&engine, retrieve.clone());
@@ -1291,6 +1419,9 @@ fn context_injection_prompt_pack_preserves_retrieved_evidence_ordering() {
         tiers: vec![ContextTier::L2],
         max_summary_nodes: 32,
         max_event_nodes: 16,
+        owner_scope: String::new(),
+        current_agent_id: String::new(),
+        shared_resource_scopes: Vec::new(),
         provider: ContextModelProviderConfig::default(),
     };
     let retrieved = retrieve_context(&engine, retrieve.clone());
@@ -1405,6 +1536,9 @@ fn context_workflow_policy_rejects_disallowed_runtime_controls() {
             tiers: default_tiers(),
             max_summary_nodes: 32,
             max_event_nodes: 16,
+            owner_scope: String::new(),
+            current_agent_id: String::new(),
+            shared_resource_scopes: Vec::new(),
             provider: ContextModelProviderConfig::default(),
         },
         prompt: "one two three four five".to_string(),
