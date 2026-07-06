@@ -31,6 +31,12 @@
     "user:user",
     "workspace:context"
   ],
+  "required_scan_scope_keys": [
+    "agent:codex",
+    "workspace:context",
+    "user:user",
+    "global"
+  ],
   "locality_keys": [
     "tenant:20260706:scope:agent:codex:node:8424729405653484612",
     "tenant:20260706:scope:workspace:context:node:16379766558787635764",

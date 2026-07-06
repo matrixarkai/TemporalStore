@@ -60,6 +60,12 @@
     "user:user",
     "workspace:context"
   ],
+  "fanout_required_scan_scope_keys": [
+    "agent:codex",
+    "workspace:context",
+    "user:user",
+    "global"
+  ],
   "secondary_index_ready": true,
   "secondary_index_checked_refs": 54,
   "secondary_index_found_refs": 54,
@@ -68,7 +74,7 @@
   "summary_embedding_selected_count": 43,
   "verbose_filter_group_count": 1,
   "selected_ref_count": 45,
-  "ingest_ms": 9734,
-  "retrieve_ms": 3066,
-  "secondary_index_validation_ms": 1278
+  "ingest_ms": 11284,
+  "retrieve_ms": 3056,
+  "secondary_index_validation_ms": 1237
 }

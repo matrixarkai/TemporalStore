@@ -6628,6 +6628,30 @@
       ]
     },
     {
+      "description": "Shared C++/Rust Context retrieval case for automatic multi-agent scope expansion: a current-agent workspace query reserves current-agent, workspace, user-shared, and global layers even when shared scopes are not passed explicitly.",
+      "family": "context",
+      "name": "context_multi_agent_auto_shared_scope_expansion",
+      "shard_id": 60,
+      "steps": [
+        {
+          "name": "multi_agent_auto_shared_scope_expansion",
+          "skip_client": true,
+          "command": {
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "suite": "cpp_context_pipeline_parity",
+            "description": "Validates derived required scan scopes for current-agent, owner workspace, user-shared, and global context; peer-agent candidates remain capped without requiring callers to duplicate shared_resource_scopes.",
+            "required_paths": [
+              "crates/temporalstore-rust/src/context_workflow/tests.rs#context_multi_agent_scan_derives_shared_scopes_from_owner_and_agent"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust context_multi_agent_scan_derives_shared_scopes_from_owner_and_agent --lib -- --test-threads=1",
+            "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
+            "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-auto-shared-scope-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
+          }
+        }
+      ]
+    },
+    {
       "description": "Archived Rust harness evidence for multi-agent scan colocation: current-agent, user, workspace, and global layers are selected from a larger namespace while peer-agent candidates are observed and capped by max_peer_agent_nodes, with producer-aware locality keys for current-agent context.",
       "family": "context",
       "name": "context_multi_agent_scan_harness_evidence",
@@ -12771,6 +12795,7 @@
   "required_case_names": [
     "context_multi_agent_layered_scan_colocation",
     "context_multi_agent_layer_quota_keeps_shared_resources",
+    "context_multi_agent_auto_shared_scope_expansion",
     "context_multi_agent_scan_harness_evidence"
   ]
 }
