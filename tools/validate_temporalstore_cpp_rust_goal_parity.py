@@ -145,6 +145,7 @@ REQUIRED_GENERATED_FROM = [
     "tools/validate_storage_tuning_parity.py",
     "tools/validate_storage_proxy_client_parity_coverage.py",
     "tools/validate_storage_unified_case_report_pair.py",
+    "tools/cpp_storage_unified_case_report_runner.cc",
     "tools/validate_grafana_metrics_parity.py",
     "tools/validate_raft_storage_parity_evidence.py",
     "tools/validate_temporalstore_cpp_rust_performance_parity.py",
@@ -179,6 +180,7 @@ REQUIRED_STORAGE_LIFECYCLE_EVIDENCE = [
     "tools/validate_storage_parity_report_artifacts.py",
     "compat/storage_lifecycle_report_pair_corpus.json",
     "tools/validate_storage_unified_case_report_pair.py",
+    "tools/cpp_storage_unified_case_report_runner.cc",
     "compat/storage_unified_case_report_pair.json",
 ]
 

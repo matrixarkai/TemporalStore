@@ -2,9 +2,10 @@
 """Validate the C++/Rust storage unified case-report fixture pair.
 
 This gate is intentionally small but important: it proves the storage/cache
-family has a committed temporalstore_unified_case_report_v1 pair that exercises
-slot/object/block indexes, GC/eviction/cold reads, stream/segment/zone evidence,
-and the same comparator path that real native C++ and Rust runners must use.
+family has a committed Rust temporalstore_unified_case_report_v1 fixture and a
+compiled C++ adapter runner that emits comparable report rows for slot/object/
+block indexes, GC/eviction/cold reads, stream/segment/zone evidence, and the
+same comparator path that real native C++ and Rust runners must use.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 PAIR = ROOT / "compat" / "storage_unified_case_report_pair.json"
 COMPARATOR = ROOT / "tools" / "compare_unified_cpp_rust_case_reports.py"
+CPP_RUNNER = ROOT / "tools" / "cpp_storage_unified_case_report_runner.cc"
 EXPECTED_SCHEMA = "temporalstore_storage_unified_case_report_pair_v1"
 EXPECTED_REPORT_SCHEMA = "temporalstore_unified_case_report_v1"
 REQUIRED_CASES = {
@@ -152,6 +154,43 @@ def _run_comparator(rust_report: dict[str, Any], cpp_report: dict[str, Any]) -> 
         return json.loads(out_path.read_text(encoding="utf-8"))
 
 
+def _run_cpp_adapter() -> dict[str, Any]:
+    with tempfile.TemporaryDirectory(prefix="cpp-storage-unified-runner-") as tmpdir:
+        root = Path(tmpdir)
+        binary_path = root / "cpp_storage_unified_case_report_runner"
+        cpp_report_path = root / "cpp-report.json"
+        compile_result = subprocess.run(
+            [
+                "g++",
+                "-std=c++17",
+                "-O2",
+                "-I",
+                str(ROOT),
+                str(CPP_RUNNER),
+                "-o",
+                str(binary_path),
+            ],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if compile_result.returncode != 0:
+            raise SystemExit(compile_result.stdout.rstrip())
+        run_result = subprocess.run(
+            [str(binary_path), "--output", str(cpp_report_path)],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if run_result.returncode != 0:
+            raise SystemExit(run_result.stdout.rstrip())
+        return json.loads(cpp_report_path.read_text(encoding="utf-8"))
+
+
 def main() -> int:
     pair = _load()
     if pair.get("schema") != EXPECTED_SCHEMA:
@@ -162,12 +201,15 @@ def main() -> int:
         raise SystemExit(f"{PAIR}: rust_report and cpp_report must be objects")
     _validate_outputs(_case_map(rust_report, "rust_report"), "rust_report")
     _validate_outputs(_case_map(cpp_report, "cpp_report"), "cpp_report")
-    comparison = _run_comparator(rust_report, cpp_report)
+    cpp_runtime_report = _run_cpp_adapter()
+    _validate_outputs(_case_map(cpp_runtime_report, "cpp_runtime_report"), "cpp_runtime_report")
+    comparison = _run_comparator(rust_report, cpp_runtime_report)
     if comparison.get("ready") is not True:
         raise SystemExit(f"storage unified case report comparison is not ready: {comparison}")
     print(
         "storage unified case report pair passed: "
-        f"cases={len(REQUIRED_CASES)} rows={comparison.get('row_count')}"
+        f"cases={len(REQUIRED_CASES)} rows={comparison.get('row_count')} "
+        "cpp_adapter=compiled"
     )
     return 0
 
