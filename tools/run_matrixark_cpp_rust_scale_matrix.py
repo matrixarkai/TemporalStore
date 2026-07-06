@@ -94,6 +94,8 @@ def run_case(args: argparse.Namespace, *, events: int, retrieve_workers: int, ru
         str(args.ingest_deadline_ms),
         "--retrieve-deadline-ms",
         str(args.retrieve_deadline_ms),
+        "--backend-worker-timeout-sec",
+        str(args.case_timeout_sec),
         "--storage-prefix",
         f"{args.storage_prefix}:{run_id}",
         "--metaserver",
