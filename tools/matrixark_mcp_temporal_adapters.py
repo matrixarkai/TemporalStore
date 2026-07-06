@@ -1559,6 +1559,42 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
     def _append_client_for_records(self, records: list[Json]) -> Any:
         return self._client
 
+    def _materialize_appended_records_locked(
+        self,
+        *,
+        prior_entry_count: int,
+        new_entry_count: int,
+        records: list[Json],
+    ) -> None:
+        """Refresh process-local materialized views after native latest-state writes.
+
+        Some compact context records are written as latest-state HSet entries
+        rather than append-log entries. Resource/skill list and retrieval paths
+        still need those records visible in the adapter's parsed caches during
+        the current process, without forcing the hot write path back through the
+        legacy full record log.
+        """
+        if not records:
+            return
+        try:
+            self._entry_count_cache = max(int(new_entry_count or 0), int(prior_entry_count or 0))
+        except Exception:
+            pass
+        if getattr(self, "_records_cache", None) is not None:
+            try:
+                self._records_cache.extend(records)
+                self._put_direct_record_cache(len(self._records_cache), self._records_cache)
+            except Exception:
+                pass
+        try:
+            self._prune_retrieval_candidate_cache(getattr(self, "_entry_count_cache", None) or int(new_entry_count or 0))
+        except Exception:
+            pass
+        try:
+            self._update_latest_entity_cache(records)
+        except Exception:
+            pass
+
     def _append_many_materialized(self, records: list[Json], *, allow_queue: bool = True) -> None:
         if not records:
             return

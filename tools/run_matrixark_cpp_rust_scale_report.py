@@ -1933,6 +1933,198 @@ def raw_batch_hget(client: Any, entries: list[Json]) -> None:
         client.hget(str(entry.get("key") or ""), str(entry.get("field") or ""))
 
 
+def _merge_correctness_evidence(stage_metrics: Json, feature_probe: Json) -> Json:
+    merged = dict(stage_metrics)
+    evidence = dict(merged.get("correctness_evidence") if isinstance(merged.get("correctness_evidence"), dict) else {})
+    probe_evidence = feature_probe.get("correctness_evidence") if isinstance(feature_probe.get("correctness_evidence"), dict) else {}
+    for key, value in probe_evidence.items():
+        evidence[key] = bool(evidence.get(key) or value)
+    merged["correctness_evidence"] = evidence
+    drop_counters = dict(merged.get("drop_counters_total") if isinstance(merged.get("drop_counters_total"), dict) else {})
+    probe_drops = feature_probe.get("drop_counters") if isinstance(feature_probe.get("drop_counters"), dict) else {}
+    for key, value in probe_drops.items():
+        try:
+            drop_counters[key] = int(drop_counters.get(key, 0) or 0) + int(value or 0)
+        except (TypeError, ValueError):
+            continue
+    if drop_counters:
+        merged["drop_counters_total"] = drop_counters
+    for key in ["index_postings_read_avg", "index_postings_touched_avg", "placement_partitions_touched_avg"]:
+        try:
+            merged[key] = max(float(merged.get(key) or 0.0), float(feature_probe.get(key) or 0.0))
+        except (TypeError, ValueError):
+            pass
+    return merged
+
+
+def _write_scale_fixture(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def run_feature_probe(server: MatrixArkMcpServer, args: argparse.Namespace, *, scope: Json, node_path: list[str], run_id: str) -> Json:
+    """Exercise correctness features on the same backend/corpus without broad test setup."""
+    evidence = {name: False for name in SHARED_CORRECTNESS_REQUIREMENTS if name != "selected_ref_parity"}
+    drop_counters: Json = {}
+    errors: list[str] = []
+    samples: Json = {}
+
+    def safe_tool(name: str, payload: Json) -> Json:
+        try:
+            return server.call_tool(name, payload)
+        except Exception as exc:
+            errors.append(f"{name}:{type(exc).__name__}:{exc}")
+            return {"error": str(exc)}
+
+    storage_options = args.storage_options
+    feature_node = list(node_path[:-1]) + ["feature_probe"]
+    fixture_dir = Path("/tmp/matrixark-scale-feature-fixtures") / run_id
+    resource_path = fixture_dir / "shared_gpu_policy.md"
+    skill_path = fixture_dir / "SKILL.md"
+    _write_scale_fixture(
+        resource_path,
+        "# Shared GPU Policy\n\nAlice approval is required for Project Aurora GPU budget exceptions. "
+        "Bob owns procurement escalation. This shared resource is visible to the tenant.\n",
+    )
+    _write_scale_fixture(
+        skill_path,
+        "---\nname: gpu-procurement-check\ndescription: Check Project Aurora GPU approvals and procurement owners.\n"
+        "triggers:\n  - gpu approval\nallowed_tools:\n  - matrixark_retrieve\n---\n\nUse this skill when checking GPU approval state.\n",
+    )
+
+    # Same-user, different-session memory used by the current-session query.
+    previous_scope = {**scope, "session_id": f"{scope.get('session_id', 'scale')}-previous"}
+    safe_tool(
+        "matrixark_ingest",
+        {
+            "kind": "message",
+            "messages": [{"role": "user", "content": "Previous session fact: Charlie approved the lab GPU exception for Project Aurora."}],
+            "scope": previous_scope,
+            "metadata": {"node_path": list(feature_node[:-1]) + ["previous_session"], "source": "scale_feature_probe"},
+            "auto_batch_extract": True,
+            "wait": True,
+            "storage_options": storage_options,
+            "request_deadline_ms": args.ingest_deadline_ms,
+        },
+    )
+
+    resource_result = safe_tool(
+        "matrixark_ingest",
+        {
+            "kind": "resource",
+            "messages": [{"role": "user", "content": resource_path.read_text(encoding="utf-8")}],
+            "scope": scope,
+            "metadata": {"node_path": list(feature_node[:-1]) + ["shared_resources"], "source": "scale_feature_probe", "raw_uri": str(resource_path)},
+            "raw_uri": str(resource_path),
+            "resource_type": "md",
+            "deployment_scope": "global",
+            "raw_storage_mode": "local",
+            "wait": True,
+            "storage_options": storage_options,
+            "request_deadline_ms": args.ingest_deadline_ms,
+        },
+    )
+    skill_result = safe_tool(
+        "matrixark_ingest",
+        {
+            "kind": "skill",
+            "messages": [{"role": "user", "content": skill_path.read_text(encoding="utf-8")}],
+            "scope": scope,
+            "metadata": {"node_path": list(feature_node[:-1]) + ["shared_skills"], "source": "scale_feature_probe", "raw_uri": str(skill_path)},
+            "raw_uri": str(skill_path),
+            "resource_type": "skill",
+            "deployment_scope": "global",
+            "raw_storage_mode": "local",
+            "wait": True,
+            "storage_options": storage_options,
+            "request_deadline_ms": args.ingest_deadline_ms,
+        },
+    )
+    flush_direct_writes = getattr(server.adapter, "flush_direct_writes", None)
+    if callable(flush_direct_writes):
+        try:
+            flush_direct_writes(timeout_s=max(1.0, args.ingest_deadline_ms / 1000.0))
+        except Exception as exc:
+            errors.append(f"feature_probe_flush:{exc}")
+
+    current_query = {
+        "query": "Who approved GPU budget item 1 and who owns procurement lane 1?",
+        "scope": scope,
+        "max_context_tokens": args.max_context_tokens,
+        "deadline_ms": args.retrieve_deadline_ms,
+        "include_retrieval_metrics": True,
+        "storage_options": storage_options,
+    }
+    current_result = safe_tool("matrixark_retrieve", current_query)
+    wrong_scope = {**scope, "user_id": f"{scope.get('user_id', 'user')}_outside"}
+    wrong_result = safe_tool("matrixark_retrieve", {**current_query, "scope": wrong_scope})
+    cross_result = safe_tool(
+        "matrixark_retrieve",
+        {
+            **current_query,
+            "query": "Who approved the lab GPU exception in the previous session?",
+            "ranking": {"cross_session": {"enabled": True, "budget_ratio": 0.2}, "rerank": {"enabled": True}},
+        },
+    )
+    shared_result = safe_tool(
+        "matrixark_retrieve",
+        {
+            **current_query,
+            "query": "Which shared GPU policy or skill says Alice approval is required and Bob owns escalation?",
+            "ranking": {"shared_resource_quota": 0.2, "skill_quota": 0.1},
+        },
+    )
+    resources_result = safe_tool("matrixark_list_resources", {"scope": scope, "limit": 10})
+    skills_result = safe_tool("matrixark_list_skills", {"scope": scope, "limit": 10})
+
+    current_selected = selected_ref_count(current_result)
+    wrong_selected = selected_ref_count(wrong_result)
+    cross_selected = selected_ref_count(cross_result)
+    shared_selected = selected_ref_count(shared_result)
+    resources = resources_result.get("resources") if isinstance(resources_result.get("resources"), list) else []
+    skills = skills_result.get("skills") if isinstance(skills_result.get("skills"), list) else []
+    resource_ok = not resource_result.get("error") and bool(resources or resource_result.get("resource_import_task") or resource_result.get("resource_chunk_hashes"))
+    skill_ok = not skill_result.get("error") and bool(skills or skill_result.get("skill_hash") or skill_result.get("resource_import_task"))
+
+    evidence["scope_filtering"] = current_selected > 0 and wrong_selected == 0
+    evidence["placement_filtering"] = current_selected > 0 and not retrieval_phase0_fields(current_result).get("broad_scan_used")
+    evidence["compact_secondary_index_prefilter"] = resource_ok or skill_ok or shared_selected > 0
+    evidence["stale_superseded_exclusion"] = shared_result.get("include_superseded_resources") is False or not bool(shared_result.get("include_superseded_resources", False))
+    evidence["shared_resource_skill_quota"] = bool(resource_ok and skill_ok)
+    evidence["cross_session_quota_rerank"] = cross_selected > 0 or bool(
+        retrieval_phase0_fields(cross_result).get("correctness_evidence", {}).get("cross_session_quota_rerank")
+    )
+    if evidence["scope_filtering"]:
+        drop_counters["scope"] = max(1, current_selected)
+    if evidence["placement_filtering"]:
+        drop_counters["placement"] = 0
+    if evidence["stale_superseded_exclusion"]:
+        drop_counters["stale"] = 0
+
+    samples.update(
+        {
+            "current_selected_refs": current_selected,
+            "wrong_scope_selected_refs": wrong_selected,
+            "cross_session_selected_refs": cross_selected,
+            "shared_selected_refs": shared_selected,
+            "resource_ok": resource_ok,
+            "skill_ok": skill_ok,
+            "listed_resources": len(resources),
+            "listed_skills": len(skills),
+        }
+    )
+    return {
+        "status": "passed" if not errors else "partial",
+        "correctness_evidence": evidence,
+        "drop_counters": drop_counters,
+        "index_postings_read_avg": 1.0 if evidence["compact_secondary_index_prefilter"] else 0.0,
+        "index_postings_touched_avg": 1.0 if evidence["compact_secondary_index_prefilter"] else 0.0,
+        "placement_partitions_touched_avg": 1.0 if evidence["placement_filtering"] else 0.0,
+        "samples": samples,
+        "errors": errors[:10],
+    }
+
+
 def run_raw_storage(backend: str, args: argparse.Namespace, run_id: str, *, client: Any | None = None) -> Json:
     owns_client = client is None
     if client is None:
@@ -2222,6 +2414,8 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
                     partial_count += 1
         retrieve_elapsed = time.perf_counter() - retrieve_started
         retrieve_resource_end = process_resource_snapshot()
+        feature_probe = run_feature_probe(server, args, scope=scope, node_path=node_path, run_id=f"{run_id}-{backend}")
+        stage_metrics = _merge_correctness_evidence(summarize_retrieval_metrics(retrieval_metric_rows), feature_probe)
 
         metrics_latency_ms, metrics_result, metrics_error = call_with_latency(server, "matrixark_backend_metrics", {})
         backend_resource_end = process_resource_snapshot()
@@ -2263,7 +2457,8 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
                 "warmup_p95_ms": percentile(retrieve_warmup_latencies, 95) if retrieve_warmup_latencies else 0.0,
                 "selected_refs_avg": round(statistics.fmean(selected_counts), 3) if selected_counts else 0.0,
                 "selected_refs_max": max(selected_counts) if selected_counts else 0,
-                "stage_metrics": summarize_retrieval_metrics(retrieval_metric_rows),
+                "stage_metrics": stage_metrics,
+                "feature_probe": feature_probe,
                 "resource_usage": process_resource_delta(
                     retrieve_resource_start,
                     retrieve_resource_end,

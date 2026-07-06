@@ -2789,8 +2789,9 @@ def source_ref_from_locator(raw_uri: str, source_locator: str) -> str:
     return f"{raw_uri}#{source_locator}" if raw_uri else source_locator
 
 
-def registry_access_scope(scope: Json) -> Json:
-    return {
+def registry_access_scope(scope: Json, *, sharing_scope: str = "private_user") -> Json:
+    sharing_scope = str(sharing_scope or "private_user").strip().lower()
+    access = {
         "account_id": str(scope.get("account_id") or ""),
         "tenant_id": str(scope.get("tenant_id") or ""),
         "team": str(scope.get("team") or ""),
