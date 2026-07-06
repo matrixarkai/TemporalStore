@@ -73,6 +73,16 @@ def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: i
         )
     require_int_at_least(report, "shared_layer_quota_nodes", 4)
     require_int_at_least(report, "selected_current_agent_nodes", 1)
+    require_int_at_least(report, "peer_agent_nodes", 1)
+    selected_peer = report.get("selected_peer_agent_nodes")
+    if not isinstance(selected_peer, int):
+        raise ValueError(f"selected_peer_agent_nodes must be an integer, got {selected_peer!r}")
+    if selected_peer != 0:
+        raise ValueError(
+            "selected_peer_agent_nodes must be 0 under tight shared quota, "
+            f"got {selected_peer}"
+        )
+    require_int_at_least(report, "skipped_peer_agent_nodes", 1)
     require_int_at_least(report, "selected_user_shared_nodes", 1)
     require_int_at_least(report, "selected_workspace_shared_nodes", 1)
     require_int_at_least(report, "selected_global_shared_nodes", 1)

@@ -1071,6 +1071,8 @@ pub struct ContextFanoutPlanReport {
     #[serde(default)]
     pub current_agent_boosted_nodes: usize,
     #[serde(default)]
+    pub peer_agent_nodes: usize,
+    #[serde(default)]
     pub user_shared_nodes: usize,
     #[serde(default)]
     pub workspace_shared_nodes: usize,
@@ -1080,6 +1082,10 @@ pub struct ContextFanoutPlanReport {
     pub scope_boosted_nodes: usize,
     #[serde(default)]
     pub selected_current_agent_nodes: usize,
+    #[serde(default)]
+    pub selected_peer_agent_nodes: usize,
+    #[serde(default)]
+    pub skipped_peer_agent_nodes: usize,
     #[serde(default)]
     pub selected_user_shared_nodes: usize,
     #[serde(default)]
@@ -4219,6 +4225,9 @@ pub fn retrieve_context(
                     fanout_plan.current_agent_boosted_nodes =
                         fanout_plan.current_agent_boosted_nodes.saturating_add(1);
                 }
+                ContextScopeLayer::Agent => {
+                    fanout_plan.peer_agent_nodes = fanout_plan.peer_agent_nodes.saturating_add(1);
+                }
                 ContextScopeLayer::User => {
                     fanout_plan.user_shared_nodes = fanout_plan.user_shared_nodes.saturating_add(1);
                 }
@@ -4356,6 +4365,10 @@ pub fn retrieve_context(
                     fanout_plan.selected_current_agent_nodes =
                         fanout_plan.selected_current_agent_nodes.saturating_add(1);
                 }
+                ContextScopeLayer::Agent => {
+                    fanout_plan.selected_peer_agent_nodes =
+                        fanout_plan.selected_peer_agent_nodes.saturating_add(1);
+                }
                 ContextScopeLayer::User => {
                     fanout_plan.selected_user_shared_nodes =
                         fanout_plan.selected_user_shared_nodes.saturating_add(1);
@@ -4373,6 +4386,9 @@ pub fn retrieve_context(
             }
         }
     }
+    fanout_plan.skipped_peer_agent_nodes = fanout_plan
+        .peer_agent_nodes
+        .saturating_sub(fanout_plan.selected_peer_agent_nodes);
     fanout_plan.skipped_node_count = skipped_node_hashes.len();
     fanout_plan.summary_lookup_batches = usize::from(!summary_scores.is_empty());
     fanout_plan.selected_node_hashes = event_node_hashes.clone();
