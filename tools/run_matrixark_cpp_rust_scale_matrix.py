@@ -102,6 +102,16 @@ def run_case(args: argparse.Namespace, *, events: int, retrieve_workers: int, ru
         args.namespace,
         "--table",
         args.table,
+        "--storage-family",
+        args.storage_family,
+        "--storage-mode",
+        args.storage_mode,
+        "--write-mode",
+        args.write_mode,
+        "--oplog-mode",
+        args.oplog_mode,
+        "--replication-mode",
+        args.replication_mode,
         "--cpp-lib",
         args.cpp_lib,
         "--rust-cli",
@@ -208,8 +218,13 @@ def main() -> int:
     parser.add_argument("--metaserver", default="127.0.0.1:18000")
     parser.add_argument("--namespace", default="deploy_ns")
     parser.add_argument("--table", default="deploy_table")
+    parser.add_argument("--storage-family", default="shared_store")
+    parser.add_argument("--storage-mode", default="multi_node")
+    parser.add_argument("--write-mode", default="async")
+    parser.add_argument("--oplog-mode", default="async")
+    parser.add_argument("--replication-mode", default="shared_store")
     parser.add_argument("--cpp-lib", default=str(ROOT / "output-ubuntu22/release/sdk/lib/libbcache2.so"))
-    parser.add_argument("--rust-cli", default=str(ROOT / "sdk/rust/temporalstore/target/release/matrixark_record_log"))
+    parser.add_argument("--rust-cli", default=str(ROOT / "target/release/matrixark_rust_proxy"))
     parser.add_argument("--request-timeout-ms", type=int, default=60000)
     parser.add_argument("--io-timeout-ms", type=int, default=60000)
     parser.add_argument("--readiness-timeout-ms", type=int, default=60000)
@@ -241,6 +256,14 @@ def main() -> int:
             "ingest_workers": args.ingest_workers,
             "retrieve_queries": args.retrieve_queries,
             "max_context_tokens": args.max_context_tokens,
+            "storage_options": {
+                "storage_family": args.storage_family,
+                "storage_mode": args.storage_mode,
+                "write_mode": args.write_mode,
+                "oplog_mode": args.oplog_mode,
+                "replication_mode": args.replication_mode,
+            },
+            "rust_cli": args.rust_cli,
         },
         "cases": cases,
         "status": "passed" if all(case["status"] == "passed" for case in cases) else "failed",
