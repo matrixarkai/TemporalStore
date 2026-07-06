@@ -4226,7 +4226,12 @@ class MatrixArkRustProxyClient:
     def batch_hset(self, entries: list[Json]) -> None:
         if not entries:
             return
-        self._call_json("batch_hset", entries=entries)
+        compact_entries = [
+            [str(entry.get("key") or ""), str(entry.get("field") or ""), str(entry.get("value") or "")]
+            for entry in entries
+            if isinstance(entry, dict)
+        ]
+        self._call_json("batch_hset", entries_compact=compact_entries)
 
     def matrixark_batch_append_records(
         self,
@@ -4304,7 +4309,12 @@ class MatrixArkRustProxyClient:
     def batch_hget(self, entries: list[Json]) -> list[Json]:
         if not entries:
             return []
-        response = self._call_json("batch_hget", entries=entries)
+        compact_entries = [
+            [str(entry.get("key") or ""), str(entry.get("field") or ""), ""]
+            for entry in entries
+            if isinstance(entry, dict)
+        ]
+        response = self._call_json("batch_hget", entries_compact=compact_entries)
         records = response.get("records", [])
         return records if isinstance(records, list) else []
 

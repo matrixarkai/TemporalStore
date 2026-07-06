@@ -327,13 +327,20 @@ impl TemporalEngine {
                 }
                 Some(ExecuteResponse {
                     status: Status::ok(),
-                    response: cached_response(&self.cache, CacheKey::string(request.shard_id, key), || {
-                        CommandResponse::Bytes {
+                    response: cached_response(
+                        &self.cache,
+                        CacheKey::string(request.shard_id, key),
+                        || CommandResponse::Bytes {
                             value: shard.strings.get(key).and_then(|address| {
-                                read_page_bytes(&self.cache, &self.page_store, request.shard_id, address)
+                                read_page_bytes(
+                                    &self.cache,
+                                    &self.page_store,
+                                    request.shard_id,
+                                    address,
+                                )
                             }),
-                        }
-                    }),
+                        },
+                    ),
                 })
             }
             Command::HashGetAll { key } => {
@@ -352,8 +359,13 @@ impl TemporalEngine {
                         let mut entries = fields
                             .iter()
                             .filter_map(|(field, address)| {
-                                read_page_bytes(&self.cache, &self.page_store, request.shard_id, address)
-                                    .map(|value| (field.clone(), value))
+                                read_page_bytes(
+                                    &self.cache,
+                                    &self.page_store,
+                                    request.shard_id,
+                                    address,
+                                )
+                                .map(|value| (field.clone(), value))
                             })
                             .collect::<Vec<_>>();
                         entries.sort_by(|a, b| a.0.cmp(&b.0));
@@ -5299,16 +5311,174 @@ impl TemporalEngine {
     }
 
     pub fn batch_execute(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
-        let responses = request
-            .commands
-            .into_iter()
-            .map(|command| {
-                self.execute(ExecuteRequest {
-                    shard_id: request.shard_id,
-                    command,
-                })
-            })
-            .collect();
+        let command_count = request.commands.len();
+        let mut responses = Vec::with_capacity(command_count);
+        if command_count == 0 {
+            return BatchExecuteResponse {
+                status: Status::ok(),
+                responses,
+            };
+        }
+        let mut shards = self.shards.write().expect("engine lock poisoned");
+        let Some(shard) = shards.get_mut(&request.shard_id) else {
+            responses.extend((0..command_count).map(|_| ExecuteResponse {
+                status: Status::error("shard_not_loaded", "shard is not loaded on this server"),
+                response: CommandResponse::Empty,
+            }));
+            return BatchExecuteResponse {
+                status: Status::ok(),
+                responses,
+            };
+        };
+        let readonly = self
+            .infos
+            .read()
+            .expect("info lock poisoned")
+            .get(&request.shard_id)
+            .map(|info| info.readonly)
+            .unwrap_or(false);
+        let config = self
+            .configs
+            .read()
+            .expect("config lock poisoned")
+            .get(&request.shard_id)
+            .cloned()
+            .unwrap_or_default();
+        let info = self
+            .infos
+            .read()
+            .expect("info lock poisoned")
+            .get(&request.shard_id)
+            .cloned();
+        let start_routing_slot = info
+            .as_ref()
+            .map(|info| info.start_routing_slot)
+            .unwrap_or_default();
+        let end_routing_slot = info
+            .as_ref()
+            .map(|info| info.end_routing_slot)
+            .unwrap_or(u32::MAX);
+        if promote_model_maps_to_slot_index_authority(
+            request.shard_id,
+            shard,
+            start_routing_slot,
+            end_routing_slot,
+        ) {
+            reconcile_secondary_views_from_slot_index(&self.page_store, shard);
+        }
+        let mut mutated_any = false;
+        let mut sync_wal_commands = Vec::new();
+        for command in request.commands {
+            let write_command = is_write_command(&command);
+            if readonly && write_command {
+                responses.push(ExecuteResponse {
+                    status: Status::error("readonly_shard", "readonly shard rejects write command"),
+                    response: CommandResponse::Empty,
+                });
+                continue;
+            }
+            if let Err(status) =
+                self.check_admission(request.shard_id, write_command, &config, &info)
+            {
+                responses.push(ExecuteResponse {
+                    status,
+                    response: CommandResponse::Empty,
+                });
+                continue;
+            }
+            if write_command
+                && config
+                    .maxmemory_bytes
+                    .map(|limit| self.page_store.stats().bytes_written >= limit)
+                    .unwrap_or(false)
+            {
+                responses.push(ExecuteResponse {
+                    status: Status::error(
+                        "storage_quota_exceeded",
+                        "shard maxmemory_bytes limit has been reached",
+                    ),
+                    response: CommandResponse::Empty,
+                });
+                continue;
+            }
+            if let Err(status) = validate_command_preconditions(
+                &self.cache,
+                &self.page_store,
+                request.shard_id,
+                shard,
+                &command,
+            ) {
+                responses.push(ExecuteResponse {
+                    status,
+                    response: CommandResponse::Empty,
+                });
+                continue;
+            }
+            let command_for_post_write = command.clone();
+            let outcome = execute_on_shard(
+                &self.cache,
+                &self.page_store,
+                config.feature_max_size,
+                config.async_storage,
+                request.shard_id,
+                start_routing_slot,
+                end_routing_slot,
+                shard,
+                command,
+            );
+            if outcome.mutated {
+                mutated_any = true;
+                let object_keys = command_object_keys(&command_for_post_write);
+                if object_keys.is_empty() {
+                    rebuild_slot_page_ownership(
+                        request.shard_id,
+                        shard,
+                        start_routing_slot,
+                        end_routing_slot,
+                    );
+                } else {
+                    for object_key in object_keys {
+                        shard.dirty_objects.insert(object_key.clone());
+                        mark_async_dirty_object(
+                            shard,
+                            &object_key,
+                            start_routing_slot,
+                            end_routing_slot,
+                        );
+                    }
+                }
+                if !command_updates_slot_index_directly(&command_for_post_write)
+                    || shard.slot_index.slot_map.is_empty()
+                {
+                    rebuild_slot_first_index(
+                        request.shard_id,
+                        shard,
+                        start_routing_slot,
+                        end_routing_slot,
+                    );
+                }
+                if write_command && !config.async_storage {
+                    sync_wal_commands.push(command_for_post_write);
+                }
+            }
+            responses.push(ExecuteResponse {
+                status: Status::ok(),
+                response: outcome.response,
+            });
+        }
+        if mutated_any {
+            refresh_slot_runtime_flags(shard);
+            if !config.async_storage {
+                for command in sync_wal_commands {
+                    let _ = self.wal_store.append(request.shard_id, command);
+                }
+                let index_bytes = serialize_index(shard);
+                let _ = self
+                    .index_log_store
+                    .append_json(request.shard_id, &index_bytes);
+                let _ = self.persist_index_bytes(request.shard_id, &index_bytes);
+            }
+        }
         BatchExecuteResponse {
             status: Status::ok(),
             responses,
@@ -9891,7 +10061,10 @@ fn storage_index_snapshot_with_samples(
             let page_address = storage_page_address_sample(shard_id, &entry.address);
             let block_address = storage_block_address_sample(shard_id, &entry.address);
             StorageBlockIndexEntrySample {
-                extent: entry.address.extent_id.unwrap_or(entry.address.page_segment_id),
+                extent: entry
+                    .address
+                    .extent_id
+                    .unwrap_or(entry.address.page_segment_id),
                 checksum: entry.address.sha256.clone().unwrap_or_default(),
                 generation: entry.address.object_id.unwrap_or(0),
                 page_address,
@@ -9902,20 +10075,25 @@ fn storage_index_snapshot_with_samples(
 
     let mut object_entries: BTreeMap<(String, String, String), StorageObjectIndexEntrySample> =
         BTreeMap::new();
-    for entry in entries.iter().take(MAX_STORAGE_INDEX_SAMPLES.saturating_mul(4)) {
+    for entry in entries
+        .iter()
+        .take(MAX_STORAGE_INDEX_SAMPLES.saturating_mul(4))
+    {
         let key = (
             entry.kind.clone(),
             entry.kind.clone(),
             entry.object_key.clone(),
         );
-        let sample = object_entries.entry(key).or_insert_with(|| StorageObjectIndexEntrySample {
-            model: entry.kind.clone(),
-            table: entry.kind.clone(),
-            object_key: entry.object_key.clone(),
-            page_chain: Vec::new(),
-            tombstone: entry.deleted,
-            generation: entry.address.object_id.unwrap_or(0),
-        });
+        let sample = object_entries
+            .entry(key)
+            .or_insert_with(|| StorageObjectIndexEntrySample {
+                model: entry.kind.clone(),
+                table: entry.kind.clone(),
+                object_key: entry.object_key.clone(),
+                page_chain: Vec::new(),
+                tombstone: entry.deleted,
+                generation: entry.address.object_id.unwrap_or(0),
+            });
         if sample.page_chain.len() < MAX_STORAGE_INDEX_SAMPLES {
             sample
                 .page_chain
@@ -10053,7 +10231,11 @@ fn storage_gc_snapshot_with_samples(
                 eligible_after_ms,
                 has_tombstone,
                 follower_safe,
-                reclaimable_bytes: if follower_safe { entry.address.length } else { 0 },
+                reclaimable_bytes: if follower_safe {
+                    entry.address.length
+                } else {
+                    0
+                },
             })
         })
         .take(MAX_STORAGE_GC_SAMPLES)
@@ -10094,14 +10276,19 @@ fn storage_topology_snapshot_with_samples(
     let mut entries = collect_live_page_entries(shard);
     entries.sort_by(|left, right| {
         (
-            left.address.extent_id.unwrap_or(left.address.page_segment_id),
+            left.address
+                .extent_id
+                .unwrap_or(left.address.page_segment_id),
             left.address.page_segment_id,
             left.address.offset,
             left.kind.as_str(),
             left.object_key.as_str(),
         )
             .cmp(&(
-                right.address.extent_id.unwrap_or(right.address.page_segment_id),
+                right
+                    .address
+                    .extent_id
+                    .unwrap_or(right.address.page_segment_id),
                 right.address.page_segment_id,
                 right.address.offset,
                 right.kind.as_str(),
@@ -10147,7 +10334,10 @@ fn storage_topology_snapshot_with_samples(
     let mut slots = BTreeMap::<u32, SlotAcc>::new();
 
     for entry in &entries {
-        let zone_id = entry.address.extent_id.unwrap_or(entry.address.page_segment_id);
+        let zone_id = entry
+            .address
+            .extent_id
+            .unwrap_or(entry.address.page_segment_id);
         let segment_id = entry.address.page_segment_id;
         let generation = entry.address.object_id.unwrap_or(0);
         let zone = zones.entry(zone_id).or_default();
@@ -10207,7 +10397,8 @@ fn storage_topology_snapshot_with_samples(
     for (slot_id, runtime_slot) in &shard.slot_index.slot_map {
         let slot = slots.entry(*slot_id).or_default();
         slot.dirty_generation = slot.dirty_generation.max(runtime_slot.dirty_generation);
-        slot.object_refs.extend(runtime_slot.object_index.iter().copied());
+        slot.object_refs
+            .extend(runtime_slot.object_index.iter().copied());
         for page in runtime_slot.page_index.values() {
             if slot.page_refs.len() >= MAX_STORAGE_TOPOLOGY_SAMPLES {
                 break;
@@ -10284,7 +10475,11 @@ fn storage_topology_snapshot_with_samples(
                 .into_iter()
                 .take(MAX_STORAGE_TOPOLOGY_SAMPLES)
                 .collect(),
-            page_refs: slot.page_refs.into_iter().take(MAX_STORAGE_TOPOLOGY_SAMPLES).collect(),
+            page_refs: slot
+                .page_refs
+                .into_iter()
+                .take(MAX_STORAGE_TOPOLOGY_SAMPLES)
+                .collect(),
             tombstones: slot
                 .tombstones
                 .into_iter()
