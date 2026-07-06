@@ -114,6 +114,7 @@ PHASES: tuple[Phase, ...] = (
         (
             "validate_temporalstore_cpp_rust_feature_execution.py",
             "validate_storage_proxy_client_parity_coverage.py",
+            "validate_storage_unified_case_report_pair.py",
             "validate_raft_storage_parity_evidence.py",
             "validate_page_address_compatibility_corpus.py",
             "validate_temporalstore_cpp_rust_goal_parity.py",
