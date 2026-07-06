@@ -34,6 +34,41 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
   "retrieved_user_shared_block_count": 3,
   "retrieved_workspace_shared_block_count": 8,
   "retrieved_global_shared_block_count": 3,
+  "selected_skill_count": 3,
+  "selected_skill_names": [
+    "benchmark-reader",
+    "context-debug",
+    "payments-incident"
+  ],
+  "selected_skill_owner_scopes": [
+    "team:benchmarks",
+    "team:context",
+    "team:payments"
+  ],
+  "selected_skill_trigger_terms": [
+    "checkout",
+    "context",
+    "injection",
+    "latency",
+    "rollback",
+    "summary"
+  ],
+  "selected_skill_allowed_tool_matches": 3,
+  "resource_import_kinds": {
+    "git_repo": 1,
+    "markdown": 1,
+    "pdf": 1,
+    "url": 1
+  },
+  "resource_owner_scopes": [
+    "team:benchmarks",
+    "team:context",
+    "team:payments",
+    "team:platform"
+  ],
+  "resource_parser_names": [
+    "context-scale-harness"
+  ],
   "multi_agent_scan_ready": true,
   "fanout_namespace_node_candidates": 44,
   "fanout_summary_embedding_query_nodes": 40,
@@ -119,6 +154,8 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
 ## What This Proves
 
 - The broader Rust harness ingests resources, skills, and conversations through TemporalStore context models.
+- Shared resource/skill provenance is named in the archive: markdown, URL, git repo, and PDF resources are parsed by `context-scale-harness` across payments, context, platform, and benchmark owner scopes.
+- Retrieval-time skill selection is also named: `payments-incident`, `context-debug`, and `benchmark-reader` are selected with matching trigger terms and allowed-tool evidence.
 - The scan reduces fanout from namespace candidates to bounded expanded nodes.
 - Peer-agent capping now happens before summary embedding lookup: 4 peer-agent nodes are pruned from summary scoring in this scale run.
 - The scale scan avoids full namespace replication: 28 candidate nodes are left unexpanded, a 63% fanout reduction across 4 selected colocation groups.
