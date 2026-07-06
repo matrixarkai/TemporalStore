@@ -24,6 +24,9 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+CANONICAL_UBUNTU_REPO = Path(
+    os.environ.get("TEMPORALSTORE_CANONICAL_REPO", "/root/src/github-services/TemporalStore")
+)
 
 # Keep the scale path storage-focused and avoid replay/audit write amplification.
 os.environ.setdefault("MATRIXARK_DIRECT_AUDIT_MODE", "drop")
@@ -76,6 +79,17 @@ def validate_cpp_runtime_host(cpp_lib: str) -> None:
     suffix = Path(cpp_lib).suffix.lower()
     if _is_windows_host() and suffix == ".so":
         raise RuntimeError(_linux_so_on_windows_error(cpp_lib))
+
+
+def default_cpp_lib_path() -> str:
+    candidates = [
+        ROOT / "output-ubuntu22/release/sdk/lib/libbcache2.so",
+        CANONICAL_UBUNTU_REPO / "output-ubuntu22/release/sdk/lib/libbcache2.so",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return str(candidates[0])
 
 
 def validate_rust_runtime_path(args: argparse.Namespace) -> None:
@@ -3577,7 +3591,7 @@ def main() -> int:
     parser.add_argument("--oplog-mode", default=os.environ.get("MATRIXARK_OPLOG_MODE", "async"))
     parser.add_argument("--replication-mode", default=os.environ.get("MATRIXARK_REPLICATION_MODE", "shared_store"))
     parser.add_argument("--storage-prefix", default="matrixark:scale")
-    parser.add_argument("--cpp-lib", default=str(ROOT / "output-ubuntu22/release/sdk/lib/libbcache2.so"))
+    parser.add_argument("--cpp-lib", default=default_cpp_lib_path())
     parser.add_argument("--rust-cli", default=str(ROOT / "target/release/matrixark_rust_proxy"))
     parser.add_argument("--allow-rust-record-log-compat", action="store_true")
     parser.add_argument("--allow-rust-debug-cli", action="store_true")

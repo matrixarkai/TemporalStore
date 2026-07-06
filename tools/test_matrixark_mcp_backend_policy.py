@@ -17,6 +17,7 @@ try:
     from tools import matrixark_mcp_core as mcp_core
     from tools.run_matrixark_cpp_rust_scale_report import (
         comparison,
+        default_cpp_lib_path,
         effective_storage_tuning_from_env,
         fallback_flags_from_backend,
         phase_scale_matrix_gate,
@@ -34,6 +35,7 @@ except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
     import matrixark_mcp_core as mcp_core
     from run_matrixark_cpp_rust_scale_report import (
         comparison,
+        default_cpp_lib_path,
         effective_storage_tuning_from_env,
         fallback_flags_from_backend,
         phase_scale_matrix_gate,
@@ -953,6 +955,24 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 validate_cpp_runtime_host("C:\\repo\\output-ubuntu22\\release\\sdk\\lib\\libbcache2.so")
         finally:
             validate_cpp_runtime_host.__globals__["_is_windows_host"] = original
+
+    def test_cpp_lib_default_prefers_canonical_ubuntu_release_when_worktree_is_clean(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="matrixark-cpp-lib-policy-") as tmpdir:
+            active_root = Path(tmpdir) / "clean-worktree"
+            canonical_root = Path(tmpdir) / "canonical"
+            canonical_lib = canonical_root / "output-ubuntu22" / "release" / "sdk" / "lib" / "libbcache2.so"
+            canonical_lib.parent.mkdir(parents=True)
+            canonical_lib.write_text("", encoding="utf-8")
+
+            original_root = default_cpp_lib_path.__globals__["ROOT"]
+            original_canonical = default_cpp_lib_path.__globals__["CANONICAL_UBUNTU_REPO"]
+            try:
+                default_cpp_lib_path.__globals__["ROOT"] = active_root
+                default_cpp_lib_path.__globals__["CANONICAL_UBUNTU_REPO"] = canonical_root
+                self.assertEqual(default_cpp_lib_path(), str(canonical_lib))
+            finally:
+                default_cpp_lib_path.__globals__["ROOT"] = original_root
+                default_cpp_lib_path.__globals__["CANONICAL_UBUNTU_REPO"] = original_canonical
 
     def test_rust_parity_preflight_requires_proxy_or_explicit_compat(self) -> None:
         with tempfile.TemporaryDirectory(prefix="matrixark-rust-cli-policy-") as tmpdir:
