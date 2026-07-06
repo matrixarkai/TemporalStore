@@ -4133,8 +4133,8 @@ class MatrixArkRustProxyClient:
                 for op, count in sorted(self._op_commands_total.items())
             }
             return {
-                "gateway_mode": "rust_direct_sdk_bridge",
-                "sdk_mode": "rust_direct_sdk_via_long_lived_bridge",
+                "gateway_mode": "rust_native_proxy",
+                "sdk_mode": "rust_native_proxy",
                 "transport": "stdio",
                 "proxy_path": self.proxy_path,
                 "cli_path": self.cli_path,
@@ -4666,10 +4666,10 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
             f'matrixark_backend_timeouts_total{{backend="{backend}"}} {int(snapshot.get("timeouts_total") or 0)}',
             "# HELP matrixark_backend_info MatrixArk storage backend identity and mode.",
             "# TYPE matrixark_backend_info gauge",
-            f'matrixark_backend_info{{backend="{backend}",storage_mode="rust-direct-sdk-bridge"}} 1',
+            f'matrixark_backend_info{{backend="{backend}",storage_mode="{storage_mode}"}} 1',
             "# HELP matrixark_backend_ready MatrixArk storage backend readiness, 1 for ready and 0 for not ready.",
             "# TYPE matrixark_backend_ready gauge",
-            f'matrixark_backend_ready{{backend="{backend}",storage_mode="rust-direct-sdk-bridge",status="{"ready" if self._backend_ready else "unknown"}"}} {1 if self._backend_ready else 0}',
+            f'matrixark_backend_ready{{backend="{backend}",storage_mode="{storage_mode}",status="{"ready" if self._backend_ready else "unknown"}"}} {1 if self._backend_ready else 0}',
             "# HELP matrixark_backend_command_latency_ms MatrixArk storage backend command latency quantiles.",
             "# TYPE matrixark_backend_command_latency_ms gauge",
             f'matrixark_backend_command_latency_ms{{backend="{backend}",quantile="0.50"}} {round(_latency_quantile_from_bucket_map(buckets, int(snapshot.get("latency_ms_count") or 0), 0.50), 3)}',
@@ -4766,12 +4766,13 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         return {
             "backend": self._backend_label(),
             "metrics_format": "prometheus",
-            "gateway_mode": "rust_direct_sdk_bridge",
-            "sdk_mode": "rust_direct_sdk_via_long_lived_bridge",
-            "production_path": "rust_direct_sdk_bridge",
+            "gateway_mode": gateway_mode,
+            "sdk_mode": sdk_mode,
+            "production_path": "rust_native_proxy" if not self._rust_direct_cdylib_enabled else "rust_cpp_c_api_bridge_diagnostic",
             "process_per_operation_enabled": False,
             "single_shot_mode": "debug_only",
-            "direct_sdk_bridge": True,
+            "direct_sdk_bridge": False,
+            "cpp_c_api_bridge_diagnostic": bool(self._rust_direct_cdylib_enabled),
             "pure_embedded_direct_sdk": False,
             "capabilities": {
                 "health_endpoint": True,
