@@ -1546,9 +1546,10 @@ class MatrixArkLocalAdapter:
                     max_chars=1200,
                     policy=l1_policy,
                 )
-                summary_specs.append(("node_l1", l1_summary, "node_l1"))
-            for level, summary_text, embedding_type in summary_specs:
+                summary_specs.append(("node_l1", l1_summary, "node_l1", l1_provider_meta))
+            for level, summary_text, embedding_type, provider_meta in summary_specs:
                 summary_hash = stable_hash(f"context_summary:{level}:{node_hash}")
+                summary_policy = {**l1_policy, **provider_meta}
                 self.append(
                     {
                         "record_type": "context_summary",
