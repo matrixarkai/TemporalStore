@@ -226,6 +226,13 @@ struct ResourceSkillConversationScaleSummary {
     fanout_colocation_groups: Vec<String>,
     fanout_colocation_scope_keys: Vec<String>,
     fanout_required_scan_scope_keys: Vec<String>,
+    fanout_scan_policy_current_agent_scope_key: String,
+    fanout_scan_policy_owner_scope_key: String,
+    fanout_scan_policy_shared_scope_keys: Vec<String>,
+    fanout_scan_policy_implicit_current_agent_scope_added: bool,
+    fanout_scan_policy_owner_scope_included: bool,
+    fanout_scan_policy_shared_scopes_included: bool,
+    fanout_scan_policy_ready: bool,
     fanout_locality_key_count: usize,
     fanout_locality_scope_keys: Vec<String>,
     fanout_peer_locality_key_count: usize,
@@ -278,6 +285,13 @@ struct MultiAgentContextScanHarnessSummary {
     colocation_groups: Vec<String>,
     colocation_scope_keys: Vec<String>,
     required_scan_scope_keys: Vec<String>,
+    scan_policy_current_agent_scope_key: String,
+    scan_policy_owner_scope_key: String,
+    scan_policy_shared_scope_keys: Vec<String>,
+    scan_policy_implicit_current_agent_scope_added: bool,
+    scan_policy_owner_scope_included: bool,
+    scan_policy_shared_scopes_included: bool,
+    scan_policy_ready: bool,
     locality_keys: Vec<String>,
     locality_key_count: usize,
     locality_scope_keys: Vec<String>,
@@ -1293,6 +1307,27 @@ fn run_resource_skill_conversation_scale(
         && fanout_current_agent_boost_percent <= 75
         && combined_retrieve.fanout_plan.selected_current_agent_nodes
             > fanout_shared_selected_node_count;
+    let fanout_scan_policy_current_agent_scope_key = "agent:codex".to_string();
+    let fanout_scan_policy_owner_scope_key = "workspace:context".to_string();
+    let fanout_scan_policy_shared_scope_keys = vec!["global".to_string(), "user:user".to_string()];
+    let fanout_scan_policy_implicit_current_agent_scope_added = combined_retrieve
+        .fanout_plan
+        .required_scan_scope_keys
+        .contains(&fanout_scan_policy_current_agent_scope_key);
+    let fanout_scan_policy_owner_scope_included = combined_retrieve
+        .fanout_plan
+        .required_scan_scope_keys
+        .contains(&fanout_scan_policy_owner_scope_key);
+    let fanout_scan_policy_shared_scopes_included =
+        fanout_scan_policy_shared_scope_keys.iter().all(|scope| {
+            combined_retrieve
+                .fanout_plan
+                .required_scan_scope_keys
+                .contains(scope)
+        });
+    let fanout_scan_policy_ready = fanout_scan_policy_implicit_current_agent_scope_added
+        && fanout_scan_policy_owner_scope_included
+        && fanout_scan_policy_shared_scopes_included;
     let multi_agent_scan_ready = combined_retrieve.fanout_plan.fanout_reduced
         && combined_retrieve.fanout_plan.layer_quota_applied
         && combined_retrieve.fanout_plan.selected_current_agent_nodes > 0
@@ -1310,6 +1345,7 @@ fn run_resource_skill_conversation_scale(
         && combined_retrieve.fanout_plan.shared_layer_quota_nodes >= 4
         && fanout_shared_scope_coverage_ready
         && fanout_current_agent_boost_bounded
+        && fanout_scan_policy_ready
         && combined_retrieve
             .fanout_plan
             .locality_keys
@@ -1508,6 +1544,13 @@ fn run_resource_skill_conversation_scale(
             .fanout_plan
             .required_scan_scope_keys
             .clone(),
+        fanout_scan_policy_current_agent_scope_key,
+        fanout_scan_policy_owner_scope_key,
+        fanout_scan_policy_shared_scope_keys,
+        fanout_scan_policy_implicit_current_agent_scope_added,
+        fanout_scan_policy_owner_scope_included,
+        fanout_scan_policy_shared_scopes_included,
+        fanout_scan_policy_ready,
         fanout_locality_key_count: combined_retrieve.fanout_plan.locality_keys.len(),
         fanout_locality_scope_keys,
         fanout_peer_locality_key_count,
@@ -1663,6 +1706,23 @@ fn run_multi_agent_context_scan_harness(
     let injection_current_agent_first = injection_scope_order
         .first()
         .is_some_and(|scope| scope == "agent:codex");
+    let scan_policy_current_agent_scope_key = "agent:codex".to_string();
+    let scan_policy_owner_scope_key = "workspace:context".to_string();
+    let scan_policy_shared_scope_keys = vec!["global".to_string(), "user:user".to_string()];
+    let scan_policy_implicit_current_agent_scope_added = report
+        .fanout_plan
+        .required_scan_scope_keys
+        .contains(&scan_policy_current_agent_scope_key);
+    let scan_policy_owner_scope_included = report
+        .fanout_plan
+        .required_scan_scope_keys
+        .contains(&scan_policy_owner_scope_key);
+    let scan_policy_shared_scopes_included = scan_policy_shared_scope_keys
+        .iter()
+        .all(|scope| report.fanout_plan.required_scan_scope_keys.contains(scope));
+    let scan_policy_ready = scan_policy_implicit_current_agent_scope_added
+        && scan_policy_owner_scope_included
+        && scan_policy_shared_scopes_included;
     let ready = report.fanout_plan.fanout_reduced
         && report.fanout_plan.layer_quota_applied
         && report.fanout_plan.selected_current_agent_nodes > 0
@@ -1675,6 +1735,7 @@ fn run_multi_agent_context_scan_harness(
         && report.fanout_plan.selected_workspace_shared_nodes > 0
         && report.fanout_plan.selected_global_shared_nodes > 0
         && report.fanout_plan.shared_layer_quota_nodes >= 4
+        && scan_policy_ready
         && report
             .fanout_plan
             .locality_keys
@@ -1760,6 +1821,13 @@ fn run_multi_agent_context_scan_harness(
         colocation_groups: report.fanout_plan.colocation_groups,
         colocation_scope_keys: report.fanout_plan.colocation_scope_keys,
         required_scan_scope_keys: report.fanout_plan.required_scan_scope_keys,
+        scan_policy_current_agent_scope_key,
+        scan_policy_owner_scope_key,
+        scan_policy_shared_scope_keys,
+        scan_policy_implicit_current_agent_scope_added,
+        scan_policy_owner_scope_included,
+        scan_policy_shared_scopes_included,
+        scan_policy_ready,
         locality_key_count: report.fanout_plan.locality_keys.len(),
         locality_keys: report.fanout_plan.locality_keys,
         locality_scope_keys,

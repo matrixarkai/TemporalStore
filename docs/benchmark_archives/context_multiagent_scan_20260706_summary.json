@@ -61,6 +61,16 @@
     "user:user",
     "global"
   ],
+  "scan_policy_current_agent_scope_key": "agent:codex",
+  "scan_policy_owner_scope_key": "workspace:context",
+  "scan_policy_shared_scope_keys": [
+    "global",
+    "user:user"
+  ],
+  "scan_policy_implicit_current_agent_scope_added": true,
+  "scan_policy_owner_scope_included": true,
+  "scan_policy_shared_scopes_included": true,
+  "scan_policy_ready": true,
   "locality_keys": [
     "tenant:20260706:scope:agent:codex:node:8424729405653484612",
     "tenant:20260706:scope:workspace:context:node:16379766558787635764",
