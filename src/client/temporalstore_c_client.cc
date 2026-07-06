@@ -693,6 +693,9 @@ struct MatrixArkPreparedRetrieveCandidate {
 struct MatrixArkPreparedRetrieveCacheEntry {
     std::vector<MatrixArkPreparedRetrieveCandidate> candidates;
     uint64_t context_index_records = 0;
+    uint64_t scanned_records = 0;
+    uint64_t dropped_by_type = 0;
+    uint64_t dropped_by_scope = 0;
 };
 
 std::mutex g_matrixark_prepared_retrieve_cache_mu;
@@ -750,8 +753,12 @@ double CrossSessionRerankBoostPrepared(const MatrixArkPreparedRetrieveCandidate&
 }
 
 MatrixArkPreparedRetrieveCacheEntry PrepareMatrixArkRetrieveCandidates(
-    const std::vector<std::string>& record_jsons, const rapidjson::Value* scope) {
+    const MatrixArkScopedRecordScan& scan, const rapidjson::Value* scope) {
     MatrixArkPreparedRetrieveCacheEntry entry;
+    entry.scanned_records = scan.scanned_records;
+    entry.dropped_by_type = scan.dropped_by_type;
+    entry.dropped_by_scope = scan.dropped_by_scope;
+    const std::vector<std::string>& record_jsons = scan.record_jsons;
     std::unordered_map<std::string, std::unordered_set<std::string>> terms_by_ref;
     std::unordered_map<uint64_t, std::unordered_set<std::string>> terms_by_node;
     std::unordered_map<std::string, std::unordered_set<std::string>> terms_by_batch;
@@ -827,39 +834,37 @@ MatrixArkPreparedRetrieveCacheEntry PrepareMatrixArkRetrieveCandidates(
     return entry;
 }
 
-std::shared_ptr<const MatrixArkPreparedRetrieveCacheEntry> LoadMatrixArkPreparedRetrieveCandidates(
-    const std::string& cache_key, const std::vector<std::string>& record_jsons,
-    const rapidjson::Value* scope, bool* cache_hit) {
+std::shared_ptr<const MatrixArkPreparedRetrieveCacheEntry> FindMatrixArkPreparedRetrieveCandidates(
+    const std::string& cache_key, bool* cache_hit) {
     if (cache_hit != nullptr) {
         *cache_hit = false;
     }
-    {
-        std::lock_guard<std::mutex> guard(g_matrixark_prepared_retrieve_cache_mu);
-        const auto it = g_matrixark_prepared_retrieve_cache.find(cache_key);
-        if (it != g_matrixark_prepared_retrieve_cache.end()) {
-            if (cache_hit != nullptr) {
-                *cache_hit = true;
-            }
-            return it->second;
-        }
+    std::lock_guard<std::mutex> guard(g_matrixark_prepared_retrieve_cache_mu);
+    const auto it = g_matrixark_prepared_retrieve_cache.find(cache_key);
+    if (it == g_matrixark_prepared_retrieve_cache.end()) {
+        return nullptr;
     }
-    auto prepared = std::make_shared<const MatrixArkPreparedRetrieveCacheEntry>(
-        PrepareMatrixArkRetrieveCandidates(record_jsons, scope));
-    {
-        std::lock_guard<std::mutex> guard(g_matrixark_prepared_retrieve_cache_mu);
-        if (g_matrixark_prepared_retrieve_cache.size() >= 8) {
-            g_matrixark_prepared_retrieve_cache.clear();
-        }
-        g_matrixark_prepared_retrieve_cache[cache_key] = prepared;
+    if (cache_hit != nullptr) {
+        *cache_hit = true;
     }
-    return prepared;
+    return it->second;
+}
+
+void StoreMatrixArkPreparedRetrieveCandidates(
+    const std::string& cache_key,
+    std::shared_ptr<const MatrixArkPreparedRetrieveCacheEntry> prepared) {
+    std::lock_guard<std::mutex> guard(g_matrixark_prepared_retrieve_cache_mu);
+    if (g_matrixark_prepared_retrieve_cache.size() >= 8) {
+        g_matrixark_prepared_retrieve_cache.clear();
+    }
+    g_matrixark_prepared_retrieve_cache[cache_key] = std::move(prepared);
 }
 
 bcache2::Status LoadMatrixArkScopedServingRecords(
     bcache2::client::TemporalStoreClient* impl, const std::string& count_key,
     const std::string& record_hash_key, size_t shard_size, uint64_t serving_count,
     const std::unordered_set<std::string>& allowed_types, const rapidjson::Value* scope,
-    MatrixArkScopedRecordScan* out) {
+    MatrixArkScopedRecordScan* out, bool populate_cache = true) {
     if (out == nullptr) {
         return NullError("scoped_record_scan");
     }
@@ -911,12 +916,12 @@ bcache2::Status LoadMatrixArkScopedServingRecords(
         }
     }
 
-    MatrixArkScopedRecordScanCacheEntry entry;
-    entry.record_jsons = out->record_jsons;
-    entry.scanned_records = out->scanned_records;
-    entry.dropped_by_type = out->dropped_by_type;
-    entry.dropped_by_scope = out->dropped_by_scope;
-    {
+    if (populate_cache) {
+        MatrixArkScopedRecordScanCacheEntry entry;
+        entry.record_jsons = out->record_jsons;
+        entry.scanned_records = out->scanned_records;
+        entry.dropped_by_type = out->dropped_by_type;
+        entry.dropped_by_scope = out->dropped_by_scope;
         std::lock_guard<std::mutex> guard(g_matrixark_scoped_scan_cache_mu);
         if (g_matrixark_scoped_scan_cache.size() >= 8) {
             g_matrixark_scoped_scan_cache.clear();
@@ -1116,17 +1121,21 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     auto secondary_groups = SecondaryGroups(request);
     const std::string retrieve_cache_key = MatrixArkScopedScanCacheKey(
         count_key, record_hash_key, shard_size, count, scan_allowed, scope);
-    MatrixArkScopedRecordScan scan;
-    status = LoadMatrixArkScopedServingRecords(
-        impl, count_key, record_hash_key, shard_size, count, scan_allowed, scope, &scan);
-    if (!status.ok()) {
-        return status;
-    }
-    const std::vector<std::string>& record_jsons = scan.record_jsons;
     bool prepared_candidate_cache_hit = false;
     std::shared_ptr<const MatrixArkPreparedRetrieveCacheEntry> prepared =
-        LoadMatrixArkPreparedRetrieveCandidates(retrieve_cache_key, record_jsons, scope,
-                                                &prepared_candidate_cache_hit);
+        FindMatrixArkPreparedRetrieveCandidates(retrieve_cache_key, &prepared_candidate_cache_hit);
+    MatrixArkScopedRecordScan scan;
+    if (!prepared) {
+        status = LoadMatrixArkScopedServingRecords(
+            impl, count_key, record_hash_key, shard_size, count, scan_allowed, scope, &scan,
+            false);
+        if (!status.ok()) {
+            return status;
+        }
+        prepared = std::make_shared<const MatrixArkPreparedRetrieveCacheEntry>(
+            PrepareMatrixArkRetrieveCandidates(scan, scope));
+        StoreMatrixArkPreparedRetrieveCandidates(retrieve_cache_key, prepared);
+    }
     std::string query = JsonStringMember(request, "query");
     auto query_terms = QueryTerms(query);
     std::string question_type = JsonStringMember(request, "question_type");
@@ -1395,11 +1404,11 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     scan_stats.AddMember("native_prefix_scan", true, alloc);
     scan_stats.AddMember("native_secondary_index_prefilter", true, alloc);
     scan_stats.AddMember("native_pack_assembly", true, alloc);
-    scan_stats.AddMember("scanned_records", scan.scanned_records, alloc);
+    scan_stats.AddMember("scanned_records", prepared->scanned_records, alloc);
     scan_stats.AddMember("returned_records", static_cast<uint64_t>(scored.size()), alloc);
-    scan_stats.AddMember("dropped_by_type", scan.dropped_by_type, alloc);
-    scan_stats.AddMember("dropped_by_scope", scan.dropped_by_scope, alloc);
-    scan_stats.AddMember("native_scan_record_cache_hit", scan.cache_hit, alloc);
+    scan_stats.AddMember("dropped_by_type", prepared->dropped_by_type, alloc);
+    scan_stats.AddMember("dropped_by_scope", prepared->dropped_by_scope, alloc);
+    scan_stats.AddMember("native_scan_record_cache_hit", false, alloc);
     scan_stats.AddMember("candidate_cache_hit", prepared_candidate_cache_hit, alloc);
     scan_stats.AddMember("native_prepared_candidate_cache_hit", prepared_candidate_cache_hit, alloc);
     scan_stats.AddMember("native_prepared_candidate_count",
