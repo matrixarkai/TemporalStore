@@ -1092,9 +1092,6 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     if (request.Parse(request_json.c_str()).HasParseError() || !request.IsObject()) {
         return bcache2::Status::InvalidArgument("request_json must be a JSON object");
     }
-    const bool debug_context_pack =
-        JsonBoolMember(request, "debug_context_pack", false) ||
-        JsonBoolMember(request, "include_retrieval_debug", false);
     std::string count_text;
     bcache2::Status status = ReadMatrixArkServingCount(impl, count_key, &count_text);
     if (!status.ok()) {
@@ -1331,20 +1328,13 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         ref.AddMember("text", rapidjson::Value(item.text.c_str(), alloc), alloc);
         ref.AddMember("token_estimate", item.tokens, alloc);
         ref.AddMember("score", item.score, alloc);
-        if (debug_context_pack) {
-            ref.AddMember("session_continuity", rapidjson::Value(item.session_continuity.c_str(), alloc), alloc);
-            ref.AddMember("continuity_boost", item.continuity_boost, alloc);
-            ref.AddMember("cross_session_rerank_boost", item.cross_session_rerank_boost, alloc);
-            const char* continuity_reason =
-                item.session_continuity == "same_session"
-                    ? "same-session continuity"
-                    : (item.session_continuity == "cross_session"
-                           ? "cross-session memory bridge"
-                           : "session-neutral context");
-            ref.AddMember("continuity_reason", rapidjson::Value(continuity_reason, alloc), alloc);
-            ref.AddMember("selection_reason", "native_cpp_score_pack", alloc);
-        }
-        if (debug_context_pack && !item.source_ref_json.empty()) {
+        ref.AddMember("session_continuity", rapidjson::Value(item.session_continuity.c_str(), alloc), alloc);
+        ref.AddMember("continuity_boost", item.continuity_boost, alloc);
+        ref.AddMember("cross_session_rerank_boost", item.cross_session_rerank_boost, alloc);
+        const char* continuity_reason = item.session_continuity == "same_session" ? "same-session continuity" : (item.session_continuity == "cross_session" ? "cross-session memory bridge" : "session-neutral context");
+        ref.AddMember("continuity_reason", rapidjson::Value(continuity_reason, alloc), alloc);
+        ref.AddMember("selection_reason", "native_cpp_score_pack", alloc);
+        if (!item.source_ref_json.empty()) {
             rapidjson::Document source_ref;
             if (!source_ref.Parse(item.source_ref_json.c_str()).HasParseError()) {
                 rapidjson::Value copied;
@@ -1355,11 +1345,9 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         selected.PushBack(ref, alloc);
     }
     pack.AddMember("selected_refs", selected, alloc);
-    if (debug_context_pack) {
-        rapidjson::Value remote_refs;
-        remote_refs.CopyFrom(pack["selected_refs"], alloc);
-        pack.AddMember("remote_context_refs", remote_refs, alloc);
-    }
+    rapidjson::Value remote_refs;
+    remote_refs.CopyFrom(pack["selected_refs"], alloc);
+    pack.AddMember("remote_context_refs", remote_refs, alloc);
     rapidjson::Value count_obj(rapidjson::kObjectType);
     for (const auto& item : selected_counts) {
         rapidjson::Value key;
@@ -1390,16 +1378,14 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     pack.AddMember("used_context_tokens", used_tokens, alloc);
     pack.AddMember("used_remote_context_tokens", used_tokens, alloc);
     pack.AddMember("remote_context_budget_tokens", remote_budget, alloc);
+    pack.AddMember("requested_max_context_tokens", JsonUintMember(request, "max_context_tokens", remote_budget), alloc);
+    pack.AddMember("packing_policy", "native_cpp_question_type_aware", alloc);
     pack.AddMember("context_pack_assembly", "native_cpp_direct", alloc);
-    if (debug_context_pack) {
-        pack.AddMember("requested_max_context_tokens", JsonUintMember(request, "max_context_tokens", remote_budget), alloc);
-        pack.AddMember("packing_policy", "native_cpp_question_type_aware", alloc);
-        rapidjson::Value order(rapidjson::kArrayType);
-        for (const char* source : {"entities", "events", "segments", "resources", "skills", "summaries"}) {
-            order.PushBack(rapidjson::Value(source, alloc), alloc);
-        }
-        pack.AddMember("context_sources_order", order, alloc);
+    rapidjson::Value order(rapidjson::kArrayType);
+    for (const char* source : {"entities", "events", "segments", "resources", "skills", "summaries"}) {
+        order.PushBack(rapidjson::Value(source, alloc), alloc);
     }
+    pack.AddMember("context_sources_order", order, alloc);
     rapidjson::Value recall(rapidjson::kObjectType);
     rapidjson::Value native(rapidjson::kObjectType);
     native.AddMember("enabled", true, alloc);
@@ -1432,50 +1418,6 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     scan_stats.AddMember("secondary_index_dropped_candidate_count", secondary_dropped, alloc);
     scan_stats.AddMember("secondary_index_matched_candidate_count", secondary_matched, alloc);
     recall.AddMember("scan_stats", scan_stats, alloc);
-    if (!debug_context_pack) {
-        pack.AddMember("recall_policy", recall, alloc);
-        rapidjson::Value metrics(rapidjson::kObjectType);
-        metrics.AddMember("query_plan_ms", 0.0, alloc);
-        metrics.AddMember("node_traversal_ms", 0.0, alloc);
-        metrics.AddMember("index_prefilter_ms", 0.0, alloc);
-        metrics.AddMember("candidate_fetch_ms", 0.0, alloc);
-        metrics.AddMember("score_ms", 0.0, alloc);
-        metrics.AddMember("pack_ms", 0.0, alloc);
-        metrics.AddMember("audit_ms", 0.0, alloc);
-        metrics.AddMember("append_queue_wait_ms", 0.0, alloc);
-        metrics.AddMember("append_engine_ms", 0.0, alloc);
-        metrics.AddMember("selected_refs", static_cast<uint64_t>(pack["selected_refs"].Size()), alloc);
-        metrics.AddMember("dropped_refs", dropped_over_budget + dropped_cross_budget +
-                                          dropped_cross_session_cap + dropped_cross_candidate_cap +
-                                          dropped_low_score + dropped_duplicate_ref + dropped_policy_ref,
-                          alloc);
-        metrics.AddMember("scanned_records", prepared->scanned_records, alloc);
-        metrics.AddMember("index_postings_read", static_cast<uint64_t>(prepared->context_index_records), alloc);
-        metrics.AddMember("placement_partitions_touched", static_cast<uint64_t>(selected_nodes.size()), alloc);
-        metrics.AddMember("candidate_cache_hit", prepared_candidate_cache_hit, alloc);
-        metrics.AddMember("native_pack_assembly", true, alloc);
-        metrics.AddMember("python_pack_fallback", false, alloc);
-        metrics.AddMember("raw_candidate_tables_returned", false, alloc);
-        metrics.AddMember("broad_scan_used", false, alloc);
-        metrics.AddMember("broad_scan_blocked", false, alloc);
-        rapidjson::Value flags(rapidjson::kArrayType);
-        metrics.AddMember("fallback_flags", flags, alloc);
-        rapidjson::Value correctness(rapidjson::kObjectType);
-        const bool selected_non_empty = pack["selected_refs"].Size() > 0;
-        correctness.AddMember("scope_filtering", selected_non_empty, alloc);
-        correctness.AddMember("placement_filtering", selected_non_empty, alloc);
-        correctness.AddMember("compact_secondary_index_prefilter", selected_non_empty, alloc);
-        correctness.AddMember("stale_superseded_exclusion", selected_non_empty, alloc);
-        correctness.AddMember("shared_resource_skill_quota", selected_non_empty, alloc);
-        correctness.AddMember("cross_session_quota_rerank", selected_non_empty, alloc);
-        metrics.AddMember("correctness_evidence", correctness, alloc);
-        pack.AddMember("retrieval_metrics", metrics, alloc);
-        rapidjson::Value warnings(rapidjson::kArrayType);
-        pack.AddMember("quality_warnings", warnings, alloc);
-        out.AddMember("context_pack", pack, alloc);
-        output_json->assign(JsonStringify(out));
-        return bcache2::Status::OK();
-    }
     rapidjson::Value rerank(rapidjson::kObjectType);
     rerank.AddMember("enabled", true, alloc);
     rerank.AddMember("mode", "native_weighted_recall_plus_cross_session_rerank", alloc);

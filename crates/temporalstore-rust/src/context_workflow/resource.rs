@@ -9,7 +9,6 @@ pub fn parse_context_resource(request: ContextResourceParseRequest) -> ContextRe
     } else {
         request.owner_scope.trim().to_string()
     };
-    let scope = context_scope_descriptor(&owner_scope);
     let parser_name = if request.parser_name.trim().is_empty() {
         default_resource_parser_name()
     } else {
@@ -56,21 +55,6 @@ pub fn parse_context_resource(request: ContextResourceParseRequest) -> ContextRe
                 default_resource_parser_version(),
             );
             unit.insert("owner_scope".to_string(), owner_scope.clone());
-            unit.insert(
-                "scope_layer".to_string(),
-                context_scope_layer_name(scope.layer).to_string(),
-            );
-            unit.insert("scope_owner_id".to_string(), scope.owner_id.clone());
-            unit.insert(
-                "shared_graph_scope".to_string(),
-                scope.shared_graph_scope.clone(),
-            );
-            if !scope.producer_agent_id.is_empty() {
-                unit.insert(
-                    "producer_agent_id".to_string(),
-                    scope.producer_agent_id.clone(),
-                );
-            }
             unit.insert("chunk_index".to_string(), chunk_index.to_string());
             unit.insert("unit_index".to_string(), unit_index.to_string());
             unit.insert("split_index".to_string(), split_index.to_string());
@@ -146,7 +130,6 @@ pub fn parse_context_resource(request: ContextResourceParseRequest) -> ContextRe
         raw_uri: request.raw_uri.clone(),
         target_uri: context_resource_target_uri(&request.raw_uri),
         owner_scope,
-        scope,
         parser_name,
         parser_version: default_resource_parser_version(),
         resource_type: resource_type.clone(),
@@ -216,7 +199,6 @@ pub fn update_context_resource_lifecycle(
             resource.action = update.action;
             if !update.owner_scope.trim().is_empty() {
                 resource.owner_scope = update.owner_scope.trim().to_string();
-                resource.scope = context_scope_descriptor(&resource.owner_scope);
             }
             if !update.version.trim().is_empty() && update.version != resource.version {
                 resource.stale = true;
@@ -244,7 +226,6 @@ pub fn update_context_resource_lifecycle(
                 } else {
                     update.owner_scope.trim().to_string()
                 },
-                scope: context_scope_descriptor(&update.owner_scope),
                 resource_type: infer_context_resource_type(&update.raw_uri, None),
                 action: update.action,
                 version: update.version,
