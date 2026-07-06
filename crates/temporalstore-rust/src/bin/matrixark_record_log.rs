@@ -2461,21 +2461,36 @@ fn execute_record_log_request(
             }
             let mut records =
                 Vec::with_capacity(grouped.values().map(|fields| fields.len()).sum::<usize>());
-            for (key, fields) in grouped {
-                let response = engine.execute(ExecuteRequest {
-                    shard_id: DEFAULT_SHARD_ID,
-                    command: Command::HashMultiGet {
-                        key: key.clone(),
-                        fields: fields.clone(),
-                    },
-                });
-                if !response.status.ok {
-                    return Err(format!(
-                        "{}: {}",
-                        response.status.code, response.status.message
-                    ));
+            let grouped_entries = grouped.into_iter().collect::<Vec<_>>();
+            let commands = grouped_entries
+                .iter()
+                .map(|(key, fields)| Command::HashMultiGet {
+                    key: key.clone(),
+                    fields: fields.clone(),
+                })
+                .collect::<Vec<_>>();
+            let response = engine.batch_execute(BatchExecuteRequest {
+                shard_id: DEFAULT_SHARD_ID,
+                commands,
+            });
+            if !response.status.ok {
+                return Err(format!(
+                    "{}: {}",
+                    response.status.code, response.status.message
+                ));
+            }
+            if response.responses.len() != grouped_entries.len() {
+                return Err(format!(
+                    "batch_hget response count mismatch: expected {} got {}",
+                    grouped_entries.len(),
+                    response.responses.len()
+                ));
+            }
+            for ((key, fields), item) in grouped_entries.into_iter().zip(response.responses) {
+                if !item.status.ok {
+                    return Err(format!("{}: {}", item.status.code, item.status.message));
                 }
-                let values = match response.response {
+                let values = match item.response {
                     CommandResponse::Values { values } => values,
                     other => return Err(format!("unexpected response for batch_hget: {other:?}")),
                 };
