@@ -9,6 +9,7 @@
   "peer_agent_nodes": 2,
   "selected_peer_agent_nodes": 0,
   "skipped_peer_agent_nodes": 2,
+  "peer_agent_limit_applied": true,
   "selected_user_shared_nodes": 1,
   "selected_workspace_shared_nodes": 1,
   "selected_global_shared_nodes": 1,

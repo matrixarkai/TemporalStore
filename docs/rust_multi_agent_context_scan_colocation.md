@@ -35,6 +35,7 @@ Archived report: `docs/benchmark_archives/context_multiagent_scan_20260706_summa
   "peer_agent_nodes": 2,
   "selected_peer_agent_nodes": 0,
   "skipped_peer_agent_nodes": 2,
+  "peer_agent_limit_applied": true,
   "selected_user_shared_nodes": 1,
   "selected_workspace_shared_nodes": 1,
   "selected_global_shared_nodes": 1,
@@ -69,7 +70,7 @@ Archived report: `docs/benchmark_archives/context_multiagent_scan_20260706_summa
 - The selected nodes include current-agent, user-shared, workspace-shared, and global-shared layers.
 - Locality keys are scoped by colocation group instead of colocating the whole namespace.
 - Layer quotas are applied before expansion so shared resources are not crowded out by many current-agent matches.
-- Peer-agent candidates are counted but skipped in the tight focused scan so current-agent plus user/workspace/global shared layers remain bounded and visible.
+- Peer-agent candidates are counted and capped by `max_peer_agent_nodes`, so the tight focused scan keeps current-agent plus user/workspace/global shared layers bounded and visible without duplicating the whole namespace.
 
 ## Honest Limits
 

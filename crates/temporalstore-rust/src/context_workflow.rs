@@ -1031,6 +1031,8 @@ pub struct ContextRetrieveRequest {
     pub current_agent_id: String,
     #[serde(default)]
     pub shared_resource_scopes: Vec<String>,
+    #[serde(default = "default_peer_agent_fanout_node_limit")]
+    pub max_peer_agent_nodes: usize,
     #[serde(default)]
     pub provider: ContextModelProviderConfig,
 }
@@ -1086,6 +1088,8 @@ pub struct ContextFanoutPlanReport {
     pub selected_peer_agent_nodes: usize,
     #[serde(default)]
     pub skipped_peer_agent_nodes: usize,
+    #[serde(default)]
+    pub peer_agent_limit_applied: bool,
     #[serde(default)]
     pub selected_user_shared_nodes: usize,
     #[serde(default)]
@@ -2238,6 +2242,7 @@ pub fn ingest_extract_context(
         owner_scope: String::new(),
         current_agent_id: String::new(),
         shared_resource_scopes: Vec::new(),
+        max_peer_agent_nodes: usize::MAX,
         provider: request.provider,
     };
     let summary = ContextIngestExtractSummary {
@@ -3044,6 +3049,7 @@ pub fn run_context_pipeline_benchmark(
             owner_scope: String::new(),
             current_agent_id: String::new(),
             shared_resource_scopes: Vec::new(),
+            max_peer_agent_nodes: usize::MAX,
             provider: ContextModelProviderConfig::default(),
         };
         let retrieve_start = Instant::now();
@@ -4044,6 +4050,10 @@ fn push_unique_context_scope(
     }
 }
 
+fn default_peer_agent_fanout_node_limit() -> usize {
+    usize::MAX
+}
+
 fn context_scope_reservation_matches(
     required: &ContextScopeDescriptor,
     candidate: &ContextScopeDescriptor,
@@ -4094,34 +4104,58 @@ fn context_select_layered_event_nodes(
     summary_scores: &[ContextSummaryScore],
     limit: usize,
     request: &ContextRetrieveRequest,
-) -> (Vec<u64>, usize, bool) {
+) -> (Vec<u64>, usize, bool, bool) {
     let mut selected = Vec::new();
     let mut selected_set = BTreeSet::<u64>::new();
     let required_scopes = context_required_scan_scopes(request);
     let mut quota_nodes = 0usize;
+    let mut selected_peer_agents = 0usize;
+    let mut peer_agent_limit_applied = false;
     for required_scope in required_scopes {
         if selected.len() >= limit {
             break;
         }
-        if let Some((node_hash, _, _, _, _)) = summary_scores.iter().find(|candidate| {
+        if let Some((node_hash, _, _, _, scope)) = summary_scores.iter().find(|candidate| {
             !selected_set.contains(&candidate.0)
                 && context_scope_reservation_matches(&required_scope, &candidate.4)
         }) {
             selected_set.insert(*node_hash);
             selected.push(*node_hash);
+            if scope.layer == ContextScopeLayer::Agent
+                && !request.current_agent_id.trim().is_empty()
+                && !scope
+                    .producer_agent_id
+                    .eq_ignore_ascii_case(request.current_agent_id.trim())
+            {
+                selected_peer_agents = selected_peer_agents.saturating_add(1);
+            }
             quota_nodes = quota_nodes.saturating_add(1);
         }
     }
-    for (node_hash, _, _, _, _) in summary_scores {
+    for (node_hash, _, _, _, scope) in summary_scores {
         if selected.len() >= limit {
             break;
         }
-        if selected_set.insert(*node_hash) {
-            selected.push(*node_hash);
+        if selected_set.contains(node_hash) {
+            continue;
+        }
+        let is_peer_agent = scope.layer == ContextScopeLayer::Agent
+            && !request.current_agent_id.trim().is_empty()
+            && !scope
+                .producer_agent_id
+                .eq_ignore_ascii_case(request.current_agent_id.trim());
+        if is_peer_agent && selected_peer_agents >= request.max_peer_agent_nodes {
+            peer_agent_limit_applied = true;
+            continue;
+        }
+        selected_set.insert(*node_hash);
+        selected.push(*node_hash);
+        if is_peer_agent {
+            selected_peer_agents = selected_peer_agents.saturating_add(1);
         }
     }
     let quota_applied = quota_nodes > 0 && summary_scores.len() > limit;
-    (selected, quota_nodes, quota_applied)
+    (selected, quota_nodes, quota_applied, peer_agent_limit_applied)
 }
 
 pub fn retrieve_context(
@@ -4325,8 +4359,12 @@ pub fn retrieve_context(
         .max_event_nodes
         .max(1)
         .min(summary_node_limit.max(1));
-    let (event_node_hashes, shared_layer_quota_nodes, layer_quota_applied) =
-        context_select_layered_event_nodes(&summary_scores, event_node_limit, &request);
+    let (
+        event_node_hashes,
+        shared_layer_quota_nodes,
+        layer_quota_applied,
+        peer_agent_limit_applied,
+    ) = context_select_layered_event_nodes(&summary_scores, event_node_limit, &request);
     let mut selected_summary_set = BTreeSet::<u64>::new();
     node_hashes = Vec::with_capacity(summary_node_limit);
     for node_hash in &event_node_hashes {
@@ -4353,6 +4391,7 @@ pub fn retrieve_context(
     fanout_plan.event_expanded_nodes = event_node_hashes.len();
     fanout_plan.shared_layer_quota_nodes = shared_layer_quota_nodes;
     fanout_plan.layer_quota_applied = layer_quota_applied;
+    fanout_plan.peer_agent_limit_applied = peer_agent_limit_applied;
     for node_hash in &event_node_hashes {
         if let Some(scope) = node_scope_by_hash.get(node_hash) {
             match scope.layer {
@@ -4389,6 +4428,10 @@ pub fn retrieve_context(
     fanout_plan.skipped_peer_agent_nodes = fanout_plan
         .peer_agent_nodes
         .saturating_sub(fanout_plan.selected_peer_agent_nodes);
+    fanout_plan.peer_agent_limit_applied = fanout_plan.peer_agent_limit_applied
+        || (request.max_peer_agent_nodes != usize::MAX
+            && fanout_plan.skipped_peer_agent_nodes > 0
+            && fanout_plan.selected_peer_agent_nodes >= request.max_peer_agent_nodes);
     fanout_plan.skipped_node_count = skipped_node_hashes.len();
     fanout_plan.summary_lookup_batches = usize::from(!summary_scores.is_empty());
     fanout_plan.selected_node_hashes = event_node_hashes.clone();

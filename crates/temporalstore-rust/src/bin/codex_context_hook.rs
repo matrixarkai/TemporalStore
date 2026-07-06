@@ -150,6 +150,7 @@ fn main() {
             owner_scope: format!("user:{}", args.user_id),
             current_agent_id: args.agent_name.clone(),
             shared_resource_scopes: vec!["global".to_string(), format!("user:{}", args.user_id)],
+            max_peer_agent_nodes: 0,
             provider: ContextModelProviderConfig::default(),
         };
         let inject = inject_context(

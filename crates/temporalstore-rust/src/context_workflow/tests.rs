@@ -314,6 +314,7 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
             owner_scope: String::new(),
             current_agent_id: String::new(),
             shared_resource_scopes: Vec::new(),
+            max_peer_agent_nodes: usize::MAX,
             provider: ContextModelProviderConfig::default(),
         },
     );
@@ -471,6 +472,7 @@ fn context_query_debug_reports_filter_groups_drops_and_injection_order() {
             owner_scope: String::new(),
             current_agent_id: String::new(),
             shared_resource_scopes: Vec::new(),
+            max_peer_agent_nodes: usize::MAX,
             provider: ContextModelProviderConfig::default(),
         },
     );
@@ -607,6 +609,7 @@ fn context_retrieval_limits_namespace_fanout_with_summary_and_locality_plan() {
             owner_scope: String::new(),
             current_agent_id: String::new(),
             shared_resource_scopes: Vec::new(),
+            max_peer_agent_nodes: usize::MAX,
             provider: ContextModelProviderConfig::default(),
         },
     );
@@ -718,6 +721,7 @@ fn context_multi_agent_scan_boosts_current_agent_and_colocates_shared_scopes() {
             owner_scope: "workspace:payments".to_string(),
             current_agent_id: "codex".to_string(),
             shared_resource_scopes: vec!["user:alice".to_string(), "global".to_string()],
+            max_peer_agent_nodes: 0,
             provider: ContextModelProviderConfig::default(),
         },
     );
@@ -836,6 +840,7 @@ fn context_multi_agent_layer_quota_keeps_shared_resources_when_agent_has_many_ma
             owner_scope: String::new(),
             current_agent_id: "codex".to_string(),
             shared_resource_scopes: vec!["user:alice".to_string(), "global".to_string()],
+            max_peer_agent_nodes: 0,
             provider: ContextModelProviderConfig::default(),
         },
     );
@@ -944,6 +949,7 @@ fn context_benchmark_injection_uses_entity_segment_l0_l1_and_secondary_index() {
         owner_scope: String::new(),
         current_agent_id: String::new(),
         shared_resource_scopes: Vec::new(),
+        max_peer_agent_nodes: usize::MAX,
         provider: ContextModelProviderConfig::default(),
     };
     let retrieved = retrieve_context(&engine, retrieve.clone());
@@ -1537,6 +1543,7 @@ fn context_injection_prompt_pack_preserves_retrieved_evidence_ordering() {
         owner_scope: String::new(),
         current_agent_id: String::new(),
         shared_resource_scopes: Vec::new(),
+        max_peer_agent_nodes: usize::MAX,
         provider: ContextModelProviderConfig::default(),
     };
     let retrieved = retrieve_context(&engine, retrieve.clone());
@@ -1654,6 +1661,7 @@ fn context_workflow_policy_rejects_disallowed_runtime_controls() {
             owner_scope: String::new(),
             current_agent_id: String::new(),
             shared_resource_scopes: Vec::new(),
+            max_peer_agent_nodes: usize::MAX,
             provider: ContextModelProviderConfig::default(),
         },
         prompt: "one two three four five".to_string(),
