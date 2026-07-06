@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -175,12 +176,20 @@ def selected_ref_signature(result: Json) -> list[str]:
     signatures: list[str] = []
     for item in _selected_ref_items_from_pack(pack):
         ref_type = str(item.get("ref_type") or item.get("type") or item.get("context_class") or "ref")
-        ref_hash = item.get("ref_hash") or item.get("event_id_hash") or item.get("entity_hash") or item.get("chunk_hash")
-        if ref_hash is not None:
-            signatures.append(f"{ref_type}:{ref_hash}")
+        stable_id = (
+            item.get("source_ref")
+            or item.get("context_event_key")
+            or item.get("summary_key")
+            or item.get("entity_name")
+            or item.get("resource_id")
+            or item.get("skill_id")
+        )
+        if stable_id is not None:
+            signatures.append(f"{ref_type}:stable:{stable_id}")
             continue
         text = str(item.get("text") or item.get("summary_text") or item.get("state") or "")
-        signatures.append(f"{ref_type}:text:{hash(text)}")
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+        signatures.append(f"{ref_type}:text:{digest}")
     return sorted(signatures)
 
 
@@ -1914,7 +1923,7 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
     prefix = f"{args.storage_prefix}:{run_id}:{backend}"
     effective_storage_tuning = effective_storage_tuning_from_env()
     previous_queue_env: dict[str, str | None] = {}
-    if backend == "cpp":
+    if backend in {"cpp", "rust"}:
         for key, value in {
             "MATRIXARK_DIRECT_WRITE_QUEUE": "1",
             "MATRIXARK_DIRECT_WRITE_QUEUE_MODE": "memory",

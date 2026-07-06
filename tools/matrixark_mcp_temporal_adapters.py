@@ -109,6 +109,79 @@ def _native_scope_with_hashes(scope: Json) -> Json:
     return enriched
 
 
+def _selected_ref_class(ref: Json) -> str:
+    raw = str(ref.get("context_class") or ref.get("ref_type") or ref.get("type") or "").lower()
+    if "entity" in raw:
+        return "entity"
+    if "segment" in raw:
+        return "segment"
+    if "summary" in raw:
+        return "summary"
+    if "resource" in raw or "chunk" in raw:
+        return "resource"
+    if "skill" in raw:
+        return "skill"
+    if "event" in raw:
+        return "event"
+    return raw or "ref"
+
+
+def _selected_ref_stable_key(ref: Json) -> str:
+    ref_class = _selected_ref_class(ref)
+    stable_id = (
+        ref.get("source_ref")
+        or ref.get("context_event_key")
+        or ref.get("summary_key")
+        or ref.get("entity_name")
+        or ref.get("resource_id")
+        or ref.get("skill_id")
+        or ref.get("ref_hash")
+        or ref.get("event_id_hash")
+        or ref.get("entity_hash")
+        or ref.get("chunk_hash")
+    )
+    if stable_id is not None:
+        return f"{ref_class}:{stable_id}"
+    text = str(ref.get("text") or ref.get("summary_text") or ref.get("state") or "")
+    return f"{ref_class}:text:{stable_hash(text)}"
+
+
+def _compact_native_selected_refs(selected_refs: list[Json], *, max_total: int = 4) -> tuple[list[Json], int]:
+    """Deduplicate and cap already-selected native refs without Python scans."""
+
+    if not selected_refs:
+        return [], 0
+    per_class_limit = {
+        "entity": 1,
+        "event": 1,
+        "segment": 1,
+        "summary": 1,
+        "resource": 1,
+        "skill": 1,
+        "ref": 1,
+    }
+    selected: list[Json] = []
+    seen: set[str] = set()
+    class_counts: dict[str, int] = {}
+    dropped = 0
+    for ref in selected_refs:
+        if not isinstance(ref, dict):
+            dropped += 1
+            continue
+        ref_class = _selected_ref_class(ref)
+        key = _selected_ref_stable_key(ref)
+        limit = per_class_limit.get(ref_class, 1)
+        if key in seen or class_counts.get(ref_class, 0) >= limit or len(selected) >= max_total:
+            dropped += 1
+            continue
+        normalized = dict(ref)
+        normalized.setdefault("context_class", ref_class)
+        selected.append(normalized)
+        seen.add(key)
+        class_counts[ref_class] = class_counts.get(ref_class, 0) + 1
+    return selected, dropped
+
+
 
 def _latency_quantile_from_cumulative_buckets(buckets: list[int], bucket_bounds: tuple[float, ...], total: int, quantile: float) -> float:
     if total <= 0:
@@ -2702,6 +2775,13 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             if not native_retrieve_fallback_allowed(args):
                 return self._native_context_pack_fallback_blocker(args, reason="native_context_pack_missing_refs_or_groups")
             return None
+        compact_dropped_refs = 0
+        if isinstance(selected_refs, list) and selected_refs:
+            compact_refs, compact_dropped_refs = _compact_native_selected_refs(selected_refs)
+            if compact_refs and (compact_dropped_refs or len(compact_refs) != len(selected_refs)):
+                pack["selected_refs"] = compact_refs
+                pack["remote_context_refs"] = compact_refs
+                selected_refs = compact_refs
         raw_candidate_tables = (
             pack.get("candidate_records")
             or pack.get("raw_candidate_records")
@@ -2761,8 +2841,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "audit_ms": round(float(native_telemetry.get("audit_ms") or native_stage_metrics.get("audit_ms") or 0.0), 3),
                 "append_queue_wait_ms": round(float(native_telemetry.get("append_queue_wait_ms") or self._append_queue_wait_ms_avg()), 3),
                 "append_engine_ms": round(float(native_telemetry.get("append_engine_ms") or self._append_engine_ms_avg()), 3),
-                "selected_refs": int(native_telemetry.get("selected_refs") or selected_count),
-                "dropped_refs": int(native_telemetry.get("dropped_refs") or native_telemetry.get("dropped_ref_count") or 0),
+                "selected_refs": selected_count,
+                "dropped_refs": int(native_telemetry.get("dropped_refs") or native_telemetry.get("dropped_ref_count") or 0) + compact_dropped_refs,
                 "scanned_records": int(native_telemetry.get("scanned_records") or 0),
                 "candidate_cache_hit": candidate_cache_hit,
                 "cache_hit": candidate_cache_hit,
@@ -2827,6 +2907,9 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                     "token_budget": int(dropped.get("over_budget", 0) or dropped.get("max_selected_refs", 0) or 0),
                     "score_threshold": int(dropped.get("low_score", 0) or dropped.get("score_threshold", 0) or 0),
                 }
+            if compact_dropped_refs:
+                native_drop_counters = dict(native_drop_counters or {})
+                native_drop_counters["token_budget"] = int(native_drop_counters.get("token_budget") or 0) + compact_dropped_refs
             if native_drop_counters:
                 retrieval_metrics["drop_counters"] = native_drop_counters
                 if not int(retrieval_metrics.get("dropped_refs") or 0):
