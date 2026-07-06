@@ -32,6 +32,8 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
   "retrieved_block_count": 45,
   "multi_agent_scan_ready": true,
   "fanout_namespace_node_candidates": 43,
+  "fanout_summary_embedding_query_nodes": 39,
+  "fanout_summary_pruned_peer_agent_nodes": 4,
   "fanout_event_expanded_nodes": 16,
   "fanout_selected_colocation_group_count": 4,
   "fanout_avoided_namespace_replication_nodes": 27,
@@ -78,6 +80,7 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
 
 - The broader Rust harness ingests resources, skills, and conversations through TemporalStore context models.
 - The scan reduces fanout from namespace candidates to bounded expanded nodes.
+- Peer-agent capping now happens before summary embedding lookup: 4 peer-agent nodes are pruned from summary scoring in this scale run.
 - The scale scan avoids full namespace replication: 27 candidate nodes are left unexpanded, a 62% fanout reduction across 4 selected colocation groups.
 - Current-agent context is selected with agent-aware locality while user, workspace, and global shared resources remain visible.
 - Required scan scopes are derived from current-agent plus owner-scope policy, so shared user/global resources do not depend on every caller spelling out the full scope list.

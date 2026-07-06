@@ -1057,6 +1057,10 @@ pub struct ContextFanoutPlanReport {
     pub namespace_node_candidates: usize,
     pub summary_candidate_nodes: usize,
     pub summary_selected_nodes: usize,
+    #[serde(default)]
+    pub summary_embedding_query_nodes: usize,
+    #[serde(default)]
+    pub summary_pruned_peer_agent_nodes: usize,
     pub event_expanded_nodes: usize,
     pub skipped_node_count: usize,
     pub summary_lookup_batches: usize,
@@ -4349,9 +4353,35 @@ pub fn retrieve_context(
             };
         }
     };
-    let mut summary_ref_owners = BTreeMap::new();
-    let mut summary_ref_hashes = Vec::with_capacity(node_hashes.len().saturating_mul(2));
+    let mut summary_scan_node_hashes = Vec::with_capacity(node_hashes.len());
+    let mut summary_peer_agent_nodes = 0usize;
     for node_hash in &node_hashes {
+        let is_peer_agent = node_scope_by_hash
+            .get(node_hash)
+            .map(|scope| {
+                scope.layer == ContextScopeLayer::Agent
+                    && !request.current_agent_id.trim().is_empty()
+                    && !scope
+                        .producer_agent_id
+                        .eq_ignore_ascii_case(request.current_agent_id.trim())
+            })
+            .unwrap_or(false);
+        if is_peer_agent && summary_peer_agent_nodes >= request.max_peer_agent_nodes {
+            fanout_plan.summary_pruned_peer_agent_nodes = fanout_plan
+                .summary_pruned_peer_agent_nodes
+                .saturating_add(1);
+            continue;
+        }
+        if is_peer_agent {
+            summary_peer_agent_nodes = summary_peer_agent_nodes.saturating_add(1);
+        }
+        summary_scan_node_hashes.push(*node_hash);
+    }
+    fanout_plan.summary_embedding_query_nodes = summary_scan_node_hashes.len();
+    let mut summary_ref_owners = BTreeMap::new();
+    let mut summary_ref_hashes =
+        Vec::with_capacity(summary_scan_node_hashes.len().saturating_mul(2));
+    for node_hash in &summary_scan_node_hashes {
         for label in ["node_l0", "node_l1"] {
             let ref_hash = context_embedding_ref_hash(request.tenant_hash, *node_hash, label);
             summary_ref_owners.insert(ref_hash, *node_hash);
@@ -4365,7 +4395,7 @@ pub fn retrieve_context(
             command: Command::ContextQueryEmbeddings {
                 tenant_hash: request.tenant_hash,
                 ref_hashes: summary_ref_hashes,
-                limit: Some(node_hashes.len().saturating_mul(2).max(1)),
+                limit: Some(summary_scan_node_hashes.len().saturating_mul(2).max(1)),
             },
         });
         if let CommandResponse::ContextEmbeddings { embeddings } = embeddings.response {
@@ -4380,7 +4410,7 @@ pub fn retrieve_context(
             }
         }
     }
-    let mut summary_scores = node_hashes
+    let mut summary_scores = summary_scan_node_hashes
         .iter()
         .map(|node_hash| {
             let (best_score, found) = summary_scores_by_node
@@ -4487,7 +4517,9 @@ pub fn retrieve_context(
             && fanout_plan.skipped_peer_agent_nodes > 0
             && fanout_plan.selected_peer_agent_nodes >= request.max_peer_agent_nodes);
     fanout_plan.skipped_node_count = skipped_node_hashes.len();
-    fanout_plan.avoided_namespace_replication_nodes = fanout_plan.skipped_node_count;
+    fanout_plan.avoided_namespace_replication_nodes = fanout_plan
+        .namespace_node_candidates
+        .saturating_sub(fanout_plan.event_expanded_nodes);
     fanout_plan.fanout_reduction_percent = if fanout_plan.namespace_node_candidates == 0 {
         0
     } else {

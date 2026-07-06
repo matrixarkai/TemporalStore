@@ -1,6 +1,8 @@
 {
   "ready": true,
   "namespace_node_candidates": 13,
+  "summary_embedding_query_nodes": 11,
+  "summary_pruned_peer_agent_nodes": 2,
   "event_expanded_nodes": 4,
   "selected_colocation_group_count": 4,
   "avoided_namespace_replication_nodes": 9,
