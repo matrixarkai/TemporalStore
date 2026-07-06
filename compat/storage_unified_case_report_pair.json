@@ -32,6 +32,61 @@
         ]
       },
       {
+        "name": "storage_slot_layout_transitions_shared",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "slot_layout_transitions_growth_delete_compact_dump_restart",
+            "status": "passed",
+            "latency_ms": 1.05,
+            "output": {
+              "slot_compacted_generation": 3,
+              "slot_deleted_refs": 1,
+              "slot_dirty_generation_count": 2,
+              "slot_growth_events": 2,
+              "slot_tombstone_count": 1
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_block_address_fallback_shared",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "block_address_cache_disk_shared_store_fallback",
+            "status": "passed",
+            "latency_ms": 1.05,
+            "output": {
+              "block_index_cache_hits": 2,
+              "block_index_cache_misses": 1,
+              "disk_cache_hits": 1,
+              "page_address_fallbacks": 1,
+              "shared_store_read_throughs": 1
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_model_aware_block_compaction_shared",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "model_aware_block_compaction_rewrites_indexes_and_reclaims_stale_blocks",
+            "status": "passed",
+            "latency_ms": 1.15,
+            "output": {
+              "block_index_entry_count": 2,
+              "compaction_reclaimed_bytes": 8192,
+              "model_layout_rewrite_count": 1,
+              "object_index_entry_count": 2,
+              "stale_blocks_rewritten": 1,
+              "stale_blocks_skipped": 0
+            }
+          }
+        ]
+      },
+      {
         "name": "storage_gc_eviction_cold_reads_shared",
         "status": "passed",
         "steps": [
@@ -49,6 +104,45 @@
               "stale_block_tombstones": 1,
               "stale_page_tombstones": 1,
               "tombstone_records": 2
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_wal_index_gc_reclaim_shared",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "wal_index_gc_slot_generation_reclaim_and_recovery",
+            "status": "passed",
+            "latency_ms": 1.1,
+            "output": {
+              "append_log_reclaimed_records": 3,
+              "append_log_replay_records": 6,
+              "compaction_watermark": 24,
+              "follower_cursor_retention_floor": 20,
+              "index_gc_generation": 4,
+              "reclaimable_bytes": 8192
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_cache_replacement_soak_shared",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "cache_replacement_soak_memory_disk_pressure_restart",
+            "status": "passed",
+            "latency_ms": 1.25,
+            "output": {
+              "cache_admissions": 8,
+              "cache_evictions": 3,
+              "cache_refills": 2,
+              "cache_writeback_queue_depth": 1,
+              "cache_writeback_rejections": 0,
+              "memory_cache_hits": 11,
+              "memory_cache_misses": 2
             }
           }
         ]
@@ -106,6 +200,61 @@
         ]
       },
       {
+        "name": "storage_slot_layout_transitions_shared",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "slot_layout_transitions_growth_delete_compact_dump_restart",
+            "status": "passed",
+            "latency_ms": 1.05,
+            "output": {
+              "slot_compacted_generation": 3,
+              "slot_deleted_refs": 1,
+              "slot_dirty_generation_count": 2,
+              "slot_growth_events": 2,
+              "slot_tombstone_count": 1
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_block_address_fallback_shared",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "block_address_cache_disk_shared_store_fallback",
+            "status": "passed",
+            "latency_ms": 1.05,
+            "output": {
+              "block_index_cache_hits": 2,
+              "block_index_cache_misses": 1,
+              "disk_cache_hits": 1,
+              "page_address_fallbacks": 1,
+              "shared_store_read_throughs": 1
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_model_aware_block_compaction_shared",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "model_aware_block_compaction_rewrites_indexes_and_reclaims_stale_blocks",
+            "status": "passed",
+            "latency_ms": 1.15,
+            "output": {
+              "block_index_entry_count": 2,
+              "compaction_reclaimed_bytes": 8192,
+              "model_layout_rewrite_count": 1,
+              "object_index_entry_count": 2,
+              "stale_blocks_rewritten": 1,
+              "stale_blocks_skipped": 0
+            }
+          }
+        ]
+      },
+      {
         "name": "storage_gc_eviction_cold_reads_shared",
         "status": "passed",
         "steps": [
@@ -123,6 +272,45 @@
               "stale_block_tombstones": 1,
               "stale_page_tombstones": 1,
               "tombstone_records": 2
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_wal_index_gc_reclaim_shared",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "wal_index_gc_slot_generation_reclaim_and_recovery",
+            "status": "passed",
+            "latency_ms": 1.1,
+            "output": {
+              "append_log_reclaimed_records": 3,
+              "append_log_replay_records": 6,
+              "compaction_watermark": 24,
+              "follower_cursor_retention_floor": 20,
+              "index_gc_generation": 4,
+              "reclaimable_bytes": 8192
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_cache_replacement_soak_shared",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "cache_replacement_soak_memory_disk_pressure_restart",
+            "status": "passed",
+            "latency_ms": 1.25,
+            "output": {
+              "cache_admissions": 8,
+              "cache_evictions": 3,
+              "cache_refills": 2,
+              "cache_writeback_queue_depth": 1,
+              "cache_writeback_rejections": 0,
+              "memory_cache_hits": 11,
+              "memory_cache_misses": 2
             }
           }
         ]

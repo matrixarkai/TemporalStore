@@ -25,11 +25,32 @@ CPP_RUNNER = ROOT / "tools" / "cpp_storage_unified_case_report_runner.cc"
 EXPECTED_SCHEMA = "temporalstore_storage_unified_case_report_pair_v1"
 EXPECTED_REPORT_SCHEMA = "temporalstore_unified_case_report_v1"
 REQUIRED_CASES = {
+    "storage_block_address_fallback_shared",
+    "storage_cache_replacement_soak_shared",
     "storage_slot_object_block_index_authority_shared",
+    "storage_slot_layout_transitions_shared",
     "storage_gc_eviction_cold_reads_shared",
+    "storage_model_aware_block_compaction_shared",
     "storage_stream_segment_manifest_rebuild_shared",
+    "storage_wal_index_gc_reclaim_shared",
 }
 REQUIRED_OUTPUT_FIELDS = {
+    "storage_block_address_fallback_shared": {
+        "block_index_cache_hits",
+        "block_index_cache_misses",
+        "disk_cache_hits",
+        "page_address_fallbacks",
+        "shared_store_read_throughs",
+    },
+    "storage_cache_replacement_soak_shared": {
+        "cache_admissions",
+        "cache_evictions",
+        "cache_refills",
+        "cache_writeback_queue_depth",
+        "cache_writeback_rejections",
+        "memory_cache_hits",
+        "memory_cache_misses",
+    },
     "storage_slot_object_block_index_authority_shared": {
         "append_watermark",
         "block_index_entry_count",
@@ -42,6 +63,13 @@ REQUIRED_OUTPUT_FIELDS = {
         "slot_page_ref_count",
         "slot_stale_ref_count",
     },
+    "storage_slot_layout_transitions_shared": {
+        "slot_compacted_generation",
+        "slot_deleted_refs",
+        "slot_dirty_generation_count",
+        "slot_growth_events",
+        "slot_tombstone_count",
+    },
     "storage_gc_eviction_cold_reads_shared": {
         "cache_evictions",
         "cold_scan_no_cache_reads",
@@ -53,6 +81,14 @@ REQUIRED_OUTPUT_FIELDS = {
         "stale_page_tombstones",
         "tombstone_records",
     },
+    "storage_model_aware_block_compaction_shared": {
+        "block_index_entry_count",
+        "compaction_reclaimed_bytes",
+        "model_layout_rewrite_count",
+        "object_index_entry_count",
+        "stale_blocks_rewritten",
+        "stale_blocks_skipped",
+    },
     "storage_stream_segment_manifest_rebuild_shared": {
         "delayed_destroy_backlog",
         "segment_open_count",
@@ -61,6 +97,14 @@ REQUIRED_OUTPUT_FIELDS = {
         "storage_zone_stale_bytes",
         "storage_zone_total_bytes",
         "storage_zone_used_bytes",
+    },
+    "storage_wal_index_gc_reclaim_shared": {
+        "append_log_reclaimed_records",
+        "append_log_replay_records",
+        "compaction_watermark",
+        "follower_cursor_retention_floor",
+        "index_gc_generation",
+        "reclaimable_bytes",
     },
 }
 
