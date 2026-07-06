@@ -4915,7 +4915,8 @@
               "crates/temporalstore-rust/src/bin/server.rs",
               "crates/temporalstore-rust/src/bin/raft_node.rs",
               "crates/temporalstore-rust/src/raft.rs",
-              "crates/rustraft/src/lib.rs"
+              "crates/temporalstore-rust/src/raft/rustraft.rs",
+              "crates/temporalstore-rust/Cargo.toml"
             ],
             "rust_runner": "cargo test -p temporalstore-rust raft_status_read_index_and_transfer_leader_match_engine_control_shape metaserver_raft_status_read_index_and_transfer_leader_work --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",

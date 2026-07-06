@@ -1,11 +1,12 @@
 # RustRaft Production Readiness
 
 RustRaft is the standalone TemporalStore-owned Raft contract library in the
-separate `RustRaft` repository. In this TemporalStore repo, the mirrored
-workspace crate lives at `crates/rustraft` and `crates/temporalstore-rust`
-consumes it directly through a path dependency so local builds prove the library
-boundary. It does not replace the data-node or metaserver by itself. It defines
-the production semantics that those runtimes must prove.
+separate `RustRaft` repository. In this TemporalStore repo,
+`crates/temporalstore-rust` consumes it through the pinned external Git
+dependency in `crates/temporalstore-rust/Cargo.toml`; the duplicate local
+workspace crate was removed so TemporalStore only carries its runtime adapter
+and integration code. It does not replace the data-node or metaserver by
+itself. It defines the production semantics that those runtimes must prove.
 
 ## Status Labels
 
