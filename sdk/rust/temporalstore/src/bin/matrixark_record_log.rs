@@ -1947,6 +1947,10 @@ fn context_class_name(record: &Value) -> String {
     }
 }
 
+fn is_serving_selected_ref_class(context_class: &str) -> bool {
+    matches!(context_class, "event" | "summary")
+}
+
 fn pack_ref_from_record(
     record: &Value,
     score: f64,
@@ -2148,6 +2152,7 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
     let mut dropped_cross_session_cap = 0_u64;
     let mut dropped_cross_candidate_cap = 0_u64;
     let mut dropped_low_score = 0_u64;
+    let mut dropped_policy_ref = 0_u64;
     let mut used_tokens = 0_u64;
     let mut cross_used_tokens = 0_u64;
     let mut cross_selected_refs = 0_u64;
@@ -2167,6 +2172,10 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
         let text = candidate_text(record);
         let tokens = token_estimate(&text);
         let context_class = context_class_name(record);
+        if !is_serving_selected_ref_class(&context_class) {
+            dropped_policy_ref += 1;
+            continue;
+        }
         let is_cross_session = session_continuity == "cross_session";
         let record_type = record
             .get("record_type")
@@ -2284,13 +2293,15 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
             "cross_session_candidate_cap": dropped_cross_candidate_cap,
             "low_score": dropped_low_score,
             "duplicate_ref": dropped_duplicate_ref,
+            "policy_ref": dropped_policy_ref,
             "reason_counts": {
                 "over_budget": dropped_over_budget,
                 "cross_session_budget": dropped_cross_budget,
                 "cross_session_session_cap": dropped_cross_session_cap,
                 "cross_session_candidate_cap": dropped_cross_candidate_cap,
                 "low_score": dropped_low_score,
-                "duplicate_ref": dropped_duplicate_ref
+                "duplicate_ref": dropped_duplicate_ref,
+                "policy_ref": dropped_policy_ref
             }
         },
         "used_context_tokens": used_tokens,
@@ -2392,6 +2403,7 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
         + dropped_cross_budget
         + dropped_cross_session_cap
         + dropped_cross_candidate_cap
+        + dropped_policy_ref
         + dropped_duplicate_ref
         + scan_dropped_count;
     let scan_cache_hit = scan_stats
