@@ -8,10 +8,11 @@ and observable apply lag.
 
 ## What Is Implemented Now
 
-- `RustRaft` now lives as the workspace library crate `crates/rustraft`.
-- `crates/temporalstore-rust` consumes `rustraft` through a path dependency, so
-  local TemporalStore builds and tests no longer depend on a pinned external git
-  revision for the RustRaft contract.
+- `RustRaft` now lives in the separate external RustRaft library repository.
+- `crates/temporalstore-rust` consumes `rustraft` through the pinned external Git
+  dependency in `crates/temporalstore-rust/Cargo.toml`; the old duplicate
+  workspace crate was removed so TemporalStore does not carry unused Raft
+  library source.
 - The library owns:
   - `RustRaftSemanticRequirement`
   - `RustRaftParityContract`
@@ -46,8 +47,8 @@ and observable apply lag.
 
 | Gap | Why It Matters | Target Implementation | Shared Gate |
 |---|---|---|---|
-| Native log runtime | Core contract and RPC/status types are separate, but production log application still lives inside `temporalstore-rust`. | Move reusable membership planner/state transitions and snapshot-floor state machine into `crates/rustraft`; keep storage engine calls in TemporalStore adapters. | RustRaft unit tests plus TemporalStore integration tests. |
-| Transport abstraction | The trait and message contract now live in `crates/rustraft`; production HTTP wiring is still TemporalStore-specific. | Make data-node/metaserver transport clients implement `RustRaftTransport` directly. | Shared Raft transport contract cases. |
+| Native log runtime | Core contract and RPC/status types are separate, but production log application still lives inside `temporalstore-rust`. | Move reusable membership planner/state transitions and snapshot-floor state machine into the external RustRaft library; keep storage engine calls in TemporalStore adapters. | RustRaft unit tests plus TemporalStore integration tests. |
+| Transport abstraction | The trait and message contract now live in the external RustRaft library; production HTTP wiring is still TemporalStore-specific. | Make data-node/metaserver transport clients implement `RustRaftTransport` directly. | Shared Raft transport contract cases. |
 | Snapshot lifecycle | Snapshot floor, chunk retry, stale chunk rejection, and tail catch-up are still tested mostly through TemporalStore. | Add library-level snapshot state machine and fault tests. | `raft_rustraft_snapshot_lifecycle_depth`. |
 | Membership workflow | Learner catch-up, promote, remove, transfer leader, and joint membership need a reusable library state model. | Add membership planner/state transitions to the `RustRaft` repo; TemporalStore metaserver consumes it. | `raft_rustraft_leader_transfer_high_write_fault_harness` and membership cases. |
 | Metrics model | RustRaft metric names/status snapshots live in the library; TemporalStore still emits many app-specific metrics. | Route Raft dashboard panels through RustRaft metric-name constants where possible. | Grafana/Prometheus parity checks. |
@@ -57,7 +58,7 @@ and observable apply lag.
 
 ## Implementation Order
 
-1. Keep `crates/rustraft` as the stable public RustRaft contract crate.
+1. Keep the external RustRaft repository as the stable public RustRaft contract crate.
 2. Move pure contract/state types first; keep TemporalStore process and storage code
    where it is until the library boundary is stable.
 3. Keep RustRaft transport and storage traits independent of TemporalStore

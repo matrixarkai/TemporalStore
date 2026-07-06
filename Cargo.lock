@@ -988,14 +988,6 @@ dependencies = [
 [[package]]
 name = "rustraft"
 version = "0.1.0"
-dependencies = [
- "serde",
- "thiserror",
-]
-
-[[package]]
-name = "rustraft"
-version = "0.1.0"
 source = "git+https://github.com/bjmeetsfo/RustRaft.git?rev=5ef82eca8cb06e5e69e6414afc2dfe57db9ff5c1#5ef82eca8cb06e5e69e6414afc2dfe57db9ff5c1"
 dependencies = [
  "serde",
@@ -1146,7 +1138,7 @@ dependencies = [
  "prost",
  "protoc-bin-vendored",
  "rustmtcache",
- "rustraft 0.1.0 (git+https://github.com/bjmeetsfo/RustRaft.git?rev=5ef82eca8cb06e5e69e6414afc2dfe57db9ff5c1)",
+ "rustraft",
  "serde",
  "serde_json",
  "sha2",
