@@ -193,6 +193,22 @@ def _case_count_by_family(corpus: dict[str, Any], coverage: dict[str, dict[str, 
     return counts
 
 
+def _case_names_by_family(
+    corpus: dict[str, Any],
+    coverage: dict[str, dict[str, Any]],
+) -> dict[str, set[str]]:
+    cases = [case for case in _as_list(corpus.get("cases")) if isinstance(case, dict)]
+    names: dict[str, set[str]] = {}
+    for family, source in coverage.items():
+        family_suites = {str(suite) for suite in source["suites"]}
+        names[family] = {
+            str(case.get("name"))
+            for case in cases
+            if case.get("name") and _case_matches_family(case, family, family_suites)
+        }
+    return names
+
+
 def main() -> int:
     matrix = json.loads(MATRIX.read_text(encoding="utf-8"))
     corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
@@ -216,6 +232,7 @@ def main() -> int:
     coverage = _coverage_by_family(corpus)
     failures.extend(_coverage_identity_failures(corpus))
     case_counts = _case_count_by_family(corpus, coverage)
+    case_names = _case_names_by_family(corpus, coverage)
     rows = matrix.get("rows")
     if not isinstance(rows, list):
         rows = []
@@ -334,6 +351,17 @@ def main() -> int:
                     failures.append(f"{family} adapter_contract_validator must match corpus coverage")
                 if source_cases != cases:
                     failures.append(f"{family} adapter_contract_case_names must match corpus coverage")
+                unknown_cases = sorted(cases - case_names.get(family, set()))
+                if unknown_cases:
+                    failures.append(
+                        f"{family} adapter_contract_case_names not selected by --family filter: "
+                        + ", ".join(unknown_cases)
+                    )
+                if len(cases) > selected_case_count:
+                    failures.append(
+                        f"{family} adapter_contract_case_names cannot exceed selected cases: "
+                        f"adapter={len(cases)} selected={selected_case_count}"
+                    )
                 for path in (ROOT / runner, ROOT / validator):
                     if not path.exists():
                         failures.append(f"{family} adapter contract path does not exist: {path}")
@@ -381,6 +409,11 @@ def main() -> int:
     print(f"- families={len(rows)}")
     print(f"- static_or_mixed_gates={static_count}")
     print(f"- selected_case_count={sum(case_counts.values())}")
+    if "storage/cache" in by_family:
+        print(
+            "- storage_cache_adapter_contract_cases="
+            f"{len(_as_strings(by_family['storage/cache'].get('adapter_contract_case_names')))}"
+        )
     print(f"- feature_correct={feature_correct}")
     return 0
 
