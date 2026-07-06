@@ -134,6 +134,88 @@ COMPARISON_OUTPUT_FIELDS = {
     "output_diffs",
     "latency_deltas",
 }
+STORAGE_CPP_REPORT_ADAPTER = ROOT / "compat" / "cpp_unified_case_report_adapter.h"
+STORAGE_REPORT_FIELDS = {
+    "StorageUnifiedEvidence",
+    "StoragePassedStep",
+    "StorageFailedStep",
+    "storage_write_sequence",
+    "storage_read_sequence",
+    "storage_cold_scan_sequence",
+    "storage_lifecycle_phases",
+    "storage_cache_layers",
+    "storage_cache_semantics",
+    "storage_reclaim_semantics",
+    "storage_manager_prepare_count",
+    "storage_manager_reclaim_count",
+    "storage_manager_evict_count",
+    "storage_manager_expire_count",
+    "storage_manager_page_gc_count",
+    "storage_manager_block_gc_count",
+    "storage_manager_compaction_count",
+    "storage_manager_index_gc_count",
+    "storage_manager_delayed_destroy_count",
+    "storage_manager_follower_cursor_safety_count",
+    "storage_manager_watermark_progress_count",
+    "stream_rollover_count",
+    "segment_open_count",
+    "segment_sealed_count",
+    "storage_zone_total_bytes",
+    "storage_zone_used_bytes",
+    "storage_zone_stale_bytes",
+    "append_log_replay_records",
+    "append_log_reclaimed_records",
+    "slot_dirty_generation_count",
+    "slot_tombstone_count",
+    "slot_stale_ref_count",
+    "slot_owner_mismatch_count",
+    "page_index_rebuild_count",
+    "block_index_rebuild_count",
+    "object_index_rebuild_count",
+    "page_index_lookup_count",
+    "page_index_lookup_ms",
+    "page_index_cache_hit_rate",
+    "block_index_lookup_count",
+    "block_index_lookup_ms",
+    "block_index_cache_hit_rate",
+    "page_reads",
+    "page_writes",
+    "block_reads",
+    "block_writes",
+    "bytes_read",
+    "bytes_written",
+    "memory_cache_hits",
+    "memory_cache_misses",
+    "page_index_cache_hits",
+    "page_index_cache_misses",
+    "block_index_cache_hits",
+    "block_index_cache_misses",
+    "disk_cache_hits",
+    "disk_cache_misses",
+    "shared_store_read_throughs",
+    "cache_refills",
+    "cache_invalidations",
+    "cache_writeback_queue_depth",
+    "cache_writeback_rejections",
+    "cold_scan_no_cache_reads",
+    "cold_scan_page_reads",
+    "hot_cache_promotions",
+    "tombstone_records",
+    "stale_page_tombstones",
+    "stale_block_tombstones",
+    "stale_pages_rewritten",
+    "stale_pages_skipped",
+    "stale_blocks_rewritten",
+    "stale_blocks_skipped",
+    "delayed_destroy_backlog",
+    "follower_cursor_retention_floor",
+    "reclaimable_bytes",
+    "compaction_reclaimed_bytes",
+    "physical_reclaimed_bytes",
+    "physical_reclaim_errors",
+    "append_watermark",
+    "compaction_watermark",
+}
 
 CPP_RUNNER_TEMPLATE = r"""#!/usr/bin/env bash
 set -euo pipefail
@@ -287,7 +369,22 @@ def validate_corpus(path: Path) -> dict:
     if missing_responses:
         raise SystemExit(f"{path}: missing required response kinds: {', '.join(missing_responses)}")
     validate_cpp_adapter_coverage(path, coverage, seen_cpp_suites, seen_static_cpp_suites)
+    validate_storage_cpp_report_adapter(path)
     return corpus
+
+
+def validate_storage_cpp_report_adapter(path: Path) -> None:
+    if not STORAGE_CPP_REPORT_ADAPTER.exists():
+        raise SystemExit(
+            f"{path}: missing C++ storage report adapter {STORAGE_CPP_REPORT_ADAPTER}"
+        )
+    adapter = STORAGE_CPP_REPORT_ADAPTER.read_text(encoding="utf-8")
+    missing = sorted(field for field in STORAGE_REPORT_FIELDS if field not in adapter)
+    if missing:
+        raise SystemExit(
+            f"{path}: C++ storage report adapter missing canonical storage fields: "
+            + ", ".join(missing)
+        )
 
 
 def case_matches_family(case: dict, family: str, family_suites: set[str]) -> bool:
