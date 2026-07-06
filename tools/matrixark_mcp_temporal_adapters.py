@@ -3475,19 +3475,26 @@ class MatrixArkRustProxyClient:
         )
         self._write_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_WRITE_LANES", "4")))
         self._read_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_READ_LANES", "4")))
-        self._pack_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_PACK_LANES", "2")))
+        self._pack_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_PACK_LANES", "4")))
         self._control_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_CONTROL_LANES", "1")))
         self._shared_process_mode = os.environ.get("MATRIXARK_RUST_PROXY_SHARED_PROCESS", "1").strip().lower() not in {"0", "false", "no"}
+        self._dedicated_pack_lanes_enabled = (
+            os.environ.get("MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES", "0").strip().lower()
+            not in {"0", "false", "no"}
+        )
         if self._shared_process_mode:
             # The local Rust TemporalEngine is embedded in the proxy process. A
-            # multi-process lane pool can hide writes from reads until there is
-            # a real shared server/proxy behind it, so correctness-first parity
-            # uses one process and one stdin/stdout lock by default.
+            # multi-process write lane pool can hide writes from reads until
+            # there is a real shared server/proxy behind it, so writes/control
+            # stay on one process. Retrieve-pack is read-mostly after ingest
+            # and may use a warm process pool to avoid stdin/stdout head-of-line
+            # blocking in scale tests and production proxy mode.
             shared_lanes = self._make_lanes(1)
+            pack_lanes = self._make_lanes(self._pack_lane_count) if self._dedicated_pack_lanes_enabled else shared_lanes
             self._lanes = {
                 "write": shared_lanes,
                 "read": shared_lanes,
-                "pack": shared_lanes,
+                "pack": pack_lanes,
                 "control": shared_lanes,
             }
         else:

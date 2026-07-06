@@ -2055,6 +2055,11 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
         selected_counts: list[int] = []
         retrieval_metric_rows: list[Json] = []
         partial_count = 0
+        retrieve_warmup_latencies: list[float] = []
+        retrieve_warmup_queries = args.retrieve_workers if int(args.retrieve_warmup_queries) < 0 else int(args.retrieve_warmup_queries)
+        for payload in retrieve_payloads[: max(0, retrieve_warmup_queries)]:
+            latency, _result, _error = call_with_latency(server, "matrixark_retrieve", payload)
+            retrieve_warmup_latencies.append(latency)
         retrieve_started = time.perf_counter()
         with ThreadPoolExecutor(max_workers=args.retrieve_workers) as pool:
             futures = {pool.submit(call_with_latency, server, "matrixark_retrieve", payload): payload for payload in retrieve_payloads}
@@ -2108,6 +2113,8 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
                 ),
                 "timeout_count": timeout_count(retrieve_errors),
                 "partial_context_packs": partial_count,
+                "warmup_queries": len(retrieve_warmup_latencies),
+                "warmup_p95_ms": percentile(retrieve_warmup_latencies, 95) if retrieve_warmup_latencies else 0.0,
                 "selected_refs_avg": round(statistics.fmean(selected_counts), 3) if selected_counts else 0.0,
                 "selected_refs_max": max(selected_counts) if selected_counts else 0,
                 "stage_metrics": summarize_retrieval_metrics(retrieval_metric_rows),
@@ -3035,6 +3042,7 @@ def main() -> int:
     parser.add_argument("--ingest-workers", type=int, default=4)
     parser.add_argument("--retrieve-queries", type=int, default=128)
     parser.add_argument("--retrieve-workers", type=int, default=16)
+    parser.add_argument("--retrieve-warmup-queries", type=int, default=-1)
     parser.add_argument("--max-context-tokens", type=int, default=12000)
     parser.add_argument("--dataset", default=os.environ.get("MATRIXARK_PARITY_DATASET", "matrixark-scale-synthetic"))
     parser.add_argument("--embedding-provider", default=os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "hash"))
@@ -3135,6 +3143,7 @@ def main() -> int:
             "ingest_workers": parsed.ingest_workers,
             "retrieve_queries": parsed.retrieve_queries,
             "retrieve_workers": parsed.retrieve_workers,
+            "retrieve_warmup_queries": parsed.retrieve_warmup_queries,
             "max_context_tokens": parsed.max_context_tokens,
             "embedding_provider": parsed.embedding_provider,
             "embedding_model": parsed.embedding_model,

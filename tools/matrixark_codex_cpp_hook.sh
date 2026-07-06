@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="${MATRIXARK_REPO_ROOT:-<repo>}"
+SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="${MATRIXARK_REPO_ROOT:-${SCRIPT_ROOT}}"
 cd "$ROOT"
 
 export MATRIXARK_MCP_BACKEND="${MATRIXARK_MCP_BACKEND:-temporalstore-direct}"
@@ -14,6 +15,7 @@ export MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS="${MATRIXARK_TEMPORALSTORE_REQ
 export MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS="${MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS:-5000}"
 export MATRIXARK_HOOK_FAIL_OPEN="${MATRIXARK_HOOK_FAIL_OPEN:-1}"
 export MATRIXARK_HOOK_AUTOSTART_CPP="${MATRIXARK_HOOK_AUTOSTART_CPP:-1}"
+export MATRIXARK_CPP_DEPLOY_DIR="${MATRIXARK_CPP_DEPLOY_DIR:-$ROOT/.local/runtime/matrixark-cpp-live}"
 
 # Hooks run in Codex's critical path. Default to fast deterministic providers;
 # OSS/OpenAI providers can be enabled explicitly for offline/debug hook tests.
@@ -28,7 +30,7 @@ if [[ "$MATRIXARK_HOOK_AUTOSTART_CPP" == "1" && "$MATRIXARK_MCP_BACKEND" == "tem
   host="${MATRIXARK_TEMPORALSTORE_METASERVER%%:*}"
   port="${MATRIXARK_TEMPORALSTORE_METASERVER##*:}"
   if ! timeout 1 bash -c "</dev/tcp/$host/$port" >/dev/null 2>&1; then
-    BUILD_TYPE="${BUILD_TYPE:-Release}" timeout 30 bash "$ROOT/tools/deploy_local_ubuntu22.sh" start >/dev/null 2>&1 || true
+    BUILD_TYPE="${BUILD_TYPE:-Release}" DEPLOY_DIR="$MATRIXARK_CPP_DEPLOY_DIR" PERSIST_DEPLOY_DIR=1 timeout 30 bash "$ROOT/tools/deploy_local_ubuntu22.sh" start >/dev/null 2>&1 || true
   fi
 fi
 
