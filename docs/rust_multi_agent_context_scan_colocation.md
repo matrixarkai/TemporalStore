@@ -13,6 +13,12 @@ TEMPORALSTORE_CONTEXT_MULTI_AGENT_SCAN_ONLY=1 \
 target/debug/context_workflow_harness > /tmp/context_multiagent_scan_summary.json
 ```
 
+## Validation
+
+```bash
+python3 tools/validate_context_multi_agent_scan.py docs/benchmark_archives/context_multiagent_scan_20260706_summary.json
+```
+
 ## Evidence
 
 Archived report: `docs/benchmark_archives/context_multiagent_scan_20260706_summary.json`
