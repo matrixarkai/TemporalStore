@@ -9,8 +9,10 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use temporalstore_rust::{
+    BatchExecuteRequest, Command, CommandResponse, ExecuteRequest, TemporalEngine,
+};
 use temporalstore_rust::{Config, SetConfigRequest};
-use temporalstore_rust::{BatchExecuteRequest, Command, CommandResponse, ExecuteRequest, TemporalEngine};
 
 const DEFAULT_SHARD_ID: u64 = 1;
 const LATENCY_BUCKETS_MS: [u128; 9] = [1, 2, 5, 10, 25, 50, 100, 250, 1000];
@@ -695,15 +697,42 @@ fn clear_matrixark_scan_cache() {
     }
 }
 
-fn retrieve_candidate_cache_key(storage_prefix: &str, count: usize) -> String {
-    format!("{storage_prefix}:candidate_snapshot:{count}")
+fn retrieve_candidate_cache_key(
+    storage_prefix: &str,
+    count: usize,
+    scope: Option<&Value>,
+    secondary_groups: &[Vec<String>],
+) -> String {
+    let scope_key = scope
+        .and_then(|value| serde_json::to_string(value).ok())
+        .unwrap_or_default();
+    let secondary_key = serde_json::to_string(secondary_groups).unwrap_or_default();
+    format!("{storage_prefix}:candidate_snapshot:{count}:{scope_key}:{secondary_key}")
 }
 
 fn storage_prefix_from_key(key: &str) -> Option<String> {
     if let Some(prefix) = key.strip_suffix(":record_count") {
         return Some(prefix.to_string());
     }
-    key.split_once(":records:").map(|(prefix, _)| prefix.to_string())
+    key.split_once(":records:")
+        .map(|(prefix, _)| prefix.to_string())
+}
+
+fn storage_prefix_from_request(request: &RecordLogRequest) -> String {
+    if !request.storage_prefix.trim().is_empty() {
+        return request.storage_prefix.trim().to_string();
+    }
+    request
+        .count_key
+        .as_deref()
+        .and_then(storage_prefix_from_key)
+        .unwrap_or_default()
+}
+
+fn matrixark_compact_snapshot_retrieve_enabled() -> bool {
+    env::var("MATRIXARK_RUST_PROXY_FULL_RETRIEVE_SCAN")
+        .map(|value| !matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(true)
 }
 
 fn invalidate_retrieve_candidate_cache(storage_prefix: &str) {
@@ -899,7 +928,10 @@ fn parse_scope_key(scope_key: &str) -> HashMap<String, u64> {
             if key.is_empty() || value.is_empty() {
                 return None;
             }
-            value.parse::<u64>().ok().map(|parsed| (key.to_string(), parsed))
+            value
+                .parse::<u64>()
+                .ok()
+                .map(|parsed| (key.to_string(), parsed))
         })
         .collect()
 }
@@ -1587,7 +1619,13 @@ fn scan_matrixark_candidates(
                     .get("record_type")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                let drop = matches!(record_type, "context_index" | "context_embedding" | "resource_manifest" | "skill_registry_update");
+                let drop = matches!(
+                    record_type,
+                    "context_index"
+                        | "context_embedding"
+                        | "resource_manifest"
+                        | "skill_registry_update"
+                );
                 if drop {
                     non_serving_dropped += 1;
                 }
@@ -2367,9 +2405,13 @@ fn execute_record_log_request(
                     .push((entry.field, entry.value.into_bytes()));
             }
             for CompactHashEntry(key, field, value) in request.entries_compact {
-                grouped.entry(key).or_default().push((field, value.into_bytes()));
+                grouped
+                    .entry(key)
+                    .or_default()
+                    .push((field, value.into_bytes()));
             }
-            let mut commands = Vec::with_capacity(grouped.len() + usize::from(!request.key.trim().is_empty()));
+            let mut commands =
+                Vec::with_capacity(grouped.len() + usize::from(!request.key.trim().is_empty()));
             for (key, entries) in grouped {
                 commands.push(Command::HashMultiSet { key, entries });
             }
@@ -2417,9 +2459,8 @@ fn execute_record_log_request(
             for CompactHashEntry(key, field, _) in request.entries_compact {
                 grouped.entry(key).or_default().push(field);
             }
-            let mut records = Vec::with_capacity(
-                grouped.values().map(|fields| fields.len()).sum::<usize>(),
-            );
+            let mut records =
+                Vec::with_capacity(grouped.values().map(|fields| fields.len()).sum::<usize>());
             for (key, fields) in grouped {
                 let response = engine.execute(ExecuteRequest {
                     shard_id: DEFAULT_SHARD_ID,
@@ -2484,6 +2525,13 @@ fn execute_record_log_request(
             json_output(scan_matrixark_candidates(&engine, &request)?, root)?
         }
         "matrixark_retrieve_context_pack" => {
+            if matrixark_compact_snapshot_retrieve_enabled() {
+                retrieve_context_pack_output(&engine, &request, root)?
+            } else {
+                json_output(retrieve_context_pack_native(&engine, &request)?, root)?
+            }
+        }
+        "matrixark_retrieve_context_pack_full_scan" => {
             json_output(retrieve_context_pack_native(&engine, &request)?, root)?
         }
         other => return Err(format!("unsupported op {other:?}")),
@@ -2500,7 +2548,9 @@ fn validate_request(request: &RecordLogRequest) -> Result<(), String> {
         "put_string" | "get_string" | "delete" | "del" | "hgetall" | "scan_hash" => {
             require_non_empty("key", &request.key)
         }
-        "matrixark_scan_candidates" | "matrixark_retrieve_context_pack" => {
+        "matrixark_scan_candidates"
+        | "matrixark_retrieve_context_pack"
+        | "matrixark_retrieve_context_pack_full_scan" => {
             require_non_empty("count_key", request.count_key.as_deref().unwrap_or(""))?;
             require_non_empty(
                 "record_hash_key",
@@ -2626,7 +2676,10 @@ fn hash_entries_output(
             }
             let mut extra = BTreeMap::new();
             extra.insert("native_prefix_scan".to_string(), json!(true));
-            extra.insert("prefix_scan_path".to_string(), json!("rust_proxy_scan_hash"));
+            extra.insert(
+                "prefix_scan_path".to_string(),
+                json!("rust_proxy_scan_hash"),
+            );
             Ok(RecordLogOutput {
                 value: serde_json::to_string(&decoded)
                     .map_err(|error| format!("failed to serialize hash entries: {error}"))?,
@@ -2756,7 +2809,10 @@ fn execute_empty(engine: &TemporalEngine, command: Command) -> Result<(), String
     }
 }
 
-fn execute_empty_batch_runtime(engine: &TemporalEngine, commands: Vec<Command>) -> Result<(), String> {
+fn execute_empty_batch_runtime(
+    engine: &TemporalEngine,
+    commands: Vec<Command>,
+) -> Result<(), String> {
     if commands.is_empty() {
         return Ok(());
     }
@@ -2805,7 +2861,10 @@ fn execute_empty_batch_runtime(engine: &TemporalEngine, commands: Vec<Command>) 
             return Err(format!("{}: {}", item.status.code, item.status.message));
         }
         if !matches!(item.response, CommandResponse::Empty) {
-            return Err(format!("unexpected response for batch write: {:?}", item.response));
+            return Err(format!(
+                "unexpected response for batch write: {:?}",
+                item.response
+            ));
         }
     }
     for (key, entries) in cache_updates {
@@ -2845,9 +2904,12 @@ fn read_bytes(engine: &TemporalEngine, command: Command) -> Result<String, Strin
 fn load_retrieve_candidate_snapshot(
     engine: &TemporalEngine,
     storage_prefix: &str,
+    record_hash_key: &str,
     count: usize,
+    scope: Option<&Value>,
+    secondary_groups: &[Vec<String>],
 ) -> Result<(RetrieveCandidateSnapshot, bool), String> {
-    let cache_key = retrieve_candidate_cache_key(storage_prefix, count);
+    let cache_key = retrieve_candidate_cache_key(storage_prefix, count, scope, secondary_groups);
     if let Ok(cache) = retrieve_candidate_cache().lock() {
         if let Some(snapshot) = cache.get(&cache_key) {
             return Ok((snapshot.clone(), true));
@@ -2861,7 +2923,7 @@ fn load_retrieve_candidate_snapshot(
     };
     let mut records = Vec::new();
     for shard in 0..shard_count {
-        let key = format!("{storage_prefix}:records:{shard:06}");
+        let key = format!("{record_hash_key}:{shard:06}");
         for payload in hgetall_map(engine, key)?.values() {
             if payload.trim().is_empty() {
                 continue;
@@ -2870,8 +2932,54 @@ fn load_retrieve_candidate_snapshot(
         }
     }
 
+    let mut index_terms_by_batch: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut index_terms_by_node: HashMap<u64, HashSet<String>> = HashMap::new();
+    let mut index_terms_by_ref: HashMap<String, HashSet<String>> = HashMap::new();
+    for record in &records {
+        if record.get("record_type").and_then(Value::as_str) != Some("context_index") {
+            continue;
+        }
+        let Some(index_name) = record
+            .get("index_name")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        if let Some(batch) = record.get("batch_id_hash").and_then(Value::as_u64) {
+            index_terms_by_batch
+                .entry(batch.to_string())
+                .or_default()
+                .insert(index_name.to_string());
+        }
+        if let Some(ref_hash) = record_ref_hash(record) {
+            index_terms_by_ref
+                .entry(ref_hash)
+                .or_default()
+                .insert(index_name.to_string());
+        } else if let Some(node_hash) = record_node_hash(record) {
+            index_terms_by_node
+                .entry(node_hash)
+                .or_default()
+                .insert(index_name.to_string());
+        }
+    }
+
     let candidates = records
         .iter()
+        .filter(|record| scope_matches_record(record, scope))
+        .filter(|record| {
+            if secondary_groups.is_empty() {
+                return true;
+            }
+            let terms = record_index_terms(
+                record,
+                &index_terms_by_batch,
+                &index_terms_by_node,
+                &index_terms_by_ref,
+            );
+            terms.is_empty() || passes_secondary_groups(&terms, secondary_groups)
+        })
         .filter(|record| is_serving_context_record(record))
         .filter_map(|record| {
             let text = context_record_text(record);
@@ -2901,15 +3009,81 @@ fn retrieve_context_pack_output(
     root: PathBuf,
 ) -> Result<RecordLogOutput, String> {
     let started = Instant::now();
-    let storage_prefix = request.storage_prefix.trim();
+    let storage_prefix = storage_prefix_from_request(request);
+    if storage_prefix.is_empty() {
+        return Err("missing storage_prefix or count_key-derived storage prefix".to_string());
+    }
     let count_key = format!("{storage_prefix}:record_count");
     let count_raw = read_bytes(engine, Command::StringGet { key: count_key })?;
     let count = count_raw.trim().parse::<usize>().unwrap_or_default();
-    let (snapshot, candidate_cache_hit) =
-        load_retrieve_candidate_snapshot(engine, storage_prefix, count)?;
+    let record_hash_key = request
+        .record_hash_key
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{storage_prefix}:records"));
+    let request_record = request.record.clone().unwrap_or_else(|| json!({}));
+    let scope = request
+        .scope
+        .as_ref()
+        .or_else(|| request_record.get("scope"));
+    let secondary_groups = request
+        .secondary_index_groups
+        .clone()
+        .or_else(|| {
+            request_record
+                .get("secondary_index_groups")
+                .and_then(Value::as_array)
+                .map(|groups| {
+                    groups
+                        .iter()
+                        .map(|group| {
+                            group
+                                .as_array()
+                                .map(|items| {
+                                    items
+                                        .iter()
+                                        .filter_map(Value::as_str)
+                                        .map(str::to_string)
+                                        .collect()
+                                })
+                                .unwrap_or_default()
+                        })
+                        .collect()
+                })
+        })
+        .unwrap_or_default();
+    let (snapshot, candidate_cache_hit) = load_retrieve_candidate_snapshot(
+        engine,
+        &storage_prefix,
+        &record_hash_key,
+        count,
+        scope,
+        &secondary_groups,
+    )?;
 
-    let max_selected_refs = request.max_selected_refs.clamp(1, 128);
-    let query_terms = query_terms(&request.query);
+    let requested_max_selected_refs = request.max_selected_refs.max(
+        request_record
+            .pointer("/ranking/max_selected_refs")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize,
+    );
+    let max_selected_refs = if requested_max_selected_refs == 0 {
+        24
+    } else {
+        requested_max_selected_refs
+    }
+    .clamp(1, 128);
+    let query = if request.query.trim().is_empty() {
+        request_record
+            .get("query")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    } else {
+        request.query.clone()
+    };
+    let query_terms = query_terms(&query);
     let score_started = Instant::now();
     let mut candidates = Vec::new();
     for candidate in &snapshot.candidates {
@@ -2934,7 +3108,7 @@ fn retrieve_context_pack_output(
     let elapsed_ms = started.elapsed().as_millis() as u64;
     let correctness = selected_count > 0;
     let pack = json!({
-        "context_pack_id": format!("rust-native-{}-{}", unix_ms(), stable_hash64(&request.query)),
+        "context_pack_id": format!("rust-native-{}-{}", unix_ms(), stable_hash64(&query)),
         "context_pack_assembly": "native_rust_proxy",
         "native_context_pack": true,
         "selected_refs": selected_refs,
@@ -2992,8 +3166,24 @@ fn retrieve_context_pack_output(
             "source": "rust_proxy_native_context_pack"
         }
     });
+    let response = json!({
+        "ok": true,
+        "count": selected_count,
+        "native_pack_assembly": true,
+        "raw_records_returned": false,
+        "python_hot_path_records": 0,
+        "scan_count": snapshot.scanned_records,
+        "cache_hit": candidate_cache_hit,
+        "selected_ref_count": selected_count,
+        "dropped_ref_count": 0,
+        "retrieval_metrics": pack
+            .get("retrieval_metrics")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+        "context_pack": pack,
+    });
     Ok(RecordLogOutput {
-        value: serde_json::to_string(&pack)
+        value: serde_json::to_string(&response)
             .map_err(|error| format!("failed to serialize native context pack: {error}"))?,
         count: Some(selected_count),
         mode: "rust_proxy_native_context_pack".to_string(),
@@ -3048,6 +3238,14 @@ fn selected_ref_from_record(record: &Value, text: &str) -> Value {
         .get("record_type")
         .and_then(Value::as_str)
         .unwrap_or("context_record");
+    let public_ref_type = match record_type {
+        "context_event" | "context_compression_event" => "event",
+        "context_summary" => "summary",
+        "context_entity" => "entity",
+        "resource_chunk" => "resource",
+        "skill_section" => "skill",
+        other => other,
+    };
     let ref_hash = [
         "ref_hash",
         "event_id_hash",
@@ -3060,7 +3258,7 @@ fn selected_ref_from_record(record: &Value, text: &str) -> Value {
     .find_map(|key| record.get(*key).and_then(Value::as_u64))
     .unwrap_or_else(|| stable_hash64(&record.to_string()));
     json!({
-        "ref_type": record_type,
+        "ref_type": public_ref_type,
         "ref_hash": ref_hash,
         "text": text,
     })
@@ -3206,6 +3404,7 @@ fn _request_shape_for_docs() -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
     use std::sync::{Mutex, MutexGuard, OnceLock};
     use tempfile::tempdir;
 
@@ -3471,6 +3670,7 @@ mod tests {
         let _guard = env_guard();
         let dir = tempdir().expect("tempdir");
         env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+        env::remove_var("MATRIXARK_RUST_PROXY_FULL_RETRIEVE_SCAN");
 
         let storage_prefix = "matrixark:test:native-pack";
         let mut append = request("matrixark_batch_append_records");
@@ -3488,20 +3688,60 @@ mod tests {
 
         let mut retrieve = request("matrixark_retrieve_context_pack");
         retrieve.storage_prefix = storage_prefix.to_string();
+        retrieve.count_key = Some(format!("{storage_prefix}:record_count"));
+        retrieve.record_hash_key = Some(format!("{storage_prefix}:records"));
         retrieve.query = "Who approved GPU budget and who owns procurement?".to_string();
         retrieve.max_selected_refs = 4;
-        let output = retrieve_context_pack_output(&engine, &retrieve, root).expect("native retrieve");
-        let pack: Value = serde_json::from_str(&output.value).expect("context pack json");
+        let output = execute_record_log_request(&engine, retrieve.clone(), root.clone())
+            .expect("native retrieve through proxy op");
+        let response: Value = serde_json::from_str(&output.value).expect("context pack json");
+        let pack = response
+            .get("context_pack")
+            .expect("wrapped context pack from proxy op");
         let refs = pack
             .get("selected_refs")
             .and_then(Value::as_array)
             .expect("selected refs");
         assert_eq!(refs.len(), 2);
+        let ref_types: BTreeSet<_> = refs
+            .iter()
+            .filter_map(|value| value.get("ref_type").and_then(Value::as_str))
+            .collect();
+        assert!(ref_types.contains("event"));
+        assert!(ref_types.contains("entity"));
         assert_eq!(
             pack.pointer("/retrieval_metrics/native_pack_assembly")
                 .and_then(Value::as_bool),
             Some(true)
         );
+        assert_eq!(
+            pack.pointer("/retrieval_metrics/candidate_cache_hit")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+
+        let cached_output = execute_record_log_request(&engine, retrieve.clone(), root.clone())
+            .expect("native retrieve cache hit through proxy op");
+        let cached_response: Value =
+            serde_json::from_str(&cached_output.value).expect("cached context pack json");
+        assert_eq!(
+            cached_response
+                .pointer("/retrieval_metrics/candidate_cache_hit")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+
+        let mut default_ref_limit = retrieve.clone();
+        default_ref_limit.max_selected_refs = 0;
+        let default_limit_output = execute_record_log_request(&engine, default_ref_limit, root)
+            .expect("native retrieve default ref limit through proxy op");
+        let default_limit_response: Value =
+            serde_json::from_str(&default_limit_output.value).expect("default context pack json");
+        let default_refs = default_limit_response
+            .pointer("/context_pack/selected_refs")
+            .and_then(Value::as_array)
+            .expect("default selected refs");
+        assert_eq!(default_refs.len(), 2);
 
         env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
     }
