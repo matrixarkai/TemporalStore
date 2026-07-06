@@ -1,6 +1,5 @@
 [workspace]
 members = [
-    "crates/rustmtcache",
     "crates/rustraft",
     "crates/temporalstore-snapshot",
     "crates/temporalstore-rust",
