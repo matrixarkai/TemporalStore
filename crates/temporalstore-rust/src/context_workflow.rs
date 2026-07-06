@@ -1075,6 +1075,10 @@ pub struct ContextFanoutPlanReport {
     #[serde(default)]
     pub selected_colocation_scope_keys: Vec<String>,
     #[serde(default)]
+    pub selected_colocation_scope_order: Vec<String>,
+    #[serde(default)]
+    pub current_agent_first_selected: bool,
+    #[serde(default)]
     pub avoided_namespace_replication_nodes: usize,
     #[serde(default)]
     pub fanout_reduction_percent: u32,
@@ -4550,13 +4554,30 @@ pub fn retrieve_context(
             )
         })
         .collect();
-    let selected_colocation_scope_keys = event_node_hashes
+    fanout_plan.selected_colocation_scope_order = event_node_hashes
         .iter()
         .filter_map(|node_hash| node_scope_by_hash.get(node_hash))
         .map(context_scope_reservation_key)
+        .collect();
+    let selected_colocation_scope_keys = fanout_plan
+        .selected_colocation_scope_order
+        .iter()
+        .cloned()
         .collect::<BTreeSet<_>>();
     fanout_plan.selected_colocation_scope_keys =
         selected_colocation_scope_keys.iter().cloned().collect();
+    let current_agent = request.current_agent_id.trim();
+    let expected_current_agent_scope = if current_agent.is_empty() {
+        String::new()
+    } else {
+        format!("agent:{current_agent}")
+    };
+    fanout_plan.current_agent_first_selected = !expected_current_agent_scope.is_empty()
+        && fanout_plan
+            .selected_colocation_scope_order
+            .first()
+            .map(|scope| scope.eq_ignore_ascii_case(&expected_current_agent_scope))
+            .unwrap_or(false);
     fanout_plan.selected_colocation_groups = event_node_hashes
         .iter()
         .filter_map(|node_hash| node_scope_by_hash.get(node_hash))

@@ -47,6 +47,14 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
     "user:user",
     "workspace:context"
   ],
+  "fanout_selected_colocation_scope_order": [
+    "agent:codex",
+    "workspace:context",
+    "user:user",
+    "global",
+    "agent:codex"
+  ],
+  "fanout_current_agent_first_selected": true,
   "fanout_avoided_namespace_replication_nodes": 27,
   "fanout_reduction_percent": 62,
   "fanout_namespace_replication_avoided": true,

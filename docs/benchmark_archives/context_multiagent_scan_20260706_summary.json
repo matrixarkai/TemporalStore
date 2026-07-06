@@ -16,6 +16,13 @@
     "user:user",
     "workspace:context"
   ],
+  "selected_colocation_scope_order": [
+    "agent:codex",
+    "workspace:context",
+    "user:user",
+    "global"
+  ],
+  "current_agent_first_selected": true,
   "avoided_namespace_replication_nodes": 9,
   "fanout_reduction_percent": 69,
   "namespace_replication_avoided": true,

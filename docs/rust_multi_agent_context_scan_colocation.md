@@ -42,6 +42,13 @@ Archived report: `docs/benchmark_archives/context_multiagent_scan_20260706_summa
     "user:user",
     "workspace:context"
   ],
+  "selected_colocation_scope_order": [
+    "agent:codex",
+    "workspace:context",
+    "user:user",
+    "global"
+  ],
+  "current_agent_first_selected": true,
   "avoided_namespace_replication_nodes": 9,
   "fanout_reduction_percent": 69,
   "namespace_replication_avoided": true,
@@ -101,6 +108,7 @@ Archived report: `docs/benchmark_archives/context_multiagent_scan_20260706_summa
 - The scan avoids full namespace replication: 9 candidate nodes are left unexpanded, a 69% fanout reduction across 4 selected colocation groups.
 - The selected nodes include current-agent, user-shared, workspace-shared, and global-shared layers.
 - The selected colocation scope set proves the expanded scan covers `agent:codex`, `user:user`, `workspace:context`, and `global`.
+- The selected colocation scope order starts with `agent:codex`, proving current-agent context gets the first expansion slot before shared resources.
 - Required scan scopes are derived from the current agent and owner scope, so user and global shared layers stay visible even when callers do not manually pass every shared scope.
 - Locality keys are producer-aware: current-agent context is scoped as `agent:codex`, while shared resources stay in `user:user`, `workspace:context`, and `global` groups instead of colocating the whole namespace.
 - Layer quotas are applied before expansion so shared resources are not crowded out by many current-agent matches.

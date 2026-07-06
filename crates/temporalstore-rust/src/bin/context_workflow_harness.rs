@@ -191,6 +191,8 @@ struct ResourceSkillConversationScaleSummary {
     fanout_selected_colocation_group_count: usize,
     fanout_selected_colocation_groups: Vec<String>,
     fanout_selected_colocation_scope_keys: Vec<String>,
+    fanout_selected_colocation_scope_order: Vec<String>,
+    fanout_current_agent_first_selected: bool,
     fanout_avoided_namespace_replication_nodes: usize,
     fanout_reduction_percent: u32,
     fanout_namespace_replication_avoided: bool,
@@ -231,6 +233,8 @@ struct MultiAgentContextScanHarnessSummary {
     selected_colocation_group_count: usize,
     selected_colocation_groups: Vec<String>,
     selected_colocation_scope_keys: Vec<String>,
+    selected_colocation_scope_order: Vec<String>,
+    current_agent_first_selected: bool,
     avoided_namespace_replication_nodes: usize,
     fanout_reduction_percent: u32,
     namespace_replication_avoided: bool,
@@ -1143,6 +1147,7 @@ fn run_resource_skill_conversation_scale(
     let multi_agent_scan_ready = combined_retrieve.fanout_plan.fanout_reduced
         && combined_retrieve.fanout_plan.layer_quota_applied
         && combined_retrieve.fanout_plan.selected_current_agent_nodes > 0
+        && combined_retrieve.fanout_plan.current_agent_first_selected
         && combined_retrieve.fanout_plan.peer_agent_nodes > 0
         && combined_retrieve.fanout_plan.selected_peer_agent_nodes == 0
         && combined_retrieve.fanout_plan.skipped_peer_agent_nodes > 0
@@ -1250,6 +1255,13 @@ fn run_resource_skill_conversation_scale(
             .fanout_plan
             .selected_colocation_scope_keys
             .clone(),
+        fanout_selected_colocation_scope_order: combined_retrieve
+            .fanout_plan
+            .selected_colocation_scope_order
+            .clone(),
+        fanout_current_agent_first_selected: combined_retrieve
+            .fanout_plan
+            .current_agent_first_selected,
         fanout_avoided_namespace_replication_nodes: combined_retrieve
             .fanout_plan
             .avoided_namespace_replication_nodes,
@@ -1405,6 +1417,7 @@ fn run_multi_agent_context_scan_harness(
     let ready = report.fanout_plan.fanout_reduced
         && report.fanout_plan.layer_quota_applied
         && report.fanout_plan.selected_current_agent_nodes > 0
+        && report.fanout_plan.current_agent_first_selected
         && report.fanout_plan.peer_agent_nodes > 0
         && report.fanout_plan.selected_peer_agent_nodes == 0
         && report.fanout_plan.skipped_peer_agent_nodes > 0
@@ -1449,6 +1462,8 @@ fn run_multi_agent_context_scan_harness(
         selected_colocation_group_count: report.fanout_plan.selected_colocation_group_count,
         selected_colocation_groups: report.fanout_plan.selected_colocation_groups,
         selected_colocation_scope_keys: report.fanout_plan.selected_colocation_scope_keys,
+        selected_colocation_scope_order: report.fanout_plan.selected_colocation_scope_order,
+        current_agent_first_selected: report.fanout_plan.current_agent_first_selected,
         avoided_namespace_replication_nodes: report.fanout_plan.avoided_namespace_replication_nodes,
         fanout_reduction_percent: report.fanout_plan.fanout_reduction_percent,
         namespace_replication_avoided: report.fanout_plan.namespace_replication_avoided,

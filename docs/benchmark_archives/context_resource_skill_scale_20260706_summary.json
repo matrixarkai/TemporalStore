@@ -46,6 +46,25 @@
     "user:user",
     "workspace:context"
   ],
+  "fanout_selected_colocation_scope_order": [
+    "agent:codex",
+    "workspace:context",
+    "user:user",
+    "global",
+    "agent:codex",
+    "agent:codex",
+    "workspace:context",
+    "agent:codex",
+    "agent:codex",
+    "agent:codex",
+    "agent:codex",
+    "workspace:context",
+    "agent:codex",
+    "agent:codex",
+    "agent:codex",
+    "agent:codex"
+  ],
+  "fanout_current_agent_first_selected": true,
   "fanout_avoided_namespace_replication_nodes": 27,
   "fanout_reduction_percent": 62,
   "fanout_namespace_replication_avoided": true,
@@ -91,7 +110,7 @@
   "summary_embedding_selected_count": 39,
   "verbose_filter_group_count": 1,
   "selected_ref_count": 45,
-  "ingest_ms": 9515,
-  "retrieve_ms": 4397,
-  "secondary_index_validation_ms": 2548
+  "ingest_ms": 9655,
+  "retrieve_ms": 2809,
+  "secondary_index_validation_ms": 1220
 }
