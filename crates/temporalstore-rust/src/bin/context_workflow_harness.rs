@@ -215,6 +215,11 @@ struct ResourceSkillConversationScaleSummary {
     fanout_selected_user_shared_nodes: usize,
     fanout_selected_workspace_shared_nodes: usize,
     fanout_selected_global_shared_nodes: usize,
+    fanout_shared_selected_node_count: usize,
+    fanout_shared_scope_coverage_count: usize,
+    fanout_shared_scope_coverage_ready: bool,
+    fanout_current_agent_boost_percent: u32,
+    fanout_current_agent_boost_bounded: bool,
     fanout_shared_layer_quota_nodes: usize,
     fanout_layer_quota_applied: bool,
     fanout_scan_layers: Vec<String>,
@@ -1260,6 +1265,34 @@ fn run_resource_skill_conversation_scale(
             .map(|resource| resource.parser_name.clone())
             .collect::<Vec<_>>(),
     );
+    let fanout_shared_selected_node_count =
+        combined_retrieve.fanout_plan.selected_user_shared_nodes
+            + combined_retrieve
+                .fanout_plan
+                .selected_workspace_shared_nodes
+            + combined_retrieve.fanout_plan.selected_global_shared_nodes;
+    let fanout_shared_scope_coverage_count = [
+        combined_retrieve.fanout_plan.selected_user_shared_nodes > 0,
+        combined_retrieve
+            .fanout_plan
+            .selected_workspace_shared_nodes
+            > 0,
+        combined_retrieve.fanout_plan.selected_global_shared_nodes > 0,
+    ]
+    .into_iter()
+    .filter(|covered| *covered)
+    .count();
+    let fanout_current_agent_boost_percent = percentage(
+        combined_retrieve.fanout_plan.selected_current_agent_nodes,
+        combined_retrieve.fanout_plan.event_expanded_nodes,
+    );
+    let fanout_shared_scope_coverage_ready = fanout_shared_scope_coverage_count == 3
+        && fanout_shared_selected_node_count
+            >= combined_retrieve.fanout_plan.shared_layer_quota_nodes;
+    let fanout_current_agent_boost_bounded = fanout_current_agent_boost_percent >= 40
+        && fanout_current_agent_boost_percent <= 75
+        && combined_retrieve.fanout_plan.selected_current_agent_nodes
+            > fanout_shared_selected_node_count;
     let multi_agent_scan_ready = combined_retrieve.fanout_plan.fanout_reduced
         && combined_retrieve.fanout_plan.layer_quota_applied
         && combined_retrieve.fanout_plan.selected_current_agent_nodes > 0
@@ -1275,6 +1308,8 @@ fn run_resource_skill_conversation_scale(
             > 0
         && combined_retrieve.fanout_plan.selected_global_shared_nodes > 0
         && combined_retrieve.fanout_plan.shared_layer_quota_nodes >= 4
+        && fanout_shared_scope_coverage_ready
+        && fanout_current_agent_boost_bounded
         && combined_retrieve
             .fanout_plan
             .locality_keys
@@ -1459,6 +1494,11 @@ fn run_resource_skill_conversation_scale(
         fanout_selected_global_shared_nodes: combined_retrieve
             .fanout_plan
             .selected_global_shared_nodes,
+        fanout_shared_selected_node_count,
+        fanout_shared_scope_coverage_count,
+        fanout_shared_scope_coverage_ready,
+        fanout_current_agent_boost_percent,
+        fanout_current_agent_boost_bounded,
         fanout_shared_layer_quota_nodes: combined_retrieve.fanout_plan.shared_layer_quota_nodes,
         fanout_layer_quota_applied: combined_retrieve.fanout_plan.layer_quota_applied,
         fanout_scan_layers: combined_retrieve.fanout_plan.scan_layers.clone(),
@@ -1759,6 +1799,13 @@ fn count_blocks_with_source_scope(blocks: &[ContextBlock], required_scope: &str)
         .iter()
         .filter(|block| block.source_ref.to_ascii_lowercase().contains(&required))
         .count()
+}
+
+fn percentage(numerator: usize, denominator: usize) -> u32 {
+    if denominator == 0 {
+        return 0;
+    }
+    ((numerator * 100) / denominator) as u32
 }
 
 fn locality_scope_keys(locality_keys: &[String]) -> Vec<String> {

@@ -59,6 +59,15 @@ def require_int_equal(report: dict[str, Any], field: str, expected: int) -> None
         raise ValueError(f"{field} must be {expected}, got {value!r}")
 
 
+def require_int_between(report: dict[str, Any], field: str, minimum: int, maximum: int) -> int:
+    value = report.get(field)
+    if not isinstance(value, int):
+        raise ValueError(f"{field} must be an integer, got {value!r}")
+    if value < minimum or value > maximum:
+        raise ValueError(f"{field} must be between {minimum} and {maximum}, got {value}")
+    return value
+
+
 def require_string_set(report: dict[str, Any], field: str, required: set[str]) -> set[str]:
     value = report.get(field)
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
@@ -140,7 +149,18 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
     require_int_at_least(report, "fanout_selected_user_shared_nodes", 1)
     require_int_at_least(report, "fanout_selected_workspace_shared_nodes", 1)
     require_int_at_least(report, "fanout_selected_global_shared_nodes", 1)
-    require_int_at_least(report, "fanout_shared_layer_quota_nodes", 4)
+    require_int_equal(report, "fanout_shared_scope_coverage_count", 3)
+    require_bool(report, "fanout_shared_scope_coverage_ready")
+    shared_quota = require_int_at_least(report, "fanout_shared_layer_quota_nodes", 4)
+    shared_selected = require_int_at_least(report, "fanout_shared_selected_node_count", shared_quota)
+    current_selected = require_int_at_least(report, "fanout_selected_current_agent_nodes", 1)
+    if current_selected <= shared_selected:
+        raise ValueError(
+            "fanout_selected_current_agent_nodes must remain boosted above shared selected nodes, "
+            f"got current={current_selected} shared={shared_selected}"
+        )
+    require_int_between(report, "fanout_current_agent_boost_percent", 40, 75)
+    require_bool(report, "fanout_current_agent_boost_bounded")
     require_bool(report, "fanout_layer_quota_applied")
     require_int_at_least(report, "retrieved_block_count", 8)
     require_int_at_least(report, "retrieved_current_agent_block_count", 1)
