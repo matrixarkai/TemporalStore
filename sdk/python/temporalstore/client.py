@@ -628,9 +628,18 @@ class Client:
         )
         self._native.check(code, error)
 
-    def batch_hset(self, entries: Iterable[dict]) -> None:
+    def _batch_hset_loop(self, entries: Iterable[dict]) -> None:
         for entry in entries:
             self.hset(str(entry["key"]), str(entry["field"]), str(entry.get("value", "")))
+
+    def batch_hset(self, entries: Iterable[dict]) -> None:
+        values = list(entries)
+        if not values:
+            return
+        if self._native.has_matrixark_batch_append_records or self._native.has_matrixark_batch_append_records_v2:
+            self.matrixark_batch_append_records(values)
+            return
+        self._batch_hset_loop(values)
 
     def hgetall(self, key: str) -> List[dict]:
         if not getattr(self._native, "has_hgetall", False):
@@ -669,7 +678,7 @@ class Client:
     ) -> None:
         values = list(entries)
         if not self._native.has_matrixark_batch_append_records and not self._native.has_matrixark_batch_append_records_v2:
-            self.batch_hset(values)
+            self._batch_hset_loop(values)
             if count_key is not None and count_value is not None:
                 self.put_string(count_key, count_value)
             return

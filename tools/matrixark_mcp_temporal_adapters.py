@@ -2871,8 +2871,6 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             total_native_ms = round((time.perf_counter() - started_perf) * 1000.0, 3)
             selected_count = len(selected_refs) if isinstance(selected_refs, list) else 0
             pack_ms = float(native_telemetry.get("pack_ms") or native_stage_metrics.get("pack_ms") or 0.0)
-            if not pack_ms:
-                pack_ms = total_native_ms
             index_postings_read = int(
                 native_telemetry.get("index_postings_read")
                 or native_telemetry.get("index_postings_touched")
