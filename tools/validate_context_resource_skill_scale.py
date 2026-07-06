@@ -14,6 +14,12 @@ REQUIRED_GROUPS = {"global", "user:user", "workspace:context"}
 REQUIRED_SCOPE_KEYS = {"agent:codex", "agent:claude", "global", "user:user", "workspace:context"}
 REQUIRED_SCAN_SCOPE_KEYS = {"agent:codex", "global", "user:user", "workspace:context"}
 REQUIRED_SELECTED_SCOPE_KEYS = {"agent:codex", "global", "user:user", "workspace:context"}
+REQUIRED_SELECTED_SKILLS = {"benchmark-reader", "context-debug", "payments-incident"}
+REQUIRED_SKILL_OWNER_SCOPES = {"team:benchmarks", "team:context", "team:payments"}
+REQUIRED_SKILL_TRIGGER_TERMS = {"checkout", "context", "injection", "latency", "rollback", "summary"}
+REQUIRED_RESOURCE_IMPORT_KINDS = {"git_repo", "markdown", "pdf", "url"}
+REQUIRED_RESOURCE_OWNER_SCOPES = {"team:benchmarks", "team:context", "team:payments", "team:platform"}
+REQUIRED_RESOURCE_PARSERS = {"context-scale-harness"}
 
 
 def fail(message: str) -> int:
@@ -62,6 +68,25 @@ def require_string_set(report: dict[str, Any], field: str, required: set[str]) -
     if missing:
         raise ValueError(f"{field} missing required entries: {missing}")
     return observed
+
+
+def require_map_keys_at_least(
+    report: dict[str, Any], field: str, required: set[str], minimum: int
+) -> dict[str, Any]:
+    value = report.get(field)
+    if not isinstance(value, dict):
+        raise ValueError(f"{field} must be an object")
+    missing = sorted(required - set(value))
+    if missing:
+        raise ValueError(f"{field} missing required keys: {missing}")
+    too_small = {
+        key: value.get(key)
+        for key in sorted(required)
+        if not isinstance(value.get(key), int) or value.get(key) < minimum
+    }
+    if too_small:
+        raise ValueError(f"{field} entries must be >= {minimum}: {too_small}")
+    return value
 
 
 def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int) -> None:
@@ -122,6 +147,21 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
     require_int_at_least(report, "retrieved_user_shared_block_count", 1)
     require_int_at_least(report, "retrieved_workspace_shared_block_count", 1)
     require_int_at_least(report, "retrieved_global_shared_block_count", 1)
+    selected_skill_count = require_int_at_least(report, "selected_skill_count", 3)
+    require_string_set(report, "selected_skill_names", REQUIRED_SELECTED_SKILLS)
+    require_string_set(report, "selected_skill_owner_scopes", REQUIRED_SKILL_OWNER_SCOPES)
+    require_string_set(report, "selected_skill_trigger_terms", REQUIRED_SKILL_TRIGGER_TERMS)
+    allowed_tool_matches = require_int_at_least(
+        report, "selected_skill_allowed_tool_matches", selected_skill_count
+    )
+    if allowed_tool_matches != selected_skill_count:
+        raise ValueError(
+            "selected_skill_allowed_tool_matches must equal selected_skill_count, "
+            f"got {allowed_tool_matches}/{selected_skill_count}"
+        )
+    require_map_keys_at_least(report, "resource_import_kinds", REQUIRED_RESOURCE_IMPORT_KINDS, 1)
+    require_string_set(report, "resource_owner_scopes", REQUIRED_RESOURCE_OWNER_SCOPES)
+    require_string_set(report, "resource_parser_names", REQUIRED_RESOURCE_PARSERS)
     require_int_at_least(report, "selected_ref_count", 8)
     require_bool(report, "fanout_selected_ref_current_agent_first")
     require_bool(report, "fanout_injection_current_agent_first")

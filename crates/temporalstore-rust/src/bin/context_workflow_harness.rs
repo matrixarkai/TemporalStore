@@ -167,7 +167,14 @@ struct ResourceSkillConversationScaleSummary {
     retrieved_global_shared_block_count: usize,
     retrieved_event_count: usize,
     selected_skill_count: usize,
+    selected_skill_names: Vec<String>,
+    selected_skill_owner_scopes: Vec<String>,
+    selected_skill_trigger_terms: Vec<String>,
+    selected_skill_allowed_tool_matches: usize,
     resource_lifecycle_watched_count: usize,
+    resource_import_kinds: BTreeMap<String, usize>,
+    resource_owner_scopes: Vec<String>,
+    resource_parser_names: Vec<String>,
     skill_registry_enabled_count: usize,
     skill_registry_disabled_count: usize,
     embedding_ref_count: usize,
@@ -1207,6 +1214,52 @@ fn run_resource_skill_conversation_scale(
     let fanout_injection_current_agent_first = fanout_injection_scope_order
         .first()
         .is_some_and(|scope| scope == "agent:codex");
+    let selected_skill_names = sorted_unique_strings(
+        &resource_skill_report
+            .skill_selection
+            .selected
+            .iter()
+            .map(|skill| skill.skill_name.clone())
+            .collect::<Vec<_>>(),
+    );
+    let selected_skill_owner_scopes = sorted_unique_strings(
+        &resource_skill_report
+            .skill_selection
+            .selected
+            .iter()
+            .map(|skill| skill.owner_scope.clone())
+            .collect::<Vec<_>>(),
+    );
+    let selected_skill_trigger_terms = sorted_unique_strings(
+        &resource_skill_report
+            .skill_selection
+            .selected
+            .iter()
+            .flat_map(|skill| skill.matched_triggers.iter().cloned())
+            .collect::<Vec<_>>(),
+    );
+    let selected_skill_allowed_tool_matches = resource_skill_report
+        .skill_selection
+        .selected
+        .iter()
+        .filter(|skill| skill.allowed_tool_match)
+        .count();
+    let resource_owner_scopes = sorted_unique_strings(
+        &resource_skill_report
+            .resource_lifecycle
+            .resources
+            .iter()
+            .map(|resource| resource.owner_scope.clone())
+            .collect::<Vec<_>>(),
+    );
+    let resource_parser_names = sorted_unique_strings(
+        &resource_skill_report
+            .resource_lifecycle
+            .resources
+            .iter()
+            .map(|resource| resource.parser_name.clone())
+            .collect::<Vec<_>>(),
+    );
     let multi_agent_scan_ready = combined_retrieve.fanout_plan.fanout_reduced
         && combined_retrieve.fanout_plan.layer_quota_applied
         && combined_retrieve.fanout_plan.selected_current_agent_nodes > 0
@@ -1320,7 +1373,17 @@ fn run_resource_skill_conversation_scale(
         ),
         retrieved_event_count: combined_retrieve.event_count,
         selected_skill_count: resource_skill_report.skill_selection.selected.len(),
+        selected_skill_names,
+        selected_skill_owner_scopes,
+        selected_skill_trigger_terms,
+        selected_skill_allowed_tool_matches,
         resource_lifecycle_watched_count: resource_skill_report.resource_lifecycle.watched_count,
+        resource_import_kinds: resource_skill_report
+            .resource_lifecycle
+            .import_kinds
+            .clone(),
+        resource_owner_scopes,
+        resource_parser_names,
         skill_registry_enabled_count: resource_skill_report.skill_registry.enabled_count,
         skill_registry_disabled_count: resource_skill_report.skill_registry.disabled_count,
         embedding_ref_count: resource_skill_report.embedding_refs.len(),

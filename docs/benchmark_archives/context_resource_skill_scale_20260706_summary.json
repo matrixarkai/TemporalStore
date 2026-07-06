@@ -13,7 +13,41 @@
   "retrieved_global_shared_block_count": 3,
   "retrieved_event_count": 13,
   "selected_skill_count": 3,
+  "selected_skill_names": [
+    "benchmark-reader",
+    "context-debug",
+    "payments-incident"
+  ],
+  "selected_skill_owner_scopes": [
+    "team:benchmarks",
+    "team:context",
+    "team:payments"
+  ],
+  "selected_skill_trigger_terms": [
+    "checkout",
+    "context",
+    "injection",
+    "latency",
+    "rollback",
+    "summary"
+  ],
+  "selected_skill_allowed_tool_matches": 3,
   "resource_lifecycle_watched_count": 3,
+  "resource_import_kinds": {
+    "git_repo": 1,
+    "markdown": 1,
+    "pdf": 1,
+    "url": 1
+  },
+  "resource_owner_scopes": [
+    "team:benchmarks",
+    "team:context",
+    "team:payments",
+    "team:platform"
+  ],
+  "resource_parser_names": [
+    "context-scale-harness"
+  ],
   "skill_registry_enabled_count": 3,
   "skill_registry_disabled_count": 0,
   "embedding_ref_count": 39,
@@ -225,7 +259,7 @@
     "global"
   ],
   "fanout_injection_current_agent_first": true,
-  "ingest_ms": 9055,
-  "retrieve_ms": 2770,
-  "secondary_index_validation_ms": 1318
+  "ingest_ms": 9632,
+  "retrieve_ms": 2883,
+  "secondary_index_validation_ms": 1224
 }
