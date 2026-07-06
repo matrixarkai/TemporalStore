@@ -209,6 +209,21 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
     require_string_set(report, "fanout_colocation_groups", REQUIRED_GROUPS)
     require_string_set(report, "fanout_colocation_scope_keys", REQUIRED_SCOPE_KEYS)
     require_string_set(report, "fanout_required_scan_scope_keys", REQUIRED_SCAN_SCOPE_KEYS)
+    if report.get("fanout_scan_policy_current_agent_scope_key") != "agent:codex":
+        raise ValueError(
+            "fanout_scan_policy_current_agent_scope_key must be agent:codex, "
+            f"got {report.get('fanout_scan_policy_current_agent_scope_key')!r}"
+        )
+    if report.get("fanout_scan_policy_owner_scope_key") != "workspace:context":
+        raise ValueError(
+            "fanout_scan_policy_owner_scope_key must be workspace:context, "
+            f"got {report.get('fanout_scan_policy_owner_scope_key')!r}"
+        )
+    require_string_set(report, "fanout_scan_policy_shared_scope_keys", {"global", "user:user"})
+    require_bool(report, "fanout_scan_policy_implicit_current_agent_scope_added")
+    require_bool(report, "fanout_scan_policy_owner_scope_included")
+    require_bool(report, "fanout_scan_policy_shared_scopes_included")
+    require_bool(report, "fanout_scan_policy_ready")
     require_int_equal(report, "fanout_locality_key_count", expanded)
     require_int_equal(report, "fanout_peer_locality_key_count", 0)
     locality_scopes = require_string_set(

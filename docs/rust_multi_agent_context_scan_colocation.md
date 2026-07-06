@@ -87,6 +87,16 @@ Archived report: `docs/benchmark_archives/context_multiagent_scan_20260706_summa
     "user:user",
     "global"
   ],
+  "scan_policy_current_agent_scope_key": "agent:codex",
+  "scan_policy_owner_scope_key": "workspace:context",
+  "scan_policy_shared_scope_keys": [
+    "global",
+    "user:user"
+  ],
+  "scan_policy_implicit_current_agent_scope_added": true,
+  "scan_policy_owner_scope_included": true,
+  "scan_policy_shared_scopes_included": true,
+  "scan_policy_ready": true,
   "locality_keys": [
     "tenant:20260706:scope:agent:codex:node:8424729405653484612",
     "tenant:20260706:scope:workspace:context:node:16379766558787635764",
@@ -132,7 +142,7 @@ Archived report: `docs/benchmark_archives/context_multiagent_scan_20260706_summa
 - The selected colocation scope order starts with `agent:codex`, proving current-agent context gets the first expansion slot before shared resources.
 - Retrieved block coverage is scope-aware: returned context includes current-agent, user-shared, workspace-shared, and global-shared blocks, not only selected node metadata.
 - Selected refs and injection ordering now start with `agent:codex`, proving the current-agent boost survives from fanout selection into prompt-facing evidence ordering.
-- Required scan scopes are derived from the current agent and owner scope, so user and global shared layers stay visible even when callers do not manually pass every shared scope.
+- Required scan scopes are policy-derived: `agent:codex` is added implicitly for the current agent, `workspace:context` is included from owner scope, and `user:user`/`global` come from the shared resource policy.
 - Locality keys are producer-aware: current-agent context is scoped as `agent:codex`, while shared resources stay in `user:user`, `workspace:context`, and `global` groups instead of colocating the whole namespace.
 - Locality key count equals expanded nodes: 4 expanded nodes produce 4 locality keys, covering exactly `agent:codex`, `user:user`, `workspace:context`, and `global` with zero peer-agent locality keys.
 - Layer quotas are applied before expansion so shared resources are not crowded out by many current-agent matches.

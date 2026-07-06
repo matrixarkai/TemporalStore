@@ -145,6 +145,16 @@
     "user:user",
     "global"
   ],
+  "fanout_scan_policy_current_agent_scope_key": "agent:codex",
+  "fanout_scan_policy_owner_scope_key": "workspace:context",
+  "fanout_scan_policy_shared_scope_keys": [
+    "global",
+    "user:user"
+  ],
+  "fanout_scan_policy_implicit_current_agent_scope_added": true,
+  "fanout_scan_policy_owner_scope_included": true,
+  "fanout_scan_policy_shared_scopes_included": true,
+  "fanout_scan_policy_ready": true,
   "fanout_locality_key_count": 16,
   "fanout_locality_scope_keys": [
     "agent:codex",
@@ -264,7 +274,7 @@
     "global"
   ],
   "fanout_injection_current_agent_first": true,
-  "ingest_ms": 13418,
-  "retrieve_ms": 2969,
-  "secondary_index_validation_ms": 1288
+  "ingest_ms": 8374,
+  "retrieve_ms": 2813,
+  "secondary_index_validation_ms": 1202
 }

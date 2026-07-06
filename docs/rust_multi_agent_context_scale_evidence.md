@@ -136,6 +136,16 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
     "user:user",
     "global"
   ],
+  "fanout_scan_policy_current_agent_scope_key": "agent:codex",
+  "fanout_scan_policy_owner_scope_key": "workspace:context",
+  "fanout_scan_policy_shared_scope_keys": [
+    "global",
+    "user:user"
+  ],
+  "fanout_scan_policy_implicit_current_agent_scope_added": true,
+  "fanout_scan_policy_owner_scope_included": true,
+  "fanout_scan_policy_shared_scopes_included": true,
+  "fanout_scan_policy_ready": true,
   "fanout_locality_key_count": 16,
   "fanout_locality_scope_keys": [
     "agent:codex",
@@ -170,7 +180,7 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
 - The selected colocation scope set proves the expanded scale scan covers `agent:codex`, `user:user`, `workspace:context`, and `global`.
 - Locality key count equals expanded nodes: 16 expanded nodes produce 16 locality keys, covering exactly `agent:codex`, `user:user`, `workspace:context`, and `global` with zero peer-agent locality keys.
 - Selected refs and injection ordering start with `agent:codex`, proving current-agent context stays first after final retrieval scoring, not only during fanout planning.
-- Required scan scopes are derived from current-agent plus owner-scope policy, so shared user/global resources do not depend on every caller spelling out the full scope list.
+- Required scan scopes are policy-derived: `agent:codex` is added implicitly for the current agent, `workspace:context` is included from owner scope, and `user:user`/`global` come from the shared resource policy.
 - Peer-agent candidates are present but capped out of expansion in this current-agent scan.
 - Secondary indexes and selected references remain active in the same scale run.
 

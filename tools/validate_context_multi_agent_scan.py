@@ -166,6 +166,21 @@ def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: i
         "required_scan_scope_keys",
         {"agent:codex", "user:user", "workspace:context", "global"},
     )
+    if report.get("scan_policy_current_agent_scope_key") != "agent:codex":
+        raise ValueError(
+            "scan_policy_current_agent_scope_key must be agent:codex, "
+            f"got {report.get('scan_policy_current_agent_scope_key')!r}"
+        )
+    if report.get("scan_policy_owner_scope_key") != "workspace:context":
+        raise ValueError(
+            "scan_policy_owner_scope_key must be workspace:context, "
+            f"got {report.get('scan_policy_owner_scope_key')!r}"
+        )
+    require_string_set(report, "scan_policy_shared_scope_keys", {"global", "user:user"})
+    require_bool(report, "scan_policy_implicit_current_agent_scope_added")
+    require_bool(report, "scan_policy_owner_scope_included")
+    require_bool(report, "scan_policy_shared_scopes_included")
+    require_bool(report, "scan_policy_ready")
     locality_keys = report.get("locality_keys")
     if not isinstance(locality_keys, list) or not locality_keys:
         raise ValueError("locality_keys must be a non-empty string array")
