@@ -1,0 +1,15 @@
+[package]
+name = "rustmtcache"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Rust-native multi-tier cache library targeting mtcache-class behavior."
+repository = "https://github.com/bjmeetsfo/TemporalStore"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "1"
+zstd = "0.13"
+
+[dev-dependencies]
+tempfile = "=3.10.1"
