@@ -1959,9 +1959,10 @@ def make_adapter(backend: str, args: argparse.Namespace, storage_prefix: str):
         else:
             os.environ["MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS"] = "0"
             os.environ["MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES"] = "0"
+        allow_c_api_bridge = bool(getattr(args, "allow_rust_cpp_c_api_bridge", False))
         direct_lib_raw = os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_LIB", "").strip()
         direct_lib = Path(direct_lib_raw) if direct_lib_raw else Path("/__matrixark_missing_rust_direct_lib__")
-        if not direct_lib.exists():
+        if allow_c_api_bridge and not direct_lib.exists():
             rust_cli = Path(args.rust_cli).resolve()
             candidates = [
                 rust_cli.parent / "libtemporalstore.so",
@@ -1972,9 +1973,13 @@ def make_adapter(backend: str, args: argparse.Namespace, storage_prefix: str):
                     direct_lib = candidate
                     os.environ.setdefault("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_LIB", str(candidate))
                     break
-        sdk_mode = "direct-sdk" if direct_lib.exists() else "proxy"
-        if direct_lib.exists():
+        sdk_mode = "direct-sdk" if allow_c_api_bridge and direct_lib.exists() else "proxy"
+        if sdk_mode == "direct-sdk":
             os.environ.setdefault("TEMPORALSTORE_LIB", args.cpp_lib)
+            os.environ.setdefault("TEMPORALSTORE_RUST_ALLOW_CPP_MATRIXARK_C_API", "1")
+        else:
+            os.environ.pop("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_LIB", None)
+            os.environ.pop("TEMPORALSTORE_RUST_ALLOW_CPP_MATRIXARK_C_API", None)
         return MatrixArkTemporalStoreRustAdapter(rust_cli=args.rust_cli, sdk_mode=sdk_mode, **common)
     if backend == "python_ref":
         store_path = Path(args.python_ref_store) if args.python_ref_store else Path("/tmp") / "matrixark_phase0_python_ref.jsonl"
@@ -3576,6 +3581,7 @@ def main() -> int:
     parser.add_argument("--rust-cli", default=str(ROOT / "target/release/matrixark_rust_proxy"))
     parser.add_argument("--allow-rust-record-log-compat", action="store_true")
     parser.add_argument("--allow-rust-debug-cli", action="store_true")
+    parser.add_argument("--allow-rust-cpp-c-api-bridge", action="store_true", help="diagnostic only: allow the legacy Rust cdylib MatrixArk hot path to call the shared C++ C API bridge")
     parser.add_argument("--request-timeout-ms", type=int, default=60000)
     parser.add_argument("--io-timeout-ms", type=int, default=60000)
     parser.add_argument("--readiness-timeout-ms", type=int, default=60000)
@@ -3676,6 +3682,8 @@ def main() -> int:
                 "production_default": "matrixark_rust_proxy",
                 "record_log_compat_allowed": parsed.allow_rust_record_log_compat,
                 "debug_cli_allowed": parsed.allow_rust_debug_cli,
+                "cpp_c_api_bridge_allowed": parsed.allow_rust_cpp_c_api_bridge,
+                "rust_hot_path_default": "rust_native_proxy_or_workspace_direct_sdk",
             },
             "storage_options": parsed.storage_options,
             "effective_storage_tuning": effective_storage_tuning_from_env(),
