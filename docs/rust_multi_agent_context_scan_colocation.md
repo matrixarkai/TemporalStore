@@ -108,6 +108,15 @@ Archived report: `docs/benchmark_archives/context_multiagent_scan_20260706_summa
   "retrieved_global_shared_block_count": 3,
   "retrieved_event_count": 4,
   "selected_ref_count": 12,
+  "selected_ref_scope_keys": [
+    "agent:codex",
+    "global",
+    "user:user",
+    "workspace:context"
+  ],
+  "selected_ref_current_agent_first": true,
+  "selected_peer_agent_ref_count": 0,
+  "injection_current_agent_first": true,
   "current_agent_id": "codex"
 }
 ```
@@ -122,6 +131,7 @@ Archived report: `docs/benchmark_archives/context_multiagent_scan_20260706_summa
 - The selected colocation scope set proves the expanded scan covers `agent:codex`, `user:user`, `workspace:context`, and `global`.
 - The selected colocation scope order starts with `agent:codex`, proving current-agent context gets the first expansion slot before shared resources.
 - Retrieved block coverage is scope-aware: returned context includes current-agent, user-shared, workspace-shared, and global-shared blocks, not only selected node metadata.
+- Selected refs and injection ordering now start with `agent:codex`, proving the current-agent boost survives from fanout selection into prompt-facing evidence ordering.
 - Required scan scopes are derived from the current agent and owner scope, so user and global shared layers stay visible even when callers do not manually pass every shared scope.
 - Locality keys are producer-aware: current-agent context is scoped as `agent:codex`, while shared resources stay in `user:user`, `workspace:context`, and `global` groups instead of colocating the whole namespace.
 - Locality key count equals expanded nodes: 4 expanded nodes produce 4 locality keys, covering exactly `agent:codex`, `user:user`, `workspace:context`, and `global` with zero peer-agent locality keys.

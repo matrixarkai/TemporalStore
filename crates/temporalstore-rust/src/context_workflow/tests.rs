@@ -15,6 +15,31 @@ fn test_engine() -> TemporalEngine {
     engine
 }
 
+fn assert_current_agent_first_selected_and_injected(report: &ContextRetrieveReport) {
+    let first_selected = report
+        .query_understanding_debug
+        .selected_refs
+        .first()
+        .map(|selected| selected.source_ref.to_ascii_lowercase())
+        .unwrap_or_default();
+    assert!(
+        first_selected.contains("agent:codex"),
+        "selected refs should start with current-agent context: {:?}",
+        report.query_understanding_debug.selected_refs
+    );
+    let first_injected = report
+        .query_understanding_debug
+        .injection_ordering
+        .first()
+        .map(|selected| selected.source_ref.to_ascii_lowercase())
+        .unwrap_or_default();
+    assert!(
+        first_injected.contains("agent:codex"),
+        "injection ordering should start with current-agent context: {:?}",
+        report.query_understanding_debug.injection_ordering
+    );
+}
+
 // shared-corpus: context_retrieval_qa_synonym_ranking
 #[test]
 fn context_relevance_ranks_qa_synonyms_and_phrases() {
@@ -741,6 +766,7 @@ fn context_multi_agent_scan_boosts_current_agent_and_colocates_shared_scopes() {
         report.fanout_plan.selected_colocation_scope_order.first(),
         Some(&"agent:codex".to_string())
     );
+    assert_current_agent_first_selected_and_injected(&report);
     assert!(report
         .fanout_plan
         .selected_colocation_scope_keys
@@ -881,6 +907,7 @@ fn context_multi_agent_layer_quota_keeps_shared_resources_when_agent_has_many_ma
         report.fanout_plan.selected_colocation_scope_order.first(),
         Some(&"agent:codex".to_string())
     );
+    assert_current_agent_first_selected_and_injected(&report);
     for selected_scope in ["agent:codex", "user:alice", "global"] {
         assert!(
             report
@@ -1014,6 +1041,7 @@ fn context_multi_agent_scan_derives_shared_scopes_from_owner_and_agent() {
         report.fanout_plan.selected_colocation_scope_order.first(),
         Some(&"agent:codex".to_string())
     );
+    assert_current_agent_first_selected_and_injected(&report);
     for selected_scope in ["agent:codex", "workspace:payments", "user:user", "global"] {
         assert!(
             report

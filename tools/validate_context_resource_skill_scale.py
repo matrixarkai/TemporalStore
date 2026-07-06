@@ -123,6 +123,28 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
     require_int_at_least(report, "retrieved_workspace_shared_block_count", 1)
     require_int_at_least(report, "retrieved_global_shared_block_count", 1)
     require_int_at_least(report, "selected_ref_count", 8)
+    require_bool(report, "fanout_selected_ref_current_agent_first")
+    require_bool(report, "fanout_injection_current_agent_first")
+    require_int_equal(report, "fanout_selected_peer_agent_ref_count", 0)
+    selected_ref_scopes = require_string_set(
+        report, "fanout_selected_ref_scope_keys", REQUIRED_SELECTED_SCOPE_KEYS
+    )
+    selected_ref_order = report.get("fanout_selected_ref_scope_order")
+    if not isinstance(selected_ref_order, list) or not selected_ref_order:
+        raise ValueError("fanout_selected_ref_scope_order must be a non-empty string array")
+    if selected_ref_order[0] != "agent:codex":
+        raise ValueError(
+            "fanout_selected_ref_scope_order must start with current agent agent:codex, "
+            f"got {selected_ref_order[:3]!r}"
+        )
+    injection_order = report.get("fanout_injection_scope_order")
+    if not isinstance(injection_order, list) or not injection_order:
+        raise ValueError("fanout_injection_scope_order must be a non-empty string array")
+    if injection_order[0] != "agent:codex":
+        raise ValueError(
+            "fanout_injection_scope_order must start with current agent agent:codex, "
+            f"got {injection_order[:3]!r}"
+        )
     require_string_set(report, "fanout_scan_layers", REQUIRED_LAYERS)
     require_string_set(report, "fanout_colocation_groups", REQUIRED_GROUPS)
     require_string_set(report, "fanout_colocation_scope_keys", REQUIRED_SCOPE_KEYS)
@@ -136,6 +158,11 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
         raise ValueError(
             "fanout_locality_scope_keys must exactly match fanout_selected_colocation_scope_keys, "
             f"got {sorted(locality_scopes)} vs {sorted(report['fanout_selected_colocation_scope_keys'])}"
+        )
+    if selected_ref_scopes != locality_scopes:
+        raise ValueError(
+            "fanout_selected_ref_scope_keys must exactly match fanout_locality_scope_keys, "
+            f"got {sorted(selected_ref_scopes)} vs {sorted(locality_scopes)}"
         )
 
 

@@ -127,6 +127,33 @@ def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: i
     require_int_at_least(report, "retrieved_workspace_shared_block_count", 1)
     require_int_at_least(report, "retrieved_global_shared_block_count", 1)
     require_int_at_least(report, "selected_ref_count", 4)
+    require_bool(report, "selected_ref_current_agent_first")
+    require_bool(report, "injection_current_agent_first")
+    require_int_equal(report, "selected_peer_agent_ref_count", 0)
+    selected_scopes = require_string_set(
+        report, "selected_ref_scope_keys", REQUIRED_SELECTED_SCOPE_KEYS
+    )
+    if selected_scopes != set(report["locality_scope_keys"]):
+        raise ValueError(
+            "selected_ref_scope_keys must exactly match locality_scope_keys, "
+            f"got {sorted(selected_scopes)} vs {sorted(report['locality_scope_keys'])}"
+        )
+    selected_order = report.get("selected_ref_scope_order")
+    if not isinstance(selected_order, list) or not selected_order:
+        raise ValueError("selected_ref_scope_order must be a non-empty string array")
+    if selected_order[0] != "agent:codex":
+        raise ValueError(
+            "selected_ref_scope_order must start with current agent agent:codex, "
+            f"got {selected_order[:3]!r}"
+        )
+    injection_order = report.get("injection_scope_order")
+    if not isinstance(injection_order, list) or not injection_order:
+        raise ValueError("injection_scope_order must be a non-empty string array")
+    if injection_order[0] != "agent:codex":
+        raise ValueError(
+            "injection_scope_order must start with current agent agent:codex, "
+            f"got {injection_order[:3]!r}"
+        )
     require_string_set(report, "scan_layers", REQUIRED_LAYERS)
     require_string_set(report, "colocation_groups", REQUIRED_COLOCATION_GROUPS)
     require_string_set(
