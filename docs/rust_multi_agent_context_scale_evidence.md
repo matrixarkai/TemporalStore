@@ -148,6 +148,9 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
   "fanout_selected_workspace_shared_nodes": 3,
   "fanout_selected_global_shared_nodes": 1,
   "fanout_shared_selected_node_count": 5,
+  "fanout_selected_current_agent_percent": 68,
+  "fanout_selected_shared_layer_percent": 31,
+  "fanout_selected_peer_agent_percent": 0,
   "fanout_shared_scope_coverage_count": 3,
   "fanout_shared_scope_coverage_ready": true,
   "fanout_current_agent_boost_percent": 68,
@@ -221,6 +224,7 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
 - Candidate pressure is scope-aware before selection: 24 current-agent nodes, 4 peer-agent nodes, and 16 shared nodes across user/workspace/global are classified before fanout pruning.
 - Shared-layer coverage is now enforced from the core retrieval report: all 3 required shared scopes are covered while the fill phase can select extra high-value workspace nodes.
 - Current-agent context is selected with agent-aware locality while user, workspace, and global shared resources remain visible.
+- Selection percentages are explicit in the core report: this scale scan is 68% current-agent, 31% shared-layer, and 0% peer-agent.
 - Current-agent boost is explicit and bounded: 11 of 16 expanded nodes are `agent:codex`, giving a 68% current-agent boost while 5 shared nodes still satisfy the shared-layer quota.
 - The selected colocation distribution is exact: 11 current-agent nodes, 3 workspace nodes, 1 user node, and 1 global node, with zero peer-agent nodes.
 - Shared-scope coverage is explicit: user, workspace, and global layers are all represented in the selected node set.

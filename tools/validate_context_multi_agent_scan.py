@@ -244,6 +244,14 @@ def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: i
     require_int_at_least(report, "selected_workspace_shared_nodes", 1)
     require_int_at_least(report, "selected_global_shared_nodes", 1)
     shared_selected = require_int_at_least(report, "selected_shared_layer_nodes", 3)
+    current_percent = require_int_at_least(report, "selected_current_agent_percent", 1)
+    shared_percent = require_int_at_least(report, "selected_shared_layer_percent", 1)
+    require_int_equal(report, "selected_peer_agent_percent", 0)
+    if current_percent + shared_percent > 100:
+        raise ValueError(
+            "selected current-agent and shared-layer percentages cannot exceed 100, "
+            f"got {current_percent}+{shared_percent}"
+        )
     if shared_selected != (
         report["selected_user_shared_nodes"]
         + report["selected_workspace_shared_nodes"]

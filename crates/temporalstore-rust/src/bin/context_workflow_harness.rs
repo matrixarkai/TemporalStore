@@ -234,6 +234,9 @@ struct ResourceSkillConversationScaleSummary {
     fanout_selected_workspace_shared_nodes: usize,
     fanout_selected_global_shared_nodes: usize,
     fanout_shared_selected_node_count: usize,
+    fanout_selected_current_agent_percent: u32,
+    fanout_selected_shared_layer_percent: u32,
+    fanout_selected_peer_agent_percent: u32,
     fanout_shared_scope_coverage_count: usize,
     fanout_shared_scope_coverage_ready: bool,
     fanout_current_agent_boost_percent: u32,
@@ -319,6 +322,9 @@ struct MultiAgentContextScanHarnessSummary {
     selected_workspace_shared_nodes: usize,
     selected_global_shared_nodes: usize,
     selected_shared_layer_nodes: usize,
+    selected_current_agent_percent: u32,
+    selected_shared_layer_percent: u32,
+    selected_peer_agent_percent: u32,
     required_shared_scope_count: usize,
     selected_shared_scope_coverage_count: usize,
     shared_scope_coverage_ready: bool,
@@ -1640,6 +1646,15 @@ fn run_resource_skill_conversation_scale(
         fanout_shared_selected_node_count: combined_retrieve
             .fanout_plan
             .selected_shared_layer_nodes,
+        fanout_selected_current_agent_percent: combined_retrieve
+            .fanout_plan
+            .selected_current_agent_percent,
+        fanout_selected_shared_layer_percent: combined_retrieve
+            .fanout_plan
+            .selected_shared_layer_percent,
+        fanout_selected_peer_agent_percent: combined_retrieve
+            .fanout_plan
+            .selected_peer_agent_percent,
         fanout_shared_scope_coverage_count: combined_retrieve
             .fanout_plan
             .selected_shared_scope_coverage_count,
@@ -1975,6 +1990,9 @@ fn run_multi_agent_context_scan_harness(
         selected_workspace_shared_nodes: report.fanout_plan.selected_workspace_shared_nodes,
         selected_global_shared_nodes: report.fanout_plan.selected_global_shared_nodes,
         selected_shared_layer_nodes: report.fanout_plan.selected_shared_layer_nodes,
+        selected_current_agent_percent: report.fanout_plan.selected_current_agent_percent,
+        selected_shared_layer_percent: report.fanout_plan.selected_shared_layer_percent,
+        selected_peer_agent_percent: report.fanout_plan.selected_peer_agent_percent,
         required_shared_scope_count: report.fanout_plan.required_shared_scope_count,
         selected_shared_scope_coverage_count: report
             .fanout_plan

@@ -291,6 +291,14 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
     require_bool(report, "fanout_shared_scope_coverage_ready")
     shared_quota = require_int_at_least(report, "fanout_shared_layer_quota_nodes", 4)
     shared_selected = require_int_at_least(report, "fanout_shared_selected_node_count", shared_quota)
+    current_percent = require_int_at_least(report, "fanout_selected_current_agent_percent", 1)
+    shared_percent = require_int_at_least(report, "fanout_selected_shared_layer_percent", 1)
+    require_int_equal(report, "fanout_selected_peer_agent_percent", 0)
+    if current_percent + shared_percent > 100:
+        raise ValueError(
+            "fanout selected current-agent and shared-layer percentages cannot exceed 100, "
+            f"got {current_percent}+{shared_percent}"
+        )
     if shared_selected != (
         report["fanout_selected_user_shared_nodes"]
         + report["fanout_selected_workspace_shared_nodes"]
