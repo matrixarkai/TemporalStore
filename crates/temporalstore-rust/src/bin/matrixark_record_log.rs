@@ -2410,20 +2410,48 @@ fn execute_record_log_request(
             output
         }
         "batch_hget" => {
-            let mut records = Vec::with_capacity(request.entries.len());
+            let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
             for entry in request.entries {
-                let value = read_bytes(
-                    &engine,
-                    Command::HashGet {
-                        key: entry.key.clone(),
-                        field: entry.field.clone(),
+                grouped.entry(entry.key).or_default().push(entry.field);
+            }
+            for CompactHashEntry(key, field, _) in request.entries_compact {
+                grouped.entry(key).or_default().push(field);
+            }
+            let mut records = Vec::with_capacity(
+                grouped.values().map(|fields| fields.len()).sum::<usize>(),
+            );
+            for (key, fields) in grouped {
+                let response = engine.execute(ExecuteRequest {
+                    shard_id: DEFAULT_SHARD_ID,
+                    command: Command::HashMultiGet {
+                        key: key.clone(),
+                        fields: fields.clone(),
                     },
-                )?;
-                records.push(HashReadRecord {
-                    key: entry.key,
-                    field: entry.field,
-                    value,
                 });
+                if !response.status.ok {
+                    return Err(format!(
+                        "{}: {}",
+                        response.status.code, response.status.message
+                    ));
+                }
+                let values = match response.response {
+                    CommandResponse::Values { values } => values,
+                    other => return Err(format!("unexpected response for batch_hget: {other:?}")),
+                };
+                for (field, value) in fields.into_iter().zip(values.into_iter()) {
+                    let value = value
+                        .map(|bytes| {
+                            String::from_utf8(bytes)
+                                .map_err(|error| format!("stored value is not UTF-8: {error}"))
+                        })
+                        .transpose()?
+                        .unwrap_or_default();
+                    records.push(HashReadRecord {
+                        key: key.clone(),
+                        field,
+                        value,
+                    });
+                }
             }
             RecordLogOutput {
                 count: Some(records.len()),
@@ -2666,7 +2694,10 @@ fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
         shard_id: DEFAULT_SHARD_ID,
         config: Config {
             version: 2,
-            async_storage: true,
+            async_storage: env::var("MATRIXARK_RUST_PROXY_ASYNC_STORAGE")
+                .ok()
+                .and_then(|value| value.parse::<bool>().ok())
+                .unwrap_or(true),
             ..Config::default()
         },
     });
