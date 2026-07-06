@@ -349,6 +349,19 @@ fn main() {
         );
         return;
     }
+    let resource_skill_scale_only = std::env::var(
+        "TEMPORALSTORE_CONTEXT_RESOURCE_SKILL_SCALE_ONLY",
+    )
+    .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+    .unwrap_or(false);
+    if resource_skill_scale_only {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&run_resource_skill_conversation_scale(&engine))
+                .expect("resource skill conversation scale summary should serialize")
+        );
+        return;
+    }
     let external_only = std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_EXTERNAL_ONLY")
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
         .unwrap_or(false);
@@ -986,6 +999,16 @@ fn run_resource_skill_conversation_scale(
             }
         })
         .collect::<Vec<_>>();
+    conversation_sources.extend((0..4).map(|index| ContextExtractRequest {
+        shard_id,
+        tenant_hash,
+        source_kind: ContextSourceKind::Chat,
+        source_id: format!("agent:claude:scale-peer-conversation-{index}"),
+        title: format!("Claude peer scale conversation {index}"),
+        body: "Claude peer-agent context mentions checkout rollback, p95 latency, context debug, and payment dependency evidence but should not crowd out Codex plus shared resources in the bounded scan.".to_string(),
+        timestamp_ms: start_time_ms + 20_000 + index,
+        provider: ContextModelProviderConfig::default(),
+    }));
     conversation_sources.extend([
         ContextExtractRequest {
             shard_id,
@@ -1047,7 +1070,7 @@ fn run_resource_skill_conversation_scale(
             owner_scope: "workspace:context".to_string(),
             current_agent_id: "codex".to_string(),
             shared_resource_scopes: vec!["global".to_string(), "user:user".to_string()],
-            max_peer_agent_nodes: usize::MAX,
+            max_peer_agent_nodes: 0,
             provider: ContextModelProviderConfig::default(),
         },
     );
@@ -1103,14 +1126,29 @@ fn run_resource_skill_conversation_scale(
     let multi_agent_scan_ready = combined_retrieve.fanout_plan.fanout_reduced
         && combined_retrieve.fanout_plan.layer_quota_applied
         && combined_retrieve.fanout_plan.selected_current_agent_nodes > 0
+        && combined_retrieve.fanout_plan.peer_agent_nodes > 0
+        && combined_retrieve.fanout_plan.selected_peer_agent_nodes == 0
+        && combined_retrieve.fanout_plan.skipped_peer_agent_nodes > 0
+        && combined_retrieve.fanout_plan.peer_agent_limit_applied
         && combined_retrieve.fanout_plan.selected_user_shared_nodes > 0
+        && combined_retrieve.fanout_plan.selected_workspace_shared_nodes > 0
         && combined_retrieve.fanout_plan.selected_global_shared_nodes > 0
-        && combined_retrieve.fanout_plan.shared_layer_quota_nodes >= 3
+        && combined_retrieve.fanout_plan.shared_layer_quota_nodes >= 4
         && combined_retrieve
             .fanout_plan
             .locality_keys
             .iter()
-            .all(|key| key.contains(":scope:"));
+            .all(|key| key.contains(":scope:"))
+        && combined_retrieve
+            .fanout_plan
+            .locality_keys
+            .iter()
+            .any(|key| key.contains(":scope:agent:codex:"))
+        && combined_retrieve
+            .fanout_plan
+            .colocation_scope_keys
+            .iter()
+            .any(|scope| scope == "agent:claude");
     let ready = resource_skill_report.status.ok
         && conversation_report.status.ok
         && combined_retrieve.status.ok

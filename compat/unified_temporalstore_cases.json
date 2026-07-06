@@ -6653,6 +6653,31 @@
       ]
     },
     {
+      "description": "Archived Rust resource/skill/conversation scale evidence for multi-agent scans: current-agent, user, workspace, and global layers remain visible across a larger namespace while peer-agent candidates are capped by max_peer_agent_nodes.",
+      "family": "context",
+      "name": "context_resource_skill_conversation_multi_agent_scale_evidence",
+      "shard_id": 60,
+      "steps": [
+        {
+          "name": "resource_skill_conversation_multi_agent_scale_evidence",
+          "skip_client": true,
+          "command": {
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "suite": "cpp_context_pipeline_parity",
+            "description": "Runs the Rust context_workflow_harness resource/skill/conversation scale mode and validates source count, fanout reduction, current-agent boost, peer-agent cap, scoped colocation, secondary index readiness, and selected refs.",
+            "required_paths": [
+              "crates/temporalstore-rust/src/bin/context_workflow_harness.rs#run_resource_skill_conversation_scale",
+              "docs/rust_multi_agent_context_scale_evidence.md"
+            ],
+            "rust_runner": "TEMPORALSTORE_CONTEXT_RESOURCE_SKILL_SCALE_ONLY=1 cargo run -p temporalstore-rust --bin context_workflow_harness",
+            "rust_validator": "python3 tools/validate_context_resource_skill_scale.py docs/benchmark_archives/context_resource_skill_scale_20260706_summary.json && python3 tools/run_temporalstore_unified_tests.py --validate-only",
+            "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-resource-skill-scale-harness> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
+          }
+        }
+      ]
+    },
+    {
       "description": "Shared C++/Rust Context resource/skill ingest case for live model-backed embeddings and summary-embedding-driven coarse retrieval expansion.",
       "family": "context",
       "name": "context_resource_skill_live_embedding_summary_retrieval",
