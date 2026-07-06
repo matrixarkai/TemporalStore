@@ -50,8 +50,15 @@ Archived report: `docs/benchmark_archives/context_multiagent_scan_20260706_summa
     "user:user",
     "workspace:context"
   ],
+  "colocation_scope_keys": [
+    "agent:claude",
+    "agent:codex",
+    "global",
+    "user:user",
+    "workspace:context"
+  ],
   "locality_keys": [
-    "tenant:20260706:scope:user:user:node:8424729405653484612",
+    "tenant:20260706:scope:agent:codex:node:8424729405653484612",
     "tenant:20260706:scope:workspace:context:node:16379766558787635764",
     "tenant:20260706:scope:user:user:node:12205718754729647577",
     "tenant:20260706:scope:global:node:12994693500116009283"
@@ -68,7 +75,7 @@ Archived report: `docs/benchmark_archives/context_multiagent_scan_20260706_summa
 - The retrieval path uses Rust TemporalStore ingestion, extraction, storage, summary embeddings, and retrieval.
 - Fanout is reduced from namespace candidates to bounded selected nodes.
 - The selected nodes include current-agent, user-shared, workspace-shared, and global-shared layers.
-- Locality keys are scoped by colocation group instead of colocating the whole namespace.
+- Locality keys are producer-aware: current-agent context is scoped as `agent:codex`, while shared resources stay in `user:user`, `workspace:context`, and `global` groups instead of colocating the whole namespace.
 - Layer quotas are applied before expansion so shared resources are not crowded out by many current-agent matches.
 - Peer-agent candidates are counted and capped by `max_peer_agent_nodes`, so the tight focused scan keeps current-agent plus user/workspace/global shared layers bounded and visible without duplicating the whole namespace.
 

@@ -24,8 +24,15 @@
     "user:user",
     "workspace:context"
   ],
+  "colocation_scope_keys": [
+    "agent:claude",
+    "agent:codex",
+    "global",
+    "user:user",
+    "workspace:context"
+  ],
   "locality_keys": [
-    "tenant:20260706:scope:user:user:node:8424729405653484612",
+    "tenant:20260706:scope:agent:codex:node:8424729405653484612",
     "tenant:20260706:scope:workspace:context:node:16379766558787635764",
     "tenant:20260706:scope:user:user:node:12205718754729647577",
     "tenant:20260706:scope:global:node:12994693500116009283"
