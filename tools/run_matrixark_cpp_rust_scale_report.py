@@ -1371,6 +1371,10 @@ def retrieval_phase0_fields(result: Json) -> Json:
 
     metric_drop_counters = metrics.get("drop_counters") if isinstance(metrics.get("drop_counters"), dict) else {}
     drop_counters = metric_drop_counters or _drop_counter_summary(pack.get("dropped_refs"))
+    candidate_class_counts = metrics.get("candidate_class_counts")
+    if not isinstance(candidate_class_counts, dict):
+        recall_candidate_class_counts = recall_policy.get("candidate_class_counts")
+        candidate_class_counts = recall_candidate_class_counts if isinstance(recall_candidate_class_counts, dict) else {}
     index_postings_read = metric_int(
         "index_postings_read",
         "index_postings_touched",
@@ -1420,6 +1424,7 @@ def retrieval_phase0_fields(result: Json) -> Json:
         "selected_ref_signature": selected_ref_signature(result),
         "dropped_refs": metric_int("dropped_refs", "dropped_ref_count") or _count_refs(pack.get("dropped_refs")),
         "drop_counters": drop_counters,
+        "candidate_class_counts": candidate_class_counts,
         "scanned_records": metric_int("scanned_records", "records_scanned"),
         "index_hits": index_hits,
         "index_postings_read": index_postings_read,
@@ -1458,6 +1463,7 @@ def summarize_retrieval_metrics(rows: list[Json]) -> Json:
             "timeout_count": 0,
             "fallback_flags_total": {},
             "drop_counters_total": {},
+            "candidate_class_counts_total": {},
             "correctness_evidence": {},
             "selected_ref_signatures_by_query": {},
             "index_postings_read_avg": 0.0,
@@ -1491,6 +1497,7 @@ def summarize_retrieval_metrics(rows: list[Json]) -> Json:
     timeout_partials = 0
     timeout_total = 0
     fallback_flags_total: Json = {}
+    candidate_class_counts_total: Json = {}
     for row in rows:
         for name in RETRIEVAL_STAGE_METRICS:
             try:
@@ -1527,6 +1534,18 @@ def summarize_retrieval_metrics(rows: list[Json]) -> Json:
                 drop_counters_total[key] = int(drop_counters_total.get(key, 0) or 0) + int(value or 0)
             except (TypeError, ValueError):
                 continue
+        class_counts = row.get("candidate_class_counts") if isinstance(row.get("candidate_class_counts"), dict) else {}
+        for bucket_name, bucket_counts in class_counts.items():
+            if not isinstance(bucket_counts, dict):
+                continue
+            bucket_total = candidate_class_counts_total.setdefault(str(bucket_name), {})
+            if not isinstance(bucket_total, dict):
+                continue
+            for class_name, value in bucket_counts.items():
+                try:
+                    bucket_total[str(class_name)] = int(bucket_total.get(str(class_name), 0) or 0) + int(value or 0)
+                except (TypeError, ValueError):
+                    continue
         evidence = row.get("correctness_evidence") if isinstance(row.get("correctness_evidence"), dict) else {}
         for key in correctness_evidence_total:
             correctness_evidence_total[key] = bool(correctness_evidence_total.get(key) or evidence.get(key))
@@ -1584,6 +1603,7 @@ def summarize_retrieval_metrics(rows: list[Json]) -> Json:
         "timeout_count": timeout_total,
         "fallback_flags_total": fallback_flags_total,
         "drop_counters_total": drop_counters_total,
+        "candidate_class_counts_total": candidate_class_counts_total,
         "correctness_evidence": correctness_evidence_total,
         "selected_ref_signatures_by_query": selected_ref_signatures_by_query,
         "index_postings_read_avg": round(statistics.fmean(index_postings_read), 3) if index_postings_read else 0.0,

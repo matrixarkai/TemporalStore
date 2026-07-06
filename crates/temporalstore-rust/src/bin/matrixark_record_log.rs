@@ -1032,6 +1032,15 @@ fn session_continuity_status(record: &Value, query_scope: Option<&Value>) -> Str
     if record_scope_string(record, "session_id").as_deref() == Some(query_session) {
         return "same_session".to_string();
     }
+    if let Some(query_scope_key) = query
+        .get("scope_key")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+    {
+        if record_scope_string(record, "scope_key").as_deref() == Some(query_scope_key) {
+            return "same_session".to_string();
+        }
+    }
     let has_sessionish_scope = record_scope_string(record, "scope_key").is_some()
         || record_scope_string(record, "session_id").is_some();
     if has_sessionish_scope {
@@ -1705,6 +1714,10 @@ fn is_serving_selected_ref_class(context_class: &str) -> bool {
     matches!(context_class, "event" | "summary")
 }
 
+fn increment_class_count(counts: &mut HashMap<String, u64>, class_name: &str) {
+    *counts.entry(class_name.to_string()).or_default() += 1;
+}
+
 fn pack_ref_from_record(
     record: &Value,
     score: f64,
@@ -1838,7 +1851,18 @@ fn retrieve_context_pack_native(
         remote_budget,
         &question_type,
     );
+    let mut raw_candidate_class_counts: HashMap<String, u64> = HashMap::new();
+    let mut text_candidate_class_counts: HashMap<String, u64> = HashMap::new();
+    for record in &records {
+        let context_class = context_class_name(record);
+        increment_class_count(&mut raw_candidate_class_counts, &context_class);
+        if !candidate_text(record).is_empty() {
+            increment_class_count(&mut text_candidate_class_counts, &context_class);
+        }
+    }
     let score_started = Instant::now();
+    let mut scored_candidate_class_counts: HashMap<String, u64> = HashMap::new();
+    let mut score_threshold_dropped_class_counts: HashMap<String, u64> = HashMap::new();
     let mut scored: Vec<(f64, Value, String, f64, f64)> = records
         .into_iter()
         .filter(|record| {
@@ -1856,7 +1880,7 @@ fn retrieve_context_pack_native(
                     | "skill_section"
             ) && !candidate_text(record).is_empty()
         })
-        .map(|record| {
+        .filter_map(|record| {
             let text = candidate_text(&record);
             let mut score = sparse_query_score(&query_terms, &text);
             if matches!(
@@ -1885,15 +1909,20 @@ fn retrieve_context_pack_native(
             );
             score += cross_session_rerank_boost_value;
             score += type_priority_boost(&record, &context_class, &question_type);
-            (
-                score,
-                record,
-                session_continuity,
-                continuity_boost_value,
-                cross_session_rerank_boost_value,
-            )
+            if score >= min_similarity_score {
+                increment_class_count(&mut scored_candidate_class_counts, &context_class);
+                Some((
+                    score,
+                    record,
+                    session_continuity,
+                    continuity_boost_value,
+                    cross_session_rerank_boost_value,
+                ))
+            } else {
+                increment_class_count(&mut score_threshold_dropped_class_counts, &context_class);
+                None
+            }
         })
-        .filter(|(score, _, _, _, _)| *score >= min_similarity_score)
         .collect();
     let score_ms = score_started.elapsed().as_secs_f64() * 1000.0;
     scored.sort_by(|left, right| {
@@ -1916,6 +1945,13 @@ fn retrieve_context_pack_native(
     let mut dropped_low_score = 0_u64;
     let mut dropped_duplicate_ref = 0_u64;
     let mut dropped_policy_ref = 0_u64;
+    let mut budget_dropped_class_counts: HashMap<String, u64> = HashMap::new();
+    let mut policy_dropped_class_counts: HashMap<String, u64> = HashMap::new();
+    let mut duplicate_dropped_class_counts: HashMap<String, u64> = HashMap::new();
+    let mut cross_policy_dropped_class_counts: HashMap<String, u64> = HashMap::new();
+    let mut cross_low_score_dropped_class_counts: HashMap<String, u64> = HashMap::new();
+    let mut cross_cap_dropped_class_counts: HashMap<String, u64> = HashMap::new();
+    let mut selected_class_counts: HashMap<String, u64> = HashMap::new();
     let mut cross_used_tokens = 0_u64;
     let mut cross_selected_refs = 0_u64;
     let mut entity_bridge_selected_refs = 0_u64;
@@ -1934,13 +1970,15 @@ fn retrieve_context_pack_native(
         }
         let text = candidate_text(&record);
         let tokens = token_estimate(&text);
+        let context_class = context_class_name(&record);
         if used_tokens + tokens > remote_budget {
             dropped_over_budget += 1;
+            increment_class_count(&mut budget_dropped_class_counts, &context_class);
             continue;
         }
-        let context_class = context_class_name(&record);
         if !is_serving_selected_ref_class(&context_class) {
             dropped_policy_ref += 1;
+            increment_class_count(&mut policy_dropped_class_counts, &context_class);
             continue;
         }
         let is_cross_session = session_continuity == "cross_session";
@@ -1958,10 +1996,12 @@ fn retrieve_context_pack_native(
         };
         if is_cross_session && !cross_policy.enabled {
             dropped_cross_budget += 1;
+            increment_class_count(&mut cross_policy_dropped_class_counts, &context_class);
             continue;
         }
         if is_cross_session && cross_policy.min_score > 0.0 && score < cross_policy.min_score {
             dropped_low_score += 1;
+            increment_class_count(&mut cross_low_score_dropped_class_counts, &context_class);
             continue;
         }
         if is_cross_session_raw_evidence
@@ -1969,6 +2009,7 @@ fn retrieve_context_pack_native(
             && score < cross_policy.raw_evidence_min_score
         {
             dropped_low_score += 1;
+            increment_class_count(&mut cross_low_score_dropped_class_counts, &context_class);
             continue;
         }
         if is_cross_session
@@ -1976,6 +2017,7 @@ fn retrieve_context_pack_native(
             && cross_selected_refs >= cross_policy.max_candidates
         {
             dropped_cross_candidate_cap += 1;
+            increment_class_count(&mut cross_cap_dropped_class_counts, &context_class);
             continue;
         }
         if is_cross_session
@@ -1984,6 +2026,7 @@ fn retrieve_context_pack_native(
             && selected_cross_sessions.len() as u64 >= cross_policy.max_sessions
         {
             dropped_cross_session_cap += 1;
+            increment_class_count(&mut cross_cap_dropped_class_counts, &context_class);
             continue;
         }
         if is_cross_session
@@ -1993,6 +2036,7 @@ fn retrieve_context_pack_native(
                 && entity_bridge_selected_refs < cross_policy.min_entity_bridge_refs)
         {
             dropped_cross_budget += 1;
+            increment_class_count(&mut cross_cap_dropped_class_counts, &context_class);
             continue;
         }
         let ref_signature = format!(
@@ -2008,6 +2052,7 @@ fn retrieve_context_pack_native(
         );
         if !selected_signatures.insert(ref_signature) {
             dropped_duplicate_ref += 1;
+            increment_class_count(&mut duplicate_dropped_class_counts, &context_class);
             continue;
         }
         used_tokens += tokens;
@@ -2019,7 +2064,8 @@ fn retrieve_context_pack_native(
                 entity_bridge_selected_refs += 1;
             }
         }
-        *selected_counts.entry(context_class).or_default() += 1;
+        *selected_counts.entry(context_class.clone()).or_default() += 1;
+        increment_class_count(&mut selected_class_counts, &context_class);
         if let Some(node_hash) = record_node_hash(&record) {
             selected_nodes.insert(node_hash);
         }
@@ -2042,6 +2088,19 @@ fn retrieve_context_pack_native(
         );
         stats.insert("next_native_gap".to_string(), json!(""));
     }
+    let candidate_class_counts = json!({
+        "raw": raw_candidate_class_counts,
+        "with_text": text_candidate_class_counts,
+        "scored": scored_candidate_class_counts,
+        "selected": selected_class_counts,
+        "score_threshold_dropped": score_threshold_dropped_class_counts,
+        "budget_dropped": budget_dropped_class_counts,
+        "policy_dropped": policy_dropped_class_counts,
+        "duplicate_dropped": duplicate_dropped_class_counts,
+        "cross_policy_dropped": cross_policy_dropped_class_counts,
+        "cross_low_score_dropped": cross_low_score_dropped_class_counts,
+        "cross_cap_dropped": cross_cap_dropped_class_counts
+    });
     let pack = json!({
         "context_pack_id": context_pack_id,
         "query": query,
@@ -2142,7 +2201,8 @@ fn retrieve_context_pack_native(
                 "applied_before_embedding_scoring": true,
                 "matched_candidate_count": scan.get("scan_stats").and_then(|v| v.get("secondary_index_matched_candidate_count")).cloned().unwrap_or_else(|| json!(0)),
                 "dropped_candidate_count": scan.get("scan_stats").and_then(|v| v.get("secondary_index_dropped_candidate_count")).cloned().unwrap_or_else(|| json!(0))
-            }
+            },
+            "candidate_class_counts": candidate_class_counts.clone()
         },
         "quality_warnings": []
     });
@@ -2187,7 +2247,7 @@ fn retrieve_context_pack_native(
         .and_then(Value::as_u64)
         .unwrap_or(0);
     let total_ms = started.elapsed().as_secs_f64() * 1000.0;
-    Ok(json!({
+    let mut output = json!({
         "ok": true,
         "count": selected.len(),
         "native_pack_assembly": true,
@@ -2235,7 +2295,17 @@ fn retrieve_context_pack_native(
         },
         "context_pack": pack,
         "scan_stats": scan_stats
-    }))
+    });
+    if let Some(metrics) = output
+        .get_mut("retrieval_metrics")
+        .and_then(Value::as_object_mut)
+    {
+        metrics.insert(
+            "candidate_class_counts".to_string(),
+            candidate_class_counts.clone(),
+        );
+    }
+    Ok(output)
 }
 
 fn execute_record_log_request(

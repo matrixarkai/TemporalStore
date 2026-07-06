@@ -2783,7 +2783,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             response = native_retrieve(
                 count_key=self._count_key,
                 record_hash_key=self._record_hash_key,
-                shard_size=self._shard_size,
+                shard_size=getattr(self, "_shard_size", 1024),
                 request=request,
             )
         except Exception as exc:
@@ -2933,6 +2933,9 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "native_context_pack_ms": total_native_ms,
                 "source": "native_context_pack",
             }
+            native_candidate_class_counts = native_telemetry.get("candidate_class_counts")
+            if isinstance(native_candidate_class_counts, dict):
+                retrieval_metrics["candidate_class_counts"] = native_candidate_class_counts
             native_correctness = (
                 native_telemetry.get("correctness_evidence")
                 if isinstance(native_telemetry.get("correctness_evidence"), dict)
