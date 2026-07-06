@@ -1,5 +1,5 @@
-﻿use std::cmp::Reverse;
-use std::collections::BTreeMap;
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -229,11 +229,169 @@ pub enum ContextResourceImportKind {
     WatchedResource,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextScopeLayer {
+    Global,
+    Tenant,
+    User,
+    #[default]
+    Workspace,
+    Agent,
+    Session,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextScopeDescriptor {
+    pub raw_scope: String,
+    pub layer: ContextScopeLayer,
+    pub owner_id: String,
+    pub shared_graph_scope: String,
+    pub producer_agent_id: String,
+    pub precedence_rank: u8,
+}
+
+impl Default for ContextScopeDescriptor {
+    fn default() -> Self {
+        context_scope_descriptor("user")
+    }
+}
+
+pub fn context_scope_layer_name(layer: ContextScopeLayer) -> &'static str {
+    match layer {
+        ContextScopeLayer::Global => "global",
+        ContextScopeLayer::Tenant => "tenant",
+        ContextScopeLayer::User => "user",
+        ContextScopeLayer::Workspace => "workspace",
+        ContextScopeLayer::Agent => "agent",
+        ContextScopeLayer::Session => "session",
+    }
+}
+
+pub fn context_scope_descriptor(raw_scope: impl AsRef<str>) -> ContextScopeDescriptor {
+    let trimmed = raw_scope.as_ref().trim();
+    let raw_scope = if trimmed.is_empty() { "user" } else { trimmed };
+    let lower = raw_scope.to_ascii_lowercase();
+    let parse_owner = |prefix: &str| -> String {
+        raw_scope
+            .split_once(':')
+            .map(|(_, rest)| rest.trim())
+            .filter(|rest| !rest.is_empty())
+            .unwrap_or(prefix)
+            .to_string()
+    };
+
+    let (layer, owner_id, shared_graph_scope, producer_agent_id, precedence_rank) =
+        if matches!(lower.as_str(), "global" | "all") {
+            (
+                ContextScopeLayer::Global,
+                "global".to_string(),
+                "global".to_string(),
+                String::new(),
+                0,
+            )
+        } else if lower.starts_with("tenant:") || lower.starts_with("org:") {
+            let owner = parse_owner("tenant");
+            (
+                ContextScopeLayer::Tenant,
+                owner.clone(),
+                format!("tenant:{owner}"),
+                String::new(),
+                10,
+            )
+        } else if lower == "user" || lower.starts_with("user:") {
+            let owner = parse_owner("user");
+            (
+                ContextScopeLayer::User,
+                owner.clone(),
+                format!("user:{owner}"),
+                String::new(),
+                20,
+            )
+        } else if lower.starts_with("agent:") || lower.starts_with("producer:") {
+            let owner = parse_owner("agent");
+            (
+                ContextScopeLayer::Agent,
+                owner.clone(),
+                "user:user".to_string(),
+                owner,
+                40,
+            )
+        } else if lower.starts_with("session:") {
+            let owner = parse_owner("session");
+            (
+                ContextScopeLayer::Session,
+                owner,
+                "user:user".to_string(),
+                String::new(),
+                50,
+            )
+        } else {
+            let owner = raw_scope
+                .split_once(':')
+                .map(|(_, rest)| rest.trim())
+                .filter(|rest| !rest.is_empty())
+                .unwrap_or(raw_scope)
+                .to_string();
+            (
+                ContextScopeLayer::Workspace,
+                owner.clone(),
+                format!("workspace:{owner}"),
+                String::new(),
+                30,
+            )
+        };
+
+    ContextScopeDescriptor {
+        raw_scope: raw_scope.to_string(),
+        layer,
+        owner_id,
+        shared_graph_scope,
+        producer_agent_id,
+        precedence_rank,
+    }
+}
+
+pub fn context_scope_matches(
+    requested: &ContextScopeDescriptor,
+    candidate: &ContextScopeDescriptor,
+) -> bool {
+    if matches!(candidate.layer, ContextScopeLayer::Global) {
+        return true;
+    }
+    if matches!(requested.layer, ContextScopeLayer::Global) {
+        return true;
+    }
+    if candidate
+        .raw_scope
+        .eq_ignore_ascii_case(&requested.raw_scope)
+        || candidate.shared_graph_scope == requested.shared_graph_scope
+    {
+        return true;
+    }
+    matches!(
+        (candidate.layer, requested.layer),
+        (ContextScopeLayer::Tenant, ContextScopeLayer::User)
+            | (ContextScopeLayer::Tenant, ContextScopeLayer::Workspace)
+            | (ContextScopeLayer::Tenant, ContextScopeLayer::Agent)
+            | (ContextScopeLayer::Tenant, ContextScopeLayer::Session)
+            | (ContextScopeLayer::User, ContextScopeLayer::Workspace)
+            | (ContextScopeLayer::User, ContextScopeLayer::Agent)
+            | (ContextScopeLayer::User, ContextScopeLayer::Session)
+            | (ContextScopeLayer::Agent, ContextScopeLayer::User)
+            | (ContextScopeLayer::Agent, ContextScopeLayer::Workspace)
+            | (ContextScopeLayer::Session, ContextScopeLayer::User)
+            | (ContextScopeLayer::Session, ContextScopeLayer::Workspace)
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextResourceLifecycleRecord {
     pub raw_uri: String,
     pub target_uri: String,
     pub owner_scope: String,
+    #[serde(default)]
+    pub scope: ContextScopeDescriptor,
     pub parser_name: String,
     pub parser_version: String,
     pub resource_type: String,
@@ -256,6 +414,7 @@ impl Default for ContextResourceLifecycleRecord {
             raw_uri: String::new(),
             target_uri: String::new(),
             owner_scope: "user".to_string(),
+            scope: context_scope_descriptor("user"),
             parser_name: default_resource_parser_name(),
             parser_version: default_resource_parser_version(),
             resource_type: "txt".to_string(),
@@ -360,6 +519,8 @@ pub struct ContextSkillParseReport {
     pub version: String,
     #[serde(default)]
     pub owner_scope: String,
+    #[serde(default)]
+    pub scope: ContextScopeDescriptor,
     #[serde(default = "default_context_skill_enabled")]
     pub enabled: bool,
     #[serde(default)]
@@ -398,6 +559,8 @@ pub struct ContextSkillRegistryEntry {
     pub description: String,
     pub version: String,
     pub owner_scope: String,
+    #[serde(default)]
+    pub scope: ContextScopeDescriptor,
     pub enabled: bool,
     pub precedence: ContextSkillPrecedence,
     pub triggers: Vec<String>,
@@ -434,6 +597,12 @@ pub struct ContextSkillRegistryReport {
     pub disabled_count: usize,
     pub highest_precedence: ContextSkillPrecedence,
     pub version_updates: Vec<String>,
+    #[serde(default)]
+    pub scope_layers: BTreeMap<String, usize>,
+    #[serde(default)]
+    pub shared_graph_scope_count: usize,
+    #[serde(default)]
+    pub producer_agent_count: usize,
 }
 
 impl Default for ContextSkillRegistryReport {
@@ -445,6 +614,9 @@ impl Default for ContextSkillRegistryReport {
             disabled_count: 0,
             highest_precedence: ContextSkillPrecedence::Normal,
             version_updates: Vec::new(),
+            scope_layers: BTreeMap::new(),
+            shared_graph_scope_count: 0,
+            producer_agent_count: 0,
         }
     }
 }
@@ -454,6 +626,8 @@ pub struct ContextSkillSelectionRequest {
     pub query: String,
     #[serde(default)]
     pub owner_scope: String,
+    #[serde(default)]
+    pub allowed_scope_layers: Vec<ContextScopeLayer>,
     #[serde(default)]
     pub tool_name: String,
     #[serde(default)]
@@ -468,6 +642,8 @@ pub struct ContextSkillSelectionCandidate {
     pub skill_name: String,
     pub version: String,
     pub owner_scope: String,
+    #[serde(default)]
+    pub scope: ContextScopeDescriptor,
     pub precedence: ContextSkillPrecedence,
     pub score: i64,
     pub matched_triggers: Vec<String>,
@@ -483,6 +659,12 @@ pub struct ContextSkillSelectionReport {
     pub skipped_disabled: Vec<String>,
     pub skipped_owner_scope: Vec<String>,
     pub skipped_tool: Vec<String>,
+    #[serde(default)]
+    pub scope_resolution_order: Vec<String>,
+    #[serde(default)]
+    pub agent_producers: Vec<String>,
+    #[serde(default)]
+    pub shared_graph_scope_count: usize,
 }
 
 impl Default for ContextSkillSelectionReport {
@@ -494,6 +676,9 @@ impl Default for ContextSkillSelectionReport {
             skipped_disabled: Vec::new(),
             skipped_owner_scope: Vec::new(),
             skipped_tool: Vec::new(),
+            scope_resolution_order: Vec::new(),
+            agent_producers: Vec::new(),
+            shared_graph_scope_count: 0,
         }
     }
 }
@@ -2107,6 +2292,7 @@ pub fn ingest_resource_skill_context(
         select_context_skills_for_retrieval(ContextSkillSelectionRequest {
             query: request.query.clone(),
             owner_scope: String::new(),
+            allowed_scope_layers: Vec::new(),
             tool_name: "context_workflow_harness".to_string(),
             include_disabled: false,
             limit: default_skill_selection_limit(),
