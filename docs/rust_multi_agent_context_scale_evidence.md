@@ -95,7 +95,15 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
     "workspace:context",
     "user:user",
     "global"
-  ]
+  ],
+  "fanout_locality_key_count": 16,
+  "fanout_locality_scope_keys": [
+    "agent:codex",
+    "global",
+    "user:user",
+    "workspace:context"
+  ],
+  "fanout_peer_locality_key_count": 0
 }
 ```
 
@@ -104,9 +112,10 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
 - The broader Rust harness ingests resources, skills, and conversations through TemporalStore context models.
 - The scan reduces fanout from namespace candidates to bounded expanded nodes.
 - Peer-agent capping now happens before summary embedding lookup: 4 peer-agent nodes are pruned from summary scoring in this scale run.
-- The scale scan avoids full namespace replication: 27 candidate nodes are left unexpanded, a 62% fanout reduction across 4 selected colocation groups.
+- The scale scan avoids full namespace replication: 28 candidate nodes are left unexpanded, a 63% fanout reduction across 4 selected colocation groups.
 - Current-agent context is selected with agent-aware locality while user, workspace, and global shared resources remain visible.
-- The selected colocation scope set proves the expanded scale scan covers gent:codex, user:user, workspace:context, and global.
+- The selected colocation scope set proves the expanded scale scan covers `agent:codex`, `user:user`, `workspace:context`, and `global`.
+- Locality key count equals expanded nodes: 16 expanded nodes produce 16 locality keys, covering exactly `agent:codex`, `user:user`, `workspace:context`, and `global` with zero peer-agent locality keys.
 - Required scan scopes are derived from current-agent plus owner-scope policy, so shared user/global resources do not depend on every caller spelling out the full scope list.
 - Peer-agent candidates are present but capped out of expansion in this current-agent scan.
 - Secondary indexes and selected references remain active in the same scale run.

@@ -60,6 +60,12 @@ def require_string_set(report: dict[str, Any], field: str, required: set[str]) -
     return observed
 
 
+def require_int_equal(report: dict[str, Any], field: str, expected: int) -> None:
+    value = report.get(field)
+    if value != expected:
+        raise ValueError(f"{field} must be {expected}, got {value!r}")
+
+
 def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: int) -> None:
     require_bool(report, "ready")
     require_bool(report, "fanout_reduced")
@@ -141,6 +147,16 @@ def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: i
         raise ValueError(f"locality_keys must all include scoped colocation markers: {bad_keys}")
     if not any(":scope:agent:codex:" in key for key in locality_keys):
         raise ValueError("locality_keys must include current-agent scoped colocation")
+    require_int_equal(report, "locality_key_count", expanded)
+    require_int_equal(report, "peer_locality_key_count", 0)
+    locality_scopes = require_string_set(
+        report, "locality_scope_keys", REQUIRED_SELECTED_SCOPE_KEYS
+    )
+    if locality_scopes != set(report["selected_colocation_scope_keys"]):
+        raise ValueError(
+            "locality_scope_keys must exactly match selected_colocation_scope_keys, "
+            f"got {sorted(locality_scopes)} vs {sorted(report['selected_colocation_scope_keys'])}"
+        )
     if report.get("current_agent_id") != "codex":
         raise ValueError(f"current_agent_id must be 'codex', got {report.get('current_agent_id')!r}")
 

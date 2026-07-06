@@ -214,6 +214,9 @@ struct ResourceSkillConversationScaleSummary {
     fanout_colocation_groups: Vec<String>,
     fanout_colocation_scope_keys: Vec<String>,
     fanout_required_scan_scope_keys: Vec<String>,
+    fanout_locality_key_count: usize,
+    fanout_locality_scope_keys: Vec<String>,
+    fanout_peer_locality_key_count: usize,
     secondary_index_ready: bool,
     secondary_index_checked_refs: usize,
     secondary_index_found_refs: usize,
@@ -258,6 +261,9 @@ struct MultiAgentContextScanHarnessSummary {
     colocation_scope_keys: Vec<String>,
     required_scan_scope_keys: Vec<String>,
     locality_keys: Vec<String>,
+    locality_key_count: usize,
+    locality_scope_keys: Vec<String>,
+    peer_locality_key_count: usize,
     retrieved_block_count: usize,
     retrieved_current_agent_block_count: usize,
     retrieved_user_shared_block_count: usize,
@@ -1162,6 +1168,10 @@ fn run_resource_skill_conversation_scale(
         .query_understanding_debug
         .tree_traversal_summary
         .summary_embedding_selected_count;
+    let fanout_locality_scope_keys =
+        locality_scope_keys(&combined_retrieve.fanout_plan.locality_keys);
+    let fanout_peer_locality_key_count =
+        peer_agent_locality_key_count(&combined_retrieve.fanout_plan.locality_keys);
     let multi_agent_scan_ready = combined_retrieve.fanout_plan.fanout_reduced
         && combined_retrieve.fanout_plan.layer_quota_applied
         && combined_retrieve.fanout_plan.selected_current_agent_nodes > 0
@@ -1187,6 +1197,21 @@ fn run_resource_skill_conversation_scale(
             .locality_keys
             .iter()
             .any(|key| key.contains(":scope:agent:codex:"))
+        && combined_retrieve.fanout_plan.locality_keys.len()
+            == combined_retrieve.fanout_plan.event_expanded_nodes
+        && fanout_peer_locality_key_count == 0
+        && fanout_locality_scope_keys
+            .iter()
+            .any(|scope| scope == "agent:codex")
+        && fanout_locality_scope_keys
+            .iter()
+            .any(|scope| scope == "user:user")
+        && fanout_locality_scope_keys
+            .iter()
+            .any(|scope| scope == "workspace:context")
+        && fanout_locality_scope_keys
+            .iter()
+            .any(|scope| scope == "global")
         && combined_retrieve
             .fanout_plan
             .colocation_scope_keys
@@ -1330,6 +1355,9 @@ fn run_resource_skill_conversation_scale(
             .fanout_plan
             .required_scan_scope_keys
             .clone(),
+        fanout_locality_key_count: combined_retrieve.fanout_plan.locality_keys.len(),
+        fanout_locality_scope_keys,
+        fanout_peer_locality_key_count,
         secondary_index_ready,
         secondary_index_checked_refs: secondary_validation.checked_ref_count,
         secondary_index_found_refs: secondary_validation.found_ref_count,
@@ -1452,6 +1480,8 @@ fn run_multi_agent_context_scan_harness(
         },
     );
     assert!(report.status.ok, "{:?}", report.status);
+    let locality_scope_keys = locality_scope_keys(&report.fanout_plan.locality_keys);
+    let peer_locality_key_count = peer_agent_locality_key_count(&report.fanout_plan.locality_keys);
     let ready = report.fanout_plan.fanout_reduced
         && report.fanout_plan.layer_quota_applied
         && report.fanout_plan.selected_current_agent_nodes > 0
@@ -1474,6 +1504,16 @@ fn run_multi_agent_context_scan_harness(
             .locality_keys
             .iter()
             .any(|key| key.contains(":scope:agent:codex:"))
+        && report.fanout_plan.locality_keys.len() == report.fanout_plan.event_expanded_nodes
+        && peer_locality_key_count == 0
+        && locality_scope_keys
+            .iter()
+            .any(|scope| scope == "agent:codex")
+        && locality_scope_keys.iter().any(|scope| scope == "user:user")
+        && locality_scope_keys
+            .iter()
+            .any(|scope| scope == "workspace:context")
+        && locality_scope_keys.iter().any(|scope| scope == "global")
         && count_blocks_with_source_scope(&report.blocks, "agent:codex") > 0
         && count_blocks_with_source_scope(&report.blocks, "user:user") > 0
         && count_blocks_with_source_scope(&report.blocks, "workspace:context") > 0
@@ -1524,7 +1564,10 @@ fn run_multi_agent_context_scan_harness(
         colocation_groups: report.fanout_plan.colocation_groups,
         colocation_scope_keys: report.fanout_plan.colocation_scope_keys,
         required_scan_scope_keys: report.fanout_plan.required_scan_scope_keys,
+        locality_key_count: report.fanout_plan.locality_keys.len(),
         locality_keys: report.fanout_plan.locality_keys,
+        locality_scope_keys,
+        peer_locality_key_count,
         retrieved_block_count: report.blocks.len(),
         retrieved_current_agent_block_count: count_blocks_with_source_scope(
             &report.blocks,
@@ -1553,6 +1596,33 @@ fn count_blocks_with_source_scope(blocks: &[ContextBlock], required_scope: &str)
     blocks
         .iter()
         .filter(|block| block.source_ref.to_ascii_lowercase().contains(&required))
+        .count()
+}
+
+fn locality_scope_keys(locality_keys: &[String]) -> Vec<String> {
+    let mut scopes = std::collections::BTreeSet::new();
+    for key in locality_keys {
+        if let Some(scope_start) = key.find(":scope:") {
+            let scope = &key[scope_start + ":scope:".len()..];
+            let scope = scope.split(":node:").next().unwrap_or(scope);
+            if !scope.trim().is_empty() {
+                scopes.insert(scope.to_string());
+            }
+        }
+    }
+    scopes.into_iter().collect()
+}
+
+fn peer_agent_locality_key_count(locality_keys: &[String]) -> usize {
+    locality_keys
+        .iter()
+        .filter_map(|key| {
+            key.find(":scope:").map(|scope_start| {
+                let scope = &key[scope_start + ":scope:".len()..];
+                scope.split(":node:").next().unwrap_or(scope).to_string()
+            })
+        })
+        .filter(|scope| scope.starts_with("agent:") && scope != "agent:codex")
         .count()
 }
 
