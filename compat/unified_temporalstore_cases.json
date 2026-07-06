@@ -6646,7 +6646,7 @@
               "docs/rust_multi_agent_context_scan_colocation.md"
             ],
             "rust_runner": "TEMPORALSTORE_CONTEXT_MULTI_AGENT_SCAN_ONLY=1 cargo run -p temporalstore-rust --bin context_workflow_harness",
-            "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
+            "rust_validator": "python3 tools/validate_context_multi_agent_scan.py docs/benchmark_archives/context_multiagent_scan_20260706_summary.json && python3 tools/run_temporalstore_unified_tests.py --validate-only",
             "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-multi-agent-scan-harness> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
           }
         }
