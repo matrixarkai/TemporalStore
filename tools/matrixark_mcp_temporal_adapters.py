@@ -3852,6 +3852,8 @@ class MatrixArkRustProxyClient:
         while time.monotonic() < deadline:
             if proc.poll() is not None:
                 stderr = proc.stderr.read() if proc.stderr else ""
+                if op == "shutdown" and proc.returncode == 0:
+                    return {"ok": True, "status": "shutdown"}
                 raise MatrixArkError(f"Rust TemporalStore {op} process exited ({proc.returncode}): {stderr[-1000:]}")
             ready, _, _ = select.select([proc.stdout], [], [], 0.05)
             if not ready:
@@ -4187,7 +4189,8 @@ class MatrixArkRustProxyClient:
                 "op_metrics": op_metrics,
                 "process_per_operation_enabled": False,
                 "single_shot_mode": "debug_only",
-                "direct_sdk_bridge": True,
+                "native_proxy": True,
+                "direct_sdk_bridge": False,
                 "pure_embedded_direct_sdk": False,
                 "supports_health": True,
                 "supports_readiness": True,
