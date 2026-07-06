@@ -1071,6 +1071,10 @@ pub struct ContextFanoutPlanReport {
     #[serde(default)]
     pub selected_colocation_group_count: usize,
     #[serde(default)]
+    pub selected_colocation_groups: Vec<String>,
+    #[serde(default)]
+    pub selected_colocation_scope_keys: Vec<String>,
+    #[serde(default)]
     pub avoided_namespace_replication_nodes: usize,
     #[serde(default)]
     pub fanout_reduction_percent: u32,
@@ -4546,12 +4550,22 @@ pub fn retrieve_context(
             )
         })
         .collect();
-    fanout_plan.selected_colocation_group_count = event_node_hashes
+    let selected_colocation_scope_keys = event_node_hashes
         .iter()
         .filter_map(|node_hash| node_scope_by_hash.get(node_hash))
         .map(context_scope_reservation_key)
+        .collect::<BTreeSet<_>>();
+    fanout_plan.selected_colocation_scope_keys =
+        selected_colocation_scope_keys.iter().cloned().collect();
+    fanout_plan.selected_colocation_groups = event_node_hashes
+        .iter()
+        .filter_map(|node_hash| node_scope_by_hash.get(node_hash))
+        .map(|scope| scope.shared_graph_scope.clone())
+        .filter(|group| !group.is_empty())
         .collect::<BTreeSet<_>>()
-        .len();
+        .into_iter()
+        .collect();
+    fanout_plan.selected_colocation_group_count = selected_colocation_scope_keys.len();
     fanout_plan.fanout_reduced =
         fanout_plan.event_expanded_nodes < fanout_plan.namespace_node_candidates;
     fanout_plan.namespace_replication_avoided =

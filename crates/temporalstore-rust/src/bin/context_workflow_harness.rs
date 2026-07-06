@@ -189,6 +189,8 @@ struct ResourceSkillConversationScaleSummary {
     fanout_summary_pruned_peer_agent_nodes: usize,
     fanout_event_expanded_nodes: usize,
     fanout_selected_colocation_group_count: usize,
+    fanout_selected_colocation_groups: Vec<String>,
+    fanout_selected_colocation_scope_keys: Vec<String>,
     fanout_avoided_namespace_replication_nodes: usize,
     fanout_reduction_percent: u32,
     fanout_namespace_replication_avoided: bool,
@@ -227,6 +229,8 @@ struct MultiAgentContextScanHarnessSummary {
     summary_pruned_peer_agent_nodes: usize,
     event_expanded_nodes: usize,
     selected_colocation_group_count: usize,
+    selected_colocation_groups: Vec<String>,
+    selected_colocation_scope_keys: Vec<String>,
     avoided_namespace_replication_nodes: usize,
     fanout_reduction_percent: u32,
     namespace_replication_avoided: bool,
@@ -1238,6 +1242,14 @@ fn run_resource_skill_conversation_scale(
         fanout_selected_colocation_group_count: combined_retrieve
             .fanout_plan
             .selected_colocation_group_count,
+        fanout_selected_colocation_groups: combined_retrieve
+            .fanout_plan
+            .selected_colocation_groups
+            .clone(),
+        fanout_selected_colocation_scope_keys: combined_retrieve
+            .fanout_plan
+            .selected_colocation_scope_keys
+            .clone(),
         fanout_avoided_namespace_replication_nodes: combined_retrieve
             .fanout_plan
             .avoided_namespace_replication_nodes,
@@ -1435,6 +1447,8 @@ fn run_multi_agent_context_scan_harness(
         summary_pruned_peer_agent_nodes: report.fanout_plan.summary_pruned_peer_agent_nodes,
         event_expanded_nodes: report.fanout_plan.event_expanded_nodes,
         selected_colocation_group_count: report.fanout_plan.selected_colocation_group_count,
+        selected_colocation_groups: report.fanout_plan.selected_colocation_groups,
+        selected_colocation_scope_keys: report.fanout_plan.selected_colocation_scope_keys,
         avoided_namespace_replication_nodes: report.fanout_plan.avoided_namespace_replication_nodes,
         fanout_reduction_percent: report.fanout_plan.fanout_reduction_percent,
         namespace_replication_avoided: report.fanout_plan.namespace_replication_avoided,

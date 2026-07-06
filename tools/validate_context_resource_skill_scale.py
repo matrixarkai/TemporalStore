@@ -13,6 +13,7 @@ REQUIRED_LAYERS = {"agent", "user", "workspace", "global"}
 REQUIRED_GROUPS = {"global", "user:user", "workspace:context"}
 REQUIRED_SCOPE_KEYS = {"agent:codex", "agent:claude", "global", "user:user", "workspace:context"}
 REQUIRED_SCAN_SCOPE_KEYS = {"agent:codex", "global", "user:user", "workspace:context"}
+REQUIRED_SELECTED_SCOPE_KEYS = {"agent:codex", "global", "user:user", "workspace:context"}
 
 
 def fail(message: str) -> int:
@@ -93,6 +94,8 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
         )
     require_int_at_least(report, "fanout_reduction_percent", 40)
     require_int_at_least(report, "fanout_selected_colocation_group_count", 4)
+    require_string_set(report, "fanout_selected_colocation_scope_keys", REQUIRED_SELECTED_SCOPE_KEYS)
+    require_string_set(report, "fanout_selected_colocation_groups", REQUIRED_GROUPS)
     require_int_at_least(report, "fanout_selected_current_agent_nodes", 1)
     require_int_at_least(report, "fanout_peer_agent_nodes", 1)
     require_int_equal(report, "fanout_selected_peer_agent_nodes", 0)
