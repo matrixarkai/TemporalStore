@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import resource
 import statistics
 import subprocess
 import sys
@@ -121,6 +122,53 @@ def summarize_latencies(latencies_ms: list[float], *, total_ops: int, elapsed_s:
         "p99_ms": percentile(latencies_ms, 99),
         "avg_ms": round(statistics.fmean(latencies_ms), 3) if latencies_ms else 0.0,
         "max_ms": round(max(latencies_ms), 3) if latencies_ms else 0.0,
+    }
+
+
+def _current_rss_mb() -> float:
+    try:
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        with open("/proc/self/statm", "r", encoding="utf-8") as fh:
+            parts = fh.read().split()
+        if len(parts) >= 2:
+            return round((int(parts[1]) * page_size) / (1024.0 * 1024.0), 3)
+    except Exception:
+        pass
+    return 0.0
+
+
+def process_resource_snapshot() -> Json:
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    max_rss_raw = float(getattr(usage, "ru_maxrss", 0.0) or 0.0)
+    max_rss_mb = max_rss_raw / 1024.0 if sys.platform != "darwin" else max_rss_raw / (1024.0 * 1024.0)
+    user_cpu_s = float(getattr(usage, "ru_utime", 0.0) or 0.0)
+    system_cpu_s = float(getattr(usage, "ru_stime", 0.0) or 0.0)
+    return {
+        "wall_time_s": time.perf_counter(),
+        "user_cpu_s": user_cpu_s,
+        "system_cpu_s": system_cpu_s,
+        "total_cpu_s": user_cpu_s + system_cpu_s,
+        "max_rss_mb": round(max_rss_mb, 3),
+        "current_rss_mb": _current_rss_mb(),
+    }
+
+
+def process_resource_delta(start: Json, end: Json, *, work_units: int = 0) -> Json:
+    wall_s = max(0.0, float(end.get("wall_time_s", 0.0)) - float(start.get("wall_time_s", 0.0)))
+    cpu_s = max(0.0, float(end.get("total_cpu_s", 0.0)) - float(start.get("total_cpu_s", 0.0)))
+    user_cpu_s = max(0.0, float(end.get("user_cpu_s", 0.0)) - float(start.get("user_cpu_s", 0.0)))
+    system_cpu_s = max(0.0, float(end.get("system_cpu_s", 0.0)) - float(start.get("system_cpu_s", 0.0)))
+    work_units = max(0, int(work_units or 0))
+    return {
+        "wall_ms": round(wall_s * 1000.0, 3),
+        "cpu_time_ms": round(cpu_s * 1000.0, 3),
+        "user_cpu_ms": round(user_cpu_s * 1000.0, 3),
+        "system_cpu_ms": round(system_cpu_s * 1000.0, 3),
+        "cpu_utilization_pct": round((cpu_s / wall_s) * 100.0, 3) if wall_s > 0 else 0.0,
+        "cpu_ms_per_unit": round((cpu_s * 1000.0) / work_units, 6) if work_units > 0 else 0.0,
+        "max_rss_mb": round(float(end.get("max_rss_mb", 0.0) or 0.0), 3),
+        "current_rss_mb": round(float(end.get("current_rss_mb", 0.0) or 0.0), 3),
+        "work_units": work_units,
     }
 
 
@@ -1957,6 +2005,7 @@ def run_raw_storage(backend: str, args: argparse.Namespace, run_id: str, *, clie
 
 
 def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
+    backend_resource_start = process_resource_snapshot()
     prefix = f"{args.storage_prefix}:{run_id}:{backend}"
     effective_storage_tuning = effective_storage_tuning_from_env()
     previous_queue_env: dict[str, str | None] = {}
@@ -2031,7 +2080,14 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
                 "errors": {"write": [], "read": []},
             }
         else:
+            raw_resource_start = process_resource_snapshot()
             raw_storage = run_raw_storage(backend, args, run_id, client=getattr(adapter, "_client", None))
+            raw_resource_end = process_resource_snapshot()
+            raw_storage["resource_usage"] = process_resource_delta(
+                raw_resource_start,
+                raw_resource_end,
+                work_units=max(0, int(args.raw_ops or 0)) + max(0, int(args.raw_read_ops or 0)),
+            )
         if args.skip_context_pipeline:
             result = {
                 "backend": backend,
@@ -2088,6 +2144,7 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
 
         ingest_latencies: list[float] = []
         ingest_errors: list[str] = []
+        ingest_resource_start = process_resource_snapshot()
         ingest_started = time.perf_counter()
         with ThreadPoolExecutor(max_workers=args.ingest_workers) as pool:
             futures = [pool.submit(call_with_latency, server, "matrixark_ingest", payload) for payload in ingest_payloads]
@@ -2107,6 +2164,7 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
             except Exception as exc:
                 ingest_errors.append(f"direct_write_flush_failed:{exc}")
                 flush_result = {"status": "failed", "error": str(exc), "latency_ms": round((time.perf_counter() - flush_started) * 1000.0, 3)}
+        ingest_resource_end = process_resource_snapshot()
 
         # Refresh summaries once so retrieval has the same post-ingest shape on both backends.
         refresh_latency_ms, refresh_result, refresh_error = call_with_latency(
@@ -2133,6 +2191,7 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
                 }
             )
 
+        retrieve_resource_start = process_resource_snapshot()
         retrieve_latencies: list[float] = []
         retrieve_errors: list[str] = []
         selected_counts: list[int] = []
@@ -2162,8 +2221,10 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
                 if result.get("partial_context_pack") or "timeout_partial" in str(result.get("quality_warnings", "")):
                     partial_count += 1
         retrieve_elapsed = time.perf_counter() - retrieve_started
+        retrieve_resource_end = process_resource_snapshot()
 
         metrics_latency_ms, metrics_result, metrics_error = call_with_latency(server, "matrixark_backend_metrics", {})
+        backend_resource_end = process_resource_snapshot()
         result = {
             "backend": backend,
             "status": "passed" if not ingest_errors and not retrieve_errors else "failed",
@@ -2187,6 +2248,7 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
                 if ingest_elapsed > 0
                 else 0.0,
                 "direct_write_flush": flush_result,
+                "resource_usage": process_resource_delta(ingest_resource_start, ingest_resource_end, work_units=args.events),
             },
             "retrieve": {
                 **summarize_latencies(
@@ -2202,6 +2264,18 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
                 "selected_refs_avg": round(statistics.fmean(selected_counts), 3) if selected_counts else 0.0,
                 "selected_refs_max": max(selected_counts) if selected_counts else 0,
                 "stage_metrics": summarize_retrieval_metrics(retrieval_metric_rows),
+                "resource_usage": process_resource_delta(
+                    retrieve_resource_start,
+                    retrieve_resource_end,
+                    work_units=max(1, len(retrieve_payloads) + len(retrieve_warmup_latencies)),
+                ),
+            },
+            "resource_usage": {
+                "overall": process_resource_delta(
+                    backend_resource_start,
+                    backend_resource_end,
+                    work_units=max(1, int(args.raw_ops or 0) + int(args.raw_read_ops or 0) + int(args.events or 0) + int(args.retrieve_queries or 0)),
+                ),
             },
             "summary_refresh": {
                 "latency_ms": round(refresh_latency_ms, 3),
@@ -2393,12 +2467,20 @@ def comparison(cpp: Json | None, rust: Json | None, args: argparse.Namespace | N
         ("raw_write_p95_ms", ("raw_storage", "write", "p95_ms"), "lower"),
         ("raw_read_qps", ("raw_storage", "read", "qps"), "higher"),
         ("raw_read_p95_ms", ("raw_storage", "read", "p95_ms"), "lower"),
+        ("raw_storage_cpu_ms_per_op", ("raw_storage", "resource_usage", "cpu_ms_per_unit"), "lower"),
+        ("raw_storage_current_rss_mb", ("raw_storage", "resource_usage", "current_rss_mb"), "lower"),
         ("message_qps", ("ingest_messages", "message_qps"), "higher"),
+        ("ingest_cpu_ms_per_message", ("ingest_messages", "resource_usage", "cpu_ms_per_unit"), "lower"),
+        ("ingest_cpu_time_ms", ("ingest_messages", "resource_usage", "cpu_time_ms"), "lower"),
+        ("ingest_current_rss_mb", ("ingest_messages", "resource_usage", "current_rss_mb"), "lower"),
         ("ingest_p50_ms", ("ingest", "p50_ms"), "lower"),
         ("ingest_p95_ms", ("ingest", "p95_ms"), "lower"),
         ("ingest_p99_ms", ("ingest", "p99_ms"), "lower"),
         ("ingest_timeout_count", ("ingest", "timeout_count"), "lower"),
         ("retrieve_qps", ("retrieve", "qps"), "higher"),
+        ("retrieve_cpu_ms_per_query", ("retrieve", "resource_usage", "cpu_ms_per_unit"), "lower"),
+        ("retrieve_cpu_time_ms", ("retrieve", "resource_usage", "cpu_time_ms"), "lower"),
+        ("retrieve_current_rss_mb", ("retrieve", "resource_usage", "current_rss_mb"), "lower"),
         ("retrieve_p50_ms", ("retrieve", "p50_ms"), "lower"),
         ("retrieve_p95_ms", ("retrieve", "p95_ms"), "lower"),
         ("retrieve_p99_ms", ("retrieve", "p99_ms"), "lower"),
@@ -2433,6 +2515,10 @@ def comparison(cpp: Json | None, rust: Json | None, args: argparse.Namespace | N
         ("hash_embedding_fallback", ("fallback_flags", "hash_embedding_fallback"), "lower"),
         ("partial_pack_fallback", ("fallback_flags", "partial_context_pack"), "lower"),
         ("native_metrics_missing", ("fallback_flags", "native_metrics_missing"), "lower"),
+        ("overall_cpu_ms_per_unit", ("resource_usage", "overall", "cpu_ms_per_unit"), "lower"),
+        ("overall_cpu_time_ms", ("resource_usage", "overall", "cpu_time_ms"), "lower"),
+        ("overall_current_rss_mb", ("resource_usage", "overall", "current_rss_mb"), "lower"),
+        ("overall_max_rss_mb", ("resource_usage", "overall", "max_rss_mb"), "lower"),
     ]
     for name, path, direction in metrics:
         cpp_value: Any = cpp
