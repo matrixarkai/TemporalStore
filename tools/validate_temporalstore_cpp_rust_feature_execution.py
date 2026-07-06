@@ -46,30 +46,6 @@ REQUIRED_STATIC_EXIT_CRITERIA_TOKENS = (
     "selected shared cases",
     "no static surface gate",
 )
-STORAGE_CACHE_ADAPTER_CONTRACT_CASES = {
-    "storage_block_address_fallback_shared",
-    "storage_cache_replacement_soak_shared",
-    "storage_config_cpp_like_public_knobs",
-    "storage_data_structure_api_parity",
-    "storage_slot_object_block_index_authority_shared",
-    "storage_slot_first_physical_index",
-    "storage_slot_layout_transitions_shared",
-    "storage_gc_eviction_cold_reads_shared",
-    "storage_merged_dump_load_lifecycle",
-    "storage_model_aware_block_compaction_shared",
-    "storage_object_manager_cold_hot_reload",
-    "storage_object_manager_slotstore_runtime_authority",
-    "storage_page_address_disk_cache_shared_store_fallback",
-    "storage_stale_page_density_compaction",
-    "storage_manager_active_eviction_runtime",
-    "storage_manager_expire_cursor_scan_limits",
-    "storage_manager_index_gc_thresholds_recovery",
-    "storage_manager_page_gc_dependency_refusal",
-    "storage_manager_real_pressure_signals",
-    "storage_manager_wal_reclaim_slot_generation_retention",
-    "storage_stream_segment_manifest_rebuild_shared",
-    "storage_wal_index_gc_reclaim_shared",
-}
 STORAGE_CACHE_ADAPTER_CONTRACT_RUNNER = "tools/cpp_storage_unified_case_report_runner.cc"
 STORAGE_CACHE_ADAPTER_CONTRACT_VALIDATOR = "tools/validate_storage_unified_case_report_pair.py"
 
@@ -354,10 +330,11 @@ def main() -> int:
                         f"{family} must declare adapter_contract_validator="
                         f"{STORAGE_CACHE_ADAPTER_CONTRACT_VALIDATOR}"
                     )
-                if cases != STORAGE_CACHE_ADAPTER_CONTRACT_CASES:
+                expected_cases = case_names.get(family, set())
+                if cases != expected_cases:
                     failures.append(
                         f"{family} adapter_contract_case_names drift: "
-                        f"matrix={sorted(cases)} expected={sorted(STORAGE_CACHE_ADAPTER_CONTRACT_CASES)}"
+                        f"matrix={sorted(cases)} expected_selected={sorted(expected_cases)}"
                     )
                 if source_runner != runner:
                     failures.append(f"{family} adapter_contract_runner must match corpus coverage")
@@ -365,11 +342,17 @@ def main() -> int:
                     failures.append(f"{family} adapter_contract_validator must match corpus coverage")
                 if source_cases != cases:
                     failures.append(f"{family} adapter_contract_case_names must match corpus coverage")
-                unknown_cases = sorted(cases - case_names.get(family, set()))
+                unknown_cases = sorted(cases - expected_cases)
                 if unknown_cases:
                     failures.append(
                         f"{family} adapter_contract_case_names not selected by --family filter: "
                         + ", ".join(unknown_cases)
+                    )
+                missing_selected_cases = sorted(expected_cases - cases)
+                if missing_selected_cases:
+                    failures.append(
+                        f"{family} adapter_contract_case_names missing selected cases: "
+                        + ", ".join(missing_selected_cases)
                     )
                 if len(cases) > selected_case_count:
                     failures.append(
