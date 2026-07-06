@@ -6,19 +6,20 @@ use rustraft::{
 use super::{distributed_raft_readiness, RaftDistributedReadiness};
 
 pub use rustraft::{
-    rustraft_admin_status_surface_evidence, rustraft_byteraft_runtime_capability_prometheus,
-    rustraft_byteraft_runtime_capability_report, rustraft_capability_evidence_from_fields,
-    rustraft_pipeline_evidence, rustraft_production_readiness_report,
-    rustraft_read_safety_runtime_decision, rustraft_runtime_capability_report_from_evidence,
-    rustraft_snapshot_lifecycle_evidence, rustraft_wal_lifecycle_evidence, RaftCapabilityEvidence,
-    RustRaftAdminStatusSurfaceEvidence, RustRaftAdminStatusSurfaceInput,
-    RustRaftByteRaftRuntimeCapabilityReport, RustRaftParityContract, RustRaftParityReport,
-    RustRaftPeerPipelineStatus, RustRaftPipelineEvidence, RustRaftPipelineLimits,
-    RustRaftProductionReadinessInput, RustRaftProductionReadinessReport,
+    rustraft_admin_status_surface_evidence, rustraft_capability_evidence_from_fields,
+    rustraft_peer_pipeline_status_from_observed, rustraft_pipeline_evidence,
+    rustraft_production_readiness_report, rustraft_read_safety_runtime_decision,
+    rustraft_reference_raft_runtime_capability_prometheus,
+    rustraft_reference_raft_runtime_capability_report,
+    rustraft_runtime_capability_report_from_evidence, rustraft_snapshot_lifecycle_evidence,
+    rustraft_wal_lifecycle_evidence, RaftCapabilityEvidence, RustRaftAdminStatusSurfaceEvidence,
+    RustRaftAdminStatusSurfaceInput, RustRaftObservedPeerPipeline, RustRaftParityContract,
+    RustRaftParityReport, RustRaftPeerPipelineStatus, RustRaftPipelineEvidence,
+    RustRaftPipelineLimits, RustRaftProductionReadinessInput, RustRaftProductionReadinessReport,
     RustRaftPrometheusMetricSet, RustRaftReadSafetyOperation, RustRaftReadSafetyRuntimeDecision,
     RustRaftReadSafetyRuntimeInput, RustRaftReadinessEvidence, RustRaftReadinessSnapshot,
-    RustRaftSemanticRequirement, RustRaftSnapshotLifecycleEvidence, RustRaftWalLifecycleEvidence,
-    RustRaftWalLifecycleStatus,
+    RustRaftReferenceRaftRuntimeCapabilityReport, RustRaftSemanticRequirement,
+    RustRaftSnapshotLifecycleEvidence, RustRaftWalLifecycleEvidence, RustRaftWalLifecycleStatus,
 };
 
 impl From<&RaftDistributedReadiness> for RustRaftReadinessSnapshot {
