@@ -52,6 +52,10 @@
   "selected_user_shared_nodes": 1,
   "selected_workspace_shared_nodes": 1,
   "selected_global_shared_nodes": 1,
+  "selected_shared_layer_nodes": 3,
+  "required_shared_scope_count": 3,
+  "selected_shared_scope_coverage_count": 3,
+  "shared_scope_coverage_ready": true,
   "scan_layers": [
     "agent",
     "global",

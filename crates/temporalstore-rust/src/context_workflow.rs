@@ -1123,6 +1123,14 @@ pub struct ContextFanoutPlanReport {
     #[serde(default)]
     pub selected_global_shared_nodes: usize,
     #[serde(default)]
+    pub selected_shared_layer_nodes: usize,
+    #[serde(default)]
+    pub required_shared_scope_count: usize,
+    #[serde(default)]
+    pub selected_shared_scope_coverage_count: usize,
+    #[serde(default)]
+    pub shared_scope_coverage_ready: bool,
+    #[serde(default)]
     pub shared_layer_quota_nodes: usize,
     #[serde(default)]
     pub layer_quota_applied: bool,
@@ -4596,6 +4604,22 @@ pub fn retrieve_context(
         .collect::<BTreeSet<_>>();
     fanout_plan.selected_colocation_scope_keys =
         selected_colocation_scope_keys.iter().cloned().collect();
+    fanout_plan.selected_shared_layer_nodes = fanout_plan
+        .selected_user_shared_nodes
+        .saturating_add(fanout_plan.selected_workspace_shared_nodes)
+        .saturating_add(fanout_plan.selected_global_shared_nodes);
+    let required_shared_scope_keys = context_required_scan_scopes(&request)
+        .iter()
+        .map(context_scope_reservation_key)
+        .filter(|scope| !scope.starts_with("agent:"))
+        .collect::<BTreeSet<_>>();
+    fanout_plan.required_shared_scope_count = required_shared_scope_keys.len();
+    fanout_plan.selected_shared_scope_coverage_count = selected_colocation_scope_keys
+        .intersection(&required_shared_scope_keys)
+        .count();
+    fanout_plan.shared_scope_coverage_ready = fanout_plan.required_shared_scope_count == 0
+        || fanout_plan.selected_shared_scope_coverage_count
+            == fanout_plan.required_shared_scope_count;
     let current_agent = request.current_agent_id.trim();
     let expected_current_agent_scope = if current_agent.is_empty() {
         String::new()

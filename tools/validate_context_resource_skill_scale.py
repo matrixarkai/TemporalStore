@@ -198,6 +198,15 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
     require_bool(report, "fanout_shared_scope_coverage_ready")
     shared_quota = require_int_at_least(report, "fanout_shared_layer_quota_nodes", 4)
     shared_selected = require_int_at_least(report, "fanout_shared_selected_node_count", shared_quota)
+    if shared_selected != (
+        report["fanout_selected_user_shared_nodes"]
+        + report["fanout_selected_workspace_shared_nodes"]
+        + report["fanout_selected_global_shared_nodes"]
+    ):
+        raise ValueError(
+            "fanout_shared_selected_node_count must equal selected user+workspace+global nodes, "
+            f"got {shared_selected}"
+        )
     current_selected = require_int_at_least(report, "fanout_selected_current_agent_nodes", 1)
     if current_selected <= shared_selected:
         raise ValueError(

@@ -78,6 +78,10 @@ Archived report: `docs/benchmark_archives/context_multiagent_scan_20260706_summa
   "selected_user_shared_nodes": 1,
   "selected_workspace_shared_nodes": 1,
   "selected_global_shared_nodes": 1,
+  "selected_shared_layer_nodes": 3,
+  "required_shared_scope_count": 3,
+  "selected_shared_scope_coverage_count": 3,
+  "shared_scope_coverage_ready": true,
   "scan_layers": [
     "agent",
     "global",
@@ -153,6 +157,7 @@ Archived report: `docs/benchmark_archives/context_multiagent_scan_20260706_summa
 - Peer-agent capping now happens before summary embedding lookup: 2 peer-agent nodes are pruned from summary scoring in this focused scan.
 - The scan avoids full namespace replication: 9 candidate nodes are left unexpanded, a 69% fanout reduction across 3 selected graph groups and 4 selected scope keys.
 - Candidate pressure is scope-aware before selection: 8 current-agent nodes, 2 peer-agent nodes, and 3 shared nodes across user/workspace/global are classified before fanout pruning.
+- Shared-layer coverage is now reported by the core retrieval path: all 3 required shared scopes are selected, with 3 selected user/workspace/global shared nodes.
 - The selected nodes include current-agent, user-shared, workspace-shared, and global-shared layers.
 - The selected colocation scope set proves the expanded scan covers `agent:codex`, `user:user`, `workspace:context`, and `global`.
 - The selected colocation distribution is exact and balanced in the focused gate: one selected node per current-agent, user, workspace, and global scope.
