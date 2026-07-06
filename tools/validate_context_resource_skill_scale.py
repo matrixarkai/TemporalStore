@@ -140,6 +140,11 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
             "fanout_summary_embedding_query_nodes + fanout_summary_pruned_peer_agent_nodes "
             f"must equal fanout_namespace_node_candidates, got {summary_query_nodes}+{pruned_peers}!={candidates}"
         )
+    require_int_equal(report, "fanout_configured_summary_node_limit", 32)
+    require_int_equal(report, "fanout_effective_summary_node_limit", 32)
+    require_int_equal(report, "fanout_configured_event_node_limit", 16)
+    require_int_equal(report, "fanout_effective_event_node_limit", 16)
+    require_int_equal(report, "fanout_configured_peer_agent_node_limit", 0)
     expanded = require_int_at_least(report, "fanout_event_expanded_nodes", 1)
     if expanded > max_expanded:
         raise ValueError(f"fanout_event_expanded_nodes must be <= {max_expanded}, got {expanded}")

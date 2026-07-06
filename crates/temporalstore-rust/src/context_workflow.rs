@@ -1065,6 +1065,16 @@ pub struct ContextFanoutPlanReport {
     pub summary_pruned_colocation_group_counts: BTreeMap<String, usize>,
     #[serde(default)]
     pub summary_pruned_colocation_scope_counts: BTreeMap<String, usize>,
+    #[serde(default)]
+    pub configured_summary_node_limit: usize,
+    #[serde(default)]
+    pub effective_summary_node_limit: usize,
+    #[serde(default)]
+    pub configured_event_node_limit: usize,
+    #[serde(default)]
+    pub effective_event_node_limit: usize,
+    #[serde(default)]
+    pub configured_peer_agent_node_limit: usize,
     pub event_expanded_nodes: usize,
     pub skipped_node_count: usize,
     pub summary_lookup_batches: usize,
@@ -4529,6 +4539,11 @@ pub fn retrieve_context(
         .max_event_nodes
         .max(1)
         .min(summary_node_limit.max(1));
+    fanout_plan.configured_summary_node_limit = request.max_summary_nodes;
+    fanout_plan.effective_summary_node_limit = summary_node_limit;
+    fanout_plan.configured_event_node_limit = request.max_event_nodes;
+    fanout_plan.effective_event_node_limit = event_node_limit;
+    fanout_plan.configured_peer_agent_node_limit = request.max_peer_agent_nodes;
     let (
         event_node_hashes,
         shared_layer_quota_nodes,

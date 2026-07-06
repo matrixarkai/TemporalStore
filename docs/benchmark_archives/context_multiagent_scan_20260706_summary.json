@@ -9,6 +9,11 @@
   "summary_pruned_colocation_scope_counts": {
     "agent:claude": 2
   },
+  "configured_summary_node_limit": 11,
+  "effective_summary_node_limit": 11,
+  "configured_event_node_limit": 4,
+  "effective_event_node_limit": 4,
+  "configured_peer_agent_node_limit": 0,
   "event_expanded_nodes": 4,
   "skipped_summary_budget_node_count": 7,
   "skipped_colocation_group_counts": {

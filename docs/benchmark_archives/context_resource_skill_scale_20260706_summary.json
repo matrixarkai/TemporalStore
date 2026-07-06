@@ -77,6 +77,11 @@
   "fanout_summary_pruned_colocation_scope_counts": {
     "agent:claude": 4
   },
+  "fanout_configured_summary_node_limit": 32,
+  "fanout_effective_summary_node_limit": 32,
+  "fanout_configured_event_node_limit": 16,
+  "fanout_effective_event_node_limit": 16,
+  "fanout_configured_peer_agent_node_limit": 0,
   "fanout_event_expanded_nodes": 16,
   "fanout_skipped_summary_budget_node_count": 24,
   "fanout_skipped_colocation_group_counts": {
@@ -319,7 +324,7 @@
     "global"
   ],
   "fanout_injection_current_agent_first": true,
-  "ingest_ms": 8790,
-  "retrieve_ms": 2833,
-  "secondary_index_validation_ms": 1153
+  "ingest_ms": 27418,
+  "retrieve_ms": 5224,
+  "secondary_index_validation_ms": 2694
 }
