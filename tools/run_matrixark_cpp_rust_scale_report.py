@@ -43,6 +43,7 @@ os.environ.setdefault("MATRIXARK_MAX_CONCURRENT_INGEST", "128")
 os.environ.setdefault("MATRIXARK_MAX_CONCURRENT_RETRIEVE", "128")
 
 from tools.matrixark_mcp_server import MatrixArkMcpServer  # noqa: E402
+from tools.matrixark_mcp_core import metaserver_reachable  # noqa: E402
 from tools.matrixark_mcp_local_adapter import MatrixArkLocalAdapter  # noqa: E402
 from tools.matrixark_mcp_temporal_adapters import (  # noqa: E402
     MatrixArkRustCliClient,
@@ -90,6 +91,100 @@ def default_cpp_lib_path() -> str:
         if candidate.exists():
             return str(candidate)
     return str(candidates[0])
+
+
+def _metaserver_host(metaserver: str) -> str:
+    if metaserver.startswith("["):
+        return metaserver.split("]", 1)[0].lstrip("[")
+    return metaserver.rsplit(":", 1)[0] if ":" in metaserver else metaserver
+
+
+def _is_loopback_metaserver(metaserver: str) -> bool:
+    return _metaserver_host(metaserver).strip().lower() in {"127.0.0.1", "localhost", "::1"}
+
+
+def default_canonical_release_out_dir() -> Path:
+    return CANONICAL_UBUNTU_REPO / "output-ubuntu22" / "release"
+
+
+def ensure_local_topology(args: argparse.Namespace) -> Json:
+    """Start local C++ topology for loopback scale runs when it is absent."""
+
+    if getattr(args, "no_auto_start_local_topology", False):
+        return {"status": "skipped", "reason": "disabled_by_flag", "metaserver": args.metaserver}
+    if not _is_loopback_metaserver(str(args.metaserver)):
+        return {"status": "skipped", "reason": "non_loopback_metaserver", "metaserver": args.metaserver}
+    before = metaserver_reachable(args.metaserver)
+    if before.get("ok"):
+        return {"status": "already_ready", "metaserver": args.metaserver, "precheck": before}
+
+    deploy_root = CANONICAL_UBUNTU_REPO if CANONICAL_UBUNTU_REPO.exists() else ROOT
+    deploy_script = deploy_root / "tools" / "deploy_local_ubuntu22.sh"
+    out_dir = Path(os.environ.get("TEMPORALSTORE_CANONICAL_OUT_DIR", str(default_canonical_release_out_dir())))
+    if not deploy_script.exists():
+        return {
+            "status": "failed",
+            "reason": "deploy_script_missing",
+            "metaserver": args.metaserver,
+            "deploy_script": str(deploy_script),
+            "precheck": before,
+        }
+    if not (out_dir / "sdk" / "lib" / "libbcache2.so").exists():
+        return {
+            "status": "failed",
+            "reason": "canonical_release_bundle_missing",
+            "metaserver": args.metaserver,
+            "out_dir": str(out_dir),
+            "precheck": before,
+        }
+
+    env = os.environ.copy()
+    env.setdefault("BUILD_TYPE", "Release")
+    env.setdefault("OUT_DIR", str(out_dir))
+    env.setdefault("DEPLOY_DIR", "/tmp/temporalstore-parity-deploy")
+    env.setdefault("PERSIST_DEPLOY_DIR", "1")
+    env.setdefault("SERVER_EXTRA_FLAGS", "--storage_async=true --server_stopping_wait_s=1")
+    timeout_sec = max(1, int(getattr(args, "local_topology_start_timeout_sec", 120) or 120))
+    command = ["bash", str(deploy_script), "start"]
+    started = time.perf_counter()
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=deploy_root,
+            env=env,
+            text=True,
+            capture_output=True,
+            timeout=timeout_sec,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "status": "failed",
+            "reason": "deploy_timeout",
+            "metaserver": args.metaserver,
+            "deploy_script": str(deploy_script),
+            "out_dir": str(out_dir),
+            "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 3),
+            "stdout_tail": (exc.stdout or "")[-4000:] if isinstance(exc.stdout, str) else "",
+            "stderr_tail": (exc.stderr or "")[-4000:] if isinstance(exc.stderr, str) else "",
+            "precheck": before,
+        }
+
+    after = metaserver_reachable(args.metaserver)
+    status = "started" if completed.returncode == 0 and after.get("ok") else "failed"
+    return {
+        "status": status,
+        "reason": "" if status == "started" else "deploy_failed_or_metaserver_unreachable",
+        "metaserver": args.metaserver,
+        "deploy_script": str(deploy_script),
+        "out_dir": str(out_dir),
+        "returncode": completed.returncode,
+        "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 3),
+        "stdout_tail": completed.stdout[-4000:],
+        "stderr_tail": completed.stderr[-4000:],
+        "precheck": before,
+        "postcheck": after,
+    }
 
 
 def validate_rust_runtime_path(args: argparse.Namespace) -> None:
@@ -3593,6 +3688,8 @@ def main() -> int:
     parser.add_argument("--storage-prefix", default="matrixark:scale")
     parser.add_argument("--cpp-lib", default=default_cpp_lib_path())
     parser.add_argument("--rust-cli", default=str(ROOT / "target/release/matrixark_rust_proxy"))
+    parser.add_argument("--no-auto-start-local-topology", action="store_true")
+    parser.add_argument("--local-topology-start-timeout-sec", type=int, default=120)
     parser.add_argument("--allow-rust-record-log-compat", action="store_true")
     parser.add_argument("--allow-rust-debug-cli", action="store_true")
     parser.add_argument("--allow-rust-cpp-c-api-bridge", action="store_true", help="diagnostic only: allow the legacy Rust cdylib MatrixArk hot path to call the shared C++ C API bridge")
@@ -3659,6 +3756,7 @@ def main() -> int:
     artifact_dir.mkdir(parents=True, exist_ok=True)
     if "rust" in parsed.backends and not os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_ROOT"):
         os.environ["MATRIXARK_TEMPORALSTORE_RUST_ROOT"] = str(artifact_dir / "rust_record_log_root")
+    topology_bootstrap = ensure_local_topology(parsed)
     report: Json = {
         "run_id": run_id,
         "generated_at_ms": int(time.time() * 1000),
@@ -3684,6 +3782,7 @@ def main() -> int:
             "judge_provider": parsed.judge_provider,
             "judge_model": parsed.judge_model,
             "metaserver": parsed.metaserver,
+            "topology_bootstrap": topology_bootstrap,
             "namespace": parsed.namespace,
             "table": parsed.table,
             "topology": {
