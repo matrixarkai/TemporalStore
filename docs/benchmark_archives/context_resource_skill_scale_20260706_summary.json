@@ -31,6 +31,8 @@
   "fanout_ready": true,
   "multi_agent_scan_ready": true,
   "fanout_namespace_node_candidates": 43,
+  "fanout_summary_embedding_query_nodes": 39,
+  "fanout_summary_pruned_peer_agent_nodes": 4,
   "fanout_event_expanded_nodes": 16,
   "fanout_selected_colocation_group_count": 4,
   "fanout_avoided_namespace_replication_nodes": 27,
@@ -74,11 +76,11 @@
   "secondary_index_checked_refs": 54,
   "secondary_index_found_refs": 54,
   "secondary_index_missing_refs": 0,
-  "summary_embedding_candidate_count": 43,
-  "summary_embedding_selected_count": 43,
+  "summary_embedding_candidate_count": 39,
+  "summary_embedding_selected_count": 39,
   "verbose_filter_group_count": 1,
   "selected_ref_count": 45,
-  "ingest_ms": 18069,
-  "retrieve_ms": 6087,
-  "secondary_index_validation_ms": 2779
+  "ingest_ms": 9315,
+  "retrieve_ms": 2582,
+  "secondary_index_validation_ms": 1259
 }

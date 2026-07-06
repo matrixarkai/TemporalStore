@@ -73,6 +73,13 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
         raise ValueError(f"accepted_sources must equal total_source_count, got {accepted}/{total}")
     require_int_equal(report, "failed_sources", 0)
     candidates = require_int_at_least(report, "fanout_namespace_node_candidates", min_sources)
+    summary_query_nodes = require_int_at_least(report, "fanout_summary_embedding_query_nodes", 1)
+    pruned_peers = require_int_at_least(report, "fanout_summary_pruned_peer_agent_nodes", 1)
+    if summary_query_nodes + pruned_peers != candidates:
+        raise ValueError(
+            "fanout_summary_embedding_query_nodes + fanout_summary_pruned_peer_agent_nodes "
+            f"must equal fanout_namespace_node_candidates, got {summary_query_nodes}+{pruned_peers}!={candidates}"
+        )
     expanded = require_int_at_least(report, "fanout_event_expanded_nodes", 1)
     if expanded > max_expanded:
         raise ValueError(f"fanout_event_expanded_nodes must be <= {max_expanded}, got {expanded}")

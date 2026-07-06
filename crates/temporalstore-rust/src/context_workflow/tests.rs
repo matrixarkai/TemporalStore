@@ -728,6 +728,8 @@ fn context_multi_agent_scan_boosts_current_agent_and_colocates_shared_scopes() {
     );
     assert!(report.status.ok, "{:?}", report.status);
     assert_eq!(report.fanout_plan.namespace_node_candidates, 5);
+    assert_eq!(report.fanout_plan.summary_embedding_query_nodes, 4);
+    assert_eq!(report.fanout_plan.summary_pruned_peer_agent_nodes, 1);
     assert_eq!(report.fanout_plan.event_expanded_nodes, 2);
     assert!(report.fanout_plan.fanout_reduced);
     assert!(report.fanout_plan.namespace_replication_avoided);
@@ -851,6 +853,8 @@ fn context_multi_agent_layer_quota_keeps_shared_resources_when_agent_has_many_ma
     );
     assert!(report.status.ok, "{:?}", report.status);
     assert_eq!(report.fanout_plan.namespace_node_candidates, 7);
+    assert_eq!(report.fanout_plan.summary_embedding_query_nodes, 7);
+    assert_eq!(report.fanout_plan.summary_pruned_peer_agent_nodes, 0);
     assert_eq!(report.fanout_plan.event_expanded_nodes, 3);
     assert!(report.fanout_plan.fanout_reduced);
     assert!(report.fanout_plan.namespace_replication_avoided);
@@ -966,6 +970,8 @@ fn context_multi_agent_scan_derives_shared_scopes_from_owner_and_agent() {
     );
     assert!(report.status.ok, "{:?}", report.status);
     assert_eq!(report.fanout_plan.namespace_node_candidates, 5);
+    assert_eq!(report.fanout_plan.summary_embedding_query_nodes, 4);
+    assert_eq!(report.fanout_plan.summary_pruned_peer_agent_nodes, 1);
     assert_eq!(report.fanout_plan.event_expanded_nodes, 4);
     assert!(report.fanout_plan.fanout_reduced);
     assert!(report.fanout_plan.namespace_replication_avoided);
