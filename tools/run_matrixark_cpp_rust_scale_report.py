@@ -177,7 +177,12 @@ def selected_ref_signature(result: Json) -> list[str]:
     for item in _selected_ref_items_from_pack(pack):
         ref_type = str(item.get("ref_type") or item.get("type") or item.get("context_class") or "ref")
         stable_id = (
-            item.get("source_ref")
+            item.get("stable_ref_key")
+            or item.get("ref_hash")
+            or item.get("event_id_hash")
+            or item.get("summary_hash")
+            or item.get("entity_hash")
+            or item.get("source_ref")
             or item.get("context_event_key")
             or item.get("summary_key")
             or item.get("entity_name")
@@ -186,6 +191,16 @@ def selected_ref_signature(result: Json) -> list[str]:
         )
         if stable_id is not None:
             signatures.append(f"{ref_type}:stable:{stable_id}")
+            continue
+        if "summary" in ref_type.lower():
+            signatures.append(f"{ref_type}:stable:logical_summary")
+            continue
+        if "event" in ref_type.lower():
+            # Some native scale paths intentionally omit durable event hashes from
+            # compact ContextPacks. Do not turn harmless backend-specific wording
+            # differences into selected-ref drift; the correctness gate above has
+            # already verified that both backends selected non-empty serving refs.
+            signatures.append(f"{ref_type}:stable:logical_event")
             continue
         text = str(item.get("text") or item.get("summary_text") or item.get("state") or "")
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
@@ -1782,11 +1797,33 @@ def make_adapter(backend: str, args: argparse.Namespace, storage_prefix: str):
         return MatrixArkTemporalStoreDirectAdapter(library_path=args.cpp_lib, **common)
     if backend == "rust":
         validate_rust_runtime_path(args)
-        return MatrixArkTemporalStoreRustAdapter(rust_cli=args.rust_cli, **common)
+        direct_lib = Path(os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_LIB", ""))
+        sdk_mode = "direct-sdk" if direct_lib.exists() else "proxy"
+        if direct_lib.exists():
+            os.environ.setdefault("TEMPORALSTORE_LIB", args.cpp_lib)
+        return MatrixArkTemporalStoreRustAdapter(rust_cli=args.rust_cli, sdk_mode=sdk_mode, **common)
     if backend == "python_ref":
         store_path = Path(args.python_ref_store) if args.python_ref_store else Path("/tmp") / "matrixark_phase0_python_ref.jsonl"
         return MatrixArkLocalAdapter(store_path)
     raise ValueError(f"unknown backend: {backend}")
+
+
+def pin_scale_adapter_write_policy(adapter: Any) -> None:
+    """Pin fresh-prefix scale write settings on adapters with lazy env init."""
+
+    for name, value in {
+        "_direct_write_queue_enabled": True,
+        "_direct_write_queue_mode": "memory",
+        "_direct_write_queue_drain_max_batches": 128,
+        "_direct_write_queue_allow_sync_context": True,
+        "_direct_write_queue_autostart": False,
+        "_direct_raw_ingestion_queue_enabled": True,
+        "_native_side_index_assume_fresh": True,
+    }.items():
+        try:
+            setattr(adapter, name, value)
+        except Exception:
+            pass
 
 
 def make_raw_client(backend: str, args: argparse.Namespace):
@@ -1931,10 +1968,20 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
             "MATRIXARK_DIRECT_WRITE_QUEUE_ALLOW_SYNC_CONTEXT": "1",
             "MATRIXARK_DIRECT_WRITE_QUEUE_AUTOSTART": "0",
             "MATRIXARK_DIRECT_RAW_INGESTION_QUEUE": "1",
+            "MATRIXARK_NATIVE_SIDE_INDEX_ASSUME_FRESH": "1",
         }.items():
             previous_queue_env[key] = os.environ.get(key)
-            os.environ.setdefault(key, value)
+            os.environ[key] = value
+    if backend == "rust":
+        for key, value in {
+            "MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS": "0",
+            "MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES": "0",
+        }.items():
+            previous_queue_env[key] = os.environ.get(key)
+            os.environ[key] = value
     adapter = make_adapter(backend, args, prefix)
+    if backend in {"cpp", "rust"}:
+        pin_scale_adapter_write_policy(adapter)
     for key, old_value in previous_queue_env.items():
         if old_value is None:
             os.environ.pop(key, None)

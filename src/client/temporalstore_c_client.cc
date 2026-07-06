@@ -634,6 +634,10 @@ std::string ContextClassName(const rapidjson::Value& record) {
     return record_type;
 }
 
+bool IsServingSelectedRefClass(const std::string& context_class) {
+    return context_class == "event" || context_class == "summary";
+}
+
 void DecodeMatrixArkPayload(const std::string& value, std::vector<std::string>* records) {
     rapidjson::Document doc;
     if (doc.Parse(value.c_str()).HasParseError()) {
@@ -1013,6 +1017,7 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         uint64_t tokens;
         std::string record_type;
         std::string context_class;
+        std::string ref_hash;
         std::string text;
         uint64_t node_hash;
         std::string cross_session_key;
@@ -1071,6 +1076,10 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         score += cross_session_rerank_boost;
         score += TypePriorityBoost(record_type, context_class, JsonStringMember(request, "question_type"));
         if (score >= min_similarity_score) {
+            std::string ref_hash = RefHash(record);
+            if (ref_hash.empty()) {
+                ref_hash = JsonStringMember(record, "record_id");
+            }
             std::string source_ref_json;
             if (record.HasMember("source_ref")) {
                 source_ref_json = JsonStringify(record["source_ref"]);
@@ -1079,6 +1088,7 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
                               TokenEstimate(text),
                               record_type,
                               context_class,
+                              ref_hash,
                               text,
                               NodeHash(record),
                               CrossSessionKey(record),
@@ -1114,10 +1124,13 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     uint64_t dropped_cross_session_cap = 0;
     uint64_t dropped_cross_candidate_cap = 0;
     uint64_t dropped_low_score = 0;
+    uint64_t dropped_duplicate_ref = 0;
+    uint64_t dropped_policy_ref = 0;
     uint64_t cross_used_tokens = 0;
     uint64_t cross_selected_refs = 0;
     uint64_t entity_bridge_selected_refs = 0;
     std::unordered_set<std::string> selected_cross_sessions;
+    std::unordered_set<std::string> selected_ref_signatures;
     for (const auto& item : scored) {
         if (selected.Size() >= max_refs) {
             break;
@@ -1128,6 +1141,10 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         }
         const std::string& record_type = item.record_type;
         const std::string& context_class = item.context_class;
+        if (!IsServingSelectedRefClass(context_class)) {
+            ++dropped_policy_ref;
+            continue;
+        }
         bool is_cross_session = item.session_continuity == "cross_session";
         bool is_entity_bridge = is_cross_session && context_class == "entity";
         bool is_cross_session_raw_evidence = is_cross_session && (record_type == "context_event" || record_type == "context_segment");
@@ -1156,6 +1173,12 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
             ++dropped_cross_budget;
             continue;
         }
+        std::string ref_signature = context_class + ":" + item.ref_hash;
+        if (!ref_signature.empty() && selected_ref_signatures.find(ref_signature) != selected_ref_signatures.end()) {
+            ++dropped_duplicate_ref;
+            continue;
+        }
+        selected_ref_signatures.insert(ref_signature);
         used_tokens += item.tokens;
         if (is_cross_session) {
             cross_used_tokens += item.tokens;
@@ -1171,6 +1194,9 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
             selected_nodes.insert(item.node_hash);
         }
         ref.AddMember("ref_type", rapidjson::Value(context_class.c_str(), alloc), alloc);
+        if (!item.ref_hash.empty()) {
+            ref.AddMember("ref_hash", rapidjson::Value(item.ref_hash.c_str(), alloc), alloc);
+        }
         ref.AddMember("text", rapidjson::Value(item.text.c_str(), alloc), alloc);
         ref.AddMember("token_estimate", item.tokens, alloc);
         ref.AddMember("score", item.score, alloc);
@@ -1209,12 +1235,16 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     dropped.AddMember("cross_session_session_cap", dropped_cross_session_cap, alloc);
     dropped.AddMember("cross_session_candidate_cap", dropped_cross_candidate_cap, alloc);
     dropped.AddMember("low_score", dropped_low_score, alloc);
+    dropped.AddMember("duplicate_ref", dropped_duplicate_ref, alloc);
+    dropped.AddMember("policy_ref", dropped_policy_ref, alloc);
     rapidjson::Value reasons(rapidjson::kObjectType);
     reasons.AddMember("over_budget", dropped_over_budget, alloc);
     reasons.AddMember("cross_session_budget", dropped_cross_budget, alloc);
     reasons.AddMember("cross_session_session_cap", dropped_cross_session_cap, alloc);
     reasons.AddMember("cross_session_candidate_cap", dropped_cross_candidate_cap, alloc);
     reasons.AddMember("low_score", dropped_low_score, alloc);
+    reasons.AddMember("duplicate_ref", dropped_duplicate_ref, alloc);
+    reasons.AddMember("policy_ref", dropped_policy_ref, alloc);
     dropped.AddMember("reason_counts", reasons, alloc);
     pack.AddMember("dropped_refs", dropped, alloc);
     pack.AddMember("used_context_tokens", used_tokens, alloc);

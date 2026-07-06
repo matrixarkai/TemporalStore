@@ -146,7 +146,7 @@ def _selected_ref_stable_key(ref: Json) -> str:
     return f"{ref_class}:text:{stable_hash(text)}"
 
 
-def _compact_native_selected_refs(selected_refs: list[Json], *, max_total: int = 4) -> tuple[list[Json], int]:
+def _compact_native_selected_refs(selected_refs: list[Json], *, max_total: int = 4, max_text_chars: int = 480) -> tuple[list[Json], int]:
     """Deduplicate and cap already-selected native refs without Python scans."""
 
     if not selected_refs:
@@ -176,6 +176,10 @@ def _compact_native_selected_refs(selected_refs: list[Json], *, max_total: int =
             continue
         normalized = dict(ref)
         normalized.setdefault("context_class", ref_class)
+        text = normalized.get("text")
+        if isinstance(text, str) and len(text) > max_text_chars:
+            normalized["text"] = text[: max(0, max_text_chars - 1)].rstrip() + "..."
+            normalized["token_estimate"] = max(1, (len(str(normalized["text"])) + 3) // 4)
         selected.append(normalized)
         seen.add(key)
         class_counts[ref_class] = class_counts.get(ref_class, 0) + 1
@@ -340,6 +344,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         self._direct_write_queue_drain_max_batches = max(1, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_DRAIN_MAX_BATCHES", "64")))
         self._direct_write_queue_allow_sync_context = os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_ALLOW_SYNC_CONTEXT", "0").strip().lower() in {"1", "true", "yes"}
         self._direct_write_queue_autostart = os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_AUTOSTART", "1").strip().lower() not in {"0", "false", "no"}
+        self._native_side_index_assume_fresh = os.environ.get("MATRIXARK_NATIVE_SIDE_INDEX_ASSUME_FRESH", "0").strip().lower() in {"1", "true", "yes"}
         self._direct_raw_ingestion_queue_enabled = os.environ.get("MATRIXARK_DIRECT_RAW_INGESTION_QUEUE", "0").strip().lower() in {"1", "true", "yes"}
         self._direct_write_queue_key = f"{self._storage_prefix}:direct_write_queue"
         self._direct_write_queue_done_key = f"{self._storage_prefix}:direct_write_queue_done"
@@ -465,6 +470,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             self._direct_write_queue_allow_sync_context = os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_ALLOW_SYNC_CONTEXT", "0").strip().lower() in {"1", "true", "yes"}
         if not hasattr(self, "_direct_write_queue_autostart"):
             self._direct_write_queue_autostart = os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_AUTOSTART", "1").strip().lower() not in {"0", "false", "no"}
+        if not hasattr(self, "_native_side_index_assume_fresh"):
+            self._native_side_index_assume_fresh = os.environ.get("MATRIXARK_NATIVE_SIDE_INDEX_ASSUME_FRESH", "0").strip().lower() in {"1", "true", "yes"}
         if not hasattr(self, "_direct_raw_ingestion_queue_enabled"):
             self._direct_raw_ingestion_queue_enabled = os.environ.get("MATRIXARK_DIRECT_RAW_INGESTION_QUEUE", "0").strip().lower() in {"1", "true", "yes"}
         if not hasattr(self, "_direct_write_queue_key"):
@@ -1027,6 +1034,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         return sorted(versions)
 
     def _read_hash_value_best_effort(self, key: str, field: str) -> str:
+        if bool(getattr(self, "_native_side_index_assume_fresh", False)):
+            return ""
         reader = getattr(self._client, "hget", None)
         if not callable(reader):
             return ""
@@ -1096,8 +1105,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         for (key, field), update in lookup_updates.items():
             new_refs = update.get("ref_hashes", []) if isinstance(update, dict) else []
             new_buckets = update.get("posting_buckets", set()) if isinstance(update, dict) else set()
-            merged_refs = self._merge_ref_hashes(self._read_hash_value_best_effort(key, field), new_refs)
             existing_value = self._read_hash_value_best_effort(key, field)
+            merged_refs = self._merge_ref_hashes(existing_value, new_refs)
             existing_buckets: set[int] = set()
             if existing_value:
                 try:
@@ -2782,6 +2791,17 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 pack["selected_refs"] = compact_refs
                 pack["remote_context_refs"] = compact_refs
                 selected_refs = compact_refs
+            compact_token_total = 0
+            for ref in selected_refs:
+                if not isinstance(ref, dict):
+                    continue
+                try:
+                    compact_token_total += int(ref.get("token_estimate") or 0)
+                except (TypeError, ValueError):
+                    compact_token_total += max(1, (len(str(ref.get("text") or "")) + 3) // 4)
+            if compact_token_total > 0:
+                pack["used_context_tokens"] = compact_token_total
+                pack["used_remote_context_tokens"] = compact_token_total
         raw_candidate_tables = (
             pack.get("candidate_records")
             or pack.get("raw_candidate_records")
@@ -3467,7 +3487,14 @@ class MatrixArkRustCdylibClient:
     def batch_hset(self, entries: list[Json]) -> None:
         self.matrixark_batch_append_records(entries)
 
-    def matrixark_batch_append_records(self, entries: list[Json], *, count_key: str | None = None, count_value: str | None = None) -> None:
+    def matrixark_batch_append_records(
+        self,
+        entries: list[Json],
+        *,
+        count_key: str | None = None,
+        count_value: str | None = None,
+        append_options: Json | None = None,
+    ) -> None:
         values = [{"key": str(entry.get("key") or ""), "field": str(entry.get("field") or ""), "value": str(entry.get("value") or "")} for entry in entries]
         payload = json.dumps(values, separators=(",", ":"), sort_keys=True).encode("utf-8")
         def call() -> None:
@@ -3482,8 +3509,20 @@ class MatrixArkRustCdylibClient:
             self._check(code, error)
         self._call("matrixark_batch_append_records", call, records_written=len(values) + (1 if count_key else 0))
 
-    def matrixark_append_records(self, entries: list[Json], *, count_key: str | None = None, count_value: str | None = None) -> None:
-        self.matrixark_batch_append_records(entries, count_key=count_key, count_value=count_value)
+    def matrixark_append_records(
+        self,
+        entries: list[Json],
+        *,
+        count_key: str | None = None,
+        count_value: str | None = None,
+        append_options: Json | None = None,
+    ) -> None:
+        self.matrixark_batch_append_records(
+            entries,
+            count_key=count_key,
+            count_value=count_value,
+            append_options=append_options,
+        )
 
     def matrixark_scan_candidates(self, *, count_key: str, record_hash_key: str, shard_size: int, scope: Json, record_types: list[str], secondary_index_groups: list[list[str]], selected_node_hashes: list[int]) -> Json:
         request = json.dumps({"scope": scope, "record_types": record_types, "secondary_index_groups": secondary_index_groups, "selected_node_hashes": selected_node_hashes}, separators=(",", ":"), sort_keys=True).encode("utf-8")
@@ -3658,6 +3697,9 @@ class MatrixArkRustProxyClient:
         self._lane_commands_total: dict[str, int] = {lane: 0 for lane in self._lane_worker_counts}
         self._lane_wait_ms_total: dict[str, float] = {lane: 0.0 for lane in self._lane_worker_counts}
         self._lane_wait_ms_max: dict[str, float] = {lane: 0.0 for lane in self._lane_worker_counts}
+        self._op_commands_total: dict[str, int] = {}
+        self._op_latency_ms_total: dict[str, float] = {}
+        self._op_latency_ms_max: dict[str, float] = {}
         self._serialization_ms_total = 0.0
         self._serialization_ms_max = 0.0
         self._rust_engine_ms_total = 0.0
@@ -3856,6 +3898,9 @@ class MatrixArkRustProxyClient:
             self._lane_commands_total[lane] = self._lane_commands_total.get(lane, 0) + 1
             self._lane_wait_ms_total[lane] = self._lane_wait_ms_total.get(lane, 0.0) + max(0.0, wait_ms)
             self._lane_wait_ms_max[lane] = max(self._lane_wait_ms_max.get(lane, 0.0), max(0.0, wait_ms))
+            self._op_commands_total[op] = self._op_commands_total.get(op, 0) + 1
+            self._op_latency_ms_total[op] = self._op_latency_ms_total.get(op, 0.0) + max(0.0, elapsed_ms)
+            self._op_latency_ms_max[op] = max(self._op_latency_ms_max.get(op, 0.0), max(0.0, elapsed_ms))
             if failed:
                 self._commands_failed_total += 1
                 if "timed out" in str(response or "").lower() or elapsed_ms >= self.request_timeout_ms:
@@ -4036,6 +4081,15 @@ class MatrixArkRustProxyClient:
                 }
                 for lane, values in lane_samples.items()
             }
+            op_metrics = {
+                op: {
+                    "commands_total": count,
+                    "latency_ms_total": round(self._op_latency_ms_total.get(op, 0.0), 3),
+                    "latency_ms_avg": round(self._op_latency_ms_total.get(op, 0.0) / max(1, count), 3),
+                    "latency_ms_max": round(self._op_latency_ms_max.get(op, 0.0), 3),
+                }
+                for op, count in sorted(self._op_commands_total.items())
+            }
             return {
                 "gateway_mode": "rust_direct_sdk_bridge",
                 "sdk_mode": "rust_direct_sdk_via_long_lived_bridge",
@@ -4088,6 +4142,7 @@ class MatrixArkRustProxyClient:
                 "max_observed_latency_ms": round(self._max_observed_latency_ms, 3),
                 "matrixark_context_records_total": sum(context_counts.values()),
                 "matrixark_context_records_by_type": context_counts,
+                "op_metrics": op_metrics,
                 "process_per_operation_enabled": False,
                 "single_shot_mode": "debug_only",
                 "direct_sdk_bridge": True,
