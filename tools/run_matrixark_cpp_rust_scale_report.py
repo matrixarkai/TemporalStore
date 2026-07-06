@@ -2475,10 +2475,15 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
             previous_queue_env[key] = os.environ.get(key)
             os.environ[key] = value
     if backend == "rust":
-        for key, value in {
+        allow_isolated_rust_clients = os.environ.get(
+            "MATRIXARK_RUST_PROXY_ALLOW_ISOLATED_CLIENTS", ""
+        ).strip().lower() in {"1", "true", "yes"}
+        rust_proxy_lane_defaults = {
             "MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS": "0",
-            "MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES": "0",
-        }.items():
+        }
+        if not allow_isolated_rust_clients:
+            rust_proxy_lane_defaults["MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES"] = "0"
+        for key, value in rust_proxy_lane_defaults.items():
             previous_queue_env[key] = os.environ.get(key)
             os.environ[key] = value
     adapter = make_adapter(backend, args, prefix)
