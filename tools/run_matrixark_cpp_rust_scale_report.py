@@ -1913,7 +1913,24 @@ def run_raw_storage(backend: str, args: argparse.Namespace, run_id: str, *, clie
 def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
     prefix = f"{args.storage_prefix}:{run_id}:{backend}"
     effective_storage_tuning = effective_storage_tuning_from_env()
+    previous_queue_env: dict[str, str | None] = {}
+    if backend == "cpp":
+        for key, value in {
+            "MATRIXARK_DIRECT_WRITE_QUEUE": "1",
+            "MATRIXARK_DIRECT_WRITE_QUEUE_MODE": "memory",
+            "MATRIXARK_DIRECT_WRITE_QUEUE_DRAIN_MAX_BATCHES": "128",
+            "MATRIXARK_DIRECT_WRITE_QUEUE_ALLOW_SYNC_CONTEXT": "1",
+            "MATRIXARK_DIRECT_WRITE_QUEUE_AUTOSTART": "0",
+            "MATRIXARK_DIRECT_RAW_INGESTION_QUEUE": "1",
+        }.items():
+            previous_queue_env[key] = os.environ.get(key)
+            os.environ.setdefault(key, value)
     adapter = make_adapter(backend, args, prefix)
+    for key, old_value in previous_queue_env.items():
+        if old_value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = old_value
     server = MatrixArkMcpServer(adapter, access_mode="dev")
     # This runner measures ingestion/retrieval/storage latency. Admin/context
     # audit durability is covered by separate parity tests; keeping it enabled
@@ -1924,9 +1941,9 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
         "account_id": "acct_scale",
         "tenant_id": "tenant_scale",
         "user_id": "user_scale",
-        "session_id": f"scale-{run_id}-{backend}",
+        "session_id": f"scale-{run_id}",
     }
-    node_path = ["tenant:tenant_scale", "user:user_scale", f"session:scale-{run_id}-{backend}", "conversation:scale"]
+    node_path = ["tenant:tenant_scale", "user:user_scale", f"session:scale-{run_id}", "conversation:scale"]
     try:
         readiness = server.call_tool("matrixark_backend_ready", {"probe": True, "timeout_ms": args.readiness_timeout_ms})
         if readiness.get("status") != "ready":
@@ -2009,7 +2026,7 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
                     "threshold_messages": max(2, args.messages_per_ingest),
                     "wait": True,
                     "storage_options": args.storage_options,
-                    "deadline_ms": args.ingest_deadline_ms,
+                    "request_deadline_ms": args.ingest_deadline_ms,
                 }
             )
 
@@ -2024,6 +2041,16 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
                 if error:
                     ingest_errors.append(error)
         ingest_elapsed = time.perf_counter() - ingest_started
+        flush_direct_writes = getattr(adapter, "flush_direct_writes", None)
+        flush_result: Json = {"skipped": True}
+        if callable(flush_direct_writes):
+            flush_started = time.perf_counter()
+            try:
+                flush_direct_writes(timeout_s=max(1.0, args.ingest_deadline_ms / 1000.0))
+                flush_result = {"status": "flushed", "latency_ms": round((time.perf_counter() - flush_started) * 1000.0, 3)}
+            except Exception as exc:
+                ingest_errors.append(f"direct_write_flush_failed:{exc}")
+                flush_result = {"status": "failed", "error": str(exc), "latency_ms": round((time.perf_counter() - flush_started) * 1000.0, 3)}
 
         # Refresh summaries once so retrieval has the same post-ingest shape on both backends.
         refresh_latency_ms, refresh_result, refresh_error = call_with_latency(
@@ -2103,6 +2130,7 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
                 "message_qps": round((args.events - (len(ingest_errors) * args.messages_per_ingest)) / ingest_elapsed, 3)
                 if ingest_elapsed > 0
                 else 0.0,
+                "direct_write_flush": flush_result,
             },
             "retrieve": {
                 **summarize_latencies(
