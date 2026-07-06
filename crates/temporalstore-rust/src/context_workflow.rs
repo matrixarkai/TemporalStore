@@ -1,6 +1,8 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::Instant;
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1153,6 +1155,18 @@ pub struct ContextFanoutPlanReport {
     #[serde(default)]
     pub peer_agent_limit_applied: bool,
     #[serde(default)]
+    pub concurrent_scan_enabled: bool,
+    #[serde(default)]
+    pub concurrent_scan_lane_count: usize,
+    #[serde(default)]
+    pub concurrent_scan_completed_lanes: usize,
+    #[serde(default)]
+    pub concurrent_scan_deadline_ms: u64,
+    #[serde(default)]
+    pub current_agent_lane_returned_first: bool,
+    #[serde(default)]
+    pub concurrent_scan_lanes: Vec<ContextConcurrentScanLaneReport>,
+    #[serde(default)]
     pub selected_user_shared_nodes: usize,
     #[serde(default)]
     pub selected_workspace_shared_nodes: usize,
@@ -1178,6 +1192,20 @@ pub struct ContextFanoutPlanReport {
     pub layer_quota_applied: bool,
     pub fallback_to_flat: bool,
     pub fanout_reduced: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ContextConcurrentScanLaneReport {
+    pub lane: String,
+    pub node_count: usize,
+    pub completed: bool,
+    #[serde(default)]
+    pub timed_out: bool,
+    pub elapsed_ms: u64,
+    pub deadline_ms: u64,
+    pub selected_nodes: Vec<u64>,
+    #[serde(default)]
+    pub source_class_counts: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -4105,6 +4133,31 @@ fn push_unique_context_string(values: &mut Vec<String>, value: String) {
 
 type ContextSummaryScore = (u64, i64, usize, i64, ContextScopeDescriptor, String);
 
+#[derive(Debug, Clone)]
+struct ContextConcurrentScanLane {
+    name: &'static str,
+    priority: usize,
+    deadline_ms: u64,
+    node_hashes: Vec<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct ContextConcurrentScanResult {
+    priority: usize,
+    report: ContextConcurrentScanLaneReport,
+    blocks: Vec<ContextBlock>,
+    event_debugs: Vec<ContextScannedEventDebug>,
+    node_count: usize,
+    event_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ContextScannedEventDebug {
+    node_hash: u64,
+    event: ContextEvent,
+    passes_prefilter: bool,
+}
+
 fn context_scope_reservation_key(scope: &ContextScopeDescriptor) -> String {
     match scope.layer {
         ContextScopeLayer::Agent => format!("agent:{}", scope.producer_agent_id),
@@ -4150,6 +4203,264 @@ fn context_source_ref_class(source_ref: &str) -> &'static str {
     } else {
         "conversation"
     }
+}
+
+fn context_concurrent_scan_lane_for_node(
+    scope: &ContextScopeDescriptor,
+    source_class: &str,
+    request: &ContextRetrieveRequest,
+) -> (&'static str, usize) {
+    let current_agent = request.current_agent_id.trim();
+    if !current_agent.is_empty()
+        && scope.layer == ContextScopeLayer::Agent
+        && scope.producer_agent_id.eq_ignore_ascii_case(current_agent)
+    {
+        return ("current-agent", 0);
+    }
+    if source_class == "resource" || source_class == "skill" {
+        return ("resource-skill", 3);
+    }
+    match scope.layer {
+        ContextScopeLayer::User => ("user-shared", 1),
+        ContextScopeLayer::Global | ContextScopeLayer::Tenant | ContextScopeLayer::Workspace => {
+            ("workspace-global", 2)
+        }
+        ContextScopeLayer::Agent | ContextScopeLayer::Session => ("peer-agent", 4),
+    }
+}
+
+fn context_concurrent_scan_lane_deadline_ms(lane: &str) -> u64 {
+    match lane {
+        "current-agent" => 25,
+        "user-shared" => 50,
+        "workspace-global" => 75,
+        "resource-skill" => 75,
+        "peer-agent" => 40,
+        _ => 60,
+    }
+}
+
+fn context_concurrent_scan_lanes(
+    event_node_hashes: &[u64],
+    node_scope_by_hash: &BTreeMap<u64, ContextScopeDescriptor>,
+    node_source_class_by_hash: &BTreeMap<u64, String>,
+    request: &ContextRetrieveRequest,
+) -> Vec<ContextConcurrentScanLane> {
+    let mut lanes = BTreeMap::<usize, ContextConcurrentScanLane>::new();
+    for node_hash in event_node_hashes {
+        let scope = node_scope_by_hash
+            .get(node_hash)
+            .cloned()
+            .unwrap_or_default();
+        let source_class = node_source_class_by_hash
+            .get(node_hash)
+            .map(String::as_str)
+            .unwrap_or("conversation");
+        let (name, priority) = context_concurrent_scan_lane_for_node(&scope, source_class, request);
+        let entry = lanes
+            .entry(priority)
+            .or_insert_with(|| ContextConcurrentScanLane {
+                name,
+                priority,
+                deadline_ms: context_concurrent_scan_lane_deadline_ms(name),
+                node_hashes: Vec::new(),
+            });
+        entry.node_hashes.push(*node_hash);
+    }
+    lanes.into_values().collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn context_scan_lane_worker(
+    engine: TemporalEngine,
+    request: ContextRetrieveRequest,
+    lane: ContextConcurrentScanLane,
+    node_scope_by_hash: BTreeMap<u64, ContextScopeDescriptor>,
+    node_source_class_by_hash: BTreeMap<u64, String>,
+    include_l0: bool,
+    include_l1: bool,
+    include_l2: bool,
+) -> ContextConcurrentScanResult {
+    let started = Instant::now();
+    let deadline = Duration::from_millis(lane.deadline_ms);
+    let mut completed = true;
+    let mut blocks = Vec::new();
+    let mut event_debugs = Vec::new();
+    let mut node_count = 0usize;
+    let mut event_count = 0usize;
+    let mut selected_nodes = Vec::new();
+    let mut source_class_counts = BTreeMap::<String, usize>::new();
+
+    for node_hash in &lane.node_hashes {
+        if started.elapsed() > deadline {
+            completed = false;
+            break;
+        }
+        let source_class = node_source_class_by_hash
+            .get(node_hash)
+            .cloned()
+            .unwrap_or_else(|| "conversation".to_string());
+        *source_class_counts.entry(source_class).or_default() += 1;
+        selected_nodes.push(*node_hash);
+
+        let mut node_source_ref = String::new();
+        let node_response = engine.execute(ExecuteRequest {
+            shard_id: request.shard_id,
+            command: Command::ContextGetNode {
+                tenant_hash: request.tenant_hash,
+                node_hash: *node_hash,
+            },
+        });
+        if let CommandResponse::ContextNode {
+            node: Some(node), ..
+        } = node_response.response
+        {
+            node_count += 1;
+            let scoped_node_source_ref = node_scope_by_hash
+                .get(node_hash)
+                .map(|scope| context_scope_qualified_source_ref(&node.raw_metadata_ref, scope))
+                .unwrap_or_else(|| node.raw_metadata_ref.clone());
+            node_source_ref = scoped_node_source_ref.clone();
+            if include_l0 {
+                blocks.push(ContextBlock {
+                    uri: format!("{}/l0", context_node_uri(request.tenant_hash, *node_hash)),
+                    tier: ContextTier::L0,
+                    node_hash: *node_hash,
+                    event_time_ms: node.last_event_time_ms,
+                    text: node.l0,
+                    estimated_tokens: estimate_tokens(&node.canonical_name),
+                    source_ref: scoped_node_source_ref.clone(),
+                });
+            }
+            if include_l1 {
+                blocks.push(ContextBlock {
+                    uri: format!("{}/l1", context_node_uri(request.tenant_hash, *node_hash)),
+                    tier: ContextTier::L1,
+                    node_hash: *node_hash,
+                    event_time_ms: node.last_event_time_ms,
+                    text: node.l1_ref,
+                    estimated_tokens: estimate_tokens(&node.canonical_name),
+                    source_ref: scoped_node_source_ref,
+                });
+            }
+        }
+
+        let events_response = engine.execute(ExecuteRequest {
+            shard_id: request.shard_id,
+            command: Command::ContextQueryEvents {
+                tenant_hash: request.tenant_hash,
+                node_hash: *node_hash,
+                start_time_ms: request.start_time_ms,
+                end_time_ms: request.end_time_ms,
+                limit: Some(request.max_events.max(1)),
+                current_valid_only: false,
+                as_of_ms: 0,
+                kinds: Vec::new(),
+                statuses: Vec::new(),
+                min_confidence: request.min_confidence,
+                min_importance: request.min_importance,
+            },
+        });
+        if let CommandResponse::ContextEvents { events, .. } = events_response.response {
+            for event in events {
+                let passes_prefilter = context_query_matches(&request.query, &event.text);
+                event_debugs.push(ContextScannedEventDebug {
+                    node_hash: *node_hash,
+                    event: event.clone(),
+                    passes_prefilter,
+                });
+                if !passes_prefilter {
+                    continue;
+                }
+                event_count += 1;
+                if include_l2 {
+                    let source_ref = if event.source_ref.is_empty() {
+                        node_source_ref.clone()
+                    } else if let Some(scope) = node_scope_by_hash.get(node_hash) {
+                        context_scope_qualified_source_ref(&event.source_ref, scope)
+                    } else {
+                        event.source_ref.clone()
+                    };
+                    blocks.push(ContextBlock {
+                        uri: context_event_uri(
+                            request.tenant_hash,
+                            *node_hash,
+                            event.event_time_ms,
+                        ),
+                        tier: ContextTier::L2,
+                        node_hash: *node_hash,
+                        event_time_ms: event.event_time_ms,
+                        text: event.text,
+                        estimated_tokens: estimate_tokens(&source_ref),
+                        source_ref,
+                    });
+                }
+            }
+        }
+    }
+
+    let elapsed_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+    ContextConcurrentScanResult {
+        priority: lane.priority,
+        report: ContextConcurrentScanLaneReport {
+            lane: lane.name.to_string(),
+            node_count: selected_nodes.len(),
+            completed,
+            timed_out: !completed,
+            elapsed_ms,
+            deadline_ms: lane.deadline_ms,
+            selected_nodes,
+            source_class_counts,
+        },
+        blocks,
+        event_debugs,
+        node_count,
+        event_count,
+    }
+}
+
+fn context_execute_concurrent_scan_lanes(
+    engine: &TemporalEngine,
+    request: &ContextRetrieveRequest,
+    lanes: Vec<ContextConcurrentScanLane>,
+    node_scope_by_hash: &BTreeMap<u64, ContextScopeDescriptor>,
+    node_source_class_by_hash: &BTreeMap<u64, String>,
+    tiers: &[ContextTier],
+) -> Vec<ContextConcurrentScanResult> {
+    let include_l0 = tiers.contains(&ContextTier::L0);
+    let include_l1 = tiers.contains(&ContextTier::L1);
+    let include_l2 = tiers.contains(&ContextTier::L2);
+    let (tx, rx) = mpsc::channel();
+    let lane_count = lanes.len();
+
+    for lane in lanes {
+        let tx = tx.clone();
+        let engine = engine.clone();
+        let request = request.clone();
+        let node_scope_by_hash = node_scope_by_hash.clone();
+        let node_source_class_by_hash = node_source_class_by_hash.clone();
+        thread::spawn(move || {
+            let result = context_scan_lane_worker(
+                engine,
+                request,
+                lane,
+                node_scope_by_hash,
+                node_source_class_by_hash,
+                include_l0,
+                include_l1,
+                include_l2,
+            );
+            let _ = tx.send(result);
+        });
+    }
+    drop(tx);
+
+    let mut results = Vec::with_capacity(lane_count);
+    for result in rx.iter().take(lane_count) {
+        results.push(result);
+    }
+    results.sort_by_key(|result| result.priority);
+    results
 }
 
 fn query_requests_source_class(query: &str, class: &str) -> bool {
@@ -4383,9 +4694,6 @@ pub fn retrieve_context(
     } else {
         request.tiers.clone()
     };
-    let include_l0 = tiers.contains(&ContextTier::L0);
-    let include_l1 = tiers.contains(&ContextTier::L1);
-    let include_l2 = tiers.contains(&ContextTier::L2);
     let mut node_hashes = if request.node_hashes.is_empty() {
         return ContextRetrieveReport {
             status: Status::error(
@@ -4923,99 +5231,55 @@ pub fn retrieve_context(
         })
         .collect();
 
-    for node_hash in event_node_hashes {
-        let mut node_source_ref = String::new();
-        let node_response = engine.execute(ExecuteRequest {
-            shard_id: request.shard_id,
-            command: Command::ContextGetNode {
-                tenant_hash: request.tenant_hash,
-                node_hash,
-            },
-        });
-        if let CommandResponse::ContextNode {
-            node: Some(node), ..
-        } = node_response.response
-        {
-            node_count += 1;
-            let scoped_node_source_ref = node_scope_by_hash
-                .get(&node_hash)
-                .map(|scope| context_scope_qualified_source_ref(&node.raw_metadata_ref, scope))
-                .unwrap_or_else(|| node.raw_metadata_ref.clone());
-            node_source_ref = scoped_node_source_ref.clone();
-            if include_l0 {
-                blocks.push(ContextBlock {
-                    uri: format!("{}/l0", context_node_uri(request.tenant_hash, node_hash)),
-                    tier: ContextTier::L0,
-                    node_hash,
-                    event_time_ms: node.last_event_time_ms,
-                    text: node.l0,
-                    estimated_tokens: estimate_tokens(&node.canonical_name),
-                    source_ref: scoped_node_source_ref.clone(),
-                });
-            }
-            if include_l1 {
-                blocks.push(ContextBlock {
-                    uri: format!("{}/l1", context_node_uri(request.tenant_hash, node_hash)),
-                    tier: ContextTier::L1,
-                    node_hash,
-                    event_time_ms: node.last_event_time_ms,
-                    text: node.l1_ref,
-                    estimated_tokens: estimate_tokens(&node.canonical_name),
-                    source_ref: scoped_node_source_ref,
-                });
-            }
-        }
+    let concurrent_scan_lanes = context_concurrent_scan_lanes(
+        &event_node_hashes,
+        &node_scope_by_hash,
+        &node_source_class_by_hash,
+        &request,
+    );
+    let concurrent_scan_deadline_ms = concurrent_scan_lanes
+        .iter()
+        .map(|lane| lane.deadline_ms)
+        .max()
+        .unwrap_or_default();
+    let concurrent_scan_results = context_execute_concurrent_scan_lanes(
+        engine,
+        &request,
+        concurrent_scan_lanes,
+        &node_scope_by_hash,
+        &node_source_class_by_hash,
+        tiers.as_slice(),
+    );
+    fanout_plan.concurrent_scan_enabled = true;
+    fanout_plan.concurrent_scan_deadline_ms = concurrent_scan_deadline_ms;
+    fanout_plan.concurrent_scan_lane_count = concurrent_scan_results.len();
+    fanout_plan.concurrent_scan_completed_lanes = concurrent_scan_results
+        .iter()
+        .filter(|result| result.report.completed)
+        .count();
+    fanout_plan.current_agent_lane_returned_first = concurrent_scan_results
+        .iter()
+        .find(|result| result.report.node_count > 0)
+        .map(|result| result.report.lane == "current-agent")
+        .unwrap_or(false);
+    fanout_plan.concurrent_scan_lanes = concurrent_scan_results
+        .iter()
+        .map(|result| result.report.clone())
+        .collect();
 
-        let events_response = engine.execute(ExecuteRequest {
-            shard_id: request.shard_id,
-            command: Command::ContextQueryEvents {
-                tenant_hash: request.tenant_hash,
-                node_hash,
-                start_time_ms: request.start_time_ms,
-                end_time_ms: request.end_time_ms,
-                limit: Some(request.max_events.max(1)),
-                current_valid_only: false,
-                as_of_ms: 0,
-                kinds: Vec::new(),
-                statuses: Vec::new(),
-                min_confidence: request.min_confidence,
-                min_importance: request.min_importance,
-            },
-        });
-        if let CommandResponse::ContextEvents { events, .. } = events_response.response {
-            for event in events {
-                let passes_prefilter = context_query_matches(&request.query, &event.text);
-                context_query_debug_record_candidate(
-                    &mut query_understanding_debug,
-                    request.tenant_hash,
-                    node_hash,
-                    &event,
-                    passes_prefilter,
-                );
-                if !passes_prefilter {
-                    continue;
-                }
-                event_count += 1;
-                if include_l2 {
-                    let source_ref = if event.source_ref.is_empty() {
-                        node_source_ref.clone()
-                    } else if let Some(scope) = node_scope_by_hash.get(&node_hash) {
-                        context_scope_qualified_source_ref(&event.source_ref, scope)
-                    } else {
-                        event.source_ref.clone()
-                    };
-                    blocks.push(ContextBlock {
-                        uri: context_event_uri(request.tenant_hash, node_hash, event.event_time_ms),
-                        tier: ContextTier::L2,
-                        node_hash,
-                        event_time_ms: event.event_time_ms,
-                        text: event.text,
-                        estimated_tokens: estimate_tokens(&source_ref),
-                        source_ref,
-                    });
-                }
-            }
+    for result in concurrent_scan_results {
+        node_count += result.node_count;
+        event_count += result.event_count;
+        for event_debug in result.event_debugs {
+            context_query_debug_record_candidate(
+                &mut query_understanding_debug,
+                request.tenant_hash,
+                event_debug.node_hash,
+                &event_debug.event,
+                event_debug.passes_prefilter,
+            );
         }
+        blocks.extend(result.blocks);
     }
 
     let selected_scope_rank = fanout_plan

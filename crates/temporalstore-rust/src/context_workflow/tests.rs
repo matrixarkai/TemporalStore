@@ -1059,6 +1059,28 @@ fn context_multi_agent_scan_derives_shared_scopes_from_owner_and_agent() {
     assert_eq!(report.fanout_plan.selected_workspace_shared_nodes, 1);
     assert_eq!(report.fanout_plan.selected_user_shared_nodes, 1);
     assert_eq!(report.fanout_plan.selected_global_shared_nodes, 1);
+    assert!(report.fanout_plan.concurrent_scan_enabled);
+    assert_eq!(report.fanout_plan.concurrent_scan_completed_lanes, 4);
+    assert!(report.fanout_plan.current_agent_lane_returned_first);
+    for expected_lane in [
+        "current-agent",
+        "user-shared",
+        "workspace-global",
+        "resource-skill",
+    ] {
+        assert!(
+            report
+                .fanout_plan
+                .concurrent_scan_lanes
+                .iter()
+                .any(|lane| lane.lane == expected_lane
+                    && lane.node_count > 0
+                    && lane.completed
+                    && !lane.timed_out),
+            "missing concurrent lane {expected_lane}: {:?}",
+            report.fanout_plan.concurrent_scan_lanes
+        );
+    }
     assert_eq!(report.fanout_plan.selected_peer_agent_nodes, 0);
     assert_eq!(report.fanout_plan.skipped_peer_agent_nodes, 1);
     assert!(report.fanout_plan.peer_agent_limit_applied);
