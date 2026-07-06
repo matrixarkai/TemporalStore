@@ -35,6 +35,17 @@
   "fanout_summary_pruned_peer_agent_nodes": 4,
   "fanout_event_expanded_nodes": 16,
   "fanout_selected_colocation_group_count": 4,
+  "fanout_selected_colocation_groups": [
+    "global",
+    "user:user",
+    "workspace:context"
+  ],
+  "fanout_selected_colocation_scope_keys": [
+    "agent:codex",
+    "global",
+    "user:user",
+    "workspace:context"
+  ],
   "fanout_avoided_namespace_replication_nodes": 27,
   "fanout_reduction_percent": 62,
   "fanout_namespace_replication_avoided": true,
@@ -80,7 +91,7 @@
   "summary_embedding_selected_count": 39,
   "verbose_filter_group_count": 1,
   "selected_ref_count": 45,
-  "ingest_ms": 9315,
-  "retrieve_ms": 2582,
-  "secondary_index_validation_ms": 1259
+  "ingest_ms": 9515,
+  "retrieve_ms": 4397,
+  "secondary_index_validation_ms": 2548
 }

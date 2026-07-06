@@ -736,6 +736,16 @@ fn context_multi_agent_scan_boosts_current_agent_and_colocates_shared_scopes() {
     assert_eq!(report.fanout_plan.avoided_namespace_replication_nodes, 3);
     assert!(report.fanout_plan.fanout_reduction_percent >= 60);
     assert_eq!(report.fanout_plan.selected_colocation_group_count, 2);
+    assert!(report
+        .fanout_plan
+        .selected_colocation_scope_keys
+        .iter()
+        .any(|key| key == "agent:codex"));
+    assert!(report
+        .fanout_plan
+        .selected_colocation_scope_keys
+        .iter()
+        .any(|key| key == "user:alice" || key == "workspace:payments" || key == "global"));
     assert_eq!(report.fanout_plan.current_agent_id, "codex");
     assert_eq!(report.fanout_plan.current_agent_boosted_nodes, 1);
     assert_eq!(report.fanout_plan.user_shared_nodes, 1);
@@ -861,6 +871,17 @@ fn context_multi_agent_layer_quota_keeps_shared_resources_when_agent_has_many_ma
     assert_eq!(report.fanout_plan.avoided_namespace_replication_nodes, 4);
     assert!(report.fanout_plan.fanout_reduction_percent >= 50);
     assert_eq!(report.fanout_plan.selected_colocation_group_count, 3);
+    for selected_scope in ["agent:codex", "user:alice", "global"] {
+        assert!(
+            report
+                .fanout_plan
+                .selected_colocation_scope_keys
+                .iter()
+                .any(|key| key == selected_scope),
+            "missing selected scope {selected_scope}: {:?}",
+            report.fanout_plan.selected_colocation_scope_keys
+        );
+    }
     assert!(report.fanout_plan.layer_quota_applied);
     assert_eq!(report.fanout_plan.shared_layer_quota_nodes, 3);
     assert_eq!(report.fanout_plan.selected_current_agent_nodes, 1);
@@ -978,6 +999,17 @@ fn context_multi_agent_scan_derives_shared_scopes_from_owner_and_agent() {
     assert_eq!(report.fanout_plan.avoided_namespace_replication_nodes, 1);
     assert_eq!(report.fanout_plan.fanout_reduction_percent, 20);
     assert_eq!(report.fanout_plan.selected_colocation_group_count, 4);
+    for selected_scope in ["agent:codex", "workspace:payments", "user:user", "global"] {
+        assert!(
+            report
+                .fanout_plan
+                .selected_colocation_scope_keys
+                .iter()
+                .any(|key| key == selected_scope),
+            "missing selected scope {selected_scope}: {:?}",
+            report.fanout_plan.selected_colocation_scope_keys
+        );
+    }
     assert!(report.fanout_plan.layer_quota_applied);
     assert_eq!(report.fanout_plan.shared_layer_quota_nodes, 4);
     assert_eq!(report.fanout_plan.selected_current_agent_nodes, 1);

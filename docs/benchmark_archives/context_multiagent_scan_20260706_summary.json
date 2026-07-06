@@ -5,6 +5,17 @@
   "summary_pruned_peer_agent_nodes": 2,
   "event_expanded_nodes": 4,
   "selected_colocation_group_count": 4,
+  "selected_colocation_groups": [
+    "global",
+    "user:user",
+    "workspace:context"
+  ],
+  "selected_colocation_scope_keys": [
+    "agent:codex",
+    "global",
+    "user:user",
+    "workspace:context"
+  ],
   "avoided_namespace_replication_nodes": 9,
   "fanout_reduction_percent": 69,
   "namespace_replication_avoided": true,

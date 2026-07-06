@@ -12,6 +12,7 @@ from typing import Any
 
 REQUIRED_LAYERS = {"agent", "user", "workspace", "global"}
 REQUIRED_COLOCATION_GROUPS = {"user:user", "workspace:context", "global"}
+REQUIRED_SELECTED_SCOPE_KEYS = {"agent:codex", "user:user", "workspace:context", "global"}
 
 
 def fail(message: str) -> int:
@@ -87,6 +88,8 @@ def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: i
         )
     require_int_at_least(report, "fanout_reduction_percent", 40)
     require_int_at_least(report, "selected_colocation_group_count", 4)
+    require_string_set(report, "selected_colocation_scope_keys", REQUIRED_SELECTED_SCOPE_KEYS)
+    require_string_set(report, "selected_colocation_groups", REQUIRED_COLOCATION_GROUPS)
     require_int_at_least(report, "shared_layer_quota_nodes", 4)
     require_int_at_least(report, "selected_current_agent_nodes", 1)
     require_int_at_least(report, "peer_agent_nodes", 1)
