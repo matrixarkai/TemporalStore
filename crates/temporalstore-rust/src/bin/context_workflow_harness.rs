@@ -225,6 +225,12 @@ struct ResourceSkillConversationScaleSummary {
     summary_embedding_selected_count: usize,
     verbose_filter_group_count: usize,
     selected_ref_count: usize,
+    fanout_selected_ref_scope_keys: Vec<String>,
+    fanout_selected_ref_scope_order: Vec<String>,
+    fanout_selected_ref_current_agent_first: bool,
+    fanout_selected_peer_agent_ref_count: usize,
+    fanout_injection_scope_order: Vec<String>,
+    fanout_injection_current_agent_first: bool,
     ingest_ms: u128,
     retrieve_ms: u128,
     secondary_index_validation_ms: u128,
@@ -271,6 +277,12 @@ struct MultiAgentContextScanHarnessSummary {
     retrieved_global_shared_block_count: usize,
     retrieved_event_count: usize,
     selected_ref_count: usize,
+    selected_ref_scope_keys: Vec<String>,
+    selected_ref_scope_order: Vec<String>,
+    selected_ref_current_agent_first: bool,
+    selected_peer_agent_ref_count: usize,
+    injection_scope_order: Vec<String>,
+    injection_current_agent_first: bool,
     current_agent_id: String,
 }
 
@@ -1172,6 +1184,29 @@ fn run_resource_skill_conversation_scale(
         locality_scope_keys(&combined_retrieve.fanout_plan.locality_keys);
     let fanout_peer_locality_key_count =
         peer_agent_locality_key_count(&combined_retrieve.fanout_plan.locality_keys);
+    let fanout_selected_ref_scope_order = collect_source_ref_scope_order(
+        combined_retrieve
+            .query_understanding_debug
+            .selected_refs
+            .iter()
+            .map(|selected| selected.source_ref.as_str()),
+    );
+    let fanout_selected_ref_scope_keys = sorted_unique_strings(&fanout_selected_ref_scope_order);
+    let fanout_selected_peer_agent_ref_count =
+        peer_agent_scope_count(&fanout_selected_ref_scope_order);
+    let fanout_selected_ref_current_agent_first = fanout_selected_ref_scope_order
+        .first()
+        .is_some_and(|scope| scope == "agent:codex");
+    let fanout_injection_scope_order = collect_source_ref_scope_order(
+        combined_retrieve
+            .query_understanding_debug
+            .injection_ordering
+            .iter()
+            .map(|selected| selected.source_ref.as_str()),
+    );
+    let fanout_injection_current_agent_first = fanout_injection_scope_order
+        .first()
+        .is_some_and(|scope| scope == "agent:codex");
     let multi_agent_scan_ready = combined_retrieve.fanout_plan.fanout_reduced
         && combined_retrieve.fanout_plan.layer_quota_applied
         && combined_retrieve.fanout_plan.selected_current_agent_nodes > 0
@@ -1210,6 +1245,21 @@ fn run_resource_skill_conversation_scale(
             .iter()
             .any(|scope| scope == "workspace:context")
         && fanout_locality_scope_keys
+            .iter()
+            .any(|scope| scope == "global")
+        && fanout_selected_ref_current_agent_first
+        && fanout_injection_current_agent_first
+        && fanout_selected_peer_agent_ref_count == 0
+        && fanout_selected_ref_scope_keys
+            .iter()
+            .any(|scope| scope == "agent:codex")
+        && fanout_selected_ref_scope_keys
+            .iter()
+            .any(|scope| scope == "user:user")
+        && fanout_selected_ref_scope_keys
+            .iter()
+            .any(|scope| scope == "workspace:context")
+        && fanout_selected_ref_scope_keys
             .iter()
             .any(|scope| scope == "global")
         && combined_retrieve
@@ -1372,6 +1422,12 @@ fn run_resource_skill_conversation_scale(
             .query_understanding_debug
             .selected_refs
             .len(),
+        fanout_selected_ref_scope_keys,
+        fanout_selected_ref_scope_order,
+        fanout_selected_ref_current_agent_first,
+        fanout_selected_peer_agent_ref_count,
+        fanout_injection_scope_order,
+        fanout_injection_current_agent_first,
         ingest_ms,
         retrieve_ms,
         secondary_index_validation_ms,
@@ -1482,6 +1538,28 @@ fn run_multi_agent_context_scan_harness(
     assert!(report.status.ok, "{:?}", report.status);
     let locality_scope_keys = locality_scope_keys(&report.fanout_plan.locality_keys);
     let peer_locality_key_count = peer_agent_locality_key_count(&report.fanout_plan.locality_keys);
+    let selected_ref_scope_order = collect_source_ref_scope_order(
+        report
+            .query_understanding_debug
+            .selected_refs
+            .iter()
+            .map(|selected| selected.source_ref.as_str()),
+    );
+    let selected_ref_scope_keys = sorted_unique_strings(&selected_ref_scope_order);
+    let selected_peer_agent_ref_count = peer_agent_scope_count(&selected_ref_scope_order);
+    let selected_ref_current_agent_first = selected_ref_scope_order
+        .first()
+        .is_some_and(|scope| scope == "agent:codex");
+    let injection_scope_order = collect_source_ref_scope_order(
+        report
+            .query_understanding_debug
+            .injection_ordering
+            .iter()
+            .map(|selected| selected.source_ref.as_str()),
+    );
+    let injection_current_agent_first = injection_scope_order
+        .first()
+        .is_some_and(|scope| scope == "agent:codex");
     let ready = report.fanout_plan.fanout_reduced
         && report.fanout_plan.layer_quota_applied
         && report.fanout_plan.selected_current_agent_nodes > 0
@@ -1514,6 +1592,21 @@ fn run_multi_agent_context_scan_harness(
             .iter()
             .any(|scope| scope == "workspace:context")
         && locality_scope_keys.iter().any(|scope| scope == "global")
+        && selected_ref_current_agent_first
+        && injection_current_agent_first
+        && selected_peer_agent_ref_count == 0
+        && selected_ref_scope_keys
+            .iter()
+            .any(|scope| scope == "agent:codex")
+        && selected_ref_scope_keys
+            .iter()
+            .any(|scope| scope == "user:user")
+        && selected_ref_scope_keys
+            .iter()
+            .any(|scope| scope == "workspace:context")
+        && selected_ref_scope_keys
+            .iter()
+            .any(|scope| scope == "global")
         && count_blocks_with_source_scope(&report.blocks, "agent:codex") > 0
         && count_blocks_with_source_scope(&report.blocks, "user:user") > 0
         && count_blocks_with_source_scope(&report.blocks, "workspace:context") > 0
@@ -1587,6 +1680,12 @@ fn run_multi_agent_context_scan_harness(
         ),
         retrieved_event_count: report.event_count,
         selected_ref_count: report.query_understanding_debug.selected_refs.len(),
+        selected_ref_scope_keys,
+        selected_ref_scope_order,
+        selected_ref_current_agent_first,
+        selected_peer_agent_ref_count,
+        injection_scope_order,
+        injection_current_agent_first,
         current_agent_id: report.fanout_plan.current_agent_id,
     }
 }
@@ -1623,6 +1722,47 @@ fn peer_agent_locality_key_count(locality_keys: &[String]) -> usize {
             })
         })
         .filter(|scope| scope.starts_with("agent:") && scope != "agent:codex")
+        .count()
+}
+
+fn collect_source_ref_scope_order<'a>(
+    source_refs: impl IntoIterator<Item = &'a str>,
+) -> Vec<String> {
+    source_refs
+        .into_iter()
+        .filter_map(source_ref_scope_key)
+        .collect()
+}
+
+fn source_ref_scope_key(source_ref: &str) -> Option<String> {
+    let lower = source_ref.to_ascii_lowercase();
+    for scope in [
+        "agent:codex",
+        "user:user",
+        "workspace:context",
+        "global",
+        "agent:claude",
+    ] {
+        if lower.contains(scope) {
+            return Some(scope.to_string());
+        }
+    }
+    None
+}
+
+fn sorted_unique_strings(values: &[String]) -> Vec<String> {
+    values
+        .iter()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn peer_agent_scope_count(scopes: &[String]) -> usize {
+    scopes
+        .iter()
+        .filter(|scope| scope.starts_with("agent:") && scope.as_str() != "agent:codex")
         .count()
 }
 

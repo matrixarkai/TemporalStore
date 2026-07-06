@@ -82,5 +82,42 @@
   "retrieved_global_shared_block_count": 3,
   "retrieved_event_count": 4,
   "selected_ref_count": 12,
+  "selected_ref_scope_keys": [
+    "agent:codex",
+    "global",
+    "user:user",
+    "workspace:context"
+  ],
+  "selected_ref_scope_order": [
+    "agent:codex",
+    "agent:codex",
+    "agent:codex",
+    "workspace:context",
+    "workspace:context",
+    "workspace:context",
+    "user:user",
+    "user:user",
+    "user:user",
+    "global",
+    "global",
+    "global"
+  ],
+  "selected_ref_current_agent_first": true,
+  "selected_peer_agent_ref_count": 0,
+  "injection_scope_order": [
+    "agent:codex",
+    "agent:codex",
+    "agent:codex",
+    "workspace:context",
+    "workspace:context",
+    "workspace:context",
+    "user:user",
+    "user:user",
+    "user:user",
+    "global",
+    "global",
+    "global"
+  ],
+  "injection_current_agent_first": true,
   "current_agent_id": "codex"
 }

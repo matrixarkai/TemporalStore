@@ -4089,6 +4089,19 @@ fn push_unique_context_scope(
     }
 }
 
+fn context_block_scope_rank(
+    block: &ContextBlock,
+    selected_scope_rank: &BTreeMap<String, usize>,
+    request: &ContextRetrieveRequest,
+) -> usize {
+    let scope = context_scope_descriptor_from_source_ref(&block.source_ref, request);
+    let scope_key = context_scope_reservation_key(&scope).to_ascii_lowercase();
+    selected_scope_rank
+        .get(&scope_key)
+        .copied()
+        .unwrap_or(usize::MAX)
+}
+
 fn context_scope_descriptor_from_shared_graph(
     scope: &ContextScopeDescriptor,
 ) -> Option<ContextScopeDescriptor> {
@@ -4744,8 +4757,20 @@ pub fn retrieve_context(
         }
     }
 
+    let selected_scope_rank = fanout_plan
+        .selected_colocation_scope_order
+        .iter()
+        .enumerate()
+        .fold(
+            BTreeMap::<String, usize>::new(),
+            |mut ranks, (rank, scope)| {
+                ranks.entry(scope.to_ascii_lowercase()).or_insert(rank);
+                ranks
+            },
+        );
     blocks.sort_by_key(|block| {
         (
+            context_block_scope_rank(block, &selected_scope_rank, &request),
             Reverse(context_relevance_score(&request.query, &block.text)),
             tier_rank(block.tier),
             Reverse(block.event_time_ms),
