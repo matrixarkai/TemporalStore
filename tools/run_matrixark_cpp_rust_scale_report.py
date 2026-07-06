@@ -1856,13 +1856,15 @@ def make_adapter(backend: str, args: argparse.Namespace, storage_prefix: str):
     raise ValueError(f"unknown backend: {backend}")
 
 
-def pin_scale_adapter_write_policy(adapter: Any) -> None:
+def pin_scale_adapter_write_policy(adapter: Any, *, queue_capacity: int | None = None) -> None:
     """Pin fresh-prefix scale write settings on adapters with lazy env init."""
 
     for name, value in {
         "_direct_write_queue_enabled": True,
         "_direct_write_queue_mode": "memory",
-        "_direct_write_queue_drain_max_batches": 128,
+        "_direct_write_queue_max_records": max(1, int(queue_capacity or 10000)),
+        "_direct_write_queue_put_timeout_s": 10.0,
+        "_direct_write_queue_drain_max_batches": 256,
         "_direct_write_queue_allow_sync_context": True,
         "_direct_write_queue_autostart": False,
         "_direct_raw_ingestion_queue_enabled": True,
@@ -1870,6 +1872,13 @@ def pin_scale_adapter_write_policy(adapter: Any) -> None:
     }.items():
         try:
             setattr(adapter, name, value)
+        except Exception:
+            pass
+    if not hasattr(adapter, "_direct_write_queue"):
+        try:
+            import queue as _queue
+
+            adapter._direct_write_queue = _queue.Queue(maxsize=max(1, int(queue_capacity or 10000)))
         except Exception:
             pass
 
@@ -2201,11 +2210,23 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
     prefix = f"{args.storage_prefix}:{run_id}:{backend}"
     effective_storage_tuning = effective_storage_tuning_from_env()
     previous_queue_env: dict[str, str | None] = {}
+    scale_queue_capacity: int | None = None
     if backend in {"cpp", "rust"}:
+        # Scale runs keep autostart off so ingestion measures native coalesced
+        # append/flush behavior instead of a background thread race. Size the
+        # bounded in-memory queue from the corpus so 100K+ runs fail on backend
+        # correctness/perf, not on the runner queue filling before final flush.
+        scale_queue_capacity = max(
+            10000,
+            int(getattr(args, "events", 0) or 0) * 4,
+            int(getattr(args, "raw_ops", 0) or 0) * 2,
+        )
         for key, value in {
             "MATRIXARK_DIRECT_WRITE_QUEUE": "1",
             "MATRIXARK_DIRECT_WRITE_QUEUE_MODE": "memory",
-            "MATRIXARK_DIRECT_WRITE_QUEUE_DRAIN_MAX_BATCHES": "128",
+            "MATRIXARK_DIRECT_WRITE_QUEUE_MAX_RECORDS": str(scale_queue_capacity),
+            "MATRIXARK_DIRECT_WRITE_QUEUE_PUT_TIMEOUT_MS": "10000",
+            "MATRIXARK_DIRECT_WRITE_QUEUE_DRAIN_MAX_BATCHES": "256",
             "MATRIXARK_DIRECT_WRITE_QUEUE_ALLOW_SYNC_CONTEXT": "1",
             "MATRIXARK_DIRECT_WRITE_QUEUE_AUTOSTART": "0",
             "MATRIXARK_DIRECT_RAW_INGESTION_QUEUE": "1",
@@ -2222,7 +2243,7 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
             os.environ[key] = value
     adapter = make_adapter(backend, args, prefix)
     if backend in {"cpp", "rust"}:
-        pin_scale_adapter_write_policy(adapter)
+        pin_scale_adapter_write_policy(adapter, queue_capacity=scale_queue_capacity)
     for key, old_value in previous_queue_env.items():
         if old_value is None:
             os.environ.pop(key, None)
