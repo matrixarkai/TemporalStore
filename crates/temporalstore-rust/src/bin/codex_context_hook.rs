@@ -145,6 +145,8 @@ fn main() {
             min_confidence: 0.0,
             min_importance: 0.0,
             tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
+            max_summary_nodes: 16,
+            max_event_nodes: 8,
             provider: ContextModelProviderConfig::default(),
         };
         let inject = inject_context(
