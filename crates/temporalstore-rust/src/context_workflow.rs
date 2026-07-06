@@ -1065,6 +1065,14 @@ pub struct ContextFanoutPlanReport {
     pub skipped_node_hashes: Vec<u64>,
     pub locality_keys: Vec<String>,
     #[serde(default)]
+    pub selected_colocation_group_count: usize,
+    #[serde(default)]
+    pub avoided_namespace_replication_nodes: usize,
+    #[serde(default)]
+    pub fanout_reduction_percent: u32,
+    #[serde(default)]
+    pub namespace_replication_avoided: bool,
+    #[serde(default)]
     pub scan_layers: Vec<String>,
     #[serde(default)]
     pub colocation_groups: Vec<String>,
@@ -4479,6 +4487,17 @@ pub fn retrieve_context(
             && fanout_plan.skipped_peer_agent_nodes > 0
             && fanout_plan.selected_peer_agent_nodes >= request.max_peer_agent_nodes);
     fanout_plan.skipped_node_count = skipped_node_hashes.len();
+    fanout_plan.avoided_namespace_replication_nodes = fanout_plan.skipped_node_count;
+    fanout_plan.fanout_reduction_percent = if fanout_plan.namespace_node_candidates == 0 {
+        0
+    } else {
+        ((fanout_plan
+            .avoided_namespace_replication_nodes
+            .saturating_mul(100))
+            / fanout_plan.namespace_node_candidates) as u32
+    };
+    fanout_plan.namespace_replication_avoided =
+        fanout_plan.avoided_namespace_replication_nodes > 0 && fanout_plan.fanout_reduced;
     fanout_plan.summary_lookup_batches = usize::from(!summary_scores.is_empty());
     fanout_plan.selected_node_hashes = event_node_hashes.clone();
     fanout_plan.skipped_node_hashes = skipped_node_hashes;
@@ -4495,8 +4514,16 @@ pub fn retrieve_context(
             )
         })
         .collect();
+    fanout_plan.selected_colocation_group_count = event_node_hashes
+        .iter()
+        .filter_map(|node_hash| node_scope_by_hash.get(node_hash))
+        .map(context_scope_reservation_key)
+        .collect::<BTreeSet<_>>()
+        .len();
     fanout_plan.fanout_reduced =
         fanout_plan.event_expanded_nodes < fanout_plan.namespace_node_candidates;
+    fanout_plan.namespace_replication_avoided =
+        fanout_plan.avoided_namespace_replication_nodes > 0 && fanout_plan.fanout_reduced;
     query_understanding_debug.tree_traversal_summary.enabled = true;
     query_understanding_debug
         .tree_traversal_summary
