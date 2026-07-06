@@ -202,6 +202,9 @@ struct ResourceSkillConversationScaleSummary {
     fanout_selected_colocation_group_count: usize,
     fanout_selected_colocation_scope_count: usize,
     fanout_selected_colocation_groups: Vec<String>,
+    fanout_selected_colocation_group_counts: BTreeMap<String, usize>,
+    fanout_max_selected_colocation_group_nodes: usize,
+    fanout_colocation_group_fanout_reduced: bool,
     fanout_selected_colocation_scope_keys: Vec<String>,
     fanout_selected_colocation_scope_order: Vec<String>,
     fanout_selected_colocation_scope_distribution: BTreeMap<String, usize>,
@@ -234,6 +237,7 @@ struct ResourceSkillConversationScaleSummary {
     fanout_layer_quota_applied: bool,
     fanout_scan_layers: Vec<String>,
     fanout_colocation_groups: Vec<String>,
+    fanout_colocation_group_candidate_counts: BTreeMap<String, usize>,
     fanout_colocation_scope_keys: Vec<String>,
     fanout_required_scan_scope_keys: Vec<String>,
     fanout_scan_policy_current_agent_scope_key: String,
@@ -275,6 +279,9 @@ struct MultiAgentContextScanHarnessSummary {
     selected_colocation_group_count: usize,
     selected_colocation_scope_count: usize,
     selected_colocation_groups: Vec<String>,
+    selected_colocation_group_counts: BTreeMap<String, usize>,
+    max_selected_colocation_group_nodes: usize,
+    colocation_group_fanout_reduced: bool,
     selected_colocation_scope_keys: Vec<String>,
     selected_colocation_scope_order: Vec<String>,
     selected_colocation_scope_distribution: BTreeMap<String, usize>,
@@ -307,6 +314,7 @@ struct MultiAgentContextScanHarnessSummary {
     shared_scope_coverage_ready: bool,
     scan_layers: Vec<String>,
     colocation_groups: Vec<String>,
+    colocation_group_candidate_counts: BTreeMap<String, usize>,
     colocation_scope_keys: Vec<String>,
     required_scan_scope_keys: Vec<String>,
     scan_policy_current_agent_scope_key: String,
@@ -1547,6 +1555,16 @@ fn run_resource_skill_conversation_scale(
             .fanout_plan
             .selected_colocation_groups
             .clone(),
+        fanout_selected_colocation_group_counts: combined_retrieve
+            .fanout_plan
+            .selected_colocation_group_counts
+            .clone(),
+        fanout_max_selected_colocation_group_nodes: combined_retrieve
+            .fanout_plan
+            .max_selected_colocation_group_nodes,
+        fanout_colocation_group_fanout_reduced: combined_retrieve
+            .fanout_plan
+            .colocation_group_fanout_reduced,
         fanout_selected_colocation_scope_keys: combined_retrieve
             .fanout_plan
             .selected_colocation_scope_keys
@@ -1607,6 +1625,10 @@ fn run_resource_skill_conversation_scale(
         fanout_layer_quota_applied: combined_retrieve.fanout_plan.layer_quota_applied,
         fanout_scan_layers: combined_retrieve.fanout_plan.scan_layers.clone(),
         fanout_colocation_groups: combined_retrieve.fanout_plan.colocation_groups.clone(),
+        fanout_colocation_group_candidate_counts: combined_retrieve
+            .fanout_plan
+            .colocation_group_candidate_counts
+            .clone(),
         fanout_colocation_scope_keys: combined_retrieve.fanout_plan.colocation_scope_keys.clone(),
         fanout_required_scan_scope_keys: combined_retrieve
             .fanout_plan
@@ -1887,6 +1909,9 @@ fn run_multi_agent_context_scan_harness(
         selected_colocation_group_count: report.fanout_plan.selected_colocation_group_count,
         selected_colocation_scope_count: report.fanout_plan.selected_colocation_scope_count,
         selected_colocation_groups: report.fanout_plan.selected_colocation_groups,
+        selected_colocation_group_counts: report.fanout_plan.selected_colocation_group_counts,
+        max_selected_colocation_group_nodes: report.fanout_plan.max_selected_colocation_group_nodes,
+        colocation_group_fanout_reduced: report.fanout_plan.colocation_group_fanout_reduced,
         selected_colocation_scope_keys: report.fanout_plan.selected_colocation_scope_keys,
         selected_colocation_scope_order: report.fanout_plan.selected_colocation_scope_order,
         selected_colocation_scope_distribution,
@@ -1921,6 +1946,7 @@ fn run_multi_agent_context_scan_harness(
         shared_scope_coverage_ready: report.fanout_plan.shared_scope_coverage_ready,
         scan_layers: report.fanout_plan.scan_layers,
         colocation_groups: report.fanout_plan.colocation_groups,
+        colocation_group_candidate_counts: report.fanout_plan.colocation_group_candidate_counts,
         colocation_scope_keys: report.fanout_plan.colocation_scope_keys,
         required_scan_scope_keys: report.fanout_plan.required_scan_scope_keys,
         scan_policy_current_agent_scope_key,

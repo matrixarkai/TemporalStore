@@ -75,6 +75,20 @@ def require_distribution_count(report: dict[str, Any], field: str, key: str, exp
         raise ValueError(f"{field}[{key!r}] must be {expected}, got {observed!r}")
 
 
+def require_int_map(report: dict[str, Any], field: str) -> dict[str, int]:
+    value = report.get(field)
+    if not isinstance(value, dict):
+        raise ValueError(f"{field} must be an object")
+    bad_items = {
+        key: item
+        for key, item in value.items()
+        if not isinstance(key, str) or not isinstance(item, int)
+    }
+    if bad_items:
+        raise ValueError(f"{field} must map strings to integers, got {bad_items!r}")
+    return value
+
+
 def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: int) -> None:
     require_bool(report, "ready")
     require_bool(report, "fanout_reduced")
@@ -106,6 +120,31 @@ def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: i
     require_int_equal(report, "selected_colocation_scope_count", 4)
     require_string_set(report, "selected_colocation_scope_keys", REQUIRED_SELECTED_SCOPE_KEYS)
     require_string_set(report, "selected_colocation_groups", REQUIRED_COLOCATION_GROUPS)
+    candidate_groups = require_int_map(report, "colocation_group_candidate_counts")
+    selected_groups = require_int_map(report, "selected_colocation_group_counts")
+    if set(selected_groups) != REQUIRED_COLOCATION_GROUPS:
+        raise ValueError(
+            "selected_colocation_group_counts must contain exactly the selected shared groups, "
+            f"got {sorted(selected_groups)}"
+        )
+    for group in REQUIRED_COLOCATION_GROUPS:
+        if candidate_groups.get(group, 0) < selected_groups.get(group, 0):
+            raise ValueError(
+                f"selected colocation group {group} exceeds candidates: "
+                f"{selected_groups.get(group, 0)}>{candidate_groups.get(group, 0)}"
+            )
+    if sum(candidate_groups.values()) != candidates:
+        raise ValueError(
+            "colocation_group_candidate_counts must account for all namespace candidates, "
+            f"got {sum(candidate_groups.values())} vs {candidates}"
+        )
+    if sum(selected_groups.values()) != expanded:
+        raise ValueError(
+            "selected_colocation_group_counts must account for all expanded nodes, "
+            f"got {sum(selected_groups.values())} vs {expanded}"
+        )
+    require_int_at_least(report, "max_selected_colocation_group_nodes", 1)
+    require_bool(report, "colocation_group_fanout_reduced")
     require_int_at_least(report, "shared_layer_quota_nodes", 4)
     require_int_at_least(report, "candidate_current_agent_nodes", 1)
     require_int_at_least(report, "candidate_peer_agent_nodes", 1)

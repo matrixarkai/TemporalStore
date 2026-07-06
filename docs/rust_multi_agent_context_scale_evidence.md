@@ -81,6 +81,13 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
     "user:user",
     "workspace:context"
   ],
+  "fanout_selected_colocation_group_counts": {
+    "global": 1,
+    "user:user": 12,
+    "workspace:context": 3
+  },
+  "fanout_max_selected_colocation_group_nodes": 12,
+  "fanout_colocation_group_fanout_reduced": true,
   "fanout_selected_colocation_scope_keys": [
     "agent:codex",
     "global",
@@ -112,6 +119,11 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
   "fanout_candidate_shared_node_count": 16,
   "fanout_candidate_shared_scope_coverage_count": 3,
   "fanout_candidate_scope_pressure_ready": true,
+  "fanout_colocation_group_candidate_counts": {
+    "global": 1,
+    "user:user": 29,
+    "workspace:context": 14
+  },
   "fanout_selected_current_agent_nodes": 11,
   "fanout_peer_agent_nodes": 4,
   "fanout_selected_peer_agent_nodes": 0,
@@ -189,6 +201,7 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
 - The scan reduces fanout from namespace candidates to bounded expanded nodes.
 - Peer-agent capping now happens before summary embedding lookup: 4 peer-agent nodes are pruned from summary scoring in this scale run.
 - The scale scan avoids full namespace replication: 28 candidate nodes are left unexpanded, a 63% fanout reduction across 3 selected graph groups and 4 selected scope keys.
+- The graph-group pressure map is complete: `user:user` is reduced from 29 candidate nodes to 12 selected nodes and `workspace:context` is reduced from 14 to 3, while `global` remains covered.
 - Candidate pressure is scope-aware before selection: 24 current-agent nodes, 4 peer-agent nodes, and 16 shared nodes across user/workspace/global are classified before fanout pruning.
 - Shared-layer coverage is now enforced from the core retrieval report: all 3 required shared scopes are covered while the fill phase can select extra high-value workspace nodes.
 - Current-agent context is selected with agent-aware locality while user, workspace, and global shared resources remain visible.

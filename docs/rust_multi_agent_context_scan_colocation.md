@@ -37,6 +37,13 @@ Archived report: `docs/benchmark_archives/context_multiagent_scan_20260706_summa
     "user:user",
     "workspace:context"
   ],
+  "selected_colocation_group_counts": {
+    "global": 1,
+    "user:user": 2,
+    "workspace:context": 1
+  },
+  "max_selected_colocation_group_nodes": 2,
+  "colocation_group_fanout_reduced": true,
   "selected_colocation_scope_keys": [
     "agent:codex",
     "global",
@@ -67,6 +74,11 @@ Archived report: `docs/benchmark_archives/context_multiagent_scan_20260706_summa
   "candidate_shared_node_count": 3,
   "candidate_shared_scope_coverage_count": 3,
   "candidate_scope_pressure_ready": true,
+  "colocation_group_candidate_counts": {
+    "global": 1,
+    "user:user": 11,
+    "workspace:context": 1
+  },
   "fanout_reduced": true,
   "layer_quota_applied": true,
   "shared_layer_quota_nodes": 4,
@@ -156,6 +168,7 @@ Archived report: `docs/benchmark_archives/context_multiagent_scan_20260706_summa
 - Fanout is reduced from namespace candidates to bounded selected nodes.
 - Peer-agent capping now happens before summary embedding lookup: 2 peer-agent nodes are pruned from summary scoring in this focused scan.
 - The scan avoids full namespace replication: 9 candidate nodes are left unexpanded, a 69% fanout reduction across 3 selected graph groups and 4 selected scope keys.
+- The graph-group pressure map is complete: `user:user` is reduced from 11 candidate nodes to 2 selected nodes, while `global` and `workspace:context` remain covered.
 - Candidate pressure is scope-aware before selection: 8 current-agent nodes, 2 peer-agent nodes, and 3 shared nodes across user/workspace/global are classified before fanout pruning.
 - Shared-layer coverage is now reported by the core retrieval path: all 3 required shared scopes are selected, with 3 selected user/workspace/global shared nodes.
 - The selected nodes include current-agent, user-shared, workspace-shared, and global-shared layers.
