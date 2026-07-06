@@ -46,10 +46,21 @@ REQUIRED_STATIC_EXIT_CRITERIA_TOKENS = (
     "selected shared cases",
     "no static surface gate",
 )
+STORAGE_CACHE_ADAPTER_CONTRACT_CASES = {
+    "storage_slot_object_block_index_authority_shared",
+    "storage_gc_eviction_cold_reads_shared",
+    "storage_stream_segment_manifest_rebuild_shared",
+}
+STORAGE_CACHE_ADAPTER_CONTRACT_RUNNER = "tools/cpp_storage_unified_case_report_runner.cc"
+STORAGE_CACHE_ADAPTER_CONTRACT_VALIDATOR = "tools/validate_storage_unified_case_report_pair.py"
 
 
 def _as_list(value: Any) -> list[Any]:
-    return value if isinstance(value, list) else []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, (set, tuple)):
+        return list(value)
+    return []
 
 
 def _as_strings(value: Any) -> list[str]:
@@ -81,6 +92,9 @@ def _coverage_by_family(corpus: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 "expected_runner_commands": set(),
                 "comparison_commands": set(),
                 "exit_criteria_sets": set(),
+                "adapter_contract_runner": "",
+                "adapter_contract_validator": "",
+                "adapter_contract_case_names": set(),
             },
         )
         status = str(row.get("status") or "")
@@ -98,6 +112,12 @@ def _coverage_by_family(corpus: dict[str, Any]) -> dict[str, dict[str, Any]]:
         expected_runner = str(row.get("expected_runner_command") or row.get("runner_command") or "")
         if expected_runner:
             target["expected_runner_commands"].add(expected_runner)
+        if row.get("adapter_contract_runner"):
+            target["adapter_contract_runner"] = str(row.get("adapter_contract_runner"))
+        if row.get("adapter_contract_validator"):
+            target["adapter_contract_validator"] = str(row.get("adapter_contract_validator"))
+        for case_name in _as_strings(row.get("adapter_contract_case_names")):
+            target["adapter_contract_case_names"].add(case_name)
         if status in STATIC_STATUSES:
             comparison_command = str(row.get("comparison_command") or "")
             if comparison_command:
@@ -281,6 +301,37 @@ def main() -> int:
             for token in REQUIRED_STATIC_EXIT_CRITERIA_TOKENS:
                 if token not in joined_exit_criteria:
                     failures.append(f"{family} static gate exit_criteria missing `{token}`")
+            if family == "storage/cache":
+                runner = str(row.get("adapter_contract_runner") or "")
+                validator = str(row.get("adapter_contract_validator") or "")
+                cases = set(_as_strings(row.get("adapter_contract_case_names")))
+                source_runner = str(source.get("adapter_contract_runner") or "")
+                source_validator = str(source.get("adapter_contract_validator") or "")
+                source_cases = set(_as_strings(source.get("adapter_contract_case_names")))
+                if runner != STORAGE_CACHE_ADAPTER_CONTRACT_RUNNER:
+                    failures.append(
+                        f"{family} must declare adapter_contract_runner="
+                        f"{STORAGE_CACHE_ADAPTER_CONTRACT_RUNNER}"
+                    )
+                if validator != STORAGE_CACHE_ADAPTER_CONTRACT_VALIDATOR:
+                    failures.append(
+                        f"{family} must declare adapter_contract_validator="
+                        f"{STORAGE_CACHE_ADAPTER_CONTRACT_VALIDATOR}"
+                    )
+                if cases != STORAGE_CACHE_ADAPTER_CONTRACT_CASES:
+                    failures.append(
+                        f"{family} adapter_contract_case_names drift: "
+                        f"matrix={sorted(cases)} expected={sorted(STORAGE_CACHE_ADAPTER_CONTRACT_CASES)}"
+                    )
+                if source_runner != runner:
+                    failures.append(f"{family} adapter_contract_runner must match corpus coverage")
+                if source_validator != validator:
+                    failures.append(f"{family} adapter_contract_validator must match corpus coverage")
+                if source_cases != cases:
+                    failures.append(f"{family} adapter_contract_case_names must match corpus coverage")
+                for path in (ROOT / runner, ROOT / validator):
+                    if not path.exists():
+                        failures.append(f"{family} adapter contract path does not exist: {path}")
         if status in COMPLETION_STATUSES:
             if row.get("native_cpp_executable") is not True:
                 failures.append(f"{family} completion status requires native_cpp_executable=true")

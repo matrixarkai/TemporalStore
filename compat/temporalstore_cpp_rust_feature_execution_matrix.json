@@ -28,6 +28,13 @@
       "selected_case_count": 60,
       "blocker": "Native C++ storage/cache corpus runner is not wired yet; static C++ object/page/slot/storage harness paths remain required.",
       "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD=cpp-storage-corpus-runner python3 tools/run_temporalstore_unified_tests.py --family storage/cache --cpp --corpus {corpus} --require-cpp-native",
+      "adapter_contract_runner": "tools/cpp_storage_unified_case_report_runner.cc",
+      "adapter_contract_validator": "tools/validate_storage_unified_case_report_pair.py",
+      "adapter_contract_case_names": [
+        "storage_slot_object_block_index_authority_shared",
+        "storage_gc_eviction_cold_reads_shared",
+        "storage_stream_segment_manifest_rebuild_shared"
+      ],
       "suites": [
         "cpp_storage_parity",
         "storage_proxy_client_parity"
