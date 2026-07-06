@@ -82,6 +82,8 @@ def run_case(args: argparse.Namespace, *, events: int, retrieve_workers: int, ru
         str(args.ingest_workers),
         "--retrieve-queries",
         str(args.retrieve_queries),
+        "--backends",
+        *args.backends,
         "--max-context-tokens",
         str(args.max_context_tokens),
         "--request-timeout-ms",
@@ -208,6 +210,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--event-tiers", default="1000,10000,100000")
     parser.add_argument("--retrieve-worker-tiers", default="4,8,16,32")
+    parser.add_argument("--backends", default="cpp,rust", help="Comma-separated backend order passed to the scale report runner, e.g. cpp,rust or rust,cpp.")
     parser.add_argument("--artifact-dir", default="")
     parser.add_argument("--storage-prefix", default="matrixark:scale_matrix")
     parser.add_argument("--raw-ops", type=int, default=1000)
@@ -239,6 +242,12 @@ def main() -> int:
 
     event_tiers = parse_int_list(args.event_tiers)
     worker_tiers = parse_int_list(args.retrieve_worker_tiers)
+    args.backends = [part.strip() for part in args.backends.replace(";", ",").split(",") if part.strip()]
+    invalid_backends = [backend for backend in args.backends if backend not in {"cpp", "rust", "python_ref"}]
+    if invalid_backends:
+        raise SystemExit(f"unsupported backend(s): {invalid_backends}")
+    if not args.backends:
+        raise SystemExit("at least one backend is required")
     run_id = str(int(time.time() * 1000))
     artifact_root = Path(args.artifact_dir) if args.artifact_dir else ROOT / "docs" / "benchmarks" / f"cpp_rust_scale_matrix_{run_id}"
     artifact_root.mkdir(parents=True, exist_ok=True)
@@ -257,6 +266,7 @@ def main() -> int:
             "messages_per_ingest": args.messages_per_ingest,
             "ingest_workers": args.ingest_workers,
             "retrieve_queries": args.retrieve_queries,
+            "backends": args.backends,
             "max_context_tokens": args.max_context_tokens,
             "storage_options": {
                 "storage_family": args.storage_family,
