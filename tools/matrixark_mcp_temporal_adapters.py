@@ -2628,8 +2628,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
     def _try_native_context_pack(self, args: Json) -> Json | None:
         if os.environ.get("MATRIXARK_DISABLE_NATIVE_CONTEXT_PACK", "").strip().lower() in {"1", "true", "yes"}:
             return None
-        native_retrieve = getattr(self._client, "matrixark_retrieve_context_pack", None)
-        if not callable(native_retrieve):
+        if not self.supports_native_context_pack():
             return None
         scope = _native_scope_with_hashes(optional_object(args, "scope"))
         query = require_string(args, "query")
@@ -2780,12 +2779,11 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         }
         started_perf = time.perf_counter()
         try:
-            response = native_retrieve(
-                count_key=self._count_key,
-                record_hash_key=self._record_hash_key,
-                shard_size=getattr(self, "_shard_size", 1024),
-                request=request,
-            )
+            response = self.native_context_pack(request)
+            if response is None:
+                if not native_retrieve_fallback_allowed(args):
+                    return self._native_context_pack_fallback_blocker(args, reason="native_context_pack_unavailable")
+                return None
         except Exception as exc:
             _mcp_debug_log(f"matrixark native context pack failed: {exc}")
             if not native_retrieve_fallback_allowed(args):

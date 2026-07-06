@@ -1865,6 +1865,18 @@ def make_adapter(backend: str, args: argparse.Namespace, storage_prefix: str):
         return MatrixArkTemporalStoreDirectAdapter(library_path=args.cpp_lib, **common)
     if backend == "rust":
         validate_rust_runtime_path(args)
+        # Correctness comes before latency in scale/parity runs. The current Rust
+        # proxy embeds MatrixArk index/cache state inside the long-lived process,
+        # so process-level isolated retrieve/pack clients can miss freshly written
+        # records and return empty ContextPacks. Keep one shared proxy process by
+        # default; isolated clients are an explicit diagnostic until Rust exposes a
+        # shared-state proxy/server or direct SDK path with equivalent visibility.
+        if os.environ.get("MATRIXARK_RUST_PROXY_ALLOW_ISOLATED_CLIENTS", "").strip().lower() in {"1", "true", "yes"}:
+            os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS", "1")
+            os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES", "1")
+        else:
+            os.environ["MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS"] = "0"
+            os.environ["MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES"] = "0"
         direct_lib = Path(os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_LIB", ""))
         sdk_mode = "direct-sdk" if direct_lib.exists() else "proxy"
         if direct_lib.exists():
