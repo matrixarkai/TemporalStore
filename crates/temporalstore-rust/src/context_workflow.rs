@@ -1078,6 +1078,18 @@ pub struct ContextFanoutPlanReport {
     pub global_shared_nodes: usize,
     #[serde(default)]
     pub scope_boosted_nodes: usize,
+    #[serde(default)]
+    pub selected_current_agent_nodes: usize,
+    #[serde(default)]
+    pub selected_user_shared_nodes: usize,
+    #[serde(default)]
+    pub selected_workspace_shared_nodes: usize,
+    #[serde(default)]
+    pub selected_global_shared_nodes: usize,
+    #[serde(default)]
+    pub shared_layer_quota_nodes: usize,
+    #[serde(default)]
+    pub layer_quota_applied: bool,
     pub fallback_to_flat: bool,
     pub fanout_reduced: bool,
 }
@@ -3986,6 +3998,109 @@ fn push_unique_context_string(values: &mut Vec<String>, value: String) {
     }
 }
 
+type ContextSummaryScore = (u64, i64, usize, i64, ContextScopeDescriptor);
+
+fn context_scope_reservation_key(scope: &ContextScopeDescriptor) -> String {
+    match scope.layer {
+        ContextScopeLayer::Agent => format!("agent:{}", scope.producer_agent_id),
+        ContextScopeLayer::Global => "global".to_string(),
+        _ => scope.shared_graph_scope.clone(),
+    }
+}
+
+fn push_unique_context_scope(
+    scopes: &mut Vec<ContextScopeDescriptor>,
+    scope: ContextScopeDescriptor,
+) {
+    let key = context_scope_reservation_key(&scope);
+    if !scopes
+        .iter()
+        .any(|existing| context_scope_reservation_key(existing) == key)
+    {
+        scopes.push(scope);
+    }
+}
+
+fn context_scope_reservation_matches(
+    required: &ContextScopeDescriptor,
+    candidate: &ContextScopeDescriptor,
+) -> bool {
+    match required.layer {
+        ContextScopeLayer::Global => candidate.layer == ContextScopeLayer::Global,
+        ContextScopeLayer::Agent => {
+            candidate.layer == ContextScopeLayer::Agent
+                && !required.producer_agent_id.is_empty()
+                && candidate
+                    .producer_agent_id
+                    .eq_ignore_ascii_case(&required.producer_agent_id)
+        }
+        ContextScopeLayer::User
+        | ContextScopeLayer::Workspace
+        | ContextScopeLayer::Tenant
+        | ContextScopeLayer::Session => {
+            candidate.layer == required.layer
+                && (candidate
+                    .raw_scope
+                    .eq_ignore_ascii_case(&required.raw_scope)
+                    || candidate.shared_graph_scope == required.shared_graph_scope)
+        }
+    }
+}
+
+fn context_required_scan_scopes(request: &ContextRetrieveRequest) -> Vec<ContextScopeDescriptor> {
+    let mut scopes = Vec::new();
+    let current_agent = request.current_agent_id.trim();
+    if !current_agent.is_empty() {
+        push_unique_context_scope(
+            &mut scopes,
+            context_scope_descriptor(format!("agent:{current_agent}")),
+        );
+    }
+    if !request.owner_scope.trim().is_empty() {
+        push_unique_context_scope(&mut scopes, context_scope_descriptor(&request.owner_scope));
+    }
+    for shared_scope in &request.shared_resource_scopes {
+        if !shared_scope.trim().is_empty() {
+            push_unique_context_scope(&mut scopes, context_scope_descriptor(shared_scope));
+        }
+    }
+    scopes
+}
+
+fn context_select_layered_event_nodes(
+    summary_scores: &[ContextSummaryScore],
+    limit: usize,
+    request: &ContextRetrieveRequest,
+) -> (Vec<u64>, usize, bool) {
+    let mut selected = Vec::new();
+    let mut selected_set = BTreeSet::<u64>::new();
+    let required_scopes = context_required_scan_scopes(request);
+    let mut quota_nodes = 0usize;
+    for required_scope in required_scopes {
+        if selected.len() >= limit {
+            break;
+        }
+        if let Some((node_hash, _, _, _, _)) = summary_scores.iter().find(|candidate| {
+            !selected_set.contains(&candidate.0)
+                && context_scope_reservation_matches(&required_scope, &candidate.4)
+        }) {
+            selected_set.insert(*node_hash);
+            selected.push(*node_hash);
+            quota_nodes = quota_nodes.saturating_add(1);
+        }
+    }
+    for (node_hash, _, _, _, _) in summary_scores {
+        if selected.len() >= limit {
+            break;
+        }
+        if selected_set.insert(*node_hash) {
+            selected.push(*node_hash);
+        }
+    }
+    let quota_applied = quota_nodes > 0 && summary_scores.len() > limit;
+    (selected, quota_nodes, quota_applied)
+}
+
 pub fn retrieve_context(
     engine: &TemporalEngine,
     request: ContextRetrieveRequest,
@@ -4156,24 +4271,63 @@ pub fn retrieve_context(
         .max_event_nodes
         .max(1)
         .min(summary_node_limit.max(1));
-    node_hashes = summary_scores
-        .iter()
-        .take(summary_node_limit)
-        .map(|(node_hash, _, _, _, _)| *node_hash)
-        .collect();
-    let event_node_hashes = node_hashes
-        .iter()
-        .copied()
-        .take(event_node_limit)
-        .collect::<Vec<_>>();
+    let (event_node_hashes, shared_layer_quota_nodes, layer_quota_applied) =
+        context_select_layered_event_nodes(&summary_scores, event_node_limit, &request);
+    let mut selected_summary_set = BTreeSet::<u64>::new();
+    node_hashes = Vec::with_capacity(summary_node_limit);
+    for node_hash in &event_node_hashes {
+        if selected_summary_set.insert(*node_hash) {
+            node_hashes.push(*node_hash);
+        }
+    }
+    for (node_hash, _, _, _, _) in &summary_scores {
+        if node_hashes.len() >= summary_node_limit {
+            break;
+        }
+        if selected_summary_set.insert(*node_hash) {
+            node_hashes.push(*node_hash);
+        }
+    }
+    let event_node_set = event_node_hashes.iter().copied().collect::<BTreeSet<_>>();
     let skipped_node_hashes = summary_scores
         .iter()
-        .skip(event_node_limit)
+        .filter(|(node_hash, _, _, _, _)| !event_node_set.contains(node_hash))
         .map(|(node_hash, _, _, _, _)| *node_hash)
         .collect::<Vec<_>>();
     fanout_plan.summary_candidate_nodes = summary_scores.len();
     fanout_plan.summary_selected_nodes = node_hashes.len();
     fanout_plan.event_expanded_nodes = event_node_hashes.len();
+    fanout_plan.shared_layer_quota_nodes = shared_layer_quota_nodes;
+    fanout_plan.layer_quota_applied = layer_quota_applied;
+    for node_hash in &event_node_hashes {
+        if let Some(scope) = node_scope_by_hash.get(node_hash) {
+            match scope.layer {
+                ContextScopeLayer::Agent
+                    if !request.current_agent_id.trim().is_empty()
+                        && scope
+                            .producer_agent_id
+                            .eq_ignore_ascii_case(request.current_agent_id.trim()) =>
+                {
+                    fanout_plan.selected_current_agent_nodes =
+                        fanout_plan.selected_current_agent_nodes.saturating_add(1);
+                }
+                ContextScopeLayer::User => {
+                    fanout_plan.selected_user_shared_nodes =
+                        fanout_plan.selected_user_shared_nodes.saturating_add(1);
+                }
+                ContextScopeLayer::Workspace => {
+                    fanout_plan.selected_workspace_shared_nodes = fanout_plan
+                        .selected_workspace_shared_nodes
+                        .saturating_add(1);
+                }
+                ContextScopeLayer::Global => {
+                    fanout_plan.selected_global_shared_nodes =
+                        fanout_plan.selected_global_shared_nodes.saturating_add(1);
+                }
+                _ => {}
+            }
+        }
+    }
     fanout_plan.skipped_node_count = skipped_node_hashes.len();
     fanout_plan.summary_lookup_batches = usize::from(!summary_scores.is_empty());
     fanout_plan.selected_node_hashes = event_node_hashes.clone();

@@ -6604,6 +6604,30 @@
       ]
     },
     {
+      "description": "Shared C++/Rust Context retrieval case for multi-agent layer quotas: many current-agent matches must not crowd out explicitly shared user/global resources when bounded fanout is applied.",
+      "family": "context",
+      "name": "context_multi_agent_layer_quota_keeps_shared_resources",
+      "shard_id": 60,
+      "steps": [
+        {
+          "name": "multi_agent_layer_quota_keeps_shared_resources",
+          "skip_client": true,
+          "command": {
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "suite": "cpp_context_pipeline_parity",
+            "description": "Validates current-agent, user-shared, and global-shared layer reservation under tight max_event_nodes so shared resources remain eligible without whole-namespace colocation.",
+            "required_paths": [
+              "crates/temporalstore-rust/src/context_workflow/tests.rs#context_multi_agent_layer_quota_keeps_shared_resources_when_agent_has_many_matches"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust context_multi_agent_layer_quota_keeps_shared_resources_when_agent_has_many_matches --lib -- --test-threads=1",
+            "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
+            "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-layer-quota-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
+          }
+        }
+      ]
+    },
+    {
       "description": "Shared C++/Rust Context resource/skill ingest case for live model-backed embeddings and summary-embedding-driven coarse retrieval expansion.",
       "family": "context",
       "name": "context_resource_skill_live_embedding_summary_retrieval",
@@ -12695,6 +12719,7 @@
   "name": "temporalstore-unified-cpp-rust-corpus",
   "schema_version": 1,
   "required_case_names": [
-    "context_multi_agent_layered_scan_colocation"
+    "context_multi_agent_layered_scan_colocation",
+    "context_multi_agent_layer_quota_keeps_shared_resources"
   ]
 }

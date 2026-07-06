@@ -731,6 +731,7 @@ fn context_multi_agent_scan_boosts_current_agent_and_colocates_shared_scopes() {
     assert_eq!(report.fanout_plan.workspace_shared_nodes, 1);
     assert_eq!(report.fanout_plan.global_shared_nodes, 1);
     assert!(report.fanout_plan.scope_boosted_nodes >= 5);
+    assert!(report.fanout_plan.selected_current_agent_nodes >= 1);
     assert!(report
         .fanout_plan
         .scan_layers
@@ -761,6 +762,120 @@ fn context_multi_agent_scan_boosts_current_agent_and_colocates_shared_scopes() {
 ",
         );
     assert!(selected_text.contains("Codex traced"), "{selected_text}");
+}
+
+// shared-corpus: context_multi_agent_layer_quota_keeps_shared_resources
+#[test]
+fn context_multi_agent_layer_quota_keeps_shared_resources_when_agent_has_many_matches() {
+    let engine = test_engine();
+    let tenant_hash = 606062;
+    let mut node_hashes = Vec::new();
+    for idx in 0..5u64 {
+        let extract = extract_context(
+            &engine,
+            ContextExtractRequest {
+                shard_id: 1,
+                tenant_hash,
+                source_kind: ContextSourceKind::Document,
+                source_id: format!("agent:codex:checkout-risk-{idx}"),
+                title: format!("Codex checkout risk trace {idx}"),
+                body: format!(
+                    "Checkout payment risk incident {idx} has Codex local evidence and retry traces."
+                ),
+                timestamp_ms: 31_000 + idx,
+                provider: ContextModelProviderConfig::default(),
+            },
+        );
+        assert!(extract.status.ok, "{:?}", extract.status);
+        node_hashes.push(extract.node.node_hash);
+    }
+    for (source_id, title, body) in [
+        (
+            "user:alice:checkout-preference",
+            "Alice shared checkout preference",
+            "User shared resource says checkout payment uses Alice corporate card exception.",
+        ),
+        (
+            "global:skills:payment-debug",
+            "Global payment debug skill",
+            "Global shared skill says checkout payment debugging starts with gateway health.",
+        ),
+    ] {
+        let extract = extract_context(
+            &engine,
+            ContextExtractRequest {
+                shard_id: 1,
+                tenant_hash,
+                source_kind: ContextSourceKind::Document,
+                source_id: source_id.to_string(),
+                title: title.to_string(),
+                body: body.to_string(),
+                timestamp_ms: 40_000 + node_hashes.len() as u64,
+                provider: ContextModelProviderConfig::default(),
+            },
+        );
+        assert!(extract.status.ok, "{:?}", extract.status);
+        node_hashes.push(extract.node.node_hash);
+    }
+
+    let report = retrieve_context(
+        &engine,
+        ContextRetrieveRequest {
+            shard_id: 1,
+            tenant_hash,
+            node_hashes,
+            query: "checkout payment risk".to_string(),
+            start_time_ms: 0,
+            end_time_ms: 50_000,
+            max_events: 8,
+            min_confidence: 0.0,
+            min_importance: 0.0,
+            tiers: vec![ContextTier::L2],
+            max_summary_nodes: 7,
+            max_event_nodes: 3,
+            owner_scope: String::new(),
+            current_agent_id: "codex".to_string(),
+            shared_resource_scopes: vec!["user:alice".to_string(), "global".to_string()],
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    assert!(report.status.ok, "{:?}", report.status);
+    assert_eq!(report.fanout_plan.namespace_node_candidates, 7);
+    assert_eq!(report.fanout_plan.event_expanded_nodes, 3);
+    assert!(report.fanout_plan.fanout_reduced);
+    assert!(report.fanout_plan.layer_quota_applied);
+    assert_eq!(report.fanout_plan.shared_layer_quota_nodes, 3);
+    assert_eq!(report.fanout_plan.selected_current_agent_nodes, 1);
+    assert_eq!(report.fanout_plan.selected_user_shared_nodes, 1);
+    assert_eq!(report.fanout_plan.selected_global_shared_nodes, 1);
+    assert!(report
+        .fanout_plan
+        .locality_keys
+        .iter()
+        .any(|key| key.contains(":scope:user:alice:")));
+    assert!(report
+        .fanout_plan
+        .locality_keys
+        .iter()
+        .any(|key| key.contains(":scope:global:")));
+    let selected_text = report
+        .blocks
+        .iter()
+        .map(|block| block.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        selected_text.contains("Codex local evidence"),
+        "{selected_text}"
+    );
+    assert!(
+        selected_text.contains("Alice corporate card"),
+        "{selected_text}"
+    );
+    assert!(
+        selected_text.contains("Global shared skill"),
+        "{selected_text}"
+    );
 }
 
 // shared-corpus: context_benchmark_injection_entity_segment_index
