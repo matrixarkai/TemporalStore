@@ -91,12 +91,19 @@ def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: i
     require_int_at_least(report, "selected_ref_count", 4)
     require_string_set(report, "scan_layers", REQUIRED_LAYERS)
     require_string_set(report, "colocation_groups", REQUIRED_COLOCATION_GROUPS)
+    require_string_set(
+        report,
+        "colocation_scope_keys",
+        {"agent:codex", "agent:claude", "user:user", "workspace:context", "global"},
+    )
     locality_keys = report.get("locality_keys")
     if not isinstance(locality_keys, list) or not locality_keys:
         raise ValueError("locality_keys must be a non-empty string array")
     bad_keys = [key for key in locality_keys if not isinstance(key, str) or ":scope:" not in key]
     if bad_keys:
         raise ValueError(f"locality_keys must all include scoped colocation markers: {bad_keys}")
+    if not any(":scope:agent:codex:" in key for key in locality_keys):
+        raise ValueError("locality_keys must include current-agent scoped colocation")
     if report.get("current_agent_id") != "codex":
         raise ValueError(f"current_agent_id must be 'codex', got {report.get('current_agent_id')!r}")
 

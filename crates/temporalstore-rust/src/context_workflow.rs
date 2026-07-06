@@ -1069,6 +1069,8 @@ pub struct ContextFanoutPlanReport {
     #[serde(default)]
     pub colocation_groups: Vec<String>,
     #[serde(default)]
+    pub colocation_scope_keys: Vec<String>,
+    #[serde(default)]
     pub current_agent_id: String,
     #[serde(default)]
     pub current_agent_boosted_nodes: usize,
@@ -4249,6 +4251,10 @@ pub fn retrieve_context(
                 &mut fanout_plan.colocation_groups,
                 scope.shared_graph_scope.clone(),
             );
+            push_unique_context_string(
+                &mut fanout_plan.colocation_scope_keys,
+                context_scope_reservation_key(&scope),
+            );
             match scope.layer {
                 ContextScopeLayer::Agent
                     if !request.current_agent_id.trim().is_empty()
@@ -4279,6 +4285,7 @@ pub fn retrieve_context(
         }
     }
     fanout_plan.colocation_groups.sort();
+    fanout_plan.colocation_scope_keys.sort();
     fanout_plan.scan_layers.sort();
     let retrieval_provider = normalize_provider(request.provider.clone());
     let query_embedding = match context_query_embedding(&retrieval_provider, &request.query) {
@@ -4441,8 +4448,8 @@ pub fn retrieve_context(
         .map(|node_hash| {
             let scope = node_scope_by_hash
                 .get(node_hash)
-                .map(|scope| scope.shared_graph_scope.as_str())
-                .unwrap_or("user:user");
+                .map(context_scope_reservation_key)
+                .unwrap_or_else(|| "user:user".to_string());
             format!(
                 "tenant:{}:scope:{scope}:node:{node_hash}",
                 request.tenant_hash

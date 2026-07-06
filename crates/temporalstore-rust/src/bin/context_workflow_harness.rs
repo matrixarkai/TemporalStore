@@ -198,6 +198,7 @@ struct ResourceSkillConversationScaleSummary {
     fanout_layer_quota_applied: bool,
     fanout_scan_layers: Vec<String>,
     fanout_colocation_groups: Vec<String>,
+    fanout_colocation_scope_keys: Vec<String>,
     secondary_index_ready: bool,
     secondary_index_checked_refs: usize,
     secondary_index_found_refs: usize,
@@ -229,6 +230,7 @@ struct MultiAgentContextScanHarnessSummary {
     selected_global_shared_nodes: usize,
     scan_layers: Vec<String>,
     colocation_groups: Vec<String>,
+    colocation_scope_keys: Vec<String>,
     locality_keys: Vec<String>,
     retrieved_block_count: usize,
     retrieved_event_count: usize,
@@ -1191,6 +1193,7 @@ fn run_resource_skill_conversation_scale(
         fanout_layer_quota_applied: combined_retrieve.fanout_plan.layer_quota_applied,
         fanout_scan_layers: combined_retrieve.fanout_plan.scan_layers.clone(),
         fanout_colocation_groups: combined_retrieve.fanout_plan.colocation_groups.clone(),
+        fanout_colocation_scope_keys: combined_retrieve.fanout_plan.colocation_scope_keys.clone(),
         secondary_index_ready,
         secondary_index_checked_refs: secondary_validation.checked_ref_count,
         secondary_index_found_refs: secondary_validation.found_ref_count,
@@ -1330,6 +1333,11 @@ fn run_multi_agent_context_scan_harness(
             .iter()
             .all(|key| key.contains(":scope:"))
         && report
+            .fanout_plan
+            .locality_keys
+            .iter()
+            .any(|key| key.contains(":scope:agent:codex:"))
+        && report
             .blocks
             .iter()
             .any(|block| block.text.contains("Codex current-agent"))
@@ -1363,6 +1371,7 @@ fn run_multi_agent_context_scan_harness(
         selected_global_shared_nodes: report.fanout_plan.selected_global_shared_nodes,
         scan_layers: report.fanout_plan.scan_layers,
         colocation_groups: report.fanout_plan.colocation_groups,
+        colocation_scope_keys: report.fanout_plan.colocation_scope_keys,
         locality_keys: report.fanout_plan.locality_keys,
         retrieved_block_count: report.blocks.len(),
         retrieved_event_count: report.event_count,
