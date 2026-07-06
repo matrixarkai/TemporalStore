@@ -572,19 +572,13 @@ pub struct ByteRaftPeerPipelineState {
 
 impl ByteRaftPeerPipelineState {
     fn to_rustraft_peer_pipeline_status(&self) -> RustRaftPeerPipelineStatus {
-        RustRaftPeerPipelineStatus {
+        rustraft_peer_pipeline_status_from_observed(&RustRaftObservedPeerPipeline {
             peer_id: self.peer_id,
             match_index: self.match_index,
             next_index: self.next_index,
             append_requests: self.append_requests,
-            append_batches: self.append_requests,
-            max_append_batch_entries: self.inflight_entries.max(1),
-            max_append_batch_bytes: self.inflight_bytes,
             append_accepted: self.append_accepted,
             append_rejected: self.append_rejected,
-            retry_attempts: self.append_rejected,
-            backoff_ms: 0,
-            next_retry_after_ms: 0,
             inflight_entries: self.inflight_entries,
             inflight_bytes: self.inflight_bytes,
             append_queue_depth: self.append_queue_depth,
@@ -622,17 +616,12 @@ impl ByteRaftPeerPipelineState {
             transfer_leader_timeouts: self.transfer_leader_timeouts,
             pre_vote_rejections: self.pre_vote_rejections,
             election_rejections: self.election_rejections,
-            follower_lag: self
-                .next_index
-                .saturating_sub(self.match_index.saturating_add(1)),
-            learner_catchup_rounds: u64::from(self.auto_promoted_from_learner),
-            learner_caught_up: self.auto_promoted_from_learner,
-            witness_quorum_required: 0,
-            witness_quorum_acked: 0,
-            witness_quorum_reached: false,
             offline_timeout_reached: self.offline_timeout_reached,
             offline_timeout_rejections: self.offline_timeout_rejections,
-        }
+            auto_promoted_from_learner: self.auto_promoted_from_learner,
+            witness_quorum_required: 0,
+            witness_quorum_acked: 0,
+        })
     }
 }
 
@@ -10280,7 +10269,7 @@ fn append_byteraft_runtime_admin_prometheus(
     report: ByteRaftRuntimeAdminReport,
 ) {
     let rustraft_capability_report = rustraft_capability_report_from_byteraft_admin(&report);
-    let rustraft_metrics = ::rustraft::rustraft_byteraft_runtime_capability_prometheus(
+    let rustraft_metrics = ::rustraft::rustraft_reference_raft_runtime_capability_prometheus(
         &rustraft_capability_report,
         &[("kind", kind)],
     );
@@ -11433,7 +11422,7 @@ fn append_byteraft_local_status_prometheus(
 
 fn rustraft_capability_report_from_byteraft_admin(
     report: &ByteRaftRuntimeAdminReport,
-) -> ::rustraft::RustRaftByteRaftRuntimeCapabilityReport {
+) -> ::rustraft::RustRaftReferenceRaftRuntimeCapabilityReport {
     let capability_evidence = report
         .capability_matrix
         .iter()
