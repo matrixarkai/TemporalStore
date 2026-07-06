@@ -674,6 +674,31 @@ struct MatrixArkScopedRecordScanCacheEntry {
 std::mutex g_matrixark_scoped_scan_cache_mu;
 std::unordered_map<std::string, MatrixArkScopedRecordScanCacheEntry> g_matrixark_scoped_scan_cache;
 
+struct MatrixArkPreparedRetrieveCandidate {
+    std::string record_type;
+    std::string context_class;
+    std::string ref_hash;
+    std::string text;
+    uint64_t token_estimate = 0;
+    uint64_t node_hash = 0;
+    std::string batch_hash;
+    std::string cross_session_key;
+    std::string source_ref_json;
+    std::string session_continuity;
+    double continuity_boost = 0.0;
+    bool has_citation = false;
+    std::unordered_set<std::string> terms;
+};
+
+struct MatrixArkPreparedRetrieveCacheEntry {
+    std::vector<MatrixArkPreparedRetrieveCandidate> candidates;
+    uint64_t context_index_records = 0;
+};
+
+std::mutex g_matrixark_prepared_retrieve_cache_mu;
+std::unordered_map<std::string, std::shared_ptr<const MatrixArkPreparedRetrieveCacheEntry>>
+    g_matrixark_prepared_retrieve_cache;
+
 std::string MatrixArkScopedScanCacheKey(
     const std::string& count_key, const std::string& record_hash_key, size_t shard_size,
     uint64_t serving_count, const std::unordered_set<std::string>& allowed_types,
@@ -690,6 +715,144 @@ std::string MatrixArkScopedScanCacheKey(
         key << JsonStringify(*scope);
     }
     return key.str();
+}
+
+double CrossSessionRerankBoostPrepared(const MatrixArkPreparedRetrieveCandidate& candidate,
+                                       const std::string& question_type) {
+    if (candidate.session_continuity != "cross_session") {
+        return 0.0;
+    }
+    if (candidate.record_type == "context_entity") {
+        return (question_type == "current_state" || question_type == "latest" ||
+                question_type == "multi_hop")
+                   ? 0.10
+                   : 0.06;
+    }
+    if (candidate.record_type == "resource_chunk" && candidate.has_citation) {
+        return 0.04;
+    }
+    if ((candidate.record_type == "context_event" || candidate.record_type == "context_segment") &&
+        (question_type == "multi_hop" || question_type == "why_emotion" ||
+         question_type == "fact" || question_type == "evidence")) {
+        return 0.01;
+    }
+    if (candidate.record_type == "context_compression_event") {
+        return 0.05;
+    }
+    if (candidate.record_type == "context_summary") {
+        return question_type == "broad_exploration" ? 0.05 : 0.02;
+    }
+    if (candidate.context_class == "resource_fact" ||
+        candidate.context_class == "resource_entity_fact") {
+        return candidate.has_citation ? 0.06 : 0.04;
+    }
+    return 0.0;
+}
+
+MatrixArkPreparedRetrieveCacheEntry PrepareMatrixArkRetrieveCandidates(
+    const std::vector<std::string>& record_jsons, const rapidjson::Value* scope) {
+    MatrixArkPreparedRetrieveCacheEntry entry;
+    std::unordered_map<std::string, std::unordered_set<std::string>> terms_by_ref;
+    std::unordered_map<uint64_t, std::unordered_set<std::string>> terms_by_node;
+    std::unordered_map<std::string, std::unordered_set<std::string>> terms_by_batch;
+    std::vector<rapidjson::Document> candidate_docs;
+    candidate_docs.reserve(record_jsons.size());
+    for (const auto& record_json : record_jsons) {
+        rapidjson::Document record;
+        if (record.Parse(record_json.c_str()).HasParseError() || !record.IsObject()) {
+            continue;
+        }
+        if (JsonStringMember(record, "record_type") == "context_index") {
+            ++entry.context_index_records;
+            std::string term = JsonStringMember(record, "index_name");
+            if (term.empty()) {
+                continue;
+            }
+            std::string ref = RefHash(record);
+            if (!ref.empty()) {
+                terms_by_ref[ref].insert(term);
+            } else if (NodeHash(record) != 0) {
+                terms_by_node[NodeHash(record)].insert(term);
+            }
+            std::string batch = BatchHash(record);
+            if (!batch.empty()) {
+                terms_by_batch[batch].insert(term);
+            }
+            continue;
+        }
+        candidate_docs.push_back(std::move(record));
+    }
+    entry.candidates.reserve(candidate_docs.size());
+    for (const auto& record : candidate_docs) {
+        std::string record_type = JsonStringMember(record, "record_type");
+        std::string text = CandidateText(record);
+        if (record_type.empty() || text.empty()) {
+            continue;
+        }
+        MatrixArkPreparedRetrieveCandidate candidate;
+        candidate.record_type = std::move(record_type);
+        candidate.context_class = ContextClassName(record);
+        candidate.ref_hash = RefHash(record);
+        if (candidate.ref_hash.empty()) {
+            candidate.ref_hash = JsonStringMember(record, "record_id");
+        }
+        candidate.text = std::move(text);
+        candidate.token_estimate = TokenEstimate(candidate.text);
+        candidate.node_hash = NodeHash(record);
+        candidate.batch_hash = BatchHash(record);
+        candidate.cross_session_key = CrossSessionKey(record);
+        candidate.session_continuity = SessionContinuityStatus(record, scope);
+        candidate.continuity_boost =
+            ContinuityBoost(candidate.record_type, candidate.context_class,
+                            candidate.session_continuity);
+        candidate.has_citation = record.HasMember("source_ref") || record.HasMember("citation") ||
+                                 record.HasMember("source_chunk_hash");
+        if (record.HasMember("source_ref")) {
+            candidate.source_ref_json = JsonStringify(record["source_ref"]);
+        }
+        if (!candidate.ref_hash.empty() && terms_by_ref.count(candidate.ref_hash)) {
+            candidate.terms.insert(terms_by_ref[candidate.ref_hash].begin(),
+                                   terms_by_ref[candidate.ref_hash].end());
+        }
+        if (candidate.node_hash != 0 && terms_by_node.count(candidate.node_hash)) {
+            candidate.terms.insert(terms_by_node[candidate.node_hash].begin(),
+                                   terms_by_node[candidate.node_hash].end());
+        }
+        if (!candidate.batch_hash.empty() && terms_by_batch.count(candidate.batch_hash)) {
+            candidate.terms.insert(terms_by_batch[candidate.batch_hash].begin(),
+                                   terms_by_batch[candidate.batch_hash].end());
+        }
+        entry.candidates.push_back(std::move(candidate));
+    }
+    return entry;
+}
+
+std::shared_ptr<const MatrixArkPreparedRetrieveCacheEntry> LoadMatrixArkPreparedRetrieveCandidates(
+    const std::string& cache_key, const std::vector<std::string>& record_jsons,
+    const rapidjson::Value* scope, bool* cache_hit) {
+    if (cache_hit != nullptr) {
+        *cache_hit = false;
+    }
+    {
+        std::lock_guard<std::mutex> guard(g_matrixark_prepared_retrieve_cache_mu);
+        const auto it = g_matrixark_prepared_retrieve_cache.find(cache_key);
+        if (it != g_matrixark_prepared_retrieve_cache.end()) {
+            if (cache_hit != nullptr) {
+                *cache_hit = true;
+            }
+            return it->second;
+        }
+    }
+    auto prepared = std::make_shared<const MatrixArkPreparedRetrieveCacheEntry>(
+        PrepareMatrixArkRetrieveCandidates(record_jsons, scope));
+    {
+        std::lock_guard<std::mutex> guard(g_matrixark_prepared_retrieve_cache_mu);
+        if (g_matrixark_prepared_retrieve_cache.size() >= 8) {
+            g_matrixark_prepared_retrieve_cache.clear();
+        }
+        g_matrixark_prepared_retrieve_cache[cache_key] = prepared;
+    }
+    return prepared;
 }
 
 bcache2::Status LoadMatrixArkScopedServingRecords(
@@ -951,6 +1114,8 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     std::unordered_set<std::string> allowed(allowed_types.begin(), allowed_types.end());
     const rapidjson::Value* scope = JsonObjectMember(request, "scope");
     auto secondary_groups = SecondaryGroups(request);
+    const std::string retrieve_cache_key = MatrixArkScopedScanCacheKey(
+        count_key, record_hash_key, shard_size, count, scan_allowed, scope);
     MatrixArkScopedRecordScan scan;
     status = LoadMatrixArkScopedServingRecords(
         impl, count_key, record_hash_key, shard_size, count, scan_allowed, scope, &scan);
@@ -958,32 +1123,10 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         return status;
     }
     const std::vector<std::string>& record_jsons = scan.record_jsons;
-    std::unordered_map<std::string, std::unordered_set<std::string>> terms_by_ref;
-    std::unordered_map<uint64_t, std::unordered_set<std::string>> terms_by_node;
-    std::unordered_map<std::string, std::unordered_set<std::string>> terms_by_batch;
-    for (const auto& record_json : record_jsons) {
-        rapidjson::Document record;
-        if (record.Parse(record_json.c_str()).HasParseError() || !record.IsObject()) {
-            continue;
-        }
-        if (JsonStringMember(record, "record_type") != "context_index") {
-            continue;
-        }
-        std::string term = JsonStringMember(record, "index_name");
-        if (term.empty()) {
-            continue;
-        }
-        std::string ref = RefHash(record);
-        if (!ref.empty()) {
-            terms_by_ref[ref].insert(term);
-        } else if (NodeHash(record) != 0) {
-            terms_by_node[NodeHash(record)].insert(term);
-        }
-        std::string batch = BatchHash(record);
-        if (!batch.empty()) {
-            terms_by_batch[batch].insert(term);
-        }
-    }
+    bool prepared_candidate_cache_hit = false;
+    std::shared_ptr<const MatrixArkPreparedRetrieveCacheEntry> prepared =
+        LoadMatrixArkPreparedRetrieveCandidates(retrieve_cache_key, record_jsons, scope,
+                                                &prepared_candidate_cache_hit);
     std::string query = JsonStringMember(request, "query");
     auto query_terms = QueryTerms(query);
     std::string question_type = JsonStringMember(request, "question_type");
@@ -1029,70 +1172,46 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     std::vector<ScoredRecord> scored;
     uint64_t secondary_dropped = 0;
     uint64_t secondary_matched = 0;
-    for (const auto& record_json : record_jsons) {
-        rapidjson::Document record;
-        if (record.Parse(record_json.c_str()).HasParseError() || !record.IsObject()) {
+    for (const auto& candidate : prepared->candidates) {
+        const std::string& record_type = candidate.record_type;
+        if (allowed.find(record_type) == allowed.end()) {
             continue;
         }
-        std::string record_type = JsonStringMember(record, "record_type");
-        if (record_type == "context_index" || allowed.find(record_type) == allowed.end()) {
-            continue;
-        }
-        std::unordered_set<std::string> terms;
-        std::string ref = RefHash(record);
-        if (!ref.empty() && terms_by_ref.count(ref)) {
-            terms.insert(terms_by_ref[ref].begin(), terms_by_ref[ref].end());
-        }
-        uint64_t node = NodeHash(record);
-        if (node != 0 && terms_by_node.count(node)) {
-            terms.insert(terms_by_node[node].begin(), terms_by_node[node].end());
-        }
-        std::string batch = BatchHash(record);
-        if (!batch.empty() && terms_by_batch.count(batch)) {
-            terms.insert(terms_by_batch[batch].begin(), terms_by_batch[batch].end());
-        }
-        if (!secondary_groups.empty() && !terms.empty() && !HasGroupMatch(terms, secondary_groups)) {
+        if (!secondary_groups.empty() && !candidate.terms.empty() &&
+            !HasGroupMatch(candidate.terms, secondary_groups)) {
             ++secondary_dropped;
             continue;
         }
-        if (!terms.empty()) {
+        if (!candidate.terms.empty()) {
             ++secondary_matched;
         }
-        std::string text = CandidateText(record);
-        if (text.empty()) {
+        if (candidate.text.empty()) {
             continue;
         }
-        double score = SparseScore(query_terms, text);
+        double score = SparseScore(query_terms, candidate.text);
         if (record_type == "context_entity") {
             score += 0.08;
         } else if (record_type == "context_compression_event") {
             score += 0.06;
         }
-        std::string continuity = SessionContinuityStatus(record, scope);
-        std::string context_class = ContextClassName(record);
-        double continuity_boost = ContinuityBoost(record_type, context_class, continuity);
+        const std::string& continuity = candidate.session_continuity;
+        const std::string& context_class = candidate.context_class;
+        double continuity_boost = candidate.continuity_boost;
         score += continuity_boost;
-        double cross_session_rerank_boost = CrossSessionRerankBoost(record, record_type, context_class, continuity, question_type);
+        double cross_session_rerank_boost =
+            CrossSessionRerankBoostPrepared(candidate, question_type);
         score += cross_session_rerank_boost;
         score += TypePriorityBoost(record_type, context_class, JsonStringMember(request, "question_type"));
         if (score >= min_similarity_score) {
-            std::string ref_hash = RefHash(record);
-            if (ref_hash.empty()) {
-                ref_hash = JsonStringMember(record, "record_id");
-            }
-            std::string source_ref_json;
-            if (record.HasMember("source_ref")) {
-                source_ref_json = JsonStringify(record["source_ref"]);
-            }
             scored.push_back({score,
-                              TokenEstimate(text),
+                              candidate.token_estimate,
                               record_type,
                               context_class,
-                              ref_hash,
-                              text,
-                              NodeHash(record),
-                              CrossSessionKey(record),
-                              source_ref_json,
+                              candidate.ref_hash,
+                              candidate.text,
+                              candidate.node_hash,
+                              candidate.cross_session_key,
+                              candidate.source_ref_json,
                               continuity,
                               continuity_boost,
                               cross_session_rerank_boost});
@@ -1281,6 +1400,12 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     scan_stats.AddMember("dropped_by_type", scan.dropped_by_type, alloc);
     scan_stats.AddMember("dropped_by_scope", scan.dropped_by_scope, alloc);
     scan_stats.AddMember("native_scan_record_cache_hit", scan.cache_hit, alloc);
+    scan_stats.AddMember("candidate_cache_hit", prepared_candidate_cache_hit, alloc);
+    scan_stats.AddMember("native_prepared_candidate_cache_hit", prepared_candidate_cache_hit, alloc);
+    scan_stats.AddMember("native_prepared_candidate_count",
+                         static_cast<uint64_t>(prepared->candidates.size()), alloc);
+    scan_stats.AddMember("native_context_index_records",
+                         static_cast<uint64_t>(prepared->context_index_records), alloc);
     scan_stats.AddMember("secondary_index_dropped_candidate_count", secondary_dropped, alloc);
     scan_stats.AddMember("secondary_index_matched_candidate_count", secondary_matched, alloc);
     recall.AddMember("scan_stats", scan_stats, alloc);
