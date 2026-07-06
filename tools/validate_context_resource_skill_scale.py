@@ -142,6 +142,35 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
     require_int_equal(report, "fanout_selected_colocation_scope_count", 4)
     require_string_set(report, "fanout_selected_colocation_scope_keys", REQUIRED_SELECTED_SCOPE_KEYS)
     require_string_set(report, "fanout_selected_colocation_groups", REQUIRED_GROUPS)
+    candidate_groups = require_map_keys_at_least(
+        report, "fanout_colocation_group_candidate_counts", REQUIRED_GROUPS, 1
+    )
+    selected_groups = require_map_keys_at_least(
+        report, "fanout_selected_colocation_group_counts", REQUIRED_GROUPS, 1
+    )
+    if set(selected_groups) != REQUIRED_GROUPS:
+        raise ValueError(
+            "fanout_selected_colocation_group_counts must contain exactly the selected shared groups, "
+            f"got {sorted(selected_groups)}"
+        )
+    for group in REQUIRED_GROUPS:
+        if candidate_groups[group] < selected_groups[group]:
+            raise ValueError(
+                f"selected colocation group {group} exceeds candidates: "
+                f"{selected_groups[group]}>{candidate_groups[group]}"
+            )
+    if sum(candidate_groups.values()) != candidates:
+        raise ValueError(
+            "fanout_colocation_group_candidate_counts must account for all namespace candidates, "
+            f"got {sum(candidate_groups.values())} vs {candidates}"
+        )
+    if sum(selected_groups.values()) != expanded:
+        raise ValueError(
+            "fanout_selected_colocation_group_counts must account for all expanded nodes, "
+            f"got {sum(selected_groups.values())} vs {expanded}"
+        )
+    require_int_at_least(report, "fanout_max_selected_colocation_group_nodes", 1)
+    require_bool(report, "fanout_colocation_group_fanout_reduced")
     require_int_at_least(report, "fanout_candidate_current_agent_nodes", 1)
     require_int_at_least(report, "fanout_candidate_peer_agent_nodes", 1)
     require_int_at_least(report, "fanout_candidate_user_shared_nodes", 1)

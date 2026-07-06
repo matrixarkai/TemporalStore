@@ -11,6 +11,13 @@
     "user:user",
     "workspace:context"
   ],
+  "selected_colocation_group_counts": {
+    "global": 1,
+    "user:user": 2,
+    "workspace:context": 1
+  },
+  "max_selected_colocation_group_nodes": 2,
+  "colocation_group_fanout_reduced": true,
   "selected_colocation_scope_keys": [
     "agent:codex",
     "global",
@@ -67,6 +74,11 @@
     "user:user",
     "workspace:context"
   ],
+  "colocation_group_candidate_counts": {
+    "global": 1,
+    "user:user": 11,
+    "workspace:context": 1
+  },
   "colocation_scope_keys": [
     "agent:claude",
     "agent:codex",

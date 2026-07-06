@@ -79,6 +79,13 @@
     "user:user",
     "workspace:context"
   ],
+  "fanout_selected_colocation_group_counts": {
+    "global": 1,
+    "user:user": 12,
+    "workspace:context": 3
+  },
+  "fanout_max_selected_colocation_group_nodes": 12,
+  "fanout_colocation_group_fanout_reduced": true,
   "fanout_selected_colocation_scope_keys": [
     "agent:codex",
     "global",
@@ -147,6 +154,11 @@
     "user:user",
     "workspace:context"
   ],
+  "fanout_colocation_group_candidate_counts": {
+    "global": 1,
+    "user:user": 29,
+    "workspace:context": 14
+  },
   "fanout_colocation_scope_keys": [
     "agent:claude",
     "agent:codex",
@@ -289,7 +301,7 @@
     "global"
   ],
   "fanout_injection_current_agent_first": true,
-  "ingest_ms": 8674,
-  "retrieve_ms": 2709,
-  "secondary_index_validation_ms": 1145
+  "ingest_ms": 8107,
+  "retrieve_ms": 2771,
+  "secondary_index_validation_ms": 1273
 }

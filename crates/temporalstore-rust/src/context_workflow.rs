@@ -1075,6 +1075,12 @@ pub struct ContextFanoutPlanReport {
     #[serde(default)]
     pub selected_colocation_groups: Vec<String>,
     #[serde(default)]
+    pub selected_colocation_group_counts: BTreeMap<String, usize>,
+    #[serde(default)]
+    pub max_selected_colocation_group_nodes: usize,
+    #[serde(default)]
+    pub colocation_group_fanout_reduced: bool,
+    #[serde(default)]
     pub selected_colocation_scope_keys: Vec<String>,
     #[serde(default)]
     pub selected_colocation_scope_order: Vec<String>,
@@ -1090,6 +1096,8 @@ pub struct ContextFanoutPlanReport {
     pub scan_layers: Vec<String>,
     #[serde(default)]
     pub colocation_groups: Vec<String>,
+    #[serde(default)]
+    pub colocation_group_candidate_counts: BTreeMap<String, usize>,
     #[serde(default)]
     pub colocation_scope_keys: Vec<String>,
     #[serde(default)]
@@ -4348,6 +4356,12 @@ pub fn retrieve_context(
                 &mut fanout_plan.colocation_groups,
                 scope.shared_graph_scope.clone(),
             );
+            if !scope.shared_graph_scope.is_empty() {
+                *fanout_plan
+                    .colocation_group_candidate_counts
+                    .entry(scope.shared_graph_scope.clone())
+                    .or_default() += 1;
+            }
             push_unique_context_string(
                 &mut fanout_plan.colocation_scope_keys,
                 context_scope_reservation_key(&scope),
@@ -4640,6 +4654,31 @@ pub fn retrieve_context(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
+    fanout_plan.selected_colocation_group_counts = event_node_hashes
+        .iter()
+        .filter_map(|node_hash| node_scope_by_hash.get(node_hash))
+        .map(|scope| scope.shared_graph_scope.clone())
+        .filter(|group| !group.is_empty())
+        .fold(BTreeMap::<String, usize>::new(), |mut counts, group| {
+            *counts.entry(group).or_default() += 1;
+            counts
+        });
+    fanout_plan.max_selected_colocation_group_nodes = fanout_plan
+        .selected_colocation_group_counts
+        .values()
+        .copied()
+        .max()
+        .unwrap_or_default();
+    fanout_plan.colocation_group_fanout_reduced = fanout_plan
+        .selected_colocation_group_counts
+        .iter()
+        .any(|(group, selected)| {
+            fanout_plan
+                .colocation_group_candidate_counts
+                .get(group)
+                .map(|candidates| *selected < *candidates)
+                .unwrap_or(false)
+        });
     fanout_plan.selected_colocation_group_count = fanout_plan.selected_colocation_groups.len();
     fanout_plan.selected_colocation_scope_count = selected_colocation_scope_keys.len();
     fanout_plan.fanout_reduced =
