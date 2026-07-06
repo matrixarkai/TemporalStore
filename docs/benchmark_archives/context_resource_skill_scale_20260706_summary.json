@@ -114,6 +114,11 @@
   "fanout_selected_user_shared_nodes": 1,
   "fanout_selected_workspace_shared_nodes": 3,
   "fanout_selected_global_shared_nodes": 1,
+  "fanout_shared_selected_node_count": 5,
+  "fanout_shared_scope_coverage_count": 3,
+  "fanout_shared_scope_coverage_ready": true,
+  "fanout_current_agent_boost_percent": 68,
+  "fanout_current_agent_boost_bounded": true,
   "fanout_shared_layer_quota_nodes": 4,
   "fanout_layer_quota_applied": true,
   "fanout_scan_layers": [
@@ -259,7 +264,7 @@
     "global"
   ],
   "fanout_injection_current_agent_first": true,
-  "ingest_ms": 9632,
-  "retrieve_ms": 2883,
-  "secondary_index_validation_ms": 1224
+  "ingest_ms": 13418,
+  "retrieve_ms": 2969,
+  "secondary_index_validation_ms": 1288
 }
