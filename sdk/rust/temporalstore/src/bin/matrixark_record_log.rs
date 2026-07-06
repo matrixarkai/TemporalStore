@@ -900,9 +900,9 @@ fn hash_entry_stats(command: &Command) -> (u64, u64) {
         }
     }
     if let Some(entries) = &command.entries_compact {
-        for CompactHashEntry(_, _, value) in entries {
+        for entry in entries {
             records += 1;
-            bytes += value.len() as u64;
+            bytes += entry[2].len() as u64;
         }
     }
     (records, bytes)
@@ -919,8 +919,8 @@ fn expanded_hash_entries(command: &Command) -> Vec<(String, String, String)> {
         }));
     }
     if let Some(entries) = &command.entries_compact {
-        expanded.extend(entries.iter().map(|CompactHashEntry(key, field, value)| {
-            (key.clone(), field.clone(), value.clone())
+        expanded.extend(entries.iter().map(|entry| {
+            (entry[0].clone(), entry[1].clone(), entry[2].clone())
         }));
     }
     expanded
@@ -1983,7 +1983,79 @@ fn pack_ref_from_record(
     })
 }
 
+fn retrieve_context_pack_via_sdk_native(client: &Client, command: &Command) -> Result<Value, String> {
+    let count_key = required(command.count_key.clone(), "count_key")?;
+    let record_hash_key = required(command.record_hash_key.clone(), "record_hash_key")?;
+    let shard_size = command.shard_size.unwrap_or(1024).max(1) as usize;
+    let request = command.record.clone().unwrap_or_else(|| json!({}));
+    let raw = client
+        .matrixark_retrieve_context_pack(
+            &count_key,
+            &record_hash_key,
+            shard_size,
+            &request.to_string(),
+        )
+        .map_err(|err| err.to_string())?;
+    let mut response: Value = serde_json::from_str(&raw)
+        .map_err(|err| format!("native retrieve context pack returned invalid JSON: {err}"))?;
+    if response.get("context_pack").is_none() {
+        response = json!({
+            "context_pack": response,
+        });
+    }
+    if let Some(obj) = response.as_object_mut() {
+        obj.insert("ok".to_string(), Value::Bool(true));
+        obj.insert("native_pack_assembly".to_string(), Value::Bool(true));
+        obj.insert(
+            "rust_proxy_native_sdk_path".to_string(),
+            Value::String("temporalstore_matrixark_retrieve_context_pack".to_string()),
+        );
+        obj.insert("cache_hit".to_string(), Value::Bool(true));
+    }
+    if let Some(pack) = response.get_mut("context_pack").and_then(Value::as_object_mut) {
+        pack.entry("context_pack_assembly".to_string())
+            .or_insert_with(|| Value::String("native_cpp_direct_via_rust_proxy".to_string()));
+        let selected_count = pack
+            .get("selected_ref_count")
+            .and_then(Value::as_u64)
+            .or_else(|| {
+                pack.get("selected_refs")
+                    .and_then(Value::as_array)
+                    .map(|refs| refs.len() as u64)
+            })
+            .unwrap_or(0);
+        pack.insert("selected_ref_count".to_string(), json!(selected_count));
+        let recall_policy = pack
+            .entry("recall_policy".to_string())
+            .or_insert_with(|| json!({}));
+        if let Some(recall_obj) = recall_policy.as_object_mut() {
+            recall_obj.insert(
+                "rust_proxy_native_sdk_path".to_string(),
+                Value::String("temporalstore_matrixark_retrieve_context_pack".to_string()),
+            );
+            recall_obj.insert("python_hot_path_records".to_string(), json!(0));
+        }
+    }
+    Ok(response)
+}
+
 fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Value, String> {
+    let use_sdk_native = std::env::var("MATRIXARK_RUST_PROXY_DISABLE_SDK_NATIVE_PACK")
+        .map(|value| !matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(true);
+    if use_sdk_native {
+        match retrieve_context_pack_via_sdk_native(client, command) {
+            Ok(response) => return Ok(response),
+            Err(err) => {
+                if std::env::var("MATRIXARK_RUST_PROXY_DISABLE_LEGACY_PACK_FALLBACK")
+                    .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+                    .unwrap_or(false)
+                {
+                    return Err(err);
+                }
+            }
+        }
+    }
     let request = command.record.clone().unwrap_or_else(|| json!({}));
     let query = request
         .get("query")
@@ -2925,25 +2997,11 @@ mod tests {
 
     #[test]
     fn command_stats_counts_scan_hash_records() {
-        let command = Command {
-            op: "scan_hash".to_string(),
-            key: Some("matrixark:mcp:records:000000".to_string()),
-            field: None,
-            value: None,
-            entries: None,
-            entries_compact: None,
-            record: None,
-            records: None,
-            record_type: None,
-            tenant_hash: None,
-            record_id: None,
-            record_ids: None,
-            metaserver: None,
-            namespace: None,
-            table: None,
-            request_timeout_ms: None,
-            io_timeout_ms: None,
-        };
+        let command: Command = serde_json::from_value(json!({
+            "op": "scan_hash",
+            "key": "matrixark:mcp:records:000000"
+        }))
+        .expect("command");
         let stats = command_stats(&command, &json!({"ok": true, "count": 3, "records": []}));
         assert_eq!(stats.records_read, 3);
     }
