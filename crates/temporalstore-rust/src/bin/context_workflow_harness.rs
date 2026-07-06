@@ -301,6 +301,10 @@ struct MultiAgentContextScanHarnessSummary {
     selected_user_shared_nodes: usize,
     selected_workspace_shared_nodes: usize,
     selected_global_shared_nodes: usize,
+    selected_shared_layer_nodes: usize,
+    required_shared_scope_count: usize,
+    selected_shared_scope_coverage_count: usize,
+    shared_scope_coverage_ready: bool,
     scan_layers: Vec<String>,
     colocation_groups: Vec<String>,
     colocation_scope_keys: Vec<String>,
@@ -1588,9 +1592,15 @@ fn run_resource_skill_conversation_scale(
         fanout_selected_global_shared_nodes: combined_retrieve
             .fanout_plan
             .selected_global_shared_nodes,
-        fanout_shared_selected_node_count,
-        fanout_shared_scope_coverage_count,
-        fanout_shared_scope_coverage_ready,
+        fanout_shared_selected_node_count: combined_retrieve
+            .fanout_plan
+            .selected_shared_layer_nodes,
+        fanout_shared_scope_coverage_count: combined_retrieve
+            .fanout_plan
+            .selected_shared_scope_coverage_count,
+        fanout_shared_scope_coverage_ready: combined_retrieve
+            .fanout_plan
+            .shared_scope_coverage_ready,
         fanout_current_agent_boost_percent,
         fanout_current_agent_boost_bounded,
         fanout_shared_layer_quota_nodes: combined_retrieve.fanout_plan.shared_layer_quota_nodes,
@@ -1903,6 +1913,12 @@ fn run_multi_agent_context_scan_harness(
         selected_user_shared_nodes: report.fanout_plan.selected_user_shared_nodes,
         selected_workspace_shared_nodes: report.fanout_plan.selected_workspace_shared_nodes,
         selected_global_shared_nodes: report.fanout_plan.selected_global_shared_nodes,
+        selected_shared_layer_nodes: report.fanout_plan.selected_shared_layer_nodes,
+        required_shared_scope_count: report.fanout_plan.required_shared_scope_count,
+        selected_shared_scope_coverage_count: report
+            .fanout_plan
+            .selected_shared_scope_coverage_count,
+        shared_scope_coverage_ready: report.fanout_plan.shared_scope_coverage_ready,
         scan_layers: report.fanout_plan.scan_layers,
         colocation_groups: report.fanout_plan.colocation_groups,
         colocation_scope_keys: report.fanout_plan.colocation_scope_keys,

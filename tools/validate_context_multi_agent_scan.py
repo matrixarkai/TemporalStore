@@ -164,6 +164,19 @@ def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: i
     require_int_at_least(report, "selected_user_shared_nodes", 1)
     require_int_at_least(report, "selected_workspace_shared_nodes", 1)
     require_int_at_least(report, "selected_global_shared_nodes", 1)
+    shared_selected = require_int_at_least(report, "selected_shared_layer_nodes", 3)
+    if shared_selected != (
+        report["selected_user_shared_nodes"]
+        + report["selected_workspace_shared_nodes"]
+        + report["selected_global_shared_nodes"]
+    ):
+        raise ValueError(
+            "selected_shared_layer_nodes must equal selected user+workspace+global nodes, "
+            f"got {shared_selected}"
+        )
+    require_int_equal(report, "required_shared_scope_count", 3)
+    require_int_equal(report, "selected_shared_scope_coverage_count", 3)
+    require_bool(report, "shared_scope_coverage_ready")
     require_int_at_least(report, "retrieved_block_count", 4)
     require_int_at_least(report, "retrieved_current_agent_block_count", 1)
     require_int_at_least(report, "retrieved_user_shared_block_count", 1)

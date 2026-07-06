@@ -289,7 +289,7 @@
     "global"
   ],
   "fanout_injection_current_agent_first": true,
-  "ingest_ms": 8833,
-  "retrieve_ms": 2796,
-  "secondary_index_validation_ms": 1203
+  "ingest_ms": 8674,
+  "retrieve_ms": 2709,
+  "secondary_index_validation_ms": 1145
 }

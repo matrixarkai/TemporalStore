@@ -190,6 +190,7 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
 - Peer-agent capping now happens before summary embedding lookup: 4 peer-agent nodes are pruned from summary scoring in this scale run.
 - The scale scan avoids full namespace replication: 28 candidate nodes are left unexpanded, a 63% fanout reduction across 3 selected graph groups and 4 selected scope keys.
 - Candidate pressure is scope-aware before selection: 24 current-agent nodes, 4 peer-agent nodes, and 16 shared nodes across user/workspace/global are classified before fanout pruning.
+- Shared-layer coverage is now enforced from the core retrieval report: all 3 required shared scopes are covered while the fill phase can select extra high-value workspace nodes.
 - Current-agent context is selected with agent-aware locality while user, workspace, and global shared resources remain visible.
 - Current-agent boost is explicit and bounded: 11 of 16 expanded nodes are `agent:codex`, giving a 68% current-agent boost while 5 shared nodes still satisfy the shared-layer quota.
 - The selected colocation distribution is exact: 11 current-agent nodes, 3 workspace nodes, 1 user node, and 1 global node, with zero peer-agent nodes.
