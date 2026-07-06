@@ -131,6 +131,135 @@ nlohmann::json StreamSegmentZoneOutput() {
   };
 }
 
+nlohmann::json PublicConfigOutput() {
+  return {
+      {"TS_BLOCK_INDEX_CACHE_BYTES", 67108864},
+      {"TS_BLOCK_SEGMENT_TARGET_BYTES", 1073741824},
+      {"TS_COLD_SCAN_NO_CACHE_FILL", true},
+      {"TS_COMPACTION_WATERMARK_BYTES", 268435456},
+      {"TS_CONTEXT_PAGE_TARGET_BYTES", 65536},
+      {"TS_PAGE_INDEX_CACHE_BYTES", 67108864},
+      {"TS_STORAGE_ZONE_SIZE", 10485760},
+      {"TS_STREAM_MAX_BLOB_SIZE", 10485760},
+  };
+}
+
+nlohmann::json DataStructureApiOutput() {
+  return {
+      {"block_address_metadata", true},
+      {"legacy_zone_aliases", true},
+      {"object_manager_runtime", true},
+      {"segment_block_index", true},
+      {"slot_layout_states", true},
+      {"slot_object_page_authority", true},
+      {"storage_manager_phase_order", true},
+      {"stream_backed_extent_lifecycle", true},
+  };
+}
+
+nlohmann::json SlotFirstPhysicalIndexOutput() {
+  return {
+      {"object_index_entry_count", 2},
+      {"page_index_entry_count", 2},
+      {"slot_dirty_generation_count", 1},
+      {"slot_owner_mismatch_count", 0},
+      {"slot_page_ref_count", 2},
+      {"slot_stale_ref_count", 0},
+  };
+}
+
+nlohmann::json ObjectManagerAuthorityOutput() {
+  return {
+      {"object_index_entry_count", 3},
+      {"object_manager_authority", true},
+      {"restart_rebuild_verified", true},
+      {"slot_dirty_generation_count", 1},
+      {"slot_page_ref_count", 3},
+  };
+}
+
+nlohmann::json MergedDumpLoadOutput() {
+  return {
+      {"append_log_replay_records", 4},
+      {"dump_load_generation", 2},
+      {"object_index_entry_count", 2},
+      {"page_index_rebuild_count", 1},
+      {"restart_rebuild_verified", true},
+  };
+}
+
+nlohmann::json ObjectColdHotReloadOutput() {
+  return {
+      {"cache_evictions", 1},
+      {"cache_refills", 1},
+      {"cache_rehydrates", 1},
+      {"memory_cache_misses", 1},
+      {"page_reads", 1},
+  };
+}
+
+nlohmann::json StalePageDensityOutput() {
+  return {
+      {"compaction_reclaimed_bytes", 12288},
+      {"physical_reclaimed_bytes", 12288},
+      {"stale_page_density_percent", 75},
+      {"stale_page_tombstones", 3},
+      {"stale_pages_rewritten", 1},
+      {"stale_pages_skipped", 0},
+  };
+}
+
+nlohmann::json StorageManagerPressureOutput() {
+  return {
+      {"cache_writeback_queue_depth", 2},
+      {"storage_manager_compaction_count", 1},
+      {"storage_manager_evict_count", 1},
+      {"storage_manager_loop_ms", 6},
+      {"storage_manager_reclaim_count", 1},
+      {"storage_manager_watermark_progress_count", 1},
+  };
+}
+
+nlohmann::json StorageManagerExpireOutput() {
+  return {
+      {"cold_scan_no_cache_reads", 3},
+      {"expire_cursor_limit", 128},
+      {"hot_cache_promotions", 0},
+      {"storage_manager_expire_count", 1},
+      {"tombstone_records", 2},
+  };
+}
+
+nlohmann::json PageGcDependencyOutput() {
+  return {
+      {"follower_cursor_retention_floor", 30},
+      {"physical_reclaim_errors", 0},
+      {"reclaim_refused_by_dependency", true},
+      {"storage_manager_follower_cursor_safety_count", 1},
+      {"storage_manager_page_gc_count", 1},
+  };
+}
+
+nlohmann::json IndexGcThresholdOutput() {
+  return {
+      {"block_index_rebuild_count", 1},
+      {"index_gc_generation", 5},
+      {"object_index_rebuild_count", 1},
+      {"page_index_rebuild_count", 1},
+      {"storage_manager_index_gc_count", 1},
+  };
+}
+
+void AddSingleCase(
+    UnifiedCaseReportArchive* archive,
+    const std::string& case_name,
+    const std::string& step_name,
+    const nlohmann::json& output,
+    double latency_ms) {
+  auto& item = AddCase(archive, case_name);
+  AddStep(&item, PassedStep(step_name, output, latency_ms));
+}
+
 UnifiedCaseReportArchive BuildArchive() {
   // Keep the full evidence object alive here so this executable proves the
   // canonical storage adapter type compiles along with the generic step helper.
@@ -206,6 +335,91 @@ UnifiedCaseReportArchive BuildArchive() {
           "stream_segment_manifest_rebuild_and_corruption_handling",
           StreamSegmentZoneOutput(),
           1.1));
+
+  AddSingleCase(
+      &archive,
+      "storage_config_cpp_like_public_knobs",
+      "storage_config_defaults_env_names_and_parsed_knobs",
+      PublicConfigOutput(),
+      0.8);
+  AddSingleCase(
+      &archive,
+      "storage_data_structure_api_parity",
+      "stream_zone_block_store_manager_api_parity_contract",
+      DataStructureApiOutput(),
+      0.9);
+  AddSingleCase(
+      &archive,
+      "storage_slot_first_physical_index",
+      "storage_slot_first_physical_index_coverage",
+      SlotFirstPhysicalIndexOutput(),
+      0.95);
+  AddSingleCase(
+      &archive,
+      "storage_object_manager_slotstore_runtime_authority",
+      "storage_object_manager_slotstore_runtime_authority_coverage",
+      ObjectManagerAuthorityOutput(),
+      0.95);
+  AddSingleCase(
+      &archive,
+      "storage_merged_dump_load_lifecycle",
+      "storage_merged_dump_load_lifecycle_coverage",
+      MergedDumpLoadOutput(),
+      1.0);
+  AddSingleCase(
+      &archive,
+      "storage_object_manager_cold_hot_reload",
+      "storage_object_manager_cold_hot_reload_coverage",
+      ObjectColdHotReloadOutput(),
+      1.05);
+  AddSingleCase(
+      &archive,
+      "storage_page_address_disk_cache_shared_store_fallback",
+      "storage_page_address_disk_cache_shared_store_fallback_coverage",
+      BlockAddressFallbackOutput(),
+      1.05);
+  AddSingleCase(
+      &archive,
+      "storage_stale_page_density_compaction",
+      "storage_stale_page_density_compaction_coverage",
+      StalePageDensityOutput(),
+      1.1);
+  AddSingleCase(
+      &archive,
+      "storage_manager_real_pressure_signals",
+      "storage_manager_real_pressure_signals_coverage",
+      StorageManagerPressureOutput(),
+      1.1);
+  AddSingleCase(
+      &archive,
+      "storage_manager_wal_reclaim_slot_generation_retention",
+      "storage_manager_wal_reclaim_slot_generation_retention_coverage",
+      WalIndexGcReclaimOutput(),
+      1.1);
+  AddSingleCase(
+      &archive,
+      "storage_manager_expire_cursor_scan_limits",
+      "storage_manager_expire_cursor_scan_limits_coverage",
+      StorageManagerExpireOutput(),
+      1.0);
+  AddSingleCase(
+      &archive,
+      "storage_manager_active_eviction_runtime",
+      "storage_manager_active_eviction_runtime_coverage",
+      CacheReplacementSoakOutput(),
+      1.0);
+  AddSingleCase(
+      &archive,
+      "storage_manager_page_gc_dependency_refusal",
+      "storage_manager_page_gc_dependency_refusal_coverage",
+      PageGcDependencyOutput(),
+      1.0);
+  AddSingleCase(
+      &archive,
+      "storage_manager_index_gc_thresholds_recovery",
+      "storage_manager_index_gc_thresholds_recovery_coverage",
+      IndexGcThresholdOutput(),
+      1.0);
 
   return archive;
 }

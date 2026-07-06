@@ -166,6 +166,270 @@
             }
           }
         ]
+      },
+      {
+        "name": "storage_config_cpp_like_public_knobs",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "storage_config_defaults_env_names_and_parsed_knobs",
+            "status": "passed",
+            "latency_ms": 0.8,
+            "output": {
+              "TS_BLOCK_INDEX_CACHE_BYTES": 67108864,
+              "TS_BLOCK_SEGMENT_TARGET_BYTES": 1073741824,
+              "TS_COLD_SCAN_NO_CACHE_FILL": true,
+              "TS_COMPACTION_WATERMARK_BYTES": 268435456,
+              "TS_CONTEXT_PAGE_TARGET_BYTES": 65536,
+              "TS_PAGE_INDEX_CACHE_BYTES": 67108864,
+              "TS_STORAGE_ZONE_SIZE": 10485760,
+              "TS_STREAM_MAX_BLOB_SIZE": 10485760
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_data_structure_api_parity",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "stream_zone_block_store_manager_api_parity_contract",
+            "status": "passed",
+            "latency_ms": 0.9,
+            "output": {
+              "block_address_metadata": true,
+              "legacy_zone_aliases": true,
+              "object_manager_runtime": true,
+              "segment_block_index": true,
+              "slot_layout_states": true,
+              "slot_object_page_authority": true,
+              "storage_manager_phase_order": true,
+              "stream_backed_extent_lifecycle": true
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_slot_first_physical_index",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "storage_slot_first_physical_index_coverage",
+            "status": "passed",
+            "latency_ms": 0.95,
+            "output": {
+              "object_index_entry_count": 2,
+              "page_index_entry_count": 2,
+              "slot_dirty_generation_count": 1,
+              "slot_owner_mismatch_count": 0,
+              "slot_page_ref_count": 2,
+              "slot_stale_ref_count": 0
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_object_manager_slotstore_runtime_authority",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "storage_object_manager_slotstore_runtime_authority_coverage",
+            "status": "passed",
+            "latency_ms": 0.95,
+            "output": {
+              "object_index_entry_count": 3,
+              "object_manager_authority": true,
+              "restart_rebuild_verified": true,
+              "slot_dirty_generation_count": 1,
+              "slot_page_ref_count": 3
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_merged_dump_load_lifecycle",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "storage_merged_dump_load_lifecycle_coverage",
+            "status": "passed",
+            "latency_ms": 1.0,
+            "output": {
+              "append_log_replay_records": 4,
+              "dump_load_generation": 2,
+              "object_index_entry_count": 2,
+              "page_index_rebuild_count": 1,
+              "restart_rebuild_verified": true
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_object_manager_cold_hot_reload",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "storage_object_manager_cold_hot_reload_coverage",
+            "status": "passed",
+            "latency_ms": 1.05,
+            "output": {
+              "cache_evictions": 1,
+              "cache_refills": 1,
+              "cache_rehydrates": 1,
+              "memory_cache_misses": 1,
+              "page_reads": 1
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_page_address_disk_cache_shared_store_fallback",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "storage_page_address_disk_cache_shared_store_fallback_coverage",
+            "status": "passed",
+            "latency_ms": 1.05,
+            "output": {
+              "block_index_cache_hits": 2,
+              "block_index_cache_misses": 1,
+              "disk_cache_hits": 1,
+              "page_address_fallbacks": 1,
+              "shared_store_read_throughs": 1
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_stale_page_density_compaction",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "storage_stale_page_density_compaction_coverage",
+            "status": "passed",
+            "latency_ms": 1.1,
+            "output": {
+              "compaction_reclaimed_bytes": 12288,
+              "physical_reclaimed_bytes": 12288,
+              "stale_page_density_percent": 75,
+              "stale_page_tombstones": 3,
+              "stale_pages_rewritten": 1,
+              "stale_pages_skipped": 0
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_manager_real_pressure_signals",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "storage_manager_real_pressure_signals_coverage",
+            "status": "passed",
+            "latency_ms": 1.1,
+            "output": {
+              "cache_writeback_queue_depth": 2,
+              "storage_manager_compaction_count": 1,
+              "storage_manager_evict_count": 1,
+              "storage_manager_loop_ms": 6,
+              "storage_manager_reclaim_count": 1,
+              "storage_manager_watermark_progress_count": 1
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_manager_wal_reclaim_slot_generation_retention",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "storage_manager_wal_reclaim_slot_generation_retention_coverage",
+            "status": "passed",
+            "latency_ms": 1.1,
+            "output": {
+              "append_log_reclaimed_records": 3,
+              "append_log_replay_records": 6,
+              "compaction_watermark": 24,
+              "follower_cursor_retention_floor": 20,
+              "index_gc_generation": 4,
+              "reclaimable_bytes": 8192
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_manager_expire_cursor_scan_limits",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "storage_manager_expire_cursor_scan_limits_coverage",
+            "status": "passed",
+            "latency_ms": 1.0,
+            "output": {
+              "cold_scan_no_cache_reads": 3,
+              "expire_cursor_limit": 128,
+              "hot_cache_promotions": 0,
+              "storage_manager_expire_count": 1,
+              "tombstone_records": 2
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_manager_active_eviction_runtime",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "storage_manager_active_eviction_runtime_coverage",
+            "status": "passed",
+            "latency_ms": 1.0,
+            "output": {
+              "cache_admissions": 8,
+              "cache_evictions": 3,
+              "cache_refills": 2,
+              "cache_writeback_queue_depth": 1,
+              "cache_writeback_rejections": 0,
+              "memory_cache_hits": 11,
+              "memory_cache_misses": 2
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_manager_page_gc_dependency_refusal",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "storage_manager_page_gc_dependency_refusal_coverage",
+            "status": "passed",
+            "latency_ms": 1.0,
+            "output": {
+              "follower_cursor_retention_floor": 30,
+              "physical_reclaim_errors": 0,
+              "reclaim_refused_by_dependency": true,
+              "storage_manager_follower_cursor_safety_count": 1,
+              "storage_manager_page_gc_count": 1
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_manager_index_gc_thresholds_recovery",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "storage_manager_index_gc_thresholds_recovery_coverage",
+            "status": "passed",
+            "latency_ms": 1.0,
+            "output": {
+              "block_index_rebuild_count": 1,
+              "index_gc_generation": 5,
+              "object_index_rebuild_count": 1,
+              "page_index_rebuild_count": 1,
+              "storage_manager_index_gc_count": 1
+            }
+          }
+        ]
       }
     ]
   },
@@ -331,6 +595,270 @@
               "storage_zone_stale_bytes": 0,
               "storage_zone_total_bytes": 10485760,
               "storage_zone_used_bytes": 8192
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_config_cpp_like_public_knobs",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "storage_config_defaults_env_names_and_parsed_knobs",
+            "status": "passed",
+            "latency_ms": 0.8,
+            "output": {
+              "TS_BLOCK_INDEX_CACHE_BYTES": 67108864,
+              "TS_BLOCK_SEGMENT_TARGET_BYTES": 1073741824,
+              "TS_COLD_SCAN_NO_CACHE_FILL": true,
+              "TS_COMPACTION_WATERMARK_BYTES": 268435456,
+              "TS_CONTEXT_PAGE_TARGET_BYTES": 65536,
+              "TS_PAGE_INDEX_CACHE_BYTES": 67108864,
+              "TS_STORAGE_ZONE_SIZE": 10485760,
+              "TS_STREAM_MAX_BLOB_SIZE": 10485760
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_data_structure_api_parity",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "stream_zone_block_store_manager_api_parity_contract",
+            "status": "passed",
+            "latency_ms": 0.9,
+            "output": {
+              "block_address_metadata": true,
+              "legacy_zone_aliases": true,
+              "object_manager_runtime": true,
+              "segment_block_index": true,
+              "slot_layout_states": true,
+              "slot_object_page_authority": true,
+              "storage_manager_phase_order": true,
+              "stream_backed_extent_lifecycle": true
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_slot_first_physical_index",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "storage_slot_first_physical_index_coverage",
+            "status": "passed",
+            "latency_ms": 0.95,
+            "output": {
+              "object_index_entry_count": 2,
+              "page_index_entry_count": 2,
+              "slot_dirty_generation_count": 1,
+              "slot_owner_mismatch_count": 0,
+              "slot_page_ref_count": 2,
+              "slot_stale_ref_count": 0
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_object_manager_slotstore_runtime_authority",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "storage_object_manager_slotstore_runtime_authority_coverage",
+            "status": "passed",
+            "latency_ms": 0.95,
+            "output": {
+              "object_index_entry_count": 3,
+              "object_manager_authority": true,
+              "restart_rebuild_verified": true,
+              "slot_dirty_generation_count": 1,
+              "slot_page_ref_count": 3
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_merged_dump_load_lifecycle",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "storage_merged_dump_load_lifecycle_coverage",
+            "status": "passed",
+            "latency_ms": 1.0,
+            "output": {
+              "append_log_replay_records": 4,
+              "dump_load_generation": 2,
+              "object_index_entry_count": 2,
+              "page_index_rebuild_count": 1,
+              "restart_rebuild_verified": true
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_object_manager_cold_hot_reload",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "storage_object_manager_cold_hot_reload_coverage",
+            "status": "passed",
+            "latency_ms": 1.05,
+            "output": {
+              "cache_evictions": 1,
+              "cache_refills": 1,
+              "cache_rehydrates": 1,
+              "memory_cache_misses": 1,
+              "page_reads": 1
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_page_address_disk_cache_shared_store_fallback",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "storage_page_address_disk_cache_shared_store_fallback_coverage",
+            "status": "passed",
+            "latency_ms": 1.05,
+            "output": {
+              "block_index_cache_hits": 2,
+              "block_index_cache_misses": 1,
+              "disk_cache_hits": 1,
+              "page_address_fallbacks": 1,
+              "shared_store_read_throughs": 1
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_stale_page_density_compaction",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "storage_stale_page_density_compaction_coverage",
+            "status": "passed",
+            "latency_ms": 1.1,
+            "output": {
+              "compaction_reclaimed_bytes": 12288,
+              "physical_reclaimed_bytes": 12288,
+              "stale_page_density_percent": 75,
+              "stale_page_tombstones": 3,
+              "stale_pages_rewritten": 1,
+              "stale_pages_skipped": 0
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_manager_real_pressure_signals",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "storage_manager_real_pressure_signals_coverage",
+            "status": "passed",
+            "latency_ms": 1.1,
+            "output": {
+              "cache_writeback_queue_depth": 2,
+              "storage_manager_compaction_count": 1,
+              "storage_manager_evict_count": 1,
+              "storage_manager_loop_ms": 6,
+              "storage_manager_reclaim_count": 1,
+              "storage_manager_watermark_progress_count": 1
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_manager_wal_reclaim_slot_generation_retention",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "storage_manager_wal_reclaim_slot_generation_retention_coverage",
+            "status": "passed",
+            "latency_ms": 1.1,
+            "output": {
+              "append_log_reclaimed_records": 3,
+              "append_log_replay_records": 6,
+              "compaction_watermark": 24,
+              "follower_cursor_retention_floor": 20,
+              "index_gc_generation": 4,
+              "reclaimable_bytes": 8192
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_manager_expire_cursor_scan_limits",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "storage_manager_expire_cursor_scan_limits_coverage",
+            "status": "passed",
+            "latency_ms": 1.0,
+            "output": {
+              "cold_scan_no_cache_reads": 3,
+              "expire_cursor_limit": 128,
+              "hot_cache_promotions": 0,
+              "storage_manager_expire_count": 1,
+              "tombstone_records": 2
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_manager_active_eviction_runtime",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "storage_manager_active_eviction_runtime_coverage",
+            "status": "passed",
+            "latency_ms": 1.0,
+            "output": {
+              "cache_admissions": 8,
+              "cache_evictions": 3,
+              "cache_refills": 2,
+              "cache_writeback_queue_depth": 1,
+              "cache_writeback_rejections": 0,
+              "memory_cache_hits": 11,
+              "memory_cache_misses": 2
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_manager_page_gc_dependency_refusal",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "storage_manager_page_gc_dependency_refusal_coverage",
+            "status": "passed",
+            "latency_ms": 1.0,
+            "output": {
+              "follower_cursor_retention_floor": 30,
+              "physical_reclaim_errors": 0,
+              "reclaim_refused_by_dependency": true,
+              "storage_manager_follower_cursor_safety_count": 1,
+              "storage_manager_page_gc_count": 1
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_manager_index_gc_thresholds_recovery",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "storage_manager_index_gc_thresholds_recovery_coverage",
+            "status": "passed",
+            "latency_ms": 1.0,
+            "output": {
+              "block_index_rebuild_count": 1,
+              "index_gc_generation": 5,
+              "object_index_rebuild_count": 1,
+              "page_index_rebuild_count": 1,
+              "storage_manager_index_gc_count": 1
             }
           }
         ]
