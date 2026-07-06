@@ -1959,7 +1959,19 @@ def make_adapter(backend: str, args: argparse.Namespace, storage_prefix: str):
         else:
             os.environ["MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS"] = "0"
             os.environ["MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES"] = "0"
-        direct_lib = Path(os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_LIB", ""))
+        direct_lib_raw = os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_LIB", "").strip()
+        direct_lib = Path(direct_lib_raw) if direct_lib_raw else Path("/__matrixark_missing_rust_direct_lib__")
+        if not direct_lib.exists():
+            rust_cli = Path(args.rust_cli).resolve()
+            candidates = [
+                rust_cli.parent / "libtemporalstore.so",
+                rust_cli.parent / "deps" / "libtemporalstore.so",
+            ]
+            for candidate in candidates:
+                if candidate.exists():
+                    direct_lib = candidate
+                    os.environ.setdefault("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_LIB", str(candidate))
+                    break
         sdk_mode = "direct-sdk" if direct_lib.exists() else "proxy"
         if direct_lib.exists():
             os.environ.setdefault("TEMPORALSTORE_LIB", args.cpp_lib)
