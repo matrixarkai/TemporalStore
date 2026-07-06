@@ -818,6 +818,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
     def append_many(self, records: list[Json]) -> None:
         self._append_raw_ingestion_records(records)
         materialized = materialize_serving_record_batch(records)
+        if self._queue_batched_records(materialized):
+            return
         self._append_many_materialized(materialized)
 
     def _storage_route_for_bundle(self, bundle: list[Json]) -> Json:
