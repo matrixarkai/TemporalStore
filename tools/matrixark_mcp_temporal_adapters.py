@@ -2867,6 +2867,11 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             pack["recall_policy"] = {}
         if isinstance(pack["recall_policy"], dict):
             native_telemetry = pack.get("retrieval_metrics") if isinstance(pack.get("retrieval_metrics"), dict) else {}
+            scan_stats = pack["recall_policy"].get("scan_stats") if isinstance(pack["recall_policy"].get("scan_stats"), dict) else {}
+            if scan_stats:
+                merged_native_telemetry = dict(scan_stats)
+                merged_native_telemetry.update(native_telemetry)
+                native_telemetry = merged_native_telemetry
             native_stage_metrics = native_telemetry.get("stages") if isinstance(native_telemetry.get("stages"), dict) else {}
             total_native_ms = round((time.perf_counter() - started_perf) * 1000.0, 3)
             selected_count = len(selected_refs) if isinstance(selected_refs, list) else 0
