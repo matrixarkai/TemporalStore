@@ -264,6 +264,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         self._direct_write_queue_mode = os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_MODE", "memory").strip().lower() or "memory"
         if self._direct_write_queue_mode not in {"memory", "temporalstore"}:
             raise MatrixArkError("MATRIXARK_DIRECT_WRITE_QUEUE_MODE must be memory or temporalstore")
+        self._direct_write_queue_drain_max_batches = max(1, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_DRAIN_MAX_BATCHES", "64")))
+        self._direct_write_queue_allow_sync_context = os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_ALLOW_SYNC_CONTEXT", "0").strip().lower() in {"1", "true", "yes"}
+        self._direct_write_queue_autostart = os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_AUTOSTART", "1").strip().lower() not in {"0", "false", "no"}
+        self._direct_raw_ingestion_queue_enabled = os.environ.get("MATRIXARK_DIRECT_RAW_INGESTION_QUEUE", "0").strip().lower() in {"1", "true", "yes"}
         self._direct_write_queue_key = f"{self._storage_prefix}:direct_write_queue"
         self._direct_write_queue_done_key = f"{self._storage_prefix}:direct_write_queue_done"
         self._direct_write_queue_dead_key = f"{self._storage_prefix}:direct_write_queue_dead"
@@ -382,6 +386,14 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             self._direct_write_queue_mode = os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_MODE", "memory").strip().lower() or "memory"
         if self._direct_write_queue_mode not in {"memory", "temporalstore"}:
             self._direct_write_queue_mode = "memory"
+        if not hasattr(self, "_direct_write_queue_drain_max_batches"):
+            self._direct_write_queue_drain_max_batches = max(1, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_DRAIN_MAX_BATCHES", "64")))
+        if not hasattr(self, "_direct_write_queue_allow_sync_context"):
+            self._direct_write_queue_allow_sync_context = os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_ALLOW_SYNC_CONTEXT", "0").strip().lower() in {"1", "true", "yes"}
+        if not hasattr(self, "_direct_write_queue_autostart"):
+            self._direct_write_queue_autostart = os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_AUTOSTART", "1").strip().lower() not in {"0", "false", "no"}
+        if not hasattr(self, "_direct_raw_ingestion_queue_enabled"):
+            self._direct_raw_ingestion_queue_enabled = os.environ.get("MATRIXARK_DIRECT_RAW_INGESTION_QUEUE", "0").strip().lower() in {"1", "true", "yes"}
         if not hasattr(self, "_direct_write_queue_key"):
             self._direct_write_queue_key = f"{self._storage_prefix}:direct_write_queue"
         if not hasattr(self, "_direct_write_queue_done_key"):
@@ -823,12 +835,20 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             return 0
         return max(0, value)
 
-    def _append_raw_ingestion_records(self, records: list[Json]) -> None:
+    def _append_raw_ingestion_records(self, records: list[Json], *, allow_queue: bool = True) -> None:
         if not records:
             return
         self._ensure_raw_ingestion_fields()
         if self._raw_ingestion_prefix == self._storage_prefix:
             raise MatrixArkError("MATRIXARK_DIRECT_RAW_STORAGE_PREFIX must differ from the serving storage prefix")
+        if (
+            allow_queue
+            and bool(getattr(self, "_direct_raw_ingestion_queue_enabled", False))
+            and bool(getattr(self, "_direct_write_queue_enabled", False))
+            and getattr(self, "_direct_write_queue_mode", "memory") == "memory"
+        ):
+            self._enqueue_direct_write_item({"queue_mode": "raw_ingestion", "records": list(records)}, len(records))
+            return
         started_perf = time.perf_counter()
         with self._records_lock:
             count = self._raw_entry_count_cache if self._raw_entry_count_cache is not None else self._get_raw_count()
@@ -1218,6 +1238,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             return False
         if not records:
             return False
+        if bool(getattr(self, "_direct_write_queue_allow_sync_context", False)):
+            return all(isinstance(record, dict) for record in records)
         saw_background_route = False
         for record in records:
             route = record.get("storage_route")
@@ -1260,53 +1282,83 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         self._hset_with_backoff(self._direct_write_queue_key, field, json.dumps(payload, separators=(",", ":")))
         return field
 
-    def _enqueue_direct_write(self, records: list[Json]) -> None:
+    def _enqueue_direct_write_item(self, item: Any, record_count: int) -> None:
         self._ensure_direct_write_queue_fields()
-        self._start_direct_write_worker()
-        item: Any = list(records)
-        if getattr(self, "_direct_write_queue_mode", "memory") == "temporalstore":
-            item = {"queue_mode": "temporalstore", "field": self._enqueue_direct_write_durable(records)}
+        if bool(getattr(self, "_direct_write_queue_autostart", True)):
+            self._start_direct_write_worker()
         wait_started_perf = time.perf_counter()
         try:
             self._direct_write_queue.put(item, timeout=self._direct_write_queue_put_timeout_s)
         except queue.Full as exc:
             self._observe_append_queue_wait((time.perf_counter() - wait_started_perf) * 1000.0)
-            if getattr(self, "_direct_write_queue_mode", "memory") == "temporalstore":
+            if isinstance(item, dict) and item.get("queue_mode") == "temporalstore":
                 _mcp_debug_log("matrixark durable direct write queue accepted batch but local worker queue is full; batch will be recovered by drain")
-                self._direct_write_enqueued_records += len(records)
+                self._direct_write_enqueued_records += record_count
                 self._direct_write_enqueued_batches += 1
                 return
             raise MatrixArkError("direct TemporalStore write queue is full") from exc
         self._observe_append_queue_wait((time.perf_counter() - wait_started_perf) * 1000.0)
-        self._direct_write_enqueued_records += len(records)
+        self._direct_write_enqueued_records += record_count
         self._direct_write_enqueued_batches += 1
+
+    def _enqueue_direct_write(self, records: list[Json]) -> None:
+        item: Any = list(records)
+        if getattr(self, "_direct_write_queue_mode", "memory") == "temporalstore":
+            item = {"queue_mode": "temporalstore", "field": self._enqueue_direct_write_durable(records)}
+        self._enqueue_direct_write_item(item, len(records))
 
     def _direct_write_loop(self) -> None:
         while not self._direct_write_stop.is_set():
             try:
-                item = self._direct_write_queue.get(timeout=0.1)
+                first = self._direct_write_queue.get(timeout=0.1)
             except queue.Empty:
                 continue
+            items = [first]
+            max_batches = max(1, int(getattr(self, "_direct_write_queue_drain_max_batches", 64) or 64))
+            while len(items) < max_batches:
+                try:
+                    items.append(self._direct_write_queue.get_nowait())
+                except queue.Empty:
+                    break
             try:
-                flushed = self._flush_direct_write_item(item)
+                flushed = self._flush_direct_write_items(items)
                 self._direct_write_flushed_records += flushed
-                self._direct_write_flushed_batches += 1
+                self._direct_write_flushed_batches += len(items)
             except Exception as exc:
                 self._direct_write_failures += 1
                 _mcp_debug_log(f"matrixark direct write queue flush failed: {exc}")
             finally:
-                try:
-                    self._direct_write_queue.task_done()
-                except Exception:
-                    pass
+                for _item in items:
+                    try:
+                        self._direct_write_queue.task_done()
+                    except Exception:
+                        pass
+
+    def _flush_direct_write_items(self, items: list[Any]) -> int:
+        memory_records: list[Json] = []
+        raw_ingestion_records: list[Json] = []
+        flushed = 0
+        for item in items:
+            if isinstance(item, dict) and item.get("queue_mode") == "temporalstore":
+                flushed += self._flush_direct_write_durable_field(str(item.get("field") or ""))
+            elif isinstance(item, dict) and item.get("queue_mode") == "raw_ingestion":
+                rows = item.get("records")
+                if isinstance(rows, list):
+                    raw_ingestion_records.extend(row for row in rows if isinstance(row, dict))
+            elif isinstance(item, list):
+                memory_records.extend(row for row in item if isinstance(row, dict))
+            else:
+                raise MatrixArkError("unknown direct write queue item")
+        if raw_ingestion_records:
+            self._append_raw_ingestion_records(raw_ingestion_records, allow_queue=False)
+            flushed += len(raw_ingestion_records)
+        if memory_records:
+            self._append_many_materialized(memory_records, allow_queue=False)
+            flushed += len(memory_records)
+        return flushed
 
     def _flush_direct_write_item(self, item: Any) -> int:
-        if isinstance(item, dict) and item.get("queue_mode") == "temporalstore":
-            return self._flush_direct_write_durable_field(str(item.get("field") or ""))
-        if isinstance(item, list):
-            self._append_many_materialized(item, allow_queue=False)
-            return len(item)
-        raise MatrixArkError("unknown direct write queue item")
+        return self._flush_direct_write_items([item])
 
     def _load_direct_write_durable_payload(self, field: str) -> Json | None:
         if not field:
@@ -1411,6 +1463,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
 
     def flush_direct_writes(self, timeout_s: float | None = None) -> None:
         self._ensure_direct_write_queue_fields()
+        self._start_direct_write_worker()
         if getattr(self, "_direct_write_queue_mode", "memory") == "temporalstore":
             self.drain_durable_direct_write_queue()
         deadline = time.monotonic() + float(timeout_s if timeout_s is not None else 30.0)
