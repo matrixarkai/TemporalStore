@@ -15,7 +15,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 rustraft = { git = "https://github.com/bjmeetsfo/RustRaft.git", rev = "5ef82eca8cb06e5e69e6414afc2dfe57db9ff5c1" }
-rustmtcache = { git = "https://github.com/bjmeetsfo/rustmtcache.git", rev = "86393ad3abce13eb345d1244992082e133b4ddcf" }
+rustmtcache = { git = "https://github.com/bjmeetsfo/rustmtcache.git", rev = "aac08ee7afdfc9119c1de3504fa7fe2f7cc35f70" }
 temporalstore-snapshot = { path = "../temporalstore-snapshot" }
 thiserror = "1"
 tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread"] }
