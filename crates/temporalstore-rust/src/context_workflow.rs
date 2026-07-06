@@ -1951,7 +1951,7 @@ pub fn extract_context(
         last_event_time_ms: timestamp_ms,
         summary_dirty: true,
         l1_ref: l1.clone(),
-        raw_metadata_ref: l2_ref.clone(),
+        raw_metadata_ref: request.source_id.clone(),
     };
     let event = context_event_with_storage_keys(
         node_hash,
@@ -1967,7 +1967,7 @@ pub fn extract_context(
             confidence: 1.0,
             importance: context_importance(&request.body),
             text: request.body.clone(),
-            source_ref: String::new(),
+            source_ref: request.source_id.clone(),
             related_node_hashes: Vec::new(),
             compact_attrs: Vec::new(),
         },
@@ -3902,6 +3902,23 @@ fn parse_provider_summary_content(
     )
 }
 
+fn context_source_ref_has_explicit_scope(source_ref: &str) -> bool {
+    let lower = source_ref.to_ascii_lowercase();
+    lower.contains("global")
+        || lower.contains("agent:")
+        || lower.contains("agent/")
+        || lower.contains("producer:")
+        || lower.contains("producer/")
+        || lower.contains("user:")
+        || lower.contains("user/")
+        || lower.contains("workspace:")
+        || lower.contains("workspace/")
+        || lower.contains("team:")
+        || lower.contains("team/")
+        || lower.contains("project:")
+        || lower.contains("project/")
+}
+
 fn context_scope_descriptor_from_source_ref(
     source_ref: &str,
     request: &ContextRetrieveRequest,
@@ -4155,7 +4172,35 @@ pub fn retrieve_context(
             node: Some(node), ..
         } = node_response.response
         {
-            let scope = context_scope_descriptor_from_source_ref(&node.raw_metadata_ref, &request);
+            let mut scope_source_ref = node.raw_metadata_ref.clone();
+            if !context_source_ref_has_explicit_scope(&scope_source_ref) {
+                let events_response = engine.execute(ExecuteRequest {
+                    shard_id: request.shard_id,
+                    command: Command::ContextQueryEvents {
+                        tenant_hash: request.tenant_hash,
+                        node_hash: *node_hash,
+                        start_time_ms: request.start_time_ms,
+                        end_time_ms: request.end_time_ms,
+                        limit: Some(1),
+                        current_valid_only: false,
+                        as_of_ms: 0,
+                        kinds: Vec::new(),
+                        statuses: Vec::new(),
+                        min_confidence: 0.0,
+                        min_importance: 0.0,
+                    },
+                });
+                if let CommandResponse::ContextEvents { events, .. } = events_response.response {
+                    if let Some(event_source_ref) = events
+                        .iter()
+                        .map(|event| event.source_ref.as_str())
+                        .find(|source_ref| context_source_ref_has_explicit_scope(source_ref))
+                    {
+                        scope_source_ref = event_source_ref.to_string();
+                    }
+                }
+            }
+            let scope = context_scope_descriptor_from_source_ref(&scope_source_ref, &request);
             push_unique_context_string(
                 &mut fanout_plan.scan_layers,
                 context_scope_layer_name(scope.layer).to_string(),

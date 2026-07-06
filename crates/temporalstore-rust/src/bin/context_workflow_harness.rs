@@ -183,6 +183,17 @@ struct ResourceSkillConversationScaleSummary {
     fanout_dirty_marker_count: usize,
     fanout_secondary_index_count: usize,
     fanout_ready: bool,
+    multi_agent_scan_ready: bool,
+    fanout_namespace_node_candidates: usize,
+    fanout_event_expanded_nodes: usize,
+    fanout_selected_current_agent_nodes: usize,
+    fanout_selected_user_shared_nodes: usize,
+    fanout_selected_workspace_shared_nodes: usize,
+    fanout_selected_global_shared_nodes: usize,
+    fanout_shared_layer_quota_nodes: usize,
+    fanout_layer_quota_applied: bool,
+    fanout_scan_layers: Vec<String>,
+    fanout_colocation_groups: Vec<String>,
     secondary_index_ready: bool,
     secondary_index_checked_refs: usize,
     secondary_index_found_refs: usize,
@@ -194,6 +205,27 @@ struct ResourceSkillConversationScaleSummary {
     ingest_ms: u128,
     retrieve_ms: u128,
     secondary_index_validation_ms: u128,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct MultiAgentContextScanHarnessSummary {
+    ready: bool,
+    namespace_node_candidates: usize,
+    event_expanded_nodes: usize,
+    fanout_reduced: bool,
+    layer_quota_applied: bool,
+    shared_layer_quota_nodes: usize,
+    selected_current_agent_nodes: usize,
+    selected_user_shared_nodes: usize,
+    selected_workspace_shared_nodes: usize,
+    selected_global_shared_nodes: usize,
+    scan_layers: Vec<String>,
+    colocation_groups: Vec<String>,
+    locality_keys: Vec<String>,
+    retrieved_block_count: usize,
+    retrieved_event_count: usize,
+    selected_ref_count: usize,
+    current_agent_id: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -296,6 +328,17 @@ fn main() {
         root.join("indexes"),
     );
     engine.load_shard(1);
+    let multi_agent_scan_only = std::env::var("TEMPORALSTORE_CONTEXT_MULTI_AGENT_SCAN_ONLY")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false);
+    if multi_agent_scan_only {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&run_multi_agent_context_scan_harness(&engine))
+                .expect("multi-agent context scan harness summary should serialize")
+        );
+        return;
+    }
     let external_only = std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_EXTERNAL_ONLY")
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
         .unwrap_or(false);
@@ -886,7 +929,7 @@ fn run_resource_skill_conversation_scale(
     );
     let ingest_ms = ingest_started.elapsed().as_millis();
 
-    let conversation_sources = (0..24)
+    let mut conversation_sources = (0..24)
         .map(|index| {
             let (title, body, kind) = match index % 6 {
                 0 => (
@@ -924,7 +967,7 @@ fn run_resource_skill_conversation_scale(
                 shard_id,
                 tenant_hash,
                 source_kind: kind,
-                source_id: format!("scale-conversation-{index}"),
+                source_id: format!("agent:codex:scale-conversation-{index}"),
                 title,
                 body: body.to_string(),
                 timestamp_ms: start_time_ms + 1_000 + index,
@@ -932,6 +975,28 @@ fn run_resource_skill_conversation_scale(
             }
         })
         .collect::<Vec<_>>();
+    conversation_sources.extend([
+        ContextExtractRequest {
+            shard_id,
+            tenant_hash,
+            source_kind: ContextSourceKind::Document,
+            source_id: "user:user:shared-checkout-context".to_string(),
+            title: "User shared checkout context".to_string(),
+            body: "User shared resource keeps checkout rollback preferences and support escalation context visible across agents.".to_string(),
+            timestamp_ms: start_time_ms + 30_000,
+            provider: ContextModelProviderConfig::default(),
+        },
+        ContextExtractRequest {
+            shard_id,
+            tenant_hash,
+            source_kind: ContextSourceKind::Document,
+            source_id: "global:skills:checkout-debug".to_string(),
+            title: "Global checkout debug skill".to_string(),
+            body: "Global shared skill explains checkout rollback, p95 latency triage, and payment dependency debugging for every agent.".to_string(),
+            timestamp_ms: start_time_ms + 30_001,
+            provider: ContextModelProviderConfig::default(),
+        },
+    ]);
 
     let conversation_report = ingest_extract_context(
         engine,
@@ -1023,6 +1088,17 @@ fn run_resource_skill_conversation_scale(
         .query_understanding_debug
         .tree_traversal_summary
         .summary_embedding_selected_count;
+    let multi_agent_scan_ready = combined_retrieve.fanout_plan.fanout_reduced
+        && combined_retrieve.fanout_plan.layer_quota_applied
+        && combined_retrieve.fanout_plan.selected_current_agent_nodes > 0
+        && combined_retrieve.fanout_plan.selected_user_shared_nodes > 0
+        && combined_retrieve.fanout_plan.selected_global_shared_nodes > 0
+        && combined_retrieve.fanout_plan.shared_layer_quota_nodes >= 3
+        && combined_retrieve
+            .fanout_plan
+            .locality_keys
+            .iter()
+            .all(|key| key.contains(":scope:"));
     let ready = resource_skill_report.status.ok
         && conversation_report.status.ok
         && combined_retrieve.status.ok
@@ -1031,6 +1107,7 @@ fn run_resource_skill_conversation_scale(
         && accepted_sources >= 30
         && combined_retrieve.blocks.len() >= 8
         && fanout_ready
+        && multi_agent_scan_ready
         && secondary_index_ready
         && resource_skill_report.skill_selection.selected.len() >= 2
         && summary_embedding_candidate_count > 0
@@ -1083,6 +1160,23 @@ fn run_resource_skill_conversation_scale(
         fanout_dirty_marker_count: resource_skill_report.fanout.dirty_marker_count,
         fanout_secondary_index_count: resource_skill_report.fanout.secondary_index_count,
         fanout_ready,
+        multi_agent_scan_ready,
+        fanout_namespace_node_candidates: combined_retrieve.fanout_plan.namespace_node_candidates,
+        fanout_event_expanded_nodes: combined_retrieve.fanout_plan.event_expanded_nodes,
+        fanout_selected_current_agent_nodes: combined_retrieve
+            .fanout_plan
+            .selected_current_agent_nodes,
+        fanout_selected_user_shared_nodes: combined_retrieve.fanout_plan.selected_user_shared_nodes,
+        fanout_selected_workspace_shared_nodes: combined_retrieve
+            .fanout_plan
+            .selected_workspace_shared_nodes,
+        fanout_selected_global_shared_nodes: combined_retrieve
+            .fanout_plan
+            .selected_global_shared_nodes,
+        fanout_shared_layer_quota_nodes: combined_retrieve.fanout_plan.shared_layer_quota_nodes,
+        fanout_layer_quota_applied: combined_retrieve.fanout_plan.layer_quota_applied,
+        fanout_scan_layers: combined_retrieve.fanout_plan.scan_layers.clone(),
+        fanout_colocation_groups: combined_retrieve.fanout_plan.colocation_groups.clone(),
         secondary_index_ready,
         secondary_index_checked_refs: secondary_validation.checked_ref_count,
         secondary_index_found_refs: secondary_validation.found_ref_count,
@@ -1100,6 +1194,137 @@ fn run_resource_skill_conversation_scale(
         ingest_ms,
         retrieve_ms,
         secondary_index_validation_ms,
+    }
+}
+
+fn run_multi_agent_context_scan_harness(
+    engine: &TemporalEngine,
+) -> MultiAgentContextScanHarnessSummary {
+    let shard_id = 1;
+    let tenant_hash = 20_260_706;
+    let mut node_hashes = Vec::new();
+    for idx in 0..8u64 {
+        let extract = extract_context(
+            engine,
+            ContextExtractRequest {
+                shard_id,
+                tenant_hash,
+                source_kind: ContextSourceKind::Chat,
+                source_id: format!("agent:codex:multi-agent-scan-{idx}"),
+                title: format!("Codex multi-agent scan note {idx}"),
+                body: format!(
+                    "Codex current-agent context {idx} records checkout rollback, p95 latency, and payment dependency evidence."
+                ),
+                timestamp_ms: 50_000 + idx,
+                provider: ContextModelProviderConfig::default(),
+            },
+        );
+        assert!(extract.status.ok, "{:?}", extract.status);
+        node_hashes.push(extract.node.node_hash);
+    }
+    for (source_id, title, body) in [
+        (
+            "user:user:shared-checkout-resource",
+            "User shared checkout resource",
+            "User shared resource keeps the checkout rollback preference and support escalation rule visible across agents.",
+        ),
+        (
+            "workspace:context:shared-debug-runbook",
+            "Workspace context debug runbook",
+            "Workspace shared runbook explains summary traversal, selected refs, and query debug flow for context debugging.",
+        ),
+        (
+            "global:skills:checkout-debug",
+            "Global checkout debug skill",
+            "Global shared skill explains checkout rollback, p95 latency triage, and payment dependency debugging for every agent.",
+        ),
+    ] {
+        let extract = extract_context(
+            engine,
+            ContextExtractRequest {
+                shard_id,
+                tenant_hash,
+                source_kind: ContextSourceKind::Document,
+                source_id: source_id.to_string(),
+                title: title.to_string(),
+                body: body.to_string(),
+                timestamp_ms: 60_000 + node_hashes.len() as u64,
+                provider: ContextModelProviderConfig::default(),
+            },
+        );
+        assert!(extract.status.ok, "{:?}", extract.status);
+        node_hashes.push(extract.node.node_hash);
+    }
+
+    let report = retrieve_context(
+        engine,
+        ContextRetrieveRequest {
+            shard_id,
+            tenant_hash,
+            node_hashes,
+            query: "checkout rollback p95 latency payment dependency context debug".to_string(),
+            start_time_ms: 0,
+            end_time_ms: 70_000,
+            max_events: 16,
+            min_confidence: 0.0,
+            min_importance: 0.0,
+            tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
+            max_summary_nodes: 11,
+            max_event_nodes: 4,
+            owner_scope: "workspace:context".to_string(),
+            current_agent_id: "codex".to_string(),
+            shared_resource_scopes: vec!["user:user".to_string(), "global".to_string()],
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    assert!(report.status.ok, "{:?}", report.status);
+    let ready = report.fanout_plan.fanout_reduced
+        && report.fanout_plan.layer_quota_applied
+        && report.fanout_plan.selected_current_agent_nodes > 0
+        && report.fanout_plan.selected_user_shared_nodes > 0
+        && report.fanout_plan.selected_workspace_shared_nodes > 0
+        && report.fanout_plan.selected_global_shared_nodes > 0
+        && report.fanout_plan.shared_layer_quota_nodes >= 4
+        && report
+            .fanout_plan
+            .locality_keys
+            .iter()
+            .all(|key| key.contains(":scope:"))
+        && report
+            .blocks
+            .iter()
+            .any(|block| block.text.contains("Codex current-agent"))
+        && report
+            .blocks
+            .iter()
+            .any(|block| block.text.contains("User shared resource"))
+        && report
+            .blocks
+            .iter()
+            .any(|block| block.text.contains("Workspace shared runbook"))
+        && report
+            .blocks
+            .iter()
+            .any(|block| block.text.contains("Global shared skill"));
+
+    MultiAgentContextScanHarnessSummary {
+        ready,
+        namespace_node_candidates: report.fanout_plan.namespace_node_candidates,
+        event_expanded_nodes: report.fanout_plan.event_expanded_nodes,
+        fanout_reduced: report.fanout_plan.fanout_reduced,
+        layer_quota_applied: report.fanout_plan.layer_quota_applied,
+        shared_layer_quota_nodes: report.fanout_plan.shared_layer_quota_nodes,
+        selected_current_agent_nodes: report.fanout_plan.selected_current_agent_nodes,
+        selected_user_shared_nodes: report.fanout_plan.selected_user_shared_nodes,
+        selected_workspace_shared_nodes: report.fanout_plan.selected_workspace_shared_nodes,
+        selected_global_shared_nodes: report.fanout_plan.selected_global_shared_nodes,
+        scan_layers: report.fanout_plan.scan_layers,
+        colocation_groups: report.fanout_plan.colocation_groups,
+        locality_keys: report.fanout_plan.locality_keys,
+        retrieved_block_count: report.blocks.len(),
+        retrieved_event_count: report.event_count,
+        selected_ref_count: report.query_understanding_debug.selected_refs.len(),
+        current_agent_id: report.fanout_plan.current_agent_id,
     }
 }
 

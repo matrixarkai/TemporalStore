@@ -634,6 +634,9 @@ impl ContextWire for ContextNode {
         encode_bytes_field(&mut out, 4, self.canonical_name.as_bytes());
         encode_bytes_field(&mut out, 5, self.l0.as_bytes());
         encode_varint_field(&mut out, 6, self.last_event_time_ms);
+        if !self.raw_metadata_ref.is_empty() {
+            encode_bytes_field(&mut out, 10, self.raw_metadata_ref.as_bytes());
+        }
         out
     }
 

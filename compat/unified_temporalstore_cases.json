@@ -6628,6 +6628,31 @@
       ]
     },
     {
+      "description": "Shared C++/Rust Context harness case for Rust TemporalStore multi-agent scan evidence: current-agent, user-shared, workspace-shared, and global-shared layers must all survive bounded fanout.",
+      "family": "context",
+      "name": "context_multi_agent_scan_harness_evidence",
+      "shard_id": 60,
+      "steps": [
+        {
+          "name": "multi_agent_scan_harness_evidence",
+          "skip_client": true,
+          "command": {
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "suite": "cpp_context_pipeline_parity",
+            "description": "Runs the Rust context_workflow_harness fast multi-agent scan mode and validates emitted readiness evidence for scoped locality keys, layer quotas, and selected current-agent/user/workspace/global nodes.",
+            "required_paths": [
+              "crates/temporalstore-rust/src/bin/context_workflow_harness.rs#run_multi_agent_context_scan_harness",
+              "docs/rust_multi_agent_context_scan_colocation.md"
+            ],
+            "rust_runner": "TEMPORALSTORE_CONTEXT_MULTI_AGENT_SCAN_ONLY=1 cargo run -p temporalstore-rust --bin context_workflow_harness",
+            "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
+            "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-multi-agent-scan-harness> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
+          }
+        }
+      ]
+    },
+    {
       "description": "Shared C++/Rust Context resource/skill ingest case for live model-backed embeddings and summary-embedding-driven coarse retrieval expansion.",
       "family": "context",
       "name": "context_resource_skill_live_embedding_summary_retrieval",
@@ -12720,6 +12745,7 @@
   "schema_version": 1,
   "required_case_names": [
     "context_multi_agent_layered_scan_colocation",
-    "context_multi_agent_layer_quota_keeps_shared_resources"
+    "context_multi_agent_layer_quota_keeps_shared_resources",
+    "context_multi_agent_scan_harness_evidence"
   ]
 }
