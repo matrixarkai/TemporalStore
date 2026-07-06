@@ -74,7 +74,8 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
   "fanout_summary_embedding_query_nodes": 40,
   "fanout_summary_pruned_peer_agent_nodes": 4,
   "fanout_event_expanded_nodes": 16,
-  "fanout_selected_colocation_group_count": 4,
+  "fanout_selected_colocation_group_count": 3,
+  "fanout_selected_colocation_scope_count": 4,
   "fanout_selected_colocation_groups": [
     "global",
     "user:user",
@@ -187,7 +188,7 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
 - Retrieval-time skill selection is also named: `payments-incident`, `context-debug`, and `benchmark-reader` are selected with matching trigger terms and allowed-tool evidence.
 - The scan reduces fanout from namespace candidates to bounded expanded nodes.
 - Peer-agent capping now happens before summary embedding lookup: 4 peer-agent nodes are pruned from summary scoring in this scale run.
-- The scale scan avoids full namespace replication: 28 candidate nodes are left unexpanded, a 63% fanout reduction across 4 selected colocation groups.
+- The scale scan avoids full namespace replication: 28 candidate nodes are left unexpanded, a 63% fanout reduction across 3 selected graph groups and 4 selected scope keys.
 - Candidate pressure is scope-aware before selection: 24 current-agent nodes, 4 peer-agent nodes, and 16 shared nodes across user/workspace/global are classified before fanout pruning.
 - Current-agent context is selected with agent-aware locality while user, workspace, and global shared resources remain visible.
 - Current-agent boost is explicit and bounded: 11 of 16 expanded nodes are `agent:codex`, giving a 68% current-agent boost while 5 shared nodes still satisfy the shared-layer quota.

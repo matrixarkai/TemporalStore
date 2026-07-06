@@ -72,7 +72,8 @@
   "fanout_summary_embedding_query_nodes": 40,
   "fanout_summary_pruned_peer_agent_nodes": 4,
   "fanout_event_expanded_nodes": 16,
-  "fanout_selected_colocation_group_count": 4,
+  "fanout_selected_colocation_group_count": 3,
+  "fanout_selected_colocation_scope_count": 4,
   "fanout_selected_colocation_groups": [
     "global",
     "user:user",
@@ -288,7 +289,7 @@
     "global"
   ],
   "fanout_injection_current_agent_first": true,
-  "ingest_ms": 8633,
-  "retrieve_ms": 2758,
-  "secondary_index_validation_ms": 1182
+  "ingest_ms": 8833,
+  "retrieve_ms": 2796,
+  "secondary_index_validation_ms": 1203
 }

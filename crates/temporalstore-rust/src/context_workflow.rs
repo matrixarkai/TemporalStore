@@ -1071,6 +1071,8 @@ pub struct ContextFanoutPlanReport {
     #[serde(default)]
     pub selected_colocation_group_count: usize,
     #[serde(default)]
+    pub selected_colocation_scope_count: usize,
+    #[serde(default)]
     pub selected_colocation_groups: Vec<String>,
     #[serde(default)]
     pub selected_colocation_scope_keys: Vec<String>,
@@ -4614,7 +4616,8 @@ pub fn retrieve_context(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    fanout_plan.selected_colocation_group_count = selected_colocation_scope_keys.len();
+    fanout_plan.selected_colocation_group_count = fanout_plan.selected_colocation_groups.len();
+    fanout_plan.selected_colocation_scope_count = selected_colocation_scope_keys.len();
     fanout_plan.fanout_reduced =
         fanout_plan.event_expanded_nodes < fanout_plan.namespace_node_candidates;
     fanout_plan.namespace_replication_avoided =
