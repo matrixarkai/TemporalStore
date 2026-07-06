@@ -20,34 +20,11 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 PAIR = ROOT / "compat" / "storage_unified_case_report_pair.json"
+CORPUS = ROOT / "compat" / "unified_temporalstore_cases.json"
 COMPARATOR = ROOT / "tools" / "compare_unified_cpp_rust_case_reports.py"
 CPP_RUNNER = ROOT / "tools" / "cpp_storage_unified_case_report_runner.cc"
 EXPECTED_SCHEMA = "temporalstore_storage_unified_case_report_pair_v1"
 EXPECTED_REPORT_SCHEMA = "temporalstore_unified_case_report_v1"
-REQUIRED_CASES = {
-    "storage_block_address_fallback_shared",
-    "storage_cache_replacement_soak_shared",
-    "storage_config_cpp_like_public_knobs",
-    "storage_data_structure_api_parity",
-    "storage_slot_object_block_index_authority_shared",
-    "storage_slot_first_physical_index",
-    "storage_slot_layout_transitions_shared",
-    "storage_gc_eviction_cold_reads_shared",
-    "storage_merged_dump_load_lifecycle",
-    "storage_model_aware_block_compaction_shared",
-    "storage_object_manager_cold_hot_reload",
-    "storage_object_manager_slotstore_runtime_authority",
-    "storage_page_address_disk_cache_shared_store_fallback",
-    "storage_stale_page_density_compaction",
-    "storage_manager_active_eviction_runtime",
-    "storage_manager_expire_cursor_scan_limits",
-    "storage_manager_index_gc_thresholds_recovery",
-    "storage_manager_page_gc_dependency_refusal",
-    "storage_manager_real_pressure_signals",
-    "storage_manager_wal_reclaim_slot_generation_retention",
-    "storage_stream_segment_manifest_rebuild_shared",
-    "storage_wal_index_gc_reclaim_shared",
-}
 REQUIRED_OUTPUT_FIELDS = {
     "storage_block_address_fallback_shared": {
         "block_index_cache_hits",
@@ -242,7 +219,31 @@ def _load() -> dict[str, Any]:
         raise SystemExit(f"{PAIR}: invalid JSON: {exc}") from exc
 
 
-def _case_map(report: dict[str, Any], label: str) -> dict[str, dict[str, Any]]:
+def _required_cases() -> set[str]:
+    try:
+        corpus = json.loads(CORPUS.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise SystemExit(f"cannot read {CORPUS}: {exc}") from exc
+    coverage = corpus.get("coverage") if isinstance(corpus.get("coverage"), dict) else {}
+    rows = coverage.get("cpp_adapter_coverage")
+    if not isinstance(rows, list):
+        raise SystemExit(f"{CORPUS}: coverage.cpp_adapter_coverage must be a list")
+    for row in rows:
+        if isinstance(row, dict) and row.get("family") == "storage/cache":
+            cases = row.get("adapter_contract_case_names")
+            if not isinstance(cases, list) or not cases:
+                raise SystemExit(
+                    f"{CORPUS}: storage/cache adapter_contract_case_names must be non-empty"
+                )
+            return {str(case) for case in cases}
+    raise SystemExit(f"{CORPUS}: missing storage/cache coverage row")
+
+
+def _case_map(
+    report: dict[str, Any],
+    label: str,
+    required_cases: set[str],
+) -> dict[str, dict[str, Any]]:
     if report.get("schema") != EXPECTED_REPORT_SCHEMA:
         raise SystemExit(f"{label}.schema must be {EXPECTED_REPORT_SCHEMA}")
     cases = report.get("cases")
@@ -258,13 +259,24 @@ def _case_map(report: dict[str, Any], label: str) -> dict[str, dict[str, Any]]:
         if name in mapped:
             raise SystemExit(f"{label}.cases contains duplicate case {name}")
         mapped[name] = case
-    missing = sorted(REQUIRED_CASES - set(mapped))
+    missing = sorted(required_cases - set(mapped))
     if missing:
         raise SystemExit(f"{label}.cases missing required storage cases: {', '.join(missing)}")
     return mapped
 
 
 def _validate_outputs(cases: dict[str, dict[str, Any]], label: str) -> None:
+    for case_name, case in cases.items():
+        if str(case.get("status") or "") != "passed":
+            raise SystemExit(f"{label}.{case_name} must be passed")
+        steps = case.get("steps")
+        if not isinstance(steps, list) or not steps:
+            raise SystemExit(f"{label}.{case_name}.steps must be non-empty")
+        output = steps[0].get("output") if isinstance(steps[0], dict) else None
+        if not isinstance(output, dict) or not output:
+            raise SystemExit(f"{label}.{case_name}.steps[0].output must be a non-empty object")
+        if steps[0].get("latency_ms") is None:
+            raise SystemExit(f"{label}.{case_name}.steps[0] missing latency_ms")
     for case_name, required_fields in REQUIRED_OUTPUT_FIELDS.items():
         case = cases[case_name]
         if str(case.get("status") or "") != "passed":
@@ -361,22 +373,26 @@ def _run_cpp_adapter() -> dict[str, Any]:
 
 def main() -> int:
     pair = _load()
+    required_cases = _required_cases()
     if pair.get("schema") != EXPECTED_SCHEMA:
         raise SystemExit(f"{PAIR}: schema must be {EXPECTED_SCHEMA}")
     rust_report = pair.get("rust_report")
     cpp_report = pair.get("cpp_report")
     if not isinstance(rust_report, dict) or not isinstance(cpp_report, dict):
         raise SystemExit(f"{PAIR}: rust_report and cpp_report must be objects")
-    _validate_outputs(_case_map(rust_report, "rust_report"), "rust_report")
-    _validate_outputs(_case_map(cpp_report, "cpp_report"), "cpp_report")
+    _validate_outputs(_case_map(rust_report, "rust_report", required_cases), "rust_report")
+    _validate_outputs(_case_map(cpp_report, "cpp_report", required_cases), "cpp_report")
     cpp_runtime_report = _run_cpp_adapter()
-    _validate_outputs(_case_map(cpp_runtime_report, "cpp_runtime_report"), "cpp_runtime_report")
+    _validate_outputs(
+        _case_map(cpp_runtime_report, "cpp_runtime_report", required_cases),
+        "cpp_runtime_report",
+    )
     comparison = _run_comparator(rust_report, cpp_runtime_report)
     if comparison.get("ready") is not True:
         raise SystemExit(f"storage unified case report comparison is not ready: {comparison}")
     print(
         "storage unified case report pair passed: "
-        f"cases={len(REQUIRED_CASES)} rows={comparison.get('row_count')} "
+        f"cases={len(required_cases)} rows={comparison.get('row_count')} "
         "cpp_adapter=compiled"
     )
     return 0
