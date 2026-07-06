@@ -122,6 +122,10 @@ def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: i
     require_string_set(report, "selected_colocation_groups", REQUIRED_COLOCATION_GROUPS)
     candidate_groups = require_int_map(report, "colocation_group_candidate_counts")
     selected_groups = require_int_map(report, "selected_colocation_group_counts")
+    pruned_groups = require_int_map(report, "summary_pruned_colocation_group_counts")
+    pruned_scopes = require_int_map(report, "summary_pruned_colocation_scope_counts")
+    skipped_groups = require_int_map(report, "skipped_colocation_group_counts")
+    skipped_scopes = require_int_map(report, "skipped_colocation_scope_counts")
     if set(selected_groups) != REQUIRED_COLOCATION_GROUPS:
         raise ValueError(
             "selected_colocation_group_counts must contain exactly the selected shared groups, "
@@ -133,6 +137,17 @@ def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: i
                 f"selected colocation group {group} exceeds candidates: "
                 f"{selected_groups.get(group, 0)}>{candidate_groups.get(group, 0)}"
             )
+        if (
+            selected_groups.get(group, 0)
+            + skipped_groups.get(group, 0)
+            + pruned_groups.get(group, 0)
+            != candidate_groups.get(group, 0)
+        ):
+            raise ValueError(
+                f"selected+skipped+pruned colocation group {group} must equal candidates: "
+                f"{selected_groups.get(group, 0)}+{skipped_groups.get(group, 0)}+"
+                f"{pruned_groups.get(group, 0)}!={candidate_groups.get(group, 0)}"
+            )
     if sum(candidate_groups.values()) != candidates:
         raise ValueError(
             "colocation_group_candidate_counts must account for all namespace candidates, "
@@ -143,6 +158,31 @@ def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: i
             "selected_colocation_group_counts must account for all expanded nodes, "
             f"got {sum(selected_groups.values())} vs {expanded}"
         )
+    skipped_budget_nodes = require_int_at_least(report, "skipped_summary_budget_node_count", 1)
+    if skipped_budget_nodes + pruned_peers != avoided:
+        raise ValueError(
+            "skipped_summary_budget_node_count + summary_pruned_peer_agent_nodes "
+            f"must equal avoided namespace nodes, got {skipped_budget_nodes}+{pruned_peers}!={avoided}"
+        )
+    if sum(skipped_groups.values()) != skipped_budget_nodes:
+        raise ValueError(
+            "skipped_colocation_group_counts must account for skipped nodes, "
+            f"got {sum(skipped_groups.values())} vs {skipped_budget_nodes}"
+        )
+    if sum(skipped_scopes.values()) != skipped_budget_nodes:
+        raise ValueError(
+            "skipped_colocation_scope_counts must account for skipped nodes, "
+            f"got {sum(skipped_scopes.values())} vs {skipped_budget_nodes}"
+        )
+    if skipped_scopes.get("agent:codex", 0) < 1:
+        raise ValueError("skipped_colocation_scope_counts must prove bounded current-agent overflow")
+    if sum(pruned_groups.values()) != pruned_peers:
+        raise ValueError(
+            "summary_pruned_colocation_group_counts must account for pruned peer agents, "
+            f"got {sum(pruned_groups.values())} vs {pruned_peers}"
+        )
+    if pruned_scopes.get("agent:claude", 0) < 1:
+        raise ValueError("summary_pruned_colocation_scope_counts must prove peer-agent pruning")
     require_int_at_least(report, "max_selected_colocation_group_nodes", 1)
     require_bool(report, "colocation_group_fanout_reduced")
     require_int_at_least(report, "shared_layer_quota_nodes", 4)

@@ -73,7 +73,22 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
   "fanout_namespace_node_candidates": 44,
   "fanout_summary_embedding_query_nodes": 40,
   "fanout_summary_pruned_peer_agent_nodes": 4,
+  "fanout_summary_pruned_colocation_group_counts": {
+    "user:user": 4
+  },
+  "fanout_summary_pruned_colocation_scope_counts": {
+    "agent:claude": 4
+  },
   "fanout_event_expanded_nodes": 16,
+  "fanout_skipped_summary_budget_node_count": 24,
+  "fanout_skipped_colocation_group_counts": {
+    "user:user": 13,
+    "workspace:context": 11
+  },
+  "fanout_skipped_colocation_scope_counts": {
+    "agent:codex": 13,
+    "workspace:context": 11
+  },
   "fanout_selected_colocation_group_count": 3,
   "fanout_selected_colocation_scope_count": 4,
   "fanout_selected_colocation_groups": [
@@ -202,6 +217,7 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
 - Peer-agent capping now happens before summary embedding lookup: 4 peer-agent nodes are pruned from summary scoring in this scale run.
 - The scale scan avoids full namespace replication: 28 candidate nodes are left unexpanded, a 63% fanout reduction across 3 selected graph groups and 4 selected scope keys.
 - The graph-group pressure map is complete: `user:user` is reduced from 29 candidate nodes to 12 selected nodes and `workspace:context` is reduced from 14 to 3, while `global` remains covered.
+- The phase split is explicit: 4 peer-agent nodes are pruned before summary scoring and 24 remaining nodes are skipped by the summary/event budget.
 - Candidate pressure is scope-aware before selection: 24 current-agent nodes, 4 peer-agent nodes, and 16 shared nodes across user/workspace/global are classified before fanout pruning.
 - Shared-layer coverage is now enforced from the core retrieval report: all 3 required shared scopes are covered while the fill phase can select extra high-value workspace nodes.
 - Current-agent context is selected with agent-aware locality while user, workspace, and global shared resources remain visible.
