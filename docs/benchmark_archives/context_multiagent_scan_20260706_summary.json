@@ -67,6 +67,14 @@
     "tenant:20260706:scope:user:user:node:12205718754729647577",
     "tenant:20260706:scope:global:node:12994693500116009283"
   ],
+  "locality_key_count": 4,
+  "locality_scope_keys": [
+    "agent:codex",
+    "global",
+    "user:user",
+    "workspace:context"
+  ],
+  "peer_locality_key_count": 0,
   "retrieved_block_count": 12,
   "retrieved_current_agent_block_count": 3,
   "retrieved_user_shared_block_count": 3,

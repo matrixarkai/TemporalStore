@@ -53,13 +53,15 @@ def require_int_equal(report: dict[str, Any], field: str, expected: int) -> None
         raise ValueError(f"{field} must be {expected}, got {value!r}")
 
 
-def require_string_set(report: dict[str, Any], field: str, required: set[str]) -> None:
+def require_string_set(report: dict[str, Any], field: str, required: set[str]) -> set[str]:
     value = report.get(field)
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise ValueError(f"{field} must be a string array")
-    missing = sorted(required - set(value))
+    observed = set(value)
+    missing = sorted(required - observed)
     if missing:
         raise ValueError(f"{field} missing required entries: {missing}")
+    return observed
 
 
 def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int) -> None:
@@ -125,6 +127,16 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
     require_string_set(report, "fanout_colocation_groups", REQUIRED_GROUPS)
     require_string_set(report, "fanout_colocation_scope_keys", REQUIRED_SCOPE_KEYS)
     require_string_set(report, "fanout_required_scan_scope_keys", REQUIRED_SCAN_SCOPE_KEYS)
+    require_int_equal(report, "fanout_locality_key_count", expanded)
+    require_int_equal(report, "fanout_peer_locality_key_count", 0)
+    locality_scopes = require_string_set(
+        report, "fanout_locality_scope_keys", REQUIRED_SELECTED_SCOPE_KEYS
+    )
+    if locality_scopes != set(report["fanout_selected_colocation_scope_keys"]):
+        raise ValueError(
+            "fanout_locality_scope_keys must exactly match fanout_selected_colocation_scope_keys, "
+            f"got {sorted(locality_scopes)} vs {sorted(report['fanout_selected_colocation_scope_keys'])}"
+        )
 
 
 def main() -> int:

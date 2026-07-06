@@ -106,6 +106,14 @@
     "user:user",
     "global"
   ],
+  "fanout_locality_key_count": 16,
+  "fanout_locality_scope_keys": [
+    "agent:codex",
+    "global",
+    "user:user",
+    "workspace:context"
+  ],
+  "fanout_peer_locality_key_count": 0,
   "secondary_index_ready": true,
   "secondary_index_checked_refs": 54,
   "secondary_index_found_refs": 54,
@@ -114,7 +122,7 @@
   "summary_embedding_selected_count": 40,
   "verbose_filter_group_count": 1,
   "selected_ref_count": 45,
-  "ingest_ms": 8799,
-  "retrieve_ms": 3015,
-  "secondary_index_validation_ms": 1302
+  "ingest_ms": 9386,
+  "retrieve_ms": 2923,
+  "secondary_index_validation_ms": 1375
 }

@@ -93,6 +93,14 @@ Archived report: `docs/benchmark_archives/context_multiagent_scan_20260706_summa
     "tenant:20260706:scope:user:user:node:12205718754729647577",
     "tenant:20260706:scope:global:node:12994693500116009283"
   ],
+  "locality_key_count": 4,
+  "locality_scope_keys": [
+    "agent:codex",
+    "global",
+    "user:user",
+    "workspace:context"
+  ],
+  "peer_locality_key_count": 0,
   "retrieved_block_count": 12,
   "retrieved_current_agent_block_count": 3,
   "retrieved_user_shared_block_count": 3,
@@ -116,6 +124,7 @@ Archived report: `docs/benchmark_archives/context_multiagent_scan_20260706_summa
 - Retrieved block coverage is scope-aware: returned context includes current-agent, user-shared, workspace-shared, and global-shared blocks, not only selected node metadata.
 - Required scan scopes are derived from the current agent and owner scope, so user and global shared layers stay visible even when callers do not manually pass every shared scope.
 - Locality keys are producer-aware: current-agent context is scoped as `agent:codex`, while shared resources stay in `user:user`, `workspace:context`, and `global` groups instead of colocating the whole namespace.
+- Locality key count equals expanded nodes: 4 expanded nodes produce 4 locality keys, covering exactly `agent:codex`, `user:user`, `workspace:context`, and `global` with zero peer-agent locality keys.
 - Layer quotas are applied before expansion so shared resources are not crowded out by many current-agent matches.
 - Peer-agent candidates are counted and capped by `max_peer_agent_nodes`, so the tight focused scan keeps current-agent plus user/workspace/global shared layers bounded and visible without duplicating the whole namespace.
 
