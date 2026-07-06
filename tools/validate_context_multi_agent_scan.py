@@ -102,7 +102,8 @@ def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: i
             f"got {avoided} vs {candidates - expanded}"
         )
     require_int_at_least(report, "fanout_reduction_percent", 40)
-    require_int_at_least(report, "selected_colocation_group_count", 4)
+    require_int_equal(report, "selected_colocation_group_count", 3)
+    require_int_equal(report, "selected_colocation_scope_count", 4)
     require_string_set(report, "selected_colocation_scope_keys", REQUIRED_SELECTED_SCOPE_KEYS)
     require_string_set(report, "selected_colocation_groups", REQUIRED_COLOCATION_GROUPS)
     require_int_at_least(report, "shared_layer_quota_nodes", 4)
