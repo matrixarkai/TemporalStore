@@ -1061,12 +1061,20 @@ pub struct ContextFanoutPlanReport {
     pub summary_embedding_query_nodes: usize,
     #[serde(default)]
     pub summary_pruned_peer_agent_nodes: usize,
+    #[serde(default)]
+    pub summary_pruned_colocation_group_counts: BTreeMap<String, usize>,
+    #[serde(default)]
+    pub summary_pruned_colocation_scope_counts: BTreeMap<String, usize>,
     pub event_expanded_nodes: usize,
     pub skipped_node_count: usize,
     pub summary_lookup_batches: usize,
     pub secondary_index_filter_group_count: usize,
     pub selected_node_hashes: Vec<u64>,
     pub skipped_node_hashes: Vec<u64>,
+    #[serde(default)]
+    pub skipped_colocation_group_counts: BTreeMap<String, usize>,
+    #[serde(default)]
+    pub skipped_colocation_scope_counts: BTreeMap<String, usize>,
     pub locality_keys: Vec<String>,
     #[serde(default)]
     pub selected_colocation_group_count: usize,
@@ -4427,6 +4435,18 @@ pub fn retrieve_context(
             })
             .unwrap_or(false);
         if is_peer_agent && summary_peer_agent_nodes >= request.max_peer_agent_nodes {
+            if let Some(scope) = node_scope_by_hash.get(node_hash) {
+                if !scope.shared_graph_scope.is_empty() {
+                    *fanout_plan
+                        .summary_pruned_colocation_group_counts
+                        .entry(scope.shared_graph_scope.clone())
+                        .or_default() += 1;
+                }
+                *fanout_plan
+                    .summary_pruned_colocation_scope_counts
+                    .entry(context_scope_reservation_key(scope))
+                    .or_default() += 1;
+            }
             fanout_plan.summary_pruned_peer_agent_nodes = fanout_plan
                 .summary_pruned_peer_agent_nodes
                 .saturating_add(1);
@@ -4593,6 +4613,25 @@ pub fn retrieve_context(
     fanout_plan.summary_lookup_batches = usize::from(!summary_scores.is_empty());
     fanout_plan.selected_node_hashes = event_node_hashes.clone();
     fanout_plan.skipped_node_hashes = skipped_node_hashes;
+    fanout_plan.skipped_colocation_group_counts = fanout_plan
+        .skipped_node_hashes
+        .iter()
+        .filter_map(|node_hash| node_scope_by_hash.get(node_hash))
+        .map(|scope| scope.shared_graph_scope.clone())
+        .filter(|group| !group.is_empty())
+        .fold(BTreeMap::<String, usize>::new(), |mut counts, group| {
+            *counts.entry(group).or_default() += 1;
+            counts
+        });
+    fanout_plan.skipped_colocation_scope_counts = fanout_plan
+        .skipped_node_hashes
+        .iter()
+        .filter_map(|node_hash| node_scope_by_hash.get(node_hash))
+        .map(context_scope_reservation_key)
+        .fold(BTreeMap::<String, usize>::new(), |mut counts, scope| {
+            *counts.entry(scope).or_default() += 1;
+            counts
+        });
     fanout_plan.locality_keys = event_node_hashes
         .iter()
         .map(|node_hash| {
