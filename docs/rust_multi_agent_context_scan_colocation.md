@@ -35,6 +35,11 @@ Archived report: `docs/benchmark_archives/context_multiagent_scan_20260706_summa
   "summary_pruned_colocation_scope_counts": {
     "agent:claude": 2
   },
+  "configured_summary_node_limit": 11,
+  "effective_summary_node_limit": 11,
+  "configured_event_node_limit": 4,
+  "effective_event_node_limit": 4,
+  "configured_peer_agent_node_limit": 0,
   "event_expanded_nodes": 4,
   "skipped_summary_budget_node_count": 7,
   "skipped_colocation_group_counts": {
@@ -186,6 +191,7 @@ Archived report: `docs/benchmark_archives/context_multiagent_scan_20260706_summa
 - The scan avoids full namespace replication: 9 candidate nodes are left unexpanded, a 69% fanout reduction across 3 selected graph groups and 4 selected scope keys.
 - The graph-group pressure map is complete: `user:user` is reduced from 11 candidate nodes to 2 selected nodes, while `global` and `workspace:context` remain covered.
 - The phase split is explicit: 2 peer-agent nodes are pruned before summary scoring and 7 current-agent overflow nodes are skipped by the summary/event budget.
+- Configured and effective scan budgets are explicit: focused scan uses summary node limit 11, event node limit 4, and peer-agent node limit 0.
 - Candidate pressure is scope-aware before selection: 8 current-agent nodes, 2 peer-agent nodes, and 3 shared nodes across user/workspace/global are classified before fanout pruning.
 - Shared-layer coverage is now reported by the core retrieval path: all 3 required shared scopes are selected, with 3 selected user/workspace/global shared nodes.
 - Selection percentages are explicit in the core report: this tight focused scan is 25% current-agent, 75% shared-layer, and 0% peer-agent.

@@ -102,6 +102,11 @@ def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: i
             "summary_embedding_query_nodes + summary_pruned_peer_agent_nodes "
             f"must equal namespace_node_candidates, got {summary_query_nodes}+{pruned_peers}!={candidates}"
         )
+    require_int_equal(report, "configured_summary_node_limit", 11)
+    require_int_equal(report, "effective_summary_node_limit", 11)
+    require_int_equal(report, "configured_event_node_limit", 4)
+    require_int_equal(report, "effective_event_node_limit", 4)
+    require_int_equal(report, "configured_peer_agent_node_limit", 0)
     expanded = require_int_at_least(report, "event_expanded_nodes", 1)
     if expanded > max_expanded:
         raise ValueError(f"event_expanded_nodes must be <= {max_expanded}, got {expanded}")

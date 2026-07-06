@@ -200,6 +200,11 @@ struct ResourceSkillConversationScaleSummary {
     fanout_summary_pruned_peer_agent_nodes: usize,
     fanout_summary_pruned_colocation_group_counts: BTreeMap<String, usize>,
     fanout_summary_pruned_colocation_scope_counts: BTreeMap<String, usize>,
+    fanout_configured_summary_node_limit: usize,
+    fanout_effective_summary_node_limit: usize,
+    fanout_configured_event_node_limit: usize,
+    fanout_effective_event_node_limit: usize,
+    fanout_configured_peer_agent_node_limit: usize,
     fanout_event_expanded_nodes: usize,
     fanout_skipped_summary_budget_node_count: usize,
     fanout_skipped_colocation_group_counts: BTreeMap<String, usize>,
@@ -285,6 +290,11 @@ struct MultiAgentContextScanHarnessSummary {
     summary_pruned_peer_agent_nodes: usize,
     summary_pruned_colocation_group_counts: BTreeMap<String, usize>,
     summary_pruned_colocation_scope_counts: BTreeMap<String, usize>,
+    configured_summary_node_limit: usize,
+    effective_summary_node_limit: usize,
+    configured_event_node_limit: usize,
+    effective_event_node_limit: usize,
+    configured_peer_agent_node_limit: usize,
     event_expanded_nodes: usize,
     skipped_summary_budget_node_count: usize,
     skipped_colocation_group_counts: BTreeMap<String, usize>,
@@ -1568,6 +1578,19 @@ fn run_resource_skill_conversation_scale(
             .fanout_plan
             .summary_pruned_colocation_scope_counts
             .clone(),
+        fanout_configured_summary_node_limit: combined_retrieve
+            .fanout_plan
+            .configured_summary_node_limit,
+        fanout_effective_summary_node_limit: combined_retrieve
+            .fanout_plan
+            .effective_summary_node_limit,
+        fanout_configured_event_node_limit: combined_retrieve
+            .fanout_plan
+            .configured_event_node_limit,
+        fanout_effective_event_node_limit: combined_retrieve.fanout_plan.effective_event_node_limit,
+        fanout_configured_peer_agent_node_limit: combined_retrieve
+            .fanout_plan
+            .configured_peer_agent_node_limit,
         fanout_event_expanded_nodes: combined_retrieve.fanout_plan.event_expanded_nodes,
         fanout_skipped_summary_budget_node_count: combined_retrieve.fanout_plan.skipped_node_count,
         fanout_skipped_colocation_group_counts: combined_retrieve
@@ -1953,6 +1976,11 @@ fn run_multi_agent_context_scan_harness(
         summary_pruned_colocation_scope_counts: report
             .fanout_plan
             .summary_pruned_colocation_scope_counts,
+        configured_summary_node_limit: report.fanout_plan.configured_summary_node_limit,
+        effective_summary_node_limit: report.fanout_plan.effective_summary_node_limit,
+        configured_event_node_limit: report.fanout_plan.configured_event_node_limit,
+        effective_event_node_limit: report.fanout_plan.effective_event_node_limit,
+        configured_peer_agent_node_limit: report.fanout_plan.configured_peer_agent_node_limit,
         event_expanded_nodes: report.fanout_plan.event_expanded_nodes,
         skipped_summary_budget_node_count: report.fanout_plan.skipped_node_count,
         skipped_colocation_group_counts: report.fanout_plan.skipped_colocation_group_counts,
