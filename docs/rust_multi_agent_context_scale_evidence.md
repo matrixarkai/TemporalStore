@@ -191,6 +191,15 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
     "resource": 2,
     "skill": 1
   },
+  "fanout_requested_source_classes": [
+    "resource",
+    "skill"
+  ],
+  "fanout_selected_requested_source_class_counts": {
+    "resource": 2,
+    "skill": 1
+  },
+  "fanout_requested_source_class_coverage_ready": true,
   "fanout_required_scan_scope_keys": [
     "agent:codex",
     "workspace:context",
@@ -257,6 +266,7 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
 - Configured and effective scan budgets are explicit: scale scan uses summary node limit 32, event node limit 16, and peer-agent node limit 0.
 - Candidate pressure is scope-aware before selection: 24 current-agent nodes, 4 peer-agent nodes, and 16 shared nodes across user/workspace/global are classified before fanout pruning.
 - Source-class pressure is explicit: fanout sees 31 conversation nodes, 7 resource nodes, and 6 skill nodes, then expands a bounded mix of 13 conversation, 2 resource, and 1 skill nodes.
+- Requested source-class coverage is explicit: the query asks for resource and skill evidence, and fanout selects both before event expansion.
 - Shared-layer coverage is now enforced from the core retrieval report: all 3 required shared scopes are covered while the fill phase can select extra high-value workspace nodes.
 - Current-agent context is selected with agent-aware locality while user, workspace, and global shared resources remain visible.
 - Selection percentages are explicit in the core report: this scale scan is 68% current-agent, 31% shared-layer, and 0% peer-agent.
