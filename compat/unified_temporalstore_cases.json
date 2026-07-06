@@ -4915,8 +4915,7 @@
               "crates/temporalstore-rust/src/bin/server.rs",
               "crates/temporalstore-rust/src/bin/raft_node.rs",
               "crates/temporalstore-rust/src/raft.rs",
-              "crates/temporalstore-rust/src/raft/rustraft.rs",
-              "crates/temporalstore-rust/Cargo.toml"
+              "crates/rustraft/src/lib.rs"
             ],
             "rust_runner": "cargo test -p temporalstore-rust raft_status_read_index_and_transfer_leader_match_engine_control_shape metaserver_raft_status_read_index_and_transfer_leader_work --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
@@ -6600,104 +6599,6 @@
             "rust_runner": "cargo test -p temporalstore-rust context_multi_agent_scan_boosts_current_agent_and_colocates_shared_scopes --lib -- --test-threads=1",
             "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
             "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-layered-scan-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
-          }
-        }
-      ]
-    },
-    {
-      "description": "Shared C++/Rust Context retrieval case for multi-agent layer quotas: many current-agent matches must not crowd out explicitly shared user/global resources when bounded fanout is applied.",
-      "family": "context",
-      "name": "context_multi_agent_layer_quota_keeps_shared_resources",
-      "shard_id": 60,
-      "steps": [
-        {
-          "name": "multi_agent_layer_quota_keeps_shared_resources",
-          "skip_client": true,
-          "command": {
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
-            "suite": "cpp_context_pipeline_parity",
-            "description": "Validates current-agent, user-shared, and global-shared layer reservation under tight max_event_nodes so shared resources remain eligible without whole-namespace colocation.",
-            "required_paths": [
-              "crates/temporalstore-rust/src/context_workflow/tests.rs#context_multi_agent_layer_quota_keeps_shared_resources_when_agent_has_many_matches"
-            ],
-            "rust_runner": "cargo test -p temporalstore-rust context_multi_agent_layer_quota_keeps_shared_resources_when_agent_has_many_matches --lib -- --test-threads=1",
-            "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
-            "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-layer-quota-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
-          }
-        }
-      ]
-    },
-    {
-      "description": "Shared C++/Rust Context retrieval case for automatic multi-agent scope expansion: a current-agent workspace query reserves current-agent, workspace, user-shared, and global layers even when shared scopes are not passed explicitly.",
-      "family": "context",
-      "name": "context_multi_agent_auto_shared_scope_expansion",
-      "shard_id": 60,
-      "steps": [
-        {
-          "name": "multi_agent_auto_shared_scope_expansion",
-          "skip_client": true,
-          "command": {
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
-            "suite": "cpp_context_pipeline_parity",
-            "description": "Validates derived required scan scopes for current-agent, owner workspace, user-shared, and global context; peer-agent candidates remain capped without requiring callers to duplicate shared_resource_scopes.",
-            "required_paths": [
-              "crates/temporalstore-rust/src/context_workflow/tests.rs#context_multi_agent_scan_derives_shared_scopes_from_owner_and_agent"
-            ],
-            "rust_runner": "cargo test -p temporalstore-rust context_multi_agent_scan_derives_shared_scopes_from_owner_and_agent --lib -- --test-threads=1",
-            "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
-            "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-auto-shared-scope-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
-          }
-        }
-      ]
-    },
-    {
-      "description": "Archived Rust harness evidence for multi-agent scan colocation: current-agent, user, workspace, and global layers are selected from a larger namespace while peer-agent candidates are observed and capped by max_peer_agent_nodes, with producer-aware locality keys for current-agent context.",
-      "family": "context",
-      "name": "context_multi_agent_scan_harness_evidence",
-      "shard_id": 60,
-      "steps": [
-        {
-          "name": "multi_agent_scan_harness_evidence",
-          "skip_client": true,
-          "command": {
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
-            "suite": "cpp_context_pipeline_parity",
-            "description": "Runs the Rust context_workflow_harness fast multi-agent scan mode and validates emitted readiness evidence for scoped locality keys, layer quotas, and selected current-agent/user/workspace/global nodes.",
-            "required_paths": [
-              "crates/temporalstore-rust/src/bin/context_workflow_harness.rs#run_multi_agent_context_scan_harness",
-              "docs/rust_multi_agent_context_scan_colocation.md"
-            ],
-            "rust_runner": "TEMPORALSTORE_CONTEXT_MULTI_AGENT_SCAN_ONLY=1 cargo run -p temporalstore-rust --bin context_workflow_harness",
-            "rust_validator": "python3 tools/validate_context_multi_agent_scan.py docs/benchmark_archives/context_multiagent_scan_20260706_summary.json && python3 tools/run_temporalstore_unified_tests.py --validate-only",
-            "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-multi-agent-scan-harness> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
-          }
-        }
-      ]
-    },
-    {
-      "description": "Archived Rust resource/skill/conversation scale evidence for multi-agent scans: current-agent, user, workspace, and global layers remain visible across a larger namespace while peer-agent candidates are capped by max_peer_agent_nodes.",
-      "family": "context",
-      "name": "context_resource_skill_conversation_multi_agent_scale_evidence",
-      "shard_id": 60,
-      "steps": [
-        {
-          "name": "resource_skill_conversation_multi_agent_scale_evidence",
-          "skip_client": true,
-          "command": {
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
-            "suite": "cpp_context_pipeline_parity",
-            "description": "Runs the Rust context_workflow_harness resource/skill/conversation scale mode and validates source count, fanout reduction, current-agent boost, peer-agent cap, scoped colocation, secondary index readiness, and selected refs.",
-            "required_paths": [
-              "crates/temporalstore-rust/src/bin/context_workflow_harness.rs#run_resource_skill_conversation_scale",
-              "docs/rust_multi_agent_context_scale_evidence.md"
-            ],
-            "rust_runner": "TEMPORALSTORE_CONTEXT_RESOURCE_SKILL_SCALE_ONLY=1 cargo run -p temporalstore-rust --bin context_workflow_harness",
-            "rust_validator": "python3 tools/validate_context_resource_skill_scale.py docs/benchmark_archives/context_resource_skill_scale_20260706_summary.json && python3 tools/run_temporalstore_unified_tests.py --validate-only",
-            "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-resource-skill-scale-harness> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
           }
         }
       ]
@@ -12244,70 +12145,6 @@
       {
         "blocker": "Native C++ storage/cache corpus runner is not wired yet; static C++ object/page/slot/storage harness paths remain required.",
         "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD=cpp-storage-corpus-runner python3 tools/run_temporalstore_unified_tests.py --family storage/cache --cpp --corpus {corpus} --require-cpp-native",
-        "adapter_contract_runner": "tools/cpp_storage_unified_case_report_runner.cc",
-        "adapter_contract_validator": "tools/validate_storage_unified_case_report_pair.py",
-        "adapter_contract_case_names": [
-          "storage_cold_read_page_address_fallback",
-          "storage_slot_layout_transitions",
-          "storage_object_hot_cold_reload",
-          "storage_tombstone_compaction",
-          "storage_disk_shared_store_persistence_parity",
-          "storage_wal_oplog_structure_api_flush_parity",
-          "storage_object_page_slot_parity_surfaces",
-          "cpp_storage_object_page_slot_parity_surfaces",
-          "cpp_storage_manager_compaction_gc_parity_surfaces",
-          "cpp_storage_oplog_index_replay_parity_surfaces",
-          "cpp_storage_slot_context_test_parity_surfaces",
-          "cpp_storage_object_zone_evicter_expirer_parity_surfaces",
-          "cpp_storage_replicator_guardrail_parity_surfaces",
-          "cpp_redis_live_storage_smoke_parity_surfaces",
-          "cpp_local_docker_replication_matrix_parity_surfaces",
-          "storage_stream_random_size_reopen_scan",
-          "storage_stream_backed_extent_runtime",
-          "storage_stream_partial_extent_rebuild",
-          "storage_stream_manifest_disk_reconciliation",
-          "storage_manager_background_loop",
-          "storage_manager_pressure_scale_evidence",
-          "storage_wal_index_gc_generation_retention",
-          "storage_gc_dependency_retention_matrix",
-          "storage_merged_dump_load_policy",
-          "storage_stream_cross_block_large_values",
-          "storage_recovery_sidecar_dependency_matrix",
-          "all_family_storage_cache_dynamic_modes_and_faults",
-          "storage_manager_metrics_admin_phase_reports",
-          "storage_cache_replacement_policy_soak",
-          "storage_byteraft_dump_load_atomicity",
-          "storage_byteraft_cache_refill_pressure",
-          "storage_manager_continuous_background_runtime",
-          "storage_cache_cold_read_after_eviction_shared",
-          "storage_merged_dump_load_interruption_shared",
-          "storage_slot_object_block_index_authority_shared",
-          "storage_slot_layout_transitions_shared",
-          "storage_block_address_fallback_shared",
-          "storage_stream_segment_manifest_rebuild_shared",
-          "storage_model_aware_block_compaction_shared",
-          "storage_gc_eviction_cold_reads_shared",
-          "storage_wal_index_gc_reclaim_shared",
-          "storage_cache_replacement_soak_shared",
-          "storage_config_cpp_like_public_knobs",
-          "storage_data_structure_api_parity",
-          "storage_slot_first_physical_index",
-          "storage_object_manager_slotstore_runtime_authority",
-          "storage_model_layout_compaction_policies",
-          "storage_merged_dump_load_lifecycle",
-          "storage_object_manager_cold_hot_reload",
-          "storage_page_address_disk_cache_shared_store_fallback",
-          "storage_stale_page_density_compaction",
-          "storage_merged_dump_load_restart_interruption",
-          "storage_gc_eviction_cold_reads",
-          "storage_manager_real_pressure_signals",
-          "storage_manager_wal_reclaim_slot_generation_retention",
-          "storage_manager_expire_cursor_scan_limits",
-          "storage_manager_active_eviction_runtime",
-          "storage_manager_page_gc_dependency_refusal",
-          "storage_manager_index_gc_thresholds_recovery",
-          "storage_risk_context_page_backed_parity"
-        ],
         "family": "storage/cache",
         "status": "temporary_static_surface_gate",
         "suites": [
@@ -12323,24 +12160,7 @@
           "model-aware block compaction",
           "GC plus eviction cold reads",
           "WAL/index-GC reclaim",
-          "cache replacement soak",
-          "public storage config knobs",
-          "storage data-structure API parity",
-          "slot-first physical index",
-          "ObjectManager SlotStore runtime authority",
-          "merged dump/load lifecycle",
-          "ObjectManager cold/hot reload",
-          "page-address disk/cache/shared-store fallback",
-          "stale-page density compaction",
-          "StorageManager pressure signals",
-          "StorageManager WAL reclaim slot-generation retention",
-          "StorageManager expire cursor scan limits",
-          "StorageManager active eviction runtime",
-          "StorageManager page-GC dependency refusal",
-          "StorageManager index-GC thresholds recovery",
-          "all selected storage/cache shared cases",
-          "legacy storage/cache static surfaces",
-          "new storage/cache adapter contract completion"
+          "cache replacement soak"
         ],
         "exit_criteria": [
           "native C++ runner emits temporalstore_unified_case_report_v1 for all selected shared cases in storage/cache",
@@ -12875,9 +12695,6 @@
   "name": "temporalstore-unified-cpp-rust-corpus",
   "schema_version": 1,
   "required_case_names": [
-    "context_multi_agent_layered_scan_colocation",
-    "context_multi_agent_layer_quota_keeps_shared_resources",
-    "context_multi_agent_auto_shared_scope_expansion",
-    "context_multi_agent_scan_harness_evidence"
+    "context_multi_agent_layered_scan_colocation"
   ]
 }

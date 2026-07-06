@@ -15,31 +15,6 @@ fn test_engine() -> TemporalEngine {
     engine
 }
 
-fn assert_current_agent_first_selected_and_injected(report: &ContextRetrieveReport) {
-    let first_selected = report
-        .query_understanding_debug
-        .selected_refs
-        .first()
-        .map(|selected| selected.source_ref.to_ascii_lowercase())
-        .unwrap_or_default();
-    assert!(
-        first_selected.contains("agent:codex"),
-        "selected refs should start with current-agent context: {:?}",
-        report.query_understanding_debug.selected_refs
-    );
-    let first_injected = report
-        .query_understanding_debug
-        .injection_ordering
-        .first()
-        .map(|selected| selected.source_ref.to_ascii_lowercase())
-        .unwrap_or_default();
-    assert!(
-        first_injected.contains("agent:codex"),
-        "injection ordering should start with current-agent context: {:?}",
-        report.query_understanding_debug.injection_ordering
-    );
-}
-
 // shared-corpus: context_retrieval_qa_synonym_ranking
 #[test]
 fn context_relevance_ranks_qa_synonyms_and_phrases() {
@@ -320,11 +295,6 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
     );
     assert!(extract.status.ok);
     assert!(extract.node_uri.starts_with("tsctx://tenant/42/node/"));
-    assert!(extract.summary_generation.new_event_summary_immediate);
-    assert!(extract.summary_generation.event_embedding_immediate);
-    assert!(extract.summary_generation.existing_summary_refresh_due);
-    assert!(!extract.summary_generation.existing_summary_refresh_deferred);
-    assert!(extract.summary_generation.dirty_marker_written);
 
     let retrieve = retrieve_context(
         &engine,
@@ -344,7 +314,6 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
             owner_scope: String::new(),
             current_agent_id: String::new(),
             shared_resource_scopes: Vec::new(),
-            max_peer_agent_nodes: usize::MAX,
             provider: ContextModelProviderConfig::default(),
         },
     );
@@ -434,7 +403,6 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
                 owner_scope: String::new(),
                 current_agent_id: String::new(),
                 shared_resource_scopes: Vec::new(),
-                max_peer_agent_nodes: usize::MAX,
                 provider: ContextModelProviderConfig::default(),
             },
             prompt: "Explain current risk.".to_string(),
@@ -447,184 +415,6 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
     assert!(inject.status.ok);
     assert!(inject.injected_prompt.contains("<context>"));
     assert!(!inject.audit.selected_refs.is_empty());
-}
-
-// shared-corpus: context_summary_generation_frequency_deferred_refresh
-#[test]
-fn context_summary_generation_prioritizes_new_events_and_defers_existing_refresh() {
-    let engine = test_engine();
-    let first = extract_context(
-        &engine,
-        ContextExtractRequest {
-            shard_id: 1,
-            tenant_hash: 4201,
-            source_kind: ContextSourceKind::Chat,
-            source_id: "agent:codex:session-1".to_string(),
-            title: "Checkout memory".to_string(),
-            body: "First event says checkout needs payment risk context.".to_string(),
-            timestamp_ms: 10_000,
-            provider: ContextModelProviderConfig::default(),
-        },
-    );
-    assert!(first.status.ok, "{:?}", first.status);
-    assert!(first.summary_generation.existing_summary_refresh_due);
-    assert!(!first.summary_generation.summary_model_call_skipped);
-
-    let second = extract_context(
-        &engine,
-        ContextExtractRequest {
-            shard_id: 1,
-            tenant_hash: 4201,
-            source_kind: ContextSourceKind::Chat,
-            source_id: "agent:codex:session-1".to_string(),
-            title: "Checkout memory".to_string(),
-            body: "Second event says the retry should inspect idempotent gateway writes."
-                .to_string(),
-            timestamp_ms: 10_100,
-            provider: ContextModelProviderConfig::default(),
-        },
-    );
-    assert!(second.status.ok, "{:?}", second.status);
-    assert!(second.summary_generation.new_event_summary_immediate);
-    assert!(second.summary_generation.event_embedding_immediate);
-    assert!(second.summary_generation.existing_summary_refresh_deferred);
-    assert!(!second.summary_generation.existing_summary_refresh_due);
-    assert!(second.summary_generation.summary_model_call_skipped);
-    assert_eq!(second.dirty_marker.reason, 2);
-    assert_eq!(second.dirty_marker.propagate_depth, 0);
-
-    let retrieve = retrieve_context(
-        &engine,
-        ContextRetrieveRequest {
-            shard_id: 1,
-            tenant_hash: 4201,
-            node_hashes: vec![first.node.node_hash],
-            query: "idempotent gateway retry".to_string(),
-            start_time_ms: 0,
-            end_time_ms: 20_000,
-            max_events: 8,
-            min_confidence: 0.0,
-            min_importance: 0.0,
-            tiers: vec![ContextTier::L2],
-            max_summary_nodes: 4,
-            max_event_nodes: 4,
-            owner_scope: "agent:codex".to_string(),
-            current_agent_id: "codex".to_string(),
-            shared_resource_scopes: Vec::new(),
-            max_peer_agent_nodes: usize::MAX,
-            provider: ContextModelProviderConfig::default(),
-        },
-    );
-    assert!(retrieve.status.ok, "{:?}", retrieve.status);
-    assert!(retrieve
-        .blocks
-        .iter()
-        .any(|block| block.text.contains("idempotent gateway")));
-}
-
-// shared-corpus: context_missing_summary_degrades_to_indexes_and_raw_events
-#[test]
-fn context_retrieval_degrades_to_secondary_index_and_raw_events_when_summaries_missing() {
-    let engine = test_engine();
-    let tenant_hash = 4202;
-    let node_hash = stable_hash64("missing-summary-node");
-    let event_time_ms = 42_000;
-    let event = context_event_with_storage_keys(
-        node_hash,
-        ContextEvent {
-            event_id_hash: stable_hash64("missing-summary-event"),
-            event_time_ms,
-            ingestion_time_ms: event_time_ms,
-            kind: source_kind_code(ContextSourceKind::Chat),
-            event_type: 1,
-            actor_hash: stable_hash64("agent:codex"),
-            status: 1,
-            valid_until_ms: 0,
-            confidence: 1.0,
-            importance: 1.0,
-            text: "Raw event says checkout retry requires the fraud review evidence.".to_string(),
-            source_ref: "agent:codex:raw-event".to_string(),
-            related_node_hashes: Vec::new(),
-            compact_attrs: Vec::new(),
-        },
-    );
-    for command in [
-        Command::ContextUpsertNode {
-            tenant_hash,
-            node: ContextNode {
-                node_hash,
-                parent_hash: 0,
-                kind: source_kind_code(ContextSourceKind::Chat),
-                canonical_name: "Missing summary node".to_string(),
-                l0: String::new(),
-                status: 1,
-                last_event_time_ms: event_time_ms,
-                summary_dirty: true,
-                l1_ref: String::new(),
-                raw_metadata_ref: "agent:codex:raw-event".to_string(),
-            },
-        },
-        Command::ContextWriteEvent {
-            tenant_hash,
-            node_hash,
-            event: event.clone(),
-            first_write_only: false,
-        },
-        Command::ContextWriteIndexRef {
-            tenant_hash,
-            index_name: "source".to_string(),
-            index_value_hash: stable_hash64("agent:codex:raw-event"),
-            scope_hash: 0,
-            event_time_ms,
-            index_ref: ContextIndexRef {
-                primary_node_hash: node_hash,
-                primary_event_time_ms: event_time_ms,
-                event_id_hash: event.event_id_hash,
-            },
-        },
-    ] {
-        let response = engine.execute_durable(ExecuteRequest {
-            shard_id: 1,
-            command,
-        });
-        assert!(response.status.ok, "{:?}", response.status);
-    }
-
-    let report = retrieve_context(
-        &engine,
-        ContextRetrieveRequest {
-            shard_id: 1,
-            tenant_hash,
-            node_hashes: vec![node_hash],
-            query: "checkout fraud review evidence".to_string(),
-            start_time_ms: 0,
-            end_time_ms: 50_000,
-            max_events: 8,
-            min_confidence: 0.0,
-            min_importance: 0.0,
-            tiers: vec![ContextTier::L2],
-            max_summary_nodes: 4,
-            max_event_nodes: 4,
-            owner_scope: "agent:codex".to_string(),
-            current_agent_id: "codex".to_string(),
-            shared_resource_scopes: Vec::new(),
-            max_peer_agent_nodes: usize::MAX,
-            provider: ContextModelProviderConfig::default(),
-        },
-    );
-    assert!(report.status.ok, "{:?}", report.status);
-    let traversal = &report.query_understanding_debug.tree_traversal_summary;
-    assert!(traversal.missing_summary_degraded_gracefully);
-    assert_eq!(traversal.summary_embedding_missing_node_count, 1);
-    assert!(traversal.degraded_to_raw_event_scan);
-    assert_eq!(
-        traversal.fallback_reason,
-        "missing_summary_embedding_secondary_index_raw_event_scan"
-    );
-    assert!(report
-        .blocks
-        .iter()
-        .any(|block| block.text.contains("fraud review evidence")));
 }
 
 // shared-corpus: context_query_debug_filter_group_cpp_parity
@@ -681,7 +471,6 @@ fn context_query_debug_reports_filter_groups_drops_and_injection_order() {
             owner_scope: String::new(),
             current_agent_id: String::new(),
             shared_resource_scopes: Vec::new(),
-            max_peer_agent_nodes: usize::MAX,
             provider: ContextModelProviderConfig::default(),
         },
     );
@@ -818,7 +607,6 @@ fn context_retrieval_limits_namespace_fanout_with_summary_and_locality_plan() {
             owner_scope: String::new(),
             current_agent_id: String::new(),
             shared_resource_scopes: Vec::new(),
-            max_peer_agent_nodes: usize::MAX,
             provider: ContextModelProviderConfig::default(),
         },
     );
@@ -930,43 +718,19 @@ fn context_multi_agent_scan_boosts_current_agent_and_colocates_shared_scopes() {
             owner_scope: "workspace:payments".to_string(),
             current_agent_id: "codex".to_string(),
             shared_resource_scopes: vec!["user:alice".to_string(), "global".to_string()],
-            max_peer_agent_nodes: 0,
             provider: ContextModelProviderConfig::default(),
         },
     );
     assert!(report.status.ok, "{:?}", report.status);
     assert_eq!(report.fanout_plan.namespace_node_candidates, 5);
-    assert_eq!(report.fanout_plan.summary_embedding_query_nodes, 4);
-    assert_eq!(report.fanout_plan.summary_pruned_peer_agent_nodes, 1);
     assert_eq!(report.fanout_plan.event_expanded_nodes, 2);
     assert!(report.fanout_plan.fanout_reduced);
-    assert!(report.fanout_plan.namespace_replication_avoided);
-    assert_eq!(report.fanout_plan.avoided_namespace_replication_nodes, 3);
-    assert!(report.fanout_plan.fanout_reduction_percent >= 60);
-    assert_eq!(report.fanout_plan.selected_colocation_group_count, 2);
-    assert!(report.fanout_plan.current_agent_first_selected);
-    assert_eq!(
-        report.fanout_plan.selected_colocation_scope_order.first(),
-        Some(&"agent:codex".to_string())
-    );
-    assert_current_agent_first_selected_and_injected(&report);
-    assert!(report
-        .fanout_plan
-        .selected_colocation_scope_keys
-        .iter()
-        .any(|key| key == "agent:codex"));
-    assert!(report
-        .fanout_plan
-        .selected_colocation_scope_keys
-        .iter()
-        .any(|key| key == "user:alice" || key == "workspace:payments" || key == "global"));
     assert_eq!(report.fanout_plan.current_agent_id, "codex");
     assert_eq!(report.fanout_plan.current_agent_boosted_nodes, 1);
     assert_eq!(report.fanout_plan.user_shared_nodes, 1);
     assert_eq!(report.fanout_plan.workspace_shared_nodes, 1);
     assert_eq!(report.fanout_plan.global_shared_nodes, 1);
     assert!(report.fanout_plan.scope_boosted_nodes >= 5);
-    assert!(report.fanout_plan.selected_current_agent_nodes >= 1);
     assert!(report
         .fanout_plan
         .scan_layers
@@ -997,313 +761,6 @@ fn context_multi_agent_scan_boosts_current_agent_and_colocates_shared_scopes() {
 ",
         );
     assert!(selected_text.contains("Codex traced"), "{selected_text}");
-}
-
-// shared-corpus: context_multi_agent_layer_quota_keeps_shared_resources
-#[test]
-fn context_multi_agent_layer_quota_keeps_shared_resources_when_agent_has_many_matches() {
-    let engine = test_engine();
-    let tenant_hash = 606062;
-    let mut node_hashes = Vec::new();
-    for idx in 0..5u64 {
-        let extract = extract_context(
-            &engine,
-            ContextExtractRequest {
-                shard_id: 1,
-                tenant_hash,
-                source_kind: ContextSourceKind::Document,
-                source_id: format!("agent:codex:checkout-risk-{idx}"),
-                title: format!("Codex checkout risk trace {idx}"),
-                body: format!(
-                    "Checkout payment risk incident {idx} has Codex local evidence and retry traces."
-                ),
-                timestamp_ms: 31_000 + idx,
-                provider: ContextModelProviderConfig::default(),
-            },
-        );
-        assert!(extract.status.ok, "{:?}", extract.status);
-        node_hashes.push(extract.node.node_hash);
-    }
-    for (source_id, title, body) in [
-        (
-            "user:alice:checkout-preference",
-            "Alice shared checkout preference",
-            "User shared resource says checkout payment uses Alice corporate card exception.",
-        ),
-        (
-            "global:skills:payment-debug",
-            "Global payment debug skill",
-            "Global shared skill says checkout payment debugging starts with gateway health.",
-        ),
-    ] {
-        let extract = extract_context(
-            &engine,
-            ContextExtractRequest {
-                shard_id: 1,
-                tenant_hash,
-                source_kind: ContextSourceKind::Document,
-                source_id: source_id.to_string(),
-                title: title.to_string(),
-                body: body.to_string(),
-                timestamp_ms: 40_000 + node_hashes.len() as u64,
-                provider: ContextModelProviderConfig::default(),
-            },
-        );
-        assert!(extract.status.ok, "{:?}", extract.status);
-        node_hashes.push(extract.node.node_hash);
-    }
-
-    let report = retrieve_context(
-        &engine,
-        ContextRetrieveRequest {
-            shard_id: 1,
-            tenant_hash,
-            node_hashes,
-            query: "checkout payment risk".to_string(),
-            start_time_ms: 0,
-            end_time_ms: 50_000,
-            max_events: 8,
-            min_confidence: 0.0,
-            min_importance: 0.0,
-            tiers: vec![ContextTier::L2],
-            max_summary_nodes: 7,
-            max_event_nodes: 3,
-            owner_scope: String::new(),
-            current_agent_id: "codex".to_string(),
-            shared_resource_scopes: vec!["user:alice".to_string(), "global".to_string()],
-            max_peer_agent_nodes: 0,
-            provider: ContextModelProviderConfig::default(),
-        },
-    );
-    assert!(report.status.ok, "{:?}", report.status);
-    assert_eq!(report.fanout_plan.namespace_node_candidates, 7);
-    assert_eq!(report.fanout_plan.summary_embedding_query_nodes, 7);
-    assert_eq!(report.fanout_plan.summary_pruned_peer_agent_nodes, 0);
-    assert_eq!(report.fanout_plan.event_expanded_nodes, 3);
-    assert!(report.fanout_plan.fanout_reduced);
-    assert!(report.fanout_plan.namespace_replication_avoided);
-    assert_eq!(report.fanout_plan.avoided_namespace_replication_nodes, 4);
-    assert!(report.fanout_plan.fanout_reduction_percent >= 50);
-    assert_eq!(report.fanout_plan.selected_colocation_group_count, 3);
-    assert!(report.fanout_plan.current_agent_first_selected);
-    assert_eq!(
-        report.fanout_plan.selected_colocation_scope_order.first(),
-        Some(&"agent:codex".to_string())
-    );
-    assert_current_agent_first_selected_and_injected(&report);
-    for selected_scope in ["agent:codex", "user:alice", "global"] {
-        assert!(
-            report
-                .fanout_plan
-                .selected_colocation_scope_keys
-                .iter()
-                .any(|key| key == selected_scope),
-            "missing selected scope {selected_scope}: {:?}",
-            report.fanout_plan.selected_colocation_scope_keys
-        );
-    }
-    assert!(report.fanout_plan.layer_quota_applied);
-    assert_eq!(report.fanout_plan.shared_layer_quota_nodes, 3);
-    assert_eq!(report.fanout_plan.selected_current_agent_nodes, 1);
-    assert_eq!(report.fanout_plan.selected_user_shared_nodes, 1);
-    assert_eq!(report.fanout_plan.selected_global_shared_nodes, 1);
-    assert!(report
-        .fanout_plan
-        .locality_keys
-        .iter()
-        .any(|key| key.contains(":scope:user:alice:")));
-    assert!(report
-        .fanout_plan
-        .locality_keys
-        .iter()
-        .any(|key| key.contains(":scope:global:")));
-    let selected_text = report
-        .blocks
-        .iter()
-        .map(|block| block.text.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        selected_text.contains("Codex local evidence"),
-        "{selected_text}"
-    );
-    assert!(
-        selected_text.contains("Alice corporate card"),
-        "{selected_text}"
-    );
-    assert!(
-        selected_text.contains("Global shared skill"),
-        "{selected_text}"
-    );
-}
-
-// shared-corpus: context_multi_agent_auto_shared_scope_expansion
-#[test]
-fn context_multi_agent_scan_derives_shared_scopes_from_owner_and_agent() {
-    let engine = test_engine();
-    let tenant_hash = 606063;
-    let mut node_hashes = Vec::new();
-    for (source_id, title, body) in [
-        (
-            "agent:codex:checkout-debug",
-            "Codex checkout debug",
-            "Codex agent trace says checkout retry should inspect payment idempotency.",
-        ),
-        (
-            "workspace:payments:checkout-runbook",
-            "Payments checkout runbook",
-            "Workspace runbook says checkout retry requires gateway health and rollback notes.",
-        ),
-        (
-            "user:user:checkout-preference",
-            "User checkout preference",
-            "User shared memory says checkout retry should preserve the corporate card.",
-        ),
-        (
-            "global:skills:checkout-debug",
-            "Global checkout debug",
-            "Global shared skill says checkout retry needs temporal context evidence.",
-        ),
-        (
-            "agent:claude:checkout-debug",
-            "Claude checkout debug",
-            "Claude peer agent note should be visible as a candidate but not selected.",
-        ),
-    ] {
-        let extract = extract_context(
-            &engine,
-            ContextExtractRequest {
-                shard_id: 1,
-                tenant_hash,
-                source_kind: ContextSourceKind::Document,
-                source_id: source_id.to_string(),
-                title: title.to_string(),
-                body: body.to_string(),
-                timestamp_ms: 50_000 + node_hashes.len() as u64,
-                provider: ContextModelProviderConfig::default(),
-            },
-        );
-        assert!(extract.status.ok, "{:?}", extract.status);
-        node_hashes.push(extract.node.node_hash);
-    }
-
-    let report = retrieve_context(
-        &engine,
-        ContextRetrieveRequest {
-            shard_id: 1,
-            tenant_hash,
-            node_hashes,
-            query: "checkout retry payment".to_string(),
-            start_time_ms: 0,
-            end_time_ms: 60_000,
-            max_events: 8,
-            min_confidence: 0.0,
-            min_importance: 0.0,
-            tiers: vec![ContextTier::L2],
-            max_summary_nodes: 5,
-            max_event_nodes: 4,
-            owner_scope: "workspace:payments".to_string(),
-            current_agent_id: "codex".to_string(),
-            shared_resource_scopes: Vec::new(),
-            max_peer_agent_nodes: 0,
-            provider: ContextModelProviderConfig::default(),
-        },
-    );
-    assert!(report.status.ok, "{:?}", report.status);
-    assert_eq!(report.fanout_plan.namespace_node_candidates, 5);
-    assert_eq!(report.fanout_plan.summary_embedding_query_nodes, 4);
-    assert_eq!(report.fanout_plan.summary_pruned_peer_agent_nodes, 1);
-    assert_eq!(report.fanout_plan.event_expanded_nodes, 4);
-    assert!(report.fanout_plan.fanout_reduced);
-    assert!(report.fanout_plan.namespace_replication_avoided);
-    assert_eq!(report.fanout_plan.avoided_namespace_replication_nodes, 1);
-    assert_eq!(report.fanout_plan.fanout_reduction_percent, 20);
-    assert_eq!(report.fanout_plan.selected_colocation_group_count, 4);
-    assert!(report.fanout_plan.current_agent_first_selected);
-    assert_eq!(
-        report.fanout_plan.selected_colocation_scope_order.first(),
-        Some(&"agent:codex".to_string())
-    );
-    assert_current_agent_first_selected_and_injected(&report);
-    for selected_scope in ["agent:codex", "workspace:payments", "user:user", "global"] {
-        assert!(
-            report
-                .fanout_plan
-                .selected_colocation_scope_keys
-                .iter()
-                .any(|key| key == selected_scope),
-            "missing selected scope {selected_scope}: {:?}",
-            report.fanout_plan.selected_colocation_scope_keys
-        );
-    }
-    assert!(report.fanout_plan.layer_quota_applied);
-    assert_eq!(report.fanout_plan.shared_layer_quota_nodes, 4);
-    assert_eq!(report.fanout_plan.selected_current_agent_nodes, 1);
-    assert_eq!(report.fanout_plan.selected_workspace_shared_nodes, 1);
-    assert_eq!(report.fanout_plan.selected_user_shared_nodes, 1);
-    assert_eq!(report.fanout_plan.selected_global_shared_nodes, 1);
-    assert!(report.fanout_plan.concurrent_scan_enabled);
-    assert_eq!(report.fanout_plan.concurrent_scan_completed_lanes, 4);
-    assert!(report.fanout_plan.current_agent_lane_returned_first);
-    for expected_lane in [
-        "current-agent",
-        "user-shared",
-        "workspace-global",
-        "resource-skill",
-    ] {
-        assert!(
-            report
-                .fanout_plan
-                .concurrent_scan_lanes
-                .iter()
-                .any(|lane| lane.lane == expected_lane
-                    && lane.node_count > 0
-                    && lane.completed
-                    && !lane.timed_out),
-            "missing concurrent lane {expected_lane}: {:?}",
-            report.fanout_plan.concurrent_scan_lanes
-        );
-    }
-    assert_eq!(report.fanout_plan.selected_peer_agent_nodes, 0);
-    assert_eq!(report.fanout_plan.skipped_peer_agent_nodes, 1);
-    assert!(report.fanout_plan.peer_agent_limit_applied);
-    for required in ["agent:codex", "workspace:payments", "user:user", "global"] {
-        assert!(
-            report
-                .fanout_plan
-                .required_scan_scope_keys
-                .iter()
-                .any(|key| key == required),
-            "missing required scope {required}: {:?}",
-            report.fanout_plan.required_scan_scope_keys
-        );
-    }
-    let selected_text = report
-        .blocks
-        .iter()
-        .map(|block| block.text.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        selected_text.contains("Codex agent trace"),
-        "{selected_text}"
-    );
-    assert!(
-        selected_text.contains("Workspace runbook"),
-        "{selected_text}"
-    );
-    assert!(
-        selected_text.contains("User shared memory"),
-        "{selected_text}"
-    );
-    assert!(
-        selected_text.contains("Global shared skill"),
-        "{selected_text}"
-    );
-    assert!(
-        !selected_text.contains("Claude peer agent"),
-        "{selected_text}"
-    );
 }
 
 // shared-corpus: context_benchmark_injection_entity_segment_index
@@ -1372,7 +829,6 @@ fn context_benchmark_injection_uses_entity_segment_l0_l1_and_secondary_index() {
         owner_scope: String::new(),
         current_agent_id: String::new(),
         shared_resource_scopes: Vec::new(),
-        max_peer_agent_nodes: usize::MAX,
         provider: ContextModelProviderConfig::default(),
     };
     let retrieved = retrieve_context(&engine, retrieve.clone());
@@ -1966,7 +1422,6 @@ fn context_injection_prompt_pack_preserves_retrieved_evidence_ordering() {
         owner_scope: String::new(),
         current_agent_id: String::new(),
         shared_resource_scopes: Vec::new(),
-        max_peer_agent_nodes: usize::MAX,
         provider: ContextModelProviderConfig::default(),
     };
     let retrieved = retrieve_context(&engine, retrieve.clone());
@@ -2084,7 +1539,6 @@ fn context_workflow_policy_rejects_disallowed_runtime_controls() {
             owner_scope: String::new(),
             current_agent_id: String::new(),
             shared_resource_scopes: Vec::new(),
-            max_peer_agent_nodes: usize::MAX,
             provider: ContextModelProviderConfig::default(),
         },
         prompt: "one two three four five".to_string(),
