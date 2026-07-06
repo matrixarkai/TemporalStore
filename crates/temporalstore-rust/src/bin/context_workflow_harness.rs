@@ -207,6 +207,14 @@ struct ResourceSkillConversationScaleSummary {
     fanout_avoided_namespace_replication_nodes: usize,
     fanout_reduction_percent: u32,
     fanout_namespace_replication_avoided: bool,
+    fanout_candidate_current_agent_nodes: usize,
+    fanout_candidate_peer_agent_nodes: usize,
+    fanout_candidate_user_shared_nodes: usize,
+    fanout_candidate_workspace_shared_nodes: usize,
+    fanout_candidate_global_shared_nodes: usize,
+    fanout_candidate_shared_node_count: usize,
+    fanout_candidate_shared_scope_coverage_count: usize,
+    fanout_candidate_scope_pressure_ready: bool,
     fanout_selected_current_agent_nodes: usize,
     fanout_peer_agent_nodes: usize,
     fanout_selected_peer_agent_nodes: usize,
@@ -270,6 +278,14 @@ struct MultiAgentContextScanHarnessSummary {
     avoided_namespace_replication_nodes: usize,
     fanout_reduction_percent: u32,
     namespace_replication_avoided: bool,
+    candidate_current_agent_nodes: usize,
+    candidate_peer_agent_nodes: usize,
+    candidate_user_shared_nodes: usize,
+    candidate_workspace_shared_nodes: usize,
+    candidate_global_shared_nodes: usize,
+    candidate_shared_node_count: usize,
+    candidate_shared_scope_coverage_count: usize,
+    candidate_scope_pressure_ready: bool,
     fanout_reduced: bool,
     layer_quota_applied: bool,
     shared_layer_quota_nodes: usize,
@@ -1328,6 +1344,22 @@ fn run_resource_skill_conversation_scale(
     let fanout_scan_policy_ready = fanout_scan_policy_implicit_current_agent_scope_added
         && fanout_scan_policy_owner_scope_included
         && fanout_scan_policy_shared_scopes_included;
+    let fanout_candidate_shared_node_count = combined_retrieve.fanout_plan.user_shared_nodes
+        + combined_retrieve.fanout_plan.workspace_shared_nodes
+        + combined_retrieve.fanout_plan.global_shared_nodes;
+    let fanout_candidate_shared_scope_coverage_count = [
+        combined_retrieve.fanout_plan.user_shared_nodes > 0,
+        combined_retrieve.fanout_plan.workspace_shared_nodes > 0,
+        combined_retrieve.fanout_plan.global_shared_nodes > 0,
+    ]
+    .into_iter()
+    .filter(|covered| *covered)
+    .count();
+    let fanout_candidate_scope_pressure_ready =
+        combined_retrieve.fanout_plan.current_agent_boosted_nodes > 0
+            && combined_retrieve.fanout_plan.peer_agent_nodes > 0
+            && fanout_candidate_shared_scope_coverage_count == 3
+            && fanout_candidate_shared_node_count > 0;
     let multi_agent_scan_ready = combined_retrieve.fanout_plan.fanout_reduced
         && combined_retrieve.fanout_plan.layer_quota_applied
         && combined_retrieve.fanout_plan.selected_current_agent_nodes > 0
@@ -1346,6 +1378,7 @@ fn run_resource_skill_conversation_scale(
         && fanout_shared_scope_coverage_ready
         && fanout_current_agent_boost_bounded
         && fanout_scan_policy_ready
+        && fanout_candidate_scope_pressure_ready
         && combined_retrieve
             .fanout_plan
             .locality_keys
@@ -1516,6 +1549,18 @@ fn run_resource_skill_conversation_scale(
         fanout_namespace_replication_avoided: combined_retrieve
             .fanout_plan
             .namespace_replication_avoided,
+        fanout_candidate_current_agent_nodes: combined_retrieve
+            .fanout_plan
+            .current_agent_boosted_nodes,
+        fanout_candidate_peer_agent_nodes: combined_retrieve.fanout_plan.peer_agent_nodes,
+        fanout_candidate_user_shared_nodes: combined_retrieve.fanout_plan.user_shared_nodes,
+        fanout_candidate_workspace_shared_nodes: combined_retrieve
+            .fanout_plan
+            .workspace_shared_nodes,
+        fanout_candidate_global_shared_nodes: combined_retrieve.fanout_plan.global_shared_nodes,
+        fanout_candidate_shared_node_count,
+        fanout_candidate_shared_scope_coverage_count,
+        fanout_candidate_scope_pressure_ready,
         fanout_selected_current_agent_nodes: combined_retrieve
             .fanout_plan
             .selected_current_agent_nodes,
@@ -1723,6 +1768,21 @@ fn run_multi_agent_context_scan_harness(
     let scan_policy_ready = scan_policy_implicit_current_agent_scope_added
         && scan_policy_owner_scope_included
         && scan_policy_shared_scopes_included;
+    let candidate_shared_node_count = report.fanout_plan.user_shared_nodes
+        + report.fanout_plan.workspace_shared_nodes
+        + report.fanout_plan.global_shared_nodes;
+    let candidate_shared_scope_coverage_count = [
+        report.fanout_plan.user_shared_nodes > 0,
+        report.fanout_plan.workspace_shared_nodes > 0,
+        report.fanout_plan.global_shared_nodes > 0,
+    ]
+    .into_iter()
+    .filter(|covered| *covered)
+    .count();
+    let candidate_scope_pressure_ready = report.fanout_plan.current_agent_boosted_nodes > 0
+        && report.fanout_plan.peer_agent_nodes > 0
+        && candidate_shared_scope_coverage_count == 3
+        && candidate_shared_node_count > 0;
     let ready = report.fanout_plan.fanout_reduced
         && report.fanout_plan.layer_quota_applied
         && report.fanout_plan.selected_current_agent_nodes > 0
@@ -1736,6 +1796,7 @@ fn run_multi_agent_context_scan_harness(
         && report.fanout_plan.selected_global_shared_nodes > 0
         && report.fanout_plan.shared_layer_quota_nodes >= 4
         && scan_policy_ready
+        && candidate_scope_pressure_ready
         && report
             .fanout_plan
             .locality_keys
@@ -1806,6 +1867,14 @@ fn run_multi_agent_context_scan_harness(
         avoided_namespace_replication_nodes: report.fanout_plan.avoided_namespace_replication_nodes,
         fanout_reduction_percent: report.fanout_plan.fanout_reduction_percent,
         namespace_replication_avoided: report.fanout_plan.namespace_replication_avoided,
+        candidate_current_agent_nodes: report.fanout_plan.current_agent_boosted_nodes,
+        candidate_peer_agent_nodes: report.fanout_plan.peer_agent_nodes,
+        candidate_user_shared_nodes: report.fanout_plan.user_shared_nodes,
+        candidate_workspace_shared_nodes: report.fanout_plan.workspace_shared_nodes,
+        candidate_global_shared_nodes: report.fanout_plan.global_shared_nodes,
+        candidate_shared_node_count,
+        candidate_shared_scope_coverage_count,
+        candidate_scope_pressure_ready,
         fanout_reduced: report.fanout_plan.fanout_reduced,
         layer_quota_applied: report.fanout_plan.layer_quota_applied,
         shared_layer_quota_nodes: report.fanout_plan.shared_layer_quota_nodes,

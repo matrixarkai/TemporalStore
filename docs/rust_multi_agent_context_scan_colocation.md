@@ -52,6 +52,14 @@ Archived report: `docs/benchmark_archives/context_multiagent_scan_20260706_summa
   "avoided_namespace_replication_nodes": 9,
   "fanout_reduction_percent": 69,
   "namespace_replication_avoided": true,
+  "candidate_current_agent_nodes": 8,
+  "candidate_peer_agent_nodes": 2,
+  "candidate_user_shared_nodes": 1,
+  "candidate_workspace_shared_nodes": 1,
+  "candidate_global_shared_nodes": 1,
+  "candidate_shared_node_count": 3,
+  "candidate_shared_scope_coverage_count": 3,
+  "candidate_scope_pressure_ready": true,
   "fanout_reduced": true,
   "layer_quota_applied": true,
   "shared_layer_quota_nodes": 4,
@@ -137,6 +145,7 @@ Archived report: `docs/benchmark_archives/context_multiagent_scan_20260706_summa
 - Fanout is reduced from namespace candidates to bounded selected nodes.
 - Peer-agent capping now happens before summary embedding lookup: 2 peer-agent nodes are pruned from summary scoring in this focused scan.
 - The scan avoids full namespace replication: 9 candidate nodes are left unexpanded, a 69% fanout reduction across 4 selected colocation groups.
+- Candidate pressure is scope-aware before selection: 8 current-agent nodes, 2 peer-agent nodes, and 3 shared nodes across user/workspace/global are classified before fanout pruning.
 - The selected nodes include current-agent, user-shared, workspace-shared, and global-shared layers.
 - The selected colocation scope set proves the expanded scan covers `agent:codex`, `user:user`, `workspace:context`, and `global`.
 - The selected colocation scope order starts with `agent:codex`, proving current-agent context gets the first expansion slot before shared resources.
