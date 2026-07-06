@@ -203,6 +203,7 @@ struct ResourceSkillConversationScaleSummary {
     fanout_selected_colocation_groups: Vec<String>,
     fanout_selected_colocation_scope_keys: Vec<String>,
     fanout_selected_colocation_scope_order: Vec<String>,
+    fanout_selected_colocation_scope_distribution: BTreeMap<String, usize>,
     fanout_current_agent_first_selected: bool,
     fanout_avoided_namespace_replication_nodes: usize,
     fanout_reduction_percent: u32,
@@ -274,6 +275,7 @@ struct MultiAgentContextScanHarnessSummary {
     selected_colocation_groups: Vec<String>,
     selected_colocation_scope_keys: Vec<String>,
     selected_colocation_scope_order: Vec<String>,
+    selected_colocation_scope_distribution: BTreeMap<String, usize>,
     current_agent_first_selected: bool,
     avoided_namespace_replication_nodes: usize,
     fanout_reduction_percent: u32,
@@ -1295,6 +1297,11 @@ fn run_resource_skill_conversation_scale(
             .map(|resource| resource.parser_name.clone())
             .collect::<Vec<_>>(),
     );
+    let fanout_selected_colocation_scope_distribution = scope_distribution(
+        &combined_retrieve
+            .fanout_plan
+            .selected_colocation_scope_order,
+    );
     let fanout_shared_selected_node_count =
         combined_retrieve.fanout_plan.selected_user_shared_nodes
             + combined_retrieve
@@ -1539,6 +1546,7 @@ fn run_resource_skill_conversation_scale(
             .fanout_plan
             .selected_colocation_scope_order
             .clone(),
+        fanout_selected_colocation_scope_distribution,
         fanout_current_agent_first_selected: combined_retrieve
             .fanout_plan
             .current_agent_first_selected,
@@ -1741,6 +1749,8 @@ fn run_multi_agent_context_scan_harness(
     let selected_ref_current_agent_first = selected_ref_scope_order
         .first()
         .is_some_and(|scope| scope == "agent:codex");
+    let selected_colocation_scope_distribution =
+        scope_distribution(&report.fanout_plan.selected_colocation_scope_order);
     let injection_scope_order = collect_source_ref_scope_order(
         report
             .query_understanding_debug
@@ -1863,6 +1873,7 @@ fn run_multi_agent_context_scan_harness(
         selected_colocation_groups: report.fanout_plan.selected_colocation_groups,
         selected_colocation_scope_keys: report.fanout_plan.selected_colocation_scope_keys,
         selected_colocation_scope_order: report.fanout_plan.selected_colocation_scope_order,
+        selected_colocation_scope_distribution,
         current_agent_first_selected: report.fanout_plan.current_agent_first_selected,
         avoided_namespace_replication_nodes: report.fanout_plan.avoided_namespace_replication_nodes,
         fanout_reduction_percent: report.fanout_plan.fanout_reduction_percent,
@@ -1943,6 +1954,14 @@ fn percentage(numerator: usize, denominator: usize) -> u32 {
         return 0;
     }
     ((numerator * 100) / denominator) as u32
+}
+
+fn scope_distribution(scopes: &[String]) -> BTreeMap<String, usize> {
+    let mut distribution = BTreeMap::new();
+    for scope in scopes {
+        *distribution.entry(scope.clone()).or_insert(0) += 1;
+    }
+    distribution
 }
 
 fn locality_scope_keys(locality_keys: &[String]) -> Vec<String> {

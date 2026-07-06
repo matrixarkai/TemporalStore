@@ -22,6 +22,12 @@
     "user:user",
     "global"
   ],
+  "selected_colocation_scope_distribution": {
+    "agent:codex": 1,
+    "global": 1,
+    "user:user": 1,
+    "workspace:context": 1
+  },
   "current_agent_first_selected": true,
   "avoided_namespace_replication_nodes": 9,
   "fanout_reduction_percent": 69,
