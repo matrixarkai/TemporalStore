@@ -25,6 +25,7 @@ SERVER_LOG_LEVEL="${SERVER_LOG_LEVEL:-2}"
 SERVER_EXTRA_FLAGS="${SERVER_EXTRA_FLAGS:-}"
 METASERVER_EXTRA_FLAGS="${METASERVER_EXTRA_FLAGS:-}"
 STORAGE_POOL_URI="${STORAGE_POOL_URI:-file://${SMOKE_DIR}/storage/}"
+PERSIST_SMOKE_DIR="${PERSIST_SMOKE_DIR:-0}"
 TABLE_ELECTION_POLICY="${TABLE_ELECTION_POLICY:-PROMOTE_DERIVED}"
 TABLE_PARTITION_UNIT_RELATION="${TABLE_PARTITION_UNIT_RELATION:-ANTI_ENTROPY}"
 REPLICATOR_OUT_OF_SYNC_S="${TEMPORALSTORE_REPLICATOR_OUT_OF_SYNC_S}"
@@ -97,7 +98,9 @@ fi
 pkill -f "bcache2-metaserver.*metaserver_cluster_name=${CLUSTER_NAME}" >/dev/null 2>&1 || true
 pkill -f "bcache2-server.*cluster_name=${CLUSTER_NAME}" >/dev/null 2>&1 || true
 
-rm -rf "${SMOKE_DIR}"
+if [[ "${PERSIST_SMOKE_DIR}" != "1" ]]; then
+  rm -rf "${SMOKE_DIR}"
+fi
 mkdir -p "${SMOKE_DIR}/storage"
 for i in $(seq 1 "${META_COUNT}"); do
   mkdir -p \

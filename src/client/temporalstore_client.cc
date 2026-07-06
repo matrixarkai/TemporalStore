@@ -1181,44 +1181,40 @@ Status TemporalStoreClient::MatrixArkBatchAppendRecords(const std::vector<HashEn
         }
         return left_route < right_route;
     });
-    return impl_->WithRetry(true, [&]() {
-        size_t index = 0;
-        bool wrote_count = false;
-        while (index < coalesced.size()) {
-            const std::string route = EntryNativeBatchGroupKey(coalesced[index].entry, policy);
-            std::unique_ptr<Pipeline> pipeline;
-            Pipeline* raw_pipeline = nullptr;
-            RETURN_IF_STATUS_ERROR(impl_->table->OpenPipeline(&raw_pipeline));
-            pipeline.reset(raw_pipeline);
-            while (index < coalesced.size() &&
-                   EntryNativeBatchGroupKey(coalesced[index].entry, policy) == route) {
-                RETURN_IF_STATUS_ERROR(pipeline->HSet(coalesced[index].entry.key,
-                                                      coalesced[index].entry.field,
-                                                      coalesced[index].entry.value));
-                ++index;
-            }
-            if (index == coalesced.size() && !count_key.empty()) {
-                RETURN_IF_STATUS_ERROR(pipeline->Set(count_key, count_value));
-                wrote_count = true;
-            }
-            const std::vector<Status> statuses = pipeline->Sync();
-            for (const auto& status : statuses) {
-                RETURN_IF_STATUS_ERROR(status);
-            }
+    std::vector<TemporalStoreClient::Impl::RawBatchItem> batch_items;
+    batch_items.reserve(coalesced.size() + (count_key.empty() ? 0 : 1));
+    for (const auto& item : coalesced) {
+        ::bcache2::hash2::SetRequest request;
+        request.set_key(item.entry.key);
+        request.set_field(item.entry.field);
+        request.set_value(item.entry.value);
+        std::string request_bytes;
+        if (!request.SerializeToString(&request_bytes)) {
+            return Status::Internal("matrixark hash append request serialization failed");
         }
-        if (!count_key.empty() && !wrote_count) {
-            std::unique_ptr<Pipeline> pipeline;
-            Pipeline* raw_pipeline = nullptr;
-            RETURN_IF_STATUS_ERROR(impl_->table->OpenPipeline(&raw_pipeline));
-            pipeline.reset(raw_pipeline);
-            RETURN_IF_STATUS_ERROR(pipeline->Set(count_key, count_value));
-            const std::vector<Status> statuses = pipeline->Sync();
-            for (const auto& status : statuses) {
-                RETURN_IF_STATUS_ERROR(status);
-            }
+        batch_items.push_back(TemporalStoreClient::Impl::RawBatchItem{
+            Module::HASH,
+            ::bcache2::hash2::SET,
+            EntryNativeBatchGroupKey(item.entry, policy),
+            std::move(request_bytes),
+        });
+    }
+    if (!count_key.empty()) {
+        ::bcache2::str2::SetRequest request;
+        request.set_key(count_key);
+        request.set_value(count_value);
+        std::string request_bytes;
+        if (!request.SerializeToString(&request_bytes)) {
+            return Status::Internal("matrixark count update request serialization failed");
         }
-        return Status::OK();
-    });
+        batch_items.push_back(TemporalStoreClient::Impl::RawBatchItem{
+            Module::STRING,
+            ::bcache2::str2::SET,
+            count_key,
+            std::move(request_bytes),
+        });
+    }
+    return impl_->ExecuteRawBatch(batch_items, true);
 }
 
 Status TemporalStoreClient::MatrixArkRetrieveContextPack(const std::string& request_json,

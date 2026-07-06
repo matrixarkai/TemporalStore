@@ -20,6 +20,7 @@ SERVER_COUNT="${SERVER_COUNT:-1}"
 REPLICA_COUNT="${REPLICA_COUNT:-${SERVER_COUNT}}"
 SERVER_EXTRA_FLAGS="${SERVER_EXTRA_FLAGS:-}"
 METASERVER_EXTRA_FLAGS="${METASERVER_EXTRA_FLAGS:-}"
+PERSIST_DEPLOY_DIR="${PERSIST_DEPLOY_DIR:-0}"
 
 action="${1:-start}"
 
@@ -90,7 +91,9 @@ status_deploy() {
 
 start_deploy() {
   stop_deploy
-  rm -rf "${DEPLOY_DIR}"
+  if [[ "${PERSIST_DEPLOY_DIR}" != "1" ]]; then
+    rm -rf "${DEPLOY_DIR}"
+  fi
   mkdir -p "${DEPLOY_DIR}"
 
   nohup env \
@@ -110,6 +113,7 @@ start_deploy() {
     REPLICA_COUNT="${REPLICA_COUNT}" \
     SERVER_EXTRA_FLAGS="${SERVER_EXTRA_FLAGS}" \
     METASERVER_EXTRA_FLAGS="${METASERVER_EXTRA_FLAGS}" \
+    PERSIST_SMOKE_DIR="${PERSIST_DEPLOY_DIR}" \
     bash "${ROOT}/tools/smoke_ubuntu22.sh" \
     > "${DEPLOY_DIR}/launcher.log" \
     2>&1 &

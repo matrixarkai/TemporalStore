@@ -28,6 +28,7 @@ fi
 export MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS="${MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS:-60000}"
 export MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS="${MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS:-60000}"
 export MATRIXARK_MCP_AUTOSTART_CPP="${MATRIXARK_MCP_AUTOSTART_CPP:-1}"
+export MATRIXARK_CPP_DEPLOY_DIR="${MATRIXARK_CPP_DEPLOY_DIR:-$ROOT/.local/runtime/matrixark-cpp-live}"
 export MATRIXARK_LOCAL_MODE="${MATRIXARK_LOCAL_MODE:-cluster}"
 
 export MATRIXARK_EMBEDDING_PROVIDER="${MATRIXARK_EMBEDDING_PROVIDER:-oss}"
@@ -47,7 +48,7 @@ if [[ "$MATRIXARK_MCP_BACKEND" == "temporalstore-direct" && "$MATRIXARK_MCP_AUTO
   port="${MATRIXARK_TEMPORALSTORE_METASERVER##*:}"
   if ! timeout 2 bash -c "</dev/tcp/$host/$port" >/dev/null 2>&1; then
     echo "MatrixArk MCP: TemporalStore metaserver $MATRIXARK_TEMPORALSTORE_METASERVER is not listening; starting local C++ deployment..." >&2
-    BUILD_TYPE="${BUILD_TYPE:-Release}" SERVER_EXTRA_FLAGS="${SERVER_EXTRA_FLAGS:---storage_async=true --server_stopping_wait_s=1}" timeout 90 bash "$ROOT/tools/deploy_local_ubuntu22.sh" start >&2
+    BUILD_TYPE="${BUILD_TYPE:-Release}" DEPLOY_DIR="$MATRIXARK_CPP_DEPLOY_DIR" PERSIST_DEPLOY_DIR=1 SERVER_EXTRA_FLAGS="${SERVER_EXTRA_FLAGS:---storage_async=true --server_stopping_wait_s=1}" timeout 90 bash "$ROOT/tools/deploy_local_ubuntu22.sh" start >&2
   fi
 fi
 

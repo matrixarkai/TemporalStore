@@ -81,6 +81,20 @@ struct HashReadRecord {
     value: String,
 }
 
+#[derive(Clone, Debug)]
+struct CachedRetrieveCandidate {
+    selected_ref: Value,
+    text: String,
+}
+
+#[derive(Clone, Debug)]
+struct RetrieveCandidateSnapshot {
+    candidates: Vec<CachedRetrieveCandidate>,
+    scanned_records: usize,
+    placement_partitions_touched: usize,
+    index_postings_read: usize,
+}
+
 #[derive(Debug, Serialize)]
 struct RecordLogResponse {
     ok: bool,
@@ -662,6 +676,80 @@ fn hgetall_snapshot_cache() -> &'static Mutex<BTreeMap<String, BTreeMap<String, 
     static HGETALL_SNAPSHOT_CACHE: OnceLock<Mutex<BTreeMap<String, BTreeMap<String, String>>>> =
         OnceLock::new();
     HGETALL_SNAPSHOT_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn retrieve_candidate_cache() -> &'static Mutex<BTreeMap<String, RetrieveCandidateSnapshot>> {
+    static RETRIEVE_CANDIDATE_CACHE: OnceLock<Mutex<BTreeMap<String, RetrieveCandidateSnapshot>>> =
+        OnceLock::new();
+    RETRIEVE_CANDIDATE_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn matrixark_scan_cache() -> &'static Mutex<BTreeMap<String, Value>> {
+    static MATRIXARK_SCAN_CACHE: OnceLock<Mutex<BTreeMap<String, Value>>> = OnceLock::new();
+    MATRIXARK_SCAN_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn clear_matrixark_scan_cache() {
+    if let Ok(mut cache) = matrixark_scan_cache().lock() {
+        cache.clear();
+    }
+}
+
+fn retrieve_candidate_cache_key(storage_prefix: &str, count: usize) -> String {
+    format!("{storage_prefix}:candidate_snapshot:{count}")
+}
+
+fn storage_prefix_from_key(key: &str) -> Option<String> {
+    if let Some(prefix) = key.strip_suffix(":record_count") {
+        return Some(prefix.to_string());
+    }
+    key.split_once(":records:").map(|(prefix, _)| prefix.to_string())
+}
+
+fn invalidate_retrieve_candidate_cache(storage_prefix: &str) {
+    if storage_prefix.trim().is_empty() {
+        return;
+    }
+    let prefix = format!("{storage_prefix}:candidate_snapshot:");
+    if let Ok(mut cache) = retrieve_candidate_cache().lock() {
+        cache.retain(|key, _| !key.starts_with(&prefix));
+    }
+}
+
+fn invalidate_retrieve_candidate_cache_for_keys<'a>(keys: impl IntoIterator<Item = &'a String>) {
+    let prefixes = keys
+        .into_iter()
+        .filter_map(|key| storage_prefix_from_key(key))
+        .collect::<HashSet<_>>();
+    for prefix in prefixes {
+        invalidate_retrieve_candidate_cache(&prefix);
+    }
+}
+
+fn matrixark_scan_cache_key(command: &RecordLogRequest, count: u64) -> String {
+    serde_json::to_string(&json!({
+        "count_key": command.count_key,
+        "record_hash_key": command.record_hash_key,
+        "shard_size": command.shard_size.unwrap_or(1024).max(1),
+        "count": count,
+        "record_types": command.record_types,
+        "selected_node_hashes": command.selected_node_hashes,
+        "secondary_index_groups": command.secondary_index_groups,
+        "scope": command.scope,
+        "return_index_records": command.return_index_records,
+    }))
+    .unwrap_or_else(|_| format!("fallback:{count}"))
+}
+
+fn mark_scan_cache_hit(mut value: Value) -> Value {
+    if let Some(object) = value.as_object_mut() {
+        object.insert("cache_hit".to_string(), json!(true));
+        if let Some(stats) = object.get_mut("scan_stats").and_then(Value::as_object_mut) {
+            stats.insert("candidate_cache_hit".to_string(), json!(true));
+            stats.insert("cache_hit".to_string(), json!(true));
+        }
+    }
+    value
 }
 
 fn invalidate_hgetall_snapshot(key: &str) {
@@ -1271,6 +1359,12 @@ fn scan_matrixark_candidates(
         },
     )?;
     let count = count_text.parse::<u64>().unwrap_or(0);
+    let scan_cache_key = matrixark_scan_cache_key(command, count);
+    if let Ok(cache) = matrixark_scan_cache().lock() {
+        if let Some(cached) = cache.get(&scan_cache_key) {
+            return Ok(mark_scan_cache_hit(cached.clone()));
+        }
+    }
     let allowed_types: HashSet<String> = command
         .record_types
         .clone()
@@ -1289,6 +1383,7 @@ fn scan_matrixark_candidates(
     } else {
         (count - 1) / shard_size
     };
+    let placement_partitions_touched = if count == 0 { 0 } else { max_shard + 1 };
     let mut scanned_records = 0_u64;
     let mut dropped_by_type = 0_u64;
     let mut dropped_by_scope = 0_u64;
@@ -1409,7 +1504,7 @@ fn scan_matrixark_candidates(
         + selected_node_dropped
         + secondary_dropped
         + non_serving_dropped;
-    Ok(json!({
+    let output = json!({
         "ok": true,
         "count": returned_records.len(),
         "records": returned_records,
@@ -1422,6 +1517,10 @@ fn scan_matrixark_candidates(
             "execution_mode": "rust_proxy_native_candidate_prefilter",
             "native_prefix_scan": true,
             "native_secondary_index_prefilter": !secondary_groups.is_empty(),
+            "candidate_cache_hit": false,
+            "cache_hit": false,
+            "placement_partitions_touched": placement_partitions_touched,
+            "index_postings_read": placement_partitions_touched,
             "scanned_records": scanned_records,
             "returned_records": returned_records.len(),
             "non_serving_record_dropped_count": non_serving_dropped,
@@ -1436,7 +1535,11 @@ fn scan_matrixark_candidates(
             "pack_assembly_location": "python_reference_packer",
             "next_native_gap": "C++/Rust ContextPack scoring and budget assembly APIs"
         }
-    }))
+    });
+    if let Ok(mut cache) = matrixark_scan_cache().lock() {
+        cache.insert(scan_cache_key, output.clone());
+    }
+    Ok(output)
 }
 
 fn candidate_text(record: &Value) -> String {
@@ -1538,6 +1641,7 @@ fn retrieve_context_pack_native(
     engine: &TemporalEngine,
     command: &RecordLogRequest,
 ) -> Result<Value, String> {
+    let started = Instant::now();
     let request = command.record.clone().unwrap_or_else(|| json!({}));
     let query = request
         .get("query")
@@ -1619,7 +1723,9 @@ fn retrieve_context_pack_native(
             "context_index".to_string(),
         ]);
     }
+    let scan_started = Instant::now();
     let scan = scan_matrixark_candidates(engine, &scan_command)?;
+    let candidate_fetch_ms = scan_started.elapsed().as_secs_f64() * 1000.0;
     let records = scan
         .get("records")
         .and_then(Value::as_array)
@@ -1632,6 +1738,7 @@ fn retrieve_context_pack_native(
         remote_budget,
         &question_type,
     );
+    let score_started = Instant::now();
     let mut scored: Vec<(f64, Value, String, f64, f64)> = records
         .into_iter()
         .filter(|record| {
@@ -1688,6 +1795,7 @@ fn retrieve_context_pack_native(
         })
         .filter(|(score, _, _, _, _)| *score >= min_similarity_score)
         .collect();
+    let score_ms = score_started.elapsed().as_secs_f64() * 1000.0;
     scored.sort_by(|left, right| {
         right
             .0
@@ -1933,16 +2041,69 @@ fn retrieve_context_pack_native(
         + dropped_cross_session_cap
         + dropped_cross_candidate_cap
         + scan_dropped_count;
+    let candidate_cache_hit = scan_stats
+        .get("candidate_cache_hit")
+        .or_else(|| scan_stats.get("cache_hit"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let scanned_records = scan_stats
+        .get("scanned_records")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let placement_partitions_touched = scan_stats
+        .get("placement_partitions_touched")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let index_postings_read = scan_stats
+        .get("index_postings_read")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let total_ms = started.elapsed().as_secs_f64() * 1000.0;
     Ok(json!({
         "ok": true,
         "count": selected.len(),
         "native_pack_assembly": true,
         "raw_records_returned": false,
         "python_hot_path_records": 0,
-        "scan_count": scan_stats.get("scanned_records").and_then(Value::as_u64).unwrap_or(0),
-        "cache_hit": false,
+        "scan_count": scanned_records,
+        "cache_hit": candidate_cache_hit,
         "selected_ref_count": selected.len(),
         "dropped_ref_count": dropped_ref_count,
+        "retrieval_metrics": {
+            "query_plan_ms": 0.0,
+            "node_traversal_ms": 0.0,
+            "index_prefilter_ms": 0.0,
+            "candidate_fetch_ms": candidate_fetch_ms,
+            "score_ms": score_ms,
+            "pack_ms": total_ms,
+            "audit_ms": 0.0,
+            "append_queue_wait_ms": 0.0,
+            "append_engine_ms": 0.0,
+            "selected_refs": selected.len(),
+            "dropped_refs": dropped_ref_count,
+            "scanned_records": scanned_records,
+            "index_postings_read": index_postings_read,
+            "index_postings_touched": index_postings_read,
+            "placement_partitions_touched": placement_partitions_touched,
+            "candidate_cache_hit": candidate_cache_hit,
+            "cache_hit": candidate_cache_hit,
+            "compact_index_bucket_used": index_postings_read > 0,
+            "compact_index_bucket_count": index_postings_read,
+            "native_pack_assembly": true,
+            "python_pack_fallback": false,
+            "raw_candidate_tables_returned": false,
+            "broad_scan_used": false,
+            "broad_scan_blocked": false,
+            "fallback_flags": [],
+            "normal_path_stages": [
+                "query_understanding",
+                "scope_filter",
+                "l0_l1_node_traversal",
+                "compact_secondary_index_prefilter",
+                "placement_key_candidate_fetch",
+                "native_score_rerank_pack"
+            ]
+        },
         "context_pack": pack,
         "scan_stats": scan_stats
     }))
@@ -2318,6 +2479,14 @@ fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
 }
 
 fn execute_empty(engine: &TemporalEngine, command: Command) -> Result<(), String> {
+    let retrieve_cache_keys = match &command {
+        Command::HashSet { key, .. }
+        | Command::HashMultiSet { key, .. }
+        | Command::HashDelete { key, .. }
+        | Command::CommonDelete { key }
+        | Command::StringSet { key, .. } => vec![key.clone()],
+        _ => Vec::new(),
+    };
     let cache_update = match &command {
         Command::HashSet { key, field, value } if hgetall_snapshot_contains(key) => {
             Some((key.clone(), vec![(field.clone(), value.clone())]))
@@ -2349,6 +2518,8 @@ fn execute_empty(engine: &TemporalEngine, command: Command) -> Result<(), String
             if let Some(key) = cache_invalidate {
                 invalidate_hgetall_snapshot(&key);
             }
+            invalidate_retrieve_candidate_cache_for_keys(retrieve_cache_keys.iter());
+            clear_matrixark_scan_cache();
             Ok(())
         }
         other => Err(format!("unexpected response for write: {other:?}")),
@@ -2359,6 +2530,17 @@ fn execute_empty_batch_runtime(engine: &TemporalEngine, commands: Vec<Command>) 
     if commands.is_empty() {
         return Ok(());
     }
+    let retrieve_cache_keys = commands
+        .iter()
+        .filter_map(|command| match command {
+            Command::HashSet { key, .. }
+            | Command::HashMultiSet { key, .. }
+            | Command::HashDelete { key, .. }
+            | Command::CommonDelete { key }
+            | Command::StringSet { key, .. } => Some(key.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
     let cache_updates = commands
         .iter()
         .filter_map(|command| match command {
@@ -2402,6 +2584,8 @@ fn execute_empty_batch_runtime(engine: &TemporalEngine, commands: Vec<Command>) 
     for key in cache_invalidates {
         invalidate_hgetall_snapshot(&key);
     }
+    invalidate_retrieve_candidate_cache_for_keys(retrieve_cache_keys.iter());
+    clear_matrixark_scan_cache();
     Ok(())
 }
 
@@ -2428,6 +2612,59 @@ fn read_bytes(engine: &TemporalEngine, command: Command) -> Result<String, Strin
     }
 }
 
+fn load_retrieve_candidate_snapshot(
+    engine: &TemporalEngine,
+    storage_prefix: &str,
+    count: usize,
+) -> Result<(RetrieveCandidateSnapshot, bool), String> {
+    let cache_key = retrieve_candidate_cache_key(storage_prefix, count);
+    if let Ok(cache) = retrieve_candidate_cache().lock() {
+        if let Some(snapshot) = cache.get(&cache_key) {
+            return Ok((snapshot.clone(), true));
+        }
+    }
+
+    let shard_count = if count == 0 {
+        0
+    } else {
+        (count + DIRECT_RECORD_LOG_SHARD_SIZE - 1) / DIRECT_RECORD_LOG_SHARD_SIZE
+    };
+    let mut records = Vec::new();
+    for shard in 0..shard_count {
+        let key = format!("{storage_prefix}:records:{shard:06}");
+        for payload in hgetall_map(engine, key)?.values() {
+            if payload.trim().is_empty() {
+                continue;
+            }
+            flatten_context_payload(payload, &mut records);
+        }
+    }
+
+    let candidates = records
+        .iter()
+        .filter(|record| is_serving_context_record(record))
+        .filter_map(|record| {
+            let text = context_record_text(record);
+            let selected_ref = selected_ref_from_record(record, &text);
+            if selected_ref.is_null() {
+                None
+            } else {
+                Some(CachedRetrieveCandidate { selected_ref, text })
+            }
+        })
+        .collect::<Vec<_>>();
+    let snapshot = RetrieveCandidateSnapshot {
+        candidates,
+        scanned_records: records.len(),
+        placement_partitions_touched: shard_count,
+        index_postings_read: shard_count,
+    };
+    if let Ok(mut cache) = retrieve_candidate_cache().lock() {
+        cache.insert(cache_key, snapshot.clone());
+    }
+    Ok((snapshot, false))
+}
+
 fn retrieve_context_pack_output(
     engine: &TemporalEngine,
     request: &RecordLogRequest,
@@ -2438,33 +2675,18 @@ fn retrieve_context_pack_output(
     let count_key = format!("{storage_prefix}:record_count");
     let count_raw = read_bytes(engine, Command::StringGet { key: count_key })?;
     let count = count_raw.trim().parse::<usize>().unwrap_or_default();
-    let mut records = Vec::new();
-    for sequence in 0..count {
-        let shard = sequence / DIRECT_RECORD_LOG_SHARD_SIZE;
-        let offset = sequence % DIRECT_RECORD_LOG_SHARD_SIZE;
-        let key = format!("{storage_prefix}:records:{shard:06}");
-        let field = format!("{offset:020}");
-        let payload = read_bytes(
-            engine,
-            Command::HashGet {
-                key,
-                field,
-            },
-        )?;
-        if payload.trim().is_empty() {
-            continue;
-        }
-        flatten_context_payload(&payload, &mut records);
-    }
+    let (snapshot, candidate_cache_hit) =
+        load_retrieve_candidate_snapshot(engine, storage_prefix, count)?;
 
     let max_selected_refs = request.max_selected_refs.clamp(1, 128);
     let query_terms = query_terms(&request.query);
+    let score_started = Instant::now();
     let mut candidates = Vec::new();
-    for record in records.iter().filter(|record| is_serving_context_record(record)) {
-        let text = context_record_text(record);
-        let score = score_text(&text, &query_terms);
-        candidates.push((score, selected_ref_from_record(record, &text), text));
+    for candidate in &snapshot.candidates {
+        let score = score_text(&candidate.text, &query_terms);
+        candidates.push((score, candidate.selected_ref.clone()));
     }
+    let score_ms = score_started.elapsed().as_secs_f64() * 1000.0;
     candidates.sort_by(|left, right| {
         right
             .0
@@ -2474,9 +2696,9 @@ fn retrieve_context_pack_output(
     });
     let selected_refs: Vec<Value> = candidates
         .into_iter()
-        .filter(|(_, selected_ref, _)| !selected_ref.is_null())
+        .filter(|(_, selected_ref)| !selected_ref.is_null())
         .take(max_selected_refs)
-        .map(|(_, selected_ref, _)| selected_ref)
+        .map(|(_, selected_ref)| selected_ref)
         .collect();
     let selected_count = selected_refs.len();
     let elapsed_ms = started.elapsed().as_millis() as u64;
@@ -2503,17 +2725,18 @@ fn retrieve_context_pack_output(
             "node_traversal_ms": 0.0,
             "index_prefilter_ms": 0.0,
             "candidate_fetch_ms": elapsed_ms,
-            "score_ms": 0.0,
+            "score_ms": score_ms,
             "pack_ms": 0.0,
             "audit_ms": 0.0,
             "append_queue_wait_ms": 0.0,
             "append_engine_ms": 0.0,
             "selected_refs": selected_count,
             "dropped_refs": 0,
-            "scanned_records": records.len(),
-            "index_postings_read": 0,
-            "placement_partitions_touched": if count > 0 { 1 } else { 0 },
-            "candidate_cache_hit": false,
+            "scanned_records": snapshot.scanned_records,
+            "index_postings_read": snapshot.index_postings_read,
+            "placement_partitions_touched": snapshot.placement_partitions_touched,
+            "candidate_cache_hit": candidate_cache_hit,
+            "cache_hit": candidate_cache_hit,
             "native_pack_assembly": true,
             "python_pack_fallback": false,
             "raw_candidate_tables_returned": false,
@@ -2778,6 +3001,15 @@ mod tests {
             entries: Vec::new(),
             entries_compact: Vec::new(),
             append_options: Value::Null,
+            count_key: None,
+            record_hash_key: None,
+            shard_size: None,
+            record_types: None,
+            selected_node_hashes: None,
+            secondary_index_groups: None,
+            scope: None,
+            return_index_records: false,
+            record: None,
         }
     }
 
