@@ -60,7 +60,7 @@
       "family": "context",
       "status": "temporary_static_surface_gate",
       "native_cpp_executable": false,
-      "selected_case_count": 21,
+      "selected_case_count": 27,
       "blocker": "Native C++ context pipeline corpus runner is not wired yet; C++ context source/debug paths remain required while Rust executes the shared cases. native C++ context query debug corpus adapter still needs to emit matrixark_context_query_debug_v1 case results",
       "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --family context --cpp --require-cpp-native",
       "suites": [

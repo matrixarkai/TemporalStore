@@ -67,11 +67,15 @@ def _redact_sensitive_argv(argv: list[str]) -> list[str]:
         if skip_next:
             skip_next = False
             continue
-        if item == root_path:
-            redacted.append(WORKSPACE_ROOT_PLACEHOLDER)
-            continue
+        # In a native WSL checkout ROOT and _wsl_path(ROOT) can be identical.
+        # Prefer the WSL placeholder for execution argv because --cd is consumed
+        # by wsl.exe and committed performance evidence must prove that local
+        # machine paths were redacted from the Linux execution boundary.
         if item == root_wsl_path:
             redacted.append(WORKSPACE_ROOT_WSL_PLACEHOLDER)
+            continue
+        if item == root_path:
+            redacted.append(WORKSPACE_ROOT_PLACEHOLDER)
             continue
         if item in SENSITIVE_PATH_FLAGS:
             redacted.append(item)
