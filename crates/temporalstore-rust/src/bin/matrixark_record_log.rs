@@ -1806,6 +1806,7 @@ fn retrieve_context_pack_native(
         scored.truncate(max_global_candidates as usize);
     }
     let mut selected = Vec::new();
+    let mut selected_signatures: HashSet<String> = HashSet::new();
     let mut selected_counts: HashMap<String, u64> = HashMap::new();
     let mut selected_nodes: HashSet<u64> = HashSet::new();
     let mut dropped_over_budget = 0_u64;
@@ -1813,6 +1814,7 @@ fn retrieve_context_pack_native(
     let mut dropped_cross_session_cap = 0_u64;
     let mut dropped_cross_candidate_cap = 0_u64;
     let mut dropped_low_score = 0_u64;
+    let mut dropped_duplicate_ref = 0_u64;
     let mut cross_used_tokens = 0_u64;
     let mut cross_selected_refs = 0_u64;
     let mut entity_bridge_selected_refs = 0_u64;
@@ -1888,6 +1890,21 @@ fn retrieve_context_pack_native(
             dropped_cross_budget += 1;
             continue;
         }
+        let ref_signature = format!(
+            "{}:{}",
+            context_class,
+            record_ref_hash(&record).unwrap_or_else(|| {
+                record
+                    .get("record_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string()
+            })
+        );
+        if !selected_signatures.insert(ref_signature) {
+            dropped_duplicate_ref += 1;
+            continue;
+        }
         used_tokens += tokens;
         if is_cross_session {
             cross_used_tokens += tokens;
@@ -1933,12 +1950,14 @@ fn retrieve_context_pack_native(
             "cross_session_session_cap": dropped_cross_session_cap,
             "cross_session_candidate_cap": dropped_cross_candidate_cap,
             "low_score": dropped_low_score,
+            "duplicate_ref": dropped_duplicate_ref,
             "reason_counts": {
                 "over_budget": dropped_over_budget,
                 "cross_session_budget": dropped_cross_budget,
                 "cross_session_session_cap": dropped_cross_session_cap,
                 "cross_session_candidate_cap": dropped_cross_candidate_cap,
-                "low_score": dropped_low_score
+                "low_score": dropped_low_score,
+                "duplicate_ref": dropped_duplicate_ref
             }
         },
         "used_context_tokens": used_tokens,
@@ -2040,6 +2059,7 @@ fn retrieve_context_pack_native(
         + dropped_cross_budget
         + dropped_cross_session_cap
         + dropped_cross_candidate_cap
+        + dropped_duplicate_ref
         + scan_dropped_count;
     let candidate_cache_hit = scan_stats
         .get("candidate_cache_hit")
@@ -2069,6 +2089,7 @@ fn retrieve_context_pack_native(
         "cache_hit": candidate_cache_hit,
         "selected_ref_count": selected.len(),
         "dropped_ref_count": dropped_ref_count,
+        "dropped_duplicate_ref_count": dropped_duplicate_ref,
         "retrieval_metrics": {
             "query_plan_ms": 0.0,
             "node_traversal_ms": 0.0,
