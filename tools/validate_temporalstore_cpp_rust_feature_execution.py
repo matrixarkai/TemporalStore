@@ -47,9 +47,14 @@ REQUIRED_STATIC_EXIT_CRITERIA_TOKENS = (
     "no static surface gate",
 )
 STORAGE_CACHE_ADAPTER_CONTRACT_CASES = {
+    "storage_block_address_fallback_shared",
+    "storage_cache_replacement_soak_shared",
     "storage_slot_object_block_index_authority_shared",
+    "storage_slot_layout_transitions_shared",
     "storage_gc_eviction_cold_reads_shared",
+    "storage_model_aware_block_compaction_shared",
     "storage_stream_segment_manifest_rebuild_shared",
+    "storage_wal_index_gc_reclaim_shared",
 }
 STORAGE_CACHE_ADAPTER_CONTRACT_RUNNER = "tools/cpp_storage_unified_case_report_runner.cc"
 STORAGE_CACHE_ADAPTER_CONTRACT_VALIDATOR = "tools/validate_storage_unified_case_report_pair.py"
