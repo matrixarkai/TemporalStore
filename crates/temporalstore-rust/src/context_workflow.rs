@@ -4061,6 +4061,21 @@ fn context_scope_reservation_key(scope: &ContextScopeDescriptor) -> String {
     }
 }
 
+fn context_scope_qualified_source_ref(source_ref: &str, scope: &ContextScopeDescriptor) -> String {
+    let scope_key = context_scope_reservation_key(scope);
+    if scope_key.is_empty()
+        || source_ref
+            .to_ascii_lowercase()
+            .contains(&scope_key.to_ascii_lowercase())
+    {
+        source_ref.to_string()
+    } else if source_ref.trim().is_empty() {
+        format!("scope:{scope_key}")
+    } else {
+        format!("scope:{scope_key}|{source_ref}")
+    }
+}
+
 fn push_unique_context_scope(
     scopes: &mut Vec<ContextScopeDescriptor>,
     scope: ContextScopeDescriptor,
@@ -4648,7 +4663,11 @@ pub fn retrieve_context(
         } = node_response.response
         {
             node_count += 1;
-            node_source_ref = node.raw_metadata_ref.clone();
+            let scoped_node_source_ref = node_scope_by_hash
+                .get(&node_hash)
+                .map(|scope| context_scope_qualified_source_ref(&node.raw_metadata_ref, scope))
+                .unwrap_or_else(|| node.raw_metadata_ref.clone());
+            node_source_ref = scoped_node_source_ref.clone();
             if include_l0 {
                 blocks.push(ContextBlock {
                     uri: format!("{}/l0", context_node_uri(request.tenant_hash, node_hash)),
@@ -4657,7 +4676,7 @@ pub fn retrieve_context(
                     event_time_ms: node.last_event_time_ms,
                     text: node.l0,
                     estimated_tokens: estimate_tokens(&node.canonical_name),
-                    source_ref: node.raw_metadata_ref.clone(),
+                    source_ref: scoped_node_source_ref.clone(),
                 });
             }
             if include_l1 {
@@ -4668,7 +4687,7 @@ pub fn retrieve_context(
                     event_time_ms: node.last_event_time_ms,
                     text: node.l1_ref,
                     estimated_tokens: estimate_tokens(&node.canonical_name),
-                    source_ref: node.raw_metadata_ref,
+                    source_ref: scoped_node_source_ref,
                 });
             }
         }
@@ -4706,6 +4725,8 @@ pub fn retrieve_context(
                 if include_l2 {
                     let source_ref = if event.source_ref.is_empty() {
                         node_source_ref.clone()
+                    } else if let Some(scope) = node_scope_by_hash.get(&node_hash) {
+                        context_scope_qualified_source_ref(&event.source_ref, scope)
                     } else {
                         event.source_ref.clone()
                     };

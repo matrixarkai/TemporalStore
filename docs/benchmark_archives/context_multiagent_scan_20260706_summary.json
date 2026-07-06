@@ -68,6 +68,10 @@
     "tenant:20260706:scope:global:node:12994693500116009283"
   ],
   "retrieved_block_count": 12,
+  "retrieved_current_agent_block_count": 3,
+  "retrieved_user_shared_block_count": 3,
+  "retrieved_workspace_shared_block_count": 3,
+  "retrieved_global_shared_block_count": 3,
   "retrieved_event_count": 4,
   "selected_ref_count": 12,
   "current_agent_id": "codex"

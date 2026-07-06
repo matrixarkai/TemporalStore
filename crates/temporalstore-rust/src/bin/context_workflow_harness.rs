@@ -15,9 +15,9 @@ use temporalstore_rust::{
     context_workflow_state_report, extract_context, ingest_extract_context,
     ingest_resource_skill_context, inject_context, retrieve_context,
     run_context_pipeline_benchmark, run_context_pipeline_benchmark_sweep,
-    validate_resource_skill_secondary_indexes, Command, CommandResponse, ContextEvent,
-    ContextExtractRequest, ContextIndexRef, ContextIngestExtractRequest, ContextInjectRequest,
-    ContextModelProviderConfig, ContextNode, ContextPipelineBenchmarkRequest,
+    validate_resource_skill_secondary_indexes, Command, CommandResponse, ContextBlock,
+    ContextEvent, ContextExtractRequest, ContextIndexRef, ContextIngestExtractRequest,
+    ContextInjectRequest, ContextModelProviderConfig, ContextNode, ContextPipelineBenchmarkRequest,
     ContextPipelineBenchmarkSweepProfile, ContextPipelineBenchmarkSweepRequest,
     ContextPipelineBenchmarkThresholds, ContextPipelineParityEvidence, ContextResourceParseRequest,
     ContextResourceSkillIngestRequest, ContextResourceSkillSecondaryIndexValidationRequest,
@@ -161,6 +161,10 @@ struct ResourceSkillConversationScaleSummary {
     accepted_sources: usize,
     failed_sources: usize,
     retrieved_block_count: usize,
+    retrieved_current_agent_block_count: usize,
+    retrieved_user_shared_block_count: usize,
+    retrieved_workspace_shared_block_count: usize,
+    retrieved_global_shared_block_count: usize,
     retrieved_event_count: usize,
     selected_skill_count: usize,
     resource_lifecycle_watched_count: usize,
@@ -255,6 +259,10 @@ struct MultiAgentContextScanHarnessSummary {
     required_scan_scope_keys: Vec<String>,
     locality_keys: Vec<String>,
     retrieved_block_count: usize,
+    retrieved_current_agent_block_count: usize,
+    retrieved_user_shared_block_count: usize,
+    retrieved_workspace_shared_block_count: usize,
+    retrieved_global_shared_block_count: usize,
     retrieved_event_count: usize,
     selected_ref_count: usize,
     current_agent_id: String,
@@ -1045,10 +1053,20 @@ fn run_resource_skill_conversation_scale(
             shard_id,
             tenant_hash,
             source_kind: ContextSourceKind::Document,
+            source_id: "workspace:context:shared-debug-runbook".to_string(),
+            title: "Workspace context debug runbook".to_string(),
+            body: "Workspace shared runbook explains summary traversal, selected refs, query debug flow, and context injection ordering for all local agents.".to_string(),
+            timestamp_ms: start_time_ms + 30_001,
+            provider: ContextModelProviderConfig::default(),
+        },
+        ContextExtractRequest {
+            shard_id,
+            tenant_hash,
+            source_kind: ContextSourceKind::Document,
             source_id: "global:skills:checkout-debug".to_string(),
             title: "Global checkout debug skill".to_string(),
             body: "Global shared skill explains checkout rollback, p95 latency triage, and payment dependency debugging for every agent.".to_string(),
-            timestamp_ms: start_time_ms + 30_001,
+            timestamp_ms: start_time_ms + 30_002,
             provider: ContextModelProviderConfig::default(),
         },
     ]);
@@ -1181,6 +1199,10 @@ fn run_resource_skill_conversation_scale(
         && accepted_sources == total_source_count
         && accepted_sources >= 30
         && combined_retrieve.blocks.len() >= 8
+        && count_blocks_with_source_scope(&combined_retrieve.blocks, "agent:codex") > 0
+        && count_blocks_with_source_scope(&combined_retrieve.blocks, "user:user") > 0
+        && count_blocks_with_source_scope(&combined_retrieve.blocks, "workspace:context") > 0
+        && count_blocks_with_source_scope(&combined_retrieve.blocks, "global") > 0
         && fanout_ready
         && multi_agent_scan_ready
         && secondary_index_ready
@@ -1205,6 +1227,22 @@ fn run_resource_skill_conversation_scale(
         accepted_sources,
         failed_sources,
         retrieved_block_count: combined_retrieve.blocks.len(),
+        retrieved_current_agent_block_count: count_blocks_with_source_scope(
+            &combined_retrieve.blocks,
+            "agent:codex",
+        ),
+        retrieved_user_shared_block_count: count_blocks_with_source_scope(
+            &combined_retrieve.blocks,
+            "user:user",
+        ),
+        retrieved_workspace_shared_block_count: count_blocks_with_source_scope(
+            &combined_retrieve.blocks,
+            "workspace:context",
+        ),
+        retrieved_global_shared_block_count: count_blocks_with_source_scope(
+            &combined_retrieve.blocks,
+            "global",
+        ),
         retrieved_event_count: combined_retrieve.event_count,
         selected_skill_count: resource_skill_report.skill_selection.selected.len(),
         resource_lifecycle_watched_count: resource_skill_report.resource_lifecycle.watched_count,
@@ -1436,6 +1474,10 @@ fn run_multi_agent_context_scan_harness(
             .locality_keys
             .iter()
             .any(|key| key.contains(":scope:agent:codex:"))
+        && count_blocks_with_source_scope(&report.blocks, "agent:codex") > 0
+        && count_blocks_with_source_scope(&report.blocks, "user:user") > 0
+        && count_blocks_with_source_scope(&report.blocks, "workspace:context") > 0
+        && count_blocks_with_source_scope(&report.blocks, "global") > 0
         && report
             .blocks
             .iter()
@@ -1484,10 +1526,34 @@ fn run_multi_agent_context_scan_harness(
         required_scan_scope_keys: report.fanout_plan.required_scan_scope_keys,
         locality_keys: report.fanout_plan.locality_keys,
         retrieved_block_count: report.blocks.len(),
+        retrieved_current_agent_block_count: count_blocks_with_source_scope(
+            &report.blocks,
+            "agent:codex",
+        ),
+        retrieved_user_shared_block_count: count_blocks_with_source_scope(
+            &report.blocks,
+            "user:user",
+        ),
+        retrieved_workspace_shared_block_count: count_blocks_with_source_scope(
+            &report.blocks,
+            "workspace:context",
+        ),
+        retrieved_global_shared_block_count: count_blocks_with_source_scope(
+            &report.blocks,
+            "global",
+        ),
         retrieved_event_count: report.event_count,
         selected_ref_count: report.query_understanding_debug.selected_refs.len(),
         current_agent_id: report.fanout_plan.current_agent_id,
     }
+}
+
+fn count_blocks_with_source_scope(blocks: &[ContextBlock], required_scope: &str) -> usize {
+    let required = required_scope.to_ascii_lowercase();
+    blocks
+        .iter()
+        .filter(|block| block.source_ref.to_ascii_lowercase().contains(&required))
+        .count()
 }
 
 fn local_context_harness_sweep_thresholds() -> ContextPipelineBenchmarkThresholds {
