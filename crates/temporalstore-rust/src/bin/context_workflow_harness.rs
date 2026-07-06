@@ -199,6 +199,7 @@ struct ResourceSkillConversationScaleSummary {
     fanout_scan_layers: Vec<String>,
     fanout_colocation_groups: Vec<String>,
     fanout_colocation_scope_keys: Vec<String>,
+    fanout_required_scan_scope_keys: Vec<String>,
     secondary_index_ready: bool,
     secondary_index_checked_refs: usize,
     secondary_index_found_refs: usize,
@@ -231,6 +232,7 @@ struct MultiAgentContextScanHarnessSummary {
     scan_layers: Vec<String>,
     colocation_groups: Vec<String>,
     colocation_scope_keys: Vec<String>,
+    required_scan_scope_keys: Vec<String>,
     locality_keys: Vec<String>,
     retrieved_block_count: usize,
     retrieved_event_count: usize,
@@ -349,11 +351,10 @@ fn main() {
         );
         return;
     }
-    let resource_skill_scale_only = std::env::var(
-        "TEMPORALSTORE_CONTEXT_RESOURCE_SKILL_SCALE_ONLY",
-    )
-    .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-    .unwrap_or(false);
+    let resource_skill_scale_only =
+        std::env::var("TEMPORALSTORE_CONTEXT_RESOURCE_SKILL_SCALE_ONLY")
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+            .unwrap_or(false);
     if resource_skill_scale_only {
         println!(
             "{}",
@@ -1131,7 +1132,10 @@ fn run_resource_skill_conversation_scale(
         && combined_retrieve.fanout_plan.skipped_peer_agent_nodes > 0
         && combined_retrieve.fanout_plan.peer_agent_limit_applied
         && combined_retrieve.fanout_plan.selected_user_shared_nodes > 0
-        && combined_retrieve.fanout_plan.selected_workspace_shared_nodes > 0
+        && combined_retrieve
+            .fanout_plan
+            .selected_workspace_shared_nodes
+            > 0
         && combined_retrieve.fanout_plan.selected_global_shared_nodes > 0
         && combined_retrieve.fanout_plan.shared_layer_quota_nodes >= 4
         && combined_retrieve
@@ -1232,6 +1236,10 @@ fn run_resource_skill_conversation_scale(
         fanout_scan_layers: combined_retrieve.fanout_plan.scan_layers.clone(),
         fanout_colocation_groups: combined_retrieve.fanout_plan.colocation_groups.clone(),
         fanout_colocation_scope_keys: combined_retrieve.fanout_plan.colocation_scope_keys.clone(),
+        fanout_required_scan_scope_keys: combined_retrieve
+            .fanout_plan
+            .required_scan_scope_keys
+            .clone(),
         secondary_index_ready,
         secondary_index_checked_refs: secondary_validation.checked_ref_count,
         secondary_index_found_refs: secondary_validation.found_ref_count,
@@ -1410,6 +1418,7 @@ fn run_multi_agent_context_scan_harness(
         scan_layers: report.fanout_plan.scan_layers,
         colocation_groups: report.fanout_plan.colocation_groups,
         colocation_scope_keys: report.fanout_plan.colocation_scope_keys,
+        required_scan_scope_keys: report.fanout_plan.required_scan_scope_keys,
         locality_keys: report.fanout_plan.locality_keys,
         retrieved_block_count: report.blocks.len(),
         retrieved_event_count: report.event_count,

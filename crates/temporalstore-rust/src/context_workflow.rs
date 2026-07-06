@@ -1071,6 +1071,8 @@ pub struct ContextFanoutPlanReport {
     #[serde(default)]
     pub colocation_scope_keys: Vec<String>,
     #[serde(default)]
+    pub required_scan_scope_keys: Vec<String>,
+    #[serde(default)]
     pub current_agent_id: String,
     #[serde(default)]
     pub current_agent_boosted_nodes: usize,
@@ -4052,6 +4054,22 @@ fn push_unique_context_scope(
     }
 }
 
+fn context_scope_descriptor_from_shared_graph(
+    scope: &ContextScopeDescriptor,
+) -> Option<ContextScopeDescriptor> {
+    if scope.layer == ContextScopeLayer::Workspace {
+        return Some(context_scope_descriptor("user"));
+    }
+    if scope.shared_graph_scope.trim().is_empty()
+        || scope
+            .shared_graph_scope
+            .eq_ignore_ascii_case(&scope.raw_scope)
+    {
+        return None;
+    }
+    Some(context_scope_descriptor(&scope.shared_graph_scope))
+}
+
 fn default_peer_agent_fanout_node_limit() -> usize {
     usize::MAX
 }
@@ -4091,13 +4109,25 @@ fn context_required_scan_scopes(request: &ContextRetrieveRequest) -> Vec<Context
             context_scope_descriptor(format!("agent:{current_agent}")),
         );
     }
+    let multi_layer_scan = !current_agent.is_empty()
+        || !request.owner_scope.trim().is_empty()
+        || !request.shared_resource_scopes.is_empty();
     if !request.owner_scope.trim().is_empty() {
-        push_unique_context_scope(&mut scopes, context_scope_descriptor(&request.owner_scope));
+        let owner_scope = context_scope_descriptor(&request.owner_scope);
+        push_unique_context_scope(&mut scopes, owner_scope.clone());
+        if let Some(shared_graph_scope) = context_scope_descriptor_from_shared_graph(&owner_scope) {
+            push_unique_context_scope(&mut scopes, shared_graph_scope);
+        }
+    } else if multi_layer_scan {
+        push_unique_context_scope(&mut scopes, context_scope_descriptor("user"));
     }
     for shared_scope in &request.shared_resource_scopes {
         if !shared_scope.trim().is_empty() {
             push_unique_context_scope(&mut scopes, context_scope_descriptor(shared_scope));
         }
+    }
+    if multi_layer_scan {
+        push_unique_context_scope(&mut scopes, context_scope_descriptor("global"));
     }
     scopes
 }
@@ -4157,7 +4187,12 @@ fn context_select_layered_event_nodes(
         }
     }
     let quota_applied = quota_nodes > 0 && summary_scores.len() > limit;
-    (selected, quota_nodes, quota_applied, peer_agent_limit_applied)
+    (
+        selected,
+        quota_nodes,
+        quota_applied,
+        peer_agent_limit_applied,
+    )
 }
 
 pub fn retrieve_context(
@@ -4176,6 +4211,10 @@ pub fn retrieve_context(
         ..ContextFanoutPlanReport::default()
     };
     fanout_plan.current_agent_id = request.current_agent_id.trim().to_string();
+    fanout_plan.required_scan_scope_keys = context_required_scan_scopes(&request)
+        .iter()
+        .map(context_scope_reservation_key)
+        .collect();
     let tiers = if request.tiers.is_empty() {
         default_tiers()
     } else {

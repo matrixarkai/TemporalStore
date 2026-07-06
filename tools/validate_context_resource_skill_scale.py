@@ -12,6 +12,7 @@ from typing import Any
 REQUIRED_LAYERS = {"agent", "user", "workspace", "global"}
 REQUIRED_GROUPS = {"global", "user:user", "workspace:context"}
 REQUIRED_SCOPE_KEYS = {"agent:codex", "agent:claude", "global", "user:user", "workspace:context"}
+REQUIRED_SCAN_SCOPE_KEYS = {"agent:codex", "global", "user:user", "workspace:context"}
 
 
 def fail(message: str) -> int:
@@ -91,6 +92,7 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
     require_string_set(report, "fanout_scan_layers", REQUIRED_LAYERS)
     require_string_set(report, "fanout_colocation_groups", REQUIRED_GROUPS)
     require_string_set(report, "fanout_colocation_scope_keys", REQUIRED_SCOPE_KEYS)
+    require_string_set(report, "fanout_required_scan_scope_keys", REQUIRED_SCAN_SCOPE_KEYS)
 
 
 def main() -> int:

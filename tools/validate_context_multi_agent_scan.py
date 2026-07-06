@@ -96,6 +96,11 @@ def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: i
         "colocation_scope_keys",
         {"agent:codex", "agent:claude", "user:user", "workspace:context", "global"},
     )
+    require_string_set(
+        report,
+        "required_scan_scope_keys",
+        {"agent:codex", "user:user", "workspace:context", "global"},
+    )
     locality_keys = report.get("locality_keys")
     if not isinstance(locality_keys, list) or not locality_keys:
         raise ValueError("locality_keys must be a non-empty string array")

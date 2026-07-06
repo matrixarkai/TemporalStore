@@ -60,6 +60,12 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
     "global",
     "user:user",
     "workspace:context"
+  ],
+  "fanout_required_scan_scope_keys": [
+    "agent:codex",
+    "workspace:context",
+    "user:user",
+    "global"
   ]
 }
 ```
@@ -69,6 +75,7 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
 - The broader Rust harness ingests resources, skills, and conversations through TemporalStore context models.
 - The scan reduces fanout from namespace candidates to bounded expanded nodes.
 - Current-agent context is selected with agent-aware locality while user, workspace, and global shared resources remain visible.
+- Required scan scopes are derived from current-agent plus owner-scope policy, so shared user/global resources do not depend on every caller spelling out the full scope list.
 - Peer-agent candidates are present but capped out of expansion in this current-agent scan.
 - Secondary indexes and selected references remain active in the same scale run.
 

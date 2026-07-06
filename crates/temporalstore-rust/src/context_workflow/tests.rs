@@ -404,6 +404,7 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
                 owner_scope: String::new(),
                 current_agent_id: String::new(),
                 shared_resource_scopes: Vec::new(),
+                max_peer_agent_nodes: usize::MAX,
                 provider: ContextModelProviderConfig::default(),
             },
             prompt: "Explain current risk.".to_string(),
@@ -879,6 +880,130 @@ fn context_multi_agent_layer_quota_keeps_shared_resources_when_agent_has_many_ma
     );
     assert!(
         selected_text.contains("Global shared skill"),
+        "{selected_text}"
+    );
+}
+
+// shared-corpus: context_multi_agent_auto_shared_scope_expansion
+#[test]
+fn context_multi_agent_scan_derives_shared_scopes_from_owner_and_agent() {
+    let engine = test_engine();
+    let tenant_hash = 606063;
+    let mut node_hashes = Vec::new();
+    for (source_id, title, body) in [
+        (
+            "agent:codex:checkout-debug",
+            "Codex checkout debug",
+            "Codex agent trace says checkout retry should inspect payment idempotency.",
+        ),
+        (
+            "workspace:payments:checkout-runbook",
+            "Payments checkout runbook",
+            "Workspace runbook says checkout retry requires gateway health and rollback notes.",
+        ),
+        (
+            "user:user:checkout-preference",
+            "User checkout preference",
+            "User shared memory says checkout retry should preserve the corporate card.",
+        ),
+        (
+            "global:skills:checkout-debug",
+            "Global checkout debug",
+            "Global shared skill says checkout retry needs temporal context evidence.",
+        ),
+        (
+            "agent:claude:checkout-debug",
+            "Claude checkout debug",
+            "Claude peer agent note should be visible as a candidate but not selected.",
+        ),
+    ] {
+        let extract = extract_context(
+            &engine,
+            ContextExtractRequest {
+                shard_id: 1,
+                tenant_hash,
+                source_kind: ContextSourceKind::Document,
+                source_id: source_id.to_string(),
+                title: title.to_string(),
+                body: body.to_string(),
+                timestamp_ms: 50_000 + node_hashes.len() as u64,
+                provider: ContextModelProviderConfig::default(),
+            },
+        );
+        assert!(extract.status.ok, "{:?}", extract.status);
+        node_hashes.push(extract.node.node_hash);
+    }
+
+    let report = retrieve_context(
+        &engine,
+        ContextRetrieveRequest {
+            shard_id: 1,
+            tenant_hash,
+            node_hashes,
+            query: "checkout retry payment".to_string(),
+            start_time_ms: 0,
+            end_time_ms: 60_000,
+            max_events: 8,
+            min_confidence: 0.0,
+            min_importance: 0.0,
+            tiers: vec![ContextTier::L2],
+            max_summary_nodes: 5,
+            max_event_nodes: 4,
+            owner_scope: "workspace:payments".to_string(),
+            current_agent_id: "codex".to_string(),
+            shared_resource_scopes: Vec::new(),
+            max_peer_agent_nodes: 0,
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    assert!(report.status.ok, "{:?}", report.status);
+    assert_eq!(report.fanout_plan.namespace_node_candidates, 5);
+    assert_eq!(report.fanout_plan.event_expanded_nodes, 4);
+    assert!(report.fanout_plan.fanout_reduced);
+    assert!(report.fanout_plan.layer_quota_applied);
+    assert_eq!(report.fanout_plan.shared_layer_quota_nodes, 4);
+    assert_eq!(report.fanout_plan.selected_current_agent_nodes, 1);
+    assert_eq!(report.fanout_plan.selected_workspace_shared_nodes, 1);
+    assert_eq!(report.fanout_plan.selected_user_shared_nodes, 1);
+    assert_eq!(report.fanout_plan.selected_global_shared_nodes, 1);
+    assert_eq!(report.fanout_plan.selected_peer_agent_nodes, 0);
+    assert_eq!(report.fanout_plan.skipped_peer_agent_nodes, 1);
+    assert!(report.fanout_plan.peer_agent_limit_applied);
+    for required in ["agent:codex", "workspace:payments", "user:user", "global"] {
+        assert!(
+            report
+                .fanout_plan
+                .required_scan_scope_keys
+                .iter()
+                .any(|key| key == required),
+            "missing required scope {required}: {:?}",
+            report.fanout_plan.required_scan_scope_keys
+        );
+    }
+    let selected_text = report
+        .blocks
+        .iter()
+        .map(|block| block.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        selected_text.contains("Codex agent trace"),
+        "{selected_text}"
+    );
+    assert!(
+        selected_text.contains("Workspace runbook"),
+        "{selected_text}"
+    );
+    assert!(
+        selected_text.contains("User shared memory"),
+        "{selected_text}"
+    );
+    assert!(
+        selected_text.contains("Global shared skill"),
+        "{selected_text}"
+    );
+    assert!(
+        !selected_text.contains("Claude peer agent"),
         "{selected_text}"
     );
 }
