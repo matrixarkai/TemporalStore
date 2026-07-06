@@ -836,6 +836,10 @@ pub struct ContextRetrieveRequest {
     pub min_importance: f32,
     #[serde(default = "default_tiers")]
     pub tiers: Vec<ContextTier>,
+    #[serde(default = "default_summary_fanout_node_limit")]
+    pub max_summary_nodes: usize,
+    #[serde(default = "default_event_fanout_node_limit")]
+    pub max_event_nodes: usize,
     #[serde(default)]
     pub provider: ContextModelProviderConfig,
 }
@@ -849,7 +853,26 @@ pub struct ContextRetrieveReport {
     #[serde(default)]
     pub query_understanding_debug: ContextQueryUnderstandingDebug,
     #[serde(default)]
+    pub fanout_plan: ContextFanoutPlanReport,
+    #[serde(default)]
     pub parity: ContextPipelineParityEvidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ContextFanoutPlanReport {
+    pub strategy: String,
+    pub namespace_node_candidates: usize,
+    pub summary_candidate_nodes: usize,
+    pub summary_selected_nodes: usize,
+    pub event_expanded_nodes: usize,
+    pub skipped_node_count: usize,
+    pub summary_lookup_batches: usize,
+    pub secondary_index_filter_group_count: usize,
+    pub selected_node_hashes: Vec<u64>,
+    pub skipped_node_hashes: Vec<u64>,
+    pub locality_keys: Vec<String>,
+    pub fallback_to_flat: bool,
+    pub fanout_reduced: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -936,6 +959,12 @@ pub struct ContextTreeTraversalDebug {
     pub query_embedding_dimension: usize,
     #[serde(default)]
     pub query_embedding_provider: String,
+    #[serde(default)]
+    pub namespace_node_candidates: usize,
+    #[serde(default)]
+    pub event_expanded_node_count: usize,
+    #[serde(default)]
+    pub skipped_node_count: usize,
     pub top_k_per_layer: usize,
 }
 
@@ -1979,6 +2008,8 @@ pub fn ingest_extract_context(
         min_confidence: 0.0,
         min_importance: 0.0,
         tiers: default_tiers(),
+        max_summary_nodes: default_summary_fanout_node_limit(),
+        max_event_nodes: default_event_fanout_node_limit(),
         provider: request.provider,
     };
     let summary = ContextIngestExtractSummary {
@@ -2779,6 +2810,8 @@ pub fn run_context_pipeline_benchmark(
             min_confidence: 0.0,
             min_importance: 0.0,
             tiers: default_tiers(),
+            max_summary_nodes: default_summary_fanout_node_limit(),
+            max_event_nodes: default_event_fanout_node_limit(),
             provider: ContextModelProviderConfig::default(),
         };
         let retrieve_start = Instant::now();
@@ -3651,6 +3684,13 @@ pub fn retrieve_context(
     let mut node_count = 0usize;
     let mut event_count = 0usize;
     let mut query_understanding_debug = context_query_understanding_debug(&request);
+    let mut fanout_plan = ContextFanoutPlanReport {
+        strategy: "hierarchical_summary_secondary_index_node_resource_colocation".to_string(),
+        secondary_index_filter_group_count: query_understanding_debug
+            .filter_group_summary
+            .secondary_index_group_count,
+        ..ContextFanoutPlanReport::default()
+    };
     let tiers = if request.tiers.is_empty() {
         default_tiers()
     } else {
@@ -3669,11 +3709,13 @@ pub fn retrieve_context(
             node_count,
             event_count,
             query_understanding_debug,
+            fanout_plan,
             parity: context_pipeline_parity_evidence(),
         };
     } else {
         request.node_hashes.clone()
     };
+    fanout_plan.namespace_node_candidates = node_hashes.len();
     let retrieval_provider = normalize_provider(request.provider.clone());
     let query_embedding = match context_query_embedding(&retrieval_provider, &request.query) {
         Ok(vector) => vector,
@@ -3684,6 +3726,7 @@ pub fn retrieve_context(
                 node_count,
                 event_count,
                 query_understanding_debug,
+                fanout_plan,
                 parity: context_pipeline_parity_evidence(),
             };
         }
@@ -3730,16 +3773,42 @@ pub fn retrieve_context(
         })
         .collect::<Vec<_>>();
     summary_scores.sort_by_key(|(node_hash, score, _)| (Reverse(*score), *node_hash));
-    let selected_node_limit = request
-        .max_events
+    let summary_node_limit = request
+        .max_summary_nodes
         .max(1)
-        .min(32)
         .min(summary_scores.len().max(1));
+    let event_node_limit = request
+        .max_event_nodes
+        .max(1)
+        .min(summary_node_limit.max(1));
     node_hashes = summary_scores
         .iter()
-        .take(selected_node_limit)
+        .take(summary_node_limit)
         .map(|(node_hash, _, _)| *node_hash)
         .collect();
+    let event_node_hashes = node_hashes
+        .iter()
+        .copied()
+        .take(event_node_limit)
+        .collect::<Vec<_>>();
+    let skipped_node_hashes = summary_scores
+        .iter()
+        .skip(event_node_limit)
+        .map(|(node_hash, _, _)| *node_hash)
+        .collect::<Vec<_>>();
+    fanout_plan.summary_candidate_nodes = summary_scores.len();
+    fanout_plan.summary_selected_nodes = node_hashes.len();
+    fanout_plan.event_expanded_nodes = event_node_hashes.len();
+    fanout_plan.skipped_node_count = skipped_node_hashes.len();
+    fanout_plan.summary_lookup_batches = usize::from(!summary_scores.is_empty());
+    fanout_plan.selected_node_hashes = event_node_hashes.clone();
+    fanout_plan.skipped_node_hashes = skipped_node_hashes;
+    fanout_plan.locality_keys = event_node_hashes
+        .iter()
+        .map(|node_hash| format!("tenant:{}:node:{node_hash}", request.tenant_hash))
+        .collect();
+    fanout_plan.fanout_reduced =
+        fanout_plan.event_expanded_nodes < fanout_plan.namespace_node_candidates;
     query_understanding_debug.tree_traversal_summary.enabled = true;
     query_understanding_debug
         .tree_traversal_summary
@@ -3764,13 +3833,21 @@ pub fn retrieve_context(
         .query_embedding_provider = retrieval_provider.provider_name.clone();
     query_understanding_debug
         .tree_traversal_summary
+        .namespace_node_candidates = fanout_plan.namespace_node_candidates;
+    query_understanding_debug
+        .tree_traversal_summary
+        .event_expanded_node_count = fanout_plan.event_expanded_nodes;
+    query_understanding_debug
+        .tree_traversal_summary
+        .skipped_node_count = fanout_plan.skipped_node_count;
+    query_understanding_debug
+        .tree_traversal_summary
         .summary_embeddings = summary_scores
         .iter()
-        .take(32)
         .map(|(node_hash, score, found)| format!("node:{node_hash}:score:{score}:refs:{found}"))
         .collect();
 
-    for node_hash in node_hashes {
+    for node_hash in event_node_hashes {
         let mut node_source_ref = String::new();
         let node_response = engine.execute(ExecuteRequest {
             shard_id: request.shard_id,
@@ -3880,6 +3957,7 @@ pub fn retrieve_context(
         node_count,
         event_count,
         query_understanding_debug,
+        fanout_plan,
         parity: context_pipeline_parity_evidence(),
     }
 }
@@ -4180,6 +4258,14 @@ fn default_max_retries() -> usize {
 }
 
 fn default_retrieve_limit() -> usize {
+    16
+}
+
+fn default_summary_fanout_node_limit() -> usize {
+    32
+}
+
+fn default_event_fanout_node_limit() -> usize {
     16
 }
 

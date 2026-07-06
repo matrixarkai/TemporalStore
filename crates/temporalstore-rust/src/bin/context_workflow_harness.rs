@@ -396,6 +396,8 @@ fn main() {
         min_confidence: 0.0,
         min_importance: 0.0,
         tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
+        max_summary_nodes: 32,
+        max_event_nodes: 16,
         provider: ContextModelProviderConfig::default(),
     };
     let retrieve = retrieve_context(&engine, retrieve_request.clone());
@@ -961,6 +963,8 @@ fn run_resource_skill_conversation_scale(
             min_confidence: 0.0,
             min_importance: 0.0,
             tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
+            max_summary_nodes: 32,
+            max_event_nodes: 16,
             provider: ContextModelProviderConfig::default(),
         },
     );
@@ -1290,6 +1294,8 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
                         min_confidence: 0.0,
                         min_importance: 0.0,
                         tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
+                        max_summary_nodes: 256,
+                        max_event_nodes: 256,
                         provider: ContextModelProviderConfig::default(),
                     },
                 );
@@ -2735,6 +2741,8 @@ mod tests {
                 min_confidence: 0.0,
                 min_importance: 0.0,
                 tiers: vec![ContextTier::L2],
+                max_summary_nodes: 32,
+                max_event_nodes: 16,
                 provider: ContextModelProviderConfig::default(),
             },
         );

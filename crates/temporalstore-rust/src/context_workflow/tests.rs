@@ -309,6 +309,8 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
             min_confidence: 0.0,
             min_importance: 0.0,
             tiers: default_tiers(),
+            max_summary_nodes: 32,
+            max_event_nodes: 16,
             provider: ContextModelProviderConfig::default(),
         },
     );
@@ -393,6 +395,8 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
                 min_confidence: 0.0,
                 min_importance: 0.0,
                 tiers: default_tiers(),
+                max_summary_nodes: 32,
+                max_event_nodes: 16,
                 provider: ContextModelProviderConfig::default(),
             },
             prompt: "Explain current risk.".to_string(),
@@ -456,6 +460,8 @@ fn context_query_debug_reports_filter_groups_drops_and_injection_order() {
             min_confidence: 0.0,
             min_importance: 0.0,
             tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
+            max_summary_nodes: 32,
+            max_event_nodes: 16,
             provider: ContextModelProviderConfig::default(),
         },
     );
@@ -526,23 +532,47 @@ fn context_query_debug_reports_filter_groups_drops_and_injection_order() {
         .contains("tree traversal"));
 }
 
+// shared-corpus: context_hierarchical_summary_secondary_index_fanout
 #[test]
-fn context_retrieve_batches_summary_embeddings_and_caps_leaf_scans() {
+fn context_retrieval_limits_namespace_fanout_with_summary_and_locality_plan() {
     let engine = test_engine();
+    let tenant_hash = 606060;
     let mut node_hashes = Vec::new();
-    for index in 0..12 {
+    for (index, (title, body)) in [
+        (
+            "Checkout payment risk",
+            "Checkout payment risk score is 91 after the payment gateway timeout.",
+        ),
+        (
+            "Gardening preference",
+            "The user likes basil and keeps herbs near the kitchen window.",
+        ),
+        (
+            "Calendar reminder",
+            "Team lunch is scheduled next week with no payment discussion.",
+        ),
+        (
+            "Travel note",
+            "The train ticket was moved to Friday morning.",
+        ),
+        (
+            "Music note",
+            "The playlist now starts with piano practice notes.",
+        ),
+    ]
+    .iter()
+    .enumerate()
+    {
         let extract = extract_context(
             &engine,
             ContextExtractRequest {
                 shard_id: 1,
-                tenant_hash: 9090,
+                tenant_hash,
                 source_kind: ContextSourceKind::Chat,
-                source_id: format!("perf-session-{index}"),
-                title: format!("Payment workflow note {index}"),
-                body: format!(
-                    "Payment workflow note {index}: checkout retry and rollback evidence for shard {index}."
-                ),
-                timestamp_ms: 10_000 + index,
+                source_id: format!("fanout-source-{index}"),
+                title: (*title).to_string(),
+                body: (*body).to_string(),
+                timestamp_ms: 10_000 + index as u64,
                 provider: ContextModelProviderConfig::default(),
             },
         );
@@ -550,49 +580,59 @@ fn context_retrieve_batches_summary_embeddings_and_caps_leaf_scans() {
         node_hashes.push(extract.node.node_hash);
     }
 
-    let retrieve = retrieve_context(
+    let report = retrieve_context(
         &engine,
         ContextRetrieveRequest {
             shard_id: 1,
-            tenant_hash: 9090,
-            node_hashes,
-            query: "payment rollback checkout".to_string(),
+            tenant_hash,
+            node_hashes: node_hashes.clone(),
+            query: "checkout payment risk score".to_string(),
             start_time_ms: 0,
             end_time_ms: 20_000,
-            max_events: 3,
+            max_events: 8,
             min_confidence: 0.0,
             min_importance: 0.0,
-            tiers: vec![ContextTier::L2],
+            tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
+            max_summary_nodes: 5,
+            max_event_nodes: 1,
             provider: ContextModelProviderConfig::default(),
         },
     );
-
-    assert!(retrieve.status.ok, "{:?}", retrieve.status);
+    assert!(report.status.ok, "{:?}", report.status);
+    assert_eq!(report.fanout_plan.namespace_node_candidates, 5);
+    assert_eq!(report.fanout_plan.summary_candidate_nodes, 5);
+    assert_eq!(report.fanout_plan.event_expanded_nodes, 1);
+    assert_eq!(report.fanout_plan.skipped_node_count, 4);
+    assert!(report.fanout_plan.fanout_reduced);
+    assert_eq!(report.node_count, 1);
+    assert_eq!(report.event_count, 1);
+    assert!(report
+        .fanout_plan
+        .locality_keys
+        .iter()
+        .all(|key| key.starts_with("tenant:606060:node:")));
     assert_eq!(
-        retrieve
+        report
             .query_understanding_debug
             .tree_traversal_summary
-            .summary_embedding_candidate_count,
-        12
+            .namespace_node_candidates,
+        5
     );
-    assert!(
-        retrieve.node_count <= 3,
-        "scanned {} nodes",
-        retrieve.node_count
-    );
-    assert!(
-        retrieve
+    assert_eq!(
+        report
             .query_understanding_debug
-            .filter_group_summary
-            .total_candidate_count
-            <= 3,
-        "prefilter saw too many leaf candidates: {}",
-        retrieve
-            .query_understanding_debug
-            .filter_group_summary
-            .total_candidate_count
+            .tree_traversal_summary
+            .event_expanded_node_count,
+        1
     );
-    assert!(!retrieve.blocks.is_empty());
+    assert_eq!(
+        report
+            .query_understanding_debug
+            .tree_traversal_summary
+            .skipped_node_count,
+        4
+    );
+    assert!(report.blocks.iter().any(|block| block.tier == ContextTier::L2));
 }
 
 // shared-corpus: context_benchmark_injection_entity_segment_index
@@ -656,6 +696,8 @@ fn context_benchmark_injection_uses_entity_segment_l0_l1_and_secondary_index() {
         min_confidence: 0.0,
         min_importance: 0.0,
         tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
+        max_summary_nodes: 32,
+        max_event_nodes: 16,
         provider: ContextModelProviderConfig::default(),
     };
     let retrieved = retrieve_context(&engine, retrieve.clone());
@@ -1244,6 +1286,8 @@ fn context_injection_prompt_pack_preserves_retrieved_evidence_ordering() {
         min_confidence: 0.0,
         min_importance: 0.0,
         tiers: vec![ContextTier::L2],
+        max_summary_nodes: 32,
+        max_event_nodes: 16,
         provider: ContextModelProviderConfig::default(),
     };
     let retrieved = retrieve_context(&engine, retrieve.clone());
@@ -1356,6 +1400,8 @@ fn context_workflow_policy_rejects_disallowed_runtime_controls() {
             min_confidence: 0.0,
             min_importance: 0.0,
             tiers: default_tiers(),
+            max_summary_nodes: 32,
+            max_event_nodes: 16,
             provider: ContextModelProviderConfig::default(),
         },
         prompt: "one two three four five".to_string(),
