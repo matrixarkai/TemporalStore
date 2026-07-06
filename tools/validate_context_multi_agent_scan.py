@@ -92,6 +92,15 @@ def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: i
     require_string_set(report, "selected_colocation_groups", REQUIRED_COLOCATION_GROUPS)
     require_int_at_least(report, "shared_layer_quota_nodes", 4)
     require_int_at_least(report, "selected_current_agent_nodes", 1)
+    require_bool(report, "current_agent_first_selected")
+    selected_order = report.get("selected_colocation_scope_order")
+    if not isinstance(selected_order, list) or not selected_order:
+        raise ValueError("selected_colocation_scope_order must be a non-empty string array")
+    if selected_order[0] != "agent:codex":
+        raise ValueError(
+            "selected_colocation_scope_order must start with current agent agent:codex, "
+            f"got {selected_order[:3]!r}"
+        )
     require_int_at_least(report, "peer_agent_nodes", 1)
     selected_peer = report.get("selected_peer_agent_nodes")
     if not isinstance(selected_peer, int):

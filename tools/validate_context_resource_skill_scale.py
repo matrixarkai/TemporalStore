@@ -97,6 +97,15 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
     require_string_set(report, "fanout_selected_colocation_scope_keys", REQUIRED_SELECTED_SCOPE_KEYS)
     require_string_set(report, "fanout_selected_colocation_groups", REQUIRED_GROUPS)
     require_int_at_least(report, "fanout_selected_current_agent_nodes", 1)
+    require_bool(report, "fanout_current_agent_first_selected")
+    selected_order = report.get("fanout_selected_colocation_scope_order")
+    if not isinstance(selected_order, list) or not selected_order:
+        raise ValueError("fanout_selected_colocation_scope_order must be a non-empty string array")
+    if selected_order[0] != "agent:codex":
+        raise ValueError(
+            "fanout_selected_colocation_scope_order must start with current agent agent:codex, "
+            f"got {selected_order[:3]!r}"
+        )
     require_int_at_least(report, "fanout_peer_agent_nodes", 1)
     require_int_equal(report, "fanout_selected_peer_agent_nodes", 0)
     require_int_at_least(report, "fanout_skipped_peer_agent_nodes", 1)

@@ -736,6 +736,11 @@ fn context_multi_agent_scan_boosts_current_agent_and_colocates_shared_scopes() {
     assert_eq!(report.fanout_plan.avoided_namespace_replication_nodes, 3);
     assert!(report.fanout_plan.fanout_reduction_percent >= 60);
     assert_eq!(report.fanout_plan.selected_colocation_group_count, 2);
+    assert!(report.fanout_plan.current_agent_first_selected);
+    assert_eq!(
+        report.fanout_plan.selected_colocation_scope_order.first(),
+        Some(&"agent:codex".to_string())
+    );
     assert!(report
         .fanout_plan
         .selected_colocation_scope_keys
@@ -871,6 +876,11 @@ fn context_multi_agent_layer_quota_keeps_shared_resources_when_agent_has_many_ma
     assert_eq!(report.fanout_plan.avoided_namespace_replication_nodes, 4);
     assert!(report.fanout_plan.fanout_reduction_percent >= 50);
     assert_eq!(report.fanout_plan.selected_colocation_group_count, 3);
+    assert!(report.fanout_plan.current_agent_first_selected);
+    assert_eq!(
+        report.fanout_plan.selected_colocation_scope_order.first(),
+        Some(&"agent:codex".to_string())
+    );
     for selected_scope in ["agent:codex", "user:alice", "global"] {
         assert!(
             report
@@ -999,6 +1009,11 @@ fn context_multi_agent_scan_derives_shared_scopes_from_owner_and_agent() {
     assert_eq!(report.fanout_plan.avoided_namespace_replication_nodes, 1);
     assert_eq!(report.fanout_plan.fanout_reduction_percent, 20);
     assert_eq!(report.fanout_plan.selected_colocation_group_count, 4);
+    assert!(report.fanout_plan.current_agent_first_selected);
+    assert_eq!(
+        report.fanout_plan.selected_colocation_scope_order.first(),
+        Some(&"agent:codex".to_string())
+    );
     for selected_scope in ["agent:codex", "workspace:payments", "user:user", "global"] {
         assert!(
             report
