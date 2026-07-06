@@ -978,7 +978,7 @@ dependencies = [
 [[package]]
 name = "rustmtcache"
 version = "0.1.0"
-source = "git+https://github.com/bjmeetsfo/rustmtcache.git?rev=746b5b92f2951295387a21cc8513cbceb43ed84e#746b5b92f2951295387a21cc8513cbceb43ed84e"
+source = "git+https://github.com/bjmeetsfo/rustmtcache.git?rev=eeb2e55c9a252bbf27ca14fa3c45f3eb276b6abf#eeb2e55c9a252bbf27ca14fa3c45f3eb276b6abf"
 dependencies = [
  "serde",
  "thiserror",
