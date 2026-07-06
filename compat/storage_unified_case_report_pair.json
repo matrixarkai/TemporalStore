@@ -1,0 +1,152 @@
+{
+  "schema": "temporalstore_storage_unified_case_report_pair_v1",
+  "description": "Fixture pair proving the C++ and Rust storage/cache native runners must emit comparable temporalstore_unified_case_report_v1 rows before the storage/cache family can leave static surface gates.",
+  "rust_report": {
+    "schema": "temporalstore_unified_case_report_v1",
+    "producer": "temporalstore-rust-storage-fixture",
+    "generated_at_ms": 1783379000000,
+    "cases": [
+      {
+        "name": "storage_slot_object_block_index_authority_shared",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "slot_object_block_authority_reconciles_model_views",
+            "status": "passed",
+            "latency_ms": 1.0,
+            "output": {
+              "append_watermark": 40,
+              "block_index_entry_count": 2,
+              "block_reads": 2,
+              "block_writes": 2,
+              "object_index_entry_count": 2,
+              "page_index_entry_count": 2,
+              "page_reads": 4,
+              "page_writes": 4,
+              "restart_rebuild_verified": true,
+              "slot_owner_mismatch_count": 0,
+              "slot_page_ref_count": 2,
+              "slot_stale_ref_count": 0
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_gc_eviction_cold_reads_shared",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "gc_eviction_retention_blockers_and_cold_read_recovery",
+            "status": "passed",
+            "latency_ms": 1.2,
+            "output": {
+              "cache_evictions": 3,
+              "cold_scan_no_cache_reads": 5,
+              "compaction_reclaimed_bytes": 4096,
+              "hot_cache_promotions": 0,
+              "physical_reclaim_errors": 0,
+              "physical_reclaimed_bytes": 4096,
+              "stale_block_tombstones": 1,
+              "stale_page_tombstones": 1,
+              "tombstone_records": 2
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_stream_segment_manifest_rebuild_shared",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "stream_segment_manifest_rebuild_and_corruption_handling",
+            "status": "passed",
+            "latency_ms": 1.1,
+            "output": {
+              "delayed_destroy_backlog": 0,
+              "segment_open_count": 1,
+              "segment_sealed_count": 1,
+              "stream_rollover_count": 1,
+              "storage_zone_stale_bytes": 0,
+              "storage_zone_total_bytes": 10485760,
+              "storage_zone_used_bytes": 8192
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "cpp_report": {
+    "schema": "temporalstore_unified_case_report_v1",
+    "producer": "temporalstore-cpp-storage-fixture",
+    "generated_at_ms": 1783379000000,
+    "cases": [
+      {
+        "name": "storage_slot_object_block_index_authority_shared",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "slot_object_block_authority_reconciles_model_views",
+            "status": "passed",
+            "latency_ms": 1.0,
+            "output": {
+              "append_watermark": 40,
+              "block_index_entry_count": 2,
+              "block_reads": 2,
+              "block_writes": 2,
+              "object_index_entry_count": 2,
+              "page_index_entry_count": 2,
+              "page_reads": 4,
+              "page_writes": 4,
+              "restart_rebuild_verified": true,
+              "slot_owner_mismatch_count": 0,
+              "slot_page_ref_count": 2,
+              "slot_stale_ref_count": 0
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_gc_eviction_cold_reads_shared",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "gc_eviction_retention_blockers_and_cold_read_recovery",
+            "status": "passed",
+            "latency_ms": 1.2,
+            "output": {
+              "cache_evictions": 3,
+              "cold_scan_no_cache_reads": 5,
+              "compaction_reclaimed_bytes": 4096,
+              "hot_cache_promotions": 0,
+              "physical_reclaim_errors": 0,
+              "physical_reclaimed_bytes": 4096,
+              "stale_block_tombstones": 1,
+              "stale_page_tombstones": 1,
+              "tombstone_records": 2
+            }
+          }
+        ]
+      },
+      {
+        "name": "storage_stream_segment_manifest_rebuild_shared",
+        "status": "passed",
+        "steps": [
+          {
+            "name": "stream_segment_manifest_rebuild_and_corruption_handling",
+            "status": "passed",
+            "latency_ms": 1.1,
+            "output": {
+              "delayed_destroy_backlog": 0,
+              "segment_open_count": 1,
+              "segment_sealed_count": 1,
+              "stream_rollover_count": 1,
+              "storage_zone_stale_bytes": 0,
+              "storage_zone_total_bytes": 10485760,
+              "storage_zone_used_bytes": 8192
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
