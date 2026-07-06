@@ -48,6 +48,12 @@ Archived report: `docs/benchmark_archives/context_multiagent_scan_20260706_summa
     "user:user",
     "global"
   ],
+  "selected_colocation_scope_distribution": {
+    "agent:codex": 1,
+    "global": 1,
+    "user:user": 1,
+    "workspace:context": 1
+  },
   "current_agent_first_selected": true,
   "avoided_namespace_replication_nodes": 9,
   "fanout_reduction_percent": 69,
@@ -148,6 +154,7 @@ Archived report: `docs/benchmark_archives/context_multiagent_scan_20260706_summa
 - Candidate pressure is scope-aware before selection: 8 current-agent nodes, 2 peer-agent nodes, and 3 shared nodes across user/workspace/global are classified before fanout pruning.
 - The selected nodes include current-agent, user-shared, workspace-shared, and global-shared layers.
 - The selected colocation scope set proves the expanded scan covers `agent:codex`, `user:user`, `workspace:context`, and `global`.
+- The selected colocation distribution is exact and balanced in the focused gate: one selected node per current-agent, user, workspace, and global scope.
 - The selected colocation scope order starts with `agent:codex`, proving current-agent context gets the first expansion slot before shared resources.
 - Retrieved block coverage is scope-aware: returned context includes current-agent, user-shared, workspace-shared, and global-shared blocks, not only selected node metadata.
 - Selected refs and injection ordering now start with `agent:codex`, proving the current-agent boost survives from fanout selection into prompt-facing evidence ordering.

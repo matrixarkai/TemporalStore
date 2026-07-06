@@ -98,6 +98,15 @@ def require_map_keys_at_least(
     return value
 
 
+def require_distribution_count(report: dict[str, Any], field: str, key: str, expected: int) -> None:
+    value = report.get(field)
+    if not isinstance(value, dict):
+        raise ValueError(f"{field} must be an object")
+    observed = value.get(key, 0)
+    if observed != expected:
+        raise ValueError(f"{field}[{key!r}] must be {expected}, got {observed!r}")
+
+
 def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int) -> None:
     require_bool(report, "ready")
     require_bool(report, "multi_agent_scan_ready")
@@ -141,6 +150,33 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
     require_int_at_least(report, "fanout_candidate_shared_node_count", 3)
     require_bool(report, "fanout_candidate_scope_pressure_ready")
     require_int_at_least(report, "fanout_selected_current_agent_nodes", 1)
+    require_distribution_count(
+        report,
+        "fanout_selected_colocation_scope_distribution",
+        "agent:codex",
+        report["fanout_selected_current_agent_nodes"],
+    )
+    require_distribution_count(
+        report, "fanout_selected_colocation_scope_distribution", "agent:claude", 0
+    )
+    require_distribution_count(
+        report,
+        "fanout_selected_colocation_scope_distribution",
+        "user:user",
+        report["fanout_selected_user_shared_nodes"],
+    )
+    require_distribution_count(
+        report,
+        "fanout_selected_colocation_scope_distribution",
+        "workspace:context",
+        report["fanout_selected_workspace_shared_nodes"],
+    )
+    require_distribution_count(
+        report,
+        "fanout_selected_colocation_scope_distribution",
+        "global",
+        report["fanout_selected_global_shared_nodes"],
+    )
     require_bool(report, "fanout_current_agent_first_selected")
     selected_order = report.get("fanout_selected_colocation_scope_order")
     if not isinstance(selected_order, list) or not selected_order:

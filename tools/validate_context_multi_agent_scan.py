@@ -66,6 +66,15 @@ def require_int_equal(report: dict[str, Any], field: str, expected: int) -> None
         raise ValueError(f"{field} must be {expected}, got {value!r}")
 
 
+def require_distribution_count(report: dict[str, Any], field: str, key: str, expected: int) -> None:
+    value = report.get(field)
+    if not isinstance(value, dict):
+        raise ValueError(f"{field} must be an object")
+    observed = value.get(key, 0)
+    if observed != expected:
+        raise ValueError(f"{field}[{key!r}] must be {expected}, got {observed!r}")
+
+
 def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: int) -> None:
     require_bool(report, "ready")
     require_bool(report, "fanout_reduced")
@@ -106,6 +115,31 @@ def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: i
     require_int_at_least(report, "candidate_shared_node_count", 3)
     require_bool(report, "candidate_scope_pressure_ready")
     require_int_at_least(report, "selected_current_agent_nodes", 1)
+    require_distribution_count(
+        report,
+        "selected_colocation_scope_distribution",
+        "agent:codex",
+        report["selected_current_agent_nodes"],
+    )
+    require_distribution_count(report, "selected_colocation_scope_distribution", "agent:claude", 0)
+    require_distribution_count(
+        report,
+        "selected_colocation_scope_distribution",
+        "user:user",
+        report["selected_user_shared_nodes"],
+    )
+    require_distribution_count(
+        report,
+        "selected_colocation_scope_distribution",
+        "workspace:context",
+        report["selected_workspace_shared_nodes"],
+    )
+    require_distribution_count(
+        report,
+        "selected_colocation_scope_distribution",
+        "global",
+        report["selected_global_shared_nodes"],
+    )
     require_bool(report, "current_agent_first_selected")
     selected_order = report.get("selected_colocation_scope_order")
     if not isinstance(selected_order, list) or not selected_order:

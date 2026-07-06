@@ -93,6 +93,12 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
     "global",
     "agent:codex"
   ],
+  "fanout_selected_colocation_scope_distribution": {
+    "agent:codex": 11,
+    "global": 1,
+    "user:user": 1,
+    "workspace:context": 3
+  },
   "fanout_current_agent_first_selected": true,
   "fanout_avoided_namespace_replication_nodes": 28,
   "fanout_reduction_percent": 63,
@@ -185,6 +191,7 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
 - Candidate pressure is scope-aware before selection: 24 current-agent nodes, 4 peer-agent nodes, and 16 shared nodes across user/workspace/global are classified before fanout pruning.
 - Current-agent context is selected with agent-aware locality while user, workspace, and global shared resources remain visible.
 - Current-agent boost is explicit and bounded: 11 of 16 expanded nodes are `agent:codex`, giving a 68% current-agent boost while 5 shared nodes still satisfy the shared-layer quota.
+- The selected colocation distribution is exact: 11 current-agent nodes, 3 workspace nodes, 1 user node, and 1 global node, with zero peer-agent nodes.
 - Shared-scope coverage is explicit: user, workspace, and global layers are all represented in the selected node set.
 - The selected colocation scope set proves the expanded scale scan covers `agent:codex`, `user:user`, `workspace:context`, and `global`.
 - Locality key count equals expanded nodes: 16 expanded nodes produce 16 locality keys, covering exactly `agent:codex`, `user:user`, `workspace:context`, and `global` with zero peer-agent locality keys.
