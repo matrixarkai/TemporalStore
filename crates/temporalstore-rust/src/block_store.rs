@@ -1729,35 +1729,83 @@ fn extent_lifecycle_states(summary: &BlockStoreExtentSummary) -> Vec<String> {
 fn extent_zone_usage(
     extents: &BTreeMap<u64, BlockStoreExtentDescriptor>,
 ) -> Vec<BlockStoreZoneUsage> {
-    extents
-        .values()
-        .map(|extent| {
-            let (live, reclaimable, purged) = match extent.state {
-                BlockStoreExtentState::Active | BlockStoreExtentState::Sealed => {
-                    (extent.physical_bytes, 0, 0)
-                }
-                BlockStoreExtentState::DelayedDestroy => (0, extent.physical_bytes, 0),
-                BlockStoreExtentState::Purged => (0, 0, extent.physical_bytes),
-            };
-            BlockStoreZoneUsage {
-                extent_id: extent.extent_id,
-                page_segment_id: extent.page_segment_id,
-                storage_zone_id: extent.extent_id,
-                stream_segment_id: extent.page_segment_id,
-                state: extent.state,
-                used_bytes: extent.physical_bytes,
-                live_bytes: live,
-                reclaimable_bytes: reclaimable,
-                purged_bytes: purged,
-                page_store_used_bytes: extent.physical_bytes,
-                live_page_store_used_bytes: live,
-                reclaimable_page_store_used_bytes: reclaimable,
-                purged_page_store_used_bytes: purged,
-                first_page_id: extent.first_page_id,
-                last_page_id: extent.last_page_id,
+    #[derive(Debug, Clone)]
+    struct ZoneUsageAcc {
+        usage: BlockStoreZoneUsage,
+    }
+
+    fn merged_zone_state(
+        left: BlockStoreExtentState,
+        right: BlockStoreExtentState,
+    ) -> BlockStoreExtentState {
+        use BlockStoreExtentState::*;
+        match (left, right) {
+            (Active, _) | (_, Active) => Active,
+            (Sealed, _) | (_, Sealed) => Sealed,
+            (DelayedDestroy, _) | (_, DelayedDestroy) => DelayedDestroy,
+            (Purged, Purged) => Purged,
+        }
+    }
+
+    let mut zones = BTreeMap::<u64, ZoneUsageAcc>::new();
+    for extent in extents.values() {
+        let (live, reclaimable, purged) = match extent.state {
+            BlockStoreExtentState::Active | BlockStoreExtentState::Sealed => {
+                (extent.physical_bytes, 0, 0)
             }
-        })
-        .collect()
+            BlockStoreExtentState::DelayedDestroy => (0, extent.physical_bytes, 0),
+            BlockStoreExtentState::Purged => (0, 0, extent.physical_bytes),
+        };
+        let entry = zones
+            .entry(extent.extent_id)
+            .or_insert_with(|| ZoneUsageAcc {
+                usage: BlockStoreZoneUsage {
+                    extent_id: extent.extent_id,
+                    page_segment_id: extent.page_segment_id,
+                    storage_zone_id: extent.extent_id,
+                    stream_segment_id: extent.page_segment_id,
+                    state: extent.state,
+                    used_bytes: 0,
+                    live_bytes: 0,
+                    reclaimable_bytes: 0,
+                    purged_bytes: 0,
+                    page_store_used_bytes: 0,
+                    live_page_store_used_bytes: 0,
+                    reclaimable_page_store_used_bytes: 0,
+                    purged_page_store_used_bytes: 0,
+                    first_page_id: None,
+                    last_page_id: None,
+                },
+            });
+        let usage = &mut entry.usage;
+        usage.page_segment_id = usage.page_segment_id.min(extent.page_segment_id);
+        usage.stream_segment_id = usage.stream_segment_id.min(extent.page_segment_id);
+        usage.state = merged_zone_state(usage.state, extent.state);
+        usage.used_bytes = usage.used_bytes.saturating_add(extent.physical_bytes);
+        usage.live_bytes = usage.live_bytes.saturating_add(live);
+        usage.reclaimable_bytes = usage.reclaimable_bytes.saturating_add(reclaimable);
+        usage.purged_bytes = usage.purged_bytes.saturating_add(purged);
+        usage.page_store_used_bytes = usage
+            .page_store_used_bytes
+            .saturating_add(extent.physical_bytes);
+        usage.live_page_store_used_bytes = usage.live_page_store_used_bytes.saturating_add(live);
+        usage.reclaimable_page_store_used_bytes = usage
+            .reclaimable_page_store_used_bytes
+            .saturating_add(reclaimable);
+        usage.purged_page_store_used_bytes =
+            usage.purged_page_store_used_bytes.saturating_add(purged);
+        usage.first_page_id = match (usage.first_page_id, extent.first_page_id) {
+            (Some(left), Some(right)) => Some(left.min(right)),
+            (None, right) => right,
+            (left, None) => left,
+        };
+        usage.last_page_id = match (usage.last_page_id, extent.last_page_id) {
+            (Some(left), Some(right)) => Some(left.max(right)),
+            (None, right) => right,
+            (left, None) => left,
+        };
+    }
+    zones.into_values().map(|acc| acc.usage).collect()
 }
 
 impl Default for LocalBlockStore {
