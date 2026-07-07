@@ -196,6 +196,45 @@ impl CoreIndex {
             }
         }
     }
+
+    pub(super) fn contains_object_page_address(
+        &self,
+        model_id: &str,
+        object_key: &str,
+        component: Option<&str>,
+        address: &PageAddress,
+    ) -> bool {
+        let lookup_key = object_page_lookup_key(model_id, object_key, component);
+        if let Some(page_refs) = self.object_page_lookup.get(&lookup_key) {
+            return page_refs.iter().any(|page_ref| {
+                self.slot_map
+                    .get(&page_ref.routing_slot)
+                    .and_then(|slot| slot.page_index.get(&page_ref.page_ref_key))
+                    .map(|page| {
+                        !page.deleted
+                            && page.model_id == model_id
+                            && page.object_key == object_key
+                            && page.component.as_deref() == component
+                            && same_page_address(&page.address, address)
+                    })
+                    .unwrap_or(false)
+            });
+        }
+
+        if !self.object_page_lookup.is_empty() {
+            return false;
+        }
+
+        self.slot_map.values().any(|slot| {
+            slot.page_index.values().any(|page| {
+                !page.deleted
+                    && page.model_id == model_id
+                    && page.object_key == object_key
+                    && page.component.as_deref() == component
+                    && same_page_address(&page.address, address)
+            })
+        })
+    }
 }
 
 pub(super) fn object_component_lookup_key(model_id: &str, object_key: &str) -> String {
@@ -228,6 +267,15 @@ fn push_lookup_part(buffer: &mut String, value: &str) {
     buffer.push(':');
     buffer.push_str(value);
     buffer.push('|');
+}
+
+fn same_page_address(left: &PageAddress, right: &PageAddress) -> bool {
+    left.page_segment_id == right.page_segment_id
+        && left.offset == right.offset
+        && left.length == right.length
+        && left.page_id == right.page_id
+        && left.object_id == right.object_id
+        && left.routing_slot == right.routing_slot
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
