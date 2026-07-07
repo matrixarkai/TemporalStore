@@ -13359,18 +13359,30 @@ fn object_manager_stats(
                 .values()
                 .map(BTreeMap::len)
                 .sum::<usize>();
-        let dirty_slot_count = shard
-            .slot_index
-            .slot_map
-            .values()
-            .filter(|slot| {
-                slot.dirty
-                    || slot
-                        .page_index
-                        .values()
-                        .any(|page| page.dirty || shard.dirty_objects.contains(&page.object_key))
-            })
-            .count();
+        let dirty_slot_count = if !shard.slot_index.object_component_lookup.is_empty() {
+            let mut dirty_slots = shard
+                .slot_index
+                .slot_map
+                .iter()
+                .filter_map(|(slot_id, slot)| slot.dirty.then_some(*slot_id))
+                .collect::<BTreeSet<_>>();
+            for object_key in &shard.dirty_objects {
+                dirty_slots.extend(slot_index_target_slots_for_object_key(shard, object_key));
+            }
+            dirty_slots.len()
+        } else {
+            shard
+                .slot_index
+                .slot_map
+                .values()
+                .filter(|slot| {
+                    slot.dirty
+                        || slot.page_index.values().any(|page| {
+                            page.dirty || shard.dirty_objects.contains(&page.object_key)
+                        })
+                })
+                .count()
+        };
         return ObjectManagerStats {
             object_count,
             page_ref_count: slot_page_ref_count.max(secondary_page_ref_count),
