@@ -1510,6 +1510,10 @@ impl ProxyClient {
         self.post("/v1/string/put", body).map(|_| ())
     }
 
+    pub fn put_string_with_ttl(&self, key: &str, value: &str, ttl_ms: u64) -> Result<()> {
+        self.set_ex(key, value, ttl_ms)
+    }
+
     pub fn get_string(&self, key: &str) -> Result<String> {
         let body = self.key_body(key, &[]);
         let data = self.post("/v1/string/get", body)?;
@@ -1562,6 +1566,40 @@ impl ProxyClient {
                 .unwrap_or_else(|| serde_json::json!([])),
         )
         .map_err(json_error)
+    }
+
+    pub fn add_feature_points(&self, key: &str, points: &[FeaturePoint]) -> Result<()> {
+        self.feature_add(key, points)
+    }
+
+    pub fn add_feature_points_with_policy(
+        &self,
+        key: &str,
+        points: &[FeaturePoint],
+        policy: FeatureWritePolicy,
+    ) -> Result<()> {
+        self.feature_add_with_policy(key, points, Some(policy))
+    }
+
+    pub fn query_feature_points(
+        &self,
+        key: &str,
+        start_ts: u64,
+        end_ts: u64,
+        count: u64,
+    ) -> Result<Vec<FeaturePoint>> {
+        self.feature_query(key, start_ts, end_ts, Some(count as usize))
+    }
+
+    pub fn query_feature_points_filtered(
+        &self,
+        key: &str,
+        start_ts: u64,
+        end_ts: u64,
+        count: u64,
+        filters: &[FeatureFilter],
+    ) -> Result<Vec<FeaturePoint>> {
+        self.feature_query_filtered(key, start_ts, end_ts, Some(count as usize), filters)
     }
 
     pub fn feature_add(&self, key: &str, points: &[FeaturePoint]) -> Result<()> {
@@ -1766,6 +1804,10 @@ impl ProxyClient {
             })
             .collect();
         Ok(entries)
+    }
+
+    pub fn scan_hash(&self, key: &str) -> Result<Vec<(String, String)>> {
+        self.hgetall(key)
     }
 
     pub fn hlen(&self, key: &str) -> Result<u64> {
