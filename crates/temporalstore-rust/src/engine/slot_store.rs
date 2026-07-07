@@ -5,7 +5,7 @@ use crate::page_store::{LocalPageStore, PageAddress};
 use crate::types::ShardId;
 
 use super::read_page_bytes;
-use super::state::{ShardState, SlotLayoutState};
+use super::state::{object_page_lookup_key, ShardState, SlotLayoutState};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct SlotRuntimeState {
@@ -141,6 +141,25 @@ pub(super) fn slot_index_page_address(
     object_key: &str,
     component: Option<&str>,
 ) -> Option<PageAddress> {
+    let lookup_key = object_page_lookup_key(model_id, object_key, component);
+    if let Some(page_refs) = shard.slot_index.object_page_lookup.get(&lookup_key) {
+        for page_ref in page_refs {
+            let Some(slot) = shard.slot_index.slot_map.get(&page_ref.routing_slot) else {
+                continue;
+            };
+            let Some(page) = slot.page_index.get(&page_ref.page_ref_key) else {
+                continue;
+            };
+            if !page.deleted
+                && page.model_id == model_id
+                && page.object_key == object_key
+                && page.component.as_deref() == component
+            {
+                return Some(page.address.clone());
+            }
+        }
+    }
+
     shard
         .slot_index
         .slot_map

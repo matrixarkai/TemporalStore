@@ -56,11 +56,20 @@ pub(super) struct ShardState {
 pub(super) struct CoreIndex {
     #[serde(default, alias = "slots")]
     pub(super) slot_map: SlotMap,
+    #[serde(default)]
+    pub(super) object_page_lookup: ObjectPageLookup,
 }
 
 pub(super) type SlotMap = BTreeMap<u32, SlotNode>;
 pub(super) type ObjectIndex = BTreeSet<u64>;
 pub(super) type PageIndexMap = BTreeMap<String, PageIndex>;
+pub(super) type ObjectPageLookup = BTreeMap<String, BTreeSet<PageLookupRef>>;
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub(super) struct PageLookupRef {
+    pub(super) routing_slot: u32,
+    pub(super) page_ref_key: String,
+}
 
 /// Rust-native core index mirroring the C++ shape:
 /// Index -> SlotMap -> SlotNode -> PageIndex/ObjectIndex.
@@ -107,6 +116,80 @@ pub(super) struct PageIndex {
     pub(super) dirty: bool,
     pub(super) deleted: bool,
     pub(super) log_backed: bool,
+}
+
+impl CoreIndex {
+    pub(super) fn rebuild_object_page_lookup(&mut self) {
+        self.object_page_lookup.clear();
+        let refs = self
+            .slot_map
+            .iter()
+            .flat_map(|(routing_slot, slot)| {
+                slot.page_index.iter().map(move |(page_ref_key, page)| {
+                    (*routing_slot, page_ref_key.clone(), page.clone())
+                })
+            })
+            .collect::<Vec<_>>();
+        for (routing_slot, page_ref_key, page) in refs {
+            self.insert_object_page_lookup(routing_slot, page_ref_key, &page);
+        }
+    }
+
+    pub(super) fn insert_object_page_lookup(
+        &mut self,
+        routing_slot: u32,
+        page_ref_key: String,
+        page: &PageIndex,
+    ) {
+        if page.deleted {
+            return;
+        }
+        self.object_page_lookup
+            .entry(object_page_lookup_key(
+                &page.model_id,
+                &page.object_key,
+                page.component.as_deref(),
+            ))
+            .or_default()
+            .insert(PageLookupRef {
+                routing_slot,
+                page_ref_key,
+            });
+    }
+
+    pub(super) fn remove_object_page_lookup_entry(
+        &mut self,
+        model_id: &str,
+        object_key: &str,
+        component: Option<&str>,
+    ) {
+        self.object_page_lookup
+            .remove(&object_page_lookup_key(model_id, object_key, component));
+    }
+}
+
+pub(super) fn object_page_lookup_key(
+    model_id: &str,
+    object_key: &str,
+    component: Option<&str>,
+) -> String {
+    fn push_part(buffer: &mut String, value: &str) {
+        buffer.push_str(&value.len().to_string());
+        buffer.push(':');
+        buffer.push_str(value);
+        buffer.push('|');
+    }
+    let mut key = String::new();
+    push_part(&mut key, model_id);
+    push_part(&mut key, object_key);
+    match component {
+        Some(component) => {
+            key.push_str("1|");
+            push_part(&mut key, component);
+        }
+        None => key.push_str("0|"),
+    }
+    key
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
