@@ -262,7 +262,7 @@ pub fn select_context_skills_for_retrieval(
             + i64::from(allowed_tool_match);
         push_unique_string(
             &mut scope_resolution_order,
-            context_scope_layer_name(entry_scope.layer).to_string(),
+            context_scope_layer_name(&entry_scope.layer).to_string(),
         );
         if !entry_scope.producer_agent_id.is_empty() {
             push_unique_string(&mut agent_producers, entry_scope.producer_agent_id.clone());
@@ -534,7 +534,7 @@ fn context_skill_registry_report(
     for entry in &entries {
         let scope = context_skill_entry_scope(entry);
         *scope_layers
-            .entry(context_scope_layer_name(scope.layer).to_string())
+            .entry(context_scope_layer_name(&scope.layer).to_string())
             .or_insert(0) += 1;
         shared_graph_scopes.insert(scope.shared_graph_scope);
         if !scope.producer_agent_id.is_empty() {

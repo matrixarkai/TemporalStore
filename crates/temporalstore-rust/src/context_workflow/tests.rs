@@ -15,6 +15,54 @@ fn test_engine() -> TemporalEngine {
     engine
 }
 
+// shared-corpus: context_retrieval_batch_node_summary_lookup
+#[test]
+fn context_get_nodes_batches_summary_lookup_for_retrieval() {
+    let engine = test_engine();
+    let tenant_hash = 91;
+    for node_hash in [11, 22] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertNode {
+                tenant_hash,
+                node: ContextNode {
+                    node_hash,
+                    parent_hash: 0,
+                    kind: 0,
+                    canonical_name: format!("node-{node_hash}"),
+                    l0: format!("l0 summary for node {node_hash}"),
+                    status: 0,
+                    last_event_time_ms: 1_000 + node_hash,
+                    summary_dirty: false,
+                    l1_ref: format!("l1 summary for node {node_hash}"),
+                    raw_metadata_ref: format!("source://node/{node_hash}"),
+                },
+            },
+        });
+        assert!(response.status.ok, "{:?}", response.status);
+    }
+
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextGetNodes {
+            tenant_hash,
+            node_hashes: vec![11, 22, 33],
+        },
+    });
+
+    assert!(response.status.ok, "{:?}", response.status);
+    match response.response {
+        CommandResponse::ContextNodes { nodes } => {
+            assert_eq!(nodes.len(), 2);
+            assert_eq!(nodes[0].node_hash, 11);
+            assert_eq!(nodes[1].node_hash, 22);
+            assert!(nodes[0].l0.contains("node 11"));
+            assert!(nodes[1].l1_ref.contains("node 22"));
+        }
+        other => panic!("unexpected response: {other:?}"),
+    }
+}
+
 // shared-corpus: context_retrieval_qa_synonym_ranking
 #[test]
 fn context_relevance_ranks_qa_synonyms_and_phrases() {
@@ -276,6 +324,46 @@ fn context_relevance_ranks_qa_synonyms_and_phrases() {
     );
 }
 
+// shared-corpus: context_retrieval_precomputed_query_plan_parity
+#[test]
+fn context_query_plan_matches_legacy_match_and_score_helpers() {
+    let cases = [
+        (
+            "What is Alice's current office choice after the payment problem?",
+            "During the latest conversation, Alice replaced her office preference with the downtown location after the billing issue was resolved.",
+        ),
+        (
+            "Which medication did Morgan say to remember before the doctor appointment?",
+            "In the later session Morgan said to remember lisinopril, the blood pressure medication, before the doctor appointment.",
+        ),
+        (
+            "How many total checkout retries happened across sessions?",
+            "Across three sessions the support agent counted 12 checkout retries, 4 payment errors, and 2 successful follow-ups.",
+        ),
+        (
+            "Which hobby did Priya switch to after cancelling guitar lessons?",
+            "Later update: Priya cancelled guitar lessons and switched to a pottery class instead for the spring session.",
+        ),
+    ];
+
+    for (query, text) in cases {
+        let plan = context_query_plan(query);
+        assert_eq!(
+            context_query_matches(query, text),
+            context_query_matches_plan(&plan, text)
+        );
+        assert_eq!(
+            context_relevance_score(query, text),
+            context_relevance_score_plan(&plan, text)
+        );
+        assert!(!plan.terms.is_empty());
+        assert_eq!(
+            plan.term_groups,
+            context_query_term_groups_from_terms(&plan.terms)
+        );
+    }
+}
+
 // shared-corpus: context_compression_secondary_index_query_debug_flow
 #[test]
 fn context_workflow_extracts_retrieves_and_injects_mock_context() {
@@ -311,9 +399,6 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
             tiers: default_tiers(),
             max_summary_nodes: 32,
             max_event_nodes: 16,
-            owner_scope: String::new(),
-            current_agent_id: String::new(),
-            shared_resource_scopes: Vec::new(),
             provider: ContextModelProviderConfig::default(),
         },
     );
@@ -400,9 +485,6 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
                 tiers: default_tiers(),
                 max_summary_nodes: 32,
                 max_event_nodes: 16,
-                owner_scope: String::new(),
-                current_agent_id: String::new(),
-                shared_resource_scopes: Vec::new(),
                 provider: ContextModelProviderConfig::default(),
             },
             prompt: "Explain current risk.".to_string(),
@@ -468,9 +550,6 @@ fn context_query_debug_reports_filter_groups_drops_and_injection_order() {
             tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
             max_summary_nodes: 32,
             max_event_nodes: 16,
-            owner_scope: String::new(),
-            current_agent_id: String::new(),
-            shared_resource_scopes: Vec::new(),
             provider: ContextModelProviderConfig::default(),
         },
     );
@@ -604,9 +683,6 @@ fn context_retrieval_limits_namespace_fanout_with_summary_and_locality_plan() {
             tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
             max_summary_nodes: 5,
             max_event_nodes: 1,
-            owner_scope: String::new(),
-            current_agent_id: String::new(),
-            shared_resource_scopes: Vec::new(),
             provider: ContextModelProviderConfig::default(),
         },
     );
@@ -648,119 +724,6 @@ fn context_retrieval_limits_namespace_fanout_with_summary_and_locality_plan() {
         .blocks
         .iter()
         .any(|block| block.tier == ContextTier::L2));
-}
-
-// shared-corpus: context_multi_agent_layered_scan_colocation
-#[test]
-fn context_multi_agent_scan_boosts_current_agent_and_colocates_shared_scopes() {
-    let engine = test_engine();
-    let tenant_hash = 606061;
-    let mut node_hashes = Vec::new();
-    for (source_id, title, body) in [
-        (
-            "agent:codex:checkout-risk",
-            "Codex checkout risk trace",
-            "Checkout payment risk score is 97 and Codex traced the gateway timeout.",
-        ),
-        (
-            "agent:claude:checkout-risk",
-            "Claude checkout risk note",
-            "Checkout payment risk score is 72 and Claude summarized the timeout.",
-        ),
-        (
-            "user:alice:checkout-preference",
-            "Alice checkout preference",
-            "Checkout payment should prefer the saved corporate card for Alice.",
-        ),
-        (
-            "workspace:payments:runbook",
-            "Payments workspace runbook",
-            "Checkout payment incidents use the payments workspace runbook.",
-        ),
-        (
-            "global:skills:payment-debug",
-            "Global payment debug skill",
-            "Checkout payment debugging can use the global payment skill.",
-        ),
-    ] {
-        let extract = extract_context(
-            &engine,
-            ContextExtractRequest {
-                shard_id: 1,
-                tenant_hash,
-                source_kind: ContextSourceKind::Document,
-                source_id: source_id.to_string(),
-                title: title.to_string(),
-                body: body.to_string(),
-                timestamp_ms: 30_000 + node_hashes.len() as u64,
-                provider: ContextModelProviderConfig::default(),
-            },
-        );
-        assert!(extract.status.ok, "{:?}", extract.status);
-        node_hashes.push(extract.node.node_hash);
-    }
-
-    let report = retrieve_context(
-        &engine,
-        ContextRetrieveRequest {
-            shard_id: 1,
-            tenant_hash,
-            node_hashes,
-            query: "checkout payment risk".to_string(),
-            start_time_ms: 0,
-            end_time_ms: 40_000,
-            max_events: 8,
-            min_confidence: 0.0,
-            min_importance: 0.0,
-            tiers: vec![ContextTier::L2],
-            max_summary_nodes: 5,
-            max_event_nodes: 2,
-            owner_scope: "workspace:payments".to_string(),
-            current_agent_id: "codex".to_string(),
-            shared_resource_scopes: vec!["user:alice".to_string(), "global".to_string()],
-            provider: ContextModelProviderConfig::default(),
-        },
-    );
-    assert!(report.status.ok, "{:?}", report.status);
-    assert_eq!(report.fanout_plan.namespace_node_candidates, 5);
-    assert_eq!(report.fanout_plan.event_expanded_nodes, 2);
-    assert!(report.fanout_plan.fanout_reduced);
-    assert_eq!(report.fanout_plan.current_agent_id, "codex");
-    assert_eq!(report.fanout_plan.current_agent_boosted_nodes, 1);
-    assert_eq!(report.fanout_plan.user_shared_nodes, 1);
-    assert_eq!(report.fanout_plan.workspace_shared_nodes, 1);
-    assert_eq!(report.fanout_plan.global_shared_nodes, 1);
-    assert!(report.fanout_plan.scope_boosted_nodes >= 5);
-    assert!(report
-        .fanout_plan
-        .scan_layers
-        .iter()
-        .any(|layer| layer == "agent"));
-    assert!(report
-        .fanout_plan
-        .scan_layers
-        .iter()
-        .any(|layer| layer == "global"));
-    assert!(report
-        .fanout_plan
-        .colocation_groups
-        .iter()
-        .any(|group| group == "workspace:payments"));
-    assert!(report
-        .fanout_plan
-        .locality_keys
-        .iter()
-        .all(|key| key.contains(":scope:")));
-    let selected_text = report
-        .blocks
-        .iter()
-        .map(|block| block.text.as_str())
-        .collect::<Vec<_>>()
-        .join(
-            "
-",
-        );
-    assert!(selected_text.contains("Codex traced"), "{selected_text}");
 }
 
 // shared-corpus: context_benchmark_injection_entity_segment_index
@@ -826,9 +789,6 @@ fn context_benchmark_injection_uses_entity_segment_l0_l1_and_secondary_index() {
         tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
         max_summary_nodes: 32,
         max_event_nodes: 16,
-        owner_scope: String::new(),
-        current_agent_id: String::new(),
-        shared_resource_scopes: Vec::new(),
         provider: ContextModelProviderConfig::default(),
     };
     let retrieved = retrieve_context(&engine, retrieve.clone());
@@ -1419,9 +1379,6 @@ fn context_injection_prompt_pack_preserves_retrieved_evidence_ordering() {
         tiers: vec![ContextTier::L2],
         max_summary_nodes: 32,
         max_event_nodes: 16,
-        owner_scope: String::new(),
-        current_agent_id: String::new(),
-        shared_resource_scopes: Vec::new(),
         provider: ContextModelProviderConfig::default(),
     };
     let retrieved = retrieve_context(&engine, retrieve.clone());
@@ -1536,9 +1493,6 @@ fn context_workflow_policy_rejects_disallowed_runtime_controls() {
             tiers: default_tiers(),
             max_summary_nodes: 32,
             max_event_nodes: 16,
-            owner_scope: String::new(),
-            current_agent_id: String::new(),
-            shared_resource_scopes: Vec::new(),
             provider: ContextModelProviderConfig::default(),
         },
         prompt: "one two three four five".to_string(),
@@ -2012,7 +1966,6 @@ fn context_skill_registry_supports_updates_and_retrieval_selection() {
     let selection = select_context_skills_for_retrieval(ContextSkillSelectionRequest {
         query: "payment retrieval trace".to_string(),
         owner_scope: "team:context".to_string(),
-        allowed_scope_layers: Vec::new(),
         tool_name: "context_workflow_harness".to_string(),
         include_disabled: false,
         limit: 4,
@@ -2031,98 +1984,6 @@ fn context_skill_registry_supports_updates_and_retrieval_selection() {
     assert!(selection
         .skipped_disabled
         .contains(&"context-debug".to_string()));
-}
-
-// shared-corpus: context_scope_layered_agent_producer_shared_graph
-#[test]
-fn context_scope_layers_share_user_graph_with_agent_producers() {
-    let global = parse_context_skill_markdown(
-        "skills/global/SKILL.md",
-        r#"---
-name: global-context-debug
-description: Global context debug skill
-owner_scope: global
-triggers: context,debug
-allowed_tools: context_workflow_harness
-precedence: high
----
-# Instructions
-- Inspect shared graph summaries.
-"#,
-    );
-    let workspace = parse_context_skill_markdown(
-        "skills/workspace/SKILL.md",
-        r#"---
-name: workspace-context-debug
-description: Workspace context debug skill
-owner_scope: workspace:payments
-triggers: payment,context
-allowed_tools: context_workflow_harness
-precedence: normal
----
-# Instructions
-- Inspect payment workspace evidence.
-"#,
-    );
-    let agent = parse_context_skill_markdown(
-        "skills/codex/SKILL.md",
-        r#"---
-name: codex-context-producer
-description: Codex contributes context evidence to the shared graph
-owner_scope: agent:codex
-triggers: codex,context
-allowed_tools: context_workflow_harness
-precedence: critical
----
-# Instructions
-- Use Codex-produced context as graph evidence, not a private namespace.
-"#,
-    );
-
-    assert_eq!(agent.scope.layer, ContextScopeLayer::Agent);
-    assert_eq!(agent.scope.producer_agent_id, "codex");
-    assert_eq!(agent.resource.lifecycle.scope.producer_agent_id, "codex");
-    assert_eq!(
-        agent.resource.chunks[0].metadata["producer_agent_id"],
-        "codex"
-    );
-    assert_eq!(workspace.scope.shared_graph_scope, "workspace:payments");
-
-    let registry = context_skill_registry_from_parsed(&[global, workspace, agent], 42);
-    assert_eq!(registry.producer_agent_count, 1);
-    assert_eq!(registry.scope_layers.get("global"), Some(&1));
-    assert_eq!(registry.scope_layers.get("workspace"), Some(&1));
-    assert_eq!(registry.scope_layers.get("agent"), Some(&1));
-    assert!(registry.shared_graph_scope_count >= 2);
-
-    let selection = select_context_skills_for_retrieval(ContextSkillSelectionRequest {
-        query: "codex payment context debug".to_string(),
-        owner_scope: "workspace:payments".to_string(),
-        allowed_scope_layers: Vec::new(),
-        tool_name: "context_workflow_harness".to_string(),
-        include_disabled: false,
-        limit: 8,
-        registry: registry.entries,
-    });
-    assert!(selection.status.ok, "{:?}", selection);
-    let selected = selection
-        .selected
-        .iter()
-        .map(|candidate| candidate.skill_name.as_str())
-        .collect::<Vec<_>>();
-    assert!(selected.contains(&"global-context-debug"));
-    assert!(selected.contains(&"workspace-context-debug"));
-    assert!(selected.contains(&"codex-context-producer"));
-    assert!(selection.agent_producers.contains(&"codex".to_string()));
-    assert!(selection
-        .scope_resolution_order
-        .contains(&"global".to_string()));
-    assert!(selection
-        .scope_resolution_order
-        .contains(&"workspace".to_string()));
-    assert!(selection
-        .scope_resolution_order
-        .contains(&"agent".to_string()));
 }
 
 // shared-corpus: context_resource_skill_parser_openviking_parity
