@@ -3285,13 +3285,24 @@ impl TemporalEngine {
                 .max()
                 .unwrap_or_default()
                 .saturating_add(1);
-            if let Err(err) = self.page_store.gc_segments_before_with_live_refs_utility(
+            match self.page_store.gc_segments_before_with_live_refs_utility(
                 retain_from_page_segment_id,
                 plan.live_page_segment_ids.clone(),
                 plan.reclaim_candidates.len(),
                 true,
             ) {
-                errors.push(format!("reclaim_page: {err}"));
+                Ok(report) => {
+                    for page_segment_id in report
+                        .removed_page_segment_ids
+                        .iter()
+                        .chain(report.delayed_destroy_page_segment_ids.iter())
+                    {
+                        let _ = self
+                            .cache
+                            .invalidate_page_segment(request.shard_id, *page_segment_id);
+                    }
+                }
+                Err(err) => errors.push(format!("reclaim_page: {err}")),
             }
         }
 
