@@ -164,6 +164,8 @@ pub struct ContextExtractReport {
     pub provider: ContextModelProviderConfig,
     #[serde(default)]
     pub embedding_generation: ContextEmbeddingGenerationReport,
+    #[serde(default)]
+    pub summary_generation: ContextSummaryGenerationScheduleReport,
     pub node: ContextNode,
     pub event: ContextEvent,
     pub index_ref: ContextIndexRef,
@@ -181,6 +183,46 @@ pub struct ContextExtractReport {
     pub l0: String,
     pub l1: String,
     pub l2_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextSummaryGenerationScheduleReport {
+    pub policy: String,
+    pub new_event_priority: String,
+    pub new_event_summary_immediate: bool,
+    pub event_embedding_immediate: bool,
+    pub existing_summary_refresh_mode: String,
+    pub existing_summary_refresh_deferred: bool,
+    pub existing_summary_refresh_due: bool,
+    pub existing_summary_refresh_threshold_ms: u64,
+    pub existing_summary_refresh_batch_threshold_events: usize,
+    pub summary_model_call_skipped: bool,
+    pub dirty_marker_written: bool,
+    pub graceful_missing_summary_fallback: bool,
+    pub secondary_index_fallback_ready: bool,
+    pub raw_event_fallback_ready: bool,
+}
+
+impl Default for ContextSummaryGenerationScheduleReport {
+    fn default() -> Self {
+        Self {
+            policy: "new_event_fast_existing_refresh_thresholded".to_string(),
+            new_event_priority: "fast_incremental".to_string(),
+            new_event_summary_immediate: false,
+            event_embedding_immediate: false,
+            existing_summary_refresh_mode: "slow_batched_threshold_driven".to_string(),
+            existing_summary_refresh_deferred: false,
+            existing_summary_refresh_due: false,
+            existing_summary_refresh_threshold_ms: default_existing_summary_refresh_threshold_ms(),
+            existing_summary_refresh_batch_threshold_events:
+                default_existing_summary_refresh_batch_threshold_events(),
+            summary_model_call_skipped: false,
+            dirty_marker_written: false,
+            graceful_missing_summary_fallback: true,
+            secondary_index_fallback_ready: true,
+            raw_event_fallback_ready: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1289,6 +1331,16 @@ pub struct ContextTreeTraversalDebug {
     #[serde(default)]
     pub summary_embedding_lookup_batches: usize,
     #[serde(default)]
+    pub summary_embedding_missing_node_count: usize,
+    #[serde(default)]
+    pub summary_embedding_missing_nodes: Vec<u64>,
+    #[serde(default)]
+    pub degraded_to_secondary_index: bool,
+    #[serde(default)]
+    pub degraded_to_raw_event_scan: bool,
+    #[serde(default)]
+    pub missing_summary_degraded_gracefully: bool,
+    #[serde(default)]
     pub query_embedding_dimension: usize,
     #[serde(default)]
     pub query_embedding_provider: String,
@@ -1982,36 +2034,91 @@ pub fn extract_context(
     request: ContextExtractRequest,
 ) -> ContextExtractReport {
     let provider = normalize_provider(request.provider.clone());
-    let summaries = match context_summaries_for_extract(&provider, &request) {
-        Ok(summaries) => summaries,
-        Err(status) => {
-            if let Some(fallback) = provider.fallback_provider.as_deref() {
-                let fallback = normalize_provider(fallback.clone());
-                match context_summaries_for_extract(&fallback, &request) {
-                    Ok(mut summaries) => {
-                        summaries.provider = fallback;
-                        summaries.provider.provider_name = format!(
-                            "{}+fallback:{}",
-                            provider.provider_name, summaries.provider.provider_name
-                        );
-                        summaries
+    let node_hash = stable_hash64(&format!(
+        "{}:{}:{}",
+        request.tenant_hash, request.source_kind as u8, request.source_id
+    ));
+    let event_id_hash = stable_hash64(&format!("event:{}:{}", request.source_id, request.body));
+    let timestamp_ms = request.timestamp_ms.max(1);
+    let existing_node = match engine
+        .execute(ExecuteRequest {
+            shard_id: request.shard_id,
+            command: Command::ContextGetNode {
+                tenant_hash: request.tenant_hash,
+                node_hash,
+            },
+        })
+        .response
+    {
+        CommandResponse::ContextNode { node, .. } => node,
+        _ => None,
+    };
+    let refresh_threshold_ms = default_existing_summary_refresh_threshold_ms();
+    let existing_summary_age_ms = existing_node
+        .as_ref()
+        .map(|node| timestamp_ms.saturating_sub(node.last_event_time_ms))
+        .unwrap_or_default();
+    let existing_summary_missing = existing_node
+        .as_ref()
+        .map(|node| node.l0.trim().is_empty() || node.l1_ref.trim().is_empty())
+        .unwrap_or(false);
+    let existing_summary_refresh_due = existing_node.is_none()
+        || existing_summary_missing
+        || existing_summary_age_ms >= refresh_threshold_ms;
+    let existing_summary_refresh_deferred =
+        existing_node.is_some() && !existing_summary_refresh_due;
+    let mut summary_generation = ContextSummaryGenerationScheduleReport {
+        new_event_summary_immediate: true,
+        event_embedding_immediate: true,
+        existing_summary_refresh_deferred,
+        existing_summary_refresh_due,
+        summary_model_call_skipped: existing_summary_refresh_deferred,
+        ..ContextSummaryGenerationScheduleReport::default()
+    };
+    let summaries = if existing_summary_refresh_deferred {
+        let existing = existing_node.as_ref().expect("deferred refresh has node");
+        ContextExtractSummaries {
+            status: Status::ok(),
+            provider: provider.clone(),
+            l0: existing.l0.clone(),
+            l1: existing.l1_ref.clone(),
+            l2_ref: format!(
+                "tsctx://tenant/{}/model/{}/source/{}",
+                request.tenant_hash, provider.provider_name, request.source_id
+            ),
+        }
+    } else {
+        match context_summaries_for_extract(&provider, &request) {
+            Ok(summaries) => summaries,
+            Err(status) => {
+                if let Some(fallback) = provider.fallback_provider.as_deref() {
+                    let fallback = normalize_provider(fallback.clone());
+                    match context_summaries_for_extract(&fallback, &request) {
+                        Ok(mut summaries) => {
+                            summaries.provider = fallback;
+                            summaries.provider.provider_name = format!(
+                                "{}+fallback:{}",
+                                provider.provider_name, summaries.provider.provider_name
+                            );
+                            summaries
+                        }
+                        Err(fallback_status) => {
+                            return empty_extract_report(
+                                fallback_status,
+                                provider,
+                                request.tenant_hash,
+                                request.timestamp_ms,
+                            );
+                        }
                     }
-                    Err(fallback_status) => {
-                        return empty_extract_report(
-                            fallback_status,
-                            provider,
-                            request.tenant_hash,
-                            request.timestamp_ms,
-                        );
-                    }
+                } else {
+                    return empty_extract_report(
+                        status,
+                        provider,
+                        request.tenant_hash,
+                        request.timestamp_ms,
+                    );
                 }
-            } else {
-                return empty_extract_report(
-                    status,
-                    provider,
-                    request.tenant_hash,
-                    request.timestamp_ms,
-                );
             }
         }
     };
@@ -2021,6 +2128,7 @@ pub fn extract_context(
             status: summaries.status,
             provider,
             embedding_generation: ContextEmbeddingGenerationReport::default(),
+            summary_generation,
             node: empty_node(),
             event: empty_event(),
             index_ref: ContextIndexRef {
@@ -2046,12 +2154,6 @@ pub fn extract_context(
         };
     }
 
-    let node_hash = stable_hash64(&format!(
-        "{}:{}:{}",
-        request.tenant_hash, request.source_kind as u8, request.source_id
-    ));
-    let event_id_hash = stable_hash64(&format!("event:{}:{}", request.source_id, request.body));
-    let timestamp_ms = request.timestamp_ms.max(1);
     let l0 = summaries.l0;
     let l1 = summaries.l1;
     let l2_ref = summaries.l2_ref;
@@ -2098,9 +2200,18 @@ pub fn extract_context(
     let dirty_marker = ContextSummaryDirtyMarker {
         node_hash,
         event_time_ms: timestamp_ms,
-        reason: 1,
-        propagate_depth: 1,
+        reason: if existing_summary_refresh_deferred {
+            2
+        } else {
+            1
+        },
+        propagate_depth: if existing_summary_refresh_deferred {
+            0
+        } else {
+            1
+        },
     };
+    summary_generation.dirty_marker_written = true;
 
     let summary_l0 = ContextSummary {
         node_hash,
@@ -2114,18 +2225,18 @@ pub fn extract_context(
         text: l1.clone(),
         valid_from_ms: timestamp_ms,
     };
-    let embedding_inputs = [
-        ("node_l0", node_hash, 1, l0.as_str()),
-        ("node_l1", node_hash, 2, l1.as_str()),
-        ("event_text", event_id_hash, 3, request.body.as_str()),
-    ];
+    let mut embedding_inputs = vec![("event_text", event_id_hash, 3, request.body.as_str())];
+    if existing_summary_refresh_due {
+        embedding_inputs.push(("node_l0", node_hash, 1, l0.as_str()));
+        embedding_inputs.push(("node_l1", node_hash, 2, l1.as_str()));
+    }
     let (embedding_vectors, embedding_generation) =
-        match context_embeddings_for_extract(&provider, &embedding_inputs) {
+        match context_embeddings_for_extract(&provider, embedding_inputs.as_slice()) {
             Ok(value) => value,
             Err(status) => {
                 if let Some(fallback) = provider.fallback_provider.as_deref() {
                     let fallback = normalize_provider(fallback.clone());
-                    match context_embeddings_for_extract(&fallback, &embedding_inputs) {
+                    match context_embeddings_for_extract(&fallback, embedding_inputs.as_slice()) {
                         Ok((vectors, mut report)) => {
                             report.fallback_used = true;
                             report.provider_name = format!(
@@ -2157,25 +2268,40 @@ pub fn extract_context(
         ref_hash: context_embedding_ref_hash(request.tenant_hash, node_hash, "node_l0"),
         level: 1,
         model_hash: context_embedding_model_hash(&provider.model),
-        vector: embedding_vectors[0].clone(),
+        vector: embedding_vectors
+            .iter()
+            .zip(embedding_inputs.iter())
+            .find(|(_, (label, _, _, _))| *label == "node_l0")
+            .map(|(vector, _)| vector.clone())
+            .unwrap_or_default(),
         updated_at_ms: timestamp_ms,
     };
     let embedding_l1 = ContextEmbedding {
         ref_hash: context_embedding_ref_hash(request.tenant_hash, node_hash, "node_l1"),
         level: 2,
         model_hash: context_embedding_model_hash(&provider.model),
-        vector: embedding_vectors[1].clone(),
+        vector: embedding_vectors
+            .iter()
+            .zip(embedding_inputs.iter())
+            .find(|(_, (label, _, _, _))| *label == "node_l1")
+            .map(|(vector, _)| vector.clone())
+            .unwrap_or_default(),
         updated_at_ms: timestamp_ms,
     };
     let embedding_event = ContextEmbedding {
         ref_hash: context_embedding_ref_hash(request.tenant_hash, event_id_hash, "event_text"),
         level: 3,
         model_hash: context_embedding_model_hash(&provider.model),
-        vector: embedding_vectors[2].clone(),
+        vector: embedding_vectors
+            .iter()
+            .zip(embedding_inputs.iter())
+            .find(|(_, (label, _, _, _))| *label == "event_text")
+            .map(|(vector, _)| vector.clone())
+            .unwrap_or_default(),
         updated_at_ms: timestamp_ms,
     };
 
-    for command in [
+    let mut commands = vec![
         Command::ContextUpsertNode {
             tenant_hash: request.tenant_hash,
             node: node.clone(),
@@ -2198,27 +2324,33 @@ pub fn extract_context(
             tenant_hash: request.tenant_hash,
             marker: dirty_marker.clone(),
         },
-        Command::ContextUpsertSummary {
-            tenant_hash: request.tenant_hash,
-            summary: summary_l0,
-        },
-        Command::ContextUpsertSummary {
-            tenant_hash: request.tenant_hash,
-            summary: summary_l1,
-        },
-        Command::ContextUpsertEmbedding {
-            tenant_hash: request.tenant_hash,
-            embedding: embedding_l0,
-        },
-        Command::ContextUpsertEmbedding {
-            tenant_hash: request.tenant_hash,
-            embedding: embedding_l1,
-        },
         Command::ContextUpsertEmbedding {
             tenant_hash: request.tenant_hash,
             embedding: embedding_event,
         },
-    ] {
+    ];
+    if existing_summary_refresh_due {
+        commands.extend([
+            Command::ContextUpsertSummary {
+                tenant_hash: request.tenant_hash,
+                summary: summary_l0,
+            },
+            Command::ContextUpsertSummary {
+                tenant_hash: request.tenant_hash,
+                summary: summary_l1,
+            },
+            Command::ContextUpsertEmbedding {
+                tenant_hash: request.tenant_hash,
+                embedding: embedding_l0,
+            },
+            Command::ContextUpsertEmbedding {
+                tenant_hash: request.tenant_hash,
+                embedding: embedding_l1,
+            },
+        ]);
+    }
+
+    for command in commands {
         let response = engine.execute_durable(ExecuteRequest {
             shard_id: request.shard_id,
             command,
@@ -2228,6 +2360,7 @@ pub fn extract_context(
                 status: response.status,
                 provider: provider.clone(),
                 embedding_generation: embedding_generation.clone(),
+                summary_generation: summary_generation.clone(),
                 node,
                 event,
                 index_ref,
@@ -2249,6 +2382,7 @@ pub fn extract_context(
         status: Status::ok(),
         provider,
         embedding_generation,
+        summary_generation,
         node,
         event,
         index_ref,
@@ -5204,6 +5338,44 @@ pub fn retrieve_context(
     query_understanding_debug
         .tree_traversal_summary
         .summary_embedding_lookup_batches = usize::from(!summary_scores.is_empty());
+    let missing_summary_embedding_nodes = summary_scores
+        .iter()
+        .filter(|(_, _, found, _, _, _)| *found == 0)
+        .map(|(node_hash, _, _, _, _, _)| *node_hash)
+        .collect::<Vec<_>>();
+    query_understanding_debug
+        .tree_traversal_summary
+        .summary_embedding_missing_node_count = missing_summary_embedding_nodes.len();
+    query_understanding_debug
+        .tree_traversal_summary
+        .summary_embedding_missing_nodes = missing_summary_embedding_nodes;
+    query_understanding_debug
+        .tree_traversal_summary
+        .missing_summary_degraded_gracefully = query_understanding_debug
+        .tree_traversal_summary
+        .summary_embedding_missing_node_count
+        > 0;
+    query_understanding_debug
+        .tree_traversal_summary
+        .degraded_to_secondary_index = query_understanding_debug
+        .tree_traversal_summary
+        .missing_summary_degraded_gracefully
+        && fanout_plan.secondary_index_filter_group_count > 0;
+    query_understanding_debug
+        .tree_traversal_summary
+        .degraded_to_raw_event_scan = query_understanding_debug
+        .tree_traversal_summary
+        .missing_summary_degraded_gracefully
+        && fanout_plan.event_expanded_nodes > 0;
+    if query_understanding_debug
+        .tree_traversal_summary
+        .missing_summary_degraded_gracefully
+    {
+        query_understanding_debug
+            .tree_traversal_summary
+            .fallback_reason =
+            "missing_summary_embedding_secondary_index_raw_event_scan".to_string();
+    }
     query_understanding_debug
         .tree_traversal_summary
         .query_embedding_dimension = query_embedding.len();
@@ -5553,6 +5725,7 @@ fn empty_extract_report(
         status,
         provider,
         embedding_generation,
+        summary_generation: ContextSummaryGenerationScheduleReport::default(),
         node: empty_node(),
         event: empty_event(),
         index_ref: ContextIndexRef {
@@ -5625,6 +5798,14 @@ fn default_summary_fanout_node_limit() -> usize {
 
 fn default_event_fanout_node_limit() -> usize {
     16
+}
+
+fn default_existing_summary_refresh_threshold_ms() -> u64 {
+    15 * 60 * 1000
+}
+
+fn default_existing_summary_refresh_batch_threshold_events() -> usize {
+    8
 }
 
 fn default_context_skill_enabled() -> bool {
