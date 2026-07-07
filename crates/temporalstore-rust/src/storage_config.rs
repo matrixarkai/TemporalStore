@@ -116,6 +116,10 @@ pub fn effective_block_segment_target_bytes() -> u64 {
     StorageTuningConfig::from_env().effective_segment_target_bytes()
 }
 
+pub fn storage_zone_size_bytes() -> u64 {
+    StorageTuningConfig::from_env().storage_zone_size
+}
+
 fn parse_u64(value: Option<String>, default: u64) -> u64 {
     value
         .as_deref()

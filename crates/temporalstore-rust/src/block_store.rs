@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::storage_config::effective_block_segment_target_bytes;
+use crate::storage_config::{effective_block_segment_target_bytes, storage_zone_size_bytes};
 
 mod paths;
 mod record;
@@ -2412,7 +2412,11 @@ fn delayed_destroy_segment_id_from_name(name: &std::ffi::OsStr) -> Option<u64> {
 }
 
 fn extent_id_for_segment(page_segment_id: u64) -> u64 {
+    let segment_target_bytes = effective_block_segment_target_bytes().max(1);
+    let storage_zone_size = storage_zone_size_bytes().max(1);
     page_segment_id
+        .saturating_mul(segment_target_bytes)
+        .saturating_div(storage_zone_size)
 }
 
 fn compact_segment_address_from_parts(page_segment_id: u64, offset: u64) -> Option<u64> {
