@@ -539,6 +539,28 @@ pub struct ProxyFeatureQueryCommandRequest {
     pub filters: Vec<FeatureFilter>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyFeatureReplaceCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub points: Vec<crate::types::FeaturePoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyFeatureAggQueryCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub aggregator: String,
+    #[serde(default)]
+    pub count: Option<usize>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyRiskHsetCommandRequest {
     pub namespace: String,
@@ -859,6 +881,15 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
+            ("POST", "/ProxyService/Exists") => {
+                match parse_json::<ProxyKeyCommandRequest>(&request.body) {
+                    Ok(req) => json_response(
+                        200,
+                        &self.table_command(req, |key| Command::CommonExists { key }),
+                    ),
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
             ("POST", "/ProxyService/FeatureAdd") => {
                 match parse_json::<ProxyFeatureAddCommandRequest>(&request.body) {
                     Ok(req) => {
@@ -904,6 +935,58 @@ impl ProxyService {
                                 count: req.count,
                                 filters: req.filters,
                             }
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/FeatureReplace") => {
+                match parse_json::<ProxyFeatureReplaceCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::FeatureReplace {
+                            key: req.key,
+                            start_ms: req.start_ms,
+                            end_ms: req.end_ms,
+                            points: req.points,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/FeatureDelete") => {
+                match parse_json::<ProxyKeyCommandRequest>(&request.body) {
+                    Ok(req) => json_response(
+                        200,
+                        &self.table_command(req, |key| Command::FeatureDelete { key }),
+                    ),
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/FeatureAggQuery") => {
+                match parse_json::<ProxyFeatureAggQueryCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::FeatureAggQuery {
+                            key: req.key,
+                            start_ms: req.start_ms,
+                            end_ms: req.end_ms,
+                            aggregator: req.aggregator,
+                            count: req.count,
                         };
                         json_response(
                             200,
@@ -1117,6 +1200,25 @@ impl ProxyService {
                         200,
                         &self.table_command(req, |key| Command::SetMembers { key }),
                     ),
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/SRem") => {
+                match parse_json::<ProxySetMemberCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::SetRemove {
+                            key: req.key,
+                            member: req.member,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
                     Err(err) => self.bad_execute_request(err),
                 }
             }
