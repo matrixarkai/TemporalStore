@@ -189,6 +189,13 @@ extern "C" {
         value: *const c_char,
         error_message: *mut *mut c_char,
     ) -> c_int;
+    fn temporalstore_put_string_with_ttl(
+        client: *mut TemporalStoreClientOpaque,
+        key: *const c_char,
+        value: *const c_char,
+        ttl_ms: u64,
+        error_message: *mut *mut c_char,
+    ) -> c_int;
     fn temporalstore_get_string(
         client: *mut TemporalStoreClientOpaque,
         key: *const c_char,
@@ -407,6 +414,22 @@ impl Client {
         let mut error: *mut c_char = ptr::null_mut();
         let code =
             unsafe { temporalstore_put_string(self.raw, key.as_ptr(), value.as_ptr(), &mut error) };
+        check(code, error)
+    }
+
+    pub fn put_string_with_ttl(&self, key: &str, value: &str, ttl_ms: u64) -> Result<()> {
+        let key = cstring(key)?;
+        let value = cstring(value)?;
+        let mut error: *mut c_char = ptr::null_mut();
+        let code = unsafe {
+            temporalstore_put_string_with_ttl(
+                self.raw,
+                key.as_ptr(),
+                value.as_ptr(),
+                ttl_ms,
+                &mut error,
+            )
+        };
         check(code, error)
     }
 
@@ -1728,6 +1751,9 @@ mod tests {
     #[cfg(feature = "direct")]
     #[test]
     fn direct_client_exposes_cpp_c_abi_parity_methods() {
+        let _: fn(&Client, &str, &str) -> super::Result<()> = Client::put_string;
+        let _: fn(&Client, &str, &str, u64) -> super::Result<()> = Client::put_string_with_ttl;
+        let _: fn(&Client, &str) -> super::Result<String> = Client::get_string;
         let _: fn(&Client, &str, &str, &str) -> super::Result<()> = Client::hset;
         let _: fn(&Client, &str, &str) -> super::Result<String> = Client::hget;
         let _: fn(&Client, &str) -> super::Result<Vec<(String, String)>> = Client::hgetall;
