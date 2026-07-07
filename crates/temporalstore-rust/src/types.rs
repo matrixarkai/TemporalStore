@@ -1438,6 +1438,10 @@ pub enum Command {
         tenant_hash: u64,
         node_hash: u64,
     },
+    ContextGetNodes {
+        tenant_hash: u64,
+        node_hashes: Vec<u64>,
+    },
     ContextWriteEvent {
         tenant_hash: u64,
         node_hash: u64,
@@ -1745,6 +1749,9 @@ pub enum CommandResponse {
     ContextNode {
         object_key: String,
         node: Option<ContextNode>,
+    },
+    ContextNodes {
+        nodes: Vec<ContextNode>,
     },
     ContextObjectKey {
         object_key: String,

@@ -15,19 +15,66 @@ pub(super) fn tier_rank(tier: ContextTier) -> u8 {
     }
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct ContextQueryPlan {
+    pub terms: Vec<String>,
+    pub term_groups: Vec<Vec<String>>,
+    pub adjacent_phrases: Vec<String>,
+    pub topic_phrase: Option<String>,
+    pub requests_latest: bool,
+    pub requests_temporal_reasoning: bool,
+    pub requests_after: bool,
+    pub requests_before: bool,
+    pub requests_correction: bool,
+    pub requests_reminder: bool,
+    pub requests_contrastive_update: bool,
+    pub requests_social_link: bool,
+    pub requests_schedule_detail: bool,
+    pub requests_quantity_detail: bool,
+    pub requests_alias_detail: bool,
+}
+
+pub(super) fn context_query_plan(query: &str) -> ContextQueryPlan {
+    let terms = context_query_terms(query);
+    let term_groups = context_query_term_groups_from_terms(&terms);
+    ContextQueryPlan {
+        adjacent_phrases: context_query_adjacent_phrases(&terms),
+        topic_phrase: context_query_topic_phrase(query),
+        requests_latest: context_query_requests_latest(&terms),
+        requests_temporal_reasoning: context_query_requests_temporal_reasoning(&terms),
+        requests_after: context_query_requests_after(&terms),
+        requests_before: context_query_requests_before(&terms),
+        requests_correction: context_query_requests_correction(&terms),
+        requests_reminder: context_query_requests_reminder(&terms),
+        requests_contrastive_update: context_query_requests_contrastive_update(&terms),
+        requests_social_link: context_query_requests_social_link(&terms),
+        requests_schedule_detail: context_query_requests_schedule_detail(&terms),
+        requests_quantity_detail: context_query_requests_quantity_detail(&terms),
+        requests_alias_detail: context_query_requests_alias_detail(&terms),
+        terms,
+        term_groups,
+    }
+}
+
+#[allow(dead_code)]
 pub(super) fn context_query_matches(query: &str, text: &str) -> bool {
+    let plan = context_query_plan(query);
+    context_query_matches_plan(&plan, text)
+}
+
+pub(super) fn context_query_matches_plan(plan: &ContextQueryPlan, text: &str) -> bool {
     let text_lower = text.to_ascii_lowercase();
     let text_normalized = context_normalize_for_match(text);
-    if let Some(topic_phrase) = context_query_topic_phrase(query) {
+    if let Some(topic_phrase) = plan.topic_phrase.as_ref() {
         if context_text_matches_term(&text_lower, &text_normalized, topic_phrase.as_str()) {
             return true;
         }
     }
-    let query_groups = context_query_term_groups(query);
-    if query_groups.is_empty() {
+    if plan.term_groups.is_empty() {
         return true;
     }
-    let matched_groups = query_groups
+    let matched_groups = plan
+        .term_groups
         .iter()
         .filter(|group| {
             group
@@ -38,16 +85,24 @@ pub(super) fn context_query_matches(query: &str, text: &str) -> bool {
     matched_groups > 0
 }
 
+#[allow(dead_code)]
 pub(super) fn context_query_understanding_debug(
     request: &ContextRetrieveRequest,
 ) -> ContextQueryUnderstandingDebug {
-    let terms = context_query_terms(&request.query);
-    let filter_groups = context_query_secondary_index_filter_groups(&terms);
+    let plan = context_query_plan(&request.query);
+    context_query_understanding_debug_for_plan(request, &plan)
+}
+
+pub(super) fn context_query_understanding_debug_for_plan(
+    request: &ContextRetrieveRequest,
+    plan: &ContextQueryPlan,
+) -> ContextQueryUnderstandingDebug {
+    let filter_groups = context_query_secondary_index_filter_groups(&plan.terms);
     ContextQueryUnderstandingDebug {
         debug_schema: "matrixark_context_query_debug_v1".to_string(),
         query_hash: stable_hash64(&request.query),
-        normalized_query_terms: terms.clone(),
-        question_type: context_query_question_type(&terms),
+        normalized_query_terms: plan.terms.clone(),
+        question_type: context_query_question_type(&plan.terms),
         secondary_index_filter_groups: filter_groups.clone(),
         verbose_filter_groups: context_query_verbose_filter_groups(&filter_groups),
         filter_group_summary: ContextQueryFilterGroupSummaryDebug {
@@ -168,7 +223,7 @@ pub(super) fn context_query_debug_record_candidate(
 
 pub(super) fn context_query_debug_finalize(
     debug: &mut ContextQueryUnderstandingDebug,
-    query: &str,
+    plan: &ContextQueryPlan,
     blocks: &[ContextBlock],
     node_count: usize,
     tiers: &[ContextTier],
@@ -222,7 +277,7 @@ pub(super) fn context_query_debug_finalize(
                 ref_hash,
                 node_hash: block.node_hash,
                 event_time_ms: block.event_time_ms,
-                relevance_score: context_relevance_score(query, &block.text),
+                relevance_score: context_relevance_score_plan(plan, &block.text),
                 matched_filter_groups,
             }
         })
@@ -513,22 +568,26 @@ pub(super) fn context_event_candidate_terms(event: &ContextEvent) -> Vec<String>
     terms
 }
 
+#[allow(dead_code)]
 pub(super) fn context_relevance_score(query: &str, text: &str) -> u32 {
-    let base_terms = context_query_terms(query);
-    let query_groups = context_query_term_groups(query);
-    if query_groups.is_empty() {
+    let plan = context_query_plan(query);
+    context_relevance_score_plan(&plan, text)
+}
+
+pub(super) fn context_relevance_score_plan(plan: &ContextQueryPlan, text: &str) -> u32 {
+    if plan.term_groups.is_empty() {
         return 0;
     }
     let text_lower = text.to_ascii_lowercase();
     let text_normalized = context_normalize_for_match(text);
     let mut score = 0u32;
-    if let Some(topic_phrase) = context_query_topic_phrase(query) {
+    if let Some(topic_phrase) = plan.topic_phrase.as_ref() {
         if context_text_matches_term(&text_lower, &text_normalized, topic_phrase.as_str()) {
             score = score.saturating_add(1_000);
         }
     }
     let mut matched_groups = 0u32;
-    for group in &query_groups {
+    for group in &plan.term_groups {
         let best_match = group
             .iter()
             .filter(|term| context_text_matches_term(&text_lower, &text_normalized, term))
@@ -540,17 +599,17 @@ pub(super) fn context_relevance_score(query: &str, text: &str) -> u32 {
             score = score.saturating_add(best_match.max(1));
         }
     }
-    if matched_groups == query_groups.len() as u32 {
+    if matched_groups == plan.term_groups.len() as u32 {
         score = score.saturating_add(100);
     } else if matched_groups > 1 {
         score = score.saturating_add(matched_groups.saturating_mul(12));
     }
-    for phrase in context_query_adjacent_phrases(&base_terms) {
+    for phrase in &plan.adjacent_phrases {
         if context_text_matches_term(&text_lower, &text_normalized, phrase.as_str()) {
             score = score.saturating_add(50);
         }
     }
-    if context_query_requests_latest(&base_terms)
+    if plan.requests_latest
         && context_text_matches_any(
             &text_lower,
             &text_normalized,
@@ -561,7 +620,7 @@ pub(super) fn context_relevance_score(query: &str, text: &str) -> u32 {
     {
         score = score.saturating_add(75);
     }
-    if context_query_requests_temporal_reasoning(&base_terms)
+    if plan.requests_temporal_reasoning
         && context_text_matches_any(
             &text_lower,
             &text_normalized,
@@ -572,7 +631,7 @@ pub(super) fn context_relevance_score(query: &str, text: &str) -> u32 {
     {
         score = score.saturating_add(50);
     }
-    if context_query_requests_after(&base_terms) {
+    if plan.requests_after {
         if context_text_matches_any(
             &text_lower,
             &text_normalized,
@@ -586,7 +645,7 @@ pub(super) fn context_relevance_score(query: &str, text: &str) -> u32 {
             score = score.saturating_sub(25);
         }
     }
-    if context_query_requests_before(&base_terms) {
+    if plan.requests_before {
         if context_text_matches_any(&text_lower, &text_normalized, &["before", "earlier", "old"]) {
             score = score.saturating_add(65);
         }
@@ -598,7 +657,7 @@ pub(super) fn context_relevance_score(query: &str, text: &str) -> u32 {
             score = score.saturating_sub(25);
         }
     }
-    if context_query_requests_correction(&base_terms)
+    if plan.requests_correction
         && context_text_matches_any(
             &text_lower,
             &text_normalized,
@@ -614,7 +673,7 @@ pub(super) fn context_relevance_score(query: &str, text: &str) -> u32 {
     {
         score = score.saturating_add(90);
     }
-    if context_query_requests_reminder(&base_terms)
+    if plan.requests_reminder
         && context_text_matches_any(
             &text_lower,
             &text_normalized,
@@ -623,7 +682,7 @@ pub(super) fn context_relevance_score(query: &str, text: &str) -> u32 {
     {
         score = score.saturating_add(70);
     }
-    if context_query_requests_contrastive_update(&base_terms)
+    if plan.requests_contrastive_update
         && context_text_matches_any(
             &text_lower,
             &text_normalized,
@@ -640,7 +699,7 @@ pub(super) fn context_relevance_score(query: &str, text: &str) -> u32 {
     {
         score = score.saturating_add(85);
     }
-    if context_query_requests_social_link(&base_terms)
+    if plan.requests_social_link
         && context_text_matches_any(
             &text_lower,
             &text_normalized,
@@ -656,7 +715,7 @@ pub(super) fn context_relevance_score(query: &str, text: &str) -> u32 {
     {
         score = score.saturating_add(80);
     }
-    if context_query_requests_schedule_detail(&base_terms)
+    if plan.requests_schedule_detail
         && context_text_matches_any(
             &text_lower,
             &text_normalized,
@@ -674,7 +733,7 @@ pub(super) fn context_relevance_score(query: &str, text: &str) -> u32 {
     {
         score = score.saturating_add(80);
     }
-    if context_query_requests_quantity_detail(&base_terms)
+    if plan.requests_quantity_detail
         && (text_lower.chars().any(|ch| ch.is_ascii_digit())
             || context_text_matches_any(
                 &text_lower,
@@ -684,7 +743,7 @@ pub(super) fn context_relevance_score(query: &str, text: &str) -> u32 {
     {
         score = score.saturating_add(80);
     }
-    if context_query_requests_alias_detail(&base_terms)
+    if plan.requests_alias_detail
         && context_text_matches_any(
             &text_lower,
             &text_normalized,
@@ -706,9 +765,15 @@ pub(super) fn context_query_terms(query: &str) -> Vec<String> {
         .collect()
 }
 
+#[allow(dead_code)]
 pub(super) fn context_query_term_groups(query: &str) -> Vec<Vec<String>> {
-    context_query_terms(query)
-        .into_iter()
+    let terms = context_query_terms(query);
+    context_query_term_groups_from_terms(&terms)
+}
+
+pub(super) fn context_query_term_groups_from_terms(terms: &[String]) -> Vec<Vec<String>> {
+    terms
+        .iter()
         .map(|term| {
             let mut group = vec![term.clone()];
             if let Some(stem) = context_query_stem(term.as_str()) {

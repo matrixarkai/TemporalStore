@@ -203,6 +203,97 @@ pub struct ContextResourceParseRequest {
     pub parser_name: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ContextScopeDescriptor {
+    pub raw_scope: String,
+    pub layer: String,
+    pub owner_id: String,
+    pub shared_graph_scope: String,
+    pub producer_agent_id: String,
+    pub precedence_rank: u32,
+}
+
+fn context_scope_descriptor(owner_scope: &str) -> ContextScopeDescriptor {
+    let raw_scope = owner_scope.trim();
+    let normalized = if raw_scope.is_empty() {
+        "user".to_string()
+    } else {
+        raw_scope.to_ascii_lowercase()
+    };
+    let (layer, owner_id) = normalized
+        .split_once(':')
+        .or_else(|| normalized.split_once('/'))
+        .map(|(layer, owner_id)| (layer.to_string(), owner_id.to_string()))
+        .unwrap_or_else(|| (normalized.clone(), String::new()));
+    let layer = match layer.as_str() {
+        "global" | "workspace" | "user" | "agent" | "resource" | "skill" => layer,
+        _ => "user".to_string(),
+    };
+    let shared_graph_scope = match layer.as_str() {
+        "global" => "global".to_string(),
+        "workspace" => format!("workspace:{owner_id}"),
+        "agent" => {
+            if owner_id.is_empty() {
+                "user".to_string()
+            } else {
+                format!("agent:{owner_id}")
+            }
+        }
+        "resource" | "skill" => format!("{layer}:{owner_id}"),
+        _ => {
+            if owner_id.is_empty() {
+                "user".to_string()
+            } else {
+                format!("user:{owner_id}")
+            }
+        }
+    };
+    let precedence_rank = match layer.as_str() {
+        "agent" => 0,
+        "user" => 10,
+        "workspace" => 20,
+        "resource" | "skill" => 30,
+        "global" => 40,
+        _ => 50,
+    };
+    ContextScopeDescriptor {
+        raw_scope: raw_scope.to_string(),
+        layer,
+        owner_id: owner_id.clone(),
+        shared_graph_scope,
+        producer_agent_id: if normalized.starts_with("agent") {
+            owner_id
+        } else {
+            String::new()
+        },
+        precedence_rank,
+    }
+}
+
+fn context_scope_layer_name(layer: impl AsRef<str>) -> &'static str {
+    match layer.as_ref() {
+        "agent" => "agent",
+        "user" => "user",
+        "workspace" => "workspace",
+        "resource" => "resource",
+        "skill" => "skill",
+        "global" => "global",
+        _ => "user",
+    }
+}
+
+fn context_scope_matches(
+    requested: &ContextScopeDescriptor,
+    candidate: &ContextScopeDescriptor,
+) -> bool {
+    candidate.layer == "global"
+        || requested
+            .raw_scope
+            .eq_ignore_ascii_case(&candidate.raw_scope)
+        || requested.shared_graph_scope == candidate.shared_graph_scope
+        || (requested.layer == "agent" && matches!(candidate.layer.as_str(), "user" | "workspace"))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ContextResourceLifecycleAction {
@@ -227,162 +318,6 @@ pub enum ContextResourceImportKind {
     Document,
     FeishuDoc,
     WatchedResource,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum ContextScopeLayer {
-    Global,
-    Tenant,
-    User,
-    #[default]
-    Workspace,
-    Agent,
-    Session,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ContextScopeDescriptor {
-    pub raw_scope: String,
-    pub layer: ContextScopeLayer,
-    pub owner_id: String,
-    pub shared_graph_scope: String,
-    pub producer_agent_id: String,
-    pub precedence_rank: u8,
-}
-
-impl Default for ContextScopeDescriptor {
-    fn default() -> Self {
-        context_scope_descriptor("user")
-    }
-}
-
-pub fn context_scope_layer_name(layer: ContextScopeLayer) -> &'static str {
-    match layer {
-        ContextScopeLayer::Global => "global",
-        ContextScopeLayer::Tenant => "tenant",
-        ContextScopeLayer::User => "user",
-        ContextScopeLayer::Workspace => "workspace",
-        ContextScopeLayer::Agent => "agent",
-        ContextScopeLayer::Session => "session",
-    }
-}
-
-pub fn context_scope_descriptor(raw_scope: impl AsRef<str>) -> ContextScopeDescriptor {
-    let trimmed = raw_scope.as_ref().trim();
-    let raw_scope = if trimmed.is_empty() { "user" } else { trimmed };
-    let lower = raw_scope.to_ascii_lowercase();
-    let parse_owner = |prefix: &str| -> String {
-        raw_scope
-            .split_once(':')
-            .map(|(_, rest)| rest.trim())
-            .filter(|rest| !rest.is_empty())
-            .unwrap_or(prefix)
-            .to_string()
-    };
-
-    let (layer, owner_id, shared_graph_scope, producer_agent_id, precedence_rank) =
-        if matches!(lower.as_str(), "global" | "all") {
-            (
-                ContextScopeLayer::Global,
-                "global".to_string(),
-                "global".to_string(),
-                String::new(),
-                0,
-            )
-        } else if lower.starts_with("tenant:") || lower.starts_with("org:") {
-            let owner = parse_owner("tenant");
-            (
-                ContextScopeLayer::Tenant,
-                owner.clone(),
-                format!("tenant:{owner}"),
-                String::new(),
-                10,
-            )
-        } else if lower == "user" || lower.starts_with("user:") {
-            let owner = parse_owner("user");
-            (
-                ContextScopeLayer::User,
-                owner.clone(),
-                format!("user:{owner}"),
-                String::new(),
-                20,
-            )
-        } else if lower.starts_with("agent:") || lower.starts_with("producer:") {
-            let owner = parse_owner("agent");
-            (
-                ContextScopeLayer::Agent,
-                owner.clone(),
-                "user:user".to_string(),
-                owner,
-                40,
-            )
-        } else if lower.starts_with("session:") {
-            let owner = parse_owner("session");
-            (
-                ContextScopeLayer::Session,
-                owner,
-                "user:user".to_string(),
-                String::new(),
-                50,
-            )
-        } else {
-            let owner = raw_scope
-                .split_once(':')
-                .map(|(_, rest)| rest.trim())
-                .filter(|rest| !rest.is_empty())
-                .unwrap_or(raw_scope)
-                .to_string();
-            (
-                ContextScopeLayer::Workspace,
-                owner.clone(),
-                format!("workspace:{owner}"),
-                String::new(),
-                30,
-            )
-        };
-
-    ContextScopeDescriptor {
-        raw_scope: raw_scope.to_string(),
-        layer,
-        owner_id,
-        shared_graph_scope,
-        producer_agent_id,
-        precedence_rank,
-    }
-}
-
-pub fn context_scope_matches(
-    requested: &ContextScopeDescriptor,
-    candidate: &ContextScopeDescriptor,
-) -> bool {
-    if matches!(candidate.layer, ContextScopeLayer::Global) {
-        return true;
-    }
-    if matches!(requested.layer, ContextScopeLayer::Global) {
-        return true;
-    }
-    if candidate
-        .raw_scope
-        .eq_ignore_ascii_case(&requested.raw_scope)
-        || candidate.shared_graph_scope == requested.shared_graph_scope
-    {
-        return true;
-    }
-    matches!(
-        (candidate.layer, requested.layer),
-        (ContextScopeLayer::Tenant, ContextScopeLayer::User)
-            | (ContextScopeLayer::Tenant, ContextScopeLayer::Workspace)
-            | (ContextScopeLayer::Tenant, ContextScopeLayer::Agent)
-            | (ContextScopeLayer::Tenant, ContextScopeLayer::Session)
-            | (ContextScopeLayer::User, ContextScopeLayer::Workspace)
-            | (ContextScopeLayer::User, ContextScopeLayer::Agent)
-            | (ContextScopeLayer::User, ContextScopeLayer::Session)
-            | (ContextScopeLayer::Agent, ContextScopeLayer::User)
-            | (ContextScopeLayer::Agent, ContextScopeLayer::Workspace)
-            | (ContextScopeLayer::Session, ContextScopeLayer::User)
-            | (ContextScopeLayer::Session, ContextScopeLayer::Workspace)
-    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -627,11 +562,11 @@ pub struct ContextSkillSelectionRequest {
     #[serde(default)]
     pub owner_scope: String,
     #[serde(default)]
-    pub allowed_scope_layers: Vec<ContextScopeLayer>,
-    #[serde(default)]
     pub tool_name: String,
     #[serde(default)]
     pub include_disabled: bool,
+    #[serde(default)]
+    pub allowed_scope_layers: Vec<String>,
     #[serde(default = "default_skill_selection_limit")]
     pub limit: usize,
     pub registry: Vec<ContextSkillRegistryEntry>,
@@ -1026,12 +961,6 @@ pub struct ContextRetrieveRequest {
     #[serde(default = "default_event_fanout_node_limit")]
     pub max_event_nodes: usize,
     #[serde(default)]
-    pub owner_scope: String,
-    #[serde(default)]
-    pub current_agent_id: String,
-    #[serde(default)]
-    pub shared_resource_scopes: Vec<String>,
-    #[serde(default)]
     pub provider: ContextModelProviderConfig,
 }
 
@@ -1062,22 +991,6 @@ pub struct ContextFanoutPlanReport {
     pub selected_node_hashes: Vec<u64>,
     pub skipped_node_hashes: Vec<u64>,
     pub locality_keys: Vec<String>,
-    #[serde(default)]
-    pub scan_layers: Vec<String>,
-    #[serde(default)]
-    pub colocation_groups: Vec<String>,
-    #[serde(default)]
-    pub current_agent_id: String,
-    #[serde(default)]
-    pub current_agent_boosted_nodes: usize,
-    #[serde(default)]
-    pub user_shared_nodes: usize,
-    #[serde(default)]
-    pub workspace_shared_nodes: usize,
-    #[serde(default)]
-    pub global_shared_nodes: usize,
-    #[serde(default)]
-    pub scope_boosted_nodes: usize,
     pub fallback_to_flat: bool,
     pub fanout_reduced: bool,
 }
@@ -2217,9 +2130,6 @@ pub fn ingest_extract_context(
         tiers: default_tiers(),
         max_summary_nodes: default_summary_fanout_node_limit(),
         max_event_nodes: default_event_fanout_node_limit(),
-        owner_scope: String::new(),
-        current_agent_id: String::new(),
-        shared_resource_scopes: Vec::new(),
         provider: request.provider,
     };
     let summary = ContextIngestExtractSummary {
@@ -2317,9 +2227,9 @@ pub fn ingest_resource_skill_context(
         select_context_skills_for_retrieval(ContextSkillSelectionRequest {
             query: request.query.clone(),
             owner_scope: String::new(),
-            allowed_scope_layers: Vec::new(),
             tool_name: "context_workflow_harness".to_string(),
             include_disabled: false,
+            allowed_scope_layers: Vec::new(),
             limit: default_skill_selection_limit(),
             registry: skill_registry.entries.clone(),
         })
@@ -3023,9 +2933,6 @@ pub fn run_context_pipeline_benchmark(
             tiers: default_tiers(),
             max_summary_nodes: default_summary_fanout_node_limit(),
             max_event_nodes: default_event_fanout_node_limit(),
-            owner_scope: String::new(),
-            current_agent_id: String::new(),
-            shared_resource_scopes: Vec::new(),
             provider: ContextModelProviderConfig::default(),
         };
         let retrieve_start = Instant::now();
@@ -3890,102 +3797,6 @@ fn parse_provider_summary_content(
     )
 }
 
-fn context_scope_descriptor_from_source_ref(
-    source_ref: &str,
-    request: &ContextRetrieveRequest,
-) -> ContextScopeDescriptor {
-    let lower = source_ref.to_ascii_lowercase();
-    if lower.contains("global") {
-        return context_scope_descriptor("global");
-    }
-    if let Some(agent) =
-        context_scope_token_after(&lower, &["agent:", "agent/", "producer:", "producer/"])
-    {
-        return context_scope_descriptor(format!("agent:{agent}"));
-    }
-    if let Some(user) = context_scope_token_after(&lower, &["user:", "user/"]) {
-        return context_scope_descriptor(format!("user:{user}"));
-    }
-    if let Some(workspace) = context_scope_token_after(
-        &lower,
-        &[
-            "workspace:",
-            "workspace/",
-            "team:",
-            "team/",
-            "project:",
-            "project/",
-        ],
-    ) {
-        return context_scope_descriptor(format!("workspace:{workspace}"));
-    }
-    if request.owner_scope.trim().is_empty() {
-        context_scope_descriptor("user")
-    } else {
-        context_scope_descriptor(&request.owner_scope)
-    }
-}
-
-fn context_scope_token_after(source: &str, prefixes: &[&str]) -> Option<String> {
-    for prefix in prefixes {
-        if let Some((_, tail)) = source.split_once(prefix) {
-            let token = tail
-                .split(|ch: char| matches!(ch, '/' | ':' | '#' | '?' | '&' | '|' | ',' | ';'))
-                .next()
-                .unwrap_or_default()
-                .trim();
-            if !token.is_empty() {
-                return Some(token.to_string());
-            }
-        }
-    }
-    None
-}
-
-fn context_scope_scan_boost(
-    scope: &ContextScopeDescriptor,
-    request: &ContextRetrieveRequest,
-) -> i64 {
-    let current_agent = request.current_agent_id.trim();
-    if !current_agent.is_empty()
-        && scope.layer == ContextScopeLayer::Agent
-        && scope.producer_agent_id.eq_ignore_ascii_case(current_agent)
-    {
-        return 240_000;
-    }
-    let requested_scope = context_scope_descriptor(&request.owner_scope);
-    if !request.owner_scope.trim().is_empty() && context_scope_matches(&requested_scope, scope) {
-        return match scope.layer {
-            ContextScopeLayer::Workspace => 180_000,
-            ContextScopeLayer::User => 160_000,
-            ContextScopeLayer::Tenant => 120_000,
-            ContextScopeLayer::Global => 80_000,
-            ContextScopeLayer::Agent | ContextScopeLayer::Session => 100_000,
-        };
-    }
-    if request
-        .shared_resource_scopes
-        .iter()
-        .map(context_scope_descriptor)
-        .any(|shared| context_scope_matches(&shared, scope))
-    {
-        return 110_000;
-    }
-    match scope.layer {
-        ContextScopeLayer::Global => 70_000,
-        ContextScopeLayer::User => 50_000,
-        ContextScopeLayer::Workspace => 40_000,
-        ContextScopeLayer::Tenant => 30_000,
-        ContextScopeLayer::Agent | ContextScopeLayer::Session => 20_000,
-    }
-}
-
-fn push_unique_context_string(values: &mut Vec<String>, value: String) {
-    if !value.is_empty() && !values.iter().any(|existing| existing == &value) {
-        values.push(value);
-    }
-}
-
 pub fn retrieve_context(
     engine: &TemporalEngine,
     request: ContextRetrieveRequest,
@@ -3993,7 +3804,9 @@ pub fn retrieve_context(
     let mut blocks = Vec::new();
     let mut node_count = 0usize;
     let mut event_count = 0usize;
-    let mut query_understanding_debug = context_query_understanding_debug(&request);
+    let query_plan = context_query_plan(&request.query);
+    let mut query_understanding_debug =
+        context_query_understanding_debug_for_plan(&request, &query_plan);
     let mut fanout_plan = ContextFanoutPlanReport {
         strategy: "hierarchical_summary_secondary_index_node_resource_colocation".to_string(),
         secondary_index_filter_group_count: query_understanding_debug
@@ -4001,7 +3814,6 @@ pub fn retrieve_context(
             .secondary_index_group_count,
         ..ContextFanoutPlanReport::default()
     };
-    fanout_plan.current_agent_id = request.current_agent_id.trim().to_string();
     let tiers = if request.tiers.is_empty() {
         default_tiers()
     } else {
@@ -4027,56 +3839,6 @@ pub fn retrieve_context(
         request.node_hashes.clone()
     };
     fanout_plan.namespace_node_candidates = node_hashes.len();
-    let mut node_scope_by_hash = BTreeMap::<u64, ContextScopeDescriptor>::new();
-    for node_hash in &node_hashes {
-        let node_response = engine.execute(ExecuteRequest {
-            shard_id: request.shard_id,
-            command: Command::ContextGetNode {
-                tenant_hash: request.tenant_hash,
-                node_hash: *node_hash,
-            },
-        });
-        if let CommandResponse::ContextNode {
-            node: Some(node), ..
-        } = node_response.response
-        {
-            let scope = context_scope_descriptor_from_source_ref(&node.raw_metadata_ref, &request);
-            push_unique_context_string(
-                &mut fanout_plan.scan_layers,
-                context_scope_layer_name(scope.layer).to_string(),
-            );
-            push_unique_context_string(
-                &mut fanout_plan.colocation_groups,
-                scope.shared_graph_scope.clone(),
-            );
-            match scope.layer {
-                ContextScopeLayer::Agent
-                    if !request.current_agent_id.trim().is_empty()
-                        && scope
-                            .producer_agent_id
-                            .eq_ignore_ascii_case(request.current_agent_id.trim()) =>
-                {
-                    fanout_plan.current_agent_boosted_nodes =
-                        fanout_plan.current_agent_boosted_nodes.saturating_add(1);
-                }
-                ContextScopeLayer::User => {
-                    fanout_plan.user_shared_nodes = fanout_plan.user_shared_nodes.saturating_add(1);
-                }
-                ContextScopeLayer::Workspace => {
-                    fanout_plan.workspace_shared_nodes =
-                        fanout_plan.workspace_shared_nodes.saturating_add(1);
-                }
-                ContextScopeLayer::Global => {
-                    fanout_plan.global_shared_nodes =
-                        fanout_plan.global_shared_nodes.saturating_add(1);
-                }
-                _ => {}
-            }
-            node_scope_by_hash.insert(*node_hash, scope);
-        }
-    }
-    fanout_plan.colocation_groups.sort();
-    fanout_plan.scan_layers.sort();
     let retrieval_provider = normalize_provider(request.provider.clone());
     let query_embedding = match context_query_embedding(&retrieval_provider, &request.query) {
         Ok(vector) => vector,
@@ -4130,21 +3892,15 @@ pub fn retrieve_context(
                 .get(node_hash)
                 .copied()
                 .unwrap_or_default();
-            let scope = node_scope_by_hash
-                .get(node_hash)
-                .cloned()
-                .unwrap_or_else(|| context_scope_descriptor(&request.owner_scope));
-            let scope_boost = context_scope_scan_boost(&scope, &request);
-            if scope_boost > 0 {
-                fanout_plan.scope_boosted_nodes = fanout_plan.scope_boosted_nodes.saturating_add(1);
-            }
-            (*node_hash, best_score, found, scope_boost, scope)
+            (*node_hash, best_score, found, 0u32, 0u64)
         })
         .collect::<Vec<_>>();
-    summary_scores.sort_by_key(|(node_hash, score, _, scope_boost, scope)| {
+    summary_scores.sort_by_key(|(node_hash, score, found, summary_score, freshness_ms)| {
         (
-            Reverse(score.saturating_add(*scope_boost)),
-            scope.precedence_rank,
+            Reverse(*score),
+            Reverse(*found),
+            Reverse(*summary_score),
+            Reverse(*freshness_ms),
             *node_hash,
         )
     });
@@ -4152,10 +3908,60 @@ pub fn retrieve_context(
         .max_summary_nodes
         .max(1)
         .min(summary_scores.len().max(1));
+    let query_aware_event_limit = ((request.max_events.max(1) + 1) / 2).max(2);
     let event_node_limit = request
         .max_event_nodes
         .max(1)
-        .min(summary_node_limit.max(1));
+        .min(summary_node_limit.max(1))
+        .min(query_aware_event_limit);
+    let rerank_node_limit = summary_node_limit.min(summary_scores.len());
+    let mut prefetched_nodes = BTreeMap::<u64, ContextNode>::new();
+    let rerank_node_hashes = summary_scores
+        .iter()
+        .take(rerank_node_limit)
+        .map(|(node_hash, _, _, _, _)| *node_hash)
+        .collect::<Vec<_>>();
+    let rerank_nodes = if rerank_node_hashes.is_empty() {
+        Vec::new()
+    } else {
+        let nodes_response = engine.execute(ExecuteRequest {
+            shard_id: request.shard_id,
+            command: Command::ContextGetNodes {
+                tenant_hash: request.tenant_hash,
+                node_hashes: rerank_node_hashes,
+            },
+        });
+        match nodes_response.response {
+            CommandResponse::ContextNodes { nodes } => nodes,
+            _ => Vec::new(),
+        }
+    };
+    for node in rerank_nodes {
+        let node_hash = node.node_hash;
+        if let Some(score) = summary_scores
+            .iter_mut()
+            .find(|(candidate_hash, _, _, _, _)| *candidate_hash == node_hash)
+        {
+            let summary_text = format!("{} {}", node.l0, node.l1_ref);
+            let summary_score = context_relevance_score_plan(&query_plan, &summary_text);
+            let freshness_ms = node.last_event_time_ms;
+            score.1 = score
+                .1
+                .saturating_add((summary_score as i64).saturating_mul(1_000));
+            score.3 = summary_score;
+            score.4 = freshness_ms;
+        }
+        prefetched_nodes.insert(node_hash, node);
+    }
+    summary_scores.sort_by_key(|(node_hash, score, found, summary_score, freshness_ms)| {
+        (
+            Reverse(*score),
+            Reverse(*found),
+            Reverse(*summary_score),
+            Reverse(*freshness_ms),
+            *node_hash,
+        )
+    });
     node_hashes = summary_scores
         .iter()
         .take(summary_node_limit)
@@ -4180,16 +3986,7 @@ pub fn retrieve_context(
     fanout_plan.skipped_node_hashes = skipped_node_hashes;
     fanout_plan.locality_keys = event_node_hashes
         .iter()
-        .map(|node_hash| {
-            let scope = node_scope_by_hash
-                .get(node_hash)
-                .map(|scope| scope.shared_graph_scope.as_str())
-                .unwrap_or("user:user");
-            format!(
-                "tenant:{}:scope:{scope}:node:{node_hash}",
-                request.tenant_hash
-            )
-        })
+        .map(|node_hash| format!("tenant:{}:node:{node_hash}", request.tenant_hash))
         .collect();
     fanout_plan.fanout_reduced =
         fanout_plan.event_expanded_nodes < fanout_plan.namespace_node_candidates;
@@ -4228,27 +4025,31 @@ pub fn retrieve_context(
         .tree_traversal_summary
         .summary_embeddings = summary_scores
         .iter()
-        .map(|(node_hash, score, found, scope_boost, scope)| {
+        .map(|(node_hash, score, found, summary_score, freshness_ms)| {
             format!(
-                "node:{node_hash}:score:{score}:boost:{scope_boost}:layer:{}:refs:{found}",
-                context_scope_layer_name(scope.layer)
+                "node:{node_hash}:score:{score}:refs:{found}:summary_score:{summary_score}:last_event:{freshness_ms}"
             )
         })
         .collect();
 
     for node_hash in event_node_hashes {
         let mut node_source_ref = String::new();
-        let node_response = engine.execute(ExecuteRequest {
-            shard_id: request.shard_id,
-            command: Command::ContextGetNode {
-                tenant_hash: request.tenant_hash,
-                node_hash,
-            },
+        let cached_node = prefetched_nodes.remove(&node_hash).or_else(|| {
+            let node_response = engine.execute(ExecuteRequest {
+                shard_id: request.shard_id,
+                command: Command::ContextGetNode {
+                    tenant_hash: request.tenant_hash,
+                    node_hash,
+                },
+            });
+            match node_response.response {
+                CommandResponse::ContextNode {
+                    node: Some(node), ..
+                } => Some(node),
+                _ => None,
+            }
         });
-        if let CommandResponse::ContextNode {
-            node: Some(node), ..
-        } = node_response.response
-        {
+        if let Some(node) = cached_node {
             node_count += 1;
             node_source_ref = node.raw_metadata_ref.clone();
             if include_l0 {
@@ -4293,7 +4094,7 @@ pub fn retrieve_context(
         });
         if let CommandResponse::ContextEvents { events, .. } = events_response.response {
             for event in events {
-                let passes_prefilter = context_query_matches(&request.query, &event.text);
+                let passes_prefilter = context_query_matches_plan(&query_plan, &event.text);
                 context_query_debug_record_candidate(
                     &mut query_understanding_debug,
                     request.tenant_hash,
@@ -4325,9 +4126,9 @@ pub fn retrieve_context(
         }
     }
 
-    blocks.sort_by_key(|block| {
+    blocks.sort_by_cached_key(|block| {
         (
-            Reverse(context_relevance_score(&request.query, &block.text)),
+            Reverse(context_relevance_score_plan(&query_plan, &block.text)),
             tier_rank(block.tier),
             Reverse(block.event_time_ms),
             block.uri.clone(),
@@ -4335,7 +4136,7 @@ pub fn retrieve_context(
     });
     context_query_debug_finalize(
         &mut query_understanding_debug,
-        &request.query,
+        &query_plan,
         &blocks,
         node_count,
         tiers.as_slice(),

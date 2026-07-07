@@ -58,7 +58,7 @@ pub fn parse_context_resource(request: ContextResourceParseRequest) -> ContextRe
             unit.insert("owner_scope".to_string(), owner_scope.clone());
             unit.insert(
                 "scope_layer".to_string(),
-                context_scope_layer_name(scope.layer).to_string(),
+                context_scope_layer_name(&scope.layer).to_string(),
             );
             unit.insert("scope_owner_id".to_string(), scope.owner_id.clone());
             unit.insert(

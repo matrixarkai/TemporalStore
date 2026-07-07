@@ -109,6 +109,7 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::SequenceBatchQuery { .. }
         | Command::ContextUpsertNode { .. }
         | Command::ContextGetNode { .. }
+        | Command::ContextGetNodes { .. }
         | Command::ContextWriteEvent { .. }
         | Command::ContextWriteExtractedEvent { .. }
         | Command::ContextQueryEvents { .. }
@@ -151,6 +152,12 @@ pub(super) fn context_command_key(command: &Command) -> Option<String> {
             tenant_hash,
             node_hash,
         } => Some(context_node_key(*tenant_hash, *node_hash)),
+        Command::ContextGetNodes {
+            tenant_hash,
+            node_hashes,
+        } => node_hashes
+            .first()
+            .map(|node_hash| context_node_key(*tenant_hash, *node_hash)),
         Command::ContextWriteEvent {
             tenant_hash,
             node_hash,

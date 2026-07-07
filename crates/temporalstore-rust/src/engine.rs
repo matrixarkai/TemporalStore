@@ -8632,6 +8632,27 @@ fn execute_on_shard(
                 });
             CommandResponse::ContextNode { object_key, node }
         }
+        Command::ContextGetNodes {
+            tenant_hash,
+            node_hashes,
+        } => {
+            let nodes = node_hashes
+                .into_iter()
+                .filter_map(|node_hash| {
+                    let object_key = context_node_key(tenant_hash, node_hash);
+                    shard
+                        .hashes
+                        .get(&object_key)
+                        .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
+                        .or_else(|| shard.context_nodes.get(&object_key))
+                        .and_then(|address| {
+                            read_page_bytes(cache, page_store, shard_id, address)
+                                .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
+                        })
+                })
+                .collect();
+            CommandResponse::ContextNodes { nodes }
+        }
         Command::ContextWriteEvent {
             tenant_hash,
             node_hash,
@@ -13702,6 +13723,7 @@ fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::RiskManager { .. }
         | Command::RiskDebug { .. }
         | Command::ContextGetNode { .. }
+        | Command::ContextGetNodes { .. }
         | Command::ContextQueryEvents { .. }
         | Command::ContextQueryIndex { .. }
         | Command::ContextQueryIndexIntersection { .. }
@@ -13951,6 +13973,16 @@ fn validate_command_preconditions(
         } => {
             validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
             validate_context_required(*node_hash != 0, "node_hash is required")?;
+        }
+        Command::ContextGetNodes {
+            tenant_hash,
+            node_hashes,
+        } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_required(!node_hashes.is_empty(), "node_hashes are required")?;
+            for node_hash in node_hashes {
+                validate_context_required(*node_hash != 0, "node_hash is required")?;
+            }
         }
         Command::ContextWriteEvent {
             tenant_hash,

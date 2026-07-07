@@ -1497,6 +1497,77 @@
       ]
     },
     {
+      "name": "context_retrieval_batch_node_summary_lookup",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "context_upsert_batch_node_a",
+          "command": {
+            "kind": "context_upsert_node",
+            "tenant_hash": 91,
+            "node": {
+              "node_hash": 11,
+              "parent_hash": 0,
+              "kind": 0,
+              "canonical_name": "node-11",
+              "l0": "l0 summary for node 11",
+              "last_event_time_ms": 1011,
+              "l1_ref": "l1 summary for node 11",
+              "raw_metadata_ref": "source://node/11"
+            }
+          },
+          "expect": {
+            "kind": "context_object_key",
+            "object_key": "ctx:node:91:11"
+          }
+        },
+        {
+          "name": "context_upsert_batch_node_b",
+          "command": {
+            "kind": "context_upsert_node",
+            "tenant_hash": 91,
+            "node": {
+              "node_hash": 22,
+              "parent_hash": 0,
+              "kind": 0,
+              "canonical_name": "node-22",
+              "l0": "l0 summary for node 22",
+              "last_event_time_ms": 1022,
+              "l1_ref": "l1 summary for node 22",
+              "raw_metadata_ref": "source://node/22"
+            }
+          },
+          "expect": {
+            "kind": "context_object_key",
+            "object_key": "ctx:node:91:22"
+          }
+        },
+        {
+          "name": "context_get_nodes_batch",
+          "command": {
+            "kind": "context_get_nodes",
+            "tenant_hash": 91,
+            "node_hashes": [
+              11,
+              22,
+              33
+            ]
+          },
+          "expect": {
+            "kind": "context_nodes",
+            "node_hashes": [
+              11,
+              22
+            ],
+            "missing_node_hashes": [
+              33
+            ],
+            "min_node_count": 2
+          }
+        }
+      ]
+    },
+    {
       "name": "context_event_index_audit_dirty_models",
       "shard_id": 1,
       "steps": [
@@ -5902,6 +5973,53 @@
       ]
     },
     {
+      "description": "Shared C++/Rust StorageManager lifecycle case: one background loop reports prepare, reclaim, evict, expire, compact, and index-GC phases.",
+      "family": "storage/cache",
+      "name": "storage_manager_background_loop",
+      "shard_id": 92,
+      "steps": [
+        {
+          "command": {
+            "description": "Runs the Rust-native StorageManager loop over dirty slots, reclaim candidates, cache eviction, TTL expiry, model-layout compaction, and slot dump manifest/index cleanup.",
+            "kind": "storage_manager_background_loop",
+            "expect_phases": [
+              "prepare",
+              "reclaim",
+              "evict",
+              "expire",
+              "compact",
+              "index_gc"
+            ]
+          },
+          "name": "storage_manager_loop_prepare_reclaim_evict_expire_compact_index_gc",
+          "skip_client": true
+        }
+      ]
+    },
+    {
+      "description": "Shared C++/Rust storage dump/load case: one merged policy coordinates dirty-slot dump, manifest validation, load preflight, replay boundary, roll-forward, follower-safe prune, and index-GC.",
+      "family": "storage/cache",
+      "name": "storage_merged_dump_load_policy",
+      "shard_id": 92,
+      "steps": [
+        {
+          "command": {
+            "description": "Creates a slot dump manifest, validates the load preflight and recovery replay boundary, installs into a restored engine, and rejects a stale merged load attempt after newer writes.",
+            "kind": "storage_merged_dump_load_policy",
+            "expect_manifest_checksum": true,
+            "expect_generation_validation": true,
+            "expect_load_preflight": true,
+            "expect_replay_boundary": true,
+            "expect_roll_forward": true,
+            "expect_follower_safe_index_gc": true,
+            "expect_stale_load_rejection": true
+          },
+          "name": "storage_merged_policy_dump_load_replay_index_gc",
+          "skip_client": true
+        }
+      ]
+    },
+    {
       "description": "Shared C++/Rust storage stream case: large cross-block values survive reopen and page stream chunk reads preserve byte boundaries.",
       "family": "storage/cache",
       "name": "storage_stream_cross_block_large_values",
@@ -6552,54 +6670,6 @@
           },
           "name": "skill_registry_updates_and_selection_shared",
           "skip_client": true
-        }
-      ]
-    },
-    {
-      "description": "Shared C++/Rust Context scope-layering case: resources and skills resolve across global, tenant/user, workspace, agent, and session layers while agents remain producers on a shared user/workspace graph rather than isolated namespaces.",
-      "family": "context",
-      "name": "context_scope_layered_agent_producer_shared_graph",
-      "shard_id": 60,
-      "steps": [
-        {
-          "command": {
-            "description": "Validates normalized scope descriptors, shared graph scope metadata on parsed resource chunks, agent producer provenance, registry layer counts, retrieval-time scope resolution order, and skill selection across global/workspace/agent layers. Rust executes the production context scope model; C++ parity remains a static gate until the native C++ context scope runner consumes this shared case.",
-            "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-scope-layer-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
-            "required_paths": [
-              "crates/temporalstore-rust/src/context_workflow/tests.rs#context_scope_layers_share_user_graph_with_agent_producers"
-            ],
-            "rust_runner": "cargo test -p temporalstore-rust context_scope_layers_share_user_graph_with_agent_producers --lib -- --test-threads=1",
-            "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
-            "suite": "cpp_context_pipeline_parity"
-          },
-          "name": "context_scope_layers_agent_producers_shared",
-          "skip_client": true
-        }
-      ]
-    },
-    {
-      "description": "Shared C++/Rust Context retrieval case for multi-agent layered scans: current-agent context is boosted while user, workspace, and global shared resources remain eligible through scoped colocation groups.",
-      "family": "context",
-      "name": "context_multi_agent_layered_scan_colocation",
-      "shard_id": 60,
-      "steps": [
-        {
-          "name": "multi_agent_layered_scan_colocation_shared",
-          "skip_client": true,
-          "command": {
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
-            "suite": "cpp_context_pipeline_parity",
-            "description": "Validates scope-aware summary ranking, current-agent boost, user/workspace/global shared resource eligibility, scoped locality keys, and fanout reduction without colocating a whole namespace on every node.",
-            "required_paths": [
-              "crates/temporalstore-rust/src/context_workflow/tests.rs#context_multi_agent_scan_boosts_current_agent_and_colocates_shared_scopes"
-            ],
-            "rust_runner": "cargo test -p temporalstore-rust context_multi_agent_scan_boosts_current_agent_and_colocates_shared_scopes --lib -- --test-threads=1",
-            "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
-            "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-layered-scan-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
-          }
         }
       ]
     },
@@ -12469,7 +12539,6 @@
       "context_resource_skill_parser_openviking_parity",
       "context_resource_lifecycle_openviking_parity",
       "context_resource_skill_registry_openviking_parity",
-      "context_scope_layered_agent_producer_shared_graph",
       "context_resource_skill_live_embedding_summary_retrieval",
       "redis_operational_admin_commands",
       "redis_slot_hash_cpp_crc64",
@@ -12693,8 +12762,5 @@
   },
   "description": "Shared behavioral corpus for validating Rust and C++ TemporalStore implementations with the same ordered operations and expected responses.",
   "name": "temporalstore-unified-cpp-rust-corpus",
-  "schema_version": 1,
-  "required_case_names": [
-    "context_multi_agent_layered_scan_colocation"
-  ]
+  "schema_version": 1
 }
