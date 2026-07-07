@@ -10900,13 +10900,31 @@ fn sync_slot_index_object_pages(
 ) {
     let mut touched_slots = BTreeSet::new();
     let mut removed_any = false;
-    for (routing_slot, slot) in shard.slot_index.slot_map.iter_mut() {
+    let target_slots = if shard.slot_index.object_component_lookup.is_empty() {
+        shard.slot_index.slot_map.keys().copied().collect::<BTreeSet<_>>()
+    } else {
+        shard
+            .slot_index
+            .object_component_lookup
+            .get(&object_component_lookup_key(kind, object_key))
+            .map(|page_refs| {
+                page_refs
+                    .iter()
+                    .map(|page_ref| page_ref.routing_slot)
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default()
+    };
+    for routing_slot in target_slots {
+        let Some(slot) = shard.slot_index.slot_map.get_mut(&routing_slot) else {
+            continue;
+        };
         let before = slot.page_index.len();
         slot.page_index
             .retain(|_, page| !(page.model_id == kind && page.object_key == object_key));
         if slot.page_index.len() != before {
             removed_any = true;
-            touched_slots.insert(*routing_slot);
+            touched_slots.insert(routing_slot);
             slot.dirty |= dirty;
             slot.deleted = slot.page_index.is_empty();
             if dirty {
