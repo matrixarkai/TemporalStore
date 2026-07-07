@@ -35,6 +35,13 @@ typedef enum temporalstore_feature_filter_op {
     TEMPORALSTORE_FEATURE_FILTER_LESS_THAN = 3,
 } temporalstore_feature_filter_op_t;
 
+typedef enum temporalstore_feature_write_policy {
+    TEMPORALSTORE_FEATURE_WRITE_UPSERT = 0,
+    TEMPORALSTORE_FEATURE_WRITE_BLOCK = 1,
+    TEMPORALSTORE_FEATURE_WRITE_FIRST = 2,
+    TEMPORALSTORE_FEATURE_WRITE_UPDATE = 3,
+} temporalstore_feature_write_policy_t;
+
 typedef struct temporalstore_options {
     const char* metaserver_addr;
     const char* metaserver_consul;
@@ -188,6 +195,10 @@ int temporalstore_matrixark_retrieve_context_pack(temporalstore_client_t* client
 int temporalstore_add_feature_points(temporalstore_client_t* client, const char* key,
                                      const temporalstore_feature_point_t* points, size_t count,
                                      char** error_message);
+int temporalstore_add_feature_points_with_policy(
+    temporalstore_client_t* client, const char* key,
+    const temporalstore_feature_point_t* points, size_t count,
+    temporalstore_feature_write_policy_t policy, char** error_message);
 int temporalstore_query_feature_points(temporalstore_client_t* client, const char* key,
                                        uint64_t start_ts, uint64_t end_ts, uint64_t count,
                                        temporalstore_feature_point_array_t* points,
@@ -199,6 +210,10 @@ int temporalstore_query_feature_points_with_filters(
 int temporalstore_add_sequence_feature_rows(temporalstore_client_t* client, const char* key,
                                             const temporalstore_sequence_feature_row_t* rows,
                                             size_t count, char** error_message);
+int temporalstore_add_sequence_feature_rows_with_policy(
+    temporalstore_client_t* client, const char* key,
+    const temporalstore_sequence_feature_row_t* rows, size_t count,
+    temporalstore_feature_write_policy_t policy, char** error_message);
 int temporalstore_query_sequence_feature_rows(
     temporalstore_client_t* client, const char* key, uint64_t start_ts, uint64_t end_ts,
     uint64_t count, const temporalstore_feature_filter_t* filters, size_t filter_count,

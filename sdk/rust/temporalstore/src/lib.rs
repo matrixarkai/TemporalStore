@@ -55,6 +55,17 @@ pub enum FeatureFilterOp {
     LessThan = 3,
 }
 
+#[derive(Clone, Copy, Debug)]
+#[repr(i32)]
+#[cfg_attr(feature = "proxy", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "proxy", serde(rename_all = "snake_case"))]
+pub enum FeatureWritePolicy {
+    Upsert = 0,
+    Block = 1,
+    First = 2,
+    Update = 3,
+}
+
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "proxy", derive(serde::Serialize, serde::Deserialize))]
 pub struct FeatureFilter {
@@ -426,11 +437,12 @@ extern "C" {
         context_pack_json: *mut *mut c_char,
         error_message: *mut *mut c_char,
     ) -> c_int;
-    fn temporalstore_add_feature_points(
+    fn temporalstore_add_feature_points_with_policy(
         client: *mut TemporalStoreClientOpaque,
         key: *const c_char,
         points: *const CFeaturePoint,
         count: usize,
+        policy: c_int,
         error_message: *mut *mut c_char,
     ) -> c_int;
     fn temporalstore_query_feature_points(
@@ -454,11 +466,12 @@ extern "C" {
         error_message: *mut *mut c_char,
     ) -> c_int;
     fn temporalstore_feature_point_array_free(points: *mut CFeaturePointArray);
-    fn temporalstore_add_sequence_feature_rows(
+    fn temporalstore_add_sequence_feature_rows_with_policy(
         client: *mut TemporalStoreClientOpaque,
         key: *const c_char,
         rows: *const CSequenceFeatureRow,
         count: usize,
+        policy: c_int,
         error_message: *mut *mut c_char,
     ) -> c_int;
     fn temporalstore_query_sequence_feature_rows(
@@ -925,6 +938,15 @@ impl Client {
     }
 
     pub fn add_feature_points(&self, key: &str, points: &[FeaturePoint]) -> Result<()> {
+        self.add_feature_points_with_policy(key, points, FeatureWritePolicy::Upsert)
+    }
+
+    pub fn add_feature_points_with_policy(
+        &self,
+        key: &str,
+        points: &[FeaturePoint],
+        policy: FeatureWritePolicy,
+    ) -> Result<()> {
         let key = cstring(key)?;
         let values = points
             .iter()
@@ -945,11 +967,12 @@ impl Client {
             c_points.as_ptr()
         };
         let code = unsafe {
-            temporalstore_add_feature_points(
+            temporalstore_add_feature_points_with_policy(
                 self.raw,
                 key.as_ptr(),
                 points_ptr,
                 c_points.len(),
+                policy as c_int,
                 &mut error,
             )
         };
@@ -1033,6 +1056,15 @@ impl Client {
     }
 
     pub fn add_sequence_feature_rows(&self, key: &str, rows: &[SequenceFeatureRow]) -> Result<()> {
+        self.add_sequence_feature_rows_with_policy(key, rows, FeatureWritePolicy::Upsert)
+    }
+
+    pub fn add_sequence_feature_rows_with_policy(
+        &self,
+        key: &str,
+        rows: &[SequenceFeatureRow],
+        policy: FeatureWritePolicy,
+    ) -> Result<()> {
         let key = cstring(key)?;
         let c_rows: Vec<CSequenceFeatureRow> = rows
             .iter()
@@ -1046,11 +1078,12 @@ impl Client {
             .collect();
         let mut error: *mut c_char = ptr::null_mut();
         let code = unsafe {
-            temporalstore_add_sequence_feature_rows(
+            temporalstore_add_sequence_feature_rows_with_policy(
                 self.raw,
                 key.as_ptr(),
                 c_rows.as_ptr(),
                 c_rows.len(),
+                policy as c_int,
                 &mut error,
             )
         };
