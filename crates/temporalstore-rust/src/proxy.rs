@@ -29,8 +29,8 @@ use crate::meta::{
     TopologyVersionReport, TopologyVersionRequest,
 };
 use crate::types::{
-    BatchExecuteRequest, BatchExecuteResponse, Command, ExecuteRequest, ExecuteResponse, ShardId,
-    Status,
+    BatchExecuteRequest, BatchExecuteResponse, Command, ExecuteRequest, ExecuteResponse,
+    RiskFolType, ShardId, Status,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -524,6 +524,17 @@ pub struct ProxyRiskHsetCommandRequest {
     pub amount: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyRiskFolSetCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub value: Vec<u8>,
+    pub occur_time_ms: u64,
+    pub ttl_ms: u64,
+    pub fol_type: RiskFolType,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProxyReplicaReadPolicy {
@@ -841,6 +852,46 @@ impl ProxyService {
                             }),
                         )
                     }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/RiskFolSet") => {
+                match parse_json::<ProxyRiskFolSetCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::RiskFolSet {
+                            key: req.key,
+                            value: req.value,
+                            occur_time_ms: req.occur_time_ms,
+                            ttl_ms: req.ttl_ms,
+                            fol_type: req.fol_type,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/RiskFolQuery") => {
+                match parse_json::<ProxyKeyCommandRequest>(&request.body) {
+                    Ok(req) => json_response(
+                        200,
+                        &self.table_command(req, |key| Command::RiskFolQuery { key }),
+                    ),
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/RiskManager") => {
+                match parse_json::<ProxyKeyCommandRequest>(&request.body) {
+                    Ok(req) => json_response(
+                        200,
+                        &self.table_command(req, |key| Command::RiskManager { key }),
+                    ),
                     Err(err) => self.bad_execute_request(err),
                 }
             }
