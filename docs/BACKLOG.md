@@ -15,6 +15,75 @@ Latest AWS/test state:
 - No EFS filesystems or data-node EC2 instances are currently running.
 - Live public pages are `https://matrixark.ai/`, `https://matrixark.ai/observation/`, and `https://matrixark.ai/monitoring/`.
 
+## C++ TemporalStore BCache Design Parity Backlog
+
+Detailed gap analysis: `docs/bcache_temporalstore_cpp_gap_analysis.md`.
+
+This backlog tracks the missing work found by comparing the local C++ TemporalStore code with the downloaded BCache design PDF. The PDF describes a fuller production system than the current C++ tree: multi-AZ/multi-region operation, shared-storage replica replay, incremental checkpointing, split/merge, hot-object relocation, Redis/model breadth, session consistency, compression, erasure coding, QoS, and proxy/client hot-key behavior.
+
+### P0 - Storage, Raft, Checkpoint, And Failover
+
+- Harden data-node raft snapshot install and restore.
+  - Snapshot manifests must include object/index/oplog generation metadata, applied index, storage URI, and completeness checks.
+  - Restore must be atomic and fail closed if stale local data, partial snapshot files, or mismatched generations are detected.
+  - Add local shared-file and object-store/S3-compatible test modes after local shared-file mode is deterministic.
+- Implement restore under sustained write pressure.
+  - Validate primary kill, follower catch-up, far-behind replica install-snapshot, and restart from stale local data.
+  - Gate promotion on committed/applied index, checkpoint freshness, and replay cursor.
+- Complete incremental checkpoint lifecycle.
+  - Add checkpoint manager state for object dump, index window creation/finalization, object-stream rewrite, safe oplog trim, and obsolete file deletion.
+  - Keep hot/cold separation so old/cold scans and compression/GC do not warm serving caches.
+  - Add recovery objective tests that restore index plus replay oplog from checkpoint.
+- Complete stream metadata restore.
+  - Remove or implement unsupported `RestoreInfo` paths in log-based stream implementations.
+  - Add crash/reopen, snapshot-install, and tail-scan tests covering restored stream metadata and CRC validation.
+- Add follower-read and session-consistency safety gates.
+  - Writes should return a token or sequence that reads can require.
+  - Follower reads must enforce bounded-stale SLA, applied-index minimums, and fallback-to-primary behavior.
+
+### P1 - Partition Movement, Placement, And Replication
+
+- Implement production-grade add/remove data-node and metaserver membership validation.
+  - Tests must cover membership change while traffic is active, removed node restart/rejoin, and stale local state fencing.
+  - Metrics must expose membership-change attempts, failures, convergence time, and rejected stale nodes.
+- Build full rebalance and scale up/down harnesses.
+  - Start skewed local clusters, add nodes, verify partition distribution improves, and keep writes/reads active during movement.
+  - Include disabled/no-op and safe-gap/no-op cases.
+- Implement partition split/merge pipeline.
+  - Freeze source partition, create target ranges, scan/rewrite/index records, shadow-validate, cut routing over, and rollback on validation failure.
+  - Cover split/merge under active traffic.
+- Strengthen placement policy.
+  - Add region/VDC/AZ/rack/host anti-affinity, table-level constraints, load-aware scoring, bounded movement per round, and safe-gap thresholds.
+- Complete shared-storage secondary replay for multi-AZ serving.
+  - Track secondary apply lag, replay cursor, checkpoint cursor, and safe serving state.
+  - Add promotion tests for shared-store async, shared-store sync, and raft-consensus tables.
+
+### P2 - Model Surface, Proxy, QoS, And Storage Efficiency
+
+- Close model and Redis parity gaps.
+  - Add or harden List, Set, ZSet, Json, TimeSeries, and Redis-compatible command behavior.
+  - Maintain a command compatibility table and run Redis-style contract tests where protocol compatibility is claimed.
+- Make proxy a complete customer ingestion and protocol gateway.
+  - Proxy should own routing, batching, retries, auth, tenant quota, backpressure, and metrics by default.
+  - Add optional queue-backed ingestion workers for Kafka/Pulsar/Kinesis/Pub/Sub and low-latency direct SDK mode for controlled internal services.
+- Add hot-key cache and invalidation behavior.
+  - Version cached hot objects at client/proxy, invalidate on writes, and reject stale cache hits.
+  - Expose hot-key hit/miss/invalidation/stale-reject metrics.
+- Expand namespace/table QoS and multi-tenant isolation.
+  - Enforce per-tenant/table read/write QPS, bytes, in-flight requests, queue depth, and noisy-neighbor limits at proxy and server.
+  - Add local noisy-neighbor scale tests.
+- Add storage-layer compression and erasure coding backlog.
+  - Define per-stream compression policies for object/index/oplog streams and avoid compressing hot objects on the critical path.
+  - Add erasure-coding layout and rebuild/read-path design before implementation.
+
+### Acceptance Gates
+
+- Local 3-node and 5-node data raft gates pass repeatedly with sustained writes, reads, failover, restart, snapshot, and scale up/down.
+- Metaserver raft failover passes during table membership changes and scheduler activity.
+- Rebalance, split, merge, checkpoint, and restore tests run with active traffic and no indefinite blocking.
+- Prometheus metrics expose checkpoint, restore, replay lag, membership change, rebalance, QoS, proxy retries, cache fallback, and stale-read behavior.
+- C++ and Rust public reports keep the shared storage/page/block naming contract aligned.
+
 ## MatrixArk LLM Context Backlog
 
 - Add Rust direct SDK parity as an embedded/local optimization after the Rust proxy path is stable.
