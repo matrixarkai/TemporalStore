@@ -1448,6 +1448,51 @@ impl ProxyClient {
         self.post_raw("/ProxyService/OpenTable", body)
     }
 
+    pub fn execute_command(
+        &self,
+        shard_id: u64,
+        command: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let body = serde_json::json!({
+            "shard_id": shard_id,
+            "command": command,
+        });
+        self.proxy_service_request("/ProxyService/ExecuteCmd", body)
+    }
+
+    pub fn batch_execute_commands(
+        &self,
+        shard_id: u64,
+        commands: Vec<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        let body = serde_json::json!({
+            "shard_id": shard_id,
+            "commands": commands,
+        });
+        self.proxy_service_request("/ProxyService/BatchExecuteCmd", body)
+    }
+
+    pub fn table_execute_command(&self, command: serde_json::Value) -> Result<serde_json::Value> {
+        let body = serde_json::json!({
+            "namespace": self.options.namespace_name,
+            "table_name": self.options.table_name,
+            "command": command,
+        });
+        self.proxy_service_request("/ProxyService/TableExecuteCmd", body)
+    }
+
+    pub fn table_batch_execute_commands(
+        &self,
+        commands: Vec<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        let body = serde_json::json!({
+            "namespace": self.options.namespace_name,
+            "table_name": self.options.table_name,
+            "commands": commands,
+        });
+        self.proxy_service_request("/ProxyService/TableBatchExecuteCmd", body)
+    }
+
     pub fn put_string(&self, key: &str, value: &str) -> Result<()> {
         let body = self.key_body(key, &[("value", serde_json::json!(value))]);
         self.post("/v1/string/put", body).map(|_| ())
@@ -1812,6 +1857,18 @@ impl ProxyClient {
         path: &str,
         body: serde_json::Value,
     ) -> Result<serde_json::Value> {
+        let response = self.proxy_service_request(path, body)?;
+        Ok(response
+            .get("response")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({})))
+    }
+
+    fn proxy_service_request(
+        &self,
+        path: &str,
+        body: serde_json::Value,
+    ) -> Result<serde_json::Value> {
         let response = self.post_raw(path, body)?;
         let status_ok = response
             .get("status")
@@ -1829,10 +1886,7 @@ impl ProxyClient {
                     .to_string(),
             });
         }
-        Ok(response
-            .get("response")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({})))
+        Ok(response)
     }
 
     fn post(&self, path: &str, body: serde_json::Value) -> Result<serde_json::Value> {
