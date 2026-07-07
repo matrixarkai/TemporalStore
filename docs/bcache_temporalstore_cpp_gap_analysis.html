@@ -1,0 +1,544 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BCache vs TemporalStore C++ Gap Analysis</title>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Arial, sans-serif; margin: 40px auto; max-width: 1040px; padding: 0 24px; line-height: 1.55; color: #172033; background: #fbfbfd; }
+h1 { font-size: 34px; line-height: 1.15; margin-bottom: 8px; }
+h2 { margin-top: 34px; border-top: 1px solid #d7dce5; padding-top: 22px; }
+h3 { margin-top: 24px; color: #173b73; }
+p, li { font-size: 15px; }
+code { background: #eef1f6; padding: 2px 5px; border-radius: 4px; }
+li { margin: 4px 0; }
+</style>
+</head>
+<body>
+<h1>BCache Design PDF vs TemporalStore C++ Gap Analysis</h1>
+<p>Date: 2026-07-07</p>
+<p>Source PDF: `C:\Users\Deeproute\Downloads\BCACHE.pdf`</p>
+<p>Code reviewed: `/root/src/github-services/TemporalStore`, C++ server/client/proxy/metaserver/storage tree.</p>
+<p>Note: the PDF is image-based, so this analysis is based on rendered page inspection. It should be treated as an engineering comparison against the visible architecture, storage, checkpoint, consistency, and client/proxy diagrams in the PDF.</p>
+<h2>Executive Summary</h2>
+<p>TemporalStore C++ is directionally aligned with the BCache design. It already has a real distributed skeleton: metaserver metadata, namespace/table/partition state, partition placement, proxy/client routing, object/index/oplog/page storage, log-based streams, block cache, local raft/snapshot support, and several business modules.</p>
+<p>It is not yet equivalent to the full BCache design. The biggest gaps are:</p>
+<ol>
+<li>production-grade multi-AZ and multi-region replication;</li>
+<li>complete incremental checkpoint and object-stream lifecycle;</li>
+<li>production-grade data-node raft snapshot/install/restore;</li>
+<li>partition split/merge and hot-object relocation;</li>
+<li>full Redis/model breadth;</li>
+<li>follower-read/session-consistency gates;</li>
+<li>compression/erasure coding;</li>
+<li>mature placement, rebalance, QoS, and hot-key invalidation.</li>
+</ol>
+<h2>What The BCache PDF Describes</h2>
+<p>The PDF describes a distributed cache/storage system with these major concepts:</p>
+<ul>
+<li>Logical model: namespace, table, object, key, model.</li>
+<li>Deployment model: region, IDC/AZ, rack, host/server, group.</li>
+<li>Data model: hash number, hash range, partition, piece, stream.</li>
+<li>Architecture: SDK, cache proxy, cache core/server, memory store, shared storage.</li>
+<li>Storage hierarchy: memory, PMEM, NVMe SSD, HDD/shared storage.</li>
+<li>Partitioning: cluster -&gt; namespace -&gt; table -&gt; partition -&gt; piece -&gt; object.</li>
+<li>Replication: primary partition handles writes; backup partitions can serve reads after applying logs/checkpoints.</li>
+<li>Multi-AZ: primary in one IDC/AZ and backups in other IDC/AZs.</li>
+<li>Multi-region: independent regional clusters with cross-region DTS-style log/data replication.</li>
+<li>Metaserver: node/client/table/partition management, placement, balancing, failover, QoS, metadata recovery.</li>
+<li>Storage engine: object indexes, object pool, oplog buffer, object buffer, object streams, index streams, oplog streams.</li>
+<li>Checkpoint: incremental checkpoint, index sliding windows, hot/cold log separation, object dump/rewrite, oplog trim.</li>
+<li>Recovery: restore index, replay oplog from checkpoint, recover quickly.</li>
+<li>Consistency: read-after-write, eventual consistency option, session consistency via client token/sequence.</li>
+<li>Models: String, List, Hash, Set, ZSet, Json, TimeSeries, and Redis-compatible variants.</li>
+<li>Client/proxy: protocol wrapper, service discovery, routing, load balancing, hot-key invalidation, aggregation, transactions.</li>
+</ul>
+<h2>What TemporalStore C++ Already Has</h2>
+<h3>Distributed Metadata And Topology</h3>
+<p>TemporalStore C++ has a metaserver v2 tree with namespaces, tables, partition sets, partitions, servers, proxies, location metadata, failure detection, publishing, and raft-backed metadata state.</p>
+<p>Relevant code:</p>
+<ul>
+<li>`src/metaserver_v2/meta/metabase.cc`</li>
+<li>`src/metaserver_v2/meta/namespace.cc`</li>
+<li>`src/metaserver_v2/meta/table.cc`</li>
+<li>`src/metaserver_v2/meta/partition.cc`</li>
+<li>`src/metaserver_v2/meta/server.h`</li>
+<li>`src/metaserver_v2/meta/location.h`</li>
+<li>`src/metaserver_v2/meta_publisher.cc`</li>
+</ul>
+<p>This maps well to the PDF&#x27;s namespace/table/partition/server/proxy control plane.</p>
+<h3>Metaserver Raft And Snapshot</h3>
+<p>Metaserver raft support and local snapshot support are present. The code can dump/load metabase snapshots and trigger snapshots through the raft server path.</p>
+<p>Relevant code:</p>
+<ul>
+<li>`src/metaserver_v2/fsm.cc`</li>
+<li>`src/metaserver_v2/raft_server.h`</li>
+<li>`src/metaserver_v2/service/raft_control_service.cc`</li>
+<li>`src/metaserver_v2/trivial_routine.cc`</li>
+<li>`src/metaserver_v2/meta/metabase.cc`</li>
+</ul>
+<p>This is one of the stronger areas versus the PDF, at least for local metadata recovery.</p>
+<h3>Storage Skeleton</h3>
+<p>TemporalStore C++ has a storage architecture that resembles the PDF:</p>
+<ul>
+<li>object manager;</li>
+<li>oplog;</li>
+<li>page store;</li>
+<li>index;</li>
+<li>stream abstraction;</li>
+<li>log-based stream implementation;</li>
+<li>block cache.</li>
+</ul>
+<p>Relevant code:</p>
+<ul>
+<li>`src/partition/storage/object_manager.h`</li>
+<li>`src/partition/storage/op_logger.h`</li>
+<li>`src/partition/storage/page_store.h`</li>
+<li>`src/partition/index/index.h`</li>
+<li>`src/stream/stream.h`</li>
+<li>`src/stream/log_based_stream_base.cc`</li>
+<li>`src/blockcache/blockcache.h`</li>
+</ul>
+<p>The pieces line up with the PDF&#x27;s object pool, object index, object stream, index stream, oplog stream, and cache layers.</p>
+<h3>Object Load/Evict And TTL Basics</h3>
+<p>Object loading, deletion, TTL, dirty tracking, and index/page state exist.</p>
+<p>Relevant code:</p>
+<ul>
+<li>`ObjectManager::GetObject`</li>
+<li>`ObjectManager::LoadObject`</li>
+<li>`ObjectManager::DeleteObject`</li>
+<li>`ObjectManager::SetObjectTtl`</li>
+<li>`ObjectManager::DoExpireObject`</li>
+<li>`Index::EvictSlot`</li>
+<li>`Index::MarkSlotDataDirty`</li>
+<li>`Index::MarkSlotPageDirty`</li>
+</ul>
+<p>This covers part of the PDF&#x27;s object load/evict/delete/TTL behavior.</p>
+<h3>Proxy And Client Routing</h3>
+<p>TemporalStore has client/proxy code, metaserver topology sync, routing, and proxy service methods.</p>
+<p>Relevant code:</p>
+<ul>
+<li>`src/proxy/service.cc`</li>
+<li>`src/proxy/proxy.h`</li>
+<li>`src/client/client_impl.cc`</li>
+<li>`src/client/meta_syncer.h`</li>
+<li>`src/client/router_v2.h`</li>
+</ul>
+<p>This partially maps to the PDF&#x27;s SDK/proxy/service-discovery/routing layer.</p>
+<h3>Existing Models And Extensions</h3>
+<p>TemporalStore has several modules:</p>
+<ul>
+<li>string;</li>
+<li>hash;</li>
+<li>set extension;</li>
+<li>feature;</li>
+<li>IPS;</li>
+<li>risk;</li>
+<li>temporal aggregate;</li>
+<li>context.</li>
+</ul>
+<p>Relevant code:</p>
+<ul>
+<li>`src/extension/string`</li>
+<li>`src/extension/hash`</li>
+<li>`src/extension/set`</li>
+<li>`src/extension/feature`</li>
+<li>`src/extension/ips`</li>
+<li>`src/extension/risk`</li>
+<li>`src/extension/temporal_aggregate`</li>
+<li>`src/extension/context`</li>
+</ul>
+<p>This is useful, but not full PDF model parity.</p>
+<h2>Detailed Missing Areas</h2>
+<h3>1. Multi-Region Active-Active And DTS Replication</h3>
+<p>PDF expectation:</p>
+<ul>
+<li>independent clusters per region;</li>
+<li>DTS nodes replicate logs/data across regions;</li>
+<li>regional read/write policy;</li>
+<li>eventual cross-region consistency;</li>
+<li>active-active or active-read/write strategy.</li>
+</ul>
+<p>Current C++ status:</p>
+<ul>
+<li>Location metadata has region/VDC-like concepts.</li>
+<li>I did not find a complete cross-region DTS/log replication pipeline.</li>
+<li>I did not find conflict resolution, cross-region replay cursors, cross-region lag metrics, or cutover logic.</li>
+</ul>
+<p>Gap:</p>
+<p>TemporalStore C++ needs a real cross-region replication subsystem if it wants parity with the PDF. Metadata naming alone is not enough.</p>
+<p>Needed work:</p>
+<ul>
+<li>cross-region log export/import;</li>
+<li>per-table replication policy;</li>
+<li>replay cursor/checkpoint;</li>
+<li>conflict policy;</li>
+<li>cross-region lag metrics;</li>
+<li>disaster recovery runbook and tests.</li>
+</ul>
+<h3>2. Multi-AZ Backup Serving And Promotion Gates</h3>
+<p>PDF expectation:</p>
+<ul>
+<li>primary partition handles writes;</li>
+<li>backup partitions apply logs/checkpoints from shared storage;</li>
+<li>backups can serve reads;</li>
+<li>promotion/failover is safe across AZs.</li>
+</ul>
+<p>Current C++ status:</p>
+<ul>
+<li>There are raft/shared-store/secondary visibility pieces and examples.</li>
+<li>There are lag and replication smoke benchmarks.</li>
+<li>Production gates are still incomplete.</li>
+</ul>
+<p>Gap:</p>
+<p>Follower/secondary read safety is not fully proven. Promotion must be gated by applied index, snapshot freshness, storage generation, and log replay position.</p>
+<p>Needed work:</p>
+<ul>
+<li>bounded-stale read SLA;</li>
+<li>read-after-write token support;</li>
+<li>secondary applied-index metrics;</li>
+<li>failover tests during sustained writes;</li>
+<li>promotion gate based on committed/applied index;</li>
+<li>stale replica fencing.</li>
+</ul>
+<h3>3. Data-Node Raft Snapshot Production Readiness</h3>
+<p>PDF expectation:</p>
+<ul>
+<li>replicas can recover from checkpoint and oplog;</li>
+<li>far-behind replicas can install snapshot;</li>
+<li>recovery is bounded and safe under write pressure.</li>
+</ul>
+<p>Current C++ status:</p>
+<ul>
+<li>Metaserver snapshots are relatively mature locally.</li>
+<li>Data-node raft snapshot support exists, but the production path is still weaker than metaserver.</li>
+<li>Current data-node snapshot behavior is mostly local-file oriented.</li>
+</ul>
+<p>Gap:</p>
+<p>Data raft needs a hardened install-snapshot and restore path for real shared storage/object storage, not only local filesystem scenarios.</p>
+<p>Needed work:</p>
+<ul>
+<li>snapshot manifest with object/index/oplog generation IDs;</li>
+<li>atomic install with validation;</li>
+<li>object-store/S3 shared-file support;</li>
+<li>restore while writes continue;</li>
+<li>far-behind replica snapshot catch-up;</li>
+<li>fail-closed behavior for stale local state.</li>
+</ul>
+<h3>4. Incremental Checkpoint And Index Sliding Windows</h3>
+<p>PDF expectation:</p>
+<ul>
+<li>avoid full data rewrite;</li>
+<li>checkpoint changed objects only;</li>
+<li>maintain index sliding windows;</li>
+<li>trim obsolete oplog;</li>
+<li>delete invalid object/index files;</li>
+<li>separate hot and cold logs/streams.</li>
+</ul>
+<p>Current C++ status:</p>
+<ul>
+<li>Oplog, page store, index, dirty tracking, stream, and block cache primitives exist.</li>
+<li>Full checkpoint lifecycle is not clearly complete.</li>
+<li>Index/window/object-dump orchestration is not at PDF level.</li>
+</ul>
+<p>Gap:</p>
+<p>TemporalStore needs a real checkpoint manager that coordinates oplog sequence, object dump, index window, object stream rewrite, and safe trim.</p>
+<p>Needed work:</p>
+<ul>
+<li>checkpoint state machine;</li>
+<li>incremental object-dump queue;</li>
+<li>index window creation/finalization;</li>
+<li>checkpoint manifest;</li>
+<li>oplog trim guard;</li>
+<li>object stream garbage collection;</li>
+<li>recovery objective tests.</li>
+</ul>
+<h3>5. Stream Restore Gap</h3>
+<p>PDF expectation:</p>
+<ul>
+<li>RecordStore-style stream abstraction can create/open/delete/append/read/scan/restore.</li>
+</ul>
+<p>Current C++ status:</p>
+<ul>
+<li>`Stream::RestoreInfo` exists in `src/stream/stream.h`.</li>
+<li>`src/stream/log_based_stream.h` has a `RestoreInfo` implementation that asserts `not supported`.</li>
+<li>Reader/base restore paths exist, but the unsupported implementation is still a red flag.</li>
+</ul>
+<p>Gap:</p>
+<p>Stream metadata restore needs to be consistent across writer/reader paths. This matters for snapshot install, recovery, and moving partitions.</p>
+<p>Needed work:</p>
+<ul>
+<li>implement or remove unsupported `RestoreInfo` path;</li>
+<li>add crash/reopen tests;</li>
+<li>add snapshot restore tests using restored stream metadata;</li>
+<li>verify stream tail scan and CRC behavior after restore.</li>
+</ul>
+<h3>6. Partition Split/Merge</h3>
+<p>PDF expectation:</p>
+<ul>
+<li>freeze old partition;</li>
+<li>create new partitions;</li>
+<li>rewrite/index data into new hash ranges;</li>
+<li>restore IO;</li>
+<li>support merge of adjacent ranges.</li>
+</ul>
+<p>Current C++ status:</p>
+<ul>
+<li>Freeze/update partition metadata exists.</li>
+<li>Balance/move concepts exist.</li>
+<li>I did not find full split/merge data rewrite and validation.</li>
+</ul>
+<p>Gap:</p>
+<p>TemporalStore lacks the complete operational split/merge pipeline described by the PDF.</p>
+<p>Needed work:</p>
+<ul>
+<li>split planner;</li>
+<li>merge planner;</li>
+<li>hash-range scan/rewrite;</li>
+<li>shadow validation;</li>
+<li>routing cutover;</li>
+<li>rollback if validation fails;</li>
+<li>active traffic tests.</li>
+</ul>
+<h3>7. Piece-Level Compute And Hot Object Relocation</h3>
+<p>PDF expectation:</p>
+<ul>
+<li>partition can be divided into pieces;</li>
+<li>pieces map to worker threads;</li>
+<li>hot objects can move to dedicated workers;</li>
+<li>location manager tracks object placement.</li>
+</ul>
+<p>Current C++ status:</p>
+<ul>
+<li>Partition/server/threading infrastructure exists.</li>
+<li>I did not see a complete hot-object location manager with object-level worker migration.</li>
+</ul>
+<p>Gap:</p>
+<p>The CPU scaling model is less complete than the PDF. It likely scales by partitions/modules, but not by full piece/hot-object relocation semantics.</p>
+<p>Needed work:</p>
+<ul>
+<li>piece abstraction if not already complete;</li>
+<li>hot-object detector;</li>
+<li>object-to-worker location map;</li>
+<li>safe migration protocol;</li>
+<li>client/proxy invalidation when placement changes;</li>
+<li>hot-key stress tests.</li>
+</ul>
+<h3>8. Placement, Rebalance, And Scale Up/Down</h3>
+<p>PDF expectation:</p>
+<ul>
+<li>placement considers server load, host/rack/IDC constraints, replica isolation;</li>
+<li>rebalance moves partitions safely;</li>
+<li>scale up/down is deterministic.</li>
+</ul>
+<p>Current C++ status:</p>
+<ul>
+<li>Balance routine and balance task exist.</li>
+<li>The implementation appears simple/brute-force in places.</li>
+</ul>
+<p>Gap:</p>
+<p>Production placement needs a stronger policy engine and deterministic validation harness.</p>
+<p>Needed work:</p>
+<ul>
+<li>rack/host/AZ anti-affinity;</li>
+<li>load-aware scoring;</li>
+<li>bounded partitions moved per round;</li>
+<li>safe-gap policy;</li>
+<li>rebalance freeze timeout;</li>
+<li>add/remove node harness with active writes/reads;</li>
+<li>Prometheus metrics for movement/freeze/failure.</li>
+</ul>
+<h3>9. Full Model And Redis Parity</h3>
+<p>PDF expectation:</p>
+<ul>
+<li>String, List, Hash, Set, ZSet, Json, TimeSeries;</li>
+<li>Redis-compatible variants of those models.</li>
+</ul>
+<p>Current C++ status:</p>
+<ul>
+<li>String/hash/custom feature/risk/IPS/temporal modules exist.</li>
+<li>Full Redis protocol and complete List/ZSet/Json/TimeSeries parity are not obvious in the current C++ tree.</li>
+</ul>
+<p>Gap:</p>
+<p>TemporalStore C++ is strong for custom serving/feature workloads, but not yet a complete Redis-compatible BCache-style model surface.</p>
+<p>Needed work:</p>
+<ul>
+<li>List model and commands;</li>
+<li>ZSet model and commands;</li>
+<li>Json model and commands;</li>
+<li>TimeSeries model and commands;</li>
+<li>Redis protocol gateway;</li>
+<li>compatibility tests against Redis command semantics.</li>
+</ul>
+<h3>10. Session Consistency And Conditional Updates</h3>
+<p>PDF expectation:</p>
+<ul>
+<li>read-after-write;</li>
+<li>eventual consistency option;</li>
+<li>session consistency with client token/sequence;</li>
+<li>conditional update token/CAS-like behavior.</li>
+</ul>
+<p>Current C++ status:</p>
+<ul>
+<li>Stronger paths exist via primary/write routing and raft/shared-store modes.</li>
+<li>I did not find a complete public read-token/session-consistency API.</li>
+</ul>
+<p>Gap:</p>
+<p>Consistency modes need to be explicit and testable at client/proxy/API level.</p>
+<p>Needed work:</p>
+<ul>
+<li>read token returned on writes;</li>
+<li>read token accepted on reads;</li>
+<li>bounded stale follower reads;</li>
+<li>CAS/update-token API;</li>
+<li>tests for stale reads, failover, and retry.</li>
+</ul>
+<h3>11. Compression And Erasure Coding</h3>
+<p>PDF expectation:</p>
+<ul>
+<li>compression for stored data;</li>
+<li>avoid over-compressing hot objects;</li>
+<li>erasure coding for storage efficiency.</li>
+</ul>
+<p>Current C++ status:</p>
+<ul>
+<li>Some module-level compression concepts exist.</li>
+<li>Topology response has compressed payload support.</li>
+<li>Oplog comments indicate page data is not compressed.</li>
+<li>I did not find storage-layer erasure coding.</li>
+</ul>
+<p>Gap:</p>
+<p>General object/oplog/index stream compression and EC are not implemented at PDF level.</p>
+<p>Needed work:</p>
+<ul>
+<li>per-stream compression policy;</li>
+<li>hot/cold compression policy;</li>
+<li>compression metrics;</li>
+<li>EC storage layout;</li>
+<li>rebuild/read path for EC shards;</li>
+<li>fault-injection tests.</li>
+</ul>
+<h3>12. Client/Proxy Hot-Key Cache Invalidation</h3>
+<p>PDF expectation:</p>
+<ul>
+<li>hot keys can be cached in client/proxy;</li>
+<li>writes trigger invalidation.</li>
+</ul>
+<p>Current C++ status:</p>
+<ul>
+<li>Client/proxy topology and routing exist.</li>
+<li>I did not find a complete hot-key invalidation protocol.</li>
+</ul>
+<p>Gap:</p>
+<p>Hot-key client/proxy caching is not yet production-complete.</p>
+<p>Needed work:</p>
+<ul>
+<li>hot-key cache metadata;</li>
+<li>write invalidation broadcast;</li>
+<li>versioned object tokens;</li>
+<li>stale cache rejection;</li>
+<li>metrics and tests.</li>
+</ul>
+<h3>13. QoS And Multi-Tenant Isolation</h3>
+<p>PDF expectation:</p>
+<ul>
+<li>per namespace/table throttling;</li>
+<li>quota;</li>
+<li>resource isolation;</li>
+<li>load-aware scheduling.</li>
+</ul>
+<p>Current C++ status:</p>
+<ul>
+<li>Token bucket/quota/backpressure pieces exist.</li>
+<li>Proxy has ingestion controls.</li>
+</ul>
+<p>Gap:</p>
+<p>QoS is partial, not a full namespace/table/server-wide isolation system.</p>
+<p>Needed work:</p>
+<ul>
+<li>namespace/table QPS quotas;</li>
+<li>byte/write/read quotas;</li>
+<li>tenant admission control;</li>
+<li>noisy-neighbor tests;</li>
+<li>per-tenant Prometheus metrics;</li>
+<li>server-side enforcement, not only proxy-side enforcement.</li>
+</ul>
+<h3>14. Proxy As Full Protocol Gateway</h3>
+<p>PDF expectation:</p>
+<ul>
+<li>SDK and proxy expose compatible protocols such as Redis;</li>
+<li>clients can switch proxies on failure;</li>
+<li>proxy handles routing/load balancing.</li>
+</ul>
+<p>Current C++ status:</p>
+<ul>
+<li>Proxy service exists and calls TemporalStore client implementation.</li>
+<li>It exposes selected commands and ingestion paths.</li>
+</ul>
+<p>Gap:</p>
+<p>Proxy is not yet a full Redis-compatible gateway.</p>
+<p>Needed work:</p>
+<ul>
+<li>RESP/Redis protocol support;</li>
+<li>command compatibility table;</li>
+<li>proxy failover tests;</li>
+<li>retry metrics;</li>
+<li>backpressure behavior under proxy failover.</li>
+</ul>
+<h3>15. Persistent Memory And Generic Persistent Containers</h3>
+<p>PDF expectation:</p>
+<ul>
+<li>persistent array/list/stack/queue/tree/hash map/set;</li>
+<li>memory persistence manager APIs;</li>
+<li>PMEM/page-pool style persistence.</li>
+</ul>
+<p>Current C++ status:</p>
+<ul>
+<li>TemporalStore has object/page/index abstractions.</li>
+<li>I did not find a full generic persistent container layer matching the PDF.</li>
+</ul>
+<p>Gap:</p>
+<p>The generic persistent-memory container library is not implemented at the PDF level.</p>
+<p>Needed work:</p>
+<ul>
+<li>decide whether PMEM/generic containers are still required;</li>
+<li>if yes, implement persistent container abstractions;</li>
+<li>if no, document the replacement design using object/page/index streams and cache.</li>
+</ul>
+<h2>Production Readiness Priority</h2>
+<h3>P0</h3>
+<ul>
+<li>Harden data-node raft snapshot install/restore.</li>
+<li>Add restore-under-write-pressure tests.</li>
+<li>Add follower-read freshness gates.</li>
+<li>Add stale local data fencing.</li>
+<li>Implement checkpoint manifest and oplog trim safety.</li>
+<li>Fix/complete stream `RestoreInfo` path.</li>
+</ul>
+<h3>P1</h3>
+<ul>
+<li>Implement incremental checkpoint manager.</li>
+<li>Implement rebalance/add/remove node harness with active traffic.</li>
+<li>Implement partition split/merge planning and validation.</li>
+<li>Add secondary lag metrics and promotion gates.</li>
+<li>Add namespace/table QoS enforcement.</li>
+</ul>
+<h3>P2</h3>
+<ul>
+<li>Full Redis/model parity: List, Set, ZSet, Json, TimeSeries.</li>
+<li>Full proxy protocol gateway.</li>
+<li>Hot-key invalidation.</li>
+<li>Compression and hot/cold stream policy.</li>
+</ul>
+<h3>P3</h3>
+<ul>
+<li>Multi-region DTS replication.</li>
+<li>Erasure coding.</li>
+<li>Generic persistent memory containers, if still needed.</li>
+</ul>
+<h2>Bottom Line</h2>
+<p>TemporalStore C++ has the right base architecture for a BCache-like system, especially in metadata, partitioning, object/index/oplog/page storage, and local raft/snapshot work.</p>
+<p>The code is missing the full production machinery from the PDF: robust checkpoint lifecycle, snapshot install/restore, split/merge, hot relocation, follower-read/session consistency, full model/protocol breadth, multi-region replication, and storage efficiency features such as compression and erasure coding.</p>
+<p>The next engineering push should focus on checkpoint/failover first. Without that, the higher-level scale, follower-read, rebalance, and multi-region pieces cannot be made safely production-ready.</p>
+</body>
+</html>
