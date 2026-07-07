@@ -1127,6 +1127,9 @@ fn handle(
     if let Some(response) = handle_master_service_route(meta, &request) {
         return response;
     }
+    if let Some(response) = handle_heartbeat_service_route(meta, &request) {
+        return response;
+    }
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/health") => json_response(200, &Status::ok()),
         ("GET", "/metrics") | ("GET", "/MasterService/Metrics") => (
@@ -1636,8 +1639,172 @@ struct MasterRegisterServerRequest {
     binary_version: String,
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct HeartbeatEndpoint {
+    #[serde(default)]
+    ip4: String,
+    #[serde(default)]
+    ip6: String,
+    #[serde(default)]
+    port: u32,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct HeartbeatServerRequest {
+    #[serde(default)]
+    server_addr: String,
+    #[serde(default)]
+    host: String,
+    #[serde(default)]
+    port: u32,
+    #[serde(default)]
+    endpoint: Option<HeartbeatEndpoint>,
+    #[serde(default)]
+    boot_time_ms: u64,
+    #[serde(default)]
+    boot_time_us: u64,
+    #[serde(default)]
+    binary_version: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct HeartbeatProxyRequest {
+    #[serde(default)]
+    proxy_addr: String,
+    #[serde(default)]
+    host: String,
+    #[serde(default)]
+    port: u32,
+    #[serde(default)]
+    endpoint: Option<HeartbeatEndpoint>,
+    #[serde(default)]
+    namespace: String,
+    #[serde(default)]
+    namespace_name: String,
+    #[serde(default)]
+    config_version: u64,
+    #[serde(default)]
+    binary_version: String,
+}
+
 fn default_master_replica_count() -> u64 {
     1
+}
+
+fn handle_heartbeat_service_route(
+    meta: &MetaBackend,
+    request: &HttpRequest,
+) -> Option<(u16, Vec<u8>)> {
+    let response = match (request.method.as_str(), request.path.as_str()) {
+        ("POST", "/HeartbeatService/ServerHeartbeat") => {
+            parse_or(&request.body, |req: HeartbeatServerRequest| {
+                backend_call!(
+                    meta,
+                    server_heartbeat,
+                    ServerHeartbeatRequest {
+                        server_addr: heartbeat_server_addr(&req),
+                        boot_time_ms: heartbeat_boot_time_ms(req.boot_time_ms, req.boot_time_us),
+                        binary_version: req.binary_version,
+                        shard_loads: Vec::new(),
+                        partition_loads: Vec::new(),
+                        runtime_load: Default::default(),
+                        shard_states: Vec::new(),
+                    }
+                )
+            })
+        }
+        ("POST", "/HeartbeatService/ServerNotifyStop") => {
+            parse_or(&request.body, |req: HeartbeatServerRequest| {
+                let endpoint = heartbeat_server_addr(&req);
+                backend_call!(
+                    meta,
+                    drop_server,
+                    StateChangeRequest {
+                        endpoint,
+                        freeze_cooldown_ms: 0,
+                    }
+                )
+            })
+        }
+        ("POST", "/HeartbeatService/ProxyHeartbeat") => {
+            parse_or(&request.body, |req: HeartbeatProxyRequest| {
+                let proxy_addr = heartbeat_proxy_addr(&req);
+                let namespace = if req.namespace_name.is_empty() {
+                    req.namespace
+                } else {
+                    req.namespace_name
+                };
+                backend_call!(
+                    meta,
+                    proxy_heartbeat,
+                    ProxyHeartbeatRequest {
+                        proxy_addr,
+                        namespace,
+                        config_version: req.config_version,
+                        binary_version: req.binary_version,
+                    }
+                )
+            })
+        }
+        ("POST", "/HeartbeatService/ProxyNotifyStop") => {
+            parse_or(&request.body, |req: HeartbeatProxyRequest| {
+                let endpoint = heartbeat_proxy_addr(&req);
+                backend_call!(
+                    meta,
+                    drop_proxy,
+                    StateChangeRequest {
+                        endpoint,
+                        freeze_cooldown_ms: 0,
+                    }
+                )
+            })
+        }
+        _ => return None,
+    };
+    Some(response)
+}
+
+fn heartbeat_server_addr(request: &HeartbeatServerRequest) -> String {
+    if !request.server_addr.is_empty() {
+        request.server_addr.clone()
+    } else {
+        heartbeat_addr(&request.host, request.port, request.endpoint.as_ref())
+    }
+}
+
+fn heartbeat_proxy_addr(request: &HeartbeatProxyRequest) -> String {
+    if !request.proxy_addr.is_empty() {
+        request.proxy_addr.clone()
+    } else {
+        heartbeat_addr(&request.host, request.port, request.endpoint.as_ref())
+    }
+}
+
+fn heartbeat_addr(host: &str, port: u32, endpoint: Option<&HeartbeatEndpoint>) -> String {
+    if let Some(endpoint) = endpoint {
+        let host = if !endpoint.ip4.is_empty() {
+            &endpoint.ip4
+        } else {
+            &endpoint.ip6
+        };
+        if endpoint.port > 0 {
+            return format!("{}:{}", host, endpoint.port);
+        }
+        return host.to_string();
+    }
+    if port > 0 {
+        format!("{host}:{port}")
+    } else {
+        host.to_string()
+    }
+}
+
+fn heartbeat_boot_time_ms(boot_time_ms: u64, boot_time_us: u64) -> u64 {
+    if boot_time_ms > 0 {
+        boot_time_ms
+    } else {
+        boot_time_us / 1000
+    }
 }
 
 fn handle_master_service_route(
