@@ -1654,6 +1654,55 @@ impl ProxyClient {
         response_feature_points(response)
     }
 
+    pub fn feature_replace(
+        &self,
+        key: &str,
+        start_ms: u64,
+        end_ms: u64,
+        points: &[FeaturePoint],
+    ) -> Result<()> {
+        let body = self.proxy_service_body(
+            key,
+            &[
+                ("start_ms", serde_json::json!(start_ms)),
+                ("end_ms", serde_json::json!(end_ms)),
+                ("points", serde_json::to_value(points).map_err(json_error)?),
+            ],
+        );
+        self.proxy_service_execute("/ProxyService/FeatureReplace", body)
+            .map(|_| ())
+    }
+
+    pub fn feature_delete(&self, key: &str) -> Result<()> {
+        let body = self.proxy_service_body(key, &[]);
+        self.proxy_service_execute("/ProxyService/FeatureDelete", body)
+            .map(|_| ())
+    }
+
+    pub fn feature_aggregate(
+        &self,
+        key: &str,
+        start_ms: u64,
+        end_ms: u64,
+        aggregator: &str,
+        count: Option<usize>,
+    ) -> Result<i64> {
+        let body = self.proxy_service_body(
+            key,
+            &[
+                ("start_ms", serde_json::json!(start_ms)),
+                ("end_ms", serde_json::json!(end_ms)),
+                ("aggregator", serde_json::json!(aggregator)),
+                ("count", serde_json::json!(count)),
+            ],
+        );
+        let response = self.proxy_service_execute("/ProxyService/FeatureAggQuery", body)?;
+        Ok(response
+            .get("value")
+            .and_then(|value| value.as_i64())
+            .unwrap_or_default())
+    }
+
     pub fn set(&self, key: &str, value: &str) -> Result<()> {
         let body = self.proxy_service_body(key, &[("value", serde_json::json!(value.as_bytes()))]);
         self.proxy_service_execute("/ProxyService/Set", body)
@@ -1855,6 +1904,13 @@ impl ProxyClient {
         Ok(members)
     }
 
+    pub fn srem(&self, key: &str, member: &str) -> Result<()> {
+        let body =
+            self.proxy_service_body(key, &[("member", serde_json::json!(member.as_bytes()))]);
+        self.proxy_service_execute("/ProxyService/SRem", body)
+            .map(|_| ())
+    }
+
     pub fn delete_object(&self, key: &str) -> Result<()> {
         let body = self.proxy_service_body(key, &[]);
         self.proxy_service_execute("/ProxyService/Delete", body)
@@ -1874,6 +1930,16 @@ impl ProxyClient {
             .get("value")
             .and_then(|value| value.as_u64())
             .unwrap_or_default())
+    }
+
+    pub fn exists(&self, key: &str) -> Result<bool> {
+        let body = self.proxy_service_body(key, &[]);
+        let response = self.proxy_service_execute("/ProxyService/Exists", body)?;
+        Ok(response
+            .get("value")
+            .and_then(|value| value.as_i64())
+            .unwrap_or_default()
+            != 0)
     }
 
     fn key_body(&self, key: &str, extra: &[(&str, serde_json::Value)]) -> serde_json::Value {
