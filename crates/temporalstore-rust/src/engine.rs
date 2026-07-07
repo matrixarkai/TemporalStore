@@ -9662,6 +9662,9 @@ fn mark_slot_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
             update_slot_layout(slot);
         }
     }
+    if removed {
+        shard.slot_index.rebuild_object_page_lookup();
+    }
     removed
 }
 
@@ -9698,6 +9701,9 @@ fn mark_slot_index_page_deleted(
             slot.in_memory = !slot.page_index.is_empty();
             update_slot_layout(slot);
         }
+    }
+    if removed {
+        shard.slot_index.rebuild_object_page_lookup();
     }
     removed
 }
