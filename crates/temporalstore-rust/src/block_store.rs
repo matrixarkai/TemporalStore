@@ -1143,9 +1143,38 @@ impl LocalBlockStore {
         let inner = self.inner.lock().expect("block store lock poisoned");
         let current_page_segment_id = inner.page_segment_id;
         let live_page_segment_ids = live_page_segment_ids.into_iter().collect::<BTreeSet<_>>();
+        let segment_ids = segment_ids_at(&inner.root)?;
+        let mut zone_total_bytes = BTreeMap::<u64, u64>::new();
+        let mut zone_used_bytes = BTreeMap::<u64, u64>::new();
+        for page_segment_id in &segment_ids {
+            let bytes = segment_path(&inner.root, *page_segment_id)
+                .metadata()
+                .map(|metadata| metadata.len())
+                .unwrap_or_default();
+            let zone_id = inner
+                .extents
+                .get(page_segment_id)
+                .map(|extent| extent.extent_id)
+                .unwrap_or_else(|| extent_id_for_segment(*page_segment_id));
+            *zone_total_bytes.entry(zone_id).or_default() = zone_total_bytes
+                .get(&zone_id)
+                .copied()
+                .unwrap_or_default()
+                .saturating_add(bytes);
+            let below_retention_floor = *page_segment_id < retain_from_page_segment_id;
+            let is_current = *page_segment_id == current_page_segment_id;
+            let is_live = live_page_segment_ids.contains(page_segment_id);
+            if !below_retention_floor || is_current || is_live {
+                *zone_used_bytes.entry(zone_id).or_default() = zone_used_bytes
+                    .get(&zone_id)
+                    .copied()
+                    .unwrap_or_default()
+                    .saturating_add(bytes);
+            }
+        }
         let mut candidates = Vec::new();
         let now = now_unix_ms();
-        for page_segment_id in segment_ids_at(&inner.root)? {
+        for page_segment_id in segment_ids {
             let below_retention_floor = page_segment_id < retain_from_page_segment_id;
             let is_current = page_segment_id == current_page_segment_id;
             let is_live = live_page_segment_ids.contains(&page_segment_id);
@@ -1160,17 +1189,21 @@ impl LocalBlockStore {
                 let age_ms = updated_unix_ms
                     .or(created_unix_ms)
                     .map(|timestamp| now.saturating_sub(timestamp));
-                let used_bytes = 0_u64;
-                let stale_bytes = bytes.saturating_sub(used_bytes);
-                let utility_basis_points = if bytes == 0 {
+                let zone_id = extent
+                    .map(|extent| extent.extent_id)
+                    .unwrap_or_else(|| extent_id_for_segment(page_segment_id));
+                let total_bytes = zone_total_bytes.get(&zone_id).copied().unwrap_or(bytes);
+                let used_bytes = zone_used_bytes.get(&zone_id).copied().unwrap_or_default();
+                let stale_bytes = total_bytes.saturating_sub(used_bytes);
+                let utility_basis_points = if total_bytes == 0 {
                     0
                 } else {
-                    used_bytes.saturating_mul(10_000) / bytes
+                    used_bytes.saturating_mul(10_000) / total_bytes
                 };
                 candidates.push(BlockStoreGcUtilityCandidate {
                     page_segment_id,
                     bytes,
-                    total_bytes: bytes,
+                    total_bytes,
                     used_bytes,
                     stale_bytes,
                     utility_basis_points,
