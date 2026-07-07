@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TemporalStore LOC Inventory</title>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Arial, sans-serif; margin: 40px auto; max-width: 1040px; padding: 0 24px; line-height: 1.55; color: #172033; background: #fbfbfd; }
+h1 { font-size: 34px; line-height: 1.15; margin-bottom: 8px; }
+h2 { margin-top: 34px; border-top: 1px solid #d7dce5; padding-top: 22px; }
+p, li, td, th { font-size: 15px; }
+code { background: #eef1f6; padding: 2px 5px; border-radius: 4px; }
+table { width: 100%; border-collapse: collapse; margin: 14px 0 24px; background: #fff; }
+th, td { border: 1px solid #d7dce5; padding: 8px 10px; text-align: left; vertical-align: top; }
+th { background: #edf2fb; }
+td:nth-child(3), td:nth-child(4), td:nth-child(5), td:nth-child(2) { white-space: nowrap; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.callout { background: #eef7f2; border: 1px solid #b9dec7; padding: 12px 14px; border-radius: 8px; }
+</style>
+</head>
+<body>
+<h1>TemporalStore Line Of Code Inventory</h1>
+<p><strong>Date:</strong> 2026-07-07</p>
+<p>This document records the local source line counts for TemporalStore and the key local dependency trees used by the C++/Rust TemporalStore work.</p>
+
+<h2>Counting Method</h2>
+<p>The counts below use nonblank source lines as the primary LOC number.</p>
+<p><strong>Included:</strong> maintained source files, tests/examples inside source trees, C/C++ headers and implementation files, Rust crates, Python tools/scripts, and protobuf definitions.</p>
+<p><strong>Excluded:</strong> <code>.git</code>, build, output, target, cache, generated artifact directories, first-party vendored dependency trees, docs benchmark/debug artifacts, logs, and bulky generated reports.</p>
+
+<h2>First-Party TemporalStore</h2>
+<table>
+<thead><tr><th>Component</th><th>Path</th><th>Files</th><th>Total lines</th><th>Nonblank LOC</th></tr></thead>
+<tbody>
+<tr><td>TemporalStore C++ first-party</td><td><code>/root/src/github-services/TemporalStore/src</code></td><td class="num">525</td><td class="num">126,663</td><td class="num"><strong>112,139</strong></td></tr>
+<tr><td>TemporalStore Rust first-party</td><td><code>/root/src/github-services/TemporalStore/crates</code></td><td class="num">96</td><td class="num">144,510</td><td class="num"><strong>137,949</strong></td></tr>
+<tr><td>TemporalStore Python first-party</td><td><code>/root/src/github-services/TemporalStore/tools</code>, <code>scripts</code>, <code>src</code>, <code>crates</code></td><td class="num">149</td><td class="num">88,787</td><td class="num"><strong>81,348</strong></td></tr>
+<tr><td>TemporalStore Proto</td><td><code>/root/src/github-services/TemporalStore/src</code>, <code>crates</code>, <code>tools</code></td><td class="num">24</td><td class="num">3,481</td><td class="num"><strong>2,933</strong></td></tr>
+</tbody>
+</table>
+<p class="callout">First-party total, C++ + Rust + Python + Proto: <strong>334,369 nonblank LOC</strong>.</p>
+
+<h2>Dependency Trees</h2>
+<table>
+<thead><tr><th>Dependency</th><th>Path</th><th>Files</th><th>Total lines</th><th>Nonblank LOC</th></tr></thead>
+<tbody>
+<tr><td>byteraft C++ dependency</td><td><code>/root/src/github-services/TemporalStore/.local/deps-src/byteraft-master</code></td><td class="num">210</td><td class="num">50,287</td><td class="num"><strong>41,996</strong></td></tr>
+<tr><td>byte C++ dependency</td><td><code>/root/src/github-services/TemporalStore/.local/deps-src/byte-master</code></td><td class="num">377</td><td class="num">85,916</td><td class="num"><strong>74,964</strong></td></tr>
+<tr><td>RustRaft external lib</td><td><code>/root/src/github-services/RustRaft</code></td><td class="num">63</td><td class="num">36,819</td><td class="num"><strong>34,530</strong></td></tr>
+<tr><td>rustmtcache external lib</td><td><code>/root/src/github-services/rustmtcache</code></td><td class="num">2</td><td class="num">24,790</td><td class="num"><strong>22,003</strong></td></tr>
+<tr><td>mtcache C++ dependency</td><td><code>/root/TemporalStore-main-slice5/dependencies/mtcache</code></td><td class="num">145</td><td class="num">31,099</td><td class="num"><strong>26,615</strong></td></tr>
+</tbody>
+</table>
+<p class="callout">Listed dependency total: <strong>200,108 nonblank LOC</strong>.</p>
+
+<h2>Rollups</h2>
+<table>
+<thead><tr><th>Rollup</th><th>Nonblank LOC</th></tr></thead>
+<tbody>
+<tr><td>TemporalStore first-party C++ + Rust + Python + Proto</td><td class="num"><strong>334,369</strong></td></tr>
+<tr><td>Listed dependencies total</td><td class="num"><strong>200,108</strong></td></tr>
+<tr><td>TemporalStore C++ plus C++ dependencies: byteraft + byte + mtcache</td><td class="num"><strong>255,714</strong></td></tr>
+<tr><td>Rust ecosystem dependencies: RustRaft + rustmtcache</td><td class="num"><strong>56,533</strong></td></tr>
+</tbody>
+</table>
+
+<h2>Notes</h2>
+<ul>
+<li><code>thirdparty/byte</code> points to <code>.local/deps-src/byte-master</code>.</li>
+<li><code>thirdparty/byteraft</code> points to <code>.local/deps-src/byteraft-master</code>.</li>
+<li>The Rust count includes maintained core, raft, Redis, server/metaserver/proxy binaries, and tests.</li>
+<li>The Python count includes MatrixArk MCP/core adapter code, backfill tooling, benchmark/report scripts, validation scripts, and <code>cpplint.py</code>.</li>
+<li>These numbers are local-source inventory numbers, not a statement of what is linked into any single final binary.</li>
+</ul>
+</body>
+</html>
