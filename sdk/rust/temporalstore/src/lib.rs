@@ -171,6 +171,14 @@ struct CFeatureFilter {
 #[cfg(feature = "direct")]
 #[repr(C)]
 #[derive(Clone, Copy)]
+struct CFeaturePoint {
+    timestamp: u64,
+    value: *const c_char,
+}
+
+#[cfg(feature = "direct")]
+#[repr(C)]
+#[derive(Clone, Copy)]
 struct CSequenceFeatureRow {
     timestamp: u64,
     gid: u64,
@@ -201,6 +209,13 @@ struct CStringArray {
 struct CHashEntryArray {
     count: usize,
     entries: *mut CHashEntry,
+}
+
+#[cfg(feature = "direct")]
+#[repr(C)]
+struct CFeaturePointArray {
+    count: usize,
+    points: *mut CFeaturePoint,
 }
 
 #[cfg(feature = "direct")]
@@ -334,6 +349,34 @@ extern "C" {
         context_pack_json: *mut *mut c_char,
         error_message: *mut *mut c_char,
     ) -> c_int;
+    fn temporalstore_add_feature_points(
+        client: *mut TemporalStoreClientOpaque,
+        key: *const c_char,
+        points: *const CFeaturePoint,
+        count: usize,
+        error_message: *mut *mut c_char,
+    ) -> c_int;
+    fn temporalstore_query_feature_points(
+        client: *mut TemporalStoreClientOpaque,
+        key: *const c_char,
+        start_ts: u64,
+        end_ts: u64,
+        count: u64,
+        points: *mut CFeaturePointArray,
+        error_message: *mut *mut c_char,
+    ) -> c_int;
+    fn temporalstore_query_feature_points_with_filters(
+        client: *mut TemporalStoreClientOpaque,
+        key: *const c_char,
+        start_ts: u64,
+        end_ts: u64,
+        count: u64,
+        filters: *const CFeatureFilter,
+        filter_count: usize,
+        points: *mut CFeaturePointArray,
+        error_message: *mut *mut c_char,
+    ) -> c_int;
+    fn temporalstore_feature_point_array_free(points: *mut CFeaturePointArray);
     fn temporalstore_add_sequence_feature_rows(
         client: *mut TemporalStoreClientOpaque,
         key: *const c_char,
@@ -780,6 +823,114 @@ impl Client {
         Ok(out)
     }
 
+    pub fn add_feature_points(&self, key: &str, points: &[FeaturePoint]) -> Result<()> {
+        let key = cstring(key)?;
+        let values = points
+            .iter()
+            .map(|point| cstring(&String::from_utf8_lossy(&point.value)))
+            .collect::<Result<Vec<_>>>()?;
+        let c_points = points
+            .iter()
+            .zip(values.iter())
+            .map(|(point, value)| CFeaturePoint {
+                timestamp: point.timestamp_ms,
+                value: value.as_ptr(),
+            })
+            .collect::<Vec<_>>();
+        let mut error: *mut c_char = ptr::null_mut();
+        let points_ptr = if c_points.is_empty() {
+            ptr::null()
+        } else {
+            c_points.as_ptr()
+        };
+        let code = unsafe {
+            temporalstore_add_feature_points(
+                self.raw,
+                key.as_ptr(),
+                points_ptr,
+                c_points.len(),
+                &mut error,
+            )
+        };
+        check(code, error)
+    }
+
+    pub fn query_feature_points(
+        &self,
+        key: &str,
+        start_ts: u64,
+        end_ts: u64,
+        count: u64,
+    ) -> Result<Vec<FeaturePoint>> {
+        let key = cstring(key)?;
+        let mut out = CFeaturePointArray {
+            count: 0,
+            points: ptr::null_mut(),
+        };
+        let mut error: *mut c_char = ptr::null_mut();
+        let code = unsafe {
+            temporalstore_query_feature_points(
+                self.raw,
+                key.as_ptr(),
+                start_ts,
+                end_ts,
+                count,
+                &mut out,
+                &mut error,
+            )
+        };
+        check(code, error)?;
+        let points = feature_points_from_c_array(&out);
+        unsafe { temporalstore_feature_point_array_free(&mut out) };
+        Ok(points)
+    }
+
+    pub fn query_feature_points_filtered(
+        &self,
+        key: &str,
+        start_ts: u64,
+        end_ts: u64,
+        count: u64,
+        filters: &[FeatureFilter],
+    ) -> Result<Vec<FeaturePoint>> {
+        let key = cstring(key)?;
+        let c_fields: Vec<CString> = filters
+            .iter()
+            .map(|filter| cstring(&filter.field))
+            .collect::<Result<Vec<_>>>()?;
+        let c_filters: Vec<CFeatureFilter> = filters
+            .iter()
+            .zip(c_fields.iter())
+            .map(|(filter, field)| CFeatureFilter {
+                field: field.as_ptr(),
+                op: filter.op as c_int,
+                value: filter.value,
+            })
+            .collect();
+        let mut out = CFeaturePointArray {
+            count: 0,
+            points: ptr::null_mut(),
+        };
+        let mut error: *mut c_char = ptr::null_mut();
+        let code = unsafe {
+            temporalstore_query_feature_points_with_filters(
+                self.raw,
+                key.as_ptr(),
+                start_ts,
+                end_ts,
+                count,
+                c_filters.as_ptr(),
+                c_filters.len(),
+                &mut out,
+                &mut error,
+            )
+        };
+        check(code, error)?;
+        let points = feature_points_from_c_array(&out);
+        unsafe { temporalstore_feature_point_array_free(&mut out) };
+        Ok(points)
+    }
+
     pub fn add_sequence_feature_rows(&self, key: &str, rows: &[SequenceFeatureRow]) -> Result<()> {
         let key = cstring(key)?;
         let c_rows: Vec<CSequenceFeatureRow> = rows
@@ -916,6 +1067,28 @@ impl Client {
         check(code, error)?;
         Ok(count)
     }
+}
+
+#[cfg(feature = "direct")]
+fn feature_points_from_c_array(out: &CFeaturePointArray) -> Vec<FeaturePoint> {
+    if out.points.is_null() {
+        return Vec::new();
+    }
+    let slice = unsafe { std::slice::from_raw_parts(out.points, out.count) };
+    slice
+        .iter()
+        .map(|point| {
+            let value = if point.value.is_null() {
+                Vec::new()
+            } else {
+                unsafe { CStr::from_ptr(point.value).to_bytes().to_vec() }
+            };
+            FeaturePoint {
+                timestamp_ms: point.timestamp,
+                value,
+            }
+        })
+        .collect()
 }
 
 #[cfg(feature = "direct")]
@@ -1876,6 +2049,18 @@ mod tests {
         let _: fn(&Client, &str) -> super::Result<u64> = Client::ttl;
         let _: fn(&Client, &str, &str) -> super::Result<()> = Client::sadd;
         let _: fn(&Client, &str) -> super::Result<Vec<String>> = Client::smembers;
+        let _: fn(&Client, &str, &[super::FeaturePoint]) -> super::Result<()> =
+            Client::add_feature_points;
+        let _: fn(&Client, &str, u64, u64, u64) -> super::Result<Vec<super::FeaturePoint>> =
+            Client::query_feature_points;
+        let _: fn(
+            &Client,
+            &str,
+            u64,
+            u64,
+            u64,
+            &[super::FeatureFilter],
+        ) -> super::Result<Vec<super::FeaturePoint>> = Client::query_feature_points_filtered;
         let _: fn(
             &Client,
             &str,
