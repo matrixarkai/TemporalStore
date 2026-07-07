@@ -320,6 +320,11 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
     );
     assert!(extract.status.ok);
     assert!(extract.node_uri.starts_with("tsctx://tenant/42/node/"));
+    assert!(extract.summary_generation.new_event_summary_immediate);
+    assert!(extract.summary_generation.event_embedding_immediate);
+    assert!(extract.summary_generation.existing_summary_refresh_due);
+    assert!(!extract.summary_generation.existing_summary_refresh_deferred);
+    assert!(extract.summary_generation.dirty_marker_written);
 
     let retrieve = retrieve_context(
         &engine,
@@ -442,6 +447,184 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
     assert!(inject.status.ok);
     assert!(inject.injected_prompt.contains("<context>"));
     assert!(!inject.audit.selected_refs.is_empty());
+}
+
+// shared-corpus: context_summary_generation_frequency_deferred_refresh
+#[test]
+fn context_summary_generation_prioritizes_new_events_and_defers_existing_refresh() {
+    let engine = test_engine();
+    let first = extract_context(
+        &engine,
+        ContextExtractRequest {
+            shard_id: 1,
+            tenant_hash: 4201,
+            source_kind: ContextSourceKind::Chat,
+            source_id: "agent:codex:session-1".to_string(),
+            title: "Checkout memory".to_string(),
+            body: "First event says checkout needs payment risk context.".to_string(),
+            timestamp_ms: 10_000,
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    assert!(first.status.ok, "{:?}", first.status);
+    assert!(first.summary_generation.existing_summary_refresh_due);
+    assert!(!first.summary_generation.summary_model_call_skipped);
+
+    let second = extract_context(
+        &engine,
+        ContextExtractRequest {
+            shard_id: 1,
+            tenant_hash: 4201,
+            source_kind: ContextSourceKind::Chat,
+            source_id: "agent:codex:session-1".to_string(),
+            title: "Checkout memory".to_string(),
+            body: "Second event says the retry should inspect idempotent gateway writes."
+                .to_string(),
+            timestamp_ms: 10_100,
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    assert!(second.status.ok, "{:?}", second.status);
+    assert!(second.summary_generation.new_event_summary_immediate);
+    assert!(second.summary_generation.event_embedding_immediate);
+    assert!(second.summary_generation.existing_summary_refresh_deferred);
+    assert!(!second.summary_generation.existing_summary_refresh_due);
+    assert!(second.summary_generation.summary_model_call_skipped);
+    assert_eq!(second.dirty_marker.reason, 2);
+    assert_eq!(second.dirty_marker.propagate_depth, 0);
+
+    let retrieve = retrieve_context(
+        &engine,
+        ContextRetrieveRequest {
+            shard_id: 1,
+            tenant_hash: 4201,
+            node_hashes: vec![first.node.node_hash],
+            query: "idempotent gateway retry".to_string(),
+            start_time_ms: 0,
+            end_time_ms: 20_000,
+            max_events: 8,
+            min_confidence: 0.0,
+            min_importance: 0.0,
+            tiers: vec![ContextTier::L2],
+            max_summary_nodes: 4,
+            max_event_nodes: 4,
+            owner_scope: "agent:codex".to_string(),
+            current_agent_id: "codex".to_string(),
+            shared_resource_scopes: Vec::new(),
+            max_peer_agent_nodes: usize::MAX,
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    assert!(retrieve.status.ok, "{:?}", retrieve.status);
+    assert!(retrieve
+        .blocks
+        .iter()
+        .any(|block| block.text.contains("idempotent gateway")));
+}
+
+// shared-corpus: context_missing_summary_degrades_to_indexes_and_raw_events
+#[test]
+fn context_retrieval_degrades_to_secondary_index_and_raw_events_when_summaries_missing() {
+    let engine = test_engine();
+    let tenant_hash = 4202;
+    let node_hash = stable_hash64("missing-summary-node");
+    let event_time_ms = 42_000;
+    let event = context_event_with_storage_keys(
+        node_hash,
+        ContextEvent {
+            event_id_hash: stable_hash64("missing-summary-event"),
+            event_time_ms,
+            ingestion_time_ms: event_time_ms,
+            kind: source_kind_code(ContextSourceKind::Chat),
+            event_type: 1,
+            actor_hash: stable_hash64("agent:codex"),
+            status: 1,
+            valid_until_ms: 0,
+            confidence: 1.0,
+            importance: 1.0,
+            text: "Raw event says checkout retry requires the fraud review evidence.".to_string(),
+            source_ref: "agent:codex:raw-event".to_string(),
+            related_node_hashes: Vec::new(),
+            compact_attrs: Vec::new(),
+        },
+    );
+    for command in [
+        Command::ContextUpsertNode {
+            tenant_hash,
+            node: ContextNode {
+                node_hash,
+                parent_hash: 0,
+                kind: source_kind_code(ContextSourceKind::Chat),
+                canonical_name: "Missing summary node".to_string(),
+                l0: String::new(),
+                status: 1,
+                last_event_time_ms: event_time_ms,
+                summary_dirty: true,
+                l1_ref: String::new(),
+                raw_metadata_ref: "agent:codex:raw-event".to_string(),
+            },
+        },
+        Command::ContextWriteEvent {
+            tenant_hash,
+            node_hash,
+            event: event.clone(),
+            first_write_only: false,
+        },
+        Command::ContextWriteIndexRef {
+            tenant_hash,
+            index_name: "source".to_string(),
+            index_value_hash: stable_hash64("agent:codex:raw-event"),
+            scope_hash: 0,
+            event_time_ms,
+            index_ref: ContextIndexRef {
+                primary_node_hash: node_hash,
+                primary_event_time_ms: event_time_ms,
+                event_id_hash: event.event_id_hash,
+            },
+        },
+    ] {
+        let response = engine.execute_durable(ExecuteRequest {
+            shard_id: 1,
+            command,
+        });
+        assert!(response.status.ok, "{:?}", response.status);
+    }
+
+    let report = retrieve_context(
+        &engine,
+        ContextRetrieveRequest {
+            shard_id: 1,
+            tenant_hash,
+            node_hashes: vec![node_hash],
+            query: "checkout fraud review evidence".to_string(),
+            start_time_ms: 0,
+            end_time_ms: 50_000,
+            max_events: 8,
+            min_confidence: 0.0,
+            min_importance: 0.0,
+            tiers: vec![ContextTier::L2],
+            max_summary_nodes: 4,
+            max_event_nodes: 4,
+            owner_scope: "agent:codex".to_string(),
+            current_agent_id: "codex".to_string(),
+            shared_resource_scopes: Vec::new(),
+            max_peer_agent_nodes: usize::MAX,
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    assert!(report.status.ok, "{:?}", report.status);
+    let traversal = &report.query_understanding_debug.tree_traversal_summary;
+    assert!(traversal.missing_summary_degraded_gracefully);
+    assert_eq!(traversal.summary_embedding_missing_node_count, 1);
+    assert!(traversal.degraded_to_raw_event_scan);
+    assert_eq!(
+        traversal.fallback_reason,
+        "missing_summary_embedding_secondary_index_raw_event_scan"
+    );
+    assert!(report
+        .blocks
+        .iter()
+        .any(|block| block.text.contains("fraud review evidence")));
 }
 
 // shared-corpus: context_query_debug_filter_group_cpp_parity

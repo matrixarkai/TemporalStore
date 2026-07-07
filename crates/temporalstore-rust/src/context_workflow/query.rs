@@ -82,6 +82,7 @@ pub(super) fn context_query_understanding_debug(
             skipped_node_count: 0,
             summary_embeddings: Vec::new(),
             top_k_per_layer: request.max_events.max(1),
+            ..ContextTreeTraversalDebug::default()
         },
         prefilter_candidate_sample: Vec::new(),
         selected_refs: Vec::new(),
