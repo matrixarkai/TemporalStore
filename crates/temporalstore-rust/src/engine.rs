@@ -10624,16 +10624,12 @@ fn promote_model_maps_to_slot_index_authority(
     }
     let slot_index_missing_entry = shard.slot_index.slot_map.is_empty()
         || model_entries.iter().any(|entry| {
-            !shard.slot_index.slot_map.values().any(|slot| {
-                slot.page_index.values().any(|page| {
-                    page.object_key == entry.object_key
-                        && page.model_id == entry.kind
-                        && page.component == entry.component
-                        && page.address.page_segment_id == entry.address.page_segment_id
-                        && page.address.offset == entry.address.offset
-                        && page.address.length == entry.address.length
-                })
-            })
+            !shard.slot_index.contains_object_page_address(
+                &entry.kind,
+                &entry.object_key,
+                entry.component.as_deref(),
+                &entry.address,
+            )
         });
     if !slot_index_missing_entry {
         return false;
