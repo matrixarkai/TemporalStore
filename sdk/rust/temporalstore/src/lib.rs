@@ -128,6 +128,64 @@ pub struct SequenceFeatureRow {
     pub author_id: u64,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct IpsFeatureStat {
+    pub id: i64,
+    pub slot: i32,
+    pub has_slot: bool,
+    pub kind: i32,
+    pub v1: i32,
+    pub v2: i32,
+}
+
+#[derive(Clone, Debug)]
+pub struct IpsInstance {
+    pub table: String,
+    pub uid: i64,
+    pub timestamp_us: i64,
+    pub action_type: i32,
+    pub logical_table: i32,
+    pub features: Vec<IpsFeatureStat>,
+}
+
+impl Default for IpsInstance {
+    fn default() -> Self {
+        Self {
+            table: "table_compress".to_string(),
+            uid: 0,
+            timestamp_us: 0,
+            action_type: 0,
+            logical_table: 0,
+            features: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct IpsLastQuery {
+    pub table: String,
+    pub uid: i64,
+    pub action_type: i32,
+    pub logical_table: i32,
+    pub slot: i32,
+    pub top_k: i32,
+    pub last_instances: i64,
+}
+
+impl Default for IpsLastQuery {
+    fn default() -> Self {
+        Self {
+            table: "table_compress".to_string(),
+            uid: 0,
+            action_type: 0,
+            logical_table: 0,
+            slot: 0,
+            top_k: 20,
+            last_instances: 10,
+        }
+    }
+}
+
 #[cfg(feature = "direct")]
 #[repr(C)]
 struct TemporalStoreClientOpaque {
@@ -190,6 +248,18 @@ struct CSequenceFeatureRow {
 #[cfg(feature = "direct")]
 #[repr(C)]
 #[derive(Clone, Copy)]
+struct CIpsFeatureStat {
+    id: i64,
+    slot: i32,
+    has_slot: c_int,
+    kind: i32,
+    v1: i32,
+    v2: i32,
+}
+
+#[cfg(feature = "direct")]
+#[repr(C)]
+#[derive(Clone, Copy)]
 struct CHashEntry {
     key: *const c_char,
     field: *const c_char,
@@ -223,6 +293,13 @@ struct CFeaturePointArray {
 struct CSequenceFeatureRowArray {
     count: usize,
     rows: *mut CSequenceFeatureRow,
+}
+
+#[cfg(feature = "direct")]
+#[repr(C)]
+struct CIpsFeatureArray {
+    count: usize,
+    features: *mut CIpsFeatureStat,
 }
 
 #[cfg(feature = "direct")]
@@ -396,6 +473,30 @@ extern "C" {
         error_message: *mut *mut c_char,
     ) -> c_int;
     fn temporalstore_sequence_feature_row_array_free(rows: *mut CSequenceFeatureRowArray);
+    fn temporalstore_add_ips_instance(
+        client: *mut TemporalStoreClientOpaque,
+        table: *const c_char,
+        uid: i64,
+        timestamp_us: i64,
+        action_type: i32,
+        logical_table: i32,
+        features: *const CIpsFeatureStat,
+        feature_count: usize,
+        error_message: *mut *mut c_char,
+    ) -> c_int;
+    fn temporalstore_query_ips_last_instances(
+        client: *mut TemporalStoreClientOpaque,
+        table: *const c_char,
+        uid: i64,
+        action_type: i32,
+        logical_table: i32,
+        slot: i32,
+        top_k: i32,
+        last_instances: i64,
+        features: *mut CIpsFeatureArray,
+        error_message: *mut *mut c_char,
+    ) -> c_int;
+    fn temporalstore_ips_feature_array_free(features: *mut CIpsFeatureArray);
     fn temporalstore_risk_increment(
         client: *mut TemporalStoreClientOpaque,
         key: *const c_char,
@@ -1016,6 +1117,69 @@ impl Client {
         Ok(rows)
     }
 
+    pub fn add_ips_instance(&self, instance: &IpsInstance) -> Result<()> {
+        let table = cstring(&instance.table)?;
+        let features = instance
+            .features
+            .iter()
+            .map(|feature| CIpsFeatureStat {
+                id: feature.id,
+                slot: feature.slot,
+                has_slot: if feature.has_slot { 1 } else { 0 },
+                kind: feature.kind,
+                v1: feature.v1,
+                v2: feature.v2,
+            })
+            .collect::<Vec<_>>();
+        let features_ptr = if features.is_empty() {
+            ptr::null()
+        } else {
+            features.as_ptr()
+        };
+        let mut error: *mut c_char = ptr::null_mut();
+        let code = unsafe {
+            temporalstore_add_ips_instance(
+                self.raw,
+                table.as_ptr(),
+                instance.uid,
+                instance.timestamp_us,
+                instance.action_type,
+                instance.logical_table,
+                features_ptr,
+                features.len(),
+                &mut error,
+            )
+        };
+        check(code, error)
+    }
+
+    pub fn query_ips_last_instances(&self, query: &IpsLastQuery) -> Result<Vec<IpsFeatureStat>> {
+        let table = cstring(&query.table)?;
+        let mut out = CIpsFeatureArray {
+            count: 0,
+            features: ptr::null_mut(),
+        };
+        let mut error: *mut c_char = ptr::null_mut();
+        let code = unsafe {
+            temporalstore_query_ips_last_instances(
+                self.raw,
+                table.as_ptr(),
+                query.uid,
+                query.action_type,
+                query.logical_table,
+                query.slot,
+                query.top_k,
+                query.last_instances,
+                &mut out,
+                &mut error,
+            )
+        };
+        check(code, error)?;
+        let features = ips_features_from_c_array(&out);
+        unsafe { temporalstore_ips_feature_array_free(&mut out) };
+        Ok(features)
+    }
+
     pub fn risk_increment(
         &self,
         key: &str,
@@ -1087,6 +1251,25 @@ fn feature_points_from_c_array(out: &CFeaturePointArray) -> Vec<FeaturePoint> {
                 timestamp_ms: point.timestamp,
                 value,
             }
+        })
+        .collect()
+}
+
+#[cfg(feature = "direct")]
+fn ips_features_from_c_array(out: &CIpsFeatureArray) -> Vec<IpsFeatureStat> {
+    if out.features.is_null() {
+        return Vec::new();
+    }
+    let slice = unsafe { std::slice::from_raw_parts(out.features, out.count) };
+    slice
+        .iter()
+        .map(|feature| IpsFeatureStat {
+            id: feature.id,
+            slot: feature.slot,
+            has_slot: feature.has_slot != 0,
+            kind: feature.kind,
+            v1: feature.v1,
+            v2: feature.v2,
         })
         .collect()
 }
@@ -2061,6 +2244,9 @@ mod tests {
             u64,
             &[super::FeatureFilter],
         ) -> super::Result<Vec<super::FeaturePoint>> = Client::query_feature_points_filtered;
+        let _: fn(&Client, &super::IpsInstance) -> super::Result<()> = Client::add_ips_instance;
+        let _: fn(&Client, &super::IpsLastQuery) -> super::Result<Vec<super::IpsFeatureStat>> =
+            Client::query_ips_last_instances;
         let _: fn(
             &Client,
             &str,
