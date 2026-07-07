@@ -1001,6 +1001,22 @@ impl ProxyClient {
         response_feature_points(response)
     }
 
+    pub fn set(&self, key: &str, value: &str) -> Result<()> {
+        let body = self.proxy_service_body(key, &[("value", serde_json::json!(value.as_bytes()))]);
+        self.proxy_service_execute("/ProxyService/Set", body)
+            .map(|_| ())
+    }
+
+    pub fn get(&self, key: &str) -> Result<Option<String>> {
+        let body = self.proxy_service_body(key, &[]);
+        let response = self.proxy_service_execute("/ProxyService/Get", body)?;
+        Ok(response
+            .get("value")
+            .cloned()
+            .filter(|value| !value.is_null())
+            .map(json_byte_array_to_string))
+    }
+
     pub fn risk_hset(&self, key: &str, timestamp_ms: u64, amount: i64) -> Result<()> {
         let body = self.proxy_service_body(
             key,
@@ -1741,6 +1757,8 @@ mod tests {
             Option<usize>,
             &[super::FeatureFilter],
         ) -> super::Result<Vec<super::FeaturePoint>> = ProxyClient::feature_query_filtered;
+        let _: fn(&ProxyClient, &str, &str) -> super::Result<()> = ProxyClient::set;
+        let _: fn(&ProxyClient, &str) -> super::Result<Option<String>> = ProxyClient::get;
         let _: fn(&ProxyClient, &str, u64, i64) -> super::Result<()> = ProxyClient::risk_hset;
         let _: fn(&ProxyClient, &str, &str, u64, u64, super::RiskFolType) -> super::Result<()> =
             ProxyClient::risk_fol_set;
