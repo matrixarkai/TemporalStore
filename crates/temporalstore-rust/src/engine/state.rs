@@ -276,6 +276,7 @@ fn same_page_address(left: &PageAddress, right: &PageAddress) -> bool {
         && left.page_id == right.page_id
         && left.object_id == right.object_id
         && left.routing_slot == right.routing_slot
+        && left.generation == right.generation
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

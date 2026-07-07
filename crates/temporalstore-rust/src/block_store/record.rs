@@ -245,6 +245,7 @@ pub(super) fn logical_range_from_segment(
             page_id: None,
             object_id: None,
             routing_slot: None,
+            generation: None,
             extent_id: None,
             sha256: None,
         };
@@ -270,6 +271,7 @@ pub(super) fn logical_range_from_segment(
             page_id: header.page_id,
             object_id: header.object_id,
             routing_slot: header.routing_slot,
+            generation: header.page_id.or(header.object_id),
             extent_id: header.extent_id,
             ..address
         };
@@ -527,6 +529,7 @@ pub(super) fn summarize_segment(
             page_id: None,
             object_id: None,
             routing_slot: None,
+            generation: None,
             extent_id: None,
             sha256: None,
         };
@@ -595,6 +598,7 @@ pub(super) fn inspect_segment(segment: &[u8], page_segment_id: u64) -> BlockStor
             page_id: None,
             object_id: None,
             routing_slot: None,
+            generation: None,
             extent_id: None,
             sha256: None,
         };
