@@ -1448,6 +1448,18 @@ impl ProxyClient {
         self.post_raw("/ProxyService/OpenTable", body)
     }
 
+    pub fn get_proxy_config(&self) -> Result<serde_json::Value> {
+        self.get_raw("/ProxyService/GetConfig")
+    }
+
+    pub fn update_proxy_config(&self, options: serde_json::Value) -> Result<serde_json::Value> {
+        self.post_raw("/ProxyService/UpdateConfig", options)
+    }
+
+    pub fn refresh_topology(&self) -> Result<serde_json::Value> {
+        self.post_raw("/ProxyService/RefreshTopology", serde_json::json!({}))
+    }
+
     pub fn execute_command(
         &self,
         shard_id: u64,
@@ -1914,12 +1926,28 @@ impl ProxyClient {
             .unwrap_or_else(|| serde_json::json!({})))
     }
 
+    fn get_raw(&self, path: &str) -> Result<serde_json::Value> {
+        self.http_json("GET", path, None)
+    }
+
     fn post_raw(&self, path: &str, body: serde_json::Value) -> Result<serde_json::Value> {
+        self.http_json("POST", path, Some(body))
+    }
+
+    fn http_json(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<serde_json::Value>,
+    ) -> Result<serde_json::Value> {
         let (host, port, base_path) = parse_http_endpoint(&self.endpoint)?;
         let request_path = format!("{base_path}{path}");
-        let payload = serde_json::to_string(&body).map_err(json_error)?;
+        let payload = match body {
+            Some(body) => serde_json::to_string(&body).map_err(json_error)?,
+            None => String::new(),
+        };
         let mut headers = format!(
-            "POST {request_path} HTTP/1.1\r\nHost: {host}:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
+            "{method} {request_path} HTTP/1.1\r\nHost: {host}:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
             payload.len()
         );
         if !self.options.api_key.is_empty() {
