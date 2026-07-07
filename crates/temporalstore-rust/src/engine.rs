@@ -10774,12 +10774,37 @@ fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
 
 fn page_index_ref_key(entry: &LivePageEntry) -> String {
     format!(
-        "{}:{}:{}:{}:{}",
+        "{}:{}:{}:{}:{}:{}:{}:{}",
         entry.kind,
         entry.object_key,
         entry.component.as_deref().unwrap_or(""),
         entry.address.page_segment_id,
-        entry.address.offset
+        entry.address.offset,
+        entry.address.length,
+        entry.address.page_id.unwrap_or_default(),
+        entry.address.generation.unwrap_or_default()
+    )
+}
+
+fn page_physical_identity_key(
+    address: &PageAddress,
+) -> (
+    u64,
+    u64,
+    u64,
+    Option<u64>,
+    Option<u64>,
+    Option<u32>,
+    Option<u64>,
+) {
+    (
+        address.page_segment_id,
+        address.offset,
+        address.length,
+        address.page_id,
+        address.object_id,
+        address.routing_slot,
+        address.generation,
     )
 }
 
@@ -10892,12 +10917,20 @@ fn sync_slot_index_object_pages(
         }
     }
 
-    let mut unique_addresses = BTreeMap::<(u64, u64, u64), PageAddress>::new();
+    let mut unique_addresses = BTreeMap::<
+        (
+            u64,
+            u64,
+            u64,
+            Option<u64>,
+            Option<u64>,
+            Option<u32>,
+            Option<u64>,
+        ),
+        PageAddress,
+    >::new();
     for address in addresses {
-        unique_addresses.insert(
-            (address.page_segment_id, address.offset, address.length),
-            address,
-        );
+        unique_addresses.insert(page_physical_identity_key(&address), address);
     }
 
     for address in unique_addresses.into_values() {
