@@ -7,6 +7,8 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::storage_config::effective_block_segment_target_bytes;
+
 mod paths;
 mod record;
 
@@ -590,11 +592,10 @@ impl LocalBlockStore {
     ) -> Result<BlockAddress, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         fs::create_dir_all(&inner.root)?;
-        let path = segment_path(&inner.root, inner.page_segment_id);
-        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-        let page_id = inner.next_page_id;
-        let extent_id = extent_id_for_segment(inner.page_segment_id);
-        let record = encode_page_record(
+        let segment_target_bytes = effective_block_segment_target_bytes();
+        let mut page_id = inner.next_page_id;
+        let mut extent_id = extent_id_for_segment(inner.page_segment_id);
+        let mut record = encode_page_record(
             bytes,
             page_id,
             object_id,
@@ -602,6 +603,25 @@ impl LocalBlockStore {
             extent_id,
             inner.options,
         )?;
+        if should_roll_before_append(
+            inner.write_offset,
+            record.bytes.len() as u64,
+            segment_target_bytes,
+        ) {
+            roll_segment_inner(&mut inner)?;
+            page_id = inner.next_page_id;
+            extent_id = extent_id_for_segment(inner.page_segment_id);
+            record = encode_page_record(
+                bytes,
+                page_id,
+                object_id,
+                routing_slot,
+                extent_id,
+                inner.options,
+            )?;
+        }
+        let path = segment_path(&inner.root, inner.page_segment_id);
+        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
         let address = BlockAddress {
             page_segment_id: inner.page_segment_id,
             offset: inner.write_offset,
@@ -647,8 +667,8 @@ impl LocalBlockStore {
             return Ok(Vec::new());
         }
         fs::create_dir_all(&inner.root)?;
-        let path = segment_path(&inner.root, inner.page_segment_id);
-        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+        let segment_target_bytes = effective_block_segment_target_bytes();
+        let mut file = None::<File>;
         let mut addresses = Vec::with_capacity(records.len());
         let mut writes = 0u64;
         let mut bytes_written = 0u64;
@@ -657,9 +677,9 @@ impl LocalBlockStore {
         let mut compression_bytes_saved = 0u64;
 
         for (bytes, object_id, routing_slot) in records {
-            let page_id = inner.next_page_id;
-            let extent_id = extent_id_for_segment(inner.page_segment_id);
-            let record = encode_page_record(
+            let mut page_id = inner.next_page_id;
+            let mut extent_id = extent_id_for_segment(inner.page_segment_id);
+            let mut record = encode_page_record(
                 &bytes,
                 page_id,
                 object_id,
@@ -667,6 +687,31 @@ impl LocalBlockStore {
                 extent_id,
                 inner.options,
             )?;
+            if should_roll_before_append(
+                inner.write_offset,
+                record.bytes.len() as u64,
+                segment_target_bytes,
+            ) {
+                if let Some(mut current) = file.take() {
+                    current.flush()?;
+                    current.sync_data()?;
+                }
+                roll_segment_inner(&mut inner)?;
+                page_id = inner.next_page_id;
+                extent_id = extent_id_for_segment(inner.page_segment_id);
+                record = encode_page_record(
+                    &bytes,
+                    page_id,
+                    object_id,
+                    routing_slot,
+                    extent_id,
+                    inner.options,
+                )?;
+            }
+            if file.is_none() {
+                let path = segment_path(&inner.root, inner.page_segment_id);
+                file = Some(OpenOptions::new().create(true).append(true).open(path)?);
+            }
             let address = BlockAddress {
                 page_segment_id: inner.page_segment_id,
                 offset: inner.write_offset,
@@ -677,7 +722,9 @@ impl LocalBlockStore {
                 extent_id: Some(extent_id),
                 sha256: Some(sha256_hex(&bytes)),
             };
-            file.write_all(&record.bytes)?;
+            if let Some(current) = file.as_mut() {
+                current.write_all(&record.bytes)?;
+            }
             inner.next_page_id = inner.next_page_id.saturating_add(1);
             inner.write_offset += address.length;
             let page_segment_id = inner.page_segment_id;
@@ -699,8 +746,10 @@ impl LocalBlockStore {
             }
             addresses.push(address);
         }
-        file.flush()?;
-        file.sync_data()?;
+        if let Some(mut current) = file {
+            current.flush()?;
+            current.sync_data()?;
+        }
         persist_extent_manifest(&inner.root, &inner.extents)?;
         inner.stats.writes = inner.stats.writes.saturating_add(writes);
         inner.stats.bytes_written = inner.stats.bytes_written.saturating_add(bytes_written);
@@ -721,47 +770,7 @@ impl LocalBlockStore {
 
     pub fn roll_segment(&self) -> Result<BlockStoreRollReport, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
-        fs::create_dir_all(&inner.root)?;
-        let previous_page_segment_id = inner.page_segment_id;
-        let next_from_current = inner.page_segment_id.saturating_add(1);
-        let next_from_disk = segment_ids_at(&inner.root)?
-            .into_iter()
-            .max()
-            .map(|id| id.saturating_add(1))
-            .unwrap_or_default();
-        inner.page_segment_id = next_from_current.max(next_from_disk);
-        inner.write_offset = 0;
-        let path = segment_path(&inner.root, inner.page_segment_id);
-        let file = File::create(&path)?;
-        file.sync_all()?;
-        sync_parent_dir(&path)?;
-        let transition_unix_ms = now_unix_ms();
-        if let Some(previous) = inner.extents.get_mut(&previous_page_segment_id) {
-            previous.state = BlockStoreExtentState::Sealed;
-            previous.updated_unix_ms = Some(transition_unix_ms);
-        }
-        let new_extent = BlockStoreExtentDescriptor {
-            extent_id: extent_id_for_segment(inner.page_segment_id),
-            page_segment_id: inner.page_segment_id,
-            state: BlockStoreExtentState::Active,
-            physical_bytes: 0,
-            logical_bytes: 0,
-            created_unix_ms: Some(transition_unix_ms),
-            updated_unix_ms: Some(transition_unix_ms),
-            first_page_id: None,
-            last_page_id: None,
-            readable_prefix_physical_bytes: 0,
-            has_corruption: false,
-            first_error_offset: None,
-            first_error: None,
-        };
-        let page_segment_id = inner.page_segment_id;
-        inner.extents.insert(page_segment_id, new_extent);
-        persist_extent_manifest(&inner.root, &inner.extents)?;
-        Ok(BlockStoreRollReport {
-            previous_page_segment_id,
-            new_page_segment_id: inner.page_segment_id,
-        })
+        roll_segment_inner(&mut inner)
     }
 
     pub fn read(&self, address: &BlockAddress) -> Result<Vec<u8>, BlockStoreError> {
@@ -1644,6 +1653,60 @@ impl LocalBlockStore {
     pub fn stats(&self) -> BlockStoreStats {
         self.inner.lock().expect("block store lock poisoned").stats
     }
+}
+
+fn should_roll_before_append(
+    write_offset: u64,
+    record_len: u64,
+    segment_target_bytes: u64,
+) -> bool {
+    write_offset > 0 && write_offset.saturating_add(record_len) > segment_target_bytes
+}
+
+fn roll_segment_inner(
+    inner: &mut BlockStoreInner,
+) -> Result<BlockStoreRollReport, BlockStoreError> {
+    fs::create_dir_all(&inner.root)?;
+    let previous_page_segment_id = inner.page_segment_id;
+    let next_from_current = inner.page_segment_id.saturating_add(1);
+    let next_from_disk = segment_ids_at(&inner.root)?
+        .into_iter()
+        .max()
+        .map(|id| id.saturating_add(1))
+        .unwrap_or_default();
+    inner.page_segment_id = next_from_current.max(next_from_disk);
+    inner.write_offset = 0;
+    let path = segment_path(&inner.root, inner.page_segment_id);
+    let file = File::create(&path)?;
+    file.sync_all()?;
+    sync_parent_dir(&path)?;
+    let transition_unix_ms = now_unix_ms();
+    if let Some(previous) = inner.extents.get_mut(&previous_page_segment_id) {
+        previous.state = BlockStoreExtentState::Sealed;
+        previous.updated_unix_ms = Some(transition_unix_ms);
+    }
+    let new_extent = BlockStoreExtentDescriptor {
+        extent_id: extent_id_for_segment(inner.page_segment_id),
+        page_segment_id: inner.page_segment_id,
+        state: BlockStoreExtentState::Active,
+        physical_bytes: 0,
+        logical_bytes: 0,
+        created_unix_ms: Some(transition_unix_ms),
+        updated_unix_ms: Some(transition_unix_ms),
+        first_page_id: None,
+        last_page_id: None,
+        readable_prefix_physical_bytes: 0,
+        has_corruption: false,
+        first_error_offset: None,
+        first_error: None,
+    };
+    let page_segment_id = inner.page_segment_id;
+    inner.extents.insert(page_segment_id, new_extent);
+    persist_extent_manifest(&inner.root, &inner.extents)?;
+    Ok(BlockStoreRollReport {
+        previous_page_segment_id,
+        new_page_segment_id: inner.page_segment_id,
+    })
 }
 
 fn extent_lifecycle_states(summary: &BlockStoreExtentSummary) -> Vec<String> {
