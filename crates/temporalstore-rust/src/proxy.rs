@@ -30,7 +30,7 @@ use crate::meta::{
 };
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, ExecuteRequest, ExecuteResponse,
-    RiskFolType, ShardId, Status,
+    FeatureFilter, RiskFolType, ShardId, Status,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -516,6 +516,19 @@ pub struct ProxyFeatureAddCommandRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyFeatureQueryCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    #[serde(default)]
+    pub count: Option<usize>,
+    #[serde(default)]
+    pub filters: Vec<FeatureFilter>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyRiskHsetCommandRequest {
     pub namespace: String,
     pub table_name: String,
@@ -821,6 +834,37 @@ impl ProxyService {
                         let command = Command::FeatureAppend {
                             key: req.key,
                             points: req.points,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/FeatureQuery") => {
+                match parse_json::<ProxyFeatureQueryCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = if req.filters.is_empty() {
+                            Command::FeatureQuery {
+                                key: req.key,
+                                start_ms: req.start_ms,
+                                end_ms: req.end_ms,
+                                count: req.count,
+                            }
+                        } else {
+                            Command::FeatureQueryFiltered {
+                                key: req.key,
+                                start_ms: req.start_ms,
+                                end_ms: req.end_ms,
+                                count: req.count,
+                                filters: req.filters,
+                            }
                         };
                         json_response(
                             200,

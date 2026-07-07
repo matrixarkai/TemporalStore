@@ -46,6 +46,8 @@ fn cpp_matrixark_c_api_bridge_allowed(op: &str) -> Result<()> {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "proxy", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "proxy", serde(rename_all = "snake_case"))]
 pub enum FeatureFilterOp {
     Equal = 0,
     NotEqual = 1,
@@ -54,6 +56,7 @@ pub enum FeatureFilterOp {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "proxy", derive(serde::Serialize, serde::Deserialize))]
 pub struct FeatureFilter {
     pub field: String,
     pub op: FeatureFilterOp,
@@ -967,6 +970,37 @@ impl ProxyClient {
             .map(|_| ())
     }
 
+    pub fn feature_query(
+        &self,
+        key: &str,
+        start_ms: u64,
+        end_ms: u64,
+        count: Option<usize>,
+    ) -> Result<Vec<FeaturePoint>> {
+        self.feature_query_filtered(key, start_ms, end_ms, count, &[])
+    }
+
+    pub fn feature_query_filtered(
+        &self,
+        key: &str,
+        start_ms: u64,
+        end_ms: u64,
+        count: Option<usize>,
+        filters: &[FeatureFilter],
+    ) -> Result<Vec<FeaturePoint>> {
+        let body = self.proxy_service_body(
+            key,
+            &[
+                ("start_ms", serde_json::json!(start_ms)),
+                ("end_ms", serde_json::json!(end_ms)),
+                ("count", serde_json::json!(count)),
+                ("filters", serde_json::to_value(filters).map_err(json_error)?),
+            ],
+        );
+        let response = self.proxy_service_execute("/ProxyService/FeatureQuery", body)?;
+        response_feature_points(response)
+    }
+
     pub fn risk_hset(&self, key: &str, timestamp_ms: u64, amount: i64) -> Result<()> {
         let body = self.proxy_service_body(
             key,
@@ -1316,6 +1350,17 @@ fn response_hash_entries_to_strings(response: serde_json::Value) -> Vec<(String,
             Some((field, value))
         })
         .collect()
+}
+
+#[cfg(feature = "proxy")]
+fn response_feature_points(response: serde_json::Value) -> Result<Vec<FeaturePoint>> {
+    serde_json::from_value(
+        response
+            .get("points")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([])),
+    )
+    .map_err(json_error)
 }
 
 #[cfg(feature = "proxy")]
@@ -1686,6 +1731,16 @@ mod tests {
     fn proxy_client_exposes_cpp_proxy_parity_methods() {
         let _: fn(&ProxyClient, &str, &[super::FeaturePoint]) -> super::Result<()> =
             ProxyClient::feature_add;
+        let _: fn(&ProxyClient, &str, u64, u64, Option<usize>) -> super::Result<Vec<super::FeaturePoint>> =
+            ProxyClient::feature_query;
+        let _: fn(
+            &ProxyClient,
+            &str,
+            u64,
+            u64,
+            Option<usize>,
+            &[super::FeatureFilter],
+        ) -> super::Result<Vec<super::FeaturePoint>> = ProxyClient::feature_query_filtered;
         let _: fn(&ProxyClient, &str, u64, i64) -> super::Result<()> = ProxyClient::risk_hset;
         let _: fn(&ProxyClient, &str, &str, u64, u64, super::RiskFolType) -> super::Result<()> =
             ProxyClient::risk_fol_set;
