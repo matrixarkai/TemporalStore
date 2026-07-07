@@ -60,6 +60,13 @@ pub struct FeatureFilter {
     pub value: u64,
 }
 
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "proxy", derive(serde::Serialize, serde::Deserialize))]
+pub struct FeaturePoint {
+    pub timestamp_ms: u64,
+    pub value: Vec<u8>,
+}
+
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "proxy", derive(serde::Serialize, serde::Deserialize))]
 pub struct SequenceFeatureRow {
@@ -943,6 +950,27 @@ impl ProxyClient {
         .map_err(json_error)
     }
 
+    pub fn feature_add(&self, key: &str, points: &[FeaturePoint]) -> Result<()> {
+        let body = self.proxy_service_body(
+            key,
+            &[("points", serde_json::to_value(points).map_err(json_error)?)],
+        );
+        self.proxy_service_execute("/ProxyService/FeatureAdd", body)
+            .map(|_| ())
+    }
+
+    pub fn risk_hset(&self, key: &str, timestamp_ms: u64, amount: i64) -> Result<()> {
+        let body = self.proxy_service_body(
+            key,
+            &[
+                ("timestamp_ms", serde_json::json!(timestamp_ms)),
+                ("amount", serde_json::json!(amount)),
+            ],
+        );
+        self.proxy_service_execute("/ProxyService/RiskHset", body)
+            .map(|_| ())
+    }
+
     pub fn hset(&self, key: &str, field: &str, value: &str) -> Result<()> {
         let body = self.proxy_service_body(
             key,
@@ -1591,6 +1619,9 @@ mod tests {
     #[cfg(feature = "proxy")]
     #[test]
     fn proxy_client_exposes_cpp_proxy_parity_methods() {
+        let _: fn(&ProxyClient, &str, &[super::FeaturePoint]) -> super::Result<()> =
+            ProxyClient::feature_add;
+        let _: fn(&ProxyClient, &str, u64, i64) -> super::Result<()> = ProxyClient::risk_hset;
         let _: fn(&ProxyClient, &str, &str, &str) -> super::Result<()> = ProxyClient::hset;
         let _: fn(&ProxyClient, &str, &str) -> super::Result<String> = ProxyClient::hget;
         let _: fn(&ProxyClient, &str, &[(&str, &str)]) -> super::Result<()> = ProxyClient::hmset;
