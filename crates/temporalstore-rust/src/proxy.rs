@@ -30,7 +30,7 @@ use crate::meta::{
 };
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, ExecuteRequest, ExecuteResponse,
-    FeatureFilter, RiskFolType, ShardId, Status,
+    FeatureFilter, FeatureWritePolicy, RiskFolType, ShardId, Status,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -513,6 +513,8 @@ pub struct ProxyFeatureAddCommandRequest {
     pub table_name: String,
     pub key: String,
     pub points: Vec<crate::types::FeaturePoint>,
+    #[serde(default)]
+    pub policy: Option<FeatureWritePolicy>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -831,9 +833,17 @@ impl ProxyService {
             ("POST", "/ProxyService/FeatureAdd") => {
                 match parse_json::<ProxyFeatureAddCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let command = Command::FeatureAppend {
-                            key: req.key,
-                            points: req.points,
+                        let command = if let Some(policy) = req.policy {
+                            Command::FeatureAppendWithPolicy {
+                                key: req.key,
+                                points: req.points,
+                                policy,
+                            }
+                        } else {
+                            Command::FeatureAppend {
+                                key: req.key,
+                                points: req.points,
+                            }
                         };
                         json_response(
                             200,

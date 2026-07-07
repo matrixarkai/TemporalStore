@@ -1486,9 +1486,21 @@ impl ProxyClient {
     }
 
     pub fn feature_add(&self, key: &str, points: &[FeaturePoint]) -> Result<()> {
+        self.feature_add_with_policy(key, points, None)
+    }
+
+    pub fn feature_add_with_policy(
+        &self,
+        key: &str,
+        points: &[FeaturePoint],
+        policy: Option<FeatureWritePolicy>,
+    ) -> Result<()> {
         let body = self.proxy_service_body(
             key,
-            &[("points", serde_json::to_value(points).map_err(json_error)?)],
+            &[
+                ("points", serde_json::to_value(points).map_err(json_error)?),
+                ("policy", serde_json::to_value(policy).map_err(json_error)?),
+            ],
         );
         self.proxy_service_execute("/ProxyService/FeatureAdd", body)
             .map(|_| ())
