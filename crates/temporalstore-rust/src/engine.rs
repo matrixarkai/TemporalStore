@@ -9653,7 +9653,11 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
 
 fn mark_slot_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
     let mut removed = false;
-    for slot in shard.slot_index.slot_map.values_mut() {
+    let target_slots = slot_index_target_slots_for_object_key(shard, key);
+    for routing_slot in target_slots {
+        let Some(slot) = shard.slot_index.slot_map.get_mut(&routing_slot) else {
+            continue;
+        };
         let mut deleted_object_ids = BTreeSet::new();
         slot.page_index.retain(|_, page| {
             if page.object_key == key {
@@ -9681,6 +9685,23 @@ fn mark_slot_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
     removed
 }
 
+fn slot_index_target_slots_for_object_key(shard: &ShardState, key: &str) -> BTreeSet<u32> {
+    if shard.slot_index.object_component_lookup.is_empty() {
+        return shard.slot_index.slot_map.keys().copied().collect();
+    }
+    let mut slots = BTreeSet::new();
+    for kind in storage_model_kinds() {
+        if let Some(page_refs) = shard
+            .slot_index
+            .object_component_lookup
+            .get(&object_component_lookup_key(kind, key))
+        {
+            slots.extend(page_refs.iter().map(|page_ref| page_ref.routing_slot));
+        }
+    }
+    slots
+}
+
 fn mark_slot_index_page_deleted(
     shard: &mut ShardState,
     model_id: &str,
@@ -9688,7 +9709,25 @@ fn mark_slot_index_page_deleted(
     component: Option<&str>,
 ) -> bool {
     let mut removed = false;
-    for slot in shard.slot_index.slot_map.values_mut() {
+    let target_slots = if shard.slot_index.object_page_lookup.is_empty() {
+        shard.slot_index.slot_map.keys().copied().collect::<BTreeSet<_>>()
+    } else {
+        shard
+            .slot_index
+            .object_page_lookup
+            .get(&object_page_lookup_key(model_id, key, component))
+            .map(|page_refs| {
+                page_refs
+                    .iter()
+                    .map(|page_ref| page_ref.routing_slot)
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default()
+    };
+    for routing_slot in target_slots {
+        let Some(slot) = shard.slot_index.slot_map.get_mut(&routing_slot) else {
+            continue;
+        };
         let mut slot_removed = false;
         let mut deleted_object_ids = BTreeSet::new();
         slot.page_index.retain(|_, page| {
@@ -13086,11 +13125,35 @@ fn record_exists(shard: &ShardState, key: &str) -> bool {
 }
 
 fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
-    shard.slot_index.slot_map.values().any(|slot| {
-        slot.page_index
-            .values()
-            .any(|page| page.object_key == key && !page.deleted)
-    }) || shard.strings.contains_key(key)
+    let slot_index_exists = if shard.slot_index.object_component_lookup.is_empty() {
+        shard.slot_index.slot_map.values().any(|slot| {
+            slot.page_index
+                .values()
+                .any(|page| page.object_key == key && !page.deleted)
+        })
+    } else {
+        storage_model_kinds().iter().any(|kind| {
+            shard
+                .slot_index
+                .object_component_lookup
+                .get(&object_component_lookup_key(kind, key))
+                .map(|page_refs| {
+                    page_refs.iter().any(|page_ref| {
+                        shard
+                            .slot_index
+                            .slot_map
+                            .get(&page_ref.routing_slot)
+                            .and_then(|slot| slot.page_index.get(&page_ref.page_ref_key))
+                            .map(|page| {
+                                !page.deleted && page.model_id == *kind && page.object_key == key
+                            })
+                            .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false)
+        })
+    };
+    slot_index_exists || shard.strings.contains_key(key)
         || shard.hashes.contains_key(key)
         || shard.sets.contains_key(key)
         || shard.features.contains_key(key)
@@ -13110,6 +13173,28 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         || shard.context_embeddings.contains_key(key)
         || shard.context_summaries.contains_key(key)
         || shard.context_compressions.contains_key(key)
+}
+
+fn storage_model_kinds() -> &'static [&'static str] {
+    &[
+        "string",
+        "hash",
+        "set",
+        "feature",
+        "sequence",
+        "ips",
+        "risk",
+        "context_node",
+        "context_event",
+        "context_index",
+        "context_audit",
+        "context_dirty",
+        "context_entity",
+        "context_child",
+        "context_embedding",
+        "context_summary",
+        "context_compression",
+    ]
 }
 
 fn invalidate_record_all(cache: &MultiLayerCache, shard_id: ShardId, key: &str) {
