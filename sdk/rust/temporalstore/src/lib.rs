@@ -1426,6 +1426,28 @@ impl ProxyClient {
         Self { endpoint, options }
     }
 
+    pub fn open_table(&self) -> Result<serde_json::Value> {
+        self.open_table_with_options(None, None)
+    }
+
+    pub fn open_table_with_options(
+        &self,
+        pin_primary: Option<bool>,
+        replica_read_policy: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let mut body = serde_json::json!({
+            "namespace": self.options.namespace_name,
+            "table_name": self.options.table_name,
+            "pin_primary": pin_primary,
+        });
+        if let Some(replica_read_policy) = replica_read_policy {
+            body.as_object_mut()
+                .expect("object body")
+                .insert("replica_read_policy".to_string(), serde_json::json!(replica_read_policy));
+        }
+        self.post_raw("/ProxyService/OpenTable", body)
+    }
+
     pub fn put_string(&self, key: &str, value: &str) -> Result<()> {
         let body = self.key_body(key, &[("value", serde_json::json!(value))]);
         self.post("/v1/string/put", body).map(|_| ())
