@@ -10595,6 +10595,7 @@ fn rebuild_slot_page_ownership(
             },
         );
     }
+    shard.slot_index.rebuild_object_page_lookup();
     for slot in shard.slot_index.slot_map.values_mut() {
         slot.meta_loaded = true;
         slot.loading = false;
@@ -10802,6 +10803,11 @@ fn upsert_slot_index_page(
         deleted: false,
         log_backed: true,
     };
+    shard.slot_index.remove_object_page_lookup_entry(
+        &entry.kind,
+        &entry.object_key,
+        entry.component.as_deref(),
+    );
     for slot in shard.slot_index.slot_map.values_mut() {
         slot.page_index.retain(|_, page| {
             !(page.object_key == entry.object_key
@@ -10817,37 +10823,42 @@ fn upsert_slot_index_page(
         }
         update_slot_layout(slot);
     }
-    let slot = shard
-        .slot_index
-        .slot_map
-        .entry(routing_slot)
-        .or_insert_with(|| SlotNode {
-            routing_slot,
-            meta_loaded: true,
-            in_memory: true,
-            ..SlotNode::default()
-        });
-    slot.dirty |= dirty;
-    slot.deleted = false;
-    if dirty {
-        slot.dirty_generation = slot.dirty_generation.saturating_add(1);
+    let page_ref_key = page_index_ref_key(&entry);
+    let page_index = PageIndex {
+        object_key: entry.object_key,
+        model_id: entry.kind,
+        component: entry.component,
+        object_id,
+        address: entry.address,
+        dirty: entry.dirty,
+        deleted: entry.deleted,
+        log_backed: entry.log_backed,
+    };
+    {
+        let slot = shard
+            .slot_index
+            .slot_map
+            .entry(routing_slot)
+            .or_insert_with(|| SlotNode {
+                routing_slot,
+                meta_loaded: true,
+                in_memory: true,
+                ..SlotNode::default()
+            });
+        slot.dirty |= dirty;
+        slot.deleted = false;
+        if dirty {
+            slot.dirty_generation = slot.dirty_generation.saturating_add(1);
+        }
+        slot.in_memory = true;
+        slot.object_index.insert(object_id);
+        slot.page_index
+            .insert(page_ref_key.clone(), page_index.clone());
+        update_slot_layout(slot);
     }
-    slot.in_memory = true;
-    slot.object_index.insert(object_id);
-    slot.page_index.insert(
-        page_index_ref_key(&entry),
-        PageIndex {
-            object_key: entry.object_key,
-            model_id: entry.kind,
-            component: entry.component,
-            object_id,
-            address: entry.address,
-            dirty: entry.dirty,
-            deleted: entry.deleted,
-            log_backed: entry.log_backed,
-        },
-    );
-    update_slot_layout(slot);
+    shard
+        .slot_index
+        .insert_object_page_lookup(routing_slot, page_ref_key, &page_index);
 }
 
 fn sync_slot_index_object_pages(
@@ -10943,6 +10954,7 @@ fn sync_slot_index_object_pages(
             .slot_map
             .retain(|_, slot| !slot.page_index.is_empty() || !slot.object_index.is_empty());
     }
+    shard.slot_index.rebuild_object_page_lookup();
 }
 
 fn classify_slot_layout(object_count: usize, page_ref_count: usize) -> SlotLayoutState {
@@ -11053,6 +11065,7 @@ fn rebuild_slot_first_index(
         );
         update_slot_layout(slot);
     }
+    slot_index.rebuild_object_page_lookup();
     shard.slot_index = slot_index;
 }
 
