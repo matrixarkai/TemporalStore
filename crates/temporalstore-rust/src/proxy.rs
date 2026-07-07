@@ -459,6 +459,15 @@ pub struct ProxySetCommandRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxySetExCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub value: Vec<u8>,
+    pub ttl_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxyHashCommandRequest {
     pub namespace: String,
     pub table_name: String,
@@ -780,6 +789,26 @@ impl ProxyService {
                         let command = Command::StringSet {
                             key: req.key,
                             value: req.value,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/SetEx") => {
+                match parse_json::<ProxySetExCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::StringSetEx {
+                            key: req.key,
+                            value: req.value,
+                            ttl_ms: req.ttl_ms,
                         };
                         json_response(
                             200,
