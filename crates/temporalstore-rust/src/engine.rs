@@ -568,12 +568,13 @@ impl TemporalEngine {
     pub fn string_page_cache_key_for_test(&self, shard_id: ShardId, key: &str) -> Option<CacheKey> {
         let shards = self.shards.read().expect("engine lock poisoned");
         let address = shards.get(&shard_id)?.strings.get(key)?;
-        Some(CacheKey::page_with_slot(
+        Some(CacheKey::page_with_slot_generation(
             shard_id,
             address.page_segment_id,
             address.offset,
             address.length,
             address.routing_slot,
+            address.generation,
         ))
     }
 
@@ -4529,12 +4530,13 @@ impl TemporalEngine {
                 continue;
             }
             report.considered_page_refs = report.considered_page_refs.saturating_add(1);
-            let key = CacheKey::page_with_slot(
+            let key = CacheKey::page_with_slot_generation(
                 shard_id,
                 entry.address.page_segment_id,
                 entry.address.offset,
                 entry.address.length,
                 entry.address.routing_slot,
+                entry.address.generation,
             );
             if self.cache.get(&key).ok().flatten().is_some() {
                 report.already_cached_page_refs = report.already_cached_page_refs.saturating_add(1);
@@ -12647,12 +12649,13 @@ impl CompactionRewriteStats {
 
 fn page_memory_resident(cache: &MultiLayerCache, shard_id: ShardId, address: &PageAddress) -> bool {
     cache
-        .get_memory(&CacheKey::page_with_slot(
+        .get_memory(&CacheKey::page_with_slot_generation(
             shard_id,
             address.page_segment_id,
             address.offset,
             address.length,
             address.routing_slot,
+            address.generation,
         ))
         .is_some()
 }
@@ -12871,12 +12874,13 @@ fn compact_page_addresses<'a>(
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
         *address = new_address.clone();
         let _ = cache.put(
-            CacheKey::page_with_slot(
+            CacheKey::page_with_slot_generation(
                 shard_id,
                 new_address.page_segment_id,
                 new_address.offset,
                 new_address.length,
                 new_address.routing_slot,
+                new_address.generation,
             ),
             bytes,
         );
@@ -12908,12 +12912,13 @@ fn compact_feature_page_addresses(
             .append_with_page_metadata(&bytes, old_address.object_id, old_address.routing_slot)
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
         let _ = cache.put(
-            CacheKey::page_with_slot(
+            CacheKey::page_with_slot_generation(
                 shard_id,
                 new_address.page_segment_id,
                 new_address.offset,
                 new_address.length,
                 new_address.routing_slot,
+                new_address.generation,
             ),
             bytes,
         );
@@ -12953,12 +12958,13 @@ fn append_value(
     };
     let bytes = bytes.to_vec();
     cache.put_memory_only(
-        CacheKey::page_with_slot(
+        CacheKey::page_with_slot_generation(
             shard_id,
             address.page_segment_id,
             address.offset,
             address.length,
             address.routing_slot,
+            address.generation,
         ),
         bytes,
     );
@@ -13055,12 +13061,13 @@ fn read_page_bytes(
     shard_id: ShardId,
     address: &PageAddress,
 ) -> Option<Vec<u8>> {
-    let cache_key = CacheKey::page_with_slot(
+    let cache_key = CacheKey::page_with_slot_generation(
         shard_id,
         address.page_segment_id,
         address.offset,
         address.length,
         address.routing_slot,
+        address.generation,
     );
     if let Ok(Some(bytes)) = cache.get(&cache_key) {
         return Some(bytes);
