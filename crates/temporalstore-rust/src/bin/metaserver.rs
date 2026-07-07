@@ -1127,6 +1127,12 @@ fn handle(
     if let Some(response) = handle_master_service_route(meta, &request) {
         return response;
     }
+    if let Some(response) = handle_manage_service_route(meta, &request) {
+        return response;
+    }
+    if let Some(response) = handle_query_service_route(meta, &request) {
+        return response;
+    }
     if let Some(response) = handle_heartbeat_service_route(meta, &request) {
         return response;
     }
@@ -1554,12 +1560,16 @@ impl MasterTableOptionsRequest {
 
 #[derive(Debug, serde::Deserialize)]
 struct MasterCreateTableRequest {
+    #[serde(alias = "namespace_name")]
     namespace: String,
+    #[serde(alias = "name")]
     table_name: String,
     #[serde(default)]
     first_shard_id: u64,
     #[serde(default)]
     shard_count: u64,
+    #[serde(default)]
+    partition_set_num: u64,
     #[serde(default = "default_master_replica_count")]
     replica_count: u64,
     #[serde(default)]
@@ -1572,7 +1582,9 @@ struct MasterCreateTableRequest {
 
 #[derive(Debug, serde::Deserialize)]
 struct MasterUpdateTableRequest {
+    #[serde(alias = "namespace_name")]
     namespace: String,
+    #[serde(alias = "name")]
     table_name: String,
     #[serde(default)]
     shard_count: Option<u64>,
@@ -1591,7 +1603,9 @@ struct MasterUpdateTableRequest {
 #[allow(dead_code)]
 #[derive(Debug, serde::Deserialize)]
 struct MasterTableRequest {
+    #[serde(alias = "namespace_name")]
     namespace: String,
+    #[serde(alias = "name")]
     table_name: String,
     #[serde(default)]
     open_version: u64,
@@ -1658,6 +1672,8 @@ struct HeartbeatServerRequest {
     #[serde(default)]
     port: u32,
     #[serde(default)]
+    location: String,
+    #[serde(default)]
     endpoint: Option<HeartbeatEndpoint>,
     #[serde(default)]
     boot_time_ms: u64,
@@ -1676,6 +1692,8 @@ struct HeartbeatProxyRequest {
     #[serde(default)]
     port: u32,
     #[serde(default)]
+    location: String,
+    #[serde(default)]
     endpoint: Option<HeartbeatEndpoint>,
     #[serde(default)]
     namespace: String,
@@ -1687,8 +1705,223 @@ struct HeartbeatProxyRequest {
     binary_version: String,
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct ManageNamespaceRequest {
+    #[serde(default, alias = "name")]
+    namespace: String,
+}
+
 fn default_master_replica_count() -> u64 {
     1
+}
+
+fn master_add_table_request(req: MasterCreateTableRequest) -> AddTableRequest {
+    let shard_count = if req.shard_count > 0 {
+        req.shard_count
+    } else if req.partition_set_num > 0 {
+        req.partition_set_num
+    } else {
+        req.table_options
+            .as_ref()
+            .map(|options| options.partition_num)
+            .unwrap_or_default()
+            .max(1)
+    };
+    AddTableRequest {
+        namespace: req.namespace,
+        table_name: req.table_name,
+        first_shard_id: req.first_shard_id,
+        shard_count,
+        replica_count: req.replica_count.max(1),
+        use_cpp_partition_ids: req.use_cpp_partition_ids,
+        partition_version: req.partition_version,
+        serving_options: req
+            .table_options
+            .as_ref()
+            .map(MasterTableOptionsRequest::serving_options)
+            .unwrap_or_default(),
+    }
+}
+
+fn master_update_table_request(req: MasterUpdateTableRequest) -> UpdateTableRequest {
+    let shard_count = req.shard_count.or_else(|| {
+        req.table_options
+            .as_ref()
+            .and_then(|options| (options.partition_num > 0).then_some(options.partition_num))
+    });
+    UpdateTableRequest {
+        namespace: req.namespace,
+        table_name: req.table_name,
+        shard_count,
+        replica_count: req.replica_count,
+        first_shard_id: req.first_shard_id,
+        use_cpp_partition_ids: req.use_cpp_partition_ids,
+        partition_version: req.partition_version,
+        serving_options: req
+            .table_options
+            .as_ref()
+            .map(MasterTableOptionsRequest::serving_options_patch),
+    }
+}
+
+fn master_delete_table_request(req: MasterTableRequest) -> DeleteTableRequest {
+    DeleteTableRequest {
+        namespace: req.namespace,
+        table_name: req.table_name,
+    }
+}
+
+fn handle_manage_service_route(
+    meta: &MetaBackend,
+    request: &HttpRequest,
+) -> Option<(u16, Vec<u8>)> {
+    let response = match (request.method.as_str(), request.path.as_str()) {
+        ("POST", "/ManageService/AddServer") => {
+            parse_or(&request.body, |req: HeartbeatServerRequest| {
+                backend_call!(
+                    meta,
+                    register_server,
+                    RegisterServerRequest {
+                        server_addr: heartbeat_server_addr(&req),
+                        node_id: 0,
+                        location: req.location,
+                        binary_version: req.binary_version,
+                    }
+                )
+            })
+        }
+        ("POST", "/ManageService/FreezeServer") => {
+            parse_or(&request.body, |req: HeartbeatServerRequest| {
+                backend_call!(
+                    meta,
+                    freeze_server,
+                    StateChangeRequest {
+                        endpoint: heartbeat_server_addr(&req),
+                        freeze_cooldown_ms: 0,
+                    }
+                )
+            })
+        }
+        ("POST", "/ManageService/DropServer") => {
+            parse_or(&request.body, |req: HeartbeatServerRequest| {
+                backend_call!(
+                    meta,
+                    drop_server,
+                    StateChangeRequest {
+                        endpoint: heartbeat_server_addr(&req),
+                        freeze_cooldown_ms: 0,
+                    }
+                )
+            })
+        }
+        ("POST", "/ManageService/AddProxy") => {
+            parse_or(&request.body, |req: HeartbeatProxyRequest| {
+                let proxy_addr = heartbeat_proxy_addr(&req);
+                let namespace = if req.namespace_name.is_empty() {
+                    req.namespace
+                } else {
+                    req.namespace_name
+                };
+                backend_call!(
+                    meta,
+                    register_proxy,
+                    RegisterProxyRequest {
+                        proxy_addr,
+                        namespace,
+                        location: req.location,
+                        config_version: req.config_version,
+                        binary_version: req.binary_version,
+                    }
+                )
+            })
+        }
+        ("POST", "/ManageService/FreezeProxy") => {
+            parse_or(&request.body, |req: HeartbeatProxyRequest| {
+                backend_call!(
+                    meta,
+                    freeze_proxy,
+                    StateChangeRequest {
+                        endpoint: heartbeat_proxy_addr(&req),
+                        freeze_cooldown_ms: 0,
+                    }
+                )
+            })
+        }
+        ("POST", "/ManageService/DropProxy") => {
+            parse_or(&request.body, |req: HeartbeatProxyRequest| {
+                backend_call!(
+                    meta,
+                    drop_proxy,
+                    StateChangeRequest {
+                        endpoint: heartbeat_proxy_addr(&req),
+                        freeze_cooldown_ms: 0,
+                    }
+                )
+            })
+        }
+        ("POST", "/ManageService/AddNamespace") => {
+            parse_or(&request.body, |req: ManageNamespaceRequest| {
+                backend_call!(
+                    meta,
+                    add_namespace,
+                    AddNamespaceRequest {
+                        namespace: req.namespace,
+                    }
+                )
+            })
+        }
+        ("POST", "/ManageService/AddTable") => {
+            parse_or(&request.body, |req: MasterCreateTableRequest| {
+                backend_call!(meta, add_table, master_add_table_request(req))
+            })
+        }
+        ("POST", "/ManageService/UpdateTable") => {
+            parse_or(&request.body, |req: MasterUpdateTableRequest| {
+                backend_call!(meta, update_table, master_update_table_request(req))
+            })
+        }
+        ("POST", "/ManageService/FreezeTable") => {
+            parse_or(&request.body, |req: MasterTableRequest| {
+                backend_call!(meta, freeze_table, master_delete_table_request(req))
+            })
+        }
+        ("POST", "/ManageService/DropTable") => {
+            parse_or(&request.body, |req: MasterTableRequest| {
+                backend_call!(meta, delete_table, master_delete_table_request(req))
+            })
+        }
+        _ => return None,
+    };
+    Some(response)
+}
+
+fn handle_query_service_route(
+    meta: &MetaBackend,
+    request: &HttpRequest,
+) -> Option<(u16, Vec<u8>)> {
+    let response = match (request.method.as_str(), request.path.as_str()) {
+        ("GET", "/QueryService/QueryManageInfo") | ("POST", "/QueryService/QueryManageInfo") => {
+            json_response(200, &backend_call!(meta, info))
+        }
+        ("GET", "/QueryService/QueryClusterStatus")
+        | ("POST", "/QueryService/QueryClusterStatus") => {
+            json_response(200, &backend_call!(meta, preflight_report))
+        }
+        ("GET", "/QueryService/ListServer") | ("POST", "/QueryService/ListServer") => {
+            json_response(200, &backend_call!(meta, list_servers))
+        }
+        ("GET", "/QueryService/ListProxy") | ("POST", "/QueryService/ListProxy") => {
+            json_response(200, &backend_call!(meta, list_proxies))
+        }
+        ("GET", "/QueryService/ListNamespace") | ("POST", "/QueryService/ListNamespace") => {
+            json_response(200, &backend_call!(meta, list_namespaces))
+        }
+        ("GET", "/QueryService/ListTable") | ("POST", "/QueryService/ListTable") => {
+            json_response(200, &backend_call!(meta, list_tables))
+        }
+        _ => return None,
+    };
+    Some(response)
 }
 
 fn handle_heartbeat_service_route(
