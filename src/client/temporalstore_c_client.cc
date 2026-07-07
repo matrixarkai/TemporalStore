@@ -75,6 +75,21 @@ bcache2::client::LogLevel ToLogLevel(int level) {
     }
 }
 
+bcache2::client::TemporalFeatureWritePolicy ToFeatureWritePolicy(
+    temporalstore_feature_write_policy_t policy) {
+    switch (policy) {
+    case TEMPORALSTORE_FEATURE_WRITE_UPSERT:
+        return bcache2::client::TemporalFeatureWritePolicy::kUpsert;
+    case TEMPORALSTORE_FEATURE_WRITE_BLOCK:
+        return bcache2::client::TemporalFeatureWritePolicy::kBlock;
+    case TEMPORALSTORE_FEATURE_WRITE_FIRST:
+        return bcache2::client::TemporalFeatureWritePolicy::kFirst;
+    case TEMPORALSTORE_FEATURE_WRITE_UPDATE:
+        return bcache2::client::TemporalFeatureWritePolicy::kUpdate;
+    }
+    return bcache2::client::TemporalFeatureWritePolicy::kUpsert;
+}
+
 
 std::string JsonStringify(const rapidjson::Value& value) {
     rapidjson::StringBuffer buffer;
@@ -2083,6 +2098,14 @@ int temporalstore_smembers(temporalstore_client_t* client, const char* key,
 int temporalstore_add_feature_points(temporalstore_client_t* client, const char* key,
                                      const temporalstore_feature_point_t* points, size_t count,
                                      char** error_message) {
+    return temporalstore_add_feature_points_with_policy(
+        client, key, points, count, TEMPORALSTORE_FEATURE_WRITE_UPSERT, error_message);
+}
+
+int temporalstore_add_feature_points_with_policy(
+    temporalstore_client_t* client, const char* key,
+    const temporalstore_feature_point_t* points, size_t count,
+    temporalstore_feature_write_policy_t policy, char** error_message) {
     bcache2::Status status = CheckClient(client);
     if (status.ok() && points == nullptr && count != 0) {
         status = NullError("points");
@@ -2095,7 +2118,8 @@ int temporalstore_add_feature_points(temporalstore_client_t* client, const char*
                 bcache2::client::TemporalFeaturePoint{points[i].timestamp,
                                                        points[i].value ? points[i].value : ""});
         }
-        status = client->impl->AddFeaturePoints(key ? key : "", cpp_points);
+        status = client->impl->AddFeaturePoints(key ? key : "", cpp_points,
+                                                ToFeatureWritePolicy(policy));
     }
     return Finish(status, error_message);
 }
@@ -2149,6 +2173,14 @@ int temporalstore_query_feature_points_with_filters(
 int temporalstore_add_sequence_feature_rows(temporalstore_client_t* client, const char* key,
                                             const temporalstore_sequence_feature_row_t* rows,
                                             size_t count, char** error_message) {
+    return temporalstore_add_sequence_feature_rows_with_policy(
+        client, key, rows, count, TEMPORALSTORE_FEATURE_WRITE_UPSERT, error_message);
+}
+
+int temporalstore_add_sequence_feature_rows_with_policy(
+    temporalstore_client_t* client, const char* key,
+    const temporalstore_sequence_feature_row_t* rows, size_t count,
+    temporalstore_feature_write_policy_t policy, char** error_message) {
     bcache2::Status status = CheckClient(client);
     if (status.ok() && rows == nullptr && count != 0) {
         status = NullError("rows");
@@ -2165,7 +2197,8 @@ int temporalstore_add_sequence_feature_rows(temporalstore_client_t* client, cons
             row.author_id = rows[i].author_id;
             cpp_rows.push_back(row);
         }
-        status = client->impl->AddSequenceFeatureRows(key ? key : "", cpp_rows);
+        status = client->impl->AddSequenceFeatureRows(key ? key : "", cpp_rows,
+                                                      ToFeatureWritePolicy(policy));
     }
     return Finish(status, error_message);
 }
