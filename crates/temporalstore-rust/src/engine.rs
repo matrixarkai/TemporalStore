@@ -12098,7 +12098,7 @@ fn slot_generation_fingerprints_by_slot(shard: &ShardState) -> BTreeMap<u32, BTr
             .routing_slot
             .unwrap_or_else(|| slot_for_object(&entry.object_key, 0, u32::MAX));
         by_slot.entry(routing_slot).or_default().insert(format!(
-            "{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             entry.kind,
             entry.object_key,
             entry.component.unwrap_or_default(),
@@ -12107,6 +12107,8 @@ fn slot_generation_fingerprints_by_slot(shard: &ShardState) -> BTreeMap<u32, BTr
             entry.address.length,
             entry.address.page_id.unwrap_or_default(),
             entry.address.object_id.unwrap_or_default(),
+            entry.address.routing_slot.unwrap_or(routing_slot),
+            entry.address.generation.unwrap_or_default(),
             entry.address.sha256.unwrap_or_default()
         ));
     }
