@@ -5,7 +5,9 @@ use crate::page_store::{LocalPageStore, PageAddress};
 use crate::types::ShardId;
 
 use super::read_page_bytes;
-use super::state::{object_page_lookup_key, ShardState, SlotLayoutState};
+use super::state::{
+    object_component_lookup_key, object_page_lookup_key, ShardState, SlotLayoutState,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct SlotRuntimeState {
@@ -180,6 +182,26 @@ pub(super) fn slot_index_component_page_addresses(
     model_id: &str,
     object_key: &str,
 ) -> Vec<(Option<String>, PageAddress)> {
+    let lookup_key = object_component_lookup_key(model_id, object_key);
+    if let Some(page_refs) = shard.slot_index.object_component_lookup.get(&lookup_key) {
+        let mut refs = page_refs
+            .iter()
+            .filter_map(|page_ref| {
+                let slot = shard.slot_index.slot_map.get(&page_ref.routing_slot)?;
+                let page = slot.page_index.get(&page_ref.page_ref_key)?;
+                if !page.deleted && page.model_id == model_id && page.object_key == object_key {
+                    Some((page.component.clone(), page.address.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        if !refs.is_empty() {
+            refs.sort_by(|left, right| left.0.cmp(&right.0));
+            return refs;
+        }
+    }
+
     let mut refs = shard
         .slot_index
         .slot_map
