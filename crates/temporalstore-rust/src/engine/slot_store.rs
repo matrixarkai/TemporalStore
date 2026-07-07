@@ -160,6 +160,11 @@ pub(super) fn slot_index_page_address(
                 return Some(page.address.clone());
             }
         }
+        return None;
+    }
+
+    if !shard.slot_index.object_page_lookup.is_empty() {
+        return None;
     }
 
     shard
@@ -200,6 +205,11 @@ pub(super) fn slot_index_component_page_addresses(
             refs.sort_by(|left, right| left.0.cmp(&right.0));
             return refs;
         }
+        return Vec::new();
+    }
+
+    if !shard.slot_index.object_component_lookup.is_empty() {
+        return Vec::new();
     }
 
     let mut refs = shard
