@@ -13246,40 +13246,55 @@ fn object_manager_stats(
     end_routing_slot: u32,
 ) -> ObjectManagerStats {
     if !shard.slot_index.slot_map.is_empty() {
-        let live_pages = shard
-            .slot_index
-            .slot_map
-            .values()
-            .flat_map(|slot| slot.page_index.values())
-            .filter(|page| !page.deleted)
-            .collect::<Vec<_>>();
-        let slot_object_count = live_pages
-            .iter()
-            .map(|page| {
+        let (slot_object_count, slot_page_ref_count, slot_dirty_object_count) =
+            if !shard.slot_index.object_component_lookup.is_empty() {
                 (
-                    page.model_id.as_str(),
-                    page.object_key.as_str(),
-                    (page.model_id == "hash")
-                        .then(|| page.component.as_deref())
-                        .flatten(),
+                    shard.slot_index.object_component_lookup.len(),
+                    shard
+                        .slot_index
+                        .object_component_lookup
+                        .values()
+                        .map(BTreeSet::len)
+                        .sum::<usize>(),
+                    shard.dirty_objects.len(),
                 )
-            })
-            .collect::<BTreeSet<_>>()
-            .len();
-        let slot_dirty_object_count = live_pages
-            .iter()
-            .filter(|page| page.dirty || shard.dirty_objects.contains(&page.object_key))
-            .map(|page| {
-                (
-                    page.model_id.as_str(),
-                    page.object_key.as_str(),
-                    (page.model_id == "hash")
-                        .then(|| page.component.as_deref())
-                        .flatten(),
-                )
-            })
-            .collect::<BTreeSet<_>>()
-            .len();
+            } else {
+                let live_pages = shard
+                    .slot_index
+                    .slot_map
+                    .values()
+                    .flat_map(|slot| slot.page_index.values())
+                    .filter(|page| !page.deleted)
+                    .collect::<Vec<_>>();
+                let slot_object_count = live_pages
+                    .iter()
+                    .map(|page| {
+                        (
+                            page.model_id.as_str(),
+                            page.object_key.as_str(),
+                            (page.model_id == "hash")
+                                .then(|| page.component.as_deref())
+                                .flatten(),
+                        )
+                    })
+                    .collect::<BTreeSet<_>>()
+                    .len();
+                let slot_dirty_object_count = live_pages
+                    .iter()
+                    .filter(|page| page.dirty || shard.dirty_objects.contains(&page.object_key))
+                    .map(|page| {
+                        (
+                            page.model_id.as_str(),
+                            page.object_key.as_str(),
+                            (page.model_id == "hash")
+                                .then(|| page.component.as_deref())
+                                .flatten(),
+                        )
+                    })
+                    .collect::<BTreeSet<_>>()
+                    .len();
+                (slot_object_count, live_pages.len(), slot_dirty_object_count)
+            };
         let secondary_object_count = shard.strings.len()
             + shard.hashes.len()
             + shard.sets.len()
@@ -13358,7 +13373,7 @@ fn object_manager_stats(
             .count();
         return ObjectManagerStats {
             object_count,
-            page_ref_count: live_pages.len().max(secondary_page_ref_count),
+            page_ref_count: slot_page_ref_count.max(secondary_page_ref_count),
             dirty_object_count,
             dirty_slot_count,
             routing_slot_count: routing_slot_count(start_routing_slot, end_routing_slot),
