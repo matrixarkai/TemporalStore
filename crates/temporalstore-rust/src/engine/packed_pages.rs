@@ -62,7 +62,36 @@ pub(super) fn append_timestamped_kv_pages(
 ) -> Result<Vec<(u64, BlockAddress)>, BlockStoreError> {
     let object_id = stable_page_object_id(shard_id, kind, key, None);
     let mut refs = Vec::new();
-    for chunk in chunk_timestamped_kv_points(points) {
+    let chunks = chunk_timestamped_kv_points(points);
+    if !async_storage {
+        let mut writes = Vec::with_capacity(chunks.len());
+        let mut chunk_points = Vec::with_capacity(chunks.len());
+        for chunk in chunks {
+            writes.push((
+                encode_feature_page(&chunk),
+                Some(object_id),
+                Some(routing_slot),
+            ));
+            chunk_points.push(chunk);
+        }
+        let addresses = block_store.append_batch_with_page_metadata(writes)?;
+        if addresses.len() != chunk_points.len() {
+            return Err(BlockStoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "batch page append returned fewer addresses than chunks",
+            )));
+        }
+        for (chunk, address) in chunk_points.into_iter().zip(addresses) {
+            refs.extend(
+                chunk
+                    .into_iter()
+                    .map(|point| (point.timestamp_ms, address.clone())),
+            );
+        }
+        return Ok(refs);
+    }
+
+    for chunk in chunks {
         let packed = encode_feature_page(&chunk);
         let address = append_value(
             cache,
