@@ -71,6 +71,46 @@ pub struct FeaturePoint {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[repr(i32)]
+pub enum RiskPrecision {
+    OneSecond = 0,
+    FiveSeconds = 1,
+    TenSeconds = 2,
+    OneMinute = 3,
+    FiveMinutes = 4,
+    TenMinutes = 5,
+    OneHour = 6,
+    OneDay = 7,
+    OneMonth = 8,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(i32)]
+pub enum RiskWindowUnit {
+    Second = 0,
+    Minute = 1,
+    Hour = 2,
+    Day = 3,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct RiskWindow {
+    pub start: i64,
+    pub end: i64,
+    pub unit: RiskWindowUnit,
+}
+
+impl Default for RiskWindow {
+    fn default() -> Self {
+        Self {
+            start: -1,
+            end: 0,
+            unit: RiskWindowUnit::Hour,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "proxy", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "proxy", serde(rename_all = "snake_case"))]
 pub enum RiskFolType {
@@ -313,6 +353,26 @@ extern "C" {
         error_message: *mut *mut c_char,
     ) -> c_int;
     fn temporalstore_sequence_feature_row_array_free(rows: *mut CSequenceFeatureRowArray);
+    fn temporalstore_risk_increment(
+        client: *mut TemporalStoreClientOpaque,
+        key: *const c_char,
+        amount: i64,
+        ttl_seconds: u64,
+        precision: i32,
+        uuid: *const c_char,
+        occur_time_seconds: u64,
+        error_message: *mut *mut c_char,
+    ) -> c_int;
+    fn temporalstore_risk_count(
+        client: *mut TemporalStoreClientOpaque,
+        key: *const c_char,
+        precision: i32,
+        window_start: i64,
+        window_end: i64,
+        window_unit: i32,
+        count: *mut i64,
+        error_message: *mut *mut c_char,
+    ) -> c_int;
 }
 
 #[cfg(feature = "direct")]
@@ -803,6 +863,58 @@ impl Client {
             .collect();
         unsafe { temporalstore_sequence_feature_row_array_free(&mut out) };
         Ok(rows)
+    }
+
+    pub fn risk_increment(
+        &self,
+        key: &str,
+        amount: i64,
+        ttl_seconds: u64,
+        precision: RiskPrecision,
+        uuid: &str,
+        occur_time_seconds: u64,
+    ) -> Result<()> {
+        let key = cstring(key)?;
+        let uuid = cstring(uuid)?;
+        let mut error: *mut c_char = ptr::null_mut();
+        let code = unsafe {
+            temporalstore_risk_increment(
+                self.raw,
+                key.as_ptr(),
+                amount,
+                ttl_seconds,
+                precision as i32,
+                uuid.as_ptr(),
+                occur_time_seconds,
+                &mut error,
+            )
+        };
+        check(code, error)
+    }
+
+    pub fn risk_count(
+        &self,
+        key: &str,
+        precision: RiskPrecision,
+        window: RiskWindow,
+    ) -> Result<i64> {
+        let key = cstring(key)?;
+        let mut count = 0_i64;
+        let mut error: *mut c_char = ptr::null_mut();
+        let code = unsafe {
+            temporalstore_risk_count(
+                self.raw,
+                key.as_ptr(),
+                precision as i32,
+                window.start,
+                window.end,
+                window.unit as i32,
+                &mut count,
+                &mut error,
+            )
+        };
+        check(code, error)?;
+        Ok(count)
     }
 }
 
@@ -1764,6 +1876,17 @@ mod tests {
         let _: fn(&Client, &str) -> super::Result<u64> = Client::ttl;
         let _: fn(&Client, &str, &str) -> super::Result<()> = Client::sadd;
         let _: fn(&Client, &str) -> super::Result<Vec<String>> = Client::smembers;
+        let _: fn(
+            &Client,
+            &str,
+            i64,
+            u64,
+            super::RiskPrecision,
+            &str,
+            u64,
+        ) -> super::Result<()> = Client::risk_increment;
+        let _: fn(&Client, &str, super::RiskPrecision, super::RiskWindow) -> super::Result<i64> =
+            Client::risk_count;
         let _: fn(&Client, &[(&str, &str, &str)], Option<&str>, Option<&str>) -> super::Result<()> =
             Client::matrixark_batch_append_records;
     }
