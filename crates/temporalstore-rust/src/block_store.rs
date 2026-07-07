@@ -62,6 +62,8 @@ pub struct BlockAddress {
     pub object_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing_slot: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<u64>,
     #[serde(default, alias = "zone_id", skip_serializing_if = "Option::is_none")]
     pub extent_id: Option<u64>,
     #[serde(default, alias = "checksum", skip_serializing_if = "Option::is_none")]
@@ -89,6 +91,7 @@ impl BlockAddress {
             page_id: None,
             object_id: None,
             routing_slot: None,
+            generation: None,
             extent_id: None,
             sha256: None,
         }
@@ -629,6 +632,7 @@ impl LocalBlockStore {
             page_id: Some(page_id),
             object_id,
             routing_slot,
+            generation: Some(page_id),
             extent_id: Some(extent_id),
             sha256: Some(sha256_hex(bytes)),
         };
@@ -719,6 +723,7 @@ impl LocalBlockStore {
                 page_id: Some(page_id),
                 object_id,
                 routing_slot,
+                generation: Some(page_id),
                 extent_id: Some(extent_id),
                 sha256: Some(sha256_hex(&bytes)),
             };
@@ -3586,6 +3591,7 @@ mod tests {
             page_id: None,
             object_id: None,
             routing_slot: None,
+            generation: None,
             extent_id: None,
             sha256: None,
         };

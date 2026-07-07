@@ -11619,6 +11619,7 @@ fn cpp_packed_page_index_bytes(
         page_id: page.page_id,
         object_id: page.object_id,
         routing_slot: Some(page.routing_slot),
+        generation: page.page_id.or(page.object_id),
         extent_id: page.zone_id,
         sha256: page.checksum.clone(),
     });
@@ -12946,6 +12947,7 @@ fn append_value(
         page_id: None,
         object_id,
         routing_slot,
+        generation: object_id,
         extent_id: None,
         sha256: None,
     };
