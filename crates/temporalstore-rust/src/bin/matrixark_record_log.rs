@@ -3443,6 +3443,9 @@ fn matrixark_storage_prefix_partition(request: &RecordLogRequest) -> Option<Stri
     for entry in &request.entries {
         candidates.push(&entry.key);
     }
+    for CompactHashEntry(key, _, _) in &request.entries_compact {
+        candidates.push(key);
+    }
     candidates
         .into_iter()
         .filter_map(matrixark_storage_prefix_from_key)
@@ -3595,6 +3598,14 @@ mod tests {
         let mut same_prefix_count = request("put_string");
         same_prefix_count.key = "matrixark:mcp:scale:rust:abc:record_count".to_string();
         assert_eq!(prefixed_root, record_log_root(&same_prefix_count));
+
+        let mut compact_only = request("batch_hset");
+        compact_only.entries_compact = vec![CompactHashEntry(
+            "matrixark:mcp:scale:rust:abc:records:000001".to_string(),
+            "00000000000000000001".to_string(),
+            "{}".to_string(),
+        )];
+        assert_eq!(prefixed_root, record_log_root(&compact_only));
     }
 
     #[test]
