@@ -7355,18 +7355,13 @@ fn execute_on_shard(
                     mutated,
                 };
             }
+            let hash_fields = shard.hashes.get(&key);
             let values = fields
                 .iter()
                 .map(|field| {
-                    read_slot_index_value(
-                        cache,
-                        page_store,
-                        shard_id,
-                        shard,
-                        "hash",
-                        &key,
-                        Some(field.as_str()),
-                    )
+                    hash_fields
+                        .and_then(|entries| entries.get(field))
+                        .and_then(|address| read_page_bytes(cache, page_store, shard_id, address))
                 })
                 .collect();
             CommandResponse::Values { values }
