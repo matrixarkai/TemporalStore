@@ -181,6 +181,10 @@ pub struct ContextExtractReport {
     pub l2_ref: String,
 }
 
+pub fn default_context_resource_max_inline_bytes() -> usize {
+    1 * 1024 * 1024
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextResourceParseRequest {
     pub raw_uri: String,
@@ -341,6 +345,14 @@ pub struct ContextResourceLifecycleRecord {
     pub next_refresh_after_ms: u64,
     pub deleted: bool,
     pub chunk_count: usize,
+    #[serde(default)]
+    pub payload_size_bytes: usize,
+    #[serde(default)]
+    pub max_inline_bytes: usize,
+    #[serde(default)]
+    pub inline_payload: bool,
+    #[serde(default)]
+    pub external_object_uri: String,
 }
 
 impl Default for ContextResourceLifecycleRecord {
@@ -364,6 +376,10 @@ impl Default for ContextResourceLifecycleRecord {
             next_refresh_after_ms: 0,
             deleted: false,
             chunk_count: 0,
+            payload_size_bytes: 0,
+            max_inline_bytes: default_context_resource_max_inline_bytes(),
+            inline_payload: true,
+            external_object_uri: String::new(),
         }
     }
 }
@@ -440,6 +456,14 @@ pub struct ContextResourceParseReport {
     #[serde(default)]
     pub source_refs: Vec<String>,
     pub total_tokens: u32,
+    #[serde(default)]
+    pub payload_size_bytes: usize,
+    #[serde(default)]
+    pub max_inline_bytes: usize,
+    #[serde(default)]
+    pub inline_payload: bool,
+    #[serde(default)]
+    pub external_object_uri: String,
     #[serde(default)]
     pub parser_warnings: Vec<String>,
 }
@@ -961,6 +985,10 @@ pub struct ContextRetrieveRequest {
     #[serde(default = "default_event_fanout_node_limit")]
     pub max_event_nodes: usize,
     #[serde(default)]
+    pub prefer_current_agent: bool,
+    #[serde(default = "default_current_agent_scope_key")]
+    pub current_agent_scope_key: String,
+    #[serde(default)]
     pub provider: ContextModelProviderConfig,
 }
 
@@ -991,6 +1019,10 @@ pub struct ContextFanoutPlanReport {
     pub selected_node_hashes: Vec<u64>,
     pub skipped_node_hashes: Vec<u64>,
     pub locality_keys: Vec<String>,
+    pub current_agent_default_boost: u32,
+    pub peer_agent_default_boost: u32,
+    pub prefer_current_agent_configured: bool,
+    pub peer_agent_demoted_by_default: bool,
     pub fallback_to_flat: bool,
     pub fanout_reduced: bool,
 }
@@ -1972,6 +2004,7 @@ pub fn extract_context(
             node_hash,
             event: event.clone(),
             first_write_only: false,
+            cold_storage: false,
         },
         Command::ContextWriteIndexRef {
             tenant_hash: request.tenant_hash,
@@ -2130,6 +2163,8 @@ pub fn ingest_extract_context(
         tiers: default_tiers(),
         max_summary_nodes: default_summary_fanout_node_limit(),
         max_event_nodes: default_event_fanout_node_limit(),
+        prefer_current_agent: false,
+        current_agent_scope_key: default_current_agent_scope_key(),
         provider: request.provider,
     };
     let summary = ContextIngestExtractSummary {
@@ -2933,6 +2968,8 @@ pub fn run_context_pipeline_benchmark(
             tiers: default_tiers(),
             max_summary_nodes: default_summary_fanout_node_limit(),
             max_event_nodes: default_event_fanout_node_limit(),
+            prefer_current_agent: false,
+            current_agent_scope_key: default_current_agent_scope_key(),
             provider: ContextModelProviderConfig::default(),
         };
         let retrieve_start = Instant::now();
@@ -3809,6 +3846,14 @@ pub fn retrieve_context(
         context_query_understanding_debug_for_plan(&request, &query_plan);
     let mut fanout_plan = ContextFanoutPlanReport {
         strategy: "hierarchical_summary_secondary_index_node_resource_colocation".to_string(),
+        current_agent_default_boost: if request.prefer_current_agent {
+            125
+        } else {
+            100
+        },
+        peer_agent_default_boost: 100,
+        prefer_current_agent_configured: request.prefer_current_agent,
+        peer_agent_demoted_by_default: false,
         secondary_index_filter_group_count: query_understanding_debug
             .filter_group_summary
             .secondary_index_group_count,
@@ -3945,9 +3990,19 @@ pub fn retrieve_context(
             let summary_text = format!("{} {}", node.l0, node.l1_ref);
             let summary_score = context_relevance_score_plan(&query_plan, &summary_text);
             let freshness_ms = node.last_event_time_ms;
+            let agent_scope_boost = if request.prefer_current_agent
+                && context_record_scope_matches(
+                    &node.raw_metadata_ref,
+                    &request.current_agent_scope_key,
+                ) {
+                125_000i64
+            } else {
+                0i64
+            };
             score.1 = score
                 .1
-                .saturating_add((summary_score as i64).saturating_mul(1_000));
+                .saturating_add((summary_score as i64).saturating_mul(1_000))
+                .saturating_add(agent_scope_boost);
             score.3 = summary_score;
             score.4 = freshness_ms;
         }
@@ -4457,6 +4512,14 @@ fn default_summary_fanout_node_limit() -> usize {
 
 fn default_event_fanout_node_limit() -> usize {
     16
+}
+
+fn default_current_agent_scope_key() -> String {
+    "agent:codex".to_string()
+}
+
+fn context_record_scope_matches(source_ref: &str, scope_key: &str) -> bool {
+    !scope_key.trim().is_empty() && source_ref.contains(scope_key)
 }
 
 fn default_context_skill_enabled() -> bool {

@@ -1,185 +1,189 @@
 {
-  "ready": true,
-  "namespace_node_candidates": 13,
-  "summary_embedding_query_nodes": 11,
-  "summary_pruned_peer_agent_nodes": 2,
-  "summary_pruned_colocation_group_counts": {
-    "user:user": 2
-  },
-  "summary_pruned_colocation_scope_counts": {
-    "agent:claude": 2
-  },
-  "configured_summary_node_limit": 11,
-  "effective_summary_node_limit": 11,
-  "configured_event_node_limit": 4,
-  "effective_event_node_limit": 4,
-  "configured_peer_agent_node_limit": 0,
-  "event_expanded_nodes": 4,
-  "skipped_summary_budget_node_count": 7,
-  "skipped_colocation_group_counts": {
-    "user:user": 7
-  },
-  "skipped_colocation_scope_counts": {
-    "agent:codex": 7
-  },
-  "selected_colocation_group_count": 3,
-  "selected_colocation_scope_count": 4,
-  "selected_colocation_groups": [
-    "global",
-    "user:user",
-    "workspace:context"
-  ],
-  "selected_colocation_group_counts": {
-    "global": 1,
-    "user:user": 2,
-    "workspace:context": 1
-  },
-  "max_selected_colocation_group_nodes": 2,
-  "colocation_group_fanout_reduced": true,
-  "selected_colocation_scope_keys": [
-    "agent:codex",
-    "global",
-    "user:user",
-    "workspace:context"
-  ],
-  "selected_colocation_scope_order": [
-    "agent:codex",
-    "workspace:context",
-    "user:user",
-    "global"
-  ],
-  "selected_colocation_scope_distribution": {
-    "agent:codex": 1,
-    "global": 1,
-    "user:user": 1,
-    "workspace:context": 1
-  },
-  "current_agent_first_selected": true,
-  "avoided_namespace_replication_nodes": 9,
-  "fanout_reduction_percent": 69,
-  "namespace_replication_avoided": true,
-  "candidate_current_agent_nodes": 8,
-  "candidate_peer_agent_nodes": 2,
-  "candidate_user_shared_nodes": 1,
-  "candidate_workspace_shared_nodes": 1,
-  "candidate_global_shared_nodes": 1,
-  "candidate_shared_node_count": 3,
-  "candidate_shared_scope_coverage_count": 3,
-  "candidate_scope_pressure_ready": true,
-  "fanout_reduced": true,
-  "layer_quota_applied": true,
-  "shared_layer_quota_nodes": 4,
-  "selected_current_agent_nodes": 1,
-  "peer_agent_nodes": 2,
-  "selected_peer_agent_nodes": 0,
-  "skipped_peer_agent_nodes": 2,
-  "peer_agent_limit_applied": true,
-  "selected_user_shared_nodes": 1,
-  "selected_workspace_shared_nodes": 1,
-  "selected_global_shared_nodes": 1,
-  "selected_shared_layer_nodes": 3,
-  "selected_current_agent_percent": 25,
-  "selected_shared_layer_percent": 75,
-  "selected_peer_agent_percent": 0,
-  "required_shared_scope_count": 3,
-  "selected_shared_scope_coverage_count": 3,
-  "shared_scope_coverage_ready": true,
-  "scan_layers": [
-    "agent",
-    "global",
-    "user",
-    "workspace"
-  ],
-  "colocation_groups": [
-    "global",
-    "user:user",
-    "workspace:context"
-  ],
-  "colocation_group_candidate_counts": {
-    "global": 1,
-    "user:user": 11,
-    "workspace:context": 1
-  },
-  "colocation_scope_keys": [
-    "agent:claude",
-    "agent:codex",
-    "global",
-    "user:user",
-    "workspace:context"
-  ],
-  "required_scan_scope_keys": [
-    "agent:codex",
-    "workspace:context",
-    "user:user",
-    "global"
-  ],
-  "scan_policy_current_agent_scope_key": "agent:codex",
-  "scan_policy_owner_scope_key": "workspace:context",
-  "scan_policy_shared_scope_keys": [
-    "global",
-    "user:user"
-  ],
-  "scan_policy_implicit_current_agent_scope_added": true,
-  "scan_policy_owner_scope_included": true,
-  "scan_policy_shared_scopes_included": true,
-  "scan_policy_ready": true,
-  "locality_keys": [
-    "tenant:20260706:scope:agent:codex:node:8424729405653484612",
-    "tenant:20260706:scope:workspace:context:node:16379766558787635764",
-    "tenant:20260706:scope:user:user:node:12205718754729647577",
-    "tenant:20260706:scope:global:node:12994693500116009283"
-  ],
-  "locality_key_count": 4,
-  "locality_scope_keys": [
-    "agent:codex",
-    "global",
-    "user:user",
-    "workspace:context"
-  ],
-  "peer_locality_key_count": 0,
-  "retrieved_block_count": 12,
-  "retrieved_current_agent_block_count": 3,
-  "retrieved_user_shared_block_count": 3,
-  "retrieved_workspace_shared_block_count": 3,
-  "retrieved_global_shared_block_count": 3,
-  "retrieved_event_count": 4,
-  "selected_ref_count": 12,
-  "selected_ref_scope_keys": [
-    "agent:codex",
-    "global",
-    "user:user",
-    "workspace:context"
-  ],
-  "selected_ref_scope_order": [
-    "agent:codex",
-    "agent:codex",
-    "agent:codex",
-    "workspace:context",
-    "workspace:context",
-    "workspace:context",
-    "user:user",
-    "user:user",
-    "user:user",
-    "global",
-    "global",
-    "global"
-  ],
-  "selected_ref_current_agent_first": true,
-  "selected_peer_agent_ref_count": 0,
-  "injection_scope_order": [
-    "agent:codex",
-    "agent:codex",
-    "agent:codex",
-    "workspace:context",
-    "workspace:context",
-    "workspace:context",
-    "user:user",
-    "user:user",
-    "user:user",
-    "global",
-    "global",
-    "global"
-  ],
-  "injection_current_agent_first": true,
-  "current_agent_id": "codex"
+    "ready":  true,
+    "namespace_node_candidates":  13,
+    "summary_embedding_query_nodes":  11,
+    "summary_pruned_peer_agent_nodes":  2,
+    "summary_pruned_colocation_group_counts":  {
+                                                   "user:user":  2
+                                               },
+    "summary_pruned_colocation_scope_counts":  {
+                                                   "agent:claude":  2
+                                               },
+    "configured_summary_node_limit":  11,
+    "effective_summary_node_limit":  11,
+    "configured_event_node_limit":  4,
+    "effective_event_node_limit":  4,
+    "configured_peer_agent_node_limit":  2,
+    "event_expanded_nodes":  4,
+    "skipped_summary_budget_node_count":  7,
+    "skipped_colocation_group_counts":  {
+                                            "user:user":  7
+                                        },
+    "skipped_colocation_scope_counts":  {
+                                            "agent:codex":  7
+                                        },
+    "selected_colocation_group_count":  3,
+    "selected_colocation_scope_count":  4,
+    "selected_colocation_groups":  [
+                                       "global",
+                                       "user:user",
+                                       "workspace:context"
+                                   ],
+    "selected_colocation_group_counts":  {
+                                             "global":  1,
+                                             "user:user":  2,
+                                             "workspace:context":  1
+                                         },
+    "max_selected_colocation_group_nodes":  2,
+    "colocation_group_fanout_reduced":  true,
+    "selected_colocation_scope_keys":  [
+                                           "agent:codex",
+                                           "global",
+                                           "user:user",
+                                           "workspace:context"
+                                       ],
+    "selected_colocation_scope_order":  [
+                                            "agent:codex",
+                                            "workspace:context",
+                                            "user:user",
+                                            "global"
+                                        ],
+    "selected_colocation_scope_distribution":  {
+                                                   "agent:codex":  1,
+                                                   "global":  1,
+                                                   "user:user":  1,
+                                                   "workspace:context":  1
+                                               },
+    "current_agent_first_selected":  true,
+    "avoided_namespace_replication_nodes":  9,
+    "fanout_reduction_percent":  69,
+    "namespace_replication_avoided":  true,
+    "candidate_current_agent_nodes":  8,
+    "candidate_peer_agent_nodes":  2,
+    "candidate_user_shared_nodes":  1,
+    "candidate_workspace_shared_nodes":  1,
+    "candidate_global_shared_nodes":  1,
+    "candidate_shared_node_count":  3,
+    "candidate_shared_scope_coverage_count":  3,
+    "candidate_scope_pressure_ready":  true,
+    "fanout_reduced":  true,
+    "layer_quota_applied":  true,
+    "shared_layer_quota_nodes":  4,
+    "selected_current_agent_nodes":  1,
+    "peer_agent_nodes":  2,
+    "selected_peer_agent_nodes":  0,
+    "skipped_peer_agent_nodes":  0,
+    "peer_agent_limit_applied":  false,
+    "selected_user_shared_nodes":  1,
+    "selected_workspace_shared_nodes":  1,
+    "selected_global_shared_nodes":  1,
+    "selected_shared_layer_nodes":  3,
+    "selected_current_agent_percent":  25,
+    "selected_shared_layer_percent":  75,
+    "selected_peer_agent_percent":  0,
+    "required_shared_scope_count":  3,
+    "selected_shared_scope_coverage_count":  3,
+    "shared_scope_coverage_ready":  true,
+    "scan_layers":  [
+                        "agent",
+                        "global",
+                        "user",
+                        "workspace"
+                    ],
+    "colocation_groups":  [
+                              "global",
+                              "user:user",
+                              "workspace:context"
+                          ],
+    "colocation_group_candidate_counts":  {
+                                              "global":  1,
+                                              "user:user":  11,
+                                              "workspace:context":  1
+                                          },
+    "colocation_scope_keys":  [
+                                  "agent:claude",
+                                  "agent:codex",
+                                  "global",
+                                  "user:user",
+                                  "workspace:context"
+                              ],
+    "required_scan_scope_keys":  [
+                                     "agent:codex",
+                                     "workspace:context",
+                                     "user:user",
+                                     "global"
+                                 ],
+    "scan_policy_current_agent_scope_key":  "agent:codex",
+    "scan_policy_owner_scope_key":  "workspace:context",
+    "scan_policy_shared_scope_keys":  [
+                                          "global",
+                                          "user:user"
+                                      ],
+    "scan_policy_implicit_current_agent_scope_added":  true,
+    "scan_policy_owner_scope_included":  true,
+    "scan_policy_shared_scopes_included":  true,
+    "scan_policy_ready":  true,
+    "locality_keys":  [
+                          "tenant:20260706:scope:agent:codex:node:8424729405653484612",
+                          "tenant:20260706:scope:workspace:context:node:16379766558787635764",
+                          "tenant:20260706:scope:user:user:node:12205718754729647577",
+                          "tenant:20260706:scope:global:node:12994693500116009283"
+                      ],
+    "locality_key_count":  4,
+    "locality_scope_keys":  [
+                                "agent:codex",
+                                "global",
+                                "user:user",
+                                "workspace:context"
+                            ],
+    "peer_locality_key_count":  0,
+    "retrieved_block_count":  12,
+    "retrieved_current_agent_block_count":  3,
+    "retrieved_user_shared_block_count":  3,
+    "retrieved_workspace_shared_block_count":  3,
+    "retrieved_global_shared_block_count":  3,
+    "retrieved_event_count":  4,
+    "selected_ref_count":  12,
+    "selected_ref_scope_keys":  [
+                                    "agent:codex",
+                                    "global",
+                                    "user:user",
+                                    "workspace:context"
+                                ],
+    "selected_ref_scope_order":  [
+                                     "agent:codex",
+                                     "agent:codex",
+                                     "agent:codex",
+                                     "workspace:context",
+                                     "workspace:context",
+                                     "workspace:context",
+                                     "user:user",
+                                     "user:user",
+                                     "user:user",
+                                     "global",
+                                     "global",
+                                     "global"
+                                 ],
+    "selected_ref_current_agent_first":  true,
+    "selected_peer_agent_ref_count":  0,
+    "injection_scope_order":  [
+                                  "agent:codex",
+                                  "agent:codex",
+                                  "agent:codex",
+                                  "workspace:context",
+                                  "workspace:context",
+                                  "workspace:context",
+                                  "user:user",
+                                  "user:user",
+                                  "user:user",
+                                  "global",
+                                  "global",
+                                  "global"
+                              ],
+    "injection_current_agent_first":  true,
+    "current_agent_id":  "codex",
+    "current_agent_default_boost":  100,
+    "peer_agent_default_boost":  100,
+    "prefer_current_agent_configured":  false,
+    "peer_agent_demoted_by_default":  false
 }

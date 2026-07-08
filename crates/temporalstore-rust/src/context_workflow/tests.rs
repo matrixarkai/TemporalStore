@@ -399,6 +399,8 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
             tiers: default_tiers(),
             max_summary_nodes: 32,
             max_event_nodes: 16,
+            prefer_current_agent: false,
+            current_agent_scope_key: "agent:codex".to_string(),
             provider: ContextModelProviderConfig::default(),
         },
     );
@@ -485,6 +487,8 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
                 tiers: default_tiers(),
                 max_summary_nodes: 32,
                 max_event_nodes: 16,
+                prefer_current_agent: false,
+                current_agent_scope_key: "agent:codex".to_string(),
                 provider: ContextModelProviderConfig::default(),
             },
             prompt: "Explain current risk.".to_string(),
@@ -550,6 +554,8 @@ fn context_query_debug_reports_filter_groups_drops_and_injection_order() {
             tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
             max_summary_nodes: 32,
             max_event_nodes: 16,
+            prefer_current_agent: false,
+            current_agent_scope_key: "agent:codex".to_string(),
             provider: ContextModelProviderConfig::default(),
         },
     );
@@ -683,6 +689,8 @@ fn context_retrieval_limits_namespace_fanout_with_summary_and_locality_plan() {
             tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
             max_summary_nodes: 5,
             max_event_nodes: 1,
+            prefer_current_agent: false,
+            current_agent_scope_key: "agent:codex".to_string(),
             provider: ContextModelProviderConfig::default(),
         },
     );
@@ -789,6 +797,8 @@ fn context_benchmark_injection_uses_entity_segment_l0_l1_and_secondary_index() {
         tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
         max_summary_nodes: 32,
         max_event_nodes: 16,
+        prefer_current_agent: false,
+        current_agent_scope_key: "agent:codex".to_string(),
         provider: ContextModelProviderConfig::default(),
     };
     let retrieved = retrieve_context(&engine, retrieve.clone());
@@ -1379,6 +1389,8 @@ fn context_injection_prompt_pack_preserves_retrieved_evidence_ordering() {
         tiers: vec![ContextTier::L2],
         max_summary_nodes: 32,
         max_event_nodes: 16,
+        prefer_current_agent: false,
+        current_agent_scope_key: "agent:codex".to_string(),
         provider: ContextModelProviderConfig::default(),
     };
     let retrieved = retrieve_context(&engine, retrieve.clone());
@@ -1493,6 +1505,8 @@ fn context_workflow_policy_rejects_disallowed_runtime_controls() {
             tiers: default_tiers(),
             max_summary_nodes: 32,
             max_event_nodes: 16,
+            prefer_current_agent: false,
+            current_agent_scope_key: "agent:codex".to_string(),
             provider: ContextModelProviderConfig::default(),
         },
         prompt: "one two three four five".to_string(),
@@ -1667,6 +1681,45 @@ fn context_workflow_falls_back_when_live_provider_fails() {
     assert!(report.embedding_generation.mock_mode);
     assert!(!report.embedding_generation.production_evidence_ready);
     assert_eq!(report.l0, "doc: body");
+}
+
+// shared-corpus: context_resource_large_object_store_spill
+#[test]
+fn context_resource_parser_spills_large_resource_body_to_object_store_ref() {
+    let large_text = "x".repeat(1_048_577);
+    let report = parse_context_resource(ContextResourceParseRequest {
+        raw_uri: "large-resource.pdf".to_string(),
+        resource_type: Some("pdf".to_string()),
+        text: large_text,
+        max_chunk_chars: 262_144,
+        overlap_chars: 0,
+        chunk_hash_base: Some(42_000),
+        owner_scope: "workspace:bench".to_string(),
+        version: "v-large".to_string(),
+        watch_interval_minutes: 0,
+        parser_name: "unit-test-parser".to_string(),
+    });
+    assert!(report.status.ok);
+    assert_eq!(report.payload_size_bytes, 1_048_577);
+    assert_eq!(report.max_inline_bytes, 1_048_576);
+    assert!(!report.inline_payload);
+    assert!(report
+        .external_object_uri
+        .starts_with("objectstore://matrixark/resources/"));
+    assert_eq!(
+        report.lifecycle.external_object_uri,
+        report.external_object_uri
+    );
+    assert_eq!(
+        report.lifecycle.payload_size_bytes,
+        report.payload_size_bytes
+    );
+    assert!(report.chunks.iter().all(|chunk| {
+        chunk.metadata.get("storage_backend").map(String::as_str) == Some("objectstore")
+            && chunk.metadata.get("storage_value_mode").map(String::as_str)
+                == Some("object_ref_json")
+            && chunk.metadata.get("external_object_uri") == Some(&report.external_object_uri)
+    }));
 }
 
 // shared-corpus: context_resource_skill_parser_openviking_parity

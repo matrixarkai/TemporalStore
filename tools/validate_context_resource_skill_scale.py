@@ -138,7 +138,7 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
     require_int_equal(report, "failed_sources", 0)
     candidates = require_int_at_least(report, "fanout_namespace_node_candidates", min_sources)
     summary_query_nodes = require_int_at_least(report, "fanout_summary_embedding_query_nodes", 1)
-    pruned_peers = require_int_at_least(report, "fanout_summary_pruned_peer_agent_nodes", 1)
+    pruned_peers = require_int_at_least(report, "fanout_summary_pruned_peer_agent_nodes", 0)
     if summary_query_nodes + pruned_peers != candidates:
         raise ValueError(
             "fanout_summary_embedding_query_nodes + fanout_summary_pruned_peer_agent_nodes "
@@ -148,7 +148,7 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
     require_int_equal(report, "fanout_effective_summary_node_limit", 32)
     require_int_equal(report, "fanout_configured_event_node_limit", 16)
     require_int_equal(report, "fanout_effective_event_node_limit", 16)
-    require_int_equal(report, "fanout_configured_peer_agent_node_limit", 0)
+    require_int_at_least(report, "fanout_configured_peer_agent_node_limit", report.get("fanout_candidate_peer_agent_nodes", 0) if isinstance(report.get("fanout_candidate_peer_agent_nodes"), int) else 0)
     expanded = require_int_at_least(report, "fanout_event_expanded_nodes", 1)
     if expanded > max_expanded:
         raise ValueError(f"fanout_event_expanded_nodes must be <= {max_expanded}, got {expanded}")
@@ -171,12 +171,8 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
     selected_groups = require_map_keys_at_least(
         report, "fanout_selected_colocation_group_counts", REQUIRED_GROUPS, 1
     )
-    pruned_groups = require_map_keys_at_least(
-        report, "fanout_summary_pruned_colocation_group_counts", {"user:user"}, 1
-    )
-    pruned_scopes = require_map_keys_at_least(
-        report, "fanout_summary_pruned_colocation_scope_counts", {"agent:claude"}, 1
-    )
+    pruned_groups = require_int_map(report, "fanout_summary_pruned_colocation_group_counts")
+    pruned_scopes = require_int_map(report, "fanout_summary_pruned_colocation_scope_counts")
     skipped_groups = require_int_map(report, "fanout_skipped_colocation_group_counts")
     skipped_scopes = require_map_keys_at_least(
         report, "fanout_skipped_colocation_scope_counts", {"agent:codex"}, 1
@@ -238,9 +234,9 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
             "fanout_summary_pruned_colocation_group_counts must account for pruned peer agents, "
             f"got {sum(pruned_groups.values())} vs {pruned_peers}"
         )
-    if pruned_scopes.get("agent:claude", 0) < 1:
+    if pruned_peers and pruned_scopes.get("agent:claude", 0) < 1:
         raise ValueError(
-            "fanout_summary_pruned_colocation_scope_counts must prove peer-agent pruning"
+            "fanout_summary_pruned_colocation_scope_counts must account for peer-agent pruning when configured"
         )
     require_int_at_least(report, "fanout_max_selected_colocation_group_nodes", 1)
     require_bool(report, "fanout_colocation_group_fanout_reduced")
@@ -259,9 +255,7 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
         "agent:codex",
         report["fanout_selected_current_agent_nodes"],
     )
-    require_distribution_count(
-        report, "fanout_selected_colocation_scope_distribution", "agent:claude", 0
-    )
+    selected_peer_scope_count = report.get("fanout_selected_colocation_scope_distribution", {}).get("agent:claude", 0)
     require_distribution_count(
         report,
         "fanout_selected_colocation_scope_distribution",
@@ -280,19 +274,29 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
         "global",
         report["fanout_selected_global_shared_nodes"],
     )
-    require_bool(report, "fanout_current_agent_first_selected")
     selected_order = report.get("fanout_selected_colocation_scope_order")
     if not isinstance(selected_order, list) or not selected_order:
         raise ValueError("fanout_selected_colocation_scope_order must be a non-empty string array")
-    if selected_order[0] != "agent:codex":
+    if report.get("fanout_prefer_current_agent_configured") is True and selected_order[0] != "agent:codex":
         raise ValueError(
-            "fanout_selected_colocation_scope_order must start with current agent agent:codex, "
+            "fanout_selected_colocation_scope_order must start with current agent only when fanout_prefer_current_agent_configured=true, "
             f"got {selected_order[:3]!r}"
         )
     require_int_at_least(report, "fanout_peer_agent_nodes", 1)
-    require_int_equal(report, "fanout_selected_peer_agent_nodes", 0)
-    require_int_at_least(report, "fanout_skipped_peer_agent_nodes", 1)
-    require_bool(report, "fanout_peer_agent_limit_applied")
+    selected_peer = require_int_at_least(report, "fanout_selected_peer_agent_nodes", 0)
+    skipped_peer = require_int_at_least(report, "fanout_skipped_peer_agent_nodes", 0)
+    pruned_peer = report.get("fanout_summary_pruned_peer_agent_nodes", 0)
+    if selected_peer + skipped_peer + pruned_peer != report["fanout_peer_agent_nodes"]:
+        raise ValueError(
+            "fanout selected+skipped+pruned peer-agent nodes must equal fanout_peer_agent_nodes, "
+            f"got {selected_peer}+{skipped_peer}+{pruned_peer}!={report['fanout_peer_agent_nodes']}"
+        )
+    if report.get("fanout_peer_agent_demoted_by_default") is not False:
+        raise ValueError("fanout_peer_agent_demoted_by_default must be false")
+    if report.get("fanout_current_agent_default_boost") != report.get("fanout_peer_agent_default_boost"):
+        raise ValueError(
+            "fanout_current_agent_default_boost and fanout_peer_agent_default_boost must match unless fanout_prefer_current_agent_configured=true"
+        )
     require_int_at_least(report, "fanout_selected_user_shared_nodes", 1)
     require_int_at_least(report, "fanout_selected_workspace_shared_nodes", 1)
     require_int_at_least(report, "fanout_selected_global_shared_nodes", 1)
@@ -302,11 +306,11 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
     shared_selected = require_int_at_least(report, "fanout_shared_selected_node_count", shared_quota)
     current_percent = require_int_at_least(report, "fanout_selected_current_agent_percent", 1)
     shared_percent = require_int_at_least(report, "fanout_selected_shared_layer_percent", 1)
-    require_int_equal(report, "fanout_selected_peer_agent_percent", 0)
-    if current_percent + shared_percent > 100:
+    peer_percent = require_int_at_least(report, "fanout_selected_peer_agent_percent", 0)
+    if current_percent + shared_percent + peer_percent > 100:
         raise ValueError(
             "fanout selected current-agent and shared-layer percentages cannot exceed 100, "
-            f"got {current_percent}+{shared_percent}"
+            f"got {current_percent}+{shared_percent}+{peer_percent}"
         )
     if shared_selected != (
         report["fanout_selected_user_shared_nodes"]
@@ -318,13 +322,7 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
             f"got {shared_selected}"
         )
     current_selected = require_int_at_least(report, "fanout_selected_current_agent_nodes", 1)
-    if current_selected <= shared_selected:
-        raise ValueError(
-            "fanout_selected_current_agent_nodes must remain boosted above shared selected nodes, "
-            f"got current={current_selected} shared={shared_selected}"
-        )
-    require_int_between(report, "fanout_current_agent_boost_percent", 40, 75)
-    require_bool(report, "fanout_current_agent_boost_bounded")
+    require_bool(report, "fanout_agent_scope_boost_parity_ready")
     require_bool(report, "fanout_layer_quota_applied")
     source_candidates = require_int_map(report, "fanout_source_class_candidate_counts")
     selected_source_nodes = require_int_map(report, "fanout_selected_source_class_counts")
@@ -390,26 +388,24 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
         raise ValueError("selected_ref_source_ref_samples must be non-empty")
     if not report.get("fanout_injection_source_ref_samples"):
         raise ValueError("fanout_injection_source_ref_samples must be non-empty")
-    require_bool(report, "fanout_selected_ref_current_agent_first")
-    require_bool(report, "fanout_injection_current_agent_first")
-    require_int_equal(report, "fanout_selected_peer_agent_ref_count", 0)
+    selected_peer_ref_count = require_int_at_least(report, "fanout_selected_peer_agent_ref_count", 0)
     selected_ref_scopes = require_string_set(
         report, "fanout_selected_ref_scope_keys", REQUIRED_SELECTED_SCOPE_KEYS
     )
     selected_ref_order = report.get("fanout_selected_ref_scope_order")
     if not isinstance(selected_ref_order, list) or not selected_ref_order:
         raise ValueError("fanout_selected_ref_scope_order must be a non-empty string array")
-    if selected_ref_order[0] != "agent:codex":
+    if report.get("fanout_prefer_current_agent_configured") is True and selected_ref_order[0] != "agent:codex":
         raise ValueError(
-            "fanout_selected_ref_scope_order must start with current agent agent:codex, "
+            "fanout_selected_ref_scope_order must start with current agent only when fanout_prefer_current_agent_configured=true, "
             f"got {selected_ref_order[:3]!r}"
         )
     injection_order = report.get("fanout_injection_scope_order")
     if not isinstance(injection_order, list) or not injection_order:
         raise ValueError("fanout_injection_scope_order must be a non-empty string array")
-    if injection_order[0] != "agent:codex":
+    if report.get("fanout_prefer_current_agent_configured") is True and injection_order[0] != "agent:codex":
         raise ValueError(
-            "fanout_injection_scope_order must start with current agent agent:codex, "
+            "fanout_injection_scope_order must start with current agent only when fanout_prefer_current_agent_configured=true, "
             f"got {injection_order[:3]!r}"
         )
     require_string_set(report, "fanout_scan_layers", REQUIRED_LAYERS)
@@ -432,7 +428,7 @@ def validate_report(report: dict[str, Any], min_sources: int, max_expanded: int)
     require_bool(report, "fanout_scan_policy_shared_scopes_included")
     require_bool(report, "fanout_scan_policy_ready")
     require_int_equal(report, "fanout_locality_key_count", expanded)
-    require_int_equal(report, "fanout_peer_locality_key_count", 0)
+    require_int_equal(report, "fanout_peer_locality_key_count", selected_peer)
     locality_scopes = require_string_set(
         report, "fanout_locality_scope_keys", REQUIRED_SELECTED_SCOPE_KEYS
     )
