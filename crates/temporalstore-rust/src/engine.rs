@@ -7390,7 +7390,7 @@ fn execute_on_shard(
                         address.clone(),
                         true,
                     );
-                    let _ = cache.invalidate(&CacheKey::hash(shard_id, &key, &field));
+                    invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
                     applied.push((field, address));
                 }
             }
