@@ -11100,25 +11100,61 @@ fn upsert_slot_index_page(
         deleted: false,
         log_backed: true,
     };
+    let lookup_enabled = !shard.slot_index.object_page_lookup.is_empty();
+    let direct_page_refs = if lookup_enabled {
+        shard
+            .slot_index
+            .object_page_lookup
+            .get(&object_page_lookup_key(
+                &entry.kind,
+                &entry.object_key,
+                entry.component.as_deref(),
+            ))
+            .cloned()
+    } else {
+        None
+    };
     shard.slot_index.remove_object_page_lookup_entry(
         &entry.kind,
         &entry.object_key,
         entry.component.as_deref(),
     );
-    for slot in shard.slot_index.slot_map.values_mut() {
-        slot.page_index.retain(|_, page| {
-            !(page.object_key == entry.object_key
-                && page.model_id == entry.kind
-                && page.component == entry.component)
-        });
-        if !slot
-            .page_index
-            .values()
-            .any(|page| page.object_id == object_id)
-        {
-            slot.object_index.remove(&object_id);
+    if let Some(page_refs) = direct_page_refs {
+        for page_ref in page_refs {
+            let Some(slot) = shard.slot_index.slot_map.get_mut(&page_ref.routing_slot) else {
+                continue;
+            };
+            let removed_object_id = slot
+                .page_index
+                .remove(&page_ref.page_ref_key)
+                .map(|page| page.object_id);
+            if let Some(removed_object_id) = removed_object_id {
+                if !slot
+                    .page_index
+                    .values()
+                    .any(|page| page.object_id == removed_object_id)
+                {
+                    slot.object_index.remove(&removed_object_id);
+                }
+                update_slot_layout(slot);
+            }
         }
-        update_slot_layout(slot);
+    } else if !lookup_enabled {
+        for slot in shard.slot_index.slot_map.values_mut() {
+            slot.page_index.retain(|_, page| {
+                !(page.object_key == entry.object_key
+                    && page.model_id == entry.kind
+                    && page.component == entry.component)
+            });
+            if !slot
+                .page_index
+                .values()
+                .any(|page| page.object_id == object_id)
+            {
+                slot.object_index.remove(&object_id);
+            }
+            update_slot_layout(slot);
+        }
     }
     let page_ref_key = page_index_ref_key(&entry);
     let page_index = PageIndex {
