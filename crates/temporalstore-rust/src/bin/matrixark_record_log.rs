@@ -4,13 +4,14 @@ use std::env;
 use std::hash::{Hash, Hasher};
 use std::io::{self, BufRead, Read, Write};
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use temporalstore_rust::{
-    BatchExecuteRequest, Command, CommandResponse, ExecuteRequest, TemporalEngine,
+    BatchExecuteRequest, BlockStoreOptions, Command, CommandResponse, ExecuteRequest,
+    TemporalEngine,
 };
 use temporalstore_rust::{Config, SetConfigRequest};
 
@@ -63,6 +64,8 @@ struct RecordLogRequest {
     return_index_records: bool,
     #[serde(default)]
     record: Option<Value>,
+    #[serde(default)]
+    visibility_keys: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -86,7 +89,7 @@ struct HashReadRecord {
 #[derive(Clone, Debug)]
 struct CachedRetrieveCandidate {
     selected_ref: Value,
-    text: String,
+    lower_text: String,
 }
 
 #[derive(Clone, Debug)]
@@ -680,9 +683,10 @@ fn hgetall_snapshot_cache() -> &'static Mutex<BTreeMap<String, BTreeMap<String, 
     HGETALL_SNAPSHOT_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
-fn retrieve_candidate_cache() -> &'static Mutex<BTreeMap<String, RetrieveCandidateSnapshot>> {
-    static RETRIEVE_CANDIDATE_CACHE: OnceLock<Mutex<BTreeMap<String, RetrieveCandidateSnapshot>>> =
-        OnceLock::new();
+fn retrieve_candidate_cache() -> &'static Mutex<BTreeMap<String, Arc<RetrieveCandidateSnapshot>>> {
+    static RETRIEVE_CANDIDATE_CACHE: OnceLock<
+        Mutex<BTreeMap<String, Arc<RetrieveCandidateSnapshot>>>,
+    > = OnceLock::new();
     RETRIEVE_CANDIDATE_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
@@ -2366,6 +2370,30 @@ fn execute_record_log_request(
             cached_clients: None,
             extra: BTreeMap::new(),
         },
+        "matrixark_publish_visibility" => {
+            let index_bytes = engine
+                .publish_shard_index_snapshot_for_keys(
+                    DEFAULT_SHARD_ID,
+                    request.visibility_keys.clone(),
+                )
+                .map_err(|status| format!("{}: {}", status.code, status.message))?;
+            clear_matrixark_scan_cache();
+            let mut output = empty_output(root);
+            output.status = "published".to_string();
+            output.count = Some(index_bytes);
+            output
+                .extra
+                .insert("matrixark_visibility_published".to_string(), json!(true));
+            output.extra.insert(
+                "matrixark_visibility_index_bytes".to_string(),
+                json!(index_bytes),
+            );
+            output.extra.insert(
+                "matrixark_visibility_scope".to_string(),
+                json!("shard_index_snapshot"),
+            );
+            output
+        }
         "put_string" => {
             execute_empty(
                 &engine,
@@ -2559,7 +2587,12 @@ fn validate_request(request: &RecordLogRequest) -> Result<(), String> {
         return Err("missing op".to_string());
     }
     match request.op.as_str() {
-        "health" | "readiness" | "preflight" | "metrics_prometheus" | "shutdown" => Ok(()),
+        "health"
+        | "readiness"
+        | "preflight"
+        | "metrics_prometheus"
+        | "shutdown"
+        | "matrixark_publish_visibility" => Ok(()),
         "put_string" | "get_string" | "delete" | "del" | "hgetall" | "scan_hash" => {
             require_non_empty("key", &request.key)
         }
@@ -2577,10 +2610,10 @@ fn validate_request(request: &RecordLogRequest) -> Result<(), String> {
             require_non_empty("field", &request.field)
         }
         "batch_hset" | "batch_hget" => {
-            if expanded_hash_entries(request).is_empty() {
+            if request.entries.is_empty() && request.entries_compact.is_empty() {
                 return Err("missing entries".to_string());
             }
-            for entry in expanded_hash_entries(request) {
+            for entry in &request.entries {
                 require_non_empty("key", &entry.key)?;
                 require_non_empty("field", &entry.field)?;
             }
@@ -2591,10 +2624,13 @@ fn validate_request(request: &RecordLogRequest) -> Result<(), String> {
             Ok(())
         }
         "matrixark_append_records" | "matrixark_batch_append_records" => {
-            if expanded_hash_entries(request).is_empty() && request.key.trim().is_empty() {
+            if request.entries.is_empty()
+                && request.entries_compact.is_empty()
+                && request.key.trim().is_empty()
+            {
                 return Err("missing entries".to_string());
             }
-            for entry in expanded_hash_entries(request) {
+            for entry in &request.entries {
                 require_non_empty("key", &entry.key)?;
                 require_non_empty("field", &entry.field)?;
             }
@@ -2606,16 +2642,6 @@ fn validate_request(request: &RecordLogRequest) -> Result<(), String> {
         }
         other => Err(format!("unsupported op {other:?}")),
     }
-}
-
-fn expanded_hash_entries(request: &RecordLogRequest) -> Vec<HashEntry> {
-    let mut entries = request.entries.clone();
-    entries.extend(request.entries_compact.iter().map(|entry| HashEntry {
-        key: entry.0.clone(),
-        field: entry.1.clone(),
-        value: entry.2.clone(),
-    }));
-    entries
 }
 
 fn require_non_empty(name: &str, value: &str) -> Result<(), String> {
@@ -2751,11 +2777,12 @@ fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(128 * 1024 * 1024);
-    let engine = TemporalEngine::with_local_dirs(
+    let engine = TemporalEngine::with_local_dirs_and_block_store_options(
         cache_bytes,
         root.join("cache"),
         root.join("pages"),
         root.join("indexes"),
+        matrixark_proxy_block_store_options(),
     );
     engine.load_shard(DEFAULT_SHARD_ID);
     let _ = engine.set_config(SetConfigRequest {
@@ -2774,6 +2801,63 @@ fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
         .map_err(|_| "record-log engine cache lock poisoned".to_string())?;
     cache.insert(root, engine.clone());
     Ok(engine)
+}
+
+fn matrixark_proxy_block_store_options() -> BlockStoreOptions {
+    let defaults = BlockStoreOptions::default();
+    BlockStoreOptions {
+        compression_enabled: env_bool_any(
+            &[
+                "MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_ENABLED",
+                "TS_PAGE_STORE_COMPRESSION_ENABLED",
+            ],
+            defaults.compression_enabled,
+        ),
+        compression_min_bytes: env_usize_any(
+            &[
+                "MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_MIN_BYTES",
+                "TS_PAGE_STORE_COMPRESSION_MIN_BYTES",
+            ],
+            4096,
+        ),
+        compression_level: env_i32_any(
+            &[
+                "MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_LEVEL",
+                "TS_PAGE_STORE_COMPRESSION_LEVEL",
+            ],
+            defaults.compression_level,
+        ),
+    }
+}
+
+fn env_bool_any(names: &[&str], default: bool) -> bool {
+    names
+        .iter()
+        .find_map(|name| env::var(name).ok())
+        .map(|value| {
+            matches!(
+                value.trim(),
+                "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"
+            )
+        })
+        .unwrap_or(default)
+}
+
+fn env_usize_any(names: &[&str], default: usize) -> usize {
+    names
+        .iter()
+        .find_map(|name| env::var(name).ok())
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+fn env_i32_any(names: &[&str], default: i32) -> i32 {
+    names
+        .iter()
+        .find_map(|name| env::var(name).ok())
+        .and_then(|value| value.trim().parse::<i32>().ok())
+        .unwrap_or(default)
 }
 
 fn execute_empty(engine: &TemporalEngine, command: Command) -> Result<(), String> {
@@ -2923,11 +3007,11 @@ fn load_retrieve_candidate_snapshot(
     count: usize,
     scope: Option<&Value>,
     secondary_groups: &[Vec<String>],
-) -> Result<(RetrieveCandidateSnapshot, bool), String> {
+) -> Result<(Arc<RetrieveCandidateSnapshot>, bool), String> {
     let cache_key = retrieve_candidate_cache_key(storage_prefix, count, scope, secondary_groups);
     if let Ok(cache) = retrieve_candidate_cache().lock() {
         if let Some(snapshot) = cache.get(&cache_key) {
-            return Ok((snapshot.clone(), true));
+            return Ok((Arc::clone(snapshot), true));
         }
     }
 
@@ -2998,22 +3082,26 @@ fn load_retrieve_candidate_snapshot(
         .filter(|record| is_serving_context_record(record))
         .filter_map(|record| {
             let text = context_record_text(record);
+            let lower_text = text.to_ascii_lowercase();
             let selected_ref = selected_ref_from_record(record, &text);
             if selected_ref.is_null() {
                 None
             } else {
-                Some(CachedRetrieveCandidate { selected_ref, text })
+                Some(CachedRetrieveCandidate {
+                    selected_ref,
+                    lower_text,
+                })
             }
         })
         .collect::<Vec<_>>();
-    let snapshot = RetrieveCandidateSnapshot {
+    let snapshot = Arc::new(RetrieveCandidateSnapshot {
         candidates,
         scanned_records: records.len(),
         placement_partitions_touched: shard_count,
         index_postings_read: shard_count,
-    };
+    });
     if let Ok(mut cache) = retrieve_candidate_cache().lock() {
-        cache.insert(cache_key, snapshot.clone());
+        cache.insert(cache_key, Arc::clone(&snapshot));
     }
     Ok((snapshot, false))
 }
@@ -3100,24 +3188,25 @@ fn retrieve_context_pack_output(
     };
     let query_terms = query_terms(&query);
     let score_started = Instant::now();
-    let mut candidates = Vec::new();
-    for candidate in &snapshot.candidates {
-        let score = score_text(&candidate.text, &query_terms);
-        candidates.push((score, candidate.selected_ref.clone()));
+    let mut candidates = Vec::with_capacity(snapshot.candidates.len());
+    for (ordinal, candidate) in snapshot.candidates.iter().enumerate() {
+        let score = score_lowered_text(&candidate.lower_text, &query_terms);
+        candidates.push((score, ordinal));
     }
     let score_ms = score_started.elapsed().as_secs_f64() * 1000.0;
-    candidates.sort_by(|left, right| {
-        right
-            .0
-            .partial_cmp(&left.0)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| left.1.to_string().cmp(&right.1.to_string()))
-    });
+    let keep = max_selected_refs.min(candidates.len());
+    if keep > 0 && candidates.len() > keep {
+        candidates
+            .select_nth_unstable_by(keep, |left, right| compare_scored_candidate(*left, *right));
+        candidates.truncate(keep);
+    }
+    candidates.sort_by(|left, right| compare_scored_candidate(*left, *right));
     let selected_refs: Vec<Value> = candidates
         .into_iter()
-        .filter(|(_, selected_ref)| !selected_ref.is_null())
+        .filter_map(|(_, ordinal)| snapshot.candidates.get(ordinal))
+        .map(|candidate| candidate.selected_ref.clone())
+        .filter(|selected_ref| !selected_ref.is_null())
         .take(max_selected_refs)
-        .map(|(_, selected_ref)| selected_ref)
         .collect();
     let selected_count = selected_refs.len();
     let elapsed_ms = started.elapsed().as_millis() as u64;
@@ -3293,16 +3382,23 @@ fn query_terms(query: &str) -> Vec<String> {
         .collect()
 }
 
-fn score_text(text: &str, query_terms: &[String]) -> f64 {
+fn score_lowered_text(lowered: &str, query_terms: &[String]) -> f64 {
     if query_terms.is_empty() {
         return 0.0;
     }
-    let lowered = text.to_ascii_lowercase();
     query_terms
         .iter()
         .filter(|term| lowered.contains(term.as_str()))
         .count() as f64
         / query_terms.len() as f64
+}
+
+fn compare_scored_candidate(left: (f64, usize), right: (f64, usize)) -> std::cmp::Ordering {
+    right
+        .0
+        .partial_cmp(&left.0)
+        .unwrap_or(std::cmp::Ordering::Equal)
+        .then_with(|| left.1.cmp(&right.1))
 }
 
 fn record_log_root(request: &RecordLogRequest) -> PathBuf {
@@ -3411,7 +3507,8 @@ fn _request_shape_for_docs() -> serde_json::Value {
             "hgetall",
             "scan_hash",
             "matrixark_scan_candidates",
-            "matrixark_retrieve_context_pack"
+            "matrixark_retrieve_context_pack",
+            "matrixark_publish_visibility"
         ]
     })
 }
@@ -3454,6 +3551,7 @@ mod tests {
             scope: None,
             return_index_records: false,
             record: None,
+            visibility_keys: Vec::new(),
         }
     }
 
@@ -3484,6 +3582,40 @@ mod tests {
         let mut same_prefix_count = request("put_string");
         same_prefix_count.key = "matrixark:mcp:scale:rust:abc:record_count".to_string();
         assert_eq!(prefixed_root, record_log_root(&same_prefix_count));
+    }
+
+    #[test]
+    fn matrixark_proxy_block_store_options_default_to_throughput_threshold() {
+        let _guard = env_guard();
+        env::remove_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_ENABLED");
+        env::remove_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_MIN_BYTES");
+        env::remove_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_LEVEL");
+        env::remove_var("TS_PAGE_STORE_COMPRESSION_ENABLED");
+        env::remove_var("TS_PAGE_STORE_COMPRESSION_MIN_BYTES");
+        env::remove_var("TS_PAGE_STORE_COMPRESSION_LEVEL");
+
+        let options = matrixark_proxy_block_store_options();
+        assert!(options.compression_enabled);
+        assert_eq!(options.compression_min_bytes, 4096);
+        assert_eq!(
+            options.compression_level,
+            BlockStoreOptions::default().compression_level
+        );
+
+        env::set_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_ENABLED", "false");
+        env::set_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_MIN_BYTES", "8192");
+        env::set_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_LEVEL", "3");
+        let overridden = matrixark_proxy_block_store_options();
+        assert!(!overridden.compression_enabled);
+        assert_eq!(overridden.compression_min_bytes, 8192);
+        assert_eq!(overridden.compression_level, 3);
+
+        env::remove_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_ENABLED");
+        env::remove_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_MIN_BYTES");
+        env::remove_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_LEVEL");
+        env::remove_var("TS_PAGE_STORE_COMPRESSION_ENABLED");
+        env::remove_var("TS_PAGE_STORE_COMPRESSION_MIN_BYTES");
+        env::remove_var("TS_PAGE_STORE_COMPRESSION_LEVEL");
     }
 
     // shared-corpus: codex_mcp_temporalstore_rust_record_log_backend
@@ -3678,6 +3810,141 @@ mod tests {
         );
 
         env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
+    }
+
+    #[test]
+    fn matrixark_publish_visibility_makes_async_writes_visible_to_reopened_engine() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+        env::set_var("MATRIXARK_RUST_PROXY_ASYNC_STORAGE", "true");
+        clear_engine_cache();
+
+        let storage_prefix = "matrixark:test:publish";
+        let mut append = request("matrixark_batch_append_records");
+        append.key = format!("{storage_prefix}:record_count");
+        append.value = "1".to_string();
+        append.entries_compact = vec![CompactHashEntry(
+            format!("{storage_prefix}:records:000000"),
+            "00000000000000000000".to_string(),
+            r#"{"record_type":"context_event","text":"published async page"}"#.to_string(),
+        )];
+
+        let root = record_log_root(&append);
+        let engine = open_engine(&append).expect("engine");
+        execute_record_log_request(&engine, append, root.clone()).expect("append compact bundle");
+        let publish = request("matrixark_publish_visibility");
+        let output =
+            execute_record_log_request(&engine, publish, root).expect("publish visibility");
+        assert_eq!(output.status, "published");
+        assert_eq!(
+            output.extra.get("matrixark_visibility_published"),
+            Some(&json!(true))
+        );
+
+        clear_engine_cache();
+        let reopened_request = request("get_string");
+        let reopened = open_engine(&reopened_request).expect("reopened engine");
+        assert_eq!(
+            read_bytes(
+                &reopened,
+                Command::StringGet {
+                    key: format!("{storage_prefix}:record_count"),
+                },
+            )
+            .expect("get published count"),
+            "1"
+        );
+        assert_eq!(
+            read_bytes(
+                &reopened,
+                Command::HashGet {
+                    key: format!("{storage_prefix}:records:000000"),
+                    field: "00000000000000000000".to_string(),
+                },
+            )
+            .expect("get published hash field"),
+            r#"{"record_type":"context_event","text":"published async page"}"#
+        );
+
+        clear_engine_cache();
+        env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
+        env::remove_var("MATRIXARK_RUST_PROXY_ASYNC_STORAGE");
+    }
+
+    #[test]
+    fn matrixark_publish_visibility_can_target_only_written_keys() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+        env::set_var("MATRIXARK_RUST_PROXY_ASYNC_STORAGE", "true");
+        clear_engine_cache();
+
+        let storage_prefix = "matrixark:test:targeted-publish";
+        let mut append = request("matrixark_batch_append_records");
+        append.key = format!("{storage_prefix}:record_count");
+        append.value = "1".to_string();
+        append.entries_compact = vec![
+            CompactHashEntry(
+                format!("{storage_prefix}:records:000000"),
+                "00000000000000000000".to_string(),
+                r#"{"record_type":"context_event","text":"target published"}"#.to_string(),
+            ),
+            CompactHashEntry(
+                format!("{storage_prefix}:records:000001"),
+                "00000000000000000001".to_string(),
+                r#"{"record_type":"context_event","text":"target not published"}"#.to_string(),
+            ),
+        ];
+
+        let root = record_log_root(&append);
+        let engine = open_engine(&append).expect("engine");
+        execute_record_log_request(&engine, append, root.clone()).expect("append compact bundle");
+        let mut publish = request("matrixark_publish_visibility");
+        publish.visibility_keys = vec![
+            format!("{storage_prefix}:record_count"),
+            format!("{storage_prefix}:records:000000"),
+        ];
+        execute_record_log_request(&engine, publish, root).expect("publish selected visibility");
+
+        clear_engine_cache();
+        let reopened = open_engine(&request("get_string")).expect("reopened engine");
+        assert_eq!(
+            read_bytes(
+                &reopened,
+                Command::StringGet {
+                    key: format!("{storage_prefix}:record_count"),
+                },
+            )
+            .expect("get targeted count"),
+            "1"
+        );
+        assert_eq!(
+            read_bytes(
+                &reopened,
+                Command::HashGet {
+                    key: format!("{storage_prefix}:records:000000"),
+                    field: "00000000000000000000".to_string(),
+                },
+            )
+            .expect("get targeted hash field"),
+            r#"{"record_type":"context_event","text":"target published"}"#
+        );
+        assert_eq!(
+            read_bytes(
+                &reopened,
+                Command::HashGet {
+                    key: format!("{storage_prefix}:records:000001"),
+                    field: "00000000000000000001".to_string(),
+                },
+            )
+            .expect("get untargeted hash field"),
+            ""
+        );
+
+        clear_engine_cache();
+        env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
+        env::remove_var("MATRIXARK_RUST_PROXY_ASYNC_STORAGE");
     }
 
     #[test]

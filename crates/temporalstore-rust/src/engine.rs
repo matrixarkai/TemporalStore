@@ -34,7 +34,7 @@ use self::product_model::*;
 use self::reports::*;
 use self::slot_store::{read_slot_index_value, slot_index_component_page_addresses};
 use self::state::*;
-use crate::cache::{CacheEntryInfo, CacheGcReport, CacheKey, MultiLayerCache};
+use crate::block_store::BlockAppendRecord;
 use crate::control::{
     CheckedBatchExecuteRequest, CheckedBatchExecuteResponse, CheckedExecuteRequest,
     CheckedExecuteResponse, Config, GetConfigResponse, GetInfoResponse, GetStatsResponse,
@@ -56,6 +56,7 @@ use crate::types::{
 };
 use crate::wal::LocalWriteAheadLogStore;
 use context::{context_index_ref_identity, validate_context_index_lookup};
+use rustmtcache::{CacheEntryInfo, CacheGcReport, CacheKey, MultiLayerCache};
 
 #[derive(Debug, Clone)]
 pub struct TemporalEngine {
@@ -5548,6 +5549,170 @@ impl TemporalEngine {
         fs::read(self.index_path(shard_id))
     }
 
+    pub fn publish_shard_index_snapshot(&self, shard_id: ShardId) -> Result<usize, Status> {
+        self.publish_shard_index_snapshot_for_keys(shard_id, Vec::<String>::new())
+    }
+
+    pub fn publish_shard_index_snapshot_for_keys(
+        &self,
+        shard_id: ShardId,
+        selected_keys: impl IntoIterator<Item = String>,
+    ) -> Result<usize, Status> {
+        enum PublishTarget {
+            String { key: String },
+            Hash { key: String, field: String },
+        }
+
+        let selected_keys = selected_keys
+            .into_iter()
+            .filter(|key| !key.trim().is_empty())
+            .collect::<BTreeSet<_>>();
+        let publish_all = selected_keys.is_empty();
+        let publish_targets = {
+            let shards = self.shards.read().expect("engine lock poisoned");
+            let Some(shard) = shards.get(&shard_id) else {
+                return Err(Status::error(
+                    "shard_not_loaded",
+                    "shard is not loaded on this server",
+                ));
+            };
+            let mut publish_targets = shard
+                .strings
+                .iter()
+                .filter(|(key, address)| {
+                    address.page_segment_id == HOT_PAGE_SEGMENT_ID
+                        && (publish_all || selected_keys.contains(*key))
+                })
+                .map(|(key, address)| (PublishTarget::String { key: key.clone() }, address.clone()))
+                .collect::<Vec<_>>();
+            publish_targets.extend(
+                shard
+                    .hashes
+                    .iter()
+                    .filter(|(key, _)| publish_all || selected_keys.contains(*key))
+                    .flat_map(|(key, fields)| {
+                        fields.iter().filter_map(move |(field, address)| {
+                            (address.page_segment_id == HOT_PAGE_SEGMENT_ID).then(|| {
+                                (
+                                    PublishTarget::Hash {
+                                        key: key.clone(),
+                                        field: field.clone(),
+                                    },
+                                    address.clone(),
+                                )
+                            })
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            );
+            publish_targets
+        };
+        let mut publish_records = Vec::with_capacity(publish_targets.len());
+        for (target, address) in publish_targets {
+            if let Some(bytes) = read_page_bytes(&self.cache, &self.page_store, shard_id, &address)
+            {
+                publish_records.push((
+                    target,
+                    address.clone(),
+                    bytes,
+                    address.object_id,
+                    address.routing_slot,
+                ));
+            }
+        }
+        if publish_records.is_empty() {
+            return Ok(0);
+        }
+        let append_records = publish_records
+            .iter()
+            .map(|(_, _, bytes, object_id, routing_slot)| {
+                (bytes.clone(), *object_id, *routing_slot)
+            })
+            .collect::<Vec<BlockAppendRecord>>();
+        let published_addresses = self
+            .page_store
+            .append_batch_with_page_metadata(append_records)
+            .map_err(|err| Status::error("publish_visibility_failed", err.to_string()))?;
+        let index_bytes = {
+            let mut shards = self.shards.write().expect("engine lock poisoned");
+            let Some(shard) = shards.get_mut(&shard_id) else {
+                return Err(Status::error(
+                    "shard_not_loaded",
+                    "shard is not loaded on this server",
+                ));
+            };
+            for ((target, original, bytes, _, _), published) in
+                publish_records.into_iter().zip(published_addresses)
+            {
+                match target {
+                    PublishTarget::String { key } => {
+                        if shard.strings.get(&key) != Some(&original) {
+                            continue;
+                        }
+                        let _ = self.cache.put(
+                            CacheKey::page_with_slot_generation(
+                                shard_id,
+                                published.page_segment_id,
+                                published.offset,
+                                published.length,
+                                published.routing_slot,
+                                published.generation,
+                            ),
+                            bytes,
+                        );
+                        upsert_slot_index_page(
+                            shard,
+                            shard_id,
+                            "string",
+                            &key,
+                            None,
+                            published.clone(),
+                            true,
+                        );
+                        shard.strings.insert(key, published);
+                    }
+                    PublishTarget::Hash { key, field } => {
+                        let current = shard.hashes.get(&key).and_then(|fields| fields.get(&field));
+                        if current != Some(&original) {
+                            continue;
+                        }
+                        let _ = self.cache.put(
+                            CacheKey::page_with_slot_generation(
+                                shard_id,
+                                published.page_segment_id,
+                                published.offset,
+                                published.length,
+                                published.routing_slot,
+                                published.generation,
+                            ),
+                            bytes,
+                        );
+                        upsert_slot_index_page(
+                            shard,
+                            shard_id,
+                            "hash",
+                            &key,
+                            Some(field.clone()),
+                            published.clone(),
+                            true,
+                        );
+                        if let Some(fields) = shard.hashes.get_mut(&key) {
+                            fields.insert(field, published);
+                        }
+                    }
+                }
+            }
+            refresh_slot_runtime_flags(shard);
+            serialize_index(shard)
+        };
+        self.index_log_store
+            .append_json(shard_id, &index_bytes)
+            .map_err(|err| Status::error("publish_visibility_failed", err.to_string()))?;
+        self.persist_index_bytes(shard_id, &index_bytes)
+            .map_err(|err| Status::error("publish_visibility_failed", err.to_string()))?;
+        Ok(index_bytes.len())
+    }
+
     pub fn install_index_bytes(
         &self,
         shard_id: ShardId,
@@ -7183,6 +7348,7 @@ fn execute_on_shard(
         Command::HashMultiSet { key, entries } => {
             remove_if_expired(shard, &key);
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
+            let mut applied = Vec::with_capacity(entries.len());
             for (field, value) in entries {
                 let object_id = stable_page_object_id(shard_id, "hash", &key, Some(&field));
                 if let Ok(address) = append_value(
@@ -7203,14 +7369,16 @@ fn execute_on_shard(
                         address.clone(),
                         true,
                     );
-                    shard
-                        .hashes
-                        .entry(key.clone())
-                        .or_default()
-                        .insert(field.clone(), address);
                     let _ = cache.invalidate(&CacheKey::hash(shard_id, &key, &field));
-                    mutated = true;
+                    applied.push((field, address));
                 }
+            }
+            if !applied.is_empty() {
+                let fields = shard.hashes.entry(key).or_default();
+                for (field, address) in applied {
+                    fields.insert(field, address);
+                }
+                mutated = true;
             }
             CommandResponse::Empty
         }
@@ -8658,6 +8826,7 @@ fn execute_on_shard(
             node_hash,
             mut event,
             first_write_only,
+            cold_storage,
         } => {
             let object_key = context_event_key(tenant_hash, node_hash);
             normalize_context_event_storage_keys(node_hash, &mut event);
@@ -8683,7 +8852,7 @@ fn execute_on_shard(
                         value,
                     }],
                     routing_slot,
-                    async_storage,
+                    async_storage && !cold_storage,
                 ) {
                     for (timestamp_ms, address) in addresses {
                         series.insert(timestamp_ms, address);
@@ -8700,6 +8869,7 @@ fn execute_on_shard(
             mut event,
             indexes,
             first_write_only,
+            cold_storage,
         } => {
             let event_object_key = context_event_key(tenant_hash, node_hash);
             normalize_context_event_storage_keys(node_hash, &mut event);
@@ -8727,7 +8897,7 @@ fn execute_on_shard(
                         value,
                     }],
                     routing_slot,
-                    async_storage,
+                    async_storage && !cold_storage,
                 ) {
                     for (timestamp_ms, address) in addresses {
                         event_series.insert(timestamp_ms, address);
@@ -9447,20 +9617,16 @@ fn execute_on_shard(
                 .context_events
                 .get(&context_event_key(tenant_hash, node_hash))
                 .map(|series| {
-                    let mut page_cache = HashMap::new();
                     series
                         .range(
                             context_timeline_start(source_start_ms)
                                 ..context_timeline_end(source_end_ms),
                         )
                         .filter_map(|(timeline_key, address)| {
-                            read_context_value_cached::<ContextEvent>(
-                                cache,
+                            read_context_value_cold::<ContextEvent>(
                                 page_store,
-                                shard_id,
                                 *timeline_key,
                                 address,
-                                &mut page_cache,
                             )
                         })
                         .filter(|event| {
@@ -9731,7 +9897,12 @@ fn mark_slot_index_page_deleted(
 ) -> bool {
     let mut removed = false;
     let target_slots = if shard.slot_index.object_page_lookup.is_empty() {
-        shard.slot_index.slot_map.keys().copied().collect::<BTreeSet<_>>()
+        shard
+            .slot_index
+            .slot_map
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>()
     } else {
         shard
             .slot_index
@@ -10972,7 +11143,12 @@ fn sync_slot_index_object_pages(
     let mut touched_slots = BTreeSet::new();
     let mut removed_any = false;
     let target_slots = if shard.slot_index.object_component_lookup.is_empty() {
-        shard.slot_index.slot_map.keys().copied().collect::<BTreeSet<_>>()
+        shard
+            .slot_index
+            .slot_map
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>()
     } else {
         shard
             .slot_index
@@ -11646,7 +11822,7 @@ fn slot_storage_summaries(
     end_routing_slot: u32,
 ) -> Vec<SlotStorageSummary> {
     let mut slots = BTreeMap::<u32, SlotStorageSummary>::new();
-    let mut page_segments_by_slot = BTreeMap::<u32, BTreeSet<u64>>::new();
+    let page_segments_by_slot = BTreeMap::<u32, BTreeSet<u64>>::new();
     for entry in collect_live_page_entries(shard) {
         let routing_slot = entry
             .address
@@ -13174,7 +13350,8 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
                 .unwrap_or(false)
         })
     };
-    slot_index_exists || shard.strings.contains_key(key)
+    slot_index_exists
+        || shard.strings.contains_key(key)
         || shard.hashes.contains_key(key)
         || shard.sets.contains_key(key)
         || shard.features.contains_key(key)
@@ -13245,6 +13422,10 @@ fn read_page_bytes(
     let bytes = page_store.read(address).ok()?;
     let _ = cache.put(cache_key, bytes.clone());
     Some(bytes)
+}
+
+fn read_page_bytes_cold(page_store: &LocalPageStore, address: &PageAddress) -> Option<Vec<u8>> {
+    page_store.read(address).ok()
 }
 
 fn cache_entry_routing_slot(entry: &CacheEntryInfo) -> Option<u32> {

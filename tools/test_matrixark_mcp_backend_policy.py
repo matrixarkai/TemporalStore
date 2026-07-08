@@ -1233,6 +1233,25 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertFalse(selected_row["parity_passed"])
         self.assertIn(">= 1", selected_row["parity_threshold"])
 
+    def test_native_zero_append_metrics_do_not_fall_back_to_adapter_average(self) -> None:
+        try:
+            from tools.matrixark_mcp_temporal_adapters import _float_metric_or_default
+        except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
+            from matrixark_mcp_temporal_adapters import _float_metric_or_default
+
+        self.assertEqual(
+            _float_metric_or_default({"append_engine_ms": 0.0}, "append_engine_ms", 400.0),
+            0.0,
+        )
+        self.assertEqual(
+            _float_metric_or_default({"append_queue_wait_ms": "0"}, "append_queue_wait_ms", 300.0),
+            0.0,
+        )
+        self.assertEqual(
+            _float_metric_or_default({}, "append_engine_ms", 400.0),
+            400.0,
+        )
+
     def test_scale_report_compares_retrieval_stage_metrics(self) -> None:
         stage_metrics = summarize_retrieval_metrics(
             [
