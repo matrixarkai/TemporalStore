@@ -5732,7 +5732,7 @@ impl TemporalEngine {
             serialize_index(shard)
         };
         self.index_log_store
-            .append_json(shard_id, &index_bytes)
+            .append_index_bytes(shard_id, &index_bytes)
             .map_err(|err| Status::error("publish_visibility_failed", err.to_string()))?;
         self.persist_index_bytes(shard_id, &index_bytes)
             .map_err(|err| Status::error("publish_visibility_failed", err.to_string()))?;
