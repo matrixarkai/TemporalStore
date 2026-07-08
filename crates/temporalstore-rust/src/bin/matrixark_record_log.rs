@@ -685,6 +685,11 @@ fn hgetall_snapshot_cache() -> &'static Mutex<BTreeMap<String, BTreeMap<String, 
     HGETALL_SNAPSHOT_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
+fn record_count_cache() -> &'static Mutex<BTreeMap<String, String>> {
+    static RECORD_COUNT_CACHE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
+    RECORD_COUNT_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
 fn retrieve_candidate_cache() -> &'static Mutex<BTreeMap<String, Arc<RetrieveCandidateSnapshot>>> {
     static RETRIEVE_CANDIDATE_CACHE: OnceLock<
         Mutex<BTreeMap<String, Arc<RetrieveCandidateSnapshot>>>,
@@ -700,6 +705,30 @@ fn matrixark_scan_cache() -> &'static Mutex<BTreeMap<String, Value>> {
 fn clear_matrixark_scan_cache() {
     if let Ok(mut cache) = matrixark_scan_cache().lock() {
         cache.clear();
+    }
+}
+
+fn is_record_count_key(key: &str) -> bool {
+    key.ends_with(":record_count")
+}
+
+fn update_record_count_cache(key: &str, value: &[u8]) {
+    if !is_record_count_key(key) {
+        return;
+    }
+    if let Ok(text) = std::str::from_utf8(value) {
+        if let Ok(mut cache) = record_count_cache().lock() {
+            cache.insert(key.to_string(), text.to_string());
+        }
+    }
+}
+
+fn invalidate_record_count_cache(key: &str) {
+    if !is_record_count_key(key) {
+        return;
+    }
+    if let Ok(mut cache) = record_count_cache().lock() {
+        cache.remove(key);
     }
 }
 
@@ -1487,12 +1516,7 @@ fn scan_matrixark_candidates(
     let count_key = required_option(command.count_key.clone(), "count_key")?;
     let record_hash_key = required_option(command.record_hash_key.clone(), "record_hash_key")?;
     let shard_size = command.shard_size.unwrap_or(1024).max(1);
-    let count_text = read_bytes(
-        engine,
-        Command::StringGet {
-            key: count_key.clone(),
-        },
-    )?;
+    let count_text = read_record_count(engine, &count_key)?;
     let count = count_text.parse::<u64>().unwrap_or(0);
     let scan_cache_key = matrixark_scan_cache_key(command, count);
     if let Ok(cache) = matrixark_scan_cache().lock() {
@@ -2893,6 +2917,14 @@ fn execute_empty(engine: &TemporalEngine, command: Command) -> Result<(), String
         Command::HashDelete { key, .. } | Command::CommonDelete { key } => Some(key.clone()),
         _ => None,
     };
+    let record_count_update = match &command {
+        Command::StringSet { key, value } => Some((key.clone(), value.clone())),
+        _ => None,
+    };
+    let record_count_invalidate = match &command {
+        Command::CommonDelete { key } | Command::StringDelete { key } => Some(key.clone()),
+        _ => None,
+    };
     let response = engine.execute(ExecuteRequest {
         shard_id: DEFAULT_SHARD_ID,
         command,
@@ -2905,6 +2937,12 @@ fn execute_empty(engine: &TemporalEngine, command: Command) -> Result<(), String
     }
     match response.response {
         CommandResponse::Empty => {
+            if let Some((key, value)) = record_count_update {
+                update_record_count_cache(&key, &value);
+            }
+            if let Some(key) = record_count_invalidate {
+                invalidate_record_count_cache(&key);
+            }
             if let Some((key, entries)) = cache_update {
                 update_hgetall_snapshot_fields(&key, &entries);
             }
@@ -2956,6 +2994,20 @@ fn execute_empty_batch_runtime(
             _ => None,
         })
         .collect::<Vec<_>>();
+    let record_count_updates = commands
+        .iter()
+        .filter_map(|command| match command {
+            Command::StringSet { key, value } => Some((key.clone(), value.clone())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let record_count_invalidates = commands
+        .iter()
+        .filter_map(|command| match command {
+            Command::CommonDelete { key } | Command::StringDelete { key } => Some(key.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
     let response = engine.batch_execute(BatchExecuteRequest {
         shard_id: DEFAULT_SHARD_ID,
         commands,
@@ -2979,6 +3031,12 @@ fn execute_empty_batch_runtime(
     }
     for (key, entries) in cache_updates {
         update_hgetall_snapshot_fields(&key, &entries);
+    }
+    for (key, value) in record_count_updates {
+        update_record_count_cache(&key, &value);
+    }
+    for key in record_count_invalidates {
+        invalidate_record_count_cache(&key);
     }
     for key in cache_invalidates {
         invalidate_hgetall_snapshot(&key);
@@ -3009,6 +3067,26 @@ fn read_bytes(engine: &TemporalEngine, command: Command) -> Result<String, Strin
             .map(|value| value.unwrap_or_default()),
         other => Err(format!("unexpected response for read: {other:?}")),
     }
+}
+
+fn read_record_count(engine: &TemporalEngine, key: &str) -> Result<String, String> {
+    if let Ok(cache) = record_count_cache().lock() {
+        if let Some(value) = cache.get(key) {
+            return Ok(value.clone());
+        }
+    }
+    let value = read_bytes(
+        engine,
+        Command::StringGet {
+            key: key.to_string(),
+        },
+    )?;
+    if !value.trim().is_empty() {
+        if let Ok(mut cache) = record_count_cache().lock() {
+            cache.insert(key.to_string(), value.clone());
+        }
+    }
+    Ok(value)
 }
 
 fn load_retrieve_candidate_snapshot(
@@ -3128,7 +3206,7 @@ fn retrieve_context_pack_output(
         return Err("missing storage_prefix or count_key-derived storage prefix".to_string());
     }
     let count_key = format!("{storage_prefix}:record_count");
-    let count_raw = read_bytes(engine, Command::StringGet { key: count_key })?;
+    let count_raw = read_record_count(engine, &count_key)?;
     let count = count_raw.trim().parse::<usize>().unwrap_or_default();
     let record_hash_key = request
         .record_hash_key
