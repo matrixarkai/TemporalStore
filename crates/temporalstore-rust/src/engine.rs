@@ -5576,22 +5576,48 @@ impl TemporalEngine {
                     "shard is not loaded on this server",
                 ));
             };
-            let mut publish_targets = shard
-                .strings
-                .iter()
-                .filter(|(key, address)| {
-                    address.page_segment_id == HOT_PAGE_SEGMENT_ID
-                        && (publish_all || selected_keys.contains(*key))
-                })
-                .map(|(key, address)| (PublishTarget::String { key: key.clone() }, address.clone()))
-                .collect::<Vec<_>>();
-            publish_targets.extend(
-                shard
-                    .hashes
+            if publish_all {
+                let mut publish_targets = shard
+                    .strings
                     .iter()
-                    .filter(|(key, _)| publish_all || selected_keys.contains(*key))
-                    .flat_map(|(key, fields)| {
-                        fields.iter().filter_map(move |(field, address)| {
+                    .filter(|(_, address)| address.page_segment_id == HOT_PAGE_SEGMENT_ID)
+                    .map(|(key, address)| {
+                        (PublishTarget::String { key: key.clone() }, address.clone())
+                    })
+                    .collect::<Vec<_>>();
+                publish_targets.extend(
+                    shard
+                        .hashes
+                        .iter()
+                        .flat_map(|(key, fields)| {
+                            fields.iter().filter_map(move |(field, address)| {
+                                (address.page_segment_id == HOT_PAGE_SEGMENT_ID).then(|| {
+                                    (
+                                        PublishTarget::Hash {
+                                            key: key.clone(),
+                                            field: field.clone(),
+                                        },
+                                        address.clone(),
+                                    )
+                                })
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                );
+                publish_targets
+            } else {
+                let mut publish_targets = Vec::new();
+                for key in &selected_keys {
+                    if let Some(address) = shard.strings.get(key) {
+                        if address.page_segment_id == HOT_PAGE_SEGMENT_ID {
+                            publish_targets.push((
+                                PublishTarget::String { key: key.clone() },
+                                address.clone(),
+                            ));
+                        }
+                    }
+                    if let Some(fields) = shard.hashes.get(key) {
+                        publish_targets.extend(fields.iter().filter_map(|(field, address)| {
                             (address.page_segment_id == HOT_PAGE_SEGMENT_ID).then(|| {
                                 (
                                     PublishTarget::Hash {
@@ -5601,11 +5627,11 @@ impl TemporalEngine {
                                     address.clone(),
                                 )
                             })
-                        })
-                    })
-                    .collect::<Vec<_>>(),
-            );
-            publish_targets
+                        }));
+                    }
+                }
+                publish_targets
+            }
         };
         let mut publish_records = Vec::with_capacity(publish_targets.len());
         for (target, address) in publish_targets {
