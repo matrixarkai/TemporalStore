@@ -2742,6 +2742,11 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
                     partial_count += 1
         retrieve_elapsed = time.perf_counter() - retrieve_started
         retrieve_resource_end = process_resource_snapshot()
+        measured_metrics_latency_ms, measured_metrics_result, measured_metrics_error = call_with_latency(
+            server,
+            "matrixark_backend_metrics",
+            {},
+        )
         feature_probe = run_feature_probe(server, args, scope=scope, node_path=node_path, run_id=f"{run_id}-{backend}")
         stage_metrics = _merge_correctness_evidence(summarize_retrieval_metrics(retrieval_metric_rows), feature_probe)
 
@@ -2810,12 +2815,20 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
                 "error": metrics_error,
                 "result": metrics_result,
             },
+            "measured_backend_metrics": {
+                "latency_ms": round(measured_metrics_latency_ms, 3),
+                "error": measured_metrics_error,
+                "result": measured_metrics_result,
+                "scope": "after_measured_ingest_retrieve_before_feature_probe",
+            },
             "errors": {
                 "ingest": ingest_errors[:10],
                 "retrieve": retrieve_errors[:10],
             },
         }
-        result["rust_proxy_breakdown"] = rust_proxy_breakdown_from_backend_metrics(result.get("backend_metrics", {}))
+        result["rust_proxy_breakdown"] = rust_proxy_breakdown_from_backend_metrics(
+            result.get("measured_backend_metrics", {})
+        )
         result = attach_storage_lifecycle_shape(result, effective_storage_tuning)
         result["fallback_flags"] = fallback_flags_from_backend(result)
         return result
