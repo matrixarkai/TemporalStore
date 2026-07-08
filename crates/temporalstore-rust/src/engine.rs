@@ -5667,6 +5667,7 @@ impl TemporalEngine {
                     "shard is not loaded on this server",
                 ));
             };
+            let mut published_object_keys = BTreeSet::new();
             for ((target, original, bytes, _, _), published) in
                 publish_records.into_iter().zip(published_addresses)
             {
@@ -5693,8 +5694,9 @@ impl TemporalEngine {
                             &key,
                             None,
                             published.clone(),
-                            true,
+                            false,
                         );
+                        published_object_keys.insert(key.clone());
                         shard.strings.insert(key, published);
                     }
                     PublishTarget::Hash { key, field } => {
@@ -5720,13 +5722,17 @@ impl TemporalEngine {
                             &key,
                             Some(field.clone()),
                             published.clone(),
-                            true,
+                            false,
                         );
+                        published_object_keys.insert(key.clone());
                         if let Some(fields) = shard.hashes.get_mut(&key) {
                             fields.insert(field, published);
                         }
                     }
                 }
+            }
+            for object_key in published_object_keys {
+                clear_published_object_dirty_state(shard, &object_key);
             }
             refresh_slot_runtime_flags(shard);
             serialize_index(shard)
@@ -11371,6 +11377,46 @@ fn refresh_slot_runtime_flags(shard: &mut ShardState) {
             .map(|expires_at| expires_at.saturating_sub(now))
             .min();
         update_slot_layout(slot);
+    }
+}
+
+fn object_still_has_hot_page(shard: &ShardState, object_key: &str) -> bool {
+    shard
+        .strings
+        .get(object_key)
+        .map(|address| address.page_segment_id == HOT_PAGE_SEGMENT_ID)
+        .unwrap_or(false)
+        || shard
+            .hashes
+            .get(object_key)
+            .map(|fields| {
+                fields
+                    .values()
+                    .any(|address| address.page_segment_id == HOT_PAGE_SEGMENT_ID)
+            })
+            .unwrap_or(false)
+}
+
+fn clear_published_object_dirty_state(shard: &mut ShardState, object_key: &str) {
+    if object_still_has_hot_page(shard, object_key) {
+        return;
+    }
+    shard.dirty_objects.remove(object_key);
+    for slot in shard.slot_index.slot_map.values_mut() {
+        let mut touched = false;
+        for page in slot.page_index.values_mut() {
+            if page.object_key == object_key {
+                page.dirty = false;
+                touched = true;
+            }
+        }
+        if touched {
+            slot.dirty = slot
+                .page_index
+                .values()
+                .any(|page| page.dirty || shard.dirty_objects.contains(&page.object_key));
+            update_slot_layout(slot);
+        }
     }
 }
 

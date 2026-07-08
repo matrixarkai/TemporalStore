@@ -3897,7 +3897,21 @@ mod tests {
             format!("{storage_prefix}:record_count"),
             format!("{storage_prefix}:records:000000"),
         ];
-        execute_record_log_request(&engine, publish, root).expect("publish selected visibility");
+        let publish_output =
+            execute_record_log_request(&engine, publish.clone(), root.clone())
+                .expect("publish selected visibility");
+        assert!(
+            publish_output.count.unwrap_or_default() > 0,
+            "first targeted publish should persist selected hot pages"
+        );
+        let republish_output =
+            execute_record_log_request(&engine, publish, root.clone())
+                .expect("republish selected visibility");
+        assert_eq!(
+            republish_output.count,
+            Some(0),
+            "republishing the same clean keys should not rewrite visibility"
+        );
 
         clear_engine_cache();
         let reopened = open_engine(&request("get_string")).expect("reopened engine");
