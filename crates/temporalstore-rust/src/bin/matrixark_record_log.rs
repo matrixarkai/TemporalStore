@@ -66,6 +66,8 @@ struct RecordLogRequest {
     record: Option<Value>,
     #[serde(default)]
     visibility_keys: Vec<String>,
+    #[serde(default)]
+    top_level_response: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -3278,13 +3280,22 @@ fn retrieve_context_pack_output(
             .unwrap_or_else(|| json!({})),
         "context_pack": pack,
     });
-    Ok(RecordLogOutput {
-        value: serde_json::to_string(&response)
-            .map_err(|error| format!("failed to serialize native context pack: {error}"))?,
-        count: Some(selected_count),
-        mode: "rust_proxy_native_context_pack".to_string(),
-        ..empty_output(root)
-    })
+    let mut output = empty_output(root);
+    output.count = Some(selected_count);
+    output.mode = "rust_proxy_native_context_pack".to_string();
+    if request.top_level_response {
+        if let Some(object) = response.as_object() {
+            for (key, value) in object {
+                if !matches!(key.as_str(), "ok" | "count") {
+                    output.extra.insert(key.clone(), value.clone());
+                }
+            }
+        }
+    } else {
+        output.value = serde_json::to_string(&response)
+            .map_err(|error| format!("failed to serialize native context pack: {error}"))?;
+    }
+    Ok(output)
 }
 
 fn flatten_context_payload(payload: &str, records: &mut Vec<Value>) {
@@ -3544,6 +3555,7 @@ mod tests {
             return_index_records: false,
             record: None,
             visibility_keys: Vec::new(),
+            top_level_response: false,
         }
     }
 

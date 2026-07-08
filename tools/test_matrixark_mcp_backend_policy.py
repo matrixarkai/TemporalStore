@@ -3796,6 +3796,26 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         adapter._dedicated_proxy_clients_enabled = True
         self.assertTrue(adapter._raw_ingestion_visibility_required_after_flush())
 
+    def test_rust_proxy_context_pack_requests_top_level_response(self) -> None:
+        client = mcp.MatrixArkRustProxyClient.__new__(mcp.MatrixArkRustProxyClient)
+        calls = []
+
+        def fake_call_json(op: str, **kwargs: object) -> dict[str, object]:
+            calls.append((op, kwargs))
+            return {"context_pack": {"context_pack_id": "pack-top-level"}}
+
+        client._call_json = fake_call_json
+        pack = client.matrixark_retrieve_context_pack(
+            count_key="matrixark:test:record_count",
+            record_hash_key="matrixark:test:records",
+            shard_size=128,
+            request={"query": "gpu", "scope": {}},
+        )
+
+        self.assertEqual(pack["context_pack"]["context_pack_id"], "pack-top-level")
+        self.assertEqual(calls[0][0], "matrixark_retrieve_context_pack")
+        self.assertTrue(calls[0][1]["top_level_response"])
+
     def test_production_retrieve_fails_closed_without_native_context_pack(self) -> None:
         mcp.MATRIXARK_MCP_PROFILE = "production"
         mcp.MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK = ""

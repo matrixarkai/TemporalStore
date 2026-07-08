@@ -4363,6 +4363,7 @@ class MatrixArkRustProxyClient:
             scope=request.get("scope", {}),
             secondary_index_groups=request.get("secondary_index_groups", []),
             record=request,
+            top_level_response=True,
         )
         value = response.get("value")
         if isinstance(value, str) and value:
