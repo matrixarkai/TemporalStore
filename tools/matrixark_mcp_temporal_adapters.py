@@ -79,6 +79,16 @@ def _latency_quantile_from_bucket_map(buckets: dict[str, Any], total: int, quant
     return previous
 
 
+def _float_metric_or_default(metrics: dict[str, Any], name: str, default: float = 0.0) -> float:
+    if name not in metrics or metrics.get(name) is None:
+        return float(default)
+    try:
+        return float(metrics.get(name))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+
 def _native_scope_with_hashes(scope: Json) -> Json:
     if not isinstance(scope, dict):
         return {}
@@ -322,6 +332,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         self._retrieval_candidate_cache_lock = threading.RLock()
         self._entry_count_cache: int | None = None
         self._legacy_index_mode = False
+        self._pending_visibility_keys: set[str] = set()
         self._records_lock = threading.RLock()
         self._audit_lock = threading.RLock()
         self._audit_buffer: list[Json] = []
@@ -851,8 +862,12 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             backend = "temporalstore"
         if backend in {"matrix_kv", "kv"}:
             backend = "matrixkv"
-        if backend not in {"temporalstore", "matrixkv"}:
-            raise MatrixArkError("MATRIXARK_RAW_INGESTION_BACKEND must be temporalstore or matrixkv")
+        if backend in {"object_store", "object", "blob", "blobstore", "blob_store"}:
+            backend = "objectstore"
+        if backend in {"aws_s3", "s3_object", "s3_objectstore"}:
+            backend = "s3"
+        if backend not in {"temporalstore", "matrixkv", "s3", "objectstore"}:
+            raise MatrixArkError("MATRIXARK_RAW_INGESTION_BACKEND must be temporalstore, matrixkv, s3, or objectstore")
         return backend
 
     def _raw_ingestion_append_path(self) -> str:
@@ -861,7 +876,11 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         )
         if backend == "temporalstore":
             return "matrixark_raw_ingestion_temporalstore_log"
-        return "matrixark_raw_ingestion_matrixkv_log"
+        if backend == "matrixkv":
+            return "matrixark_raw_ingestion_matrixkv_log"
+        if backend == "s3":
+            return "matrixark_raw_ingestion_s3_object_ref"
+        return "matrixark_raw_ingestion_objectstore_ref"
 
     def _raw_ingestion_append_options(self) -> Json:
         backend = self._normalize_raw_storage_backend(
@@ -956,6 +975,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             else:
                 self._hset_many_with_backoff(entries)
                 self._put_string_with_backoff(self._raw_count_key, str(sequence))
+            self._note_pending_visibility_keys([self._raw_count_key] + [str(entry.get("key") or "") for entry in entries])
             self._raw_entry_count_cache = sequence
             elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
             self._observe_backend_command(elapsed_ms, records_written=len(records))
@@ -1638,6 +1658,12 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                     self._index_cache.append(record_id)
                 self._hset_many_with_backoff(latest_state_entries + event_time_entries + entries)
                 self._put_string_with_backoff(self._index_key, json.dumps(self._index_cache, separators=(",", ":")))
+                self._note_pending_visibility_keys(
+                    [self._index_key]
+                    + [str(entry.get("key") or "") for entry in latest_state_entries]
+                    + [str(entry.get("key") or "") for entry in event_time_entries]
+                    + [str(entry.get("key") or "") for entry in entries]
+                )
                 if self._records_cache is not None:
                     self._records_cache.extend(records)
                     self._put_direct_record_cache(len(self._records_cache), self._records_cache)
@@ -1675,6 +1701,13 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             else:
                 self._hset_many_with_backoff(event_time_entries + native_index_entries + entries)
                 self._put_string_with_backoff(self._count_key, str(sequence))
+            self._note_pending_visibility_keys(
+                [self._count_key]
+                + [str(entry.get("key") or "") for entry in latest_state_entries]
+                + [str(entry.get("key") or "") for entry in event_time_entries]
+                + [str(entry.get("key") or "") for entry in native_index_entries]
+                + [str(entry.get("key") or "") for entry in entries]
+            )
             self._entry_count_cache = sequence
             if self._records_cache is not None:
                 self._records_cache.extend(records)
@@ -1684,6 +1717,26 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
             self._observe_append_engine(elapsed_ms)
             self._observe_backend_command(elapsed_ms, records_written=len(records))
+
+    def _note_pending_visibility_keys(self, keys: Iterable[str]) -> None:
+        if not getattr(self, "_publish_visibility_after_flush", False):
+            return
+        pending = getattr(self, "_pending_visibility_keys", None)
+        if pending is None:
+            self._pending_visibility_keys = set()
+            pending = self._pending_visibility_keys
+        for key in keys:
+            key = str(key or "")
+            if key:
+                pending.add(key)
+
+    def _consume_pending_visibility_keys(self) -> list[str]:
+        pending = getattr(self, "_pending_visibility_keys", None)
+        if not pending:
+            return []
+        keys = sorted(pending)
+        pending.clear()
+        return keys
 
     def append_audit(self, record: Json) -> None:
         if self._audit_mode == "drop":
@@ -2898,8 +2951,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "score_ms": round(float(native_telemetry.get("score_ms") or native_stage_metrics.get("score_ms") or 0.0), 3),
                 "pack_ms": round(pack_ms, 3),
                 "audit_ms": round(float(native_telemetry.get("audit_ms") or native_stage_metrics.get("audit_ms") or 0.0), 3),
-                "append_queue_wait_ms": round(float(native_telemetry.get("append_queue_wait_ms") or self._append_queue_wait_ms_avg()), 3),
-                "append_engine_ms": round(float(native_telemetry.get("append_engine_ms") or self._append_engine_ms_avg()), 3),
+                "append_queue_wait_ms": round(_float_metric_or_default(native_telemetry, "append_queue_wait_ms", self._append_queue_wait_ms_avg()), 3),
+                "append_engine_ms": round(_float_metric_or_default(native_telemetry, "append_engine_ms", self._append_engine_ms_avg()), 3),
                 "selected_refs": selected_count,
                 "dropped_refs": int(native_telemetry.get("dropped_refs") or native_telemetry.get("dropped_ref_count") or 0) + compact_dropped_refs,
                 "scanned_records": int(native_telemetry.get("scanned_records") or 0),
@@ -4106,6 +4159,9 @@ class MatrixArkRustProxyClient:
             record=request,
         )
 
+    def matrixark_publish_visibility(self, visibility_keys: list[str] | None = None) -> Json:
+        return self._call_json("matrixark_publish_visibility", visibility_keys=visibility_keys or [])
+
     def metrics_snapshot(self) -> Json:
         with self._metrics_lock:
             elapsed_s = max(0.001, time.time() - self._started_at)
@@ -4141,22 +4197,20 @@ class MatrixArkRustProxyClient:
                 "proxy_path": self.proxy_path,
                 "cli_path": self.cli_path,
                 "shared_process_mode": self._shared_process_mode,
-                "max_inflight": 1
-                if self._shared_process_mode
-                else self._write_lane_count + self._read_lane_count + self._pack_lane_count + self._control_lane_count,
+                "max_inflight": sum(self._lane_worker_counts.get(group, 0) for group in ("write", "read", "pack", "control")),
                 "lane_pool": {
-                    "write": 1 if self._shared_process_mode else self._write_lane_count,
-                    "read": 1 if self._shared_process_mode else self._read_lane_count,
-                    "pack": 1 if self._shared_process_mode else self._pack_lane_count,
-                    "control": 1 if self._shared_process_mode else self._control_lane_count,
+                    "write": self._lane_worker_counts.get("write", 0),
+                    "read": self._lane_worker_counts.get("read", 0),
+                    "pack": self._lane_worker_counts.get("pack", 0),
+                    "control": self._lane_worker_counts.get("control", 0),
                 },
-                "write_pool_size": 1 if self._shared_process_mode else self._write_lane_count,
-                "read_pool_size": 1 if self._shared_process_mode else self._read_lane_count,
-                "pack_pool_size": 1 if self._shared_process_mode else self._pack_lane_count,
-                "control_pool_size": 1 if self._shared_process_mode else self._control_lane_count,
-                "write_pool_enabled": False if self._shared_process_mode else self._write_lane_count > 1,
-                "read_pool_enabled": False if self._shared_process_mode else self._read_lane_count > 1,
-                "pack_pool_enabled": False if self._shared_process_mode else self._pack_lane_count > 1,
+                "write_pool_size": self._lane_worker_counts.get("write", 0),
+                "read_pool_size": self._lane_worker_counts.get("read", 0),
+                "pack_pool_size": self._lane_worker_counts.get("pack", 0),
+                "control_pool_size": self._lane_worker_counts.get("control", 0),
+                "write_pool_enabled": self._lane_worker_counts.get("write", 0) > 1,
+                "read_pool_enabled": self._lane_worker_counts.get("read", 0) > 1,
+                "pack_pool_enabled": self._lane_worker_counts.get("pack", 0) > 1,
                 "backpressure_timeout_ms": int(self._backpressure_timeout_s * 1000),
                 "commands_total": self._commands_total,
                 "commands_failed_total": self._commands_failed_total,
@@ -4424,6 +4478,13 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
             "MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS",
             "0",
         ).strip().lower() in {"1", "true", "yes"}
+        self._dedicated_pack_lanes_enabled = os.environ.get(
+            "MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES",
+            "0",
+        ).strip().lower() in {"1", "true", "yes"}
+        self._publish_visibility_after_flush = (
+            self._dedicated_proxy_clients_enabled or self._dedicated_pack_lanes_enabled
+        )
         self._rust_proxy_path = proxy_path
         self._rust_request_timeout_ms = request_timeout_ms
         self._rust_io_timeout_ms = io_timeout_ms
@@ -4539,6 +4600,17 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
                     sdk_mode=self._rust_sdk_mode,
                 )
             return self._retrieve_client
+
+    def flush_direct_writes(self, timeout_s: float | None = None) -> None:
+        super().flush_direct_writes(timeout_s=timeout_s)
+        if not getattr(self, "_publish_visibility_after_flush", False):
+            return
+        visibility_keys = self._consume_pending_visibility_keys()
+        if not visibility_keys:
+            return
+        publisher = getattr(self._client, "matrixark_publish_visibility", None)
+        if callable(publisher):
+            publisher(visibility_keys=visibility_keys)
 
     def supports_native_candidate_prefilter(self) -> bool:
         return True
