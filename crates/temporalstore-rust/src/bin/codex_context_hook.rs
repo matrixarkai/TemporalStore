@@ -69,7 +69,7 @@ fn main() {
     ));
     let now_ms = now_ms();
     let source_id = format!(
-        "agent:{}:session:{}:event:{}:{:016x}",
+        "{}:{}:{}:{:016x}",
         args.agent_name,
         args.session_id,
         args.event,
@@ -147,9 +147,8 @@ fn main() {
             tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
             max_summary_nodes: 16,
             max_event_nodes: 8,
-            owner_scope: format!("user:{}", args.user_id),
-            current_agent_id: args.agent_name.clone(),
-            shared_resource_scopes: vec!["global".to_string(), format!("user:{}", args.user_id)],
+            prefer_current_agent: false,
+            current_agent_scope_key: "agent:codex".to_string(),
             provider: ContextModelProviderConfig::default(),
         };
         let inject = inject_context(

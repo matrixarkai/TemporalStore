@@ -2,7 +2,7 @@
 
 ## Summary
 
-This document records the Rust TemporalStore evidence for multi-layer context scanning across current-agent, user-shared, workspace-shared, and global-shared context. The goal is bounded fanout with useful colocation: boost the current agent, keep user/global resources and skills visible, and avoid colocating an entire namespace on every node.
+This document records the Rust TemporalStore evidence for multi-layer context scanning across current-agent, user-shared, workspace-shared, and global-shared context. The goal is bounded fanout with useful colocation: keep peer-agent and current-agent evidence at equal default boost, keep user/global resources and skills visible, and avoid colocating an entire namespace on every node.
 
 ## Command
 
@@ -205,7 +205,7 @@ Archived report: `docs/benchmark_archives/context_multiagent_scan_20260706_summa
 - Locality keys are producer-aware: current-agent context is scoped as `agent:codex`, while shared resources stay in `user:user`, `workspace:context`, and `global` groups instead of colocating the whole namespace.
 - Locality key count equals expanded nodes: 4 expanded nodes produce 4 locality keys, covering exactly `agent:codex`, `user:user`, `workspace:context`, and `global` with zero peer-agent locality keys.
 - Layer quotas are applied before expansion so shared resources are not crowded out by many current-agent matches.
-- Peer-agent candidates are counted and capped by `max_peer_agent_nodes`, so the tight focused scan keeps current-agent plus user/workspace/global shared layers bounded and visible without duplicating the whole namespace.
+- Peer-agent candidates are counted under the same default agent-scope boost as current-agent candidates, so the tight focused scan keeps agent plus user/workspace/global shared layers bounded and visible without duplicating the whole namespace.
 
 ## Honest Limits
 

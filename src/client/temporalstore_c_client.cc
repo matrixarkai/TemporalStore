@@ -700,6 +700,7 @@ struct MatrixArkPreparedRetrieveCandidate {
     std::string cross_session_key;
     std::string source_ref_json;
     std::string session_continuity;
+    std::string agent_scope_key;
     double continuity_boost = 0.0;
     bool has_citation = false;
     std::unordered_set<std::string> terms;
@@ -733,6 +734,15 @@ std::string MatrixArkScopedScanCacheKey(
         key << JsonStringify(*scope);
     }
     return key.str();
+}
+
+double AgentScopeBoostPrepared(const MatrixArkPreparedRetrieveCandidate& candidate,
+                               const std::string& current_agent_scope_key,
+                               bool prefer_current_agent) {
+    if (!prefer_current_agent || current_agent_scope_key.empty()) {
+        return 0.0;
+    }
+    return candidate.agent_scope_key == current_agent_scope_key ? 0.125 : 0.0;
 }
 
 double CrossSessionRerankBoostPrepared(const MatrixArkPreparedRetrieveCandidate& candidate,
@@ -824,6 +834,7 @@ MatrixArkPreparedRetrieveCacheEntry PrepareMatrixArkRetrieveCandidates(
         candidate.batch_hash = BatchHash(record);
         candidate.cross_session_key = CrossSessionKey(record);
         candidate.session_continuity = SessionContinuityStatus(record, scope);
+        candidate.agent_scope_key = CandidateScopeKey(record);
         candidate.continuity_boost =
             ContinuityBoost(candidate.record_type, candidate.context_class,
                             candidate.session_continuity);
@@ -1165,6 +1176,11 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         remote_budget = JsonUintMember(*local_budget, "remote_budget_tokens", remote_budget);
     }
     CrossSessionPolicy cross_policy = ParseCrossSessionPolicy(request, scope, remote_budget, question_type);
+    bool prefer_current_agent = JsonBoolMember(request, "prefer_current_agent", false);
+    std::string current_agent_scope_key = JsonStringMember(request, "current_agent_scope_key");
+    if (current_agent_scope_key.empty()) {
+        current_agent_scope_key = "agent:codex";
+    }
     uint64_t max_refs = 24;
     uint64_t max_global_candidates = 512;
     double min_similarity_score = 0.20;
@@ -1225,6 +1241,9 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         const std::string& context_class = candidate.context_class;
         double continuity_boost = candidate.continuity_boost;
         score += continuity_boost;
+        double agent_scope_boost =
+            AgentScopeBoostPrepared(candidate, current_agent_scope_key, prefer_current_agent);
+        score += agent_scope_boost;
         double cross_session_rerank_boost =
             CrossSessionRerankBoostPrepared(candidate, question_type);
         score += cross_session_rerank_boost;
@@ -1510,6 +1529,11 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     ranking_policy.AddMember("max_selected_refs", max_refs, alloc);
     ranking_policy.AddMember("budget_fill_policy", rapidjson::Value(budget_fill_policy.c_str(), alloc), alloc);
     ranking_policy.AddMember("quality_first_budget_underfill_allowed", budget_fill_policy == "quality_first", alloc);
+    ranking_policy.AddMember("prefer_current_agent_configured", prefer_current_agent, alloc);
+    ranking_policy.AddMember("current_agent_scope_key", rapidjson::Value(current_agent_scope_key.c_str(), alloc), alloc);
+    ranking_policy.AddMember("current_agent_default_boost", prefer_current_agent ? 125 : 100, alloc);
+    ranking_policy.AddMember("peer_agent_default_boost", 100, alloc);
+    ranking_policy.AddMember("peer_agent_demoted_by_default", false, alloc);
     recall.AddMember("ranking", ranking_policy, alloc);
     rapidjson::Value session_policy(rapidjson::kObjectType);
     session_policy.AddMember("mode", scope == nullptr ? rapidjson::Value("unscoped", alloc) : rapidjson::Value(SessionScopeMode(*scope).c_str(), alloc), alloc);

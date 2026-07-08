@@ -96,7 +96,7 @@ def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: i
     require_bool(report, "layer_quota_applied")
     candidates = require_int_at_least(report, "namespace_node_candidates", min_candidates)
     summary_query_nodes = require_int_at_least(report, "summary_embedding_query_nodes", 1)
-    pruned_peers = require_int_at_least(report, "summary_pruned_peer_agent_nodes", 1)
+    pruned_peers = require_int_at_least(report, "summary_pruned_peer_agent_nodes", 0)
     if summary_query_nodes + pruned_peers != candidates:
         raise ValueError(
             "summary_embedding_query_nodes + summary_pruned_peer_agent_nodes "
@@ -106,7 +106,7 @@ def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: i
     require_int_equal(report, "effective_summary_node_limit", 11)
     require_int_equal(report, "configured_event_node_limit", 4)
     require_int_equal(report, "effective_event_node_limit", 4)
-    require_int_equal(report, "configured_peer_agent_node_limit", 0)
+    require_int_at_least(report, "configured_peer_agent_node_limit", report.get("candidate_peer_agent_nodes", 0) if isinstance(report.get("candidate_peer_agent_nodes"), int) else 0)
     expanded = require_int_at_least(report, "event_expanded_nodes", 1)
     if expanded > max_expanded:
         raise ValueError(f"event_expanded_nodes must be <= {max_expanded}, got {expanded}")
@@ -186,8 +186,8 @@ def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: i
             "summary_pruned_colocation_group_counts must account for pruned peer agents, "
             f"got {sum(pruned_groups.values())} vs {pruned_peers}"
         )
-    if pruned_scopes.get("agent:claude", 0) < 1:
-        raise ValueError("summary_pruned_colocation_scope_counts must prove peer-agent pruning")
+    if pruned_peers and pruned_scopes.get("agent:claude", 0) < 1:
+        raise ValueError("summary_pruned_colocation_scope_counts must account for peer-agent pruning when configured")
     require_int_at_least(report, "max_selected_colocation_group_nodes", 1)
     require_bool(report, "colocation_group_fanout_reduced")
     require_int_at_least(report, "shared_layer_quota_nodes", 4)
@@ -206,7 +206,7 @@ def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: i
         "agent:codex",
         report["selected_current_agent_nodes"],
     )
-    require_distribution_count(report, "selected_colocation_scope_distribution", "agent:claude", 0)
+    selected_peer_scope_count = report.get("selected_colocation_scope_distribution", {}).get("agent:claude", 0)
     require_distribution_count(
         report,
         "selected_colocation_scope_distribution",
@@ -225,37 +225,42 @@ def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: i
         "global",
         report["selected_global_shared_nodes"],
     )
-    require_bool(report, "current_agent_first_selected")
     selected_order = report.get("selected_colocation_scope_order")
     if not isinstance(selected_order, list) or not selected_order:
         raise ValueError("selected_colocation_scope_order must be a non-empty string array")
-    if selected_order[0] != "agent:codex":
+    if report.get("prefer_current_agent_configured") is True and selected_order[0] != "agent:codex":
         raise ValueError(
-            "selected_colocation_scope_order must start with current agent agent:codex, "
+            "selected_colocation_scope_order must start with current agent only when prefer_current_agent_configured=true, "
             f"got {selected_order[:3]!r}"
         )
     require_int_at_least(report, "peer_agent_nodes", 1)
     selected_peer = report.get("selected_peer_agent_nodes")
     if not isinstance(selected_peer, int):
         raise ValueError(f"selected_peer_agent_nodes must be an integer, got {selected_peer!r}")
-    if selected_peer != 0:
+    skipped_peer = require_int_at_least(report, "skipped_peer_agent_nodes", 0)
+    pruned_peer = report.get("summary_pruned_peer_agent_nodes", 0)
+    if selected_peer + skipped_peer + pruned_peer != report["peer_agent_nodes"]:
         raise ValueError(
-            "selected_peer_agent_nodes must be 0 under tight shared quota, "
-            f"got {selected_peer}"
+            "selected+skipped+pruned peer-agent nodes must equal peer_agent_nodes, "
+            f"got {selected_peer}+{skipped_peer}+{pruned_peer}!={report['peer_agent_nodes']}"
         )
-    require_int_at_least(report, "skipped_peer_agent_nodes", 1)
-    require_bool(report, "peer_agent_limit_applied")
+    if report.get("peer_agent_demoted_by_default") is not False:
+        raise ValueError("peer_agent_demoted_by_default must be false")
+    if report.get("current_agent_default_boost") != report.get("peer_agent_default_boost"):
+        raise ValueError(
+            "current_agent_default_boost and peer_agent_default_boost must match unless prefer_current_agent_configured=true"
+        )
     require_int_at_least(report, "selected_user_shared_nodes", 1)
     require_int_at_least(report, "selected_workspace_shared_nodes", 1)
     require_int_at_least(report, "selected_global_shared_nodes", 1)
     shared_selected = require_int_at_least(report, "selected_shared_layer_nodes", 3)
     current_percent = require_int_at_least(report, "selected_current_agent_percent", 1)
     shared_percent = require_int_at_least(report, "selected_shared_layer_percent", 1)
-    require_int_equal(report, "selected_peer_agent_percent", 0)
-    if current_percent + shared_percent > 100:
+    peer_percent = require_int_at_least(report, "selected_peer_agent_percent", 0)
+    if current_percent + shared_percent + peer_percent > 100:
         raise ValueError(
             "selected current-agent and shared-layer percentages cannot exceed 100, "
-            f"got {current_percent}+{shared_percent}"
+            f"got {current_percent}+{shared_percent}+{peer_percent}"
         )
     if shared_selected != (
         report["selected_user_shared_nodes"]
@@ -275,9 +280,7 @@ def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: i
     require_int_at_least(report, "retrieved_workspace_shared_block_count", 1)
     require_int_at_least(report, "retrieved_global_shared_block_count", 1)
     require_int_at_least(report, "selected_ref_count", 4)
-    require_bool(report, "selected_ref_current_agent_first")
-    require_bool(report, "injection_current_agent_first")
-    require_int_equal(report, "selected_peer_agent_ref_count", 0)
+    selected_peer_ref_count = require_int_at_least(report, "selected_peer_agent_ref_count", 0)
     selected_scopes = require_string_set(
         report, "selected_ref_scope_keys", REQUIRED_SELECTED_SCOPE_KEYS
     )
@@ -289,17 +292,17 @@ def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: i
     selected_order = report.get("selected_ref_scope_order")
     if not isinstance(selected_order, list) or not selected_order:
         raise ValueError("selected_ref_scope_order must be a non-empty string array")
-    if selected_order[0] != "agent:codex":
+    if report.get("prefer_current_agent_configured") is True and selected_order[0] != "agent:codex":
         raise ValueError(
-            "selected_ref_scope_order must start with current agent agent:codex, "
+            "selected_ref_scope_order must start with current agent only when prefer_current_agent_configured=true, "
             f"got {selected_order[:3]!r}"
         )
     injection_order = report.get("injection_scope_order")
     if not isinstance(injection_order, list) or not injection_order:
         raise ValueError("injection_scope_order must be a non-empty string array")
-    if injection_order[0] != "agent:codex":
+    if report.get("prefer_current_agent_configured") is True and injection_order[0] != "agent:codex":
         raise ValueError(
-            "injection_scope_order must start with current agent agent:codex, "
+            "injection_scope_order must start with current agent only when prefer_current_agent_configured=true, "
             f"got {injection_order[:3]!r}"
         )
     require_string_set(report, "scan_layers", REQUIRED_LAYERS)
@@ -338,7 +341,7 @@ def validate_report(report: dict[str, Any], min_candidates: int, max_expanded: i
     if not any(":scope:agent:codex:" in key for key in locality_keys):
         raise ValueError("locality_keys must include current-agent scoped colocation")
     require_int_equal(report, "locality_key_count", expanded)
-    require_int_equal(report, "peer_locality_key_count", 0)
+    require_int_equal(report, "peer_locality_key_count", selected_peer)
     locality_scopes = require_string_set(
         report, "locality_scope_keys", REQUIRED_SELECTED_SCOPE_KEYS
     )

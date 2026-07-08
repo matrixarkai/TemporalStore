@@ -2,7 +2,7 @@
 
 ## Summary
 
-This document records the Rust TemporalStore resource/skill/conversation scale evidence for multi-agent context scanning. It proves the broader harness, not only the tiny focused scan, keeps current-agent context boosted while user, workspace, and global shared resources remain visible and peer-agent context is bounded instead of expanding the whole namespace.
+This document records the Rust TemporalStore resource/skill/conversation scale evidence for multi-agent context scanning. It proves the broader harness, not only the tiny focused scan, keeps peer-agent and current-agent evidence at equal default boost while user, workspace, and global shared resources remain visible and peer-agent context is bounded instead of expanding the whole namespace.
 
 ## Command
 
@@ -268,9 +268,9 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
 - Source-class pressure is explicit: fanout sees 31 conversation nodes, 7 resource nodes, and 6 skill nodes, then expands a bounded mix of 13 conversation, 2 resource, and 1 skill nodes.
 - Requested source-class coverage is explicit: the query asks for resource and skill evidence, and fanout selects both before event expansion.
 - Shared-layer coverage is now enforced from the core retrieval report: all 3 required shared scopes are covered while the fill phase can select extra high-value workspace nodes.
-- Current-agent context is selected with agent-aware locality while user, workspace, and global shared resources remain visible.
+- Agent-scope context is selected with peer/current boost parity while user, workspace, and global shared resources remain visible.
 - Selection percentages are explicit in the core report: this scale scan is 68% current-agent, 31% shared-layer, and 0% peer-agent.
-- Current-agent boost is explicit and bounded: 11 of 16 expanded nodes are `agent:codex`, giving a 68% current-agent boost while 5 shared nodes still satisfy the shared-layer quota.
+- Agent-scope boost parity is explicit and bounded: 11 of 16 expanded nodes are `agent:codex`, giving a 68% current-agent boost while 5 shared nodes still satisfy the shared-layer quota.
 - The selected colocation distribution is exact: 11 current-agent nodes, 3 workspace nodes, 1 user node, and 1 global node, with zero peer-agent nodes.
 - Shared-scope coverage is explicit: user, workspace, and global layers are all represented in the selected node set.
 - The selected colocation scope set proves the expanded scale scan covers `agent:codex`, `user:user`, `workspace:context`, and `global`.
@@ -278,7 +278,7 @@ Archived report: `docs/benchmark_archives/context_resource_skill_scale_20260706_
 - Selected refs and injection ordering start with `agent:codex`, proving current-agent context stays first after final retrieval scoring, not only during fanout planning.
 - Selected refs and injection both include all source classes: 37 conversation refs, 6 resource refs, and 2 skill refs, with samples showing a current-agent conversation, an OpenViking debug resource URL, and a benchmark-reader skill file.
 - Required scan scopes are policy-derived: `agent:codex` is added implicitly for the current agent, `workspace:context` is included from owner scope, and `user:user`/`global` come from the shared resource policy.
-- Peer-agent candidates are present but capped out of expansion in this current-agent scan.
+- Peer-agent candidates are not demoted by default; if they are not expanded, that is due to budget/relevance rather than a default peer penalty.
 - Secondary indexes and selected references remain active in the same scale run.
 
 ## Honest Limits

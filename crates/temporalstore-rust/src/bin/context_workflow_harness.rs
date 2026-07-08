@@ -398,9 +398,8 @@ fn main() {
         tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
         max_summary_nodes: 32,
         max_event_nodes: 16,
-        owner_scope: String::new(),
-        current_agent_id: String::new(),
-        shared_resource_scopes: Vec::new(),
+        prefer_current_agent: false,
+        current_agent_scope_key: "agent:codex".to_string(),
         provider: ContextModelProviderConfig::default(),
     };
     let retrieve = retrieve_context(&engine, retrieve_request.clone());
@@ -968,9 +967,8 @@ fn run_resource_skill_conversation_scale(
             tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
             max_summary_nodes: 32,
             max_event_nodes: 16,
-            owner_scope: "workspace:context".to_string(),
-            current_agent_id: "codex".to_string(),
-            shared_resource_scopes: vec!["global".to_string(), "user:user".to_string()],
+            prefer_current_agent: false,
+            current_agent_scope_key: "agent:codex".to_string(),
             provider: ContextModelProviderConfig::default(),
         },
     );
@@ -1302,9 +1300,8 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
                         tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
                         max_summary_nodes: 256,
                         max_event_nodes: 256,
-                        owner_scope: String::new(),
-                        current_agent_id: String::new(),
-                        shared_resource_scopes: vec!["global".to_string()],
+                        prefer_current_agent: false,
+                        current_agent_scope_key: "agent:codex".to_string(),
                         provider: ContextModelProviderConfig::default(),
                     },
                 );
@@ -1791,6 +1788,7 @@ fn ingest_external_benchmark_sources(
                 node_hash,
                 event,
                 first_write_only: false,
+                cold_storage: false,
             },
             Command::ContextWriteIndexRef {
                 tenant_hash,
@@ -2488,6 +2486,7 @@ fn context_pipeline_commands(extract: &temporalstore_rust::ContextExtractReport)
             node_hash: extract.node.node_hash,
             event: extract.event.clone(),
             first_write_only: false,
+            cold_storage: false,
         },
         Command::ContextWriteIndexRef {
             tenant_hash: 20260616,
@@ -2752,6 +2751,8 @@ mod tests {
                 tiers: vec![ContextTier::L2],
                 max_summary_nodes: 32,
                 max_event_nodes: 16,
+                prefer_current_agent: false,
+                current_agent_scope_key: "agent:codex".to_string(),
                 provider: ContextModelProviderConfig::default(),
             },
         );
