@@ -2373,6 +2373,7 @@ fn execute_record_log_request(
             extra: BTreeMap::new(),
         },
         "matrixark_publish_visibility" => {
+            let visibility_key_count = request.visibility_keys.len();
             let index_bytes = engine
                 .publish_shard_index_snapshot_for_keys(
                     DEFAULT_SHARD_ID,
@@ -2389,6 +2390,14 @@ fn execute_record_log_request(
             output.extra.insert(
                 "matrixark_visibility_index_bytes".to_string(),
                 json!(index_bytes),
+            );
+            output.extra.insert(
+                "matrixark_visibility_key_count".to_string(),
+                json!(visibility_key_count),
+            );
+            output.extra.insert(
+                "matrixark_visibility_full_shard".to_string(),
+                json!(visibility_key_count == 0),
             );
             output.extra.insert(
                 "matrixark_visibility_scope".to_string(),
@@ -3915,6 +3924,16 @@ mod tests {
         assert!(
             publish_output.count.unwrap_or_default() > 0,
             "first targeted publish should persist selected hot pages"
+        );
+        assert_eq!(
+            publish_output.extra.get("matrixark_visibility_key_count"),
+            Some(&json!(2)),
+            "publish diagnostics should report targeted key fanout"
+        );
+        assert_eq!(
+            publish_output.extra.get("matrixark_visibility_full_shard"),
+            Some(&json!(false)),
+            "targeted publish diagnostics should not look like a full-shard publish"
         );
         let republish_output =
             execute_record_log_request(&engine, publish, root.clone())
