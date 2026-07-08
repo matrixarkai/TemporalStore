@@ -2126,7 +2126,7 @@ def make_adapter(backend: str, args: argparse.Namespace, storage_prefix: str):
         # shared-state proxy/server or direct SDK path with equivalent visibility.
         if os.environ.get("MATRIXARK_RUST_PROXY_ALLOW_ISOLATED_CLIENTS", "").strip().lower() in {"1", "true", "yes"}:
             os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS", "1")
-            os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES", "1")
+            os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES", "0")
         else:
             os.environ["MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS"] = "0"
             os.environ["MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES"] = "0"
