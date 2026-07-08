@@ -4212,6 +4212,7 @@ class MatrixArkRustProxyClient:
                     "pack": self._lane_worker_counts.get("pack", 0),
                     "control": self._lane_worker_counts.get("control", 0),
                 },
+                "lanes": lane_metrics,
                 "write_pool_size": self._lane_worker_counts.get("write", 0),
                 "read_pool_size": self._lane_worker_counts.get("read", 0),
                 "pack_pool_size": self._lane_worker_counts.get("pack", 0),
