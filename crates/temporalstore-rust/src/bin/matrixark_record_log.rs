@@ -3440,7 +3440,16 @@ fn selected_ref_from_record(record: &Value, text: &str) -> Value {
         "skill_section" => "skill",
         other => other,
     };
-    let ref_hash = [
+    let ref_hash = stable_ref_hash_from_record(record);
+    json!({
+        "ref_type": public_ref_type,
+        "ref_hash": ref_hash,
+        "text": text,
+    })
+}
+
+fn stable_ref_hash_from_record(record: &Value) -> u64 {
+    for key in [
         "ref_hash",
         "event_id_hash",
         "entity_hash",
@@ -3449,13 +3458,32 @@ fn selected_ref_from_record(record: &Value, text: &str) -> Value {
         "section_hash",
     ]
     .iter()
-    .find_map(|key| record.get(*key).and_then(Value::as_u64))
-    .unwrap_or_else(|| stable_hash64(&record.to_string()));
-    json!({
-        "ref_type": public_ref_type,
-        "ref_hash": ref_hash,
-        "text": text,
-    })
+    {
+        if let Some(value) = record.get(*key) {
+            if let Some(hash) = value.as_u64() {
+                return hash;
+            }
+            if let Some(hash) = value.as_str().and_then(|raw| raw.parse::<u64>().ok()) {
+                return hash;
+            }
+        }
+    }
+    for key in [
+        "record_id",
+        "event_id",
+        "entity_id",
+        "summary_id",
+        "chunk_id",
+        "section_id",
+        "source_ref",
+    ] {
+        if let Some(value) = record.get(key).and_then(Value::as_str) {
+            if !value.is_empty() {
+                return stable_hash64(value);
+            }
+        }
+    }
+    stable_hash64(&record.to_string())
 }
 
 fn query_terms(query: &str) -> Vec<String> {
@@ -4152,5 +4180,26 @@ mod tests {
         assert_eq!(default_refs.len(), 2);
 
         env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
+    }
+
+    #[test]
+    fn selected_ref_hash_prefers_string_hashes_and_stable_ids() {
+        let numeric_string = json!({
+            "record_type": "context_event",
+            "event_id_hash": "42",
+            "record_id": "slow-fallback-should-not-win",
+            "text": "visible text"
+        });
+        assert_eq!(stable_ref_hash_from_record(&numeric_string), 42);
+
+        let stable_id = json!({
+            "record_type": "context_summary",
+            "record_id": "summary-record-7",
+            "text": "summary text"
+        });
+        assert_eq!(
+            stable_ref_hash_from_record(&stable_id),
+            stable_hash64("summary-record-7")
+        );
     }
 }
