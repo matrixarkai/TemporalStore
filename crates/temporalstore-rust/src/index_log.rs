@@ -113,6 +113,44 @@ impl LocalIndexLogStore {
         Ok(record)
     }
 
+    pub fn append_index_bytes(
+        &self,
+        shard_id: ShardId,
+        index_bytes: &[u8],
+    ) -> Result<u64, IndexLogError> {
+        debug_assert!(serde_json::from_slice::<serde_json::Value>(index_bytes).is_ok());
+        let mut inner = self.inner.lock().expect("index log lock poisoned");
+        fs::create_dir_all(&inner.root)?;
+        let last_sequence = match inner.last_sequence_by_shard.get(&shard_id).copied() {
+            Some(sequence) => sequence,
+            None => {
+                let sequence = last_sequence_at(&inner.root, shard_id)?;
+                inner.last_sequence_by_shard.insert(shard_id, sequence);
+                sequence
+            }
+        };
+        let next_sequence = last_sequence.saturating_add(1);
+        let mut bytes = Vec::with_capacity(index_bytes.len().saturating_add(96));
+        write!(
+            &mut bytes,
+            "{{\"shard_id\":{shard_id},\"sequence\":{next_sequence},\"index\":"
+        )?;
+        bytes.extend_from_slice(index_bytes);
+        bytes.extend_from_slice(b"}\n");
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(index_log_path(&inner.root, shard_id))?;
+        file.write_all(&bytes)?;
+        file.flush()?;
+        file.sync_data()?;
+        inner.stats.writes += 1;
+        inner.stats.bytes_written += bytes.len() as u64;
+        inner.stats.last_sequence = next_sequence;
+        inner.last_sequence_by_shard.insert(shard_id, next_sequence);
+        Ok(next_sequence)
+    }
+
     pub fn read_range(
         &self,
         shard_id: ShardId,
@@ -350,6 +388,20 @@ mod tests {
         assert_eq!(reopened.scan(5, 0, u64::MAX, u64::MAX).unwrap().len(), 2);
         store.append_json(5, b"{\"value\":4}").unwrap();
         assert_eq!(store.stats(5).last_sequence, 4);
+    }
+
+    #[test]
+    fn append_index_bytes_writes_parseable_index_log_record_without_reencoding_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        let sequence = store.append_index_bytes(5, b"{\"value\":1}").unwrap();
+        assert_eq!(sequence, 1);
+        let rows = store.scan(5, 0, u64::MAX, u64::MAX).unwrap();
+        assert_eq!(rows.len(), 1);
+        let record: IndexLogRecord = serde_json::from_slice(&rows[0].1).unwrap();
+        assert_eq!(record.shard_id, 5);
+        assert_eq!(record.sequence, 1);
+        assert_eq!(record.index, serde_json::json!({"value": 1}));
     }
 
     #[test]
