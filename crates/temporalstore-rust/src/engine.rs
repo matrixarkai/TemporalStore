@@ -6607,7 +6607,7 @@ impl TemporalEngine {
 }
 
 fn serialize_index(shard: &ShardState) -> Vec<u8> {
-    serde_json::to_vec_pretty(shard).expect("shard index should serialize")
+    serde_json::to_vec(shard).expect("shard index should serialize")
 }
 
 fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
