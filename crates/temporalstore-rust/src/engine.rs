@@ -7292,13 +7292,13 @@ fn execute_on_shard(
                     .insert(field.clone(), address);
                 mutated = true;
             }
-            let _ = cache.invalidate(&CacheKey::hash(shard_id, &key, &field));
+            invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
             CommandResponse::Empty
         }
         Command::HashGet { key, field } => {
             if remove_if_expired(shard, &key) {
                 mutated = true;
-                let _ = cache.invalidate(&CacheKey::hash(shard_id, &key, &field));
+                invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
                 return ExecuteOutcome {
                     response: CommandResponse::Bytes { value: None },
                     mutated,
@@ -7427,7 +7427,7 @@ fn execute_on_shard(
                     .entry(key.clone())
                     .or_default()
                     .insert(field.clone(), address);
-                let _ = cache.invalidate(&CacheKey::hash(shard_id, &key, &field));
+                invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
                 mutated = true;
             }
             CommandResponse::Integer { value }
@@ -7470,7 +7470,7 @@ fn execute_on_shard(
             if let Some(fields) = shard.hashes.get_mut(&key) {
                 mutated |= fields.remove(&field).is_some();
             }
-            let _ = cache.invalidate(&CacheKey::hash(shard_id, &key, &field));
+            invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
             CommandResponse::Empty
         }
         Command::SetAdd { key, member } => {
@@ -14521,6 +14521,12 @@ fn cached_response(
         cache.put_memory_only(key, bytes);
     }
     response
+}
+
+fn invalidate_if_cached(cache: &MultiLayerCache, key: CacheKey) {
+    if cache.peek(&key) {
+        let _ = cache.invalidate(&key);
+    }
 }
 
 #[cfg(test)]
