@@ -975,7 +975,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             else:
                 self._hset_many_with_backoff(entries)
                 self._put_string_with_backoff(self._raw_count_key, str(sequence))
-            self._note_pending_visibility_keys([self._raw_count_key] + [str(entry.get("key") or "") for entry in entries])
+            if self._raw_ingestion_visibility_required_after_flush():
+                self._note_pending_visibility_keys(
+                    [self._raw_count_key] + [str(entry.get("key") or "") for entry in entries]
+                )
             self._raw_entry_count_cache = sequence
             elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
             self._observe_backend_command(elapsed_ms, records_written=len(records))
@@ -1729,6 +1732,11 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             key = str(key or "")
             if key:
                 pending.add(key)
+
+    def _raw_ingestion_visibility_required_after_flush(self) -> bool:
+        if not getattr(self, "_publish_visibility_after_flush", False):
+            return False
+        return bool(getattr(self, "_dedicated_proxy_clients_enabled", False))
 
     def _consume_pending_visibility_keys(self) -> list[str]:
         pending = getattr(self, "_pending_visibility_keys", None)

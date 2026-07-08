@@ -3781,6 +3781,21 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         adapter._client = _NativeContextPackClient()
         self.assertFalse(adapter.supports_native_candidate_prefilter())
 
+    def test_raw_ingestion_visibility_only_required_for_dedicated_proxy_clients(self) -> None:
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._publish_visibility_after_flush = False
+        adapter._dedicated_proxy_clients_enabled = False
+        adapter._dedicated_pack_lanes_enabled = False
+        self.assertFalse(adapter._raw_ingestion_visibility_required_after_flush())
+
+        adapter._publish_visibility_after_flush = True
+        adapter._dedicated_proxy_clients_enabled = False
+        adapter._dedicated_pack_lanes_enabled = True
+        self.assertFalse(adapter._raw_ingestion_visibility_required_after_flush())
+
+        adapter._dedicated_proxy_clients_enabled = True
+        self.assertTrue(adapter._raw_ingestion_visibility_required_after_flush())
+
     def test_production_retrieve_fails_closed_without_native_context_pack(self) -> None:
         mcp.MATRIXARK_MCP_PROFILE = "production"
         mcp.MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK = ""
