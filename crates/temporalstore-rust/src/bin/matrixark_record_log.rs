@@ -2474,7 +2474,7 @@ fn execute_record_log_request(
                 .into_iter()
                 .map(|(key, entries)| Command::HashMultiSet { key, entries })
                 .collect::<Vec<_>>();
-            execute_empty_batch_runtime(&engine, commands)?;
+            execute_empty_batch_runtime(&engine, commands, false)?;
             let mut output = empty_output(root);
             output.count = Some(count);
             output
@@ -2506,7 +2506,7 @@ fn execute_record_log_request(
                 });
                 count += 1;
             }
-            execute_empty_batch_runtime(&engine, commands)?;
+            execute_empty_batch_runtime(&engine, commands, true)?;
             let mut output = empty_output(root);
             output.count = Some(count);
             output.append_path = request
@@ -2981,6 +2981,7 @@ fn execute_empty(engine: &TemporalEngine, command: Command) -> Result<(), String
 fn execute_empty_batch_runtime(
     engine: &TemporalEngine,
     commands: Vec<Command>,
+    invalidate_matrixark_scan_cache: bool,
 ) -> Result<(), String> {
     if commands.is_empty() {
         return Ok(());
@@ -3063,7 +3064,9 @@ fn execute_empty_batch_runtime(
         invalidate_hgetall_snapshot(&key);
     }
     invalidate_retrieve_candidate_cache_for_keys(retrieve_cache_keys.iter());
-    clear_matrixark_scan_cache();
+    if invalidate_matrixark_scan_cache {
+        clear_matrixark_scan_cache();
+    }
     Ok(())
 }
 
