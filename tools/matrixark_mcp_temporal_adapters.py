@@ -3813,6 +3813,12 @@ class MatrixArkRustProxyClient:
         self._selected_refs_total = 0
         self._dropped_refs_total = 0
         self._context_record_counts: dict[str, int] = {}
+        self._publish_visibility_calls_total = 0
+        self._publish_visibility_keys_total = 0
+        self._publish_visibility_full_shard_total = 0
+        self._publish_visibility_index_bytes_total = 0
+        self._publish_visibility_last_key_count = 0
+        self._publish_visibility_last_index_bytes = 0
         self._started_at = time.time()
         self._proc: subprocess.Popen[str] | None = None
 
@@ -4100,6 +4106,29 @@ class MatrixArkRustProxyClient:
                     self._records_read_total += 1
                 elif op in {"batch_hget", "hgetall", "scan_hash"}:
                     self._records_read_total += count
+                elif op == "matrixark_publish_visibility":
+                    visibility_keys = kwargs.get("visibility_keys") if isinstance(kwargs, dict) else []
+                    key_count = len(visibility_keys) if isinstance(visibility_keys, list) else 0
+                    index_bytes = int(
+                        self._nested_float(
+                            response,
+                            "matrixark_visibility_index_bytes",
+                            "extra.matrixark_visibility_index_bytes",
+                            "count",
+                        )
+                        or 0
+                    )
+                    full_shard = bool(
+                        response.get("matrixark_visibility_full_shard")
+                        or (isinstance(response.get("extra"), dict) and response["extra"].get("matrixark_visibility_full_shard"))
+                        or key_count == 0
+                    )
+                    self._publish_visibility_calls_total += 1
+                    self._publish_visibility_keys_total += key_count
+                    self._publish_visibility_full_shard_total += 1 if full_shard else 0
+                    self._publish_visibility_index_bytes_total += index_bytes
+                    self._publish_visibility_last_key_count = key_count
+                    self._publish_visibility_last_index_bytes = index_bytes
 
     @staticmethod
     def _nested_float(payload: Json, *paths: str) -> float:
@@ -4239,6 +4268,22 @@ class MatrixArkRustProxyClient:
                 "cache_misses_total": self._cache_misses_total,
                 "selected_refs_total": self._selected_refs_total,
                 "dropped_refs_total": self._dropped_refs_total,
+                "publish_visibility": {
+                    "calls_total": self._publish_visibility_calls_total,
+                    "keys_total": self._publish_visibility_keys_total,
+                    "keys_avg": round(
+                        self._publish_visibility_keys_total / max(1, self._publish_visibility_calls_total),
+                        3,
+                    ),
+                    "full_shard_total": self._publish_visibility_full_shard_total,
+                    "index_bytes_total": self._publish_visibility_index_bytes_total,
+                    "index_bytes_avg": round(
+                        self._publish_visibility_index_bytes_total / max(1, self._publish_visibility_calls_total),
+                        3,
+                    ),
+                    "last_key_count": self._publish_visibility_last_key_count,
+                    "last_index_bytes": self._publish_visibility_last_index_bytes,
+                },
                 "last_latency_ms": round(self._last_latency_ms, 3),
                 "latency_ms_sum": round(sum(samples), 3),
                 "latency_ms_count": len(samples),
