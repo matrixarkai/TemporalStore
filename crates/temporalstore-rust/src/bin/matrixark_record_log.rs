@@ -2458,7 +2458,28 @@ fn execute_record_log_request(
             )?;
             empty_output(root)
         }
-        "batch_hset" | "matrixark_append_records" | "matrixark_batch_append_records" => {
+        "batch_hset" => {
+            let count = request.entries.len() + request.entries_compact.len();
+            let mut grouped: BTreeMap<String, Vec<(String, Vec<u8>)>> = BTreeMap::new();
+            for entry in request.entries {
+                grouped
+                    .entry(entry.key)
+                    .or_default()
+                    .push((entry.field, entry.value.into_bytes()));
+            }
+            for CompactHashEntry(key, field, value) in request.entries_compact {
+                grouped.entry(key).or_default().push((field, value.into_bytes()));
+            }
+            let commands = grouped
+                .into_iter()
+                .map(|(key, entries)| Command::HashMultiSet { key, entries })
+                .collect::<Vec<_>>();
+            execute_empty_batch_runtime(&engine, commands)?;
+            let mut output = empty_output(root);
+            output.count = Some(count);
+            output
+        }
+        "matrixark_append_records" | "matrixark_batch_append_records" => {
             let mut count = request.entries.len() + request.entries_compact.len();
             let mut grouped: BTreeMap<String, Vec<(String, Vec<u8>)>> = BTreeMap::new();
             for entry in request.entries {

@@ -737,16 +737,10 @@ fn command_stats(command: &Command, result: &Value) -> CommandStats {
             stats.records_written = 1;
             stats.bytes_written = command.value.as_ref().map(|v| v.len() as u64).unwrap_or(0);
         }
-        "batch_hset" | "matrixark_append_records" | "matrixark_batch_append_records" => {
+        "batch_hset" => {
             let (entry_count, entry_bytes) = command_entry_stats(command);
             stats.records_written = entry_count;
             stats.bytes_written = entry_bytes;
-            if command.key.as_ref().filter(|value| !value.is_empty()).is_some()
-                && command.value.as_ref().filter(|value| !value.is_empty()).is_some()
-            {
-                stats.records_written += 1;
-                stats.bytes_written += command.value.as_ref().map(|value| value.len() as u64).unwrap_or(0);
-            }
         }
         "matrixark_append_records" | "matrixark_batch_append_records" => {
             let (records, bytes) = hash_entry_stats(command);
@@ -2530,7 +2524,19 @@ fn run_with_client(client: &Client, command: Command) -> Result<Value, String> {
                 .map_err(|err| err.to_string())?;
             Ok(json!({"ok": true}))
         }
-        "batch_hset" | "matrixark_append_records" | "matrixark_batch_append_records" => {
+        "batch_hset" => {
+            let entries = command_entries(&command)?;
+            if entries.is_empty() {
+                return Err("missing entries".to_string());
+            }
+            for entry in &entries {
+                client
+                    .hset(entry.key, entry.field, entry.value)
+                    .map_err(|err| err.to_string())?;
+            }
+            Ok(json!({"ok": true, "written": entries.len(), "batch_lowering": "raw_hset"}))
+        }
+        "matrixark_append_records" | "matrixark_batch_append_records" => {
             let entries = command_entries(&command)?;
             if entries.is_empty()
                 && command.key.as_ref().filter(|value| !value.is_empty()).is_none()
@@ -2563,6 +2569,7 @@ fn run_with_client(client: &Client, command: Command) -> Result<Value, String> {
                 "ok": true,
                 "written": written,
                 "append_api": command.op,
+                "native_append": true,
                 "append_path": append_path,
                 "raw_storage_backend": raw_backend,
                 "batch_lowering": "none"
