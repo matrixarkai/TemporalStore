@@ -1813,6 +1813,67 @@ def timeout_count(errors: list[str]) -> int:
     return sum(1 for error in errors if "timeout" in str(error).lower() or "timed out" in str(error).lower())
 
 
+def rust_proxy_breakdown_from_backend_metrics(backend_metrics: Json) -> Json:
+    if not isinstance(backend_metrics, dict):
+        return {"available": False, "reason": "missing_backend_metrics"}
+    metrics = backend_metrics.get("result", backend_metrics)
+    if not isinstance(metrics, dict):
+        return {"available": False, "reason": "missing_backend_metrics_result"}
+    nested_metrics = metrics.get("metrics", {}) if isinstance(metrics.get("metrics"), dict) else {}
+    rust_client_metrics = nested_metrics.get("rust_client", {}) if isinstance(nested_metrics.get("rust_client"), dict) else {}
+    if rust_client_metrics:
+        metrics = rust_client_metrics
+    op_metrics = metrics.get("op_metrics", {})
+    lane_metrics = metrics.get("lanes", metrics.get("lane_metrics", {}))
+    top_ops: list[Json] = []
+    if isinstance(op_metrics, dict):
+        for op, values in op_metrics.items():
+            if not isinstance(values, dict):
+                continue
+            commands = int(values.get("commands_total") or 0)
+            latency_total = float(values.get("latency_ms_total") or 0.0)
+            top_ops.append(
+                {
+                    "op": op,
+                    "commands_total": commands,
+                    "latency_ms_total": round(latency_total, 3),
+                    "latency_ms_avg": round(float(values.get("latency_ms_avg") or (latency_total / max(1, commands))), 3),
+                    "latency_ms_max": round(float(values.get("latency_ms_max") or 0.0), 3),
+                }
+            )
+    top_ops.sort(key=lambda item: (float(item.get("latency_ms_total") or 0.0), int(item.get("commands_total") or 0)), reverse=True)
+
+    lanes: Json = {}
+    if isinstance(lane_metrics, dict):
+        for lane, values in lane_metrics.items():
+            if not isinstance(values, dict):
+                continue
+            lanes[lane] = {
+                "workers": int(values.get("workers") or 0),
+                "commands_total": int(values.get("commands_total") or 0),
+                "wait_ms_total": round(float(values.get("wait_ms_total") or values.get("queue_wait_ms_total") or 0.0), 3),
+                "wait_ms_max": round(float(values.get("wait_ms_max") or values.get("queue_wait_ms_max") or 0.0), 3),
+                "p95_latency_ms": round(float(values.get("p95_latency_ms") or 0.0), 3),
+                "p99_latency_ms": round(float(values.get("p99_latency_ms") or 0.0), 3),
+            }
+
+    commands_total = int(metrics.get("commands_total") or 0)
+    engine_total = float(metrics.get("rust_engine_ms_total") or 0.0)
+    serialization_total = float(metrics.get("serialization_ms_total") or 0.0)
+    return {
+        "available": bool(top_ops or lanes),
+        "commands_total": commands_total,
+        "qps": round(float(metrics.get("qps") or 0.0), 6),
+        "engine_ms_total": round(engine_total, 3),
+        "serialization_ms_total": round(serialization_total, 3),
+        "proxy_queue_wait_ms_total": round(float(metrics.get("proxy_queue_wait_ms_total") or 0.0), 3),
+        "engine_ms_per_command": round(engine_total / max(1, commands_total), 6),
+        "serialization_ms_per_command": round(serialization_total / max(1, commands_total), 6),
+        "top_ops_by_total_latency": top_ops[:8],
+        "lanes": lanes,
+    }
+
+
 def fallback_flags_from_backend(result: Json) -> Json:
     status = str(result.get("status") or "")
     retrieve = result.get("retrieve", {}) if isinstance(result.get("retrieve"), dict) else {}
@@ -2753,6 +2814,7 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
                 "retrieve": retrieve_errors[:10],
             },
         }
+        result["rust_proxy_breakdown"] = rust_proxy_breakdown_from_backend_metrics(result.get("backend_metrics", {}))
         result = attach_storage_lifecycle_shape(result, effective_storage_tuning)
         result["fallback_flags"] = fallback_flags_from_backend(result)
         return result
