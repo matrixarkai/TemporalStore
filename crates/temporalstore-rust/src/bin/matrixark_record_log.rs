@@ -2760,12 +2760,6 @@ fn clear_engine_cache() {
 
 fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
     let root = record_log_root(request);
-    std::fs::create_dir_all(&root).map_err(|error| {
-        format!(
-            "failed to create record-log root {}: {error}",
-            root.display()
-        )
-    })?;
     {
         let cache = engine_cache()
             .lock()
@@ -2774,6 +2768,12 @@ fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
             return Ok(engine.clone());
         }
     }
+    std::fs::create_dir_all(&root).map_err(|error| {
+        format!(
+            "failed to create record-log root {}: {error}",
+            root.display()
+        )
+    })?;
     let cache_bytes = env::var("MATRIXARK_RUST_PROXY_CACHE_BYTES")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
