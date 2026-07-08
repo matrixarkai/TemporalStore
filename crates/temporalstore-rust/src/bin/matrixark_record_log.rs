@@ -3216,14 +3216,6 @@ fn retrieve_context_pack_output(
         "context_pack_assembly": "native_rust_proxy",
         "native_context_pack": true,
         "selected_refs": selected_refs,
-        "remote_context_refs": selected_refs,
-        "groups": [
-            {
-                "k": "native_rust",
-                "n": selected_count,
-                "items": selected_refs,
-            }
-        ],
         "dropped_refs": {
             "refs": [],
             "native_summary": true,
