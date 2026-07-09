@@ -7498,10 +7498,12 @@ fn execute_on_shard(
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             let mut applied = Vec::with_capacity(entries.len());
             if !async_storage && entries.len() >= hash_multiset_batch_memory_put_min() {
+                let object_id_prefix = stable_page_object_id_prefix(shard_id, "hash", &key);
                 let mut fields = Vec::with_capacity(entries.len());
                 let mut writes = Vec::with_capacity(entries.len());
                 for (field, value) in entries {
-                    let object_id = stable_page_object_id(shard_id, "hash", &key, Some(&field));
+                    let object_id =
+                        stable_page_object_id_from_prefix(object_id_prefix, Some(&field));
                     fields.push(field);
                     writes.push((value, Some(object_id), Some(routing_slot)));
                 }
@@ -7524,9 +7526,11 @@ fn execute_on_shard(
                     }
                 }
             } else if async_storage && entries.len() >= hash_multiset_batch_memory_put_min() {
+                let object_id_prefix = stable_page_object_id_prefix(shard_id, "hash", &key);
                 let mut page_cache_entries = Vec::with_capacity(entries.len());
                 for (field, value) in entries {
-                    let object_id = stable_page_object_id(shard_id, "hash", &key, Some(&field));
+                    let object_id =
+                        stable_page_object_id_from_prefix(object_id_prefix, Some(&field));
                     let address = PageAddress {
                         page_segment_id: HOT_PAGE_SEGMENT_ID,
                         offset: HOT_PAGE_OFFSET.fetch_add(1, Ordering::Relaxed),
@@ -7566,8 +7570,10 @@ fn execute_on_shard(
                 }
                 cache.put_memory_only_batch(page_cache_entries);
             } else {
+                let object_id_prefix = stable_page_object_id_prefix(shard_id, "hash", &key);
                 for (field, value) in entries {
-                    let object_id = stable_page_object_id(shard_id, "hash", &key, Some(&field));
+                    let object_id =
+                        stable_page_object_id_from_prefix(object_id_prefix, Some(&field));
                     if let Ok(address) = append_value(
                         cache,
                         page_store,
@@ -15331,12 +15337,23 @@ fn stable_object_hash_update_u64_decimal(hash: &mut u64, mut value: u64) {
 }
 
 fn stable_page_object_id(shard_id: ShardId, kind: &str, key: &str, component: Option<&str>) -> u64 {
+    stable_page_object_id_from_prefix(
+        stable_page_object_id_prefix(shard_id, kind, key),
+        component,
+    )
+}
+
+fn stable_page_object_id_prefix(shard_id: ShardId, kind: &str, key: &str) -> u64 {
     let mut hash = FNV1A64_OFFSET_BASIS;
     stable_object_hash_update_u64_decimal(&mut hash, shard_id as u64);
     stable_object_hash_update(&mut hash, b":");
     stable_object_hash_update(&mut hash, kind.as_bytes());
     stable_object_hash_update(&mut hash, b":");
     stable_object_hash_update(&mut hash, key.as_bytes());
+    hash
+}
+
+fn stable_page_object_id_from_prefix(mut hash: u64, component: Option<&str>) -> u64 {
     if let Some(component) = component {
         stable_object_hash_update(&mut hash, b":");
         stable_object_hash_update(&mut hash, component.as_bytes());
