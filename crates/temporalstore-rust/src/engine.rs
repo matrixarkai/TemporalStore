@@ -1994,6 +1994,8 @@ impl TemporalEngine {
         let mut restored = serde_json::from_slice::<ShardState>(&manifest.index_bytes)
             .map_err(|err| Status::error("slot_dump_invalid_index", err.to_string()))?;
         rebuild_slot_page_ownership(manifest.shard_id, &mut restored, 0, u32::MAX);
+        reconcile_secondary_views_from_slot_index(&self.page_store, &mut restored);
+        refresh_slot_runtime_flags(&mut restored);
         let restored_index_bytes = serialize_index(&restored);
         self.persist_slot_dump_install_marker(manifest, "prepare")
             .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
@@ -6158,6 +6160,7 @@ impl TemporalEngine {
         let after_segments = collect_live_page_segment_ids(shard);
         let after = compaction_utility_report(&self.page_store, shard);
         rebuild_slot_page_ownership(shard_id, shard, start_routing_slot, end_routing_slot);
+        refresh_slot_runtime_flags(shard);
         let tombstoned_object_ids_after =
             storage_object_lifecycle_report(shard_id, shard).tombstoned_object_ids;
         let object_manager_after =
