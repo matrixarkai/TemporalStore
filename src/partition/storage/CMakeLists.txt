@@ -12,6 +12,7 @@ target_link_libraries(partition_storage
     bytestore
     byte
     byteraft
+    /usr/lib/x86_64-linux-gnu/libabsl_time_zone.so
     gflags
     libprotobuf
     brpc-static

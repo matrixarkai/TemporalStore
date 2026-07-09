@@ -587,7 +587,14 @@ IndexInfo Index::GetInfo() const {
     info.set_dirty_slot_count(slot_context_manager_->DirtySlotsNum());
     info.mutable_meta()->CopyFrom(meta_);
     *info.mutable_stream_info() = stream_->GetInfo();
-    info.set_current_sequence(current_sequence_);
+    uint64_t durable_sequence = 0;
+    if (info.stream_info().blob_infos_size() > 0) {
+        durable_sequence = info.stream_info().blob_infos(
+            info.stream_info().blob_infos_size() - 1).end_record_sequence();
+    }
+    info.set_current_sequence(current_sequence_ < durable_sequence
+                                  ? current_sequence_
+                                  : durable_sequence);
     return info;
 }
 
