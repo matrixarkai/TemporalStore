@@ -5663,13 +5663,15 @@ impl TemporalEngine {
                 ));
             };
             let mut published_object_keys = BTreeSet::new();
+            let mut durable_cache_refills = Vec::new();
+            let mut published_memory_only_keys = Vec::new();
             for ((target, original, bytes, _, _), published) in
                 publish_records.into_iter().zip(published_addresses)
             {
                 if !replace_model_page_address(shard, &target, &original, &published) {
                     continue;
                 }
-                let _ = self.cache.put(
+                durable_cache_refills.push((
                     CacheKey::page_with_slot_generation(
                         shard_id,
                         published.page_segment_id,
@@ -5679,8 +5681,13 @@ impl TemporalEngine {
                         published.generation,
                     ),
                     bytes,
-                );
+                ));
+                published_memory_only_keys.push(page_address_cache_key(shard_id, &original));
                 published_object_keys.insert(target.object_key);
+            }
+            let _ = self.cache.put_batch(durable_cache_refills);
+            for key in published_memory_only_keys {
+                self.cache.invalidate_memory_only(&key);
             }
             for object_key in published_object_keys {
                 clear_published_object_dirty_state(shard, &object_key);
