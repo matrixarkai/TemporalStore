@@ -5934,7 +5934,7 @@ impl TemporalEngine {
         let mut hot_keys = Vec::new();
         let mut cold_keys = Vec::new();
         for (key, expires_at) in &shard.expires_at_ms {
-            if record_exists(shard, key) {
+            if record_exists_exact(shard, key) {
                 hot_keys.push((key.clone(), *expires_at));
             } else {
                 cold_keys.push((key.clone(), *expires_at));
@@ -5954,7 +5954,7 @@ impl TemporalEngine {
         let mut loaded_for_expire = 0usize;
         for (key, expires_at) in hot_selected.iter() {
             if *expires_at <= now {
-                if delete_record(&self.cache, request.shard_id, shard, key) {
+                if delete_record_exact(&self.cache, request.shard_id, shard, key) {
                     invalidate_record_all(&self.cache, request.shard_id, key);
                     expired_records_removed += 1;
                 }
@@ -5966,7 +5966,7 @@ impl TemporalEngine {
             if *expires_at <= now {
                 if request.load_cold_slots {
                     loaded_for_expire = loaded_for_expire.saturating_add(1);
-                    if delete_record(&self.cache, request.shard_id, shard, key) {
+                    if delete_record_exact(&self.cache, request.shard_id, shard, key) {
                         invalidate_record_all(&self.cache, request.shard_id, key);
                         expired_records_removed += 1;
                     } else {
