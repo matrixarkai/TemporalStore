@@ -11,7 +11,7 @@ use crate::types::{
 };
 use rustmtcache::MultiLayerCache;
 
-use super::packed_pages::{read_feature_point, read_feature_point_cached, read_feature_point_cold};
+use super::packed_pages::{read_feature_point_cached, read_feature_point_cold};
 use super::{read_page_bytes, stable_object_hash, ShardState};
 pub(super) fn context_node_key(tenant_hash: u64, node_hash: u64) -> String {
     format!("ctx:node:{tenant_hash}:{node_hash}")
@@ -106,13 +106,19 @@ pub(super) fn context_event_timeline_key_for_write(
     let start = context_timeline_key(primary_time_ms, event.event_id_hash);
     let end = context_timeline_end(primary_time_ms);
     let mut timeline_key = start;
+    let mut page_cache = HashMap::new();
     while timeline_key < end {
         let Some(address) = series.get(&timeline_key) else {
             return Some(timeline_key);
         };
-        if let Some(existing) =
-            read_context_value::<ContextEvent>(cache, page_store, shard_id, timeline_key, address)
-        {
+        if let Some(existing) = read_context_value_cached::<ContextEvent>(
+            cache,
+            page_store,
+            shard_id,
+            timeline_key,
+            address,
+            &mut page_cache,
+        ) {
             if existing.event_id_hash == event.event_id_hash {
                 return if first_write_only {
                     None
@@ -149,17 +155,6 @@ pub(super) fn context_bytes<T: ContextWire>(value: &T) -> Vec<u8> {
 
 pub(super) fn context_from_bytes<T: ContextWire>(bytes: &[u8]) -> Option<T> {
     T::decode_context_value(bytes)
-}
-
-pub(super) fn read_context_value<T: ContextWire>(
-    cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
-    shard_id: ShardId,
-    timeline_key: u64,
-    address: &PageAddress,
-) -> Option<T> {
-    let point = read_feature_point(cache, page_store, shard_id, timeline_key, address)?;
-    context_from_bytes(&point.value)
 }
 
 pub(super) fn read_context_value_cold<T: ContextWire>(
