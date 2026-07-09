@@ -491,6 +491,117 @@ class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
         self.assertEqual(snapshot["string_cache"]["misses_total"], 0)
         self.assertGreaterEqual(snapshot["string_cache"]["updates_total"], 1)
 
+    def test_rust_bridge_caches_scan_hash_until_key_write(self) -> None:
+        old_env = {
+            key: os.environ.get(key)
+            for key in (
+                "MATRIXARK_RUST_PROXY_SCAN_HASH_CACHE",
+                "MATRIXARK_RUST_PROXY_SCAN_HASH_CACHE_MAX_ENTRIES",
+            )
+        }
+        os.environ["MATRIXARK_RUST_PROXY_SCAN_HASH_CACHE"] = "1"
+        os.environ["MATRIXARK_RUST_PROXY_SCAN_HASH_CACHE_MAX_ENTRIES"] = "8"
+        try:
+            client = mcp.MatrixArkRustCliClient(
+                cli_path="matrixark_rust_proxy",
+                metaserver="127.0.0.1:18000",
+                namespace="ns",
+                table="table",
+                request_timeout_ms=10000,
+                io_timeout_ms=10000,
+            )
+            calls: list[dict] = []
+            scan_values = iter(
+                [
+                    {"ok": True, "records": [{"key": "ctx:hash", "field": "a", "value": "old"}]},
+                    {"ok": True, "records": [{"key": "ctx:hash", "field": "a", "value": "new"}]},
+                ]
+            )
+
+            def fake_call_json(op: str, **kwargs):
+                calls.append({"op": op, **kwargs})
+                if op == "scan_hash":
+                    return next(scan_values)
+                return {"ok": True}
+
+            client._call_json = fake_call_json  # type: ignore[method-assign]
+            first = client.scan_hash("ctx:hash")
+            second = client.scan_hash("ctx:hash")
+            client.hset("ctx:hash", "a", "new")
+            third = client.scan_hash("ctx:hash")
+            snapshot = client.metrics_snapshot()
+        finally:
+            try:
+                client.close()  # type: ignore[name-defined]
+            except Exception:
+                pass
+            for key, value in old_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.assertEqual([call["op"] for call in calls], ["scan_hash", "hset", "scan_hash"])
+        self.assertEqual(first["records"][0]["value"], "old")
+        self.assertEqual(second["records"][0]["value"], "old")
+        self.assertEqual(third["records"][0]["value"], "new")
+        self.assertEqual(snapshot["scan_hash_cache"]["misses_total"], 2)
+        self.assertEqual(snapshot["scan_hash_cache"]["hits_total"], 1)
+        self.assertEqual(snapshot["scan_hash_cache"]["updates_total"], 2)
+        self.assertEqual(snapshot["scan_hash_cache"]["invalidations_total"], 1)
+
+    def test_rust_bridge_invalidates_scan_hash_cache_after_batch_append(self) -> None:
+        old_env = {
+            key: os.environ.get(key)
+            for key in (
+                "MATRIXARK_RUST_PROXY_SCAN_HASH_CACHE",
+                "MATRIXARK_RUST_PROXY_APPEND_COALESCE",
+            )
+        }
+        os.environ["MATRIXARK_RUST_PROXY_SCAN_HASH_CACHE"] = "1"
+        os.environ["MATRIXARK_RUST_PROXY_APPEND_COALESCE"] = "0"
+        try:
+            client = mcp.MatrixArkRustCliClient(
+                cli_path="matrixark_rust_proxy",
+                metaserver="127.0.0.1:18000",
+                namespace="ns",
+                table="table",
+                request_timeout_ms=10000,
+                io_timeout_ms=10000,
+            )
+            calls: list[dict] = []
+
+            def fake_call_json(op: str, **kwargs):
+                calls.append({"op": op, **kwargs})
+                if op == "scan_hash":
+                    return {"ok": True, "records": [{"key": "records:000000", "field": "a", "value": "cached"}]}
+                return {"ok": True}
+
+            client._call_json = fake_call_json  # type: ignore[method-assign]
+            client.scan_hash("records:000000")
+            client.matrixark_batch_append_records(
+                [{"key": "records:000000", "field": "b", "value": "fresh"}],
+                count_key="matrixark:test:record_count",
+                count_value="2",
+                append_options={"append_path": "native_append_queue"},
+            )
+            snapshot = client.metrics_snapshot()
+        finally:
+            try:
+                client.close()  # type: ignore[name-defined]
+            except Exception:
+                pass
+            for key, value in old_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.assertEqual([call["op"] for call in calls], ["scan_hash", "matrixark_batch_append_records"])
+        self.assertEqual(snapshot["scan_hash_cache"]["updates_total"], 1)
+        self.assertEqual(snapshot["scan_hash_cache"]["invalidations_total"], 1)
+        self.assertEqual(snapshot["scan_hash_cache"]["entries"], 0)
+
     def test_rust_bridge_can_opt_into_separate_read_write_pack_lanes(self) -> None:
         old_env = {
             key: os.environ.get(key)

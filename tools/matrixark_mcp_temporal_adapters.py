@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import queue
-from collections import defaultdict, deque
+from collections import OrderedDict, defaultdict, deque
 
 try:
     from tools.matrixark_mcp_core import *
@@ -3828,6 +3828,13 @@ class MatrixArkRustProxyClient:
             os.environ.get("MATRIXARK_RUST_PROXY_STRING_CACHE", "1").strip().lower()
             not in {"0", "false", "no"}
         )
+        self._scan_hash_cache_enabled = (
+            os.environ.get("MATRIXARK_RUST_PROXY_SCAN_HASH_CACHE", "1").strip().lower()
+            not in {"0", "false", "no"}
+        )
+        self._scan_hash_cache_max_entries = max(
+            1, int(os.environ.get("MATRIXARK_RUST_PROXY_SCAN_HASH_CACHE_MAX_ENTRIES", "1024"))
+        )
         if self._shared_process_mode:
             # The local Rust TemporalEngine is embedded in the proxy process. A
             # multi-process write lane pool can hide writes from reads until
@@ -3916,6 +3923,12 @@ class MatrixArkRustProxyClient:
         self._string_cache_hits_total = 0
         self._string_cache_misses_total = 0
         self._string_cache_updates_total = 0
+        self._scan_hash_cache_lock = threading.Lock()
+        self._scan_hash_cache: OrderedDict[str, Json] = OrderedDict()
+        self._scan_hash_cache_hits_total = 0
+        self._scan_hash_cache_misses_total = 0
+        self._scan_hash_cache_updates_total = 0
+        self._scan_hash_cache_invalidations_total = 0
         self._started_at = time.time()
         self._proc: subprocess.Popen[str] | None = None
 
@@ -4422,6 +4435,16 @@ class MatrixArkRustProxyClient:
                     "updates_total": self._string_cache_updates_total,
                     "scope": "record_count_keys",
                 },
+                "scan_hash_cache": {
+                    "enabled": self._scan_hash_cache_enabled,
+                    "max_entries": self._scan_hash_cache_max_entries,
+                    "entries": len(self._scan_hash_cache),
+                    "hits_total": self._scan_hash_cache_hits_total,
+                    "misses_total": self._scan_hash_cache_misses_total,
+                    "updates_total": self._scan_hash_cache_updates_total,
+                    "invalidations_total": self._scan_hash_cache_invalidations_total,
+                    "scope": "hash_key_with_write_invalidation",
+                },
                 "last_latency_ms": round(self._last_latency_ms, 3),
                 "latency_ms_sum": round(sum(samples), 3),
                 "latency_ms_count": len(samples),
@@ -4485,6 +4508,46 @@ class MatrixArkRustProxyClient:
         with self._metrics_lock:
             self._string_cache_updates_total += 1
 
+    def _scan_hash_cache_get(self, key: str) -> Json | None:
+        if not self._scan_hash_cache_enabled:
+            return None
+        with self._scan_hash_cache_lock:
+            cached = self._scan_hash_cache.get(key)
+            if cached is None:
+                value = None
+            else:
+                self._scan_hash_cache.move_to_end(key)
+                value = json.loads(json.dumps(cached))
+        with self._metrics_lock:
+            if value is None:
+                self._scan_hash_cache_misses_total += 1
+            else:
+                self._scan_hash_cache_hits_total += 1
+        return value
+
+    def _scan_hash_cache_put(self, key: str, response: Json) -> None:
+        if not self._scan_hash_cache_enabled:
+            return
+        with self._scan_hash_cache_lock:
+            self._scan_hash_cache[key] = json.loads(json.dumps(response))
+            self._scan_hash_cache.move_to_end(key)
+            while len(self._scan_hash_cache) > self._scan_hash_cache_max_entries:
+                self._scan_hash_cache.popitem(last=False)
+        with self._metrics_lock:
+            self._scan_hash_cache_updates_total += 1
+
+    def _scan_hash_cache_invalidate_keys(self, keys: Iterable[str]) -> None:
+        if not self._scan_hash_cache_enabled:
+            return
+        removed = 0
+        with self._scan_hash_cache_lock:
+            for key in set(str(item) for item in keys if str(item)):
+                if self._scan_hash_cache.pop(key, None) is not None:
+                    removed += 1
+        if removed:
+            with self._metrics_lock:
+                self._scan_hash_cache_invalidations_total += removed
+
     def put_string(self, key: str, value: str) -> None:
         self._call("put_string", key=key, value=value)
         self._string_cache_put(key, value)
@@ -4499,6 +4562,7 @@ class MatrixArkRustProxyClient:
 
     def hset(self, key: str, field: str, value: str) -> None:
         self._call("hset", key=key, field=field, value=value)
+        self._scan_hash_cache_invalidate_keys([key])
 
     def hget(self, key: str, field: str) -> str:
         return self._call("hget", key=key, field=field)
@@ -4519,6 +4583,7 @@ class MatrixArkRustProxyClient:
             self._coalesced_batch_hset(compact_entries)
             return
         self._call_json("batch_hset", entries_compact=compact_entries)
+        self._scan_hash_cache_invalidate_keys(entry[0] for entry in compact_entries)
 
     def _coalesced_batch_hset(self, compact_entries: list[list[str]]) -> None:
         event = threading.Event()
@@ -4570,6 +4635,8 @@ class MatrixArkRustProxyClient:
                     self._call_json("batch_hset", entries_compact=merged)
                 except BaseException as exc:
                     error = exc
+                if error is None:
+                    self._scan_hash_cache_invalidate_keys(entry[0] for entry in merged)
                 with self._metrics_lock:
                     self._batch_hset_coalesced_batches_total += 1
                     self._batch_hset_coalesced_calls_total += len(pending)
@@ -4631,6 +4698,7 @@ class MatrixArkRustProxyClient:
             value=count_value or "",
             append_options=append_options,
         )
+        self._scan_hash_cache_invalidate_keys(entry[0] for entry in compact_entries)
         if count_key:
             self._string_cache_put(count_key, count_value or "")
 
@@ -4734,6 +4802,8 @@ class MatrixArkRustProxyClient:
                         error = exc
                     if error is None and count_key:
                         self._string_cache_put(count_key, count_value)
+                    if error is None:
+                        self._scan_hash_cache_invalidate_keys(entry[0] for entry in merged)
                     with self._metrics_lock:
                         self._append_coalesced_batches_total += 1
                         self._append_coalesced_calls_total += len(items)
@@ -4927,7 +4997,12 @@ class MatrixArkRustProxyClient:
             raise
 
     def scan_hash(self, key: str) -> Json:
-        return self._call_json("scan_hash", key=key)
+        cached = self._scan_hash_cache_get(key)
+        if cached is not None:
+            return cached
+        response = self._call_json("scan_hash", key=key)
+        self._scan_hash_cache_put(key, response)
+        return response
 
     def matrixark_scan_candidates(
         self,
