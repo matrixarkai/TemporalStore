@@ -4,6 +4,7 @@ pub mod v1 {
 
 use std::sync::Arc;
 
+use serde::Serialize;
 use tonic::{Request, Response, Status as TonicStatus};
 
 use crate::client::TemporalStoreTable;
@@ -585,6 +586,137 @@ pub fn types_command_response_to_sdk(response: types::CommandResponse) -> v1::Co
             value: object_key.into_bytes(),
             ..Default::default()
         },
+        types::CommandResponse::ContextExtractedEventWrite {
+            event_object_key,
+            index_object_keys,
+            written_index_count,
+        } => v1::CommandResponse {
+            status: Some(types_status_to_sdk(types::Status::ok())),
+            value: event_object_key.into_bytes(),
+            values: index_object_keys
+                .into_iter()
+                .map(String::into_bytes)
+                .collect(),
+            count: written_index_count as u64,
+            ..Default::default()
+        },
+        types::CommandResponse::ContextEvents { object_key, events } => v1::CommandResponse {
+            status: Some(types_status_to_sdk(types::Status::ok())),
+            value: object_key.into_bytes(),
+            count: events.len() as u64,
+            values: json_values(events),
+            ..Default::default()
+        },
+        types::CommandResponse::ContextIndexRefs { object_key, refs } => v1::CommandResponse {
+            status: Some(types_status_to_sdk(types::Status::ok())),
+            value: object_key.into_bytes(),
+            count: refs.len() as u64,
+            values: json_values(refs),
+            ..Default::default()
+        },
+        types::CommandResponse::ContextIndexIntersection {
+            refs,
+            deduped_ref_count,
+            ..
+        } => v1::CommandResponse {
+            status: Some(types_status_to_sdk(types::Status::ok())),
+            count: deduped_ref_count as u64,
+            values: json_values(refs),
+            ..Default::default()
+        },
+        types::CommandResponse::ContextPackAudits { object_key, audits } => v1::CommandResponse {
+            status: Some(types_status_to_sdk(types::Status::ok())),
+            value: object_key.into_bytes(),
+            count: audits.len() as u64,
+            values: json_values(audits),
+            ..Default::default()
+        },
+        types::CommandResponse::ContextSummaryDirtyMarkers {
+            object_key,
+            markers,
+        } => v1::CommandResponse {
+            status: Some(types_status_to_sdk(types::Status::ok())),
+            value: object_key.into_bytes(),
+            count: markers.len() as u64,
+            values: json_values(markers),
+            ..Default::default()
+        },
+        types::CommandResponse::ContextEntity { object_key, entity } => v1::CommandResponse {
+            status: Some(types_status_to_sdk(types::Status::ok())),
+            value: object_key.into_bytes(),
+            count: u64::from(entity.is_some()),
+            values: entity.into_iter().map(json_bytes).collect(),
+            ..Default::default()
+        },
+        types::CommandResponse::ContextEntities {
+            object_key,
+            entities,
+        } => v1::CommandResponse {
+            status: Some(types_status_to_sdk(types::Status::ok())),
+            value: object_key.into_bytes(),
+            count: entities.len() as u64,
+            values: json_values(entities),
+            ..Default::default()
+        },
+        types::CommandResponse::ContextChildRefs {
+            object_key, refs, ..
+        } => v1::CommandResponse {
+            status: Some(types_status_to_sdk(types::Status::ok())),
+            value: object_key.into_bytes(),
+            count: refs.len() as u64,
+            values: json_values(refs),
+            ..Default::default()
+        },
+        types::CommandResponse::ContextEmbeddings { embeddings } => v1::CommandResponse {
+            status: Some(types_status_to_sdk(types::Status::ok())),
+            count: embeddings.len() as u64,
+            values: json_values(embeddings),
+            ..Default::default()
+        },
+        types::CommandResponse::ContextTraversedNodes { nodes } => v1::CommandResponse {
+            status: Some(types_status_to_sdk(types::Status::ok())),
+            count: nodes.len() as u64,
+            values: json_values(nodes),
+            ..Default::default()
+        },
+        types::CommandResponse::ContextSummaries {
+            object_key,
+            summaries,
+        } => v1::CommandResponse {
+            status: Some(types_status_to_sdk(types::Status::ok())),
+            value: object_key.into_bytes(),
+            count: summaries.len() as u64,
+            values: json_values(summaries),
+            ..Default::default()
+        },
+        types::CommandResponse::ContextCompressionEvents {
+            object_key, events, ..
+        } => v1::CommandResponse {
+            status: Some(types_status_to_sdk(types::Status::ok())),
+            value: object_key.into_bytes(),
+            count: events.len() as u64,
+            values: json_values(events),
+            ..Default::default()
+        },
+        types::CommandResponse::ContextNodeContext {
+            node,
+            overall_summary,
+            cold_window_summaries,
+            ..
+        } => {
+            let mut values = Vec::new();
+            if let Some(summary) = overall_summary {
+                values.push(json_bytes(summary));
+            }
+            values.extend(json_values(cold_window_summaries));
+            v1::CommandResponse {
+                status: Some(types_status_to_sdk(types::Status::ok())),
+                context_nodes: node.into_iter().map(types_context_node_to_sdk).collect(),
+                count: values.len() as u64,
+                values,
+                ..Default::default()
+            }
+        }
         other => v1::CommandResponse {
             status: Some(types_status_to_sdk(types::Status::error(
                 "unsupported_sdk_response",
@@ -593,6 +725,14 @@ pub fn types_command_response_to_sdk(response: types::CommandResponse) -> v1::Co
             ..Default::default()
         },
     }
+}
+
+fn json_values<T: Serialize>(values: Vec<T>) -> Vec<Vec<u8>> {
+    values.into_iter().map(json_bytes).collect()
+}
+
+fn json_bytes<T: Serialize>(value: T) -> Vec<u8> {
+    serde_json::to_vec(&value).unwrap_or_default()
 }
 
 fn types_status_to_sdk(status: types::Status) -> v1::Status {
