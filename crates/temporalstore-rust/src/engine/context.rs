@@ -11,7 +11,7 @@ use crate::types::{
 };
 use rustmtcache::MultiLayerCache;
 
-use super::packed_pages::{read_feature_point_cached, read_feature_point_cold};
+use super::packed_pages::{read_feature_point_cached, read_feature_point_cold_with_cache_policy};
 use super::{read_page_bytes, stable_object_hash, ShardState};
 pub(super) fn context_node_key(tenant_hash: u64, node_hash: u64) -> String {
     format!("ctx:node:{tenant_hash}:{node_hash}")
@@ -158,11 +158,19 @@ pub(super) fn context_from_bytes<T: ContextWire>(bytes: &[u8]) -> Option<T> {
 }
 
 pub(super) fn read_context_value_cold<T: ContextWire>(
+    cache: Option<&MultiLayerCache>,
     page_store: &LocalPageStore,
+    shard_id: ShardId,
     timeline_key: u64,
     address: &PageAddress,
 ) -> Option<T> {
-    let point = read_feature_point_cold(page_store, timeline_key, address)?;
+    let point = read_feature_point_cold_with_cache_policy(
+        cache,
+        page_store,
+        shard_id,
+        timeline_key,
+        address,
+    )?;
     context_from_bytes(&point.value)
 }
 
@@ -756,7 +764,9 @@ pub(super) fn load_context_compression_events(
 }
 
 pub(super) fn load_context_compression_events_cold(
+    cache: Option<&MultiLayerCache>,
     page_store: &LocalPageStore,
+    shard_id: ShardId,
     shard: &ShardState,
     tenant_hash: u64,
     node_hashes: &[u64],
@@ -777,7 +787,9 @@ pub(super) fn load_context_compression_events_cold(
         if let Some(series) = shard.context_compressions.get(&object_key) {
             for event in series.iter().filter_map(|(timeline_key, address)| {
                 read_context_value_cold::<ContextCompressionEvent>(
+                    cache,
                     page_store,
+                    shard_id,
                     *timeline_key,
                     address,
                 )

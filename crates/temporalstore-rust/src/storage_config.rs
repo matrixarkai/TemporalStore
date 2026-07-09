@@ -120,6 +120,10 @@ pub fn storage_zone_size_bytes() -> u64 {
     StorageTuningConfig::from_env().storage_zone_size
 }
 
+pub fn cold_scan_no_cache_fill() -> bool {
+    StorageTuningConfig::from_env().cold_scan_no_cache_fill
+}
+
 fn parse_u64(value: Option<String>, default: u64) -> u64 {
     value
         .as_deref()

@@ -9884,7 +9884,9 @@ fn execute_on_shard(
                         )
                         .filter_map(|(timeline_key, address)| {
                             read_context_value_cold::<ContextEvent>(
+                                Some(cache),
                                 page_store,
+                                shard_id,
                                 *timeline_key,
                                 address,
                             )
@@ -9984,7 +9986,9 @@ fn execute_on_shard(
                 Vec::new()
             } else {
                 load_context_compression_events_cold(
+                    Some(cache),
                     page_store,
+                    shard_id,
                     shard,
                     tenant_hash,
                     &[node_hash],

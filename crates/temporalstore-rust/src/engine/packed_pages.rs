@@ -7,7 +7,7 @@ use rustmtcache::MultiLayerCache;
 use super::constants::FEATURE_PAGE_MAGIC;
 use super::state::{PackedFeaturePage, PackedFeaturePageDecode};
 use super::{append_value, read_page_bytes, read_page_bytes_cold, stable_page_object_id};
-use crate::storage_config::context_page_target_bytes;
+use crate::storage_config::{cold_scan_no_cache_fill, context_page_target_bytes};
 pub(super) fn sorted_feature_points(mut points: Vec<FeaturePoint>) -> Vec<FeaturePoint> {
     if points
         .windows(2)
@@ -185,6 +185,30 @@ pub(super) fn read_feature_point_cold(
         }),
         PackedFeaturePageDecode::Corrupt(_) => None,
     }
+}
+
+pub(super) fn read_feature_point_cold_with_cache_policy(
+    cache: Option<&MultiLayerCache>,
+    block_store: &LocalBlockStore,
+    shard_id: ShardId,
+    timestamp_ms: u64,
+    address: &BlockAddress,
+) -> Option<FeaturePoint> {
+    if cold_scan_no_cache_fill() {
+        return read_feature_point_cold(block_store, timestamp_ms, address);
+    }
+    let Some(cache) = cache else {
+        return read_feature_point_cold(block_store, timestamp_ms, address);
+    };
+    let mut packed_page_cache = HashMap::new();
+    read_feature_point_cached(
+        cache,
+        block_store,
+        shard_id,
+        timestamp_ms,
+        address,
+        &mut packed_page_cache,
+    )
 }
 
 pub(super) fn read_feature_point_cached(
