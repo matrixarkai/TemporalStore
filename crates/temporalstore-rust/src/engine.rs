@@ -5798,7 +5798,7 @@ impl TemporalEngine {
             let mut published_object_keys = BTreeSet::new();
             let mut published_entries = Vec::new();
             let mut durable_cache_refills = Vec::new();
-            let mut published_memory_only_keys = Vec::new();
+            let mut published_memory_only_keys = HashSet::new();
             for ((target, original, bytes, _, _), published) in
                 publish_records.into_iter().zip(published_addresses)
             {
@@ -5825,10 +5825,12 @@ impl TemporalEngine {
                     ),
                     bytes,
                 ));
-                published_memory_only_keys.push(page_address_cache_key(shard_id, &original));
+                published_memory_only_keys.insert(page_address_cache_key(shard_id, &original));
                 published_object_keys.insert(target.object_key);
             }
-            let _ = self.cache.put_batch(durable_cache_refills);
+            if !durable_cache_refills.is_empty() {
+                let _ = self.cache.put_batch(durable_cache_refills);
+            }
             for key in published_memory_only_keys {
                 self.cache.invalidate_memory_only(&key);
             }
