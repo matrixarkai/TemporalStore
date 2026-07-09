@@ -9185,7 +9185,8 @@ fn execute_on_shard(
                 event_id_hash: event.event_id_hash,
             };
             let mut index_object_keys = Vec::new();
-            let mut write_default_index =
+            let mut pending_index_writes = Vec::new();
+            let mut collect_default_index =
                 |index_name: &str, value_hash: u64, index_time_ms: u64| {
                     if value_hash == 0 || index_time_ms == 0 {
                         return;
@@ -9196,45 +9197,25 @@ fn execute_on_shard(
                     let value = context_bytes(&index_ref);
                     let routing_slot =
                         page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
-                    if let Ok(addresses) = append_timestamped_kv_pages(
-                        cache,
-                        page_store,
-                        shard_id,
-                        "context_index",
-                        &object_key,
-                        vec![FeaturePoint {
-                            timestamp_ms: timeline_key,
-                            value,
-                        }],
-                        routing_slot,
-                        async_storage && !cold_storage,
-                    ) {
-                        let series = shard.context_indexes.entry(object_key.clone()).or_default();
-                        for (timestamp_ms, address) in addresses {
-                            series.insert(timestamp_ms, address);
-                            mutated = true;
-                        }
-                        invalidate_record_all(cache, shard_id, &object_key);
-                        index_object_keys.push(object_key);
-                    }
+                    pending_index_writes.push((object_key, timeline_key, value, routing_slot));
                 };
 
             if should_write_event {
                 if !context_index_disabled(&indexes, InternalContextIndex::EventKind) {
-                    write_default_index(
+                    collect_default_index(
                         "event_kind",
                         context_event_kind_hash(&event),
                         primary_time_ms,
                     );
                 }
                 if !context_index_disabled(&indexes, InternalContextIndex::Status) {
-                    write_default_index("status", indexes.status_hash, primary_time_ms);
+                    collect_default_index("status", indexes.status_hash, primary_time_ms);
                 }
                 if !context_index_disabled(&indexes, InternalContextIndex::Source) {
-                    write_default_index("source", indexes.source_hash, primary_time_ms);
+                    collect_default_index("source", indexes.source_hash, primary_time_ms);
                 }
                 if !context_index_disabled(&indexes, InternalContextIndex::EventTimeBucket) {
-                    write_default_index(
+                    collect_default_index(
                         "event_time_bucket",
                         indexes.event_time_bucket_ms,
                         indexes.event_time_bucket_ms,
@@ -9244,8 +9225,84 @@ fn execute_on_shard(
                     let mut seen_entity_hashes = HashSet::new();
                     for entity_hash in indexes.entity_hashes.iter().copied() {
                         if seen_entity_hashes.insert(entity_hash) {
-                            write_default_index("entity", entity_hash, primary_time_ms);
+                            collect_default_index("entity", entity_hash, primary_time_ms);
                         }
+                    }
+                }
+            }
+            if !pending_index_writes.is_empty() {
+                let async_index_storage = async_storage && !cold_storage;
+                let addresses = if async_index_storage {
+                    let start_offset = HOT_PAGE_OFFSET
+                        .fetch_add(pending_index_writes.len() as u64, Ordering::Relaxed);
+                    let mut page_cache_entries = Vec::with_capacity(pending_index_writes.len());
+                    let addresses = pending_index_writes
+                        .iter()
+                        .enumerate()
+                        .map(|(index, (object_key, timeline_key, value, routing_slot))| {
+                            let object_id =
+                                stable_page_object_id(shard_id, "context_index", object_key, None);
+                            let packed = encode_feature_page(&[FeaturePoint {
+                                timestamp_ms: *timeline_key,
+                                value: value.clone(),
+                            }]);
+                            let address = PageAddress {
+                                page_segment_id: HOT_PAGE_SEGMENT_ID,
+                                offset: start_offset.saturating_add(index as u64),
+                                length: packed.len() as u64,
+                                page_id: None,
+                                object_id: Some(object_id),
+                                routing_slot: Some(*routing_slot),
+                                generation: Some(object_id),
+                                extent_id: None,
+                                sha256: None,
+                            };
+                            page_cache_entries.push((
+                                CacheKey::page_with_slot_generation(
+                                    shard_id,
+                                    address.page_segment_id,
+                                    address.offset,
+                                    address.length,
+                                    address.routing_slot,
+                                    address.generation,
+                                ),
+                                packed,
+                            ));
+                            address
+                        })
+                        .collect::<Vec<_>>();
+                    cache.put_memory_only_batch(page_cache_entries);
+                    Some(addresses)
+                } else {
+                    let writes = pending_index_writes
+                        .iter()
+                        .map(|(object_key, timeline_key, value, routing_slot)| {
+                            let object_id =
+                                stable_page_object_id(shard_id, "context_index", object_key, None);
+                            (
+                                encode_feature_page(&[FeaturePoint {
+                                    timestamp_ms: *timeline_key,
+                                    value: value.clone(),
+                                }]),
+                                Some(object_id),
+                                Some(*routing_slot),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    page_store.append_batch_with_page_metadata(writes).ok()
+                };
+                if let Some(addresses) = addresses {
+                    for ((object_key, timeline_key, _, _), address) in
+                        pending_index_writes.into_iter().zip(addresses)
+                    {
+                        shard
+                            .context_indexes
+                            .entry(object_key.clone())
+                            .or_default()
+                            .insert(timeline_key, address);
+                        invalidate_record_all(cache, shard_id, &object_key);
+                        index_object_keys.push(object_key);
+                        mutated = true;
                     }
                 }
             }
