@@ -10,22 +10,28 @@ use rustmtcache::MultiLayerCache;
 use super::packed_pages::{decode_feature_page_strict, read_feature_point_cached};
 use super::state::PackedFeaturePageDecode;
 use super::{parse_i64, read_page_bytes, ShardState};
-pub(super) fn read_sequence_row(
+
+fn decode_sequence_row_value(bytes: &[u8]) -> Option<SequenceFeatureRow> {
+    serde_json::from_slice(bytes).ok()
+}
+
+fn read_sequence_row_cached(
     cache: &MultiLayerCache,
     block_store: &LocalBlockStore,
     shard_id: ShardId,
     timestamp_ms: u64,
     address: &BlockAddress,
+    page_cache: &mut HashMap<BlockAddress, Option<Vec<FeaturePoint>>>,
 ) -> Option<SequenceFeatureRow> {
-    let bytes = read_page_bytes(cache, block_store, shard_id, address)?;
-    match decode_feature_page_strict(&bytes) {
-        PackedFeaturePageDecode::Packed(points) => points
-            .into_iter()
-            .find(|point| point.timestamp_ms == timestamp_ms)
-            .and_then(|point| serde_json::from_slice(&point.value).ok()),
-        PackedFeaturePageDecode::Legacy => serde_json::from_slice(&bytes).ok(),
-        PackedFeaturePageDecode::Corrupt(_) => None,
-    }
+    let point = read_feature_point_cached(
+        cache,
+        block_store,
+        shard_id,
+        timestamp_ms,
+        address,
+        page_cache,
+    )?;
+    decode_sequence_row_value(&point.value)
 }
 
 pub(super) fn sequence_filter_matches(row: &SequenceFeatureRow, filter: &FeatureFilter) -> bool {
@@ -61,11 +67,19 @@ pub(super) fn sequence_rows_in_range(
         .sequences
         .get(key)
         .map(|series| {
+            let mut page_cache = HashMap::new();
             series
                 .range(start_ms..=end_ms)
                 .take(count)
                 .filter_map(|(timestamp_ms, address)| {
-                    read_sequence_row(cache, block_store, shard_id, *timestamp_ms, address)
+                    read_sequence_row_cached(
+                        cache,
+                        block_store,
+                        shard_id,
+                        *timestamp_ms,
+                        address,
+                        &mut page_cache,
+                    )
                 })
                 .filter(|row| {
                     filters
