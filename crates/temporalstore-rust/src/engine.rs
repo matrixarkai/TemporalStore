@@ -9887,12 +9887,15 @@ fn ttl_ms(cache: &MultiLayerCache, shard_id: ShardId, shard: &mut ShardState, ke
     if !record_exists(shard, key) {
         return -2;
     }
-    associated_record_keys(key)
-        .into_iter()
-        .filter_map(|record_key| shard.expires_at_ms.get(&record_key).copied())
-        .map(|expires_at| expires_at.saturating_sub(now_ms()) as i64)
-        .min()
-        .unwrap_or(-1)
+    let now = now_ms();
+    let mut min_ttl = None;
+    visit_associated_record_keys(key, |record_key| {
+        if let Some(expires_at) = shard.expires_at_ms.get(record_key).copied() {
+            let ttl = expires_at.saturating_sub(now) as i64;
+            min_ttl = Some(min_ttl.map_or(ttl, |current: i64| current.min(ttl)));
+        }
+    });
+    min_ttl.unwrap_or(-1)
 }
 
 fn select_expiry_cursor_window(
@@ -10140,6 +10143,33 @@ fn associated_record_keys(key: &str) -> Vec<String> {
         keys.push(risk_family_key(family, key));
     }
     keys
+}
+
+fn visit_associated_record_keys(key: &str, mut visit: impl FnMut(&str)) {
+    visit(key);
+    if key.starts_with("risk:") {
+        return;
+    }
+    for family in [RiskFamily::H, RiskFamily::Cpc, RiskFamily::Fol] {
+        let family_key = risk_family_key(family, key);
+        visit(&family_key);
+    }
+}
+
+fn any_associated_record_key(key: &str, mut predicate: impl FnMut(&str) -> bool) -> bool {
+    if predicate(key) {
+        return true;
+    }
+    if key.starts_with("risk:") {
+        return false;
+    }
+    for family in [RiskFamily::H, RiskFamily::Cpc, RiskFamily::Fol] {
+        let family_key = risk_family_key(family, key);
+        if predicate(&family_key) {
+            return true;
+        }
+    }
+    false
 }
 
 fn collect_live_page_segment_ids(shard: &ShardState) -> BTreeSet<u64> {
@@ -14041,9 +14071,7 @@ fn invalidate_page_addresses_except(
 }
 
 fn record_exists(shard: &ShardState, key: &str) -> bool {
-    associated_record_keys(key)
-        .iter()
-        .any(|record_key| record_exists_exact(shard, record_key))
+    any_associated_record_key(key, |record_key| record_exists_exact(shard, record_key))
 }
 
 fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
