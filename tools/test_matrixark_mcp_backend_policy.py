@@ -948,8 +948,15 @@ class _NativeAppendClient:
     def get_string(self, key: str) -> str:
         return "0"
 
-    def matrixark_batch_append_records(self, entries, *, count_key=None, count_value=None) -> None:
-        self.calls.append({"entries": list(entries), "count_key": count_key, "count_value": count_value})
+    def matrixark_batch_append_records(self, entries, *, count_key=None, count_value=None, append_options=None) -> None:
+        self.calls.append(
+            {
+                "entries": list(entries),
+                "count_key": count_key,
+                "count_value": count_value,
+                "append_options": dict(append_options or {}),
+            }
+        )
 
 
 
@@ -3138,6 +3145,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             "scope_key": "tenant=7",
             "node_hash": 9,
             "updated_at_ms": 1780000001000,
+            "scope": {"session_id": "session-raw"},
             "text": "raw must stay canonical",
             "internal_extraction": {"classification": "memory", "status": "observed"},
         }
@@ -3154,6 +3162,8 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(raw_payload["text"], "raw must stay canonical")
         self.assertIn("internal_extraction", raw_payload)
         self.assertNotIn("placement_key", raw_payload)
+        expected_session_index_key = f"matrixark:test:dual-write:raw_ingestion:session_index:{mcp_core.stable_hash('session-raw')}"
+        self.assertIn(expected_session_index_key, {entry["key"] for entry in raw_call["entries"]})
 
         self.assertEqual(serving_call["count_key"], "matrixark:test:dual-write:record_count")
         self.assertEqual(serving_call["count_value"], "1")
@@ -3195,6 +3205,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 "scope_key": "tenant=8",
                 "node_hash": 10,
                 "updated_at_ms": 1780000002000,
+                "envelope": {"scope": {"conversation_id": "conv-matrixkv"}},
                 "text": "matrixkv raw option",
             }
         )
@@ -3205,6 +3216,8 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(raw_call["append_options"]["append_path"], "matrixark_raw_ingestion_matrixkv_log")
         self.assertEqual(raw_call["append_options"]["raw_storage_backend"], "matrixkv")
         self.assertEqual(raw_call["entries"][0]["key"], "matrixkv:raw:messages:records:000000")
+        expected_session_index_key = f"matrixkv:raw:messages:session_index:{mcp_core.stable_hash('conv-matrixkv')}"
+        self.assertIn(expected_session_index_key, {entry["key"] for entry in raw_call["entries"]})
 
     def test_direct_retrieval_records_reuses_candidate_cache_by_count_and_scope(self) -> None:
         records = [

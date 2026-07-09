@@ -923,6 +923,62 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         offset = sequence % self._shard_size
         return f"{self._raw_record_hash_key}:{shard:06d}", f"{offset:020d}"
 
+    def _raw_session_index_key(self, session_id: str) -> str:
+        self._ensure_raw_ingestion_fields()
+        return f"{self._raw_ingestion_prefix}:session_index:{stable_hash(str(session_id))}"
+
+    def _raw_record_scope_value(self, record: Json, name: str) -> str:
+        scope = record.get("scope") if isinstance(record.get("scope"), dict) else {}
+        envelope = record.get("envelope") if isinstance(record.get("envelope"), dict) else {}
+        envelope_scope = envelope.get("scope") if isinstance(envelope.get("scope"), dict) else {}
+        for key in (name, name.replace("_id", "")):
+            for container in (record, scope, envelope_scope, envelope):
+                if not isinstance(container, dict):
+                    continue
+                value = container.get(key)
+                if value not in (None, ""):
+                    return str(value)
+        return ""
+
+    def _raw_record_session_ids(self, record: Json) -> set[str]:
+        candidates = {
+            self._raw_record_scope_value(record, "session_id"),
+            self._raw_record_scope_value(record, "conversation_id"),
+        }
+        scope = record.get("scope") if isinstance(record.get("scope"), dict) else {}
+        envelope = record.get("envelope") if isinstance(record.get("envelope"), dict) else {}
+        envelope_scope = envelope.get("scope") if isinstance(envelope.get("scope"), dict) else {}
+        metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+        for container in (scope, envelope_scope, metadata, envelope, record):
+            if not isinstance(container, dict):
+                continue
+            for key in ("session_id", "session", "conversation_id", "conversation"):
+                value = container.get(key)
+                if value not in (None, ""):
+                    candidates.add(str(value))
+        return {item for item in candidates if item}
+
+    def _raw_session_index_entries(self, *, sequence: int, record: Json) -> list[Json]:
+        shard = sequence // self._shard_size
+        offset = sequence % self._shard_size
+        ref = json.dumps(
+            {
+                "sequence": sequence,
+                "shard": shard,
+                "field": f"{offset:020d}",
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return [
+            {
+                "key": self._raw_session_index_key(session_id),
+                "field": f"{sequence:020d}",
+                "value": ref,
+            }
+            for session_id in sorted(self._raw_record_session_ids(record))
+        ]
+
     def _get_raw_count(self) -> int:
         self._ensure_raw_ingestion_fields()
         try:
@@ -961,6 +1017,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 payload = json.dumps(record, sort_keys=True, separators=(",", ":"))
                 route = record.get("storage_route") if isinstance(record.get("storage_route"), dict) else {}
                 entries.append({"key": record_key, "field": record_id, "value": payload, "storage_route": route})
+                entries.extend(self._raw_session_index_entries(sequence=sequence, record=record))
                 sequence += 1
             append_records = getattr(self._client, "matrixark_batch_append_records", None)
             if callable(append_records):

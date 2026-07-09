@@ -6,6 +6,7 @@ TemporalStore adapter:
 
     <prefix>:record_count              string global count
     <prefix>:records:<shard>           hash of zero-padded offsets -> JSON record
+    <prefix>:session_index:<hash>      optional hash of sequence -> record ref
 
 Legacy prefixes using <prefix>:record_index plus <prefix>:records are also
 supported. Backfill writes normalized MatrixArk serving records to a shadow
@@ -401,6 +402,48 @@ class LocalJsonKV:
         return dict(self.data['hashes'].get(key, {}))
 
 
+def raw_session_index_key(prefix: str, session_id: str) -> str:
+    digest = stable_hash(str(session_id))
+    return f'{prefix.rstrip(":")}:session_index:{digest}'
+
+
+def raw_record_session_ids(record: Json) -> set[str]:
+    candidates = {
+        _scope_value(record, 'session_id'),
+        _scope_value(record, 'conversation_id'),
+    }
+    scope = record.get('scope') if isinstance(record.get('scope'), dict) else {}
+    envelope = record.get('envelope') if isinstance(record.get('envelope'), dict) else {}
+    envelope_scope = envelope.get('scope') if isinstance(envelope.get('scope'), dict) else {}
+    metadata = record.get('metadata') if isinstance(record.get('metadata'), dict) else {}
+    for container in [scope, envelope_scope, metadata, envelope, record]:
+        if not isinstance(container, dict):
+            continue
+        for key in ['session_id', 'session', 'conversation_id', 'conversation']:
+            value = container.get(key)
+            if value not in (None, ''):
+                candidates.add(str(value))
+    return {item for item in candidates if item}
+
+
+def raw_session_index_entries(prefix: str, sequence: int, record: Json, *, shard_size: int = DIRECT_RECORD_LOG_SHARD_SIZE) -> list[Json]:
+    shard = sequence // shard_size
+    offset = sequence % shard_size
+    ref = json.dumps({
+        'sequence': sequence,
+        'shard': shard,
+        'field': f'{offset:020d}',
+    }, sort_keys=True, separators=(',', ':'))
+    return [
+        {
+            'key': raw_session_index_key(prefix, session_id),
+            'field': f'{sequence:020d}',
+            'value': ref,
+        }
+        for session_id in sorted(raw_record_session_ids(record))
+    ]
+
+
 class MatrixKVRecordLog:
     def __init__(self, kv: Any, *, prefix: str, shard_size: int = DIRECT_RECORD_LOG_SHARD_SIZE) -> None:
         self.kv = kv
@@ -486,6 +529,99 @@ class MatrixKVRecordLog:
         legacy_record_id = ref[1] if len(ref) > 1 else None
         scan_field = ref[2] if len(ref) > 2 else None
         return sequence, legacy_record_id, scan_field
+
+    def session_index_key(self, session_id: str) -> str:
+        return raw_session_index_key(self.prefix, session_id)
+
+    def append_session_index_entries(self, *, sequence: int, record: Json) -> None:
+        entries = raw_session_index_entries(self.prefix, sequence, record, shard_size=self.shard_size)
+        if not entries:
+            return
+        batch_hset = getattr(self.kv, 'batch_hset', None)
+        if callable(batch_hset):
+            batch_hset(entries)
+            return
+        for entry in entries:
+            self.kv.hset(str(entry['key']), str(entry['field']), str(entry['value']))
+
+    def session_refs(
+        self,
+        *,
+        session_ids: Iterable[str],
+        start_seq: int,
+        end_seq: int | None,
+    ) -> tuple[list[SourceRef], Json] | None:
+        scan_hash = getattr(self.kv, 'scan_hash', None)
+        if not callable(scan_hash):
+            return None
+        refs_by_sequence: dict[int, SourceRef] = {}
+        found_indexes = 0
+        missing_indexes: list[str] = []
+        for session_id in sorted({str(item) for item in session_ids if str(item)}):
+            index_key = self.session_index_key(session_id)
+            payload = scan_hash(index_key)
+            payload = payload if isinstance(payload, dict) else {}
+            fields = self._scan_hash_fields(payload)
+            if not fields:
+                missing_indexes.append(session_id)
+                continue
+            found_indexes += 1
+            for field in fields:
+                sequence = self._sequence_from_session_index_field(field)
+                value = str(payload.get(field) or '')
+                if value:
+                    sequence = self._sequence_from_session_index_value(value, fallback=sequence)
+                if sequence is None:
+                    continue
+                if sequence < max(0, start_seq):
+                    continue
+                if end_seq is not None and sequence >= end_seq:
+                    continue
+                refs_by_sequence[sequence] = (sequence, None, f'{sequence % self.shard_size:020d}')
+        if found_indexes == 0 or missing_indexes:
+            return None
+        refs = [refs_by_sequence[sequence] for sequence in sorted(refs_by_sequence)]
+        source_range = {
+            'scan_mode': 'session_index',
+            'requested_start_seq': start_seq,
+            'requested_end_seq': end_seq,
+            'effective_start_seq': max(0, start_seq),
+            'effective_end_seq': (max(refs_by_sequence) + 1) if refs_by_sequence else max(0, start_seq),
+            'source_record_count': len(refs),
+            'source_high_watermark_seq': max(refs_by_sequence) if refs_by_sequence else None,
+            'user_bounded_end': end_seq is not None,
+            'session_index_used': True,
+            'session_index_key_count': found_indexes,
+            'session_index_missing_key_count': len(missing_indexes),
+            'session_index_missing_session_ids': missing_indexes[:32],
+        }
+        return refs, source_range
+
+    @staticmethod
+    def _sequence_from_session_index_field(field: str) -> int | None:
+        try:
+            return int(field)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _sequence_from_session_index_value(value: str, *, fallback: int | None) -> int | None:
+        try:
+            decoded = json.loads(value)
+        except Exception:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return fallback
+        if isinstance(decoded, dict):
+            try:
+                return int(decoded.get('sequence'))
+            except (TypeError, ValueError):
+                return fallback
+        try:
+            return int(decoded)
+        except (TypeError, ValueError):
+            return fallback
 
     def _read_one_ref(self, sequence: int, legacy_record_id: str | None, scan_field: str | None = None) -> tuple[int, Json | None, Exception | None]:
         try:
@@ -712,6 +848,21 @@ class RawMessageStoreReader:
             max_empty_scan_shards=max_empty_scan_shards,
             source_range=source_range,
         )
+
+    def session_refs(
+        self,
+        *,
+        session_ids: Iterable[str],
+        start_seq: int,
+        end_seq: int | None,
+    ) -> tuple[list[SourceRef], Json] | None:
+        result = self.log.session_refs(session_ids=session_ids, start_seq=start_seq, end_seq=end_seq)
+        if result is None:
+            return None
+        refs, source_range = result
+        source_range['raw_backend'] = self.raw_backend
+        source_range['raw_store_reader'] = 'matrixark.raw_message_store_reader.v1'
+        return refs, source_range
 
     def iter_records(self, *, start_seq: int, end_seq: int | None) -> Iterable[tuple[int, Json]]:
         return self.log.iter_records(start_seq=start_seq, end_seq=end_seq)
@@ -2062,11 +2213,19 @@ def _csv_set(value: str) -> set[str]:
 
 def _scope_value(record: Json, name: str) -> str:
     scope = record.get('scope') if isinstance(record.get('scope'), dict) else {}
+    envelope = record.get('envelope') if isinstance(record.get('envelope'), dict) else {}
+    envelope_scope = envelope.get('scope') if isinstance(envelope.get('scope'), dict) else {}
     for key in (name, name.replace('_id', '')):
         value = record.get(key)
         if value not in (None, ''):
             return str(value)
         value = scope.get(key) if isinstance(scope, dict) else None
+        if value not in (None, ''):
+            return str(value)
+        value = envelope_scope.get(key) if isinstance(envelope_scope, dict) else None
+        if value not in (None, ''):
+            return str(value)
+        value = envelope.get(key) if isinstance(envelope, dict) else None
         if value not in (None, ''):
             return str(value)
     return ''
@@ -2118,7 +2277,14 @@ def record_matches_partial(raw_record: Json, partial: Json) -> bool:
     ]
     for spec_key, record_key in checks:
         allowed = set(partial.get(spec_key) or [])
-        if allowed and _scope_value(raw_record, record_key) not in allowed:
+        if (
+            spec_key == 'session_ids'
+            and allowed
+            and _scope_value(raw_record, record_key) not in allowed
+            and _scope_value(raw_record, 'conversation_id') not in allowed
+        ):
+            return False
+        if spec_key != 'session_ids' and allowed and _scope_value(raw_record, record_key) not in allowed:
             return False
     filter_json = partial.get('filter_json') if isinstance(partial.get('filter_json'), dict) else {}
     for key, expected in filter_json.items():
@@ -2482,13 +2648,26 @@ def run_backfill(args: argparse.Namespace) -> Json:
                 continue
             process_raw_record(sequence, raw_record or {}, existing_dedupe_ids)
 
-    source_range = source.source_range(start_seq=start_seq, end_seq=args.end_seq)
-    source_items, scan_mode = source.source_refs(
+    session_index_result = source.session_refs(
+        session_ids=partial.get('session_ids') or [],
         start_seq=start_seq,
         end_seq=args.end_seq,
-        max_empty_scan_shards=args.source_scan_max_empty_shards,
-        source_range=source_range,
-    )
+    ) if partial.get('session_ids') else None
+    if session_index_result is not None:
+        session_refs, source_range = session_index_result
+        source_items = iter(session_refs)
+        scan_mode = 'session_index'
+    else:
+        source_range = source.source_range(start_seq=start_seq, end_seq=args.end_seq)
+        if partial.get('session_ids'):
+            source_range['session_index_used'] = False
+            source_range['session_index_fallback_reason'] = 'missing_or_unavailable_session_index'
+        source_items, scan_mode = source.source_refs(
+            start_seq=start_seq,
+            end_seq=args.end_seq,
+            max_empty_scan_shards=args.source_scan_max_empty_shards,
+            source_range=source_range,
+        )
 
     if outer_bulk:
         kv.begin_bulk()
