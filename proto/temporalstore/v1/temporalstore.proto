@@ -251,6 +251,7 @@ message Command {
     FeatureReplace feature_replace = 27;
     FeatureDelete feature_delete = 28;
     FeatureAggQuery feature_agg_query = 29;
+    SequenceBatchQuery sequence_batch_query = 30;
   }
 }
 
@@ -386,6 +387,17 @@ message SequenceQuery {
   uint64 start_ms = 2;
   uint64 end_ms = 3;
   uint32 limit = 4;
+}
+
+message SequenceQuerySpec {
+  string key = 1;
+  uint64 start_ms = 2;
+  uint64 end_ms = 3;
+  uint32 limit = 4;
+}
+
+message SequenceBatchQuery {
+  repeated SequenceQuerySpec queries = 1;
 }
 
 message IpsAdd {
