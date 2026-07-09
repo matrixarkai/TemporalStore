@@ -60,6 +60,8 @@ pub(super) struct CoreIndex {
     pub(super) object_page_lookup: ObjectPageLookup,
     #[serde(default)]
     pub(super) object_component_lookup: ObjectComponentLookup,
+    #[serde(default)]
+    pub(super) object_key_lookup: ObjectKeyLookup,
 }
 
 pub(super) type SlotMap = BTreeMap<u32, SlotNode>;
@@ -67,6 +69,7 @@ pub(super) type ObjectIndex = BTreeSet<u64>;
 pub(super) type PageIndexMap = BTreeMap<String, PageIndex>;
 pub(super) type ObjectPageLookup = BTreeMap<String, BTreeSet<PageLookupRef>>;
 pub(super) type ObjectComponentLookup = BTreeMap<String, BTreeSet<ComponentPageLookupRef>>;
+pub(super) type ObjectKeyLookup = BTreeMap<String, BTreeSet<ObjectKeyPageLookupRef>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(super) struct PageLookupRef {
@@ -76,6 +79,15 @@ pub(super) struct PageLookupRef {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(super) struct ComponentPageLookupRef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) component: Option<String>,
+    pub(super) routing_slot: u32,
+    pub(super) page_ref_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub(super) struct ObjectKeyPageLookupRef {
+    pub(super) model_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) component: Option<String>,
     pub(super) routing_slot: u32,
@@ -133,6 +145,7 @@ impl CoreIndex {
     pub(super) fn rebuild_object_page_lookup(&mut self) {
         self.object_page_lookup.clear();
         self.object_component_lookup.clear();
+        self.object_key_lookup.clear();
         let refs = self
             .slot_map
             .iter()
@@ -176,7 +189,16 @@ impl CoreIndex {
             .insert(ComponentPageLookupRef {
                 component: page.component.clone(),
                 routing_slot,
-                page_ref_key,
+                page_ref_key: page_ref_key.clone(),
+            });
+        self.object_key_lookup
+            .entry(page.object_key.clone())
+            .or_default()
+            .insert(ObjectKeyPageLookupRef {
+                model_id: page.model_id.clone(),
+                component: page.component.clone(),
+                routing_slot,
+                page_ref_key: page_ref_key.clone(),
             });
     }
 
@@ -195,6 +217,7 @@ impl CoreIndex {
                 self.object_component_lookup.remove(&component_lookup_key);
             }
         }
+        self.remove_object_key_lookup_entry(model_id, object_key, component);
     }
 
     pub(super) fn remove_all_object_page_lookup_entries(
@@ -225,6 +248,7 @@ impl CoreIndex {
                 component.as_deref(),
             ));
         }
+        self.remove_object_key_lookup_model_entries(model_id, object_key);
     }
 
     pub(super) fn remove_object_lookup_entries(&mut self, object_key: &str, model_ids: &[&str]) {
@@ -247,7 +271,55 @@ impl CoreIndex {
                     component.as_deref(),
                 ));
             }
+            self.remove_object_key_lookup_model_entries(model_id, object_key);
         }
+    }
+
+    fn remove_object_key_lookup_entry(
+        &mut self,
+        model_id: &str,
+        object_key: &str,
+        component: Option<&str>,
+    ) {
+        if let Some(page_refs) = self.object_key_lookup.get_mut(object_key) {
+            page_refs.retain(|page_ref| {
+                !(page_ref.model_id == model_id && page_ref.component.as_deref() == component)
+            });
+            if page_refs.is_empty() {
+                self.object_key_lookup.remove(object_key);
+            }
+        }
+    }
+
+    fn remove_object_key_lookup_model_entries(&mut self, model_id: &str, object_key: &str) {
+        if let Some(page_refs) = self.object_key_lookup.get_mut(object_key) {
+            page_refs.retain(|page_ref| page_ref.model_id != model_id);
+            if page_refs.is_empty() {
+                self.object_key_lookup.remove(object_key);
+            }
+        }
+    }
+
+    pub(super) fn contains_object_key(&self, object_key: &str) -> bool {
+        if let Some(page_refs) = self.object_key_lookup.get(object_key) {
+            return page_refs.iter().any(|page_ref| {
+                self.slot_map
+                    .get(&page_ref.routing_slot)
+                    .and_then(|slot| slot.page_index.get(&page_ref.page_ref_key))
+                    .map(|page| !page.deleted && page.object_key == object_key)
+                    .unwrap_or(false)
+            });
+        }
+
+        if !self.object_key_lookup.is_empty() {
+            return false;
+        }
+
+        self.slot_map.values().any(|slot| {
+            slot.page_index
+                .values()
+                .any(|page| page.object_key == object_key && !page.deleted)
+        })
     }
 
     pub(super) fn contains_object_page_address(

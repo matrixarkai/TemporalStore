@@ -14102,13 +14102,9 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         return true;
     }
 
-    if shard.slot_index.object_component_lookup.is_empty() {
-        shard.slot_index.slot_map.values().any(|slot| {
-            slot.page_index
-                .values()
-                .any(|page| page.object_key == key && !page.deleted)
-        })
-    } else {
+    if !shard.slot_index.object_key_lookup.is_empty() {
+        shard.slot_index.contains_object_key(key)
+    } else if !shard.slot_index.object_component_lookup.is_empty() {
         storage_model_kinds().iter().any(|kind| {
             shard
                 .slot_index
@@ -14129,6 +14125,8 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
                 })
                 .unwrap_or(false)
         })
+    } else {
+        shard.slot_index.contains_object_key(key)
     }
 }
 
