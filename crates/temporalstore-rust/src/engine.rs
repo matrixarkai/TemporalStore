@@ -5560,11 +5560,6 @@ impl TemporalEngine {
         shard_id: ShardId,
         selected_keys: impl IntoIterator<Item = String>,
     ) -> Result<usize, Status> {
-        enum PublishTarget {
-            String { key: String },
-            Hash { key: String, field: String },
-        }
-
         let selected_keys = selected_keys
             .into_iter()
             .filter(|key| !key.trim().is_empty())
@@ -5578,73 +5573,24 @@ impl TemporalEngine {
                     "shard is not loaded on this server",
                 ));
             };
-            if publish_all {
-                let mut publish_targets = shard
-                    .strings
-                    .iter()
-                    .filter(|(_, address)| address.page_segment_id == HOT_PAGE_SEGMENT_ID)
-                    .map(|(key, address)| {
-                        (PublishTarget::String { key: key.clone() }, address.clone())
-                    })
-                    .collect::<Vec<_>>();
-                publish_targets.extend(
-                    shard
-                        .hashes
-                        .iter()
-                        .flat_map(|(key, fields)| {
-                            fields.iter().filter_map(move |(field, address)| {
-                                (address.page_segment_id == HOT_PAGE_SEGMENT_ID).then(|| {
-                                    (
-                                        PublishTarget::Hash {
-                                            key: key.clone(),
-                                            field: field.clone(),
-                                        },
-                                        address.clone(),
-                                    )
-                                })
-                            })
-                        })
-                        .collect::<Vec<_>>(),
-                );
-                publish_targets
-            } else {
-                let mut publish_targets = Vec::new();
-                for key in &selected_keys {
-                    if let Some(address) = shard.strings.get(key) {
-                        if address.page_segment_id == HOT_PAGE_SEGMENT_ID {
-                            publish_targets.push((
-                                PublishTarget::String { key: key.clone() },
-                                address.clone(),
-                            ));
-                        }
-                    }
-                    if let Some(fields) = shard.hashes.get(key) {
-                        publish_targets.extend(fields.iter().filter_map(|(field, address)| {
-                            (address.page_segment_id == HOT_PAGE_SEGMENT_ID).then(|| {
-                                (
-                                    PublishTarget::Hash {
-                                        key: key.clone(),
-                                        field: field.clone(),
-                                    },
-                                    address.clone(),
-                                )
-                            })
-                        }));
-                    }
-                }
-                publish_targets
-            }
+            collect_model_live_page_entries(shard)
+                .into_iter()
+                .filter(|entry| page_address_is_memory_only(&entry.address))
+                .filter(|entry| publish_all || selected_keys.contains(&entry.object_key))
+                .collect::<Vec<_>>()
         };
         let mut publish_records = Vec::with_capacity(publish_targets.len());
-        for (target, address) in publish_targets {
-            if let Some(bytes) = read_page_bytes(&self.cache, &self.page_store, shard_id, &address)
+        for target in publish_targets {
+            if let Some(bytes) =
+                read_page_bytes(&self.cache, &self.page_store, shard_id, &target.address)
             {
+                let original = target.address.clone();
                 publish_records.push((
                     target,
-                    address.clone(),
+                    original.clone(),
                     bytes,
-                    address.object_id,
-                    address.routing_slot,
+                    original.object_id,
+                    original.routing_slot,
                 ));
             }
         }
@@ -5673,71 +5619,26 @@ impl TemporalEngine {
             for ((target, original, bytes, _, _), published) in
                 publish_records.into_iter().zip(published_addresses)
             {
-                match target {
-                    PublishTarget::String { key } => {
-                        if shard.strings.get(&key) != Some(&original) {
-                            continue;
-                        }
-                        let _ = self.cache.put(
-                            CacheKey::page_with_slot_generation(
-                                shard_id,
-                                published.page_segment_id,
-                                published.offset,
-                                published.length,
-                                published.routing_slot,
-                                published.generation,
-                            ),
-                            bytes,
-                        );
-                        upsert_slot_index_page(
-                            &self.cache,
-                            shard,
-                            shard_id,
-                            "string",
-                            &key,
-                            None,
-                            published.clone(),
-                            false,
-                        );
-                        published_object_keys.insert(key.clone());
-                        shard.strings.insert(key, published);
-                    }
-                    PublishTarget::Hash { key, field } => {
-                        let current = shard.hashes.get(&key).and_then(|fields| fields.get(&field));
-                        if current != Some(&original) {
-                            continue;
-                        }
-                        let _ = self.cache.put(
-                            CacheKey::page_with_slot_generation(
-                                shard_id,
-                                published.page_segment_id,
-                                published.offset,
-                                published.length,
-                                published.routing_slot,
-                                published.generation,
-                            ),
-                            bytes,
-                        );
-                        upsert_slot_index_page(
-                            &self.cache,
-                            shard,
-                            shard_id,
-                            "hash",
-                            &key,
-                            Some(field.clone()),
-                            published.clone(),
-                            false,
-                        );
-                        published_object_keys.insert(key.clone());
-                        if let Some(fields) = shard.hashes.get_mut(&key) {
-                            fields.insert(field, published);
-                        }
-                    }
+                if !replace_model_page_address(shard, &target, &original, &published) {
+                    continue;
                 }
+                let _ = self.cache.put(
+                    CacheKey::page_with_slot_generation(
+                        shard_id,
+                        published.page_segment_id,
+                        published.offset,
+                        published.length,
+                        published.routing_slot,
+                        published.generation,
+                    ),
+                    bytes,
+                );
+                published_object_keys.insert(target.object_key);
             }
             for object_key in published_object_keys {
                 clear_published_object_dirty_state(shard, &object_key);
             }
+            rebuild_slot_page_ownership(shard_id, shard, 0, u32::MAX);
             refresh_slot_runtime_flags(shard);
             serialize_index(shard)
         };
@@ -10408,6 +10309,137 @@ fn live_page_entry(
         dirty: false,
         deleted: false,
         log_backed: true,
+    }
+}
+
+fn replace_series_page_address(
+    series: &mut BTreeMap<u64, PageAddress>,
+    original: &PageAddress,
+    published: &PageAddress,
+) -> bool {
+    let mut replaced = false;
+    for address in series.values_mut() {
+        if address == original {
+            *address = published.clone();
+            replaced = true;
+        }
+    }
+    replaced
+}
+
+fn replace_model_page_address(
+    shard: &mut ShardState,
+    entry: &LivePageEntry,
+    original: &PageAddress,
+    published: &PageAddress,
+) -> bool {
+    match entry.kind.as_str() {
+        "string" => shard
+            .strings
+            .get_mut(&entry.object_key)
+            .filter(|address| *address == original)
+            .map(|address| *address = published.clone())
+            .is_some(),
+        "hash" => entry
+            .component
+            .as_ref()
+            .and_then(|field| {
+                shard
+                    .hashes
+                    .get_mut(&entry.object_key)
+                    .and_then(|fields| fields.get_mut(field))
+            })
+            .filter(|address| *address == original)
+            .map(|address| *address = published.clone())
+            .is_some(),
+        "set" => entry
+            .component
+            .as_ref()
+            .and_then(|member| hex::decode(member).ok())
+            .and_then(|member| {
+                shard
+                    .sets
+                    .get_mut(&entry.object_key)
+                    .and_then(|members| members.get_mut(&member))
+            })
+            .filter(|address| *address == original)
+            .map(|address| *address = published.clone())
+            .is_some(),
+        "feature" => shard
+            .features
+            .get_mut(&entry.object_key)
+            .map(|series| replace_series_page_address(series, original, published))
+            .unwrap_or(false),
+        "sequence" => shard
+            .sequences
+            .get_mut(&entry.object_key)
+            .map(|series| replace_series_page_address(series, original, published))
+            .unwrap_or(false),
+        "ips" => shard
+            .ips
+            .get_mut(&entry.object_key)
+            .map(|series| replace_series_page_address(series, original, published))
+            .unwrap_or(false),
+        "risk" => shard
+            .risk_pages
+            .get_mut(&entry.object_key)
+            .filter(|address| *address == original)
+            .map(|address| *address = published.clone())
+            .is_some(),
+        "context_node" => shard
+            .context_nodes
+            .get_mut(&entry.object_key)
+            .filter(|address| *address == original)
+            .map(|address| *address = published.clone())
+            .is_some(),
+        "context_event" => shard
+            .context_events
+            .get_mut(&entry.object_key)
+            .map(|series| replace_series_page_address(series, original, published))
+            .unwrap_or(false),
+        "context_index" => shard
+            .context_indexes
+            .get_mut(&entry.object_key)
+            .map(|series| replace_series_page_address(series, original, published))
+            .unwrap_or(false),
+        "context_audit" => shard
+            .context_audits
+            .get_mut(&entry.object_key)
+            .map(|series| replace_series_page_address(series, original, published))
+            .unwrap_or(false),
+        "context_dirty" => shard
+            .context_dirty
+            .get_mut(&entry.object_key)
+            .map(|series| replace_series_page_address(series, original, published))
+            .unwrap_or(false),
+        "context_entity" => shard
+            .context_entities
+            .get_mut(&entry.object_key)
+            .filter(|address| *address == original)
+            .map(|address| *address = published.clone())
+            .is_some(),
+        "context_child" => shard
+            .context_children
+            .get_mut(&entry.object_key)
+            .map(|series| replace_series_page_address(series, original, published))
+            .unwrap_or(false),
+        "context_embedding" => shard
+            .context_embeddings
+            .get_mut(&entry.object_key)
+            .filter(|address| *address == original)
+            .map(|address| *address = published.clone())
+            .is_some(),
+        "context_summary" => shard
+            .context_summaries
+            .get_mut(&entry.object_key)
+            .map(|series| replace_series_page_address(series, original, published))
+            .unwrap_or(false),
+        "context_compression" => shard
+            .context_compressions
+            .get_mut(&entry.object_key)
+            .map(|series| replace_series_page_address(series, original, published))
+            .unwrap_or(false),
+        _ => false,
     }
 }
 
