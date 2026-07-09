@@ -2189,7 +2189,10 @@ pub fn default_storage_write_contract(
         "batch_watermark".to_string(),
         contract_u64(metric(metrics, "append_watermark")),
     );
-    contract.insert("records_appended".to_string(), contract_u64(1));
+    contract.insert(
+        "records_appended".to_string(),
+        contract_u64(metric(metrics, "records_appended").max(1)),
+    );
     contract.insert(
         "append_queue_wait_ms".to_string(),
         contract_u64(metric(metrics, "append_queue_wait_ms")),
