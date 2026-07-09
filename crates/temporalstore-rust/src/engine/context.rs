@@ -657,56 +657,52 @@ pub(super) fn validate_context_compression_event(
     )
 }
 
-pub(super) fn load_context_children(
+pub(super) fn load_context_children_limited(
     cache: &MultiLayerCache,
     page_store: &LocalPageStore,
     shard_id: ShardId,
     shard: &ShardState,
     object_key: &str,
+    limit: usize,
 ) -> Vec<ContextChildRef> {
+    let Some(series) = shard.context_children.get(object_key) else {
+        return Vec::new();
+    };
+    let limit = limit.max(1);
+    let mut refs = Vec::with_capacity(limit.min(64));
     let mut page_cache = HashMap::new();
-    load_context_children_with_page_cache(
-        cache,
-        page_store,
-        shard_id,
-        shard,
-        object_key,
-        &mut page_cache,
-    )
-}
-
-pub(super) fn load_context_children_with_page_cache(
-    cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
-    shard_id: ShardId,
-    shard: &ShardState,
-    object_key: &str,
-    page_cache: &mut HashMap<PageAddress, Option<Vec<FeaturePoint>>>,
-) -> Vec<ContextChildRef> {
-    shard
-        .context_children
-        .get(object_key)
-        .map(|series| {
-            let mut latest_by_child = HashMap::new();
-            let entries = series
-                .iter()
-                .map(|(timeline_key, address)| (*timeline_key, address.clone()))
-                .collect::<Vec<_>>();
+    let mut batch = Vec::with_capacity(64);
+    let drain_batch =
+        |batch: &mut Vec<(u64, PageAddress)>,
+         refs: &mut Vec<ContextChildRef>,
+         page_cache: &mut HashMap<PageAddress, Option<Vec<FeaturePoint>>>| {
             for child_ref in read_context_values_cached_with_page_cache::<ContextChildRef>(
-                cache, page_store, shard_id, entries, page_cache,
+                cache,
+                page_store,
+                shard_id,
+                std::mem::take(batch),
+                page_cache,
             ) {
-                latest_by_child
-                    .entry(child_ref.child_hash)
-                    .and_modify(|stored: &mut ContextChildRef| {
-                        if child_ref.updated_at_ms > stored.updated_at_ms {
-                            *stored = child_ref.clone();
-                        }
-                    })
-                    .or_insert(child_ref);
+                refs.push(child_ref);
+                if refs.len() >= limit {
+                    break;
+                }
             }
-            latest_by_child.into_values().collect()
-        })
-        .unwrap_or_default()
+        };
+    for (timeline_key, address) in series.iter() {
+        batch.push((*timeline_key, address.clone()));
+        if batch.len() >= 64 {
+            drain_batch(&mut batch, &mut refs, &mut page_cache);
+            if refs.len() >= limit {
+                break;
+            }
+        }
+    }
+    if refs.len() < limit && !batch.is_empty() {
+        drain_batch(&mut batch, &mut refs, &mut page_cache);
+    }
+    refs.truncate(limit);
+    refs
 }
 
 pub(super) fn context_child_ref_exists(
@@ -1043,17 +1039,16 @@ pub(super) fn traverse_context_tree(
     let mut embedding_cache = HashMap::new();
     for depth in 1..=max_depth {
         let mut scored_layer = Vec::new();
-        let mut child_page_cache = HashMap::new();
         let mut children_to_score = Vec::new();
         for parent in &frontier {
             let child_key = context_child_key(tenant_hash, parent.node_hash);
-            let mut children = load_context_children_with_page_cache(
+            let mut children = load_context_children_limited(
                 cache,
                 page_store,
                 shard_id,
                 shard,
                 &child_key,
-                &mut child_page_cache,
+                child_limit,
             );
             children.sort_by_key(|child_ref| (child_ref.updated_at_ms, child_ref.child_hash));
             children.truncate(child_limit);

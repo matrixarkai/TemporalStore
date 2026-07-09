@@ -9742,9 +9742,15 @@ fn execute_on_shard(
             limit,
         } => {
             let object_key = context_child_key(tenant_hash, parent_hash);
-            let mut refs = load_context_children(cache, page_store, shard_id, shard, &object_key);
+            let mut refs = load_context_children_limited(
+                cache,
+                page_store,
+                shard_id,
+                shard,
+                &object_key,
+                context_limit(limit),
+            );
             refs.sort_by_key(|child_ref| (child_ref.updated_at_ms, child_ref.child_hash));
-            refs.truncate(context_limit(limit));
             CommandResponse::ContextChildRefs {
                 object_key,
                 refs,
