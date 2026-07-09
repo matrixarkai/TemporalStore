@@ -9923,16 +9923,16 @@ fn remove_if_expired(
 ) -> bool {
     let now = now_ms();
     let mut removed = false;
-    for record_key in associated_record_keys(key) {
+    visit_associated_record_keys(key, |record_key| {
         if shard
             .expires_at_ms
-            .get(&record_key)
+            .get(record_key)
             .map(|expires_at| *expires_at <= now)
             .unwrap_or(false)
         {
-            removed |= delete_record_exact(cache, shard_id, shard, &record_key);
+            removed |= delete_record_exact(cache, shard_id, shard, record_key);
         }
-    }
+    });
     removed
 }
 
@@ -9943,9 +9943,9 @@ fn delete_record(
     key: &str,
 ) -> bool {
     let mut removed = false;
-    for record_key in associated_record_keys(key) {
-        removed |= delete_record_exact(cache, shard_id, shard, &record_key);
-    }
+    visit_associated_record_keys(key, |record_key| {
+        removed |= delete_record_exact(cache, shard_id, shard, record_key);
+    });
     removed
 }
 
