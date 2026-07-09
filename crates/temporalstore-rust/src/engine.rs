@@ -5654,6 +5654,13 @@ impl TemporalEngine {
             .page_store
             .append_batch_with_page_metadata(append_records)
             .map_err(|err| Status::error("publish_visibility_failed", err.to_string()))?;
+        let (start_routing_slot, end_routing_slot) = self
+            .infos
+            .read()
+            .expect("info lock poisoned")
+            .get(&shard_id)
+            .map(|info| (info.start_routing_slot, info.end_routing_slot))
+            .unwrap_or((0, u32::MAX));
         let index_bytes = {
             let mut shards = self.shards.write().expect("engine lock poisoned");
             let Some(shard) = shards.get_mut(&shard_id) else {
@@ -5692,7 +5699,7 @@ impl TemporalEngine {
             for object_key in published_object_keys {
                 clear_published_object_dirty_state(shard, &object_key);
             }
-            rebuild_slot_page_ownership(shard_id, shard, 0, u32::MAX);
+            rebuild_slot_page_ownership(shard_id, shard, start_routing_slot, end_routing_slot);
             refresh_slot_runtime_flags(shard);
             serialize_index(shard)
         };
