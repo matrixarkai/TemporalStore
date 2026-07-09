@@ -1641,6 +1641,50 @@ struct QueryListPartitionResponse {
     info: Vec<QueryPartitionSetBlock>,
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct QueryListServerPartitionRequest {
+    #[serde(default)]
+    read_stale: bool,
+    #[serde(default)]
+    server_addr: String,
+    #[serde(default)]
+    endpoint: Option<HeartbeatEndpoint>,
+    #[serde(default)]
+    host: String,
+    #[serde(default)]
+    port: u32,
+    #[serde(default)]
+    server_id: u64,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct QueryServerPartitionInfo {
+    id: u64,
+    state: String,
+    membership: serde_json::Value,
+    config: serde_json::Value,
+    load_version: u64,
+    partition_uri: String,
+    start_slot: u32,
+    end_slot: u32,
+    persistent_type: String,
+    readonly: bool,
+    table_name: String,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct QueryServerNodePartitions {
+    node_id: u64,
+    partitions: Vec<QueryServerPartitionInfo>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct QueryListServerPartitionResponse {
+    status: Status,
+    server_info: Option<temporalstore_rust::meta::ServerMetaInfo>,
+    node_partitions: Vec<QueryServerNodePartitions>,
+}
+
 #[allow(dead_code)]
 #[derive(Debug, serde::Deserialize)]
 struct MasterGetTableTopoRequest {
@@ -1945,6 +1989,11 @@ fn handle_query_service_route(meta: &MetaBackend, request: &HttpRequest) -> Opti
                 query_list_partition(meta, req)
             })
         }
+        ("POST", "/QueryService/ListServerPartition") => {
+            parse_or(&request.body, |req: QueryListServerPartitionRequest| {
+                query_list_server_partition(meta, req)
+            })
+        }
         _ => return None,
     };
     Some(response)
@@ -1984,6 +2033,82 @@ fn query_list_partition(
         info: vec![QueryPartitionSetBlock {
             set_info: topology.table,
             partition_info: partitions,
+        }],
+    }
+}
+
+fn query_list_server_partition(
+    meta: &MetaBackend,
+    req: QueryListServerPartitionRequest,
+) -> QueryListServerPartitionResponse {
+    let _ = req.read_stale;
+    let servers = backend_call!(meta, list_servers);
+    if !servers.status.ok {
+        return QueryListServerPartitionResponse {
+            status: servers.status,
+            server_info: None,
+            node_partitions: Vec::new(),
+        };
+    }
+    let endpoint = if !req.server_addr.is_empty() {
+        req.server_addr
+    } else {
+        heartbeat_addr(&req.host, req.port, req.endpoint.as_ref())
+    };
+    let server = servers.servers.into_iter().find(|server| {
+        (req.server_id > 0 && server.node_id == req.server_id)
+            || (!endpoint.is_empty() && server.server_addr == endpoint)
+    });
+    let Some(server) = server else {
+        return QueryListServerPartitionResponse {
+            status: Status::error("not_found", "server not found"),
+            server_info: None,
+            node_partitions: Vec::new(),
+        };
+    };
+    let mut partitions = server
+        .shard_states
+        .iter()
+        .map(|state| QueryServerPartitionInfo {
+            id: state.shard_id,
+            state: state.serving_state.clone(),
+            membership: serde_json::json!({}),
+            config: serde_json::json!({}),
+            load_version: state.load_version,
+            partition_uri: state.shard_uri.clone(),
+            start_slot: state.start_routing_slot,
+            end_slot: state.end_routing_slot,
+            persistent_type: String::new(),
+            readonly: state.readonly,
+            table_name: state.table_name.clone(),
+        })
+        .collect::<Vec<_>>();
+    if partitions.is_empty() {
+        partitions = server
+            .partition_loads
+            .iter()
+            .map(|load| QueryServerPartitionInfo {
+                id: load.shard_id,
+                state: "unknown".to_string(),
+                membership: serde_json::json!({}),
+                config: serde_json::json!({}),
+                load_version: load.partition_info.load_version,
+                partition_uri: load.partition_info.shard_uri.clone(),
+                start_slot: load.partition_info.start_routing_slot,
+                end_slot: load.partition_info.end_routing_slot,
+                persistent_type: String::new(),
+                readonly: load.partition_info.readonly,
+                table_name: load.partition_info.table_name.clone(),
+            })
+            .collect();
+    }
+    let node_id = server.node_id;
+    QueryListServerPartitionResponse {
+        status: Status::ok(),
+        server_info: Some(server),
+        node_partitions: vec![QueryServerNodePartitions {
+            node_id,
+            partitions,
         }],
     }
 }
