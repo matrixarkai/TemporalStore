@@ -35,7 +35,7 @@ from matrixark_mcp_core import (  # noqa: E402
     materialize_serving_records,
     stable_hash,
 )
-from matrixark_mcp_local_adapter import MatrixArkLocalAdapter  # noqa: E402
+from matrixark_mcp_local_adapter import DEFAULT_SESSION_IDLE_COMMIT_TIMEOUT_MS, MatrixArkLocalAdapter  # noqa: E402
 from matrixark_raw_message_storage_contract import (  # noqa: E402
     RawMessageStorageTarget,
     contract_report as raw_message_contract_report,
@@ -1014,10 +1014,19 @@ class CaptureAdapter(MatrixArkLocalAdapter):
         self.records: list[Json] = []
 
     def append(self, record: Json) -> None:
-        self.records.extend(materialize_serving_records(record))
+        records = materialize_serving_records(record)
+        self.records.extend(records)
+        self._update_latest_entity_cache(records)
 
     def append_many(self, records: list[Json]) -> None:
-        self.records.extend(materialize_serving_record_batch(records))
+        materialized = materialize_serving_record_batch(records)
+        self.records.extend(materialized)
+        self._update_latest_entity_cache(materialized)
+
+    def drain_records(self) -> list[Json]:
+        records = self.records
+        self.records = []
+        return records
 
 
 def normalize_raw_backend(value: str) -> str:
@@ -1295,6 +1304,9 @@ def build_plan_command_base_args(args: argparse.Namespace, *, start_seq: int, en
         _plan_arg('start-seq', start_seq),
         _plan_arg('end-seq', end_seq),
         _plan_arg('batch-size', args.batch_size),
+        _plan_arg('backfill-window-policy', getattr(args, 'backfill_window_policy', 'conversation')),
+        _plan_arg('session-commit-threshold', getattr(args, 'session_commit_threshold', 20)),
+        _plan_arg('idle-commit-timeout-ms', getattr(args, 'idle_commit_timeout_ms', DEFAULT_SESSION_IDLE_COMMIT_TIMEOUT_MS)),
         _plan_arg('source-scan-max-empty-shards', args.source_scan_max_empty_shards),
     ]
     _append_plan_arg(out, 'library-path', getattr(args, 'library_path', ''))
@@ -2159,6 +2171,84 @@ def should_backfill_record(raw_record: Json) -> bool:
     return 'messages' in raw_record or 'kind' in raw_record or 'scope' in raw_record
 
 
+def is_windowed_backfill_record(raw_record: Json) -> bool:
+    record_type = str(raw_record.get('record_type') or '')
+    kind = str(raw_record.get('kind') or 'message')
+    return not record_type and 'messages' in raw_record and kind in {'message', 'business_data', 'feedback'}
+
+
+def backfill_scope_key(raw_record: Json) -> tuple[str, str, str, str]:
+    scope = raw_record.get('scope') if isinstance(raw_record.get('scope'), dict) else {}
+    return (
+        str(scope.get('account_id') or ''),
+        str(scope.get('tenant_id') or ''),
+        str(scope.get('user_id') or ''),
+        str(scope.get('session_id') or ''),
+    )
+
+
+def raw_record_time_ms(raw_record: Json) -> int | None:
+    candidates = [
+        raw_record.get('ingestion_time_ms'),
+        raw_record.get('updated_at_ms'),
+        raw_record.get('created_at_ms'),
+        raw_record.get('timestamp_key_ms'),
+    ]
+    envelope = raw_record.get('envelope') if isinstance(raw_record.get('envelope'), dict) else {}
+    candidates.extend([
+        envelope.get('ingestion_time_ms'),
+        envelope.get('updated_at_ms'),
+        envelope.get('created_at_ms'),
+    ])
+    for value in candidates:
+        try:
+            if value is not None:
+                return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def backfill_boundary_requested(raw_record: Json) -> bool:
+    metadata = raw_record.get('metadata') if isinstance(raw_record.get('metadata'), dict) else {}
+    if any(bool(raw_record.get(field, False)) for field in ['flush_session_buffer', 'conversation_done', 'session_done', 'task_complete']):
+        return True
+    event = (
+        raw_record.get('lifecycle_event_type')
+        or raw_record.get('event_type')
+        or raw_record.get('event')
+        or metadata.get('lifecycle_event_type')
+        or metadata.get('event_type')
+        or ''
+    )
+    normalized = ''.join(ch for ch in str(event).lower() if ch.isalnum())
+    return normalized in {
+        'stop',
+        'subagentstop',
+        'postcompact',
+        'precompact',
+        'compact',
+        'sessionend',
+        'conversationend',
+        'conversationdone',
+        'sessiondone',
+        'taskcomplete',
+    }
+
+
+def assign_backfill_idempotency(records: list[Json], *, source_prefix: str, raw_backend: str, sequence: int | None, fallback_id: str) -> None:
+    for index, item in enumerate(records):
+        if item.get('idempotency_key'):
+            continue
+        payload = json.dumps(stable_serving_fingerprint_value(item), sort_keys=True, separators=(',', ':'))
+        item['idempotency_key'] = (
+            f'backfill:{normalize_raw_backend(raw_backend)}:{source_prefix}:'
+            f'{sequence if sequence is not None else "window"}:{index}:{stable_hash(payload)}'
+            if fallback_id == ''
+            else f'{fallback_id}:{index}:{stable_hash(payload)}'
+        )
+
+
 def materialize_backfill_record(raw_record: Json) -> list[Json]:
     adapter = CaptureAdapter()
     if 'messages' in raw_record and not str(raw_record.get('record_type') or ''):
@@ -2206,6 +2296,39 @@ def run_backfill(args: argparse.Namespace) -> Json:
     discovered_min_sequence: int | None = None
     discovered_max_sequence: int | None = None
     outer_bulk = hasattr(kv, 'begin_bulk') and hasattr(kv, 'end_bulk')
+    windowed_backfill = str(getattr(args, 'backfill_window_policy', 'conversation')).lower() != 'per_record'
+    backfill_idle_timeout_ms = int(getattr(args, 'idle_commit_timeout_ms', DEFAULT_SESSION_IDLE_COMMIT_TIMEOUT_MS) or 0)
+    backfill_adapter = CaptureAdapter()
+    last_event_time_by_scope: dict[tuple[str, str, str, str], int] = {}
+    open_scopes: dict[tuple[str, str, str, str], Json] = {}
+
+    def drain_adapter_records(*, sequence: int | None = None, fallback_id: str = '') -> list[Json]:
+        records = backfill_adapter.drain_records()
+        assign_backfill_idempotency(
+            records,
+            source_prefix=args.source_prefix,
+            raw_backend=raw_backend,
+            sequence=sequence,
+            fallback_id=fallback_id,
+        )
+        return records
+
+    def flush_backfill_window(scope: Json, *, sequence: int | None, reason: str) -> None:
+        result = backfill_adapter.session_commit(
+            {
+                'scope': scope,
+                'metadata': {'backfill_commit_reason': reason},
+                'threshold_messages': int(getattr(args, 'session_commit_threshold', 20) or 20),
+                'force': True,
+                'commit_reason': 'idle_timeout' if reason == 'idle_timeout' else 'hook_boundary',
+                'skip_prior_context': True,
+            }
+        )
+        records = drain_adapter_records(sequence=sequence, fallback_id=f'backfill:{args.source_prefix}:{raw_backend}:{reason}:{sequence if sequence is not None else "end"}')
+        if result.get('status') == 'committed' and records:
+            pending.extend(records)
+            if len(pending) >= args.batch_size:
+                flush()
 
     def flush() -> None:
         nonlocal pending, checkpoint, checkpoint_pending_seq
@@ -2287,7 +2410,34 @@ def run_backfill(args: argparse.Namespace) -> Json:
                 checkpoint_pending_seq = sequence
                 return
             seen_ids.add(dedupe_id)
-            materialized = materialize_backfill_record(record)
+            if windowed_backfill and is_windowed_backfill_record(record):
+                scope_key = backfill_scope_key(record)
+                event_time_ms = raw_record_time_ms(record)
+                previous_time_ms = last_event_time_by_scope.get(scope_key)
+                if (
+                    event_time_ms is not None
+                    and previous_time_ms is not None
+                    and backfill_idle_timeout_ms > 0
+                    and event_time_ms - previous_time_ms >= backfill_idle_timeout_ms
+                ):
+                    previous_scope = open_scopes.get(scope_key) or record.get('scope') or {}
+                    flush_backfill_window(previous_scope, sequence=sequence, reason='idle_timeout')
+                ingest_record = dict(record)
+                ingest_record.setdefault('session_buffer_threshold', int(getattr(args, 'session_commit_threshold', 20) or 20))
+                ingest_record.setdefault('idle_commit_timeout_ms', 0)
+                ingest_record.setdefault('skip_prior_context', True)
+                if backfill_boundary_requested(record):
+                    ingest_record.setdefault('flush_session_buffer', True)
+                backfill_adapter.ingest(ingest_record, hook=record.get('agent_hook'))
+                materialized = drain_adapter_records(sequence=sequence, fallback_id=dedupe_id)
+                if event_time_ms is not None:
+                    last_event_time_by_scope[scope_key] = event_time_ms
+                open_scopes[scope_key] = record.get('scope') or {}
+                if backfill_boundary_requested(record):
+                    open_scopes.pop(scope_key, None)
+                    last_event_time_by_scope.pop(scope_key, None)
+            else:
+                materialized = materialize_backfill_record(record)
             if not materialized:
                 metrics.skipped += 1
                 checkpoint_pending_seq = sequence
@@ -2350,6 +2500,11 @@ def run_backfill(args: argparse.Namespace) -> Json:
                 process_source_batch(source_batch)
                 source_batch = []
         process_source_batch(source_batch)
+        if windowed_backfill:
+            for scope_key, scope in list(open_scopes.items()):
+                flush_backfill_window(scope, sequence=checkpoint_pending_seq, reason='backfill_end')
+                open_scopes.pop(scope_key, None)
+                last_event_time_by_scope.pop(scope_key, None)
         flush()
     finally:
         if outer_bulk:
@@ -2395,6 +2550,8 @@ def run_backfill(args: argparse.Namespace) -> Json:
     summary['raw_store_reader'] = 'matrixark.raw_message_store_reader.v1'
     summary['dry_run'] = bool(args.dry_run)
     summary['dry_run_check_target'] = bool(getattr(args, 'dry_run_check_target', True))
+    summary['backfill_window_policy'] = 'conversation' if windowed_backfill else 'per_record'
+    summary['idle_commit_timeout_ms'] = backfill_idle_timeout_ms
     manifest = {
         'manifest_schema': 'matrixark_context_backfill_manifest_v1',
         'job_id': args.job_id,
@@ -2412,6 +2569,8 @@ def run_backfill(args: argparse.Namespace) -> Json:
         'raw_store_reader': 'matrixark.raw_message_store_reader.v1',
         'dry_run': bool(args.dry_run),
         'dry_run_check_target': bool(getattr(args, 'dry_run_check_target', True)),
+        'backfill_window_policy': summary['backfill_window_policy'],
+        'idle_commit_timeout_ms': backfill_idle_timeout_ms,
         'summary': dict(summary),
     }
     manifest_payload_sha256 = canonical_json_sha256(manifest)
@@ -3651,6 +3810,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--partial-filter-json', default='', help='exact-match JSON object filter for partial backfill')
     parser.add_argument('--partial-require-bounded', type=int, choices=[0, 1], default=1, help='require bounded range or filters for partial backfill')
     parser.add_argument('--batch-size', type=int, default=256)
+    parser.add_argument('--backfill-window-policy', choices=['conversation', 'per_record'], default=os.environ.get('MATRIXARK_BACKFILL_WINDOW_POLICY', 'conversation'), help='conversation replays raw messages through session windows; per_record preserves legacy one-record materialization')
+    parser.add_argument('--session-commit-threshold', type=int, default=int(os.environ.get('MATRIXARK_SESSION_COMMIT_THRESHOLD', '20')), help='message threshold for conversation-window backfill extraction commits')
+    parser.add_argument('--idle-commit-timeout-ms', type=int, default=int(os.environ.get('MATRIXARK_IDLE_COMMIT_TIMEOUT_MS', '300000')), help='historical idle gap that commits the previous conversation window during backfill; set 0 to disable')
     parser.add_argument('--plan-window-size', type=int, default=0, help='plan-only bounded source records per execution window; 0 disables chunk planning')
     parser.add_argument('--plan-max-windows', type=int, default=128, help='plan-only maximum windows to emit; 0 emits all windows')
     parser.add_argument('--plan-parallelism', type=int, default=1, help='plan-only number of independent chunk shadows to group into each preparation wave')
