@@ -2007,7 +2007,19 @@ impl TemporalEngine {
         }
         let mut restored = serde_json::from_slice::<ShardState>(&manifest.index_bytes)
             .map_err(|err| Status::error("slot_dump_invalid_index", err.to_string()))?;
-        rebuild_slot_page_ownership(manifest.shard_id, &mut restored, 0, u32::MAX);
+        let (start_routing_slot, end_routing_slot) = self
+            .infos
+            .read()
+            .expect("shard info lock poisoned")
+            .get(&manifest.shard_id)
+            .map(|info| (info.start_routing_slot, info.end_routing_slot))
+            .unwrap_or((0, u32::MAX));
+        rebuild_slot_page_ownership(
+            manifest.shard_id,
+            &mut restored,
+            start_routing_slot,
+            end_routing_slot,
+        );
         reconcile_secondary_views_from_slot_index(&self.page_store, &mut restored);
         refresh_slot_runtime_flags(&mut restored);
         let restored_index_bytes = serialize_index(&restored);
