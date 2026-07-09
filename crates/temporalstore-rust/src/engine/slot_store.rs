@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::page_store::{LocalPageStore, PageAddress};
@@ -258,26 +260,48 @@ pub(super) fn read_slot_index_component_values(
         .get_batch(&keys)
         .unwrap_or_else(|_| vec![None; keys.len()]);
 
-    let mut values = Vec::with_capacity(refs.len());
-    let mut refills = Vec::new();
-    for ((component, address), key, cached_value) in refs
-        .into_iter()
-        .zip(keys.into_iter())
-        .zip(cached.into_iter())
-        .map(|((entry, key), cached_value)| (entry, key, cached_value))
+    let mut values = vec![None; refs.len()];
+    let mut missed_pages = HashMap::<CacheKey, PageAddress>::new();
+    for (index, ((component, address), (key, cached_value))) in refs
+        .iter()
+        .cloned()
+        .zip(keys.iter().cloned().zip(cached.into_iter()))
+        .enumerate()
     {
-        if let Some(value) = cached_value {
-            values.push((component, value));
-            continue;
-        }
-        if let Ok(value) = page_store.read(&address) {
-            refills.push((key, value.clone()));
-            values.push((component, value));
+        match cached_value {
+            Some(value) => values[index] = Some((component, value)),
+            None => {
+                missed_pages.entry(key).or_insert(address);
+            }
         }
     }
 
+    let mut missed_values = HashMap::<CacheKey, Vec<u8>>::new();
+    for (key, address) in missed_pages {
+        if let Ok(value) = page_store.read(&address) {
+            missed_values.insert(key, value);
+        }
+    }
+    let refills = missed_values
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect::<Vec<_>>();
     let _ = cache.put_batch(refills);
+
     values
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, value)| {
+            value.or_else(|| {
+                keys.get(index).and_then(|key| {
+                    missed_values
+                        .get(key)
+                        .cloned()
+                        .map(|value| (refs[index].0.clone(), value))
+                })
+            })
+        })
+        .collect()
 }
 
 fn page_cache_key(shard_id: ShardId, address: &PageAddress) -> CacheKey {
