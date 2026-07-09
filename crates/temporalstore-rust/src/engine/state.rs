@@ -197,6 +197,36 @@ impl CoreIndex {
         }
     }
 
+    pub(super) fn remove_all_object_page_lookup_entries(
+        &mut self,
+        model_id: &str,
+        object_key: &str,
+    ) {
+        let component_lookup_key = object_component_lookup_key(model_id, object_key);
+        let components = self
+            .object_component_lookup
+            .remove(&component_lookup_key)
+            .map(|component_refs| {
+                component_refs
+                    .into_iter()
+                    .map(|page_ref| page_ref.component)
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        if components.is_empty() {
+            self.object_page_lookup
+                .remove(&object_page_lookup_key(model_id, object_key, None));
+            return;
+        }
+        for component in components {
+            self.object_page_lookup.remove(&object_page_lookup_key(
+                model_id,
+                object_key,
+                component.as_deref(),
+            ));
+        }
+    }
+
     pub(super) fn remove_object_lookup_entries(&mut self, object_key: &str, model_ids: &[&str]) {
         for model_id in model_ids {
             let component_lookup_key = object_component_lookup_key(model_id, object_key);
