@@ -46,6 +46,7 @@
 DECLARE_bool(storage_async);
 DECLARE_bool(partition_commit_oplog);
 DECLARE_bool(start_storage_manager_when_loading);
+DECLARE_string(storage_canonical_log_ack_policy);
 
 namespace byte {
 class AsyncThread;
@@ -270,15 +271,20 @@ inline void Partition::OnExecuteCmdDone(CmdContext* ctx, Closure<void>* callback
         ctx->ctrl->event_replication_mode() == EVENT_REPLICATION_SYNC_STORAGE;
     const bool request_forces_async =
         ctx->ctrl->event_replication_mode() == EVENT_REPLICATION_ASYNC_STORAGE;
-    if (LIKELY(!request_forces_sync &&
-               (request_forces_async ||
-                (options_.persistent_type == PersistentType::PERSISTENT_ASYNC &&
-                 FLAGS_storage_async)))) {
+    const bool async_storage_write =
+        !request_forces_sync &&
+        (request_forces_async ||
+         (options_.persistent_type == PersistentType::PERSISTENT_ASYNC && FLAGS_storage_async));
+    if (LIKELY(async_storage_write) && !FLAGS_partition_commit_oplog) {
         delete ctx;
-        if (FLAGS_partition_commit_oplog) {
-            // set FLAGS_partition_commit_oplog to false only in test now
-            op_logger_->Commit(nullptr, nullptr);
-        }
+        callback->Run();
+        inflight_io_count_--;
+        return;
+    }
+    if (LIKELY(async_storage_write) &&
+        FLAGS_storage_canonical_log_ack_policy == "best_effort") {
+        delete ctx;
+        op_logger_->Commit(nullptr, nullptr);
         callback->Run();
         inflight_io_count_--;
         return;
