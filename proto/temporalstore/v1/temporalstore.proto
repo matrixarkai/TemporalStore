@@ -264,6 +264,7 @@ message Command {
     RiskFolSet risk_fol_set = 40;
     RiskFolQuery risk_fol_query = 41;
     RiskManager risk_manager = 42;
+    RiskDebug risk_debug = 43;
   }
 }
 
@@ -534,6 +535,12 @@ message RiskFolQuery {
 
 message RiskManager {
   string key = 1;
+}
+
+message RiskDebug {
+  string key = 1;
+  uint64 start_ms = 2;
+  uint64 end_ms = 3;
 }
 
 message ContextNode {
