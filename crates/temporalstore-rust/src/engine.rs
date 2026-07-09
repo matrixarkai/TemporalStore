@@ -2846,8 +2846,13 @@ impl TemporalEngine {
             .write_ahead_log_store()
             .gc_before_sequence(plan.shard_id, plan.retain_from_oplog_sequence)
             .ok();
+        let index_log_gc = self
+            .index_log_store
+            .gc_before_sequence(plan.shard_id, plan.retain_from_index_log_sequence)
+            .ok();
+        let index_log_stats = self.index_log_store.stats(plan.shard_id);
         StorageWalReclaimReport {
-            applied: oplog_gc.is_some(),
+            applied: oplog_gc.is_some() || index_log_gc.is_some(),
             oplog_records_removed: oplog_gc
                 .as_ref()
                 .map(|report| report.records_removed)
@@ -2860,9 +2865,18 @@ impl TemporalEngine {
                 .as_ref()
                 .map(|report| report.bytes_after)
                 .unwrap_or_default(),
-            index_log_records_removed: 0,
-            index_log_bytes_before: self.index_log_store.stats(plan.shard_id).bytes_written,
-            index_log_bytes_after: self.index_log_store.stats(plan.shard_id).bytes_written,
+            index_log_records_removed: index_log_gc
+                .as_ref()
+                .map(|report| report.records_removed)
+                .unwrap_or_default(),
+            index_log_bytes_before: index_log_gc
+                .as_ref()
+                .map(|report| report.bytes_before)
+                .unwrap_or(index_log_stats.bytes_written),
+            index_log_bytes_after: index_log_gc
+                .as_ref()
+                .map(|report| report.bytes_after)
+                .unwrap_or(index_log_stats.bytes_written),
             plan,
         }
     }
