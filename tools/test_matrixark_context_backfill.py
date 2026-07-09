@@ -20,6 +20,11 @@ def write_sharded(kv: backfill.LocalJsonKV, prefix: str, sequence: int, record: 
     kv.hset(f"{prefix}:records:{shard:06d}", f"{offset:020d}", json.dumps(record, sort_keys=True))
 
 
+def write_sharded_with_session_index(kv: backfill.LocalJsonKV, prefix: str, sequence: int, record: dict) -> None:
+    write_sharded(kv, prefix, sequence, record)
+    backfill.MatrixKVRecordLog(kv, prefix=prefix).append_session_index_entries(sequence=sequence, record=record)
+
+
 def read_target_records(kv: backfill.LocalJsonKV, prefix: str) -> list[dict]:
     count = int(kv.get_string(f"{prefix}:record_count") or 0)
     records = []
@@ -1654,6 +1659,77 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertNotEqual(full_cp, partial_cp)
             self.assertEqual(json.loads(kv_after.get_string(partial_cp))["last_sequence"], 2)
 
+    def test_partial_session_backfill_fetches_conversation_specific_refs_for_temporalstore_and_matrixkv(self):
+        for backend in ["temporalstore", "matrixkv"]:
+            with self.subTest(backend=backend):
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / "kv.json"
+                    kv = backfill.LocalJsonKV(path)
+                    write_sharded_with_session_index(
+                        kv,
+                        "matrixark:mcp",
+                        0,
+                        {"record_type": "context_event", "event_id_hash": 10, "scope": {"session_id": "s-a"}},
+                    )
+                    write_sharded_with_session_index(
+                        kv,
+                        "matrixark:mcp",
+                        1,
+                        {"record_type": "context_event", "event_id_hash": 20, "scope": {"session_id": "s-b"}},
+                    )
+                    write_sharded_with_session_index(
+                        kv,
+                        "matrixark:mcp",
+                        2,
+                        {"record_type": "context_event", "event_id_hash": 11, "envelope": {"scope": {"conversation_id": "s-a"}}},
+                    )
+                    write_sharded_with_session_index(
+                        kv,
+                        "matrixark:mcp",
+                        3,
+                        {"record_type": "context_event", "event_id_hash": 21, "scope": {"session_id": "s-b"}},
+                    )
+                    kv.put_string("matrixark:mcp:record_count", "4")
+
+                    summary = backfill.run_backfill(self.make_args(
+                        path,
+                        raw_backend=backend,
+                        target_prefix=f"shadow:{backend}:session-index",
+                        partial=True,
+                        partial_session_ids="s-a",
+                        batch_size=1,
+                        resume=False,
+                    ))
+
+                    self.assertEqual(summary["source_range"]["scan_mode"], "session_index")
+                    self.assertTrue(summary["source_range"]["session_index_used"])
+                    self.assertEqual(summary["metrics"]["scanned"], 2)
+                    self.assertEqual(summary["metrics"]["filtered"], 0)
+                    self.assertEqual(summary["metrics"]["written"], 2)
+                    records = read_target_records(backfill.LocalJsonKV(path), f"shadow:{backend}:session-index")
+                    self.assertEqual([record["event_id_hash"] for record in records], [10, 11])
+
+    def test_partial_session_backfill_falls_back_to_global_scan_without_complete_index(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            write_sharded_with_session_index(kv, "matrixark:mcp", 0, {"record_type": "context_event", "event_id_hash": 10, "scope": {"session_id": "s-a"}})
+            write_sharded(kv, "matrixark:mcp", 1, {"record_type": "context_event", "event_id_hash": 20, "scope": {"session_id": "s-b"}})
+            kv.put_string("matrixark:mcp:record_count", "2")
+
+            summary = backfill.run_backfill(self.make_args(
+                path,
+                target_prefix="shadow:session-index-fallback",
+                partial=True,
+                partial_session_ids="s-a,s-b",
+                resume=False,
+            ))
+
+            self.assertEqual(summary["source_range"]["scan_mode"], "record_count")
+            self.assertFalse(summary["source_range"]["session_index_used"])
+            self.assertEqual(summary["source_range"]["session_index_fallback_reason"], "missing_or_unavailable_session_index")
+            self.assertEqual(summary["metrics"]["scanned"], 2)
+            self.assertEqual(summary["metrics"]["written"], 2)
 
     def test_raw_message_store_reader_reads_temporalstore_and_matrixkv_with_same_api(self):
         with tempfile.TemporaryDirectory() as tmp:
