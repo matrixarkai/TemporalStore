@@ -205,50 +205,56 @@ pub(super) fn read_context_values_cached_with_page_cache<T: ContextWire>(
     packed_page_cache: &mut HashMap<PageAddress, Option<Vec<FeaturePoint>>>,
 ) -> Vec<T> {
     let mut values: Vec<Option<T>> = Vec::with_capacity(entries.len());
-    let mut misses = Vec::new();
-    let addresses = entries
-        .iter()
-        .enumerate()
-        .filter_map(|(index, (timeline_key, address))| {
-            if let Some(points) = packed_page_cache.get(address) {
-                values.push(
-                    points
-                        .as_ref()
-                        .and_then(|points| {
-                            points
-                                .iter()
-                                .find(|point| point.timestamp_ms == *timeline_key)
-                        })
-                        .and_then(|point| context_from_bytes::<T>(&point.value)),
-                );
-                None
-            } else {
-                values.push(None);
-                misses.push((index, *timeline_key, address.clone()));
-                Some(Some(address.clone()))
+    let mut miss_addresses = Vec::new();
+    let mut miss_groups = HashMap::<PageAddress, Vec<(usize, u64)>>::new();
+    for (index, (timeline_key, address)) in entries.iter().enumerate() {
+        if let Some(points) = packed_page_cache.get(address) {
+            values.push(
+                points
+                    .as_ref()
+                    .and_then(|points| {
+                        points
+                            .iter()
+                            .find(|point| point.timestamp_ms == *timeline_key)
+                    })
+                    .and_then(|point| context_from_bytes::<T>(&point.value)),
+            );
+        } else {
+            values.push(None);
+            if !miss_groups.contains_key(address) {
+                miss_addresses.push(Some(address.clone()));
             }
-        })
-        .collect::<Vec<_>>();
-    let bytes = read_page_bytes_batch(cache, page_store, shard_id, &addresses);
-    for ((index, timeline_key, address), bytes) in misses.into_iter().zip(bytes) {
+            miss_groups
+                .entry(address.clone())
+                .or_default()
+                .push((index, *timeline_key));
+        }
+    }
+    let bytes = read_page_bytes_batch(cache, page_store, shard_id, &miss_addresses);
+    for (address, bytes) in miss_addresses.into_iter().flatten().zip(bytes) {
         let Some(bytes) = bytes else {
             continue;
         };
-        values[index] = match decode_feature_page_strict(&bytes) {
+        let lookups = miss_groups.remove(&address).unwrap_or_default();
+        match decode_feature_page_strict(&bytes) {
             PackedFeaturePageDecode::Packed(points) => {
-                let selected = points
-                    .iter()
-                    .find(|point| point.timestamp_ms == timeline_key)
-                    .and_then(|point| context_from_bytes::<T>(&point.value));
+                for (index, timeline_key) in lookups {
+                    values[index] = points
+                        .iter()
+                        .find(|point| point.timestamp_ms == timeline_key)
+                        .and_then(|point| context_from_bytes::<T>(&point.value));
+                }
                 packed_page_cache.insert(address, Some(points));
-                selected
             }
-            PackedFeaturePageDecode::Legacy => context_from_bytes::<T>(&bytes),
+            PackedFeaturePageDecode::Legacy => {
+                for (index, _) in lookups {
+                    values[index] = context_from_bytes::<T>(&bytes);
+                }
+            }
             PackedFeaturePageDecode::Corrupt(_) => {
                 packed_page_cache.insert(address, None);
-                None
             }
-        };
+        }
     }
     values.into_iter().flatten().collect()
 }
