@@ -542,6 +542,28 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                 .map(|node_id| stable_hash(&node_id))
                 .collect(),
         },
+        v1::command::Kind::ContextWriteIndexRef(command) => {
+            let index_ref = command
+                .index_ref
+                .ok_or_else(|| TonicStatus::invalid_argument("context index_ref missing"))?;
+            types::Command::ContextWriteIndexRef {
+                tenant_hash: stable_hash(&command.key),
+                index_name: command.index_name,
+                index_value_hash: command.index_value_hash,
+                scope_hash: command.scope_hash,
+                event_time_ms: command.event_time_ms,
+                index_ref: sdk_context_index_ref_to_types(index_ref),
+            }
+        }
+        v1::command::Kind::ContextQueryIndex(command) => types::Command::ContextQueryIndex {
+            tenant_hash: stable_hash(&command.key),
+            index_name: command.index_name,
+            index_value_hash: command.index_value_hash,
+            scope_hash: command.scope_hash,
+            start_time_ms: command.start_time_ms,
+            end_time_ms: command.end_time_ms,
+            limit: nonzero_limit(command.limit),
+        },
         v1::command::Kind::ContextWriteEvent(command) => {
             let event = command
                 .event
@@ -638,6 +660,14 @@ fn types_context_node_to_sdk(node: types::ContextNode) -> v1::ContextNode {
         model: node.l0,
         payload: node.raw_metadata_ref.into_bytes(),
         updated_at_ms: node.last_event_time_ms,
+    }
+}
+
+fn sdk_context_index_ref_to_types(index_ref: v1::ContextIndexRef) -> types::ContextIndexRef {
+    types::ContextIndexRef {
+        primary_node_hash: index_ref.primary_node_hash,
+        primary_event_time_ms: index_ref.primary_event_time_ms,
+        event_id_hash: index_ref.event_id_hash,
     }
 }
 
