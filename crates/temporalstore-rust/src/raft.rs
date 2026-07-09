@@ -19,16 +19,17 @@ use crate::http::{
     json_response, parse_json, post_json_with_options, HttpRequest, HttpRequestOptions,
 };
 use crate::meta::{
-    AckResponse, AddNamespaceRequest, AddTableRequest, DeleteTableRequest, GetShardResponse,
-    GetTableTopologyRequest, ListNamespacesResponse, ListProxiesResponse, ListServersResponse,
-    ListTablesResponse, LoadFinishRequest, MetaEntityState, MetaInfo, MetaMutation,
+    AckResponse, AddNamespaceRequest, AddTableRequest, DeleteTableRequest, DropProxyGroupRequest,
+    GetShardResponse, GetTableTopologyRequest, ListNamespacesResponse, ListProxiesResponse,
+    ListProxyGroupRequest, ListProxyGroupResponse, ListServersResponse, ListTablesResponse,
+    LoadFinishRequest, ManagementInfo, MetaEntityState, MetaInfo, MetaMutation,
     MetaPreflightReport, MetaSnapshot, MetaStats, ProxyHeartbeatRequest, ProxyHeartbeatResponse,
     PublishShardSnapshotRequest, PutProxyGroupRequest, RegisterProxyRequest, RegisterServerRequest,
     RegisterShardRequest, RegisterShardResponse, SafeModePolicy, SafeModeReport,
     ServerHeartbeatRequest, ServerHeartbeatResponse, ShardLocation, ShardSnapshotRef,
     SingleNodeMeta, StaleResourceReport, StaleServerReport, StateChangeRequest,
-    TableTopologyResponse, TopologyVersionReport, TopologyVersionRequest, UpdateServerRequest,
-    UpdateTableRequest, DropProxyGroupRequest, ListProxyGroupRequest, ListProxyGroupResponse,
+    TableTopologyResponse, TopologyVersionReport, TopologyVersionRequest, UpdateManageInfoRequest,
+    UpdateServerRequest, UpdateTableRequest,
 };
 use crate::rebalance::RaftPersistedSchedulerState;
 use crate::types::{Command, CommandResponse, ExecuteRequest, ShardId, Status};
@@ -11667,6 +11668,24 @@ impl MetaRaftCluster {
         )
     }
 
+    pub fn update_manage_info(&self, request: UpdateManageInfoRequest) -> AckResponse {
+        AckResponse {
+            status: self.mutation_status(MetaMutation::UpdateManageInfo(request)),
+        }
+    }
+
+    pub fn mute_meta_change(&self) -> AckResponse {
+        AckResponse {
+            status: self.mutation_status(MetaMutation::MuteMetaChange),
+        }
+    }
+
+    pub fn resume_meta_change(&self) -> AckResponse {
+        AckResponse {
+            status: self.mutation_status(MetaMutation::ResumeMetaChange),
+        }
+    }
+
     pub fn add_namespace(&self, request: AddNamespaceRequest) -> AckResponse {
         AckResponse {
             status: self.mutation_status(MetaMutation::AddNamespace(request)),
@@ -11895,6 +11914,8 @@ impl MetaRaftCluster {
                 stats: MetaStats::default(),
                 boot_time_ms: 0,
                 durable_mutation_log: false,
+                management_info: ManagementInfo::default(),
+                manage_info: ManagementInfo::default(),
             },
             |meta| meta.info(),
         )

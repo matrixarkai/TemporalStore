@@ -8,14 +8,13 @@ use temporalstore_rust::http::{
     HttpRequestOptions,
 };
 use temporalstore_rust::meta::{
-    AckResponse, AddNamespaceRequest, AddTableRequest, DeleteTableRequest,
-    DropProxyGroupRequest, FreezeStaleServersRequest, GetShardResponse, GetTableTopologyRequest,
-    ListProxyGroupRequest, LoadFinishRequest,
-    MetaSnapshot, MetaSnapshotFileRequest, MetaSnapshotFileResponse, MetaSnapshotResponse,
-    ProxyHeartbeatRequest, PublishShardSnapshotRequest, PutProxyGroupRequest, RegisterProxyRequest,
-    RegisterServerRequest, RegisterShardRequest, SafeModePolicy, ServerHeartbeatRequest,
-    SingleNodeMeta, StateChangeRequest, TopologyVersionRequest, UpdateServerRequest,
-    UpdateTableRequest,
+    AckResponse, AddNamespaceRequest, AddTableRequest, DeleteTableRequest, DropProxyGroupRequest,
+    FreezeStaleServersRequest, GetShardResponse, GetTableTopologyRequest, ListProxyGroupRequest,
+    LoadFinishRequest, MetaSnapshot, MetaSnapshotFileRequest, MetaSnapshotFileResponse,
+    MetaSnapshotResponse, ProxyHeartbeatRequest, PublishShardSnapshotRequest, PutProxyGroupRequest,
+    RegisterProxyRequest, RegisterServerRequest, RegisterShardRequest, SafeModePolicy,
+    ServerHeartbeatRequest, SingleNodeMeta, StateChangeRequest, TopologyVersionRequest,
+    UpdateManageInfoRequest, UpdateServerRequest, UpdateTableRequest,
 };
 use temporalstore_rust::raft::{
     ProductionMetaRaftRuntime, ProductionMetaRaftRuntimeOptions, ProductionRaftEngineKind,
@@ -1916,6 +1915,17 @@ fn handle_manage_service_route(
     request: &HttpRequest,
 ) -> Option<(u16, Vec<u8>)> {
     let response = match (request.method.as_str(), request.path.as_str()) {
+        ("POST", "/ManageService/UpdateManageInfo") => {
+            parse_or(&request.body, |req: UpdateManageInfoRequest| {
+                backend_call!(meta, update_manage_info, req)
+            })
+        }
+        ("POST", "/ManageService/MuteMetaChange") => {
+            json_response(200, &backend_call!(meta, mute_meta_change))
+        }
+        ("POST", "/ManageService/ResumeMetaChange") => {
+            json_response(200, &backend_call!(meta, resume_meta_change))
+        }
         ("POST", "/ManageService/AddServer") => {
             parse_or(&request.body, |req: HeartbeatServerRequest| {
                 backend_call!(
@@ -2787,6 +2797,72 @@ mod tests {
             assert!(report.production_ready);
             assert!(report.cpp_parity_ready);
             assert_eq!(report.missing_count(), 0);
+        }
+    }
+
+    #[test]
+    fn manage_service_updates_and_toggles_management_info() {
+        let backend = MetaBackend::Single(SingleNodeMeta::default());
+        let scheduler = MetaTaskScheduler::default();
+        let update = UpdateManageInfoRequest {
+            info: temporalstore_rust::meta::ManagementInfo {
+                readonly: false,
+                reserved_namespace_name_list: vec!["system".to_string()],
+                reserved_table_name_list: vec!["meta".to_string()],
+                reserved_consul_name_list: vec!["consul-a".to_string()],
+            },
+        };
+
+        let (code, body) = handle(
+            &backend,
+            &scheduler,
+            HttpRequest {
+                method: "POST".to_string(),
+                path: "/ManageService/UpdateManageInfo".to_string(),
+                body: serde_json::to_vec(&update).unwrap(),
+            },
+        );
+        assert_eq!(code, 200);
+        let ack: AckResponse = serde_json::from_slice(&body).unwrap();
+        assert!(ack.status.ok);
+
+        let (code, body) = handle(
+            &backend,
+            &scheduler,
+            HttpRequest {
+                method: "GET".to_string(),
+                path: "/QueryService/QueryManageInfo".to_string(),
+                body: Vec::new(),
+            },
+        );
+        assert_eq!(code, 200);
+        let info: temporalstore_rust::meta::MetaInfo = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            info.manage_info.reserved_namespace_name_list,
+            vec!["system".to_string()]
+        );
+        assert!(!info.manage_info.readonly);
+
+        for (path, expected_readonly) in [
+            ("/ManageService/MuteMetaChange", true),
+            ("/ManageService/ResumeMetaChange", false),
+        ] {
+            let (code, body) = handle(
+                &backend,
+                &scheduler,
+                HttpRequest {
+                    method: "POST".to_string(),
+                    path: path.to_string(),
+                    body: Vec::new(),
+                },
+            );
+            assert_eq!(code, 200);
+            let ack: AckResponse = serde_json::from_slice(&body).unwrap();
+            assert!(ack.status.ok);
+            assert_eq!(
+                backend_call!(&backend, info).manage_info.readonly,
+                expected_readonly
+            );
         }
     }
 

@@ -348,6 +348,23 @@ pub struct ListProxyGroupResponse {
     pub groups: Vec<ProxyGroupMetaInfo>,
 }
 
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ManagementInfo {
+    #[serde(default)]
+    pub readonly: bool,
+    #[serde(default)]
+    pub reserved_namespace_name_list: Vec<String>,
+    #[serde(default)]
+    pub reserved_table_name_list: Vec<String>,
+    #[serde(default)]
+    pub reserved_consul_name_list: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdateManageInfoRequest {
+    pub info: ManagementInfo,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AddNamespaceRequest {
     pub namespace: String,
@@ -645,6 +662,10 @@ pub struct MetaInfo {
     pub stats: MetaStats,
     pub boot_time_ms: u64,
     pub durable_mutation_log: bool,
+    #[serde(default)]
+    pub management_info: ManagementInfo,
+    #[serde(default)]
+    pub manage_info: ManagementInfo,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -670,6 +691,9 @@ pub enum MetaMutation {
     RegisterProxy(RegisterProxyRequest),
     PutProxyGroup(PutProxyGroupRequest),
     DropProxyGroup(DropProxyGroupRequest),
+    UpdateManageInfo(UpdateManageInfoRequest),
+    MuteMetaChange,
+    ResumeMetaChange,
     AddNamespace(AddNamespaceRequest),
     AddTable(AddTableRequest),
     DeleteTable(DeleteTableRequest),
@@ -763,6 +787,7 @@ pub(crate) struct MetaState {
     servers: BTreeMap<String, ServerMetaInfo>,
     proxies: BTreeMap<String, ProxyMetaInfo>,
     proxy_groups: BTreeMap<String, ProxyGroupMetaInfo>,
+    management_info: ManagementInfo,
     namespaces: BTreeMap<String, MetaEntityState>,
     tables: BTreeMap<String, TableRecord>,
     counters: MetaCounters,
@@ -781,6 +806,8 @@ pub struct MetaSnapshot {
     pub proxies: BTreeMap<String, ProxyMetaInfo>,
     #[serde(default)]
     pub proxy_groups: BTreeMap<String, ProxyGroupMetaInfo>,
+    #[serde(default)]
+    pub management_info: ManagementInfo,
     pub namespaces: BTreeMap<String, MetaEntityState>,
     pub tables: Vec<TableMetaInfo>,
     pub stats: MetaStats,
@@ -876,6 +903,7 @@ impl SingleNodeMeta {
             servers: snapshot.servers,
             proxies: snapshot.proxies,
             proxy_groups: snapshot.proxy_groups,
+            management_info: snapshot.management_info,
             namespaces: snapshot.namespaces,
             tables,
             counters: counters_from_stats(&snapshot.stats),
@@ -907,6 +935,7 @@ impl MetaSnapshot {
             servers: state.servers.clone(),
             proxies: state.proxies.clone(),
             proxy_groups: state.proxy_groups.clone(),
+            management_info: state.management_info.clone(),
             namespaces: state.namespaces.clone(),
             tables: state
                 .tables
@@ -1740,6 +1769,53 @@ impl SingleNodeMeta {
         }
     }
 
+    pub fn update_manage_info(&self, request: UpdateManageInfoRequest) -> AckResponse {
+        self.record_mutation(MetaMutation::UpdateManageInfo(request.clone()));
+        self.apply_update_manage_info(request)
+    }
+
+    fn apply_update_manage_info(&self, request: UpdateManageInfoRequest) -> AckResponse {
+        let mut state = self.inner.write().expect("meta lock poisoned");
+        state.management_info = request.info;
+        record_topology_event(
+            &mut state,
+            "manage_info_update",
+            "management".to_string(),
+            "management_info_updated",
+        );
+        AckResponse {
+            status: Status::ok(),
+        }
+    }
+
+    pub fn mute_meta_change(&self) -> AckResponse {
+        self.record_mutation(MetaMutation::MuteMetaChange);
+        self.apply_set_meta_change_readonly(true)
+    }
+
+    pub fn resume_meta_change(&self) -> AckResponse {
+        self.record_mutation(MetaMutation::ResumeMetaChange);
+        self.apply_set_meta_change_readonly(false)
+    }
+
+    fn apply_set_meta_change_readonly(&self, readonly: bool) -> AckResponse {
+        let mut state = self.inner.write().expect("meta lock poisoned");
+        state.management_info.readonly = readonly;
+        record_topology_event(
+            &mut state,
+            if readonly {
+                "meta_change_muted"
+            } else {
+                "meta_change_resumed"
+            },
+            "management".to_string(),
+            format!("readonly={readonly}"),
+        );
+        AckResponse {
+            status: Status::ok(),
+        }
+    }
+
     pub fn list_servers(&self) -> ListServersResponse {
         let state = self.inner.read().expect("meta lock poisoned");
         ListServersResponse {
@@ -2091,11 +2167,15 @@ impl SingleNodeMeta {
     }
 
     pub fn info(&self) -> MetaInfo {
+        let state = self.inner.read().expect("meta lock poisoned");
+        let management_info = state.management_info.clone();
         MetaInfo {
             status: Status::ok(),
-            stats: self.stats(),
+            stats: stats_from_state(&state),
             boot_time_ms: self.boot_time_ms,
             durable_mutation_log: self.mutation_log.is_some(),
+            management_info: management_info.clone(),
+            manage_info: management_info,
         }
     }
 
@@ -2347,6 +2427,11 @@ impl SingleNodeMeta {
             MetaMutation::RegisterProxy(request) => self.apply_register_proxy(request).status,
             MetaMutation::PutProxyGroup(request) => self.apply_put_proxy_group(request).status,
             MetaMutation::DropProxyGroup(request) => self.apply_drop_proxy_group(request).status,
+            MetaMutation::UpdateManageInfo(request) => {
+                self.apply_update_manage_info(request).status
+            }
+            MetaMutation::MuteMetaChange => self.apply_set_meta_change_readonly(true).status,
+            MetaMutation::ResumeMetaChange => self.apply_set_meta_change_readonly(false).status,
             MetaMutation::AddNamespace(request) => self.apply_add_namespace(request).status,
             MetaMutation::AddTable(request) => self.apply_add_table(request).status,
             MetaMutation::DeleteTable(request) => self.apply_delete_table(request).status,
@@ -4639,6 +4724,46 @@ mod tests {
             recovered.stats().topology_version,
             snapshot.topology_version
         );
+    }
+
+    #[test]
+    fn metaserver_management_info_replays_and_snapshots() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("meta-mutations.jsonl");
+        let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+
+        assert!(
+            meta.update_manage_info(UpdateManageInfoRequest {
+                info: ManagementInfo {
+                    readonly: false,
+                    reserved_namespace_name_list: vec!["system".to_string()],
+                    reserved_table_name_list: vec!["meta".to_string()],
+                    reserved_consul_name_list: vec!["consul-a".to_string()],
+                },
+            })
+            .status
+            .ok
+        );
+        assert!(meta.mute_meta_change().status.ok);
+        assert!(meta.info().manage_info.readonly);
+        let snapshot = meta.export_snapshot();
+        assert_eq!(
+            snapshot.management_info.reserved_namespace_name_list,
+            vec!["system".to_string()]
+        );
+
+        let replayed = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        assert!(replayed.info().manage_info.readonly);
+        assert_eq!(
+            replayed.info().manage_info.reserved_table_name_list,
+            vec!["meta".to_string()]
+        );
+        assert!(replayed.resume_meta_change().status.ok);
+        assert!(!replayed.info().manage_info.readonly);
+
+        let restored = SingleNodeMeta::default();
+        assert!(restored.install_snapshot(snapshot).status.ok);
+        assert!(restored.info().manage_info.readonly);
     }
 
     #[test]
