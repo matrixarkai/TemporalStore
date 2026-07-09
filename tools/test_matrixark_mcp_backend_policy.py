@@ -154,7 +154,7 @@ class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
         self.assertFalse(snapshot["read_pool_enabled"])
         self.assertTrue(snapshot["pack_pool_enabled"])
         self.assertEqual(snapshot["batch_hset_coalescing"]["wait_ms"], 0.0)
-        self.assertEqual(snapshot["batch_hget_coalescing"]["wait_ms"], 1.0)
+        self.assertEqual(snapshot["batch_hget_coalescing"]["wait_ms"], 0.0)
         self.assertEqual(snapshot["matrixark_append_coalescing"]["wait_ms"], 0.0)
         self.assertEqual(client._lane_group_for_op("matrixark_batch_append_records"), "write")
         self.assertEqual(client._lane_group_for_op("matrixark_batch_append_raw_ingestion_records"), "write")
