@@ -1872,6 +1872,7 @@ def rust_proxy_breakdown_from_backend_metrics(backend_metrics: Json) -> Json:
         "top_ops_by_total_latency": top_ops[:8],
         "lanes": lanes,
         "publish_visibility": metrics.get("publish_visibility", {}),
+        "batch_hset_coalescing": metrics.get("batch_hset_coalescing", {}),
     }
 
 

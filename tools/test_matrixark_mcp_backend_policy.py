@@ -106,6 +106,72 @@ class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
         self.assertEqual(client._lane_group_for_op("matrixark_retrieve_context_pack"), "pack")
         self.assertEqual(client._lane_group_for_op("readiness"), "control")
 
+    def test_rust_bridge_coalesces_concurrent_batch_hset_in_shared_process(self) -> None:
+        old_env = {
+            key: os.environ.get(key)
+            for key in (
+                "MATRIXARK_RUST_PROXY_SHARED_PROCESS",
+                "MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE",
+                "MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE_MAX_BATCHES",
+                "MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE_MIN_RECORDS",
+                "MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE_WAIT_MS",
+            )
+        }
+        os.environ["MATRIXARK_RUST_PROXY_SHARED_PROCESS"] = "1"
+        os.environ["MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE"] = "1"
+        os.environ["MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE_MAX_BATCHES"] = "8"
+        os.environ["MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE_MIN_RECORDS"] = "1"
+        os.environ["MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE_WAIT_MS"] = "25"
+        try:
+            client = mcp.MatrixArkRustCliClient(
+                cli_path="matrixark_rust_proxy",
+                metaserver="127.0.0.1:18000",
+                namespace="ns",
+                table="table",
+                request_timeout_ms=10000,
+                io_timeout_ms=10000,
+            )
+            calls: list[list[list[str]]] = []
+            calls_lock = threading.Lock()
+
+            def fake_call_json(op: str, **kwargs):
+                self.assertEqual(op, "batch_hset")
+                with calls_lock:
+                    calls.append(list(kwargs["entries_compact"]))
+                return {"ok": True, "count": len(kwargs["entries_compact"])}
+
+            client._call_json = fake_call_json  # type: ignore[method-assign]
+            barrier = threading.Barrier(4)
+
+            def write_one(index: int) -> None:
+                barrier.wait(timeout=5)
+                client.batch_hset([{"key": "raw", "field": f"{index:08d}", "value": f"value-{index}"}])
+
+            threads = [threading.Thread(target=write_one, args=(index,)) for index in range(4)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=5)
+                self.assertFalse(thread.is_alive())
+
+            snapshot = client.metrics_snapshot()
+        finally:
+            try:
+                client.close()  # type: ignore[name-defined]
+            except Exception:
+                pass
+            for key, value in old_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls[0]), 4)
+        self.assertEqual(snapshot["batch_hset_coalescing"]["batches_total"], 1)
+        self.assertEqual(snapshot["batch_hset_coalescing"]["calls_total"], 4)
+        self.assertEqual(snapshot["batch_hset_coalescing"]["records_total"], 4)
+
     def test_rust_bridge_can_opt_into_separate_read_write_pack_lanes(self) -> None:
         old_env = {
             key: os.environ.get(key)
