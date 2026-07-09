@@ -9,9 +9,10 @@ use temporalstore_rust::http::{
 };
 use temporalstore_rust::meta::{
     AckResponse, AddNamespaceRequest, AddTableRequest, DeleteTableRequest,
-    FreezeStaleServersRequest, GetShardResponse, GetTableTopologyRequest, LoadFinishRequest,
+    DropProxyGroupRequest, FreezeStaleServersRequest, GetShardResponse, GetTableTopologyRequest,
+    ListProxyGroupRequest, LoadFinishRequest,
     MetaSnapshot, MetaSnapshotFileRequest, MetaSnapshotFileResponse, MetaSnapshotResponse,
-    ProxyHeartbeatRequest, PublishShardSnapshotRequest, RegisterProxyRequest,
+    ProxyHeartbeatRequest, PublishShardSnapshotRequest, PutProxyGroupRequest, RegisterProxyRequest,
     RegisterServerRequest, RegisterShardRequest, SafeModePolicy, ServerHeartbeatRequest,
     SingleNodeMeta, StateChangeRequest, TopologyVersionRequest, UpdateServerRequest,
     UpdateTableRequest,
@@ -2012,6 +2013,16 @@ fn handle_manage_service_route(
                 )
             })
         }
+        ("POST", "/ManageService/PutProxyGroup") => {
+            parse_or(&request.body, |req: PutProxyGroupRequest| {
+                backend_call!(meta, put_proxy_group, req)
+            })
+        }
+        ("POST", "/ManageService/DropProxyGroup") => {
+            parse_or(&request.body, |req: DropProxyGroupRequest| {
+                backend_call!(meta, drop_proxy_group, req)
+            })
+        }
         ("POST", "/ManageService/AddNamespace") => {
             parse_or(&request.body, |req: ManageNamespaceRequest| {
                 backend_call!(
@@ -2197,6 +2208,11 @@ fn handle_query_service_route(meta: &MetaBackend, request: &HttpRequest) -> Opti
         }
         ("GET", "/QueryService/ListProxy") | ("POST", "/QueryService/ListProxy") => {
             json_response(200, &backend_call!(meta, list_proxies))
+        }
+        ("POST", "/QueryService/ListProxyGroup") => {
+            parse_or(&request.body, |req: ListProxyGroupRequest| {
+                backend_call!(meta, list_proxy_groups, req)
+            })
         }
         ("GET", "/QueryService/ListNamespace") | ("POST", "/QueryService/ListNamespace") => {
             json_response(200, &backend_call!(meta, list_namespaces))

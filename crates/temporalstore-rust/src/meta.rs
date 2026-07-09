@@ -307,6 +307,48 @@ pub struct ProxyMetaInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyGroupMetaInfo {
+    #[serde(rename = "namespace_name", alias = "namespace")]
+    pub namespace: String,
+    #[serde(default)]
+    pub placement: serde_json::Value,
+    #[serde(default)]
+    pub config: serde_json::Value,
+    #[serde(default)]
+    pub proxies: Vec<ProxyMetaInfo>,
+    #[serde(default)]
+    pub instance_num: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PutProxyGroupRequest {
+    pub info: ProxyGroupMetaInfo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DropProxyGroupRequest {
+    #[serde(rename = "namespace_name", alias = "namespace")]
+    pub namespace: String,
+    #[serde(default)]
+    pub placement: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ListProxyGroupRequest {
+    #[serde(default)]
+    #[serde(rename = "namespace_name", alias = "namespace")]
+    pub namespace: String,
+    #[serde(default)]
+    pub placement: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ListProxyGroupResponse {
+    pub status: Status,
+    pub groups: Vec<ProxyGroupMetaInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AddNamespaceRequest {
     pub namespace: String,
 }
@@ -626,6 +668,8 @@ pub enum MetaMutation {
     RegisterServer(RegisterServerRequest),
     UpdateServer(UpdateServerRequest),
     RegisterProxy(RegisterProxyRequest),
+    PutProxyGroup(PutProxyGroupRequest),
+    DropProxyGroup(DropProxyGroupRequest),
     AddNamespace(AddNamespaceRequest),
     AddTable(AddTableRequest),
     DeleteTable(DeleteTableRequest),
@@ -718,6 +762,7 @@ pub(crate) struct MetaState {
     shards: HashMap<ShardId, ShardLocation>,
     servers: BTreeMap<String, ServerMetaInfo>,
     proxies: BTreeMap<String, ProxyMetaInfo>,
+    proxy_groups: BTreeMap<String, ProxyGroupMetaInfo>,
     namespaces: BTreeMap<String, MetaEntityState>,
     tables: BTreeMap<String, TableRecord>,
     counters: MetaCounters,
@@ -734,6 +779,8 @@ pub struct MetaSnapshot {
     pub shards: HashMap<ShardId, ShardLocation>,
     pub servers: BTreeMap<String, ServerMetaInfo>,
     pub proxies: BTreeMap<String, ProxyMetaInfo>,
+    #[serde(default)]
+    pub proxy_groups: BTreeMap<String, ProxyGroupMetaInfo>,
     pub namespaces: BTreeMap<String, MetaEntityState>,
     pub tables: Vec<TableMetaInfo>,
     pub stats: MetaStats,
@@ -828,6 +875,7 @@ impl SingleNodeMeta {
             shards: snapshot.shards,
             servers: snapshot.servers,
             proxies: snapshot.proxies,
+            proxy_groups: snapshot.proxy_groups,
             namespaces: snapshot.namespaces,
             tables,
             counters: counters_from_stats(&snapshot.stats),
@@ -858,6 +906,7 @@ impl MetaSnapshot {
             shards: state.shards.clone(),
             servers: state.servers.clone(),
             proxies: state.proxies.clone(),
+            proxy_groups: state.proxy_groups.clone(),
             namespaces: state.namespaces.clone(),
             tables: state
                 .tables
@@ -1587,6 +1636,110 @@ impl SingleNodeMeta {
         }
     }
 
+    pub fn put_proxy_group(&self, request: PutProxyGroupRequest) -> AckResponse {
+        self.record_mutation(MetaMutation::PutProxyGroup(request.clone()));
+        self.apply_put_proxy_group(request)
+    }
+
+    fn apply_put_proxy_group(&self, request: PutProxyGroupRequest) -> AckResponse {
+        if request.info.namespace.is_empty() {
+            return AckResponse {
+                status: Status::error("bad_request", "namespace is required"),
+            };
+        }
+        let mut state = self.inner.write().expect("meta lock poisoned");
+        match state.namespaces.get(&request.info.namespace) {
+            Some(MetaEntityState::Normal) => {}
+            Some(MetaEntityState::Frozen) => {
+                return AckResponse {
+                    status: Status::error("resource_frozen", "namespace is frozen"),
+                };
+            }
+            Some(MetaEntityState::Dropped) => {
+                return AckResponse {
+                    status: Status::error("namespace_not_found", "namespace is dropped"),
+                };
+            }
+            None => {
+                return AckResponse {
+                    status: Status::error("namespace_not_found", "namespace not found"),
+                };
+            }
+        }
+        let key = proxy_group_key(&request.info.namespace, &request.info.placement);
+        state.proxy_groups.insert(key, request.info.clone());
+        record_topology_event(
+            &mut state,
+            "proxy_group_put",
+            format!("namespace:{}", request.info.namespace),
+            "proxy_group_updated",
+        );
+        AckResponse {
+            status: Status::ok(),
+        }
+    }
+
+    pub fn drop_proxy_group(&self, request: DropProxyGroupRequest) -> AckResponse {
+        self.record_mutation(MetaMutation::DropProxyGroup(request.clone()));
+        self.apply_drop_proxy_group(request)
+    }
+
+    fn apply_drop_proxy_group(&self, request: DropProxyGroupRequest) -> AckResponse {
+        if request.namespace.is_empty() {
+            return AckResponse {
+                status: Status::error("bad_request", "namespace is required"),
+            };
+        }
+        let mut state = self.inner.write().expect("meta lock poisoned");
+        let key = proxy_group_key(&request.namespace, &request.placement);
+        if state.proxy_groups.remove(&key).is_none() {
+            return AckResponse {
+                status: Status::error("not_found", "proxy group not found"),
+            };
+        }
+        record_topology_event(
+            &mut state,
+            "proxy_group_drop",
+            format!("namespace:{}", request.namespace),
+            "proxy_group_dropped",
+        );
+        AckResponse {
+            status: Status::ok(),
+        }
+    }
+
+    pub fn list_proxy_groups(&self, request: ListProxyGroupRequest) -> ListProxyGroupResponse {
+        let state = self.inner.read().expect("meta lock poisoned");
+        if !request.namespace.is_empty() {
+            match state.namespaces.get(&request.namespace) {
+                Some(MetaEntityState::Normal) | Some(MetaEntityState::Frozen) => {}
+                Some(MetaEntityState::Dropped) | None => {
+                    return ListProxyGroupResponse {
+                        status: Status::error("namespace_not_found", "namespace not found"),
+                        groups: Vec::new(),
+                    };
+                }
+            }
+        }
+        let groups = state
+            .proxy_groups
+            .values()
+            .filter(|group| request.namespace.is_empty() || group.namespace == request.namespace)
+            .filter(|group| {
+                request
+                    .placement
+                    .as_ref()
+                    .map(|placement| group.placement == *placement)
+                    .unwrap_or(true)
+            })
+            .cloned()
+            .collect();
+        ListProxyGroupResponse {
+            status: Status::ok(),
+            groups,
+        }
+    }
+
     pub fn list_servers(&self) -> ListServersResponse {
         let state = self.inner.read().expect("meta lock poisoned");
         ListServersResponse {
@@ -2192,6 +2345,8 @@ impl SingleNodeMeta {
             MetaMutation::RegisterServer(request) => self.apply_register_server(request).status,
             MetaMutation::UpdateServer(request) => self.apply_update_server(request).status,
             MetaMutation::RegisterProxy(request) => self.apply_register_proxy(request).status,
+            MetaMutation::PutProxyGroup(request) => self.apply_put_proxy_group(request).status,
+            MetaMutation::DropProxyGroup(request) => self.apply_drop_proxy_group(request).status,
             MetaMutation::AddNamespace(request) => self.apply_add_namespace(request).status,
             MetaMutation::AddTable(request) => self.apply_add_table(request).status,
             MetaMutation::DeleteTable(request) => self.apply_delete_table(request).status,
@@ -2633,6 +2788,11 @@ fn counters_from_stats(stats: &MetaStats) -> MetaCounters {
 
 fn table_key(namespace: &str, table_name: &str) -> String {
     format!("{namespace}/{table_name}")
+}
+
+fn proxy_group_key(namespace: &str, placement: &serde_json::Value) -> String {
+    let placement = serde_json::to_string(placement).unwrap_or_else(|_| "null".to_string());
+    format!("{namespace}/{placement}")
 }
 
 fn default_replica_count() -> u64 {
