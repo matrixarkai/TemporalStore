@@ -957,6 +957,9 @@ impl LocalBlockStore {
         offset: u64,
         size: u64,
     ) -> Result<Vec<u8>, BlockStoreError> {
+        if size == 0 {
+            return Ok(Vec::new());
+        }
         let root = self
             .inner
             .lock()
@@ -981,6 +984,9 @@ impl LocalBlockStore {
         offset: u64,
         size: u64,
     ) -> Result<Vec<u8>, BlockStoreError> {
+        if size == 0 {
+            return Ok(Vec::new());
+        }
         let (root, readable_prefix_physical_bytes) = {
             let inner = self.inner.lock().expect("block store lock poisoned");
             (
