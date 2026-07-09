@@ -225,6 +225,15 @@ impl LocalWriteAheadLogStore {
         shard_id: ShardId,
         command: Command,
     ) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
+        self.append_with_sync(shard_id, command, true)
+    }
+
+    pub fn append_with_sync(
+        &self,
+        shard_id: ShardId,
+        command: Command,
+        sync: bool,
+    ) -> Result<WriteAheadLogRecord, WriteAheadLogError> {
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         fs::create_dir_all(&inner.root)?;
         let last_sequence = match inner.last_sequence_by_shard.get(&shard_id).copied() {
@@ -242,9 +251,8 @@ impl LocalWriteAheadLogStore {
             metadata: Some(WriteAheadLogRecordMetadata::single_command(&command)),
             command,
         };
-        let report = append_record_locked(&mut inner, &record, true)?;
+        let report = append_record_locked(&mut inner, &record, sync)?;
         inner.stats.last_sequence = report.current_sequence;
-        inner.stats.last_flushed_sequence = report.current_sequence;
         inner.last_sequence_by_shard.insert(shard_id, next_sequence);
         Ok(record)
     }

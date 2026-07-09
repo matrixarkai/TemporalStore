@@ -38,12 +38,12 @@ use self::slot_store::{
 use self::state::*;
 use crate::block_store::BlockAppendRecord;
 use crate::control::{
-    CheckedBatchExecuteRequest, CheckedBatchExecuteResponse, CheckedExecuteRequest,
-    CheckedExecuteResponse, Config, GetConfigResponse, GetInfoResponse, GetStatsResponse,
-    LoadShardRequest, LoadShardResponse, MembershipUpdateRequest, ObjectManagerStats,
-    PartitionInfoStats, ScanStreamRequest, ScanStreamResponse, SetConfigRequest, ShardInfo,
-    ShardStats, StreamKind, StreamReadRequest, StreamReadResponse, StreamRecord,
-    UnloadShardRequest, UnloadShardResponse,
+    CanonicalLogAckPolicy, CheckedBatchExecuteRequest, CheckedBatchExecuteResponse,
+    CheckedExecuteRequest, CheckedExecuteResponse, Config, GetConfigResponse, GetInfoResponse,
+    GetStatsResponse, LoadShardRequest, LoadShardResponse, MembershipUpdateRequest,
+    ObjectManagerStats, PartitionInfoStats, ScanStreamRequest, ScanStreamResponse,
+    SetConfigRequest, ShardInfo, ShardStats, StreamKind, StreamReadRequest, StreamReadResponse,
+    StreamRecord, UnloadShardRequest, UnloadShardResponse,
 };
 use crate::index_log::LocalIndexLogStore;
 use crate::page_store::{LocalPageStore, PageAddress, PageStoreError, PageStoreOptions};
@@ -287,7 +287,13 @@ impl TemporalEngine {
             }
             refresh_slot_runtime_flags(shard);
             if write_command {
-                if let Err(error) = self.wal_store.append(request.shard_id, command.clone()) {
+                let sync_canonical_log = !config.async_storage
+                    || config.canonical_log_ack_policy == CanonicalLogAckPolicy::Durable;
+                if let Err(error) = self.wal_store.append_with_sync(
+                    request.shard_id,
+                    command.clone(),
+                    sync_canonical_log,
+                ) {
                     return ExecuteResponse {
                         status: Status::error(
                             "canonical_log_append_failed",
@@ -5497,8 +5503,13 @@ impl TemporalEngine {
         }
         if mutated_any {
             refresh_slot_runtime_flags(shard);
+            let sync_canonical_log = !config.async_storage
+                || config.canonical_log_ack_policy == CanonicalLogAckPolicy::Durable;
             for command in sync_wal_commands {
-                if let Err(error) = self.wal_store.append(request.shard_id, command) {
+                if let Err(error) =
+                    self.wal_store
+                        .append_with_sync(request.shard_id, command, sync_canonical_log)
+                {
                     return BatchExecuteResponse {
                         status: Status::error(
                             "canonical_log_append_failed",

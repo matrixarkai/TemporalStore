@@ -1,5 +1,6 @@
 use super::*;
 use crate::block_store::BlockStoreExtentState;
+use crate::control::CanonicalLogAckPolicy;
 use crate::engine::golden::{
     cpp_api_golden_corpus_report, cpp_feature_sequence_golden_corpus_report,
 };
@@ -3402,8 +3403,8 @@ fn async_storage_string_write_stays_on_hot_memory_path() {
     assert_eq!(engine.block_store().stats().writes, 0);
     let wal_stats = engine.write_ahead_log_store().stats(1);
     assert_eq!(wal_stats.writes, 1);
-    assert_eq!(wal_stats.syncs, 1);
-    assert_eq!(wal_stats.last_flushed_sequence, 1);
+    assert_eq!(wal_stats.syncs, 0);
+    assert_eq!(wal_stats.last_flushed_sequence, 0);
     assert_eq!(engine.index_log_store().stats(1).writes, 0);
 
     let read = engine.execute(ExecuteRequest {
@@ -3420,6 +3421,45 @@ fn async_storage_string_write_stays_on_hot_memory_path() {
     );
     assert_eq!(engine.block_store().stats().reads, 0);
     assert!(engine.cache().stats().memory_hits >= 1);
+}
+
+#[test]
+fn async_storage_can_force_durable_canonical_log_ack() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    assert!(
+        engine
+            .set_config(SetConfigRequest {
+                shard_id: 1,
+                config: Config {
+                    version: 2,
+                    async_storage: true,
+                    canonical_log_ack_policy: CanonicalLogAckPolicy::Durable,
+                    ..Config::default()
+                },
+            })
+            .ok
+    );
+
+    let write = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "durable-hot".to_string(),
+            value: b"value".to_vec(),
+        },
+    });
+    assert!(write.status.ok);
+    assert_eq!(engine.block_store().stats().writes, 0);
+    let wal_stats = engine.write_ahead_log_store().stats(1);
+    assert_eq!(wal_stats.writes, 1);
+    assert_eq!(wal_stats.syncs, 1);
+    assert_eq!(wal_stats.last_flushed_sequence, 1);
 }
 
 #[test]
