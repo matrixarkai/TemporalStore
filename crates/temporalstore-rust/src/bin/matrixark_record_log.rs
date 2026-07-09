@@ -685,6 +685,13 @@ fn hgetall_snapshot_cache() -> &'static Mutex<BTreeMap<String, BTreeMap<String, 
     HGETALL_SNAPSHOT_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
+fn hgetall_snapshot_cache_has_entries() -> bool {
+    hgetall_snapshot_cache()
+        .lock()
+        .map(|cache| !cache.is_empty())
+        .unwrap_or(false)
+}
+
 fn record_count_cache() -> &'static Mutex<BTreeMap<String, String>> {
     static RECORD_COUNT_CACHE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
     RECORD_COUNT_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
@@ -785,6 +792,10 @@ fn invalidate_retrieve_candidate_cache_for_keys<'a>(keys: impl IntoIterator<Item
         .into_iter()
         .filter_map(|key| storage_prefix_from_key(key))
         .collect::<HashSet<_>>();
+    invalidate_retrieve_candidate_cache_for_prefixes(prefixes);
+}
+
+fn invalidate_retrieve_candidate_cache_for_prefixes(prefixes: HashSet<String>) {
     for prefix in prefixes {
         invalidate_retrieve_candidate_cache(&prefix);
     }
@@ -2986,29 +2997,37 @@ fn execute_empty_batch_runtime(
     if commands.is_empty() {
         return Ok(());
     }
-    let retrieve_cache_keys = commands
-        .iter()
-        .filter_map(|command| match command {
+    let mut retrieve_cache_prefixes = HashSet::<String>::new();
+    for command in &commands {
+        match command {
             Command::HashSet { key, .. }
             | Command::HashMultiSet { key, .. }
             | Command::HashDelete { key, .. }
             | Command::CommonDelete { key }
-            | Command::StringSet { key, .. } => Some(key.clone()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    let cache_updates = commands
-        .iter()
-        .filter_map(|command| match command {
-            Command::HashSet { key, field, value } if hgetall_snapshot_contains(key) => {
-                Some((key.clone(), vec![(field.clone(), value.clone())]))
+            | Command::StringSet { key, .. } => {
+                if let Some(prefix) = storage_prefix_from_key(key) {
+                    retrieve_cache_prefixes.insert(prefix);
+                }
             }
-            Command::HashMultiSet { key, entries } if hgetall_snapshot_contains(key) => {
-                Some((key.clone(), entries.clone()))
-            }
-            _ => None,
-        })
-        .collect::<Vec<_>>();
+            _ => {}
+        }
+    }
+    let cache_updates = if hgetall_snapshot_cache_has_entries() {
+        commands
+            .iter()
+            .filter_map(|command| match command {
+                Command::HashSet { key, field, value } if hgetall_snapshot_contains(key) => {
+                    Some((key.clone(), vec![(field.clone(), value.clone())]))
+                }
+                Command::HashMultiSet { key, entries } if hgetall_snapshot_contains(key) => {
+                    Some((key.clone(), entries.clone()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     let cache_invalidates = commands
         .iter()
         .filter_map(|command| match command {
@@ -3063,7 +3082,7 @@ fn execute_empty_batch_runtime(
     for key in cache_invalidates {
         invalidate_hgetall_snapshot(&key);
     }
-    invalidate_retrieve_candidate_cache_for_keys(retrieve_cache_keys.iter());
+    invalidate_retrieve_candidate_cache_for_prefixes(retrieve_cache_prefixes);
     if invalidate_matrixark_scan_cache {
         clear_matrixark_scan_cache();
     }
