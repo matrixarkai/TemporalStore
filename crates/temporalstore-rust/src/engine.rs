@@ -8995,8 +8995,11 @@ fn execute_on_shard(
                 );
             }
             if !context_index_disabled(&indexes, InternalContextIndex::Entity) {
-                for entity_hash in &indexes.entity_hashes {
-                    write_default_index("entity", *entity_hash, primary_time_ms);
+                let mut seen_entity_hashes = HashSet::new();
+                for entity_hash in indexes.entity_hashes.iter().copied() {
+                    if seen_entity_hashes.insert(entity_hash) {
+                        write_default_index("entity", entity_hash, primary_time_ms);
+                    }
                 }
             }
             CommandResponse::ContextExtractedEventWrite {
@@ -13951,12 +13954,14 @@ fn command_object_keys(command: &Command) -> Vec<String> {
                 ));
             }
             if !context_index_disabled(indexes, InternalContextIndex::Entity) {
+                let mut seen_entity_hashes = HashSet::new();
                 keys.extend(
                     indexes
                         .entity_hashes
                         .iter()
                         .copied()
                         .filter(|hash| *hash != 0)
+                        .filter(|hash| seen_entity_hashes.insert(*hash))
                         .map(|entity_hash| {
                             context_index_key(
                                 *tenant_hash,
