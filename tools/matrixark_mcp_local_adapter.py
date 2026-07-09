@@ -707,6 +707,35 @@ class MatrixArkLocalAdapter:
             return False
         return True
 
+    def session_boundary_commit_requested(self, args: Json, *, hook: Json | None = None) -> bool:
+        boundary_fields = ["flush_session_buffer", "conversation_done", "session_done", "task_complete"]
+        if any(bool(args.get(field, False)) for field in boundary_fields):
+            return True
+        metadata = optional_object(args, "metadata")
+        lifecycle_event = (
+            args.get("lifecycle_event_type")
+            or args.get("event_type")
+            or args.get("event")
+            or metadata.get("lifecycle_event_type")
+            or metadata.get("event_type")
+            or (hook or {}).get("event")
+            or (hook or {}).get("event_type")
+            or ""
+        )
+        normalized_event = "".join(ch for ch in str(lifecycle_event).lower() if ch.isalnum())
+        return normalized_event in {
+            "stop",
+            "subagentstop",
+            "postcompact",
+            "precompact",
+            "compact",
+            "sessionend",
+            "conversationend",
+            "conversationdone",
+            "sessiondone",
+            "taskcomplete",
+        }
+
     def default_session_node_path(self, scope: Json) -> list[str]:
         tenant_id = str(scope.get("tenant_id") or "tenant_local_agent")
         user_id = str(scope.get("user_id") or local_account_user_id())
@@ -2335,19 +2364,20 @@ class MatrixArkLocalAdapter:
             session_buffer_enabled = self.session_buffer_enabled(args, kind=envelope["kind"])
             pending_event_count = len(self.pending_session_events(envelope["scope"])) if session_buffer_enabled else 0
             auto_batch_extract = self.auto_batch_extract_enabled(args, kind=envelope["kind"])
+            session_boundary_commit = self.session_boundary_commit_requested(args, hook=hook)
             auto_batch_result: Json | None = None
             session_buffer_threshold = args.get("session_buffer_threshold", 20)
             if not isinstance(session_buffer_threshold, int) or session_buffer_threshold <= 0:
                 raise MatrixArkError("session_buffer_threshold must be a positive integer")
-            if auto_batch_extract and pending_event_count >= session_buffer_threshold:
+            if auto_batch_extract and (session_boundary_commit or pending_event_count >= session_buffer_threshold):
                 auto_batch_result = self.session_commit(
                     {
                         "scope": envelope["scope"],
                         "metadata": envelope["metadata"],
                         "threshold_messages": session_buffer_threshold,
-                        "force": False,
-                        "max_messages": session_buffer_threshold,
-                        "commit_reason": "threshold",
+                        "force": session_boundary_commit,
+                        "max_messages": None if session_boundary_commit else session_buffer_threshold,
+                        "commit_reason": "hook_boundary" if session_boundary_commit else "threshold",
                         "understanding_provider": args.get("understanding_provider"),
                         "extraction_provider": args.get("extraction_provider"),
                         "segment_provider": args.get("segment_provider"),
@@ -2383,6 +2413,7 @@ class MatrixArkLocalAdapter:
                     "pending_event_count": pending_event_count,
                     "threshold_messages": session_buffer_threshold,
                     "auto_batch_extract": auto_batch_extract,
+                    "boundary_commit_requested": session_boundary_commit,
                 },
                 "auto_batch_extract_result": auto_batch_result,
                 "idle_commit_result": idle_commit_result,
@@ -3369,18 +3400,19 @@ class MatrixArkLocalAdapter:
         pending_event_count = len(self.pending_session_events(envelope["scope"])) if session_buffer_enabled else 0
         auto_batch_result: Json | None = None
         auto_batch_extract = self.auto_batch_extract_enabled(args, kind=envelope["kind"])
+        session_boundary_commit = self.session_boundary_commit_requested(args, hook=hook)
         session_buffer_threshold = args.get("session_buffer_threshold", 20)
         if not isinstance(session_buffer_threshold, int) or session_buffer_threshold <= 0:
             raise MatrixArkError("session_buffer_threshold must be a positive integer")
-        if auto_batch_extract and pending_event_count >= session_buffer_threshold:
+        if auto_batch_extract and (session_boundary_commit or pending_event_count >= session_buffer_threshold):
             auto_batch_result = self.session_commit(
                 {
                     "scope": hot_record_scope,
                     "metadata": envelope["metadata"],
                     "threshold_messages": session_buffer_threshold,
-                    "force": False,
-                    "max_messages": session_buffer_threshold,
-                    "commit_reason": "threshold",
+                    "force": session_boundary_commit,
+                    "max_messages": None if session_boundary_commit else session_buffer_threshold,
+                    "commit_reason": "hook_boundary" if session_boundary_commit else "threshold",
                     "understanding_provider": args.get("understanding_provider"),
                     "extraction_provider": args.get("extraction_provider"),
                     "segment_provider": args.get("segment_provider"),
@@ -3466,6 +3498,7 @@ class MatrixArkLocalAdapter:
                 "pending_event_count": pending_event_count,
                 "threshold_messages": session_buffer_threshold,
                 "auto_batch_extract": auto_batch_extract,
+                "boundary_commit_requested": session_boundary_commit,
             },
             "idle_commit_result": idle_commit_result,
             "auto_batch_extract_result": auto_batch_result,
