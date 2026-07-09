@@ -13430,6 +13430,7 @@ fn compact_page_addresses<'a>(
     addresses: impl IntoIterator<Item = &'a mut PageAddress>,
     rewrite_stats: &mut CompactionRewriteStats,
 ) -> Result<(), Status> {
+    let mut rewritten_old_addresses = Vec::new();
     for address in addresses {
         let old_address = address.clone();
         let cold_page = !page_memory_resident(cache, shard_id, address);
@@ -13443,7 +13444,7 @@ fn compact_page_addresses<'a>(
             .append_with_page_metadata(&bytes, address.object_id, address.routing_slot)
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
         *address = new_address.clone();
-        invalidate_page_addresses(cache, shard_id, vec![old_address]);
+        rewritten_old_addresses.push(old_address);
         if !cold_page {
             let _ = cache.put(
                 CacheKey::page_with_slot_generation(
@@ -13459,6 +13460,7 @@ fn compact_page_addresses<'a>(
         }
         rewrite_stats.record(model_id, cold_page);
     }
+    invalidate_page_addresses(cache, shard_id, rewritten_old_addresses);
     Ok(())
 }
 
@@ -13472,6 +13474,7 @@ fn compact_feature_page_addresses(
 ) -> Result<(), Status> {
     let unique_addresses = unique_feature_page_addresses(series);
     let mut rewritten = HashMap::<PageAddress, PageAddress>::new();
+    let mut rewritten_old_addresses = Vec::new();
     for old_address in unique_addresses {
         let cold_page = !page_memory_resident(cache, shard_id, &old_address);
         let bytes = read_page_bytes_cold(page_store, &old_address).ok_or_else(|| {
@@ -13483,7 +13486,7 @@ fn compact_feature_page_addresses(
         let new_address = page_store
             .append_with_page_metadata(&bytes, old_address.object_id, old_address.routing_slot)
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
-        invalidate_page_addresses(cache, shard_id, vec![old_address.clone()]);
+        rewritten_old_addresses.push(old_address.clone());
         if !cold_page {
             let _ = cache.put(
                 CacheKey::page_with_slot_generation(
@@ -13500,6 +13503,7 @@ fn compact_feature_page_addresses(
         rewritten.insert(old_address, new_address);
         rewrite_stats.record(model_id, cold_page);
     }
+    invalidate_page_addresses(cache, shard_id, rewritten_old_addresses);
     for address in series.values_mut() {
         if let Some(new_address) = rewritten.get(address) {
             *address = new_address.clone();
