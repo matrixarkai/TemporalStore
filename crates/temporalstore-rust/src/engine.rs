@@ -680,7 +680,7 @@ impl TemporalEngine {
             } else {
                 summaries
             };
-        storage_physical_index_report(shard_id, shard, summaries)
+        storage_physical_index_report(shard_id, shard, summaries, start, end)
     }
 
     pub fn slot_object_page_ownership_report(
@@ -1423,8 +1423,19 @@ impl TemporalEngine {
                 ),
             ));
         }
-        let expected_slot_summaries =
-            slot_dump_manifest_comparable_summaries(&restored, &manifest_slots);
+        let (start_routing_slot, end_routing_slot) = self
+            .infos
+            .read()
+            .expect("shard info lock poisoned")
+            .get(&manifest.shard_id)
+            .map(|info| (info.start_routing_slot, info.end_routing_slot))
+            .unwrap_or((0, u32::MAX));
+        let expected_slot_summaries = slot_dump_manifest_comparable_summaries(
+            &restored,
+            &manifest_slots,
+            start_routing_slot,
+            end_routing_slot,
+        );
         let actual_slot_summaries = comparable_slot_dump_summaries(manifest.slot_summaries.clone());
         if actual_slot_summaries != expected_slot_summaries {
             return Err(Status::error(
@@ -2604,6 +2615,13 @@ impl TemporalEngine {
             .expect("shards lock poisoned")
             .get(&request.shard_id)
         {
+            let (start_routing_slot, end_routing_slot) = self
+                .infos
+                .read()
+                .expect("shard info lock poisoned")
+                .get(&request.shard_id)
+                .map(|info| (info.start_routing_slot, info.end_routing_slot))
+                .unwrap_or((0, u32::MAX));
             report.storage_index_snapshot = storage_index_snapshot_with_samples(
                 request.shard_id,
                 shard,
@@ -2613,6 +2631,8 @@ impl TemporalEngine {
                 request.shard_id,
                 shard,
                 report.storage_watermark_snapshot,
+                start_routing_slot,
+                end_routing_slot,
             );
             report.storage_gc_snapshot = storage_gc_snapshot_with_samples(
                 request.shard_id,
@@ -2623,6 +2643,8 @@ impl TemporalEngine {
                 request.shard_id,
                 shard,
                 report.storage_topology_snapshot,
+                start_routing_slot,
+                end_routing_slot,
             );
         }
         report
@@ -2639,12 +2661,21 @@ impl TemporalEngine {
         let current_oplog_sequence = self.write_ahead_log_store().stats(shard_id).last_sequence;
         let current_index_log_sequence = self.index_log_store.stats(shard_id).last_sequence;
         let slot_summaries = self.slot_storage_summaries(shard_id);
+        let (start_routing_slot, end_routing_slot) = self
+            .infos
+            .read()
+            .expect("shard info lock poisoned")
+            .get(&shard_id)
+            .map(|info| (info.start_routing_slot, info.end_routing_slot))
+            .unwrap_or((0, u32::MAX));
         let current_slot_fingerprints = self
             .shards
             .read()
             .expect("shards lock poisoned")
             .get(&shard_id)
-            .map(slot_generation_fingerprints_by_slot)
+            .map(|shard| {
+                slot_generation_fingerprints_by_slot(shard, start_routing_slot, end_routing_slot)
+            })
             .unwrap_or_default();
         let manifests = self.list_slot_dump_manifests(shard_id);
         let mut missing_slot_generations = Vec::new();
@@ -2660,8 +2691,11 @@ impl TemporalEngine {
                 else {
                     return false;
                 };
-                let manifest_slot_fingerprints =
-                    slot_generation_fingerprints_by_slot(&manifest_state);
+                let manifest_slot_fingerprints = slot_generation_fingerprints_by_slot(
+                    &manifest_state,
+                    start_routing_slot,
+                    end_routing_slot,
+                );
                 manifest.slot_summaries.iter().any(|manifest_summary| {
                     slot_dump_summary_matches_current_generation(
                         manifest_summary,
@@ -10823,6 +10857,8 @@ fn storage_watermark_snapshot_with_samples(
     shard_id: ShardId,
     shard: &ShardState,
     mut snapshot: StorageWatermarkSnapshot,
+    start_routing_slot: u32,
+    end_routing_slot: u32,
 ) -> StorageWatermarkSnapshot {
     const MAX_STORAGE_WATERMARK_SAMPLES: usize = 8;
     let timestamp_ms = now_ms();
@@ -10832,10 +10868,9 @@ fn storage_watermark_snapshot_with_samples(
         slot_watermarks.insert(*slot_id, runtime_slot.dirty_generation);
     }
     for entry in collect_live_page_entries(shard) {
-        let slot_id = entry
-            .address
-            .routing_slot
-            .unwrap_or_else(|| slot_for_object(&entry.object_key, 0, u32::MAX));
+        let slot_id = entry.address.routing_slot.unwrap_or_else(|| {
+            slot_for_object(&entry.object_key, start_routing_slot, end_routing_slot)
+        });
         let generation = entry.address.object_id.unwrap_or(0);
         slot_watermarks
             .entry(slot_id)
@@ -10972,6 +11007,8 @@ fn storage_topology_snapshot_with_samples(
     shard_id: ShardId,
     shard: &ShardState,
     mut snapshot: StorageTopologySnapshot,
+    start_routing_slot: u32,
+    end_routing_slot: u32,
 ) -> StorageTopologySnapshot {
     let mut entries = collect_live_page_entries(shard);
     entries.sort_by(|left, right| {
@@ -11078,10 +11115,9 @@ fn storage_topology_snapshot_with_samples(
             extent.live_refs = extent.live_refs.saturating_add(1);
         }
 
-        let slot_id = entry
-            .address
-            .routing_slot
-            .unwrap_or_else(|| slot_for_object(&entry.object_key, 0, u32::MAX));
+        let slot_id = entry.address.routing_slot.unwrap_or_else(|| {
+            slot_for_object(&entry.object_key, start_routing_slot, end_routing_slot)
+        });
         let slot = slots.entry(slot_id).or_default();
         slot.dirty_generation = slot.dirty_generation.max(generation);
         slot.object_refs.insert(generation);
@@ -12706,10 +12742,9 @@ fn slot_storage_summaries(
     let mut slots = BTreeMap::<u32, SlotStorageSummary>::new();
     let page_segments_by_slot = BTreeMap::<u32, BTreeSet<u64>>::new();
     for entry in collect_live_page_entries(shard) {
-        let routing_slot = entry
-            .address
-            .routing_slot
-            .unwrap_or_else(|| slot_for_object(&entry.object_key, 0, u32::MAX));
+        let routing_slot = entry.address.routing_slot.unwrap_or_else(|| {
+            slot_for_object(&entry.object_key, start_routing_slot, end_routing_slot)
+        });
         let summary = slots.entry(routing_slot).or_insert(SlotStorageSummary {
             routing_slot,
             ..SlotStorageSummary::default()
@@ -12846,6 +12881,8 @@ fn storage_physical_index_report(
     shard_id: ShardId,
     shard: &ShardState,
     summaries: Vec<SlotStorageSummary>,
+    start_routing_slot: u32,
+    end_routing_slot: u32,
 ) -> StoragePhysicalIndexReport {
     let summary_by_slot = summaries
         .into_iter()
@@ -12883,10 +12920,9 @@ fn storage_physical_index_report(
         if entry.address.routing_slot.is_none() {
             missing_routing_slot_count = missing_routing_slot_count.saturating_add(1);
         }
-        let routing_slot = entry
-            .address
-            .routing_slot
-            .unwrap_or_else(|| slot_for_object(&entry.object_key, 0, u32::MAX));
+        let routing_slot = entry.address.routing_slot.unwrap_or_else(|| {
+            slot_for_object(&entry.object_key, start_routing_slot, end_routing_slot)
+        });
         let slot = slots
             .entry(routing_slot)
             .or_insert(StoragePhysicalSlotNode {
@@ -13183,9 +13219,11 @@ fn merge_last_dump_sequence(
 fn slot_dump_manifest_comparable_summaries(
     shard: &ShardState,
     selected_slots: &BTreeSet<u32>,
+    start_routing_slot: u32,
+    end_routing_slot: u32,
 ) -> Vec<SlotStorageSummary> {
     comparable_slot_dump_summaries(
-        slot_storage_summaries(shard, 0, u32::MAX)
+        slot_storage_summaries(shard, start_routing_slot, end_routing_slot)
             .into_iter()
             .filter(|summary| {
                 selected_slots.is_empty() || selected_slots.contains(&summary.routing_slot)
@@ -13237,13 +13275,16 @@ fn slot_dump_summary_matches_current_generation(
             == current_slot_fingerprints.get(&current_summary.routing_slot)
 }
 
-fn slot_generation_fingerprints_by_slot(shard: &ShardState) -> BTreeMap<u32, BTreeSet<String>> {
+fn slot_generation_fingerprints_by_slot(
+    shard: &ShardState,
+    start_routing_slot: u32,
+    end_routing_slot: u32,
+) -> BTreeMap<u32, BTreeSet<String>> {
     let mut by_slot = BTreeMap::<u32, BTreeSet<String>>::new();
     for entry in collect_live_page_entries(shard) {
-        let routing_slot = entry
-            .address
-            .routing_slot
-            .unwrap_or_else(|| slot_for_object(&entry.object_key, 0, u32::MAX));
+        let routing_slot = entry.address.routing_slot.unwrap_or_else(|| {
+            slot_for_object(&entry.object_key, start_routing_slot, end_routing_slot)
+        });
         by_slot.entry(routing_slot).or_default().insert(format!(
             "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             entry.kind,
