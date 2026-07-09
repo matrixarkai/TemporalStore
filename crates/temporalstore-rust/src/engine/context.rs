@@ -651,7 +651,6 @@ pub(super) fn load_context_summaries(
             let mut page_cache = HashMap::new();
             series
                 .range(0..context_timeline_end(as_of_ms))
-                .take(context_limit(limit))
                 .filter_map(|(timeline_key, address)| {
                     read_context_value_cached::<ContextSummary>(
                         cache,
@@ -663,6 +662,7 @@ pub(super) fn load_context_summaries(
                     )
                 })
                 .filter(|summary| summary.valid_from_ms <= as_of_ms)
+                .take(context_limit(limit))
                 .collect()
         })
         .unwrap_or_default()
