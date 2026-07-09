@@ -681,6 +681,24 @@ pub(super) fn load_context_embedding(
         })
 }
 
+pub(super) fn load_context_embedding_with_cache(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    tenant_hash: u64,
+    ref_hash: u64,
+    embedding_cache: &mut HashMap<u64, Option<ContextEmbedding>>,
+) -> Option<ContextEmbedding> {
+    if let Some(cached) = embedding_cache.get(&ref_hash) {
+        return cached.clone();
+    }
+    let embedding =
+        load_context_embedding(cache, page_store, shard_id, shard, tenant_hash, ref_hash);
+    embedding_cache.insert(ref_hash, embedding.clone());
+    embedding
+}
+
 pub(super) fn load_context_summaries(
     cache: &MultiLayerCache,
     page_store: &LocalPageStore,
@@ -898,6 +916,7 @@ pub(super) fn traverse_context_tree(
         score: 1.0,
     }];
     let mut results = Vec::new();
+    let mut embedding_cache = HashMap::new();
     for depth in 1..=max_depth {
         let mut scored_layer = Vec::new();
         let mut child_page_cache = HashMap::new();
@@ -914,13 +933,14 @@ pub(super) fn traverse_context_tree(
             children.sort_by_key(|child_ref| (child_ref.updated_at_ms, child_ref.child_hash));
             children.truncate(child_limit);
             for child in children {
-                let Some(embedding) = load_context_embedding(
+                let Some(embedding) = load_context_embedding_with_cache(
                     cache,
                     page_store,
                     shard_id,
                     shard,
                     tenant_hash,
                     child.child_hash,
+                    &mut embedding_cache,
                 ) else {
                     continue;
                 };
