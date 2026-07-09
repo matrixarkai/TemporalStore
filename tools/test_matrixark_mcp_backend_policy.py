@@ -73,6 +73,9 @@ class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
                 "MATRIXARK_RUST_PROXY_CONTROL_LANES",
                 "MATRIXARK_RUST_PROXY_SHARED_PROCESS",
                 "MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES",
+                "MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE_WAIT_MS",
+                "MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_WAIT_MS",
+                "MATRIXARK_RUST_PROXY_APPEND_COALESCE_WAIT_MS",
             )
         }
         for key in old_env:
@@ -100,6 +103,9 @@ class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
         self.assertFalse(snapshot["write_pool_enabled"])
         self.assertFalse(snapshot["read_pool_enabled"])
         self.assertTrue(snapshot["pack_pool_enabled"])
+        self.assertEqual(snapshot["batch_hset_coalescing"]["wait_ms"], 0.0)
+        self.assertEqual(snapshot["batch_hget_coalescing"]["wait_ms"], 1.0)
+        self.assertEqual(snapshot["matrixark_append_coalescing"]["wait_ms"], 1.0)
         self.assertEqual(client._lane_group_for_op("matrixark_batch_append_records"), "write")
         self.assertEqual(client._lane_group_for_op("matrixark_batch_append_raw_ingestion_records"), "write")
         self.assertEqual(client._lane_group_for_op("batch_hget"), "read")
