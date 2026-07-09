@@ -9950,7 +9950,8 @@ fn mark_slot_index_page_deleted(
     component: Option<&str>,
 ) -> bool {
     let mut removed = false;
-    let target_slots = if shard.slot_index.object_page_lookup.is_empty() {
+    let lookup_enabled = !shard.slot_index.object_page_lookup.is_empty();
+    let target_slots = if !lookup_enabled {
         shard
             .slot_index
             .slot_map
@@ -9970,6 +9971,11 @@ fn mark_slot_index_page_deleted(
             })
             .unwrap_or_default()
     };
+    if lookup_enabled {
+        shard
+            .slot_index
+            .remove_object_page_lookup_entry(model_id, key, component);
+    }
     for routing_slot in target_slots {
         let Some(slot) = shard.slot_index.slot_map.get_mut(&routing_slot) else {
             continue;
@@ -10000,7 +10006,7 @@ fn mark_slot_index_page_deleted(
             update_slot_layout(slot);
         }
     }
-    if removed {
+    if removed && !lookup_enabled {
         shard.slot_index.rebuild_object_page_lookup();
     }
     removed
