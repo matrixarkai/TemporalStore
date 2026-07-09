@@ -9988,6 +9988,7 @@ fn mark_slot_index_object_deleted(
 ) -> bool {
     let mut removed = false;
     let mut removed_addresses = Vec::new();
+    ensure_slot_index_lookup_maps(shard);
     let lookup_enabled = !shard.slot_index.object_component_lookup.is_empty();
     let target_slots = slot_index_target_slots_for_object_key(shard, key);
     if lookup_enabled {
@@ -10045,6 +10046,15 @@ fn slot_index_target_slots_for_object_key(shard: &ShardState, key: &str) -> BTre
     slots
 }
 
+fn ensure_slot_index_lookup_maps(shard: &mut ShardState) {
+    if (shard.slot_index.object_page_lookup.is_empty()
+        || shard.slot_index.object_component_lookup.is_empty())
+        && !shard.slot_index.slot_map.is_empty()
+    {
+        shard.slot_index.rebuild_object_page_lookup();
+    }
+}
+
 fn mark_slot_index_page_deleted(
     cache: &MultiLayerCache,
     shard_id: ShardId,
@@ -10055,6 +10065,7 @@ fn mark_slot_index_page_deleted(
 ) -> bool {
     let mut removed = false;
     let mut removed_addresses = Vec::new();
+    ensure_slot_index_lookup_maps(shard);
     let lookup_enabled = !shard.slot_index.object_page_lookup.is_empty();
     let target_slots = if !lookup_enabled {
         shard
@@ -11514,6 +11525,7 @@ fn upsert_slot_index_page(
         log_backed,
     };
     let live_address_key = page_physical_identity_key(&entry.address);
+    ensure_slot_index_lookup_maps(shard);
     let lookup_enabled = !shard.slot_index.object_page_lookup.is_empty();
     let direct_page_refs = if lookup_enabled {
         shard
@@ -11630,6 +11642,7 @@ fn sync_slot_index_object_pages(
     let mut touched_slots = BTreeSet::new();
     let mut removed_any = false;
     let mut removed_addresses = Vec::new();
+    ensure_slot_index_lookup_maps(shard);
     let lookup_enabled = !shard.slot_index.object_component_lookup.is_empty();
     let target_slots = if !lookup_enabled {
         shard
@@ -11758,12 +11771,7 @@ fn sync_slot_index_live_page_entries(
     shard_id: ShardId,
     entries: Vec<LivePageEntry>,
 ) {
-    if (shard.slot_index.object_page_lookup.is_empty()
-        || shard.slot_index.object_component_lookup.is_empty())
-        && !shard.slot_index.slot_map.is_empty()
-    {
-        shard.slot_index.rebuild_object_page_lookup();
-    }
+    ensure_slot_index_lookup_maps(shard);
 
     let mut object_pages = BTreeMap::<(String, String), Vec<PageAddress>>::new();
     for entry in entries {
