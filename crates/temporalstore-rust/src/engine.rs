@@ -14476,6 +14476,9 @@ fn compact_page_addresses<'a>(
             compactable_addresses.push(address.clone());
         }
     }
+    if compactable_addresses.is_empty() {
+        return Ok(());
+    }
     let cold_pages = compactable_addresses
         .iter()
         .map(|address| !page_memory_resident(cache, shard_id, address))
@@ -14556,6 +14559,9 @@ fn compact_feature_page_addresses(
         .into_iter()
         .filter(|address| !page_address_is_memory_only(address))
         .collect::<Vec<_>>();
+    if compactable_addresses.is_empty() {
+        return Ok(());
+    }
     let cold_pages = compactable_addresses
         .iter()
         .map(|address| !page_memory_resident(cache, shard_id, address))
