@@ -70,6 +70,9 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             "partial_filter_json": "",
             "partial_require_bounded": True,
             "batch_size": 2,
+            "backfill_window_policy": "conversation",
+            "session_commit_threshold": 20,
+            "idle_commit_timeout_ms": 300000,
             "plan_window_size": 0,
             "plan_max_windows": 128,
             "plan_parallelism": 1,
@@ -172,6 +175,93 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(resumed["resume_state"]["checkpoint_last_sequence"], 1)
             self.assertEqual(resumed["resume_state"]["checkpoint_source_range"]["source_high_watermark_seq"], 1)
             self.assertEqual(resumed["resume_state"]["effective_start_seq"], 2)
+
+    def test_message_backfill_uses_conversation_window_and_flushes_at_end(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            scope = {"account_id": "acct", "tenant_id": "tenant", "user_id": "user", "session_id": "session"}
+            for sequence in range(3):
+                write_sharded(
+                    kv,
+                    "matrixark:mcp",
+                    sequence,
+                    {
+                        "kind": "message",
+                        "messages": [{"role": "user", "content": f"Backfilled conversation message {sequence}."}],
+                        "scope": scope,
+                        "metadata": {"node_path": ["tenant:tenant", "user:user", "session:session"]},
+                        "updated_at_ms": 1000 + sequence,
+                    },
+                )
+            kv.put_string("matrixark:mcp:record_count", "3")
+
+            summary = backfill.run_backfill(self.make_args(path, batch_size=64, resume=False))
+
+            self.assertEqual(summary["backfill_window_policy"], "conversation")
+            records = read_target_records(backfill.LocalJsonKV(path), "matrixark:context_backfill:test")
+            record_types = [record.get("record_type") for record in records]
+            self.assertEqual(record_types.count("context_event"), 3)
+            self.assertEqual(record_types.count("session_buffer_event"), 3)
+            commits = [record for record in records if record.get("record_type") == "context_batch_commit"]
+            self.assertEqual(len(commits), 1)
+            self.assertEqual(commits[0].get("commit_reason"), "hook_boundary")
+            self.assertEqual(commits[0].get("committed_event_count"), 3)
+
+    def test_message_backfill_threshold_commits_during_replay(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            scope = {"account_id": "acct", "tenant_id": "tenant", "user_id": "user", "session_id": "threshold"}
+            for sequence in range(3):
+                write_sharded(
+                    kv,
+                    "matrixark:mcp",
+                    sequence,
+                    {
+                        "kind": "message",
+                        "messages": [{"role": "user", "content": f"Threshold replay message {sequence}."}],
+                        "scope": scope,
+                        "metadata": {"node_path": ["tenant:tenant", "user:user", "session:threshold"]},
+                        "updated_at_ms": 1000 + sequence,
+                    },
+                )
+            kv.put_string("matrixark:mcp:record_count", "3")
+
+            backfill.run_backfill(self.make_args(path, batch_size=64, resume=False, session_commit_threshold=2))
+
+            records = read_target_records(backfill.LocalJsonKV(path), "matrixark:context_backfill:test")
+            commits = [record for record in records if record.get("record_type") == "context_batch_commit"]
+            self.assertEqual([commit.get("commit_reason") for commit in commits], ["threshold", "hook_boundary"])
+            self.assertEqual([commit.get("committed_event_count") for commit in commits], [2, 1])
+
+    def test_message_backfill_idle_gap_commits_previous_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            scope = {"account_id": "acct", "tenant_id": "tenant", "user_id": "user", "session_id": "idle"}
+            for sequence, updated_at_ms in enumerate([1_000, 301_001]):
+                write_sharded(
+                    kv,
+                    "matrixark:mcp",
+                    sequence,
+                    {
+                        "kind": "message",
+                        "messages": [{"role": "user", "content": f"Idle replay message {sequence}."}],
+                        "scope": scope,
+                        "metadata": {"node_path": ["tenant:tenant", "user:user", "session:idle"]},
+                        "updated_at_ms": updated_at_ms,
+                    },
+                )
+            kv.put_string("matrixark:mcp:record_count", "2")
+
+            summary = backfill.run_backfill(self.make_args(path, batch_size=64, resume=False))
+
+            self.assertEqual(summary["idle_commit_timeout_ms"], 300000)
+            records = read_target_records(backfill.LocalJsonKV(path), "matrixark:context_backfill:test")
+            commits = [record for record in records if record.get("record_type") == "context_batch_commit"]
+            self.assertEqual([commit.get("commit_reason") for commit in commits], ["idle_timeout", "hook_boundary"])
+            self.assertEqual([commit.get("committed_event_count") for commit in commits], [1, 1])
 
     def test_dry_run_checks_target_idempotency_by_default(self):
         with tempfile.TemporaryDirectory() as tmp:
