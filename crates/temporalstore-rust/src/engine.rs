@@ -7441,7 +7441,33 @@ fn execute_on_shard(
             remove_if_expired(cache, shard_id, shard, &key);
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             let mut applied = Vec::with_capacity(entries.len());
-            if async_storage && entries.len() >= hash_multiset_batch_memory_put_min() {
+            if !async_storage && entries.len() >= hash_multiset_batch_memory_put_min() {
+                let mut fields = Vec::with_capacity(entries.len());
+                let mut writes = Vec::with_capacity(entries.len());
+                for (field, value) in entries {
+                    let object_id = stable_page_object_id(shard_id, "hash", &key, Some(&field));
+                    fields.push(field);
+                    writes.push((value, Some(object_id), Some(routing_slot)));
+                }
+                if let Ok(addresses) = page_store.append_batch_with_page_metadata(writes) {
+                    for (field, address) in fields.into_iter().zip(addresses) {
+                        upsert_slot_index_page(
+                            cache,
+                            shard,
+                            shard_id,
+                            "hash",
+                            &key,
+                            Some(field.clone()),
+                            address.clone(),
+                            true,
+                            start_routing_slot,
+                            end_routing_slot,
+                        );
+                        invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
+                        applied.push((field, address));
+                    }
+                }
+            } else if async_storage && entries.len() >= hash_multiset_batch_memory_put_min() {
                 let mut page_cache_entries = Vec::with_capacity(entries.len());
                 for (field, value) in entries {
                     let object_id = stable_page_object_id(shard_id, "hash", &key, Some(&field));
