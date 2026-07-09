@@ -249,6 +249,30 @@ TOOLS: list[Json] = [
                     "minimum": 0,
                     "description": "Optional idle timeout. If previous pending same-session messages are older than this, MatrixArk commits that window before ingesting the new message.",
                 },
+                "flush_session_buffer": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "If true, commit pending same-session extraction immediately after this raw message is persisted, even below session_buffer_threshold.",
+                },
+                "conversation_done": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Alias for flush_session_buffer when the caller knows the conversation/thread has ended.",
+                },
+                "session_done": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Alias for flush_session_buffer when the caller knows the session has ended.",
+                },
+                "task_complete": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Alias for flush_session_buffer when the task has completed and buffered extraction should run now.",
+                },
+                "lifecycle_event_type": {
+                    "type": "string",
+                    "description": "Optional agent lifecycle event. stop/session_end/task_complete/post_compact style events force a session buffer commit after raw ingest.",
+                },
             },
             "additionalProperties": True,
         },

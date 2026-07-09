@@ -190,6 +190,58 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             records = adapter.read_all()
             self.assertTrue(any(record.get("record_type") == "context_batch_commit" for record in records))
 
+    def test_session_done_signal_commits_buffer_below_threshold(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            event_log = Path(tmp_dir) / "matrixark-session-done-flush.jsonl"
+            adapter = CountingLocalAdapter(event_log)
+            server = MatrixArkMcpServer(adapter, line_json=True, access_mode="dev")
+            result = {}
+            for index in range(3):
+                result = server.call_tool(
+                    "matrixark_ingest",
+                    {
+                        "messages": [{"role": "user", "content": f"Short task message {index}."}],
+                        "scope": {
+                            "account_id": "acct_done",
+                            "tenant_id": "tenant_done",
+                            "user_id": "user_done",
+                            "session_id": "session_done",
+                        },
+                        "metadata": {"node_path": ["tenant:tenant_done", "user:user_done", "session:session_done"]},
+                        "conversation_done": index == 2,
+                    },
+                )
+            self.assertEqual("accepted", result["status"])
+            self.assertTrue(result["session_buffer"]["boundary_commit_requested"])
+            self.assertEqual("committed", result["auto_batch_extract_result"]["status"])
+            self.assertEqual("hook_boundary", result["auto_batch_extract_result"]["commit_reason"])
+            self.assertEqual(3, result["auto_batch_extract_result"]["committed_event_count"])
+            records = adapter.read_all()
+            self.assertTrue(any(record.get("record_type") == "context_batch_commit" and record.get("trigger_policy") == "force" for record in records))
+
+    def test_lifecycle_stop_signal_commits_buffer_below_threshold(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            event_log = Path(tmp_dir) / "matrixark-lifecycle-stop-flush.jsonl"
+            adapter = CountingLocalAdapter(event_log)
+            server = MatrixArkMcpServer(adapter, line_json=True, access_mode="dev")
+            result = server.call_tool(
+                "matrixark_ingest",
+                {
+                    "messages": [{"role": "assistant", "content": "The task is complete."}],
+                    "scope": {
+                        "account_id": "acct_stop",
+                        "tenant_id": "tenant_stop",
+                        "user_id": "user_stop",
+                        "session_id": "session_stop",
+                    },
+                    "metadata": {"node_path": ["tenant:tenant_stop", "user:user_stop", "session:session_stop"]},
+                    "lifecycle_event_type": "session_end",
+                },
+            )
+            self.assertEqual("committed", result["auto_batch_extract_result"]["status"])
+            self.assertEqual("hook_boundary", result["auto_batch_extract_result"]["commit_reason"])
+            self.assertEqual(1, result["auto_batch_extract_result"]["committed_event_count"])
+
     def test_batch_extract_events_are_timestamp_keyed_under_segment_parent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-batch-segment-time.jsonl")
