@@ -709,6 +709,48 @@ pub(super) fn load_context_children_with_page_cache(
         .unwrap_or_default()
 }
 
+pub(super) fn context_child_ref_exists(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    object_key: &str,
+    child_hash: u64,
+) -> bool {
+    let Some(series) = shard.context_children.get(object_key) else {
+        return false;
+    };
+    let mut page_cache = HashMap::new();
+    let mut batch = Vec::with_capacity(64);
+    for (timeline_key, address) in series.iter().rev() {
+        batch.push((*timeline_key, address.clone()));
+        if batch.len() >= 64 {
+            if read_context_values_cached_with_page_cache::<ContextChildRef>(
+                cache,
+                page_store,
+                shard_id,
+                std::mem::take(&mut batch),
+                &mut page_cache,
+            )
+            .into_iter()
+            .any(|child_ref| child_ref.child_hash == child_hash)
+            {
+                return true;
+            }
+        }
+    }
+    !batch.is_empty()
+        && read_context_values_cached_with_page_cache::<ContextChildRef>(
+            cache,
+            page_store,
+            shard_id,
+            batch,
+            &mut page_cache,
+        )
+        .into_iter()
+        .any(|child_ref| child_ref.child_hash == child_hash)
+}
+
 pub(super) fn context_child_refs_may_exist(shard: &ShardState, object_key: &str) -> bool {
     shard
         .context_children
