@@ -239,6 +239,7 @@ impl CoreIndex {
         if components.is_empty() {
             self.object_page_lookup
                 .remove(&object_page_lookup_key(model_id, object_key, None));
+            self.remove_object_key_lookup_model_entries(model_id, object_key);
             return;
         }
         for component in components {
