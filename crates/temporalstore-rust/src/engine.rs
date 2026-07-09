@@ -7527,6 +7527,7 @@ fn execute_on_shard(
             remove_if_expired(cache, shard_id, shard, &key);
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             let mut applied = Vec::with_capacity(entries.len());
+            let mut batch_seen_fields = HashSet::<String>::new();
             if !async_storage && entries.len() >= hash_multiset_batch_memory_put_min() {
                 let object_id_prefix = stable_page_object_id_prefix(shard_id, "hash", &key);
                 let mut fields = Vec::with_capacity(entries.len());
@@ -7539,18 +7540,37 @@ fn execute_on_shard(
                 }
                 if let Ok(addresses) = page_store.append_batch_with_page_metadata(writes) {
                     for (field, address) in fields.into_iter().zip(addresses) {
-                        upsert_slot_index_page(
-                            cache,
-                            shard,
-                            shard_id,
-                            "hash",
-                            &key,
-                            Some(field.clone()),
-                            address.clone(),
-                            true,
-                            start_routing_slot,
-                            end_routing_slot,
-                        );
+                        let field_existed = shard
+                            .hashes
+                            .get(&key)
+                            .is_some_and(|fields| fields.contains_key(&field));
+                        let first_in_batch = batch_seen_fields.insert(field.clone());
+                        if field_existed || !first_in_batch {
+                            upsert_slot_index_page(
+                                cache,
+                                shard,
+                                shard_id,
+                                "hash",
+                                &key,
+                                Some(field.clone()),
+                                address.clone(),
+                                true,
+                                start_routing_slot,
+                                end_routing_slot,
+                            );
+                        } else {
+                            insert_slot_index_page_without_replacement(
+                                shard,
+                                shard_id,
+                                "hash",
+                                &key,
+                                Some(field.clone()),
+                                address.clone(),
+                                true,
+                                start_routing_slot,
+                                end_routing_slot,
+                            );
+                        }
                         invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
                         applied.push((field, address));
                     }
@@ -7583,18 +7603,37 @@ fn execute_on_shard(
                         ),
                         value,
                     ));
-                    upsert_slot_index_page(
-                        cache,
-                        shard,
-                        shard_id,
-                        "hash",
-                        &key,
-                        Some(field.clone()),
-                        address.clone(),
-                        true,
-                        start_routing_slot,
-                        end_routing_slot,
-                    );
+                    let field_existed = shard
+                        .hashes
+                        .get(&key)
+                        .is_some_and(|fields| fields.contains_key(&field));
+                    let first_in_batch = batch_seen_fields.insert(field.clone());
+                    if field_existed || !first_in_batch {
+                        upsert_slot_index_page(
+                            cache,
+                            shard,
+                            shard_id,
+                            "hash",
+                            &key,
+                            Some(field.clone()),
+                            address.clone(),
+                            true,
+                            start_routing_slot,
+                            end_routing_slot,
+                        );
+                    } else {
+                        insert_slot_index_page_without_replacement(
+                            shard,
+                            shard_id,
+                            "hash",
+                            &key,
+                            Some(field.clone()),
+                            address.clone(),
+                            true,
+                            start_routing_slot,
+                            end_routing_slot,
+                        );
+                    }
                     invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
                     applied.push((field, address));
                 }
@@ -7615,18 +7654,37 @@ fn execute_on_shard(
                         Some(routing_slot),
                         async_storage,
                     ) {
-                        upsert_slot_index_page(
-                            cache,
-                            shard,
-                            shard_id,
-                            "hash",
-                            &key,
-                            Some(field.clone()),
-                            address.clone(),
-                            true,
-                            start_routing_slot,
-                            end_routing_slot,
-                        );
+                        let field_existed = shard
+                            .hashes
+                            .get(&key)
+                            .is_some_and(|fields| fields.contains_key(&field));
+                        let first_in_batch = batch_seen_fields.insert(field.clone());
+                        if field_existed || !first_in_batch {
+                            upsert_slot_index_page(
+                                cache,
+                                shard,
+                                shard_id,
+                                "hash",
+                                &key,
+                                Some(field.clone()),
+                                address.clone(),
+                                true,
+                                start_routing_slot,
+                                end_routing_slot,
+                            );
+                        } else {
+                            insert_slot_index_page_without_replacement(
+                                shard,
+                                shard_id,
+                                "hash",
+                                &key,
+                                Some(field.clone()),
+                                address.clone(),
+                                true,
+                                start_routing_slot,
+                                end_routing_slot,
+                            );
+                        }
                         invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
                         applied.push((field, address));
                     }
@@ -12155,6 +12213,71 @@ fn upsert_slot_index_page(
         removed_addresses,
         BTreeSet::from([live_address_key]),
     );
+}
+
+fn insert_slot_index_page_without_replacement(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    kind: &str,
+    object_key: &str,
+    component: Option<String>,
+    address: PageAddress,
+    dirty: bool,
+    start_routing_slot: u32,
+    end_routing_slot: u32,
+) {
+    let routing_slot = address
+        .routing_slot
+        .unwrap_or_else(|| page_routing_slot(object_key, start_routing_slot, end_routing_slot));
+    let object_id = address
+        .object_id
+        .unwrap_or_else(|| stable_page_object_id(shard_id, kind, object_key, component.as_deref()));
+    let log_backed = !page_address_is_memory_only(&address);
+    let entry = LivePageEntry {
+        object_key: object_key.to_string(),
+        kind: kind.to_string(),
+        component,
+        address,
+        dirty,
+        deleted: false,
+        log_backed,
+    };
+    let page_ref_key = page_index_ref_key(&entry);
+    let page_index = PageIndex {
+        object_key: entry.object_key,
+        model_id: entry.kind,
+        component: entry.component,
+        object_id,
+        address: entry.address,
+        dirty: entry.dirty,
+        deleted: entry.deleted,
+        log_backed: entry.log_backed,
+    };
+    {
+        let slot = shard
+            .slot_index
+            .slot_map
+            .entry(routing_slot)
+            .or_insert_with(|| SlotNode {
+                routing_slot,
+                meta_loaded: true,
+                in_memory: true,
+                ..SlotNode::default()
+            });
+        slot.dirty |= dirty;
+        slot.deleted = false;
+        if dirty {
+            slot.dirty_generation = slot.dirty_generation.saturating_add(1);
+        }
+        slot.in_memory = true;
+        slot.object_index.insert(object_id);
+        slot.page_index
+            .insert(page_ref_key.clone(), page_index.clone());
+        update_slot_layout(slot);
+    }
+    shard
+        .slot_index
+        .insert_object_page_lookup(routing_slot, page_ref_key, &page_index);
 }
 
 fn sync_slot_index_object_pages(
