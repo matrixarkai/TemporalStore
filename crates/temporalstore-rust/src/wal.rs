@@ -257,6 +257,68 @@ impl LocalWriteAheadLogStore {
         Ok(record)
     }
 
+    pub fn append_batch_with_sync(
+        &self,
+        shard_id: ShardId,
+        commands: impl IntoIterator<Item = Command>,
+        sync: bool,
+    ) -> Result<Vec<WriteAheadLogRecord>, WriteAheadLogError> {
+        let commands = commands.into_iter().collect::<Vec<_>>();
+        if commands.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        fs::create_dir_all(&inner.root)?;
+        let last_sequence = match inner.last_sequence_by_shard.get(&shard_id).copied() {
+            Some(sequence) => sequence,
+            None => {
+                let sequence = last_wal_sequence_at(&inner.root, shard_id)?;
+                inner.last_sequence_by_shard.insert(shard_id, sequence);
+                sequence
+            }
+        };
+        let path = write_ahead_log_path(&inner.root, shard_id);
+        let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+        let mut records = Vec::with_capacity(commands.len());
+        let mut bytes_written = 0_u64;
+
+        for (index, command) in commands.into_iter().enumerate() {
+            let sequence = last_sequence.saturating_add(index as u64).saturating_add(1);
+            let record = WriteAheadLogRecord {
+                shard_id,
+                sequence,
+                metadata: Some(WriteAheadLogRecordMetadata::single_command(&command)),
+                command,
+            };
+            let mut bytes = serde_json::to_vec(&record)?;
+            bytes.push(b'\n');
+            file.write_all(&bytes)?;
+            bytes_written = bytes_written.saturating_add(bytes.len() as u64);
+            records.push(record);
+        }
+
+        if sync {
+            file.flush()?;
+            file.sync_data()?;
+            sync_parent_dir(&path)?;
+            inner.stats.flushes += 1;
+            inner.stats.syncs += 1;
+            if let Some(last) = records.last() {
+                inner.stats.last_flushed_sequence = last.sequence;
+            }
+        }
+        let persistent_bytes = path.metadata()?.len();
+        if let Some(last) = records.last() {
+            inner.stats.last_sequence = last.sequence;
+            inner.last_sequence_by_shard.insert(shard_id, last.sequence);
+        }
+        inner.stats.writes = inner.stats.writes.saturating_add(records.len() as u64);
+        inner.stats.bytes_written = inner.stats.bytes_written.saturating_add(bytes_written);
+        inner.stats.persistent_bytes = persistent_bytes;
+        Ok(records)
+    }
+
     pub fn append_replayed_record(
         &self,
         record: WriteAheadLogRecord,
