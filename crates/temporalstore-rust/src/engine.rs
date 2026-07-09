@@ -13313,7 +13313,7 @@ fn compact_page_addresses<'a>(
 ) -> Result<(), Status> {
     for address in addresses {
         let cold_page = !page_memory_resident(cache, shard_id, address);
-        let bytes = read_page_bytes(cache, page_store, shard_id, address).ok_or_else(|| {
+        let bytes = read_page_bytes_cold(page_store, address).ok_or_else(|| {
             Status::error(
                 "page_compaction_failed",
                 "missing page bytes during compaction",
@@ -13323,17 +13323,19 @@ fn compact_page_addresses<'a>(
             .append_with_page_metadata(&bytes, address.object_id, address.routing_slot)
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
         *address = new_address.clone();
-        let _ = cache.put(
-            CacheKey::page_with_slot_generation(
-                shard_id,
-                new_address.page_segment_id,
-                new_address.offset,
-                new_address.length,
-                new_address.routing_slot,
-                new_address.generation,
-            ),
-            bytes,
-        );
+        if !cold_page {
+            let _ = cache.put(
+                CacheKey::page_with_slot_generation(
+                    shard_id,
+                    new_address.page_segment_id,
+                    new_address.offset,
+                    new_address.length,
+                    new_address.routing_slot,
+                    new_address.generation,
+                ),
+                bytes,
+            );
+        }
         rewrite_stats.record(model_id, cold_page);
     }
     Ok(())
@@ -13351,27 +13353,28 @@ fn compact_feature_page_addresses(
     let mut rewritten = HashMap::<PageAddress, PageAddress>::new();
     for old_address in unique_addresses {
         let cold_page = !page_memory_resident(cache, shard_id, &old_address);
-        let bytes =
-            read_page_bytes(cache, page_store, shard_id, &old_address).ok_or_else(|| {
-                Status::error(
-                    "page_compaction_failed",
-                    "missing feature page bytes during compaction",
-                )
-            })?;
+        let bytes = read_page_bytes_cold(page_store, &old_address).ok_or_else(|| {
+            Status::error(
+                "page_compaction_failed",
+                "missing feature page bytes during compaction",
+            )
+        })?;
         let new_address = page_store
             .append_with_page_metadata(&bytes, old_address.object_id, old_address.routing_slot)
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
-        let _ = cache.put(
-            CacheKey::page_with_slot_generation(
-                shard_id,
-                new_address.page_segment_id,
-                new_address.offset,
-                new_address.length,
-                new_address.routing_slot,
-                new_address.generation,
-            ),
-            bytes,
-        );
+        if !cold_page {
+            let _ = cache.put(
+                CacheKey::page_with_slot_generation(
+                    shard_id,
+                    new_address.page_segment_id,
+                    new_address.offset,
+                    new_address.length,
+                    new_address.routing_slot,
+                    new_address.generation,
+                ),
+                bytes,
+            );
+        }
         rewritten.insert(old_address, new_address);
         rewrite_stats.record(model_id, cold_page);
     }
