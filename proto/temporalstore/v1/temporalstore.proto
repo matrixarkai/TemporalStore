@@ -258,6 +258,12 @@ message Command {
     RiskCount risk_count = 34;
     RiskChangeAdd risk_change_add = 35;
     RiskDetail risk_detail = 36;
+    RiskFamilySet risk_family_set = 37;
+    RiskFamilyQuery risk_family_query = 38;
+    RiskFamilySetAndGet risk_family_set_and_get = 39;
+    RiskFolSet risk_fol_set = 40;
+    RiskFolQuery risk_fol_query = 41;
+    RiskManager risk_manager = 42;
   }
 }
 
@@ -433,6 +439,19 @@ message IpsQueryLast {
   uint32 limit = 2;
 }
 
+enum RiskFamily {
+  RISK_FAMILY_UNSPECIFIED = 0;
+  RISK_FAMILY_H = 1;
+  RISK_FAMILY_CPC = 2;
+  RISK_FAMILY_FOL = 3;
+}
+
+enum RiskFolType {
+  RISK_FOL_TYPE_UNSPECIFIED = 0;
+  RISK_FOL_TYPE_FIRST = 1;
+  RISK_FOL_TYPE_LAST = 2;
+}
+
 message RiskIncrement {
   string key = 1;
   string family = 2;
@@ -474,6 +493,47 @@ message RiskQuery {
   string family = 2;
   uint64 start_ms = 3;
   uint64 end_ms = 4;
+}
+
+message RiskFamilySet {
+  RiskFamily family = 1;
+  string key = 2;
+  uint64 timestamp_ms = 3;
+  int64 amount = 4;
+}
+
+message RiskFamilyQuery {
+  RiskFamily family = 1;
+  string key = 2;
+  uint64 start_ms = 3;
+  uint64 end_ms = 4;
+  string aggregator = 5;
+}
+
+message RiskFamilySetAndGet {
+  RiskFamily family = 1;
+  string key = 2;
+  uint64 timestamp_ms = 3;
+  int64 amount = 4;
+  uint64 start_ms = 5;
+  uint64 end_ms = 6;
+  string aggregator = 7;
+}
+
+message RiskFolSet {
+  string key = 1;
+  bytes value = 2;
+  uint64 occur_time_ms = 3;
+  uint64 ttl_ms = 4;
+  RiskFolType fol_type = 5;
+}
+
+message RiskFolQuery {
+  string key = 1;
+}
+
+message RiskManager {
+  string key = 1;
 }
 
 message ContextNode {
