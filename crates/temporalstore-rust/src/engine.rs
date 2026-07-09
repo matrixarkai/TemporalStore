@@ -9894,7 +9894,13 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
 
 fn mark_slot_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
     let mut removed = false;
+    let lookup_enabled = !shard.slot_index.object_component_lookup.is_empty();
     let target_slots = slot_index_target_slots_for_object_key(shard, key);
+    if lookup_enabled {
+        shard
+            .slot_index
+            .remove_object_lookup_entries(key, storage_model_kinds());
+    }
     for routing_slot in target_slots {
         let Some(slot) = shard.slot_index.slot_map.get_mut(&routing_slot) else {
             continue;
@@ -9920,7 +9926,7 @@ fn mark_slot_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
             update_slot_layout(slot);
         }
     }
-    if removed {
+    if removed && !lookup_enabled {
         shard.slot_index.rebuild_object_page_lookup();
     }
     removed
