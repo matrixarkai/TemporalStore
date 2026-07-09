@@ -830,6 +830,9 @@ impl LocalBlockStore {
         addresses: &[BlockAddress],
         no_cache_fill: bool,
     ) -> Vec<Result<Vec<u8>, BlockStoreError>> {
+        if addresses.len() < 2 {
+            return self.read_batch_with_cache_policy_deduped(addresses, no_cache_fill);
+        }
         let mut duplicate_groups = HashMap::<BlockAddress, Vec<usize>>::new();
         for (index, address) in addresses.iter().enumerate() {
             duplicate_groups
