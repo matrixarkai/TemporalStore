@@ -10150,6 +10150,36 @@ fn mark_slot_index_page_deleted(
             update_slot_layout(slot);
         }
     }
+    if lookup_enabled && !removed {
+        for slot in shard.slot_index.slot_map.values_mut() {
+            let mut slot_removed = false;
+            let mut deleted_object_ids = BTreeSet::new();
+            slot.page_index.retain(|_, page| {
+                let matches = page.model_id == model_id
+                    && page.object_key == key
+                    && page.component.as_deref() == component;
+                if matches {
+                    deleted_object_ids.insert(page.object_id);
+                    removed_addresses.push(page.address.clone());
+                    slot_removed = true;
+                    removed = true;
+                    false
+                } else {
+                    true
+                }
+            });
+            if slot_removed {
+                slot.object_index.extend(deleted_object_ids.iter().copied());
+                slot.deleted_object_index.extend(deleted_object_ids);
+                slot.dirty = true;
+                slot.deleted = slot.page_index.is_empty();
+                slot.dirty_generation = slot.dirty_generation.saturating_add(1);
+                slot.meta_loaded = true;
+                slot.in_memory = !slot.page_index.is_empty();
+                update_slot_layout(slot);
+            }
+        }
+    }
     if removed && !lookup_enabled {
         shard.slot_index.rebuild_object_page_lookup();
     }
@@ -11600,6 +11630,7 @@ fn upsert_slot_index_page(
         entry.component.as_deref(),
     );
     if let Some(page_refs) = direct_page_refs {
+        let mut removed_direct = false;
         for page_ref in page_refs {
             let Some(slot) = shard.slot_index.slot_map.get_mut(&page_ref.routing_slot) else {
                 continue;
@@ -11609,12 +11640,34 @@ fn upsert_slot_index_page(
                 page.object_id
             });
             if let Some(removed_object_id) = removed_object_id {
+                removed_direct = true;
                 if !slot
                     .page_index
                     .values()
                     .any(|page| page.object_id == removed_object_id)
                 {
                     slot.object_index.remove(&removed_object_id);
+                }
+                update_slot_layout(slot);
+            }
+        }
+        if !removed_direct {
+            for slot in shard.slot_index.slot_map.values_mut() {
+                slot.page_index.retain(|_, page| {
+                    let remove = page.object_key == entry.object_key
+                        && page.model_id == entry.kind
+                        && page.component == entry.component;
+                    if remove {
+                        removed_addresses.push(page.address.clone());
+                    }
+                    !remove
+                });
+                if !slot
+                    .page_index
+                    .values()
+                    .any(|page| page.object_id == object_id)
+                {
+                    slot.object_index.remove(&object_id);
                 }
                 update_slot_layout(slot);
             }
@@ -11745,6 +11798,29 @@ fn sync_slot_index_object_pages(
             }
             slot.in_memory = !slot.page_index.is_empty();
             update_slot_layout(slot);
+        }
+    }
+    if lookup_enabled && !removed_any {
+        for slot in shard.slot_index.slot_map.values_mut() {
+            let before = slot.page_index.len();
+            slot.page_index.retain(|_, page| {
+                let remove = page.model_id == kind && page.object_key == object_key;
+                if remove {
+                    removed_addresses.push(page.address.clone());
+                }
+                !remove
+            });
+            if slot.page_index.len() != before {
+                removed_any = true;
+                touched_slots.insert(slot.routing_slot);
+                slot.dirty |= dirty;
+                slot.deleted = slot.page_index.is_empty();
+                if dirty {
+                    slot.dirty_generation = slot.dirty_generation.saturating_add(1);
+                }
+                slot.in_memory = !slot.page_index.is_empty();
+                update_slot_layout(slot);
+            }
         }
     }
 
