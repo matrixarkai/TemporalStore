@@ -2044,6 +2044,10 @@ pub fn default_storage_lifecycle_metrics() -> BTreeMap<String, u64> {
         "page_index_entry_count",
         "block_index_entry_count",
         "page_address_count",
+        "page_index_lookup_count",
+        "page_index_lookup_ms",
+        "block_index_lookup_count",
+        "block_index_lookup_ms",
         "unreadable_page_refs",
         "checksum_mismatches",
         "missing_owner_ref_count",
@@ -2260,8 +2264,22 @@ pub fn default_storage_read_contract(
         contract_u64(metric(metrics, "object_page_index_lookup_count")),
     );
     contract.insert(
+        "page_index_lookup_count".to_string(),
+        contract_u64(
+            metric(metrics, "page_index_lookup_count")
+                .max(metric(metrics, "object_page_index_lookup_count")),
+        ),
+    );
+    contract.insert(
         "object_page_index_lookup_ms".to_string(),
         contract_u64(metric(metrics, "object_page_index_lookup_ms")),
+    );
+    contract.insert(
+        "page_index_lookup_ms".to_string(),
+        contract_u64(
+            metric(metrics, "page_index_lookup_ms")
+                .max(metric(metrics, "object_page_index_lookup_ms")),
+        ),
     );
     contract.insert(
         "page_address_count".to_string(),

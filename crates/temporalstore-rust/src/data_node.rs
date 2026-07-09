@@ -433,6 +433,11 @@ fn apply_shard_storage_metrics(
         );
         add(
             metrics,
+            "page_index_lookup_count",
+            storage.page_reads.max(page_entries),
+        );
+        add(
+            metrics,
             "block_index_lookup_count",
             storage
                 .page_reads
