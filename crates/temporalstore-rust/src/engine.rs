@@ -9107,6 +9107,7 @@ fn execute_on_shard(
                 .context_indexes
                 .get(&object_key)
                 .map(|series| {
+                    let mut page_cache = HashMap::new();
                     series
                         .range(
                             context_timeline_start(start_time_ms)
@@ -9114,12 +9115,13 @@ fn execute_on_shard(
                         )
                         .take(context_limit(limit))
                         .filter_map(|(timeline_key, address)| {
-                            read_context_value::<ContextIndexRef>(
+                            read_context_value_cached::<ContextIndexRef>(
                                 cache,
                                 page_store,
                                 shard_id,
                                 *timeline_key,
                                 address,
+                                &mut page_cache,
                             )
                         })
                         .collect()
