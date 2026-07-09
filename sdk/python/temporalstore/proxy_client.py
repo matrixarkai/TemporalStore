@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
@@ -77,6 +78,7 @@ class ProxyClient:
         body: Dict[str, Any] = {
             "namespace": self.options.namespace_name,
             "table": self.options.table_name,
+            "table_name": self.options.table_name,
             "entries": list(entries),
         }
         if count_key is not None:
@@ -114,6 +116,7 @@ class ProxyClient:
         body = {
             "namespace": self.options.namespace_name,
             "table": self.options.table_name,
+            "table_name": self.options.table_name,
             "count_key": count_key,
             "record_hash_key": record_hash_key,
             "shard_size": int(shard_size),
@@ -135,6 +138,7 @@ class ProxyClient:
         body = {
             "namespace": self.options.namespace_name,
             "table": self.options.table_name,
+            "table_name": self.options.table_name,
             "count_key": count_key,
             "record_hash_key": record_hash_key,
             "shard_size": int(shard_size),
@@ -184,8 +188,8 @@ class ProxyClient:
 
     def add_sequence_feature_rows(self, key: str, rows: Iterable[SequenceFeatureRow]) -> None:
         body = self._key_body(key)
-        body["command"] = {"kind": "sequence_add", "key": key, "rows": [_sequence_row_body(row) for row in rows]}
-        self._post("/ProxyService/ExecuteTableCmd", body)
+        body["rows"] = [_sequence_row_body(row) for row in rows]
+        self._post("/ProxyService/SequenceAdd", body)
 
     def query_sequence_feature_rows(
         self,
@@ -195,16 +199,8 @@ class ProxyClient:
         count: int,
         filters: Iterable[FeatureFilter] = (),
     ) -> List[SequenceFeatureRow]:
-        body = self._key_body(key)
-        body["command"] = {
-            "kind": "sequence_query",
-            "key": key,
-            "start_ms": start_ts,
-            "end_ms": end_ts,
-            "count": int(count),
-            "filters": [_feature_filter_body(item) for item in filters],
-        }
-        data = self._post("/ProxyService/ExecuteTableCmd", body)
+        body = self._query_body(key, start_ts, end_ts, count, filters)
+        data = self._post("/ProxyService/SequenceQuery", body)
         return [
             SequenceFeatureRow(
                 int(row.get("timestamp", row.get("timestamp_ms", 0))),
@@ -228,22 +224,19 @@ class ProxyClient:
         body = {
             "namespace": self.options.namespace_name,
             "table": self.options.table_name,
+            "table_name": self.options.table_name,
             "ips_table": table,
+            "key": table,
             "uid": uid,
             "timestamp_us": timestamp_us,
+            "timestamp_ms": int(timestamp_us // 1000),
             "action_type": action_type,
+            "table_id": int(logical_table),
             "logical_table": logical_table,
             "features": [asdict(feature) for feature in features],
         }
-        body["command"] = {
-            "kind": "ips_add_with_options",
-            "key": table,
-            "timestamp_ms": int(timestamp_us // 1000),
-            "instance": _bytes_value(json.dumps(body["features"], separators=(",", ":"))),
-            "action_type": int(action_type),
-            "table_id": int(logical_table),
-        }
-        self._post("/ProxyService/ExecuteTableCmd", body)
+        body["instance"] = _bytes_value(json.dumps(body["features"], separators=(",", ":")))
+        self._post("/ProxyService/IpsAdd", body)
 
     def query_ips_last_instances(
         self,
@@ -258,16 +251,18 @@ class ProxyClient:
         body = {
             "namespace": self.options.namespace_name,
             "table": self.options.table_name,
+            "table_name": self.options.table_name,
             "ips_table": table,
+            "key": table,
             "uid": uid,
             "action_type": action_type,
             "logical_table": logical_table,
             "slot": slot,
             "top_k": top_k,
             "last_instances": last_instances,
+            "count": int(last_instances),
         }
-        body["command"] = {"kind": "ips_query_last", "key": table, "count": int(last_instances)}
-        data = self._post("/ProxyService/ExecuteTableCmd", body)
+        data = self._post("/ProxyService/IpsQueryLast", body)
         return [
             IpsFeatureStat(
                 int(row.get("id", 0)),
@@ -294,18 +289,15 @@ class ProxyClient:
             {
                 "amount": amount,
                 "ttl_seconds": ttl_seconds,
+                "ttl_ms": ttl_seconds * 1000,
                 "precision": int(precision),
+                "precision_ms": _risk_precision_ms(precision),
                 "uuid": uuid,
                 "occur_time_seconds": occur_time_seconds,
+                "timestamp_ms": _proxy_timestamp_ms(occur_time_seconds),
             }
         )
-        body["command"] = {
-            "kind": "risk_increment",
-            "key": key,
-            "timestamp_ms": int(occur_time_seconds * 1000) if occur_time_seconds else 0,
-            "amount": int(amount),
-        }
-        self._post("/ProxyService/ExecuteTableCmd", body)
+        self._post("/ProxyService/RiskIncrement", body)
 
     def risk_count(
         self,
@@ -324,8 +316,10 @@ class ProxyClient:
                 "window_unit": int(window_unit),
             }
         )
-        body["command"] = {"kind": "risk_count", "key": key, "start_ms": int(window_start), "end_ms": int(window_end)}
-        data = self._post("/ProxyService/ExecuteTableCmd", body)
+        start_ms, end_ms = _risk_window_ms(window_start, window_end, window_unit)
+        body["start_ms"] = start_ms
+        body["end_ms"] = end_ms
+        data = self._post("/ProxyService/RiskCount", body)
         return int(data.get("count", 0))
 
     def _key_body(self, key: str) -> Dict[str, Any]:
@@ -464,3 +458,42 @@ def _sequence_row_result(value: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(value)
     out["timestamp"] = int(out.get("timestamp", out.get("timestamp_ms", 0)))
     return out
+
+
+def _proxy_timestamp_ms(occur_time_seconds: int) -> int:
+    if occur_time_seconds:
+        return int(occur_time_seconds) * 1000
+    return int(time.time() * 1000)
+
+
+def _risk_precision_ms(precision: RiskPrecision) -> int:
+    values = {
+        RiskPrecision.ONE_SECOND: 1000,
+        RiskPrecision.FIVE_SECONDS: 5000,
+        RiskPrecision.TEN_SECONDS: 10000,
+        RiskPrecision.ONE_MINUTE: 60000,
+        RiskPrecision.FIVE_MINUTES: 5 * 60000,
+        RiskPrecision.TEN_MINUTES: 10 * 60000,
+        RiskPrecision.ONE_HOUR: 60 * 60000,
+        RiskPrecision.ONE_DAY: 24 * 60 * 60000,
+        RiskPrecision.ONE_MONTH: 30 * 24 * 60 * 60000,
+    }
+    return values.get(precision, 60000)
+
+
+def _risk_window_ms(window_start: int, window_end: int, unit: WindowUnit) -> tuple[int, int]:
+    end = int(window_end) if window_end > 0 else int(time.time() * 1000)
+    start = int(window_start)
+    if start < 0:
+        start = end - _window_unit_ms(unit)
+    return max(start, 0), end
+
+
+def _window_unit_ms(unit: WindowUnit) -> int:
+    values = {
+        WindowUnit.SECOND: 1000,
+        WindowUnit.MINUTE: 60000,
+        WindowUnit.HOUR: 60 * 60000,
+        WindowUnit.DAY: 24 * 60 * 60000,
+    }
+    return values.get(unit, 60 * 60000)
