@@ -7780,9 +7780,13 @@ fn execute_on_shard(
             let series = shard.features.entry(key.clone()).or_default();
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             let points = sorted_feature_points(points);
+            let replacing_existing_timestamp = points
+                .iter()
+                .any(|point| series.contains_key(&point.timestamp_ms));
             // feature_append_chunks_and_persists_timestamped_kv_pages: append each
             // timestamped feature point through the page-backed KV layout, then
             // publish the resulting page addresses into the slot index below.
+            let mut appended_addresses = Vec::new();
             if let Ok(addresses) = append_timestamped_kv_pages(
                 cache,
                 page_store,
@@ -7794,29 +7798,46 @@ fn execute_on_shard(
                 async_storage,
             ) {
                 for (timestamp_ms, address) in addresses {
+                    appended_addresses.push(address.clone());
                     series.insert(timestamp_ms, address);
                     mutated = true;
                 }
             }
+            let mut retention_trimmed = false;
             while series.len() > feature_max_size {
                 if let Some(oldest) = series.keys().next().copied() {
                     series.remove(&oldest);
+                    retention_trimmed = true;
                 } else {
                     break;
                 }
             }
-            let live_addresses = series.values().cloned().collect::<Vec<_>>();
-            sync_slot_index_object_pages(
-                cache,
-                shard,
-                shard_id,
-                "feature",
-                &key,
-                live_addresses,
-                mutated,
-                start_routing_slot,
-                end_routing_slot,
-            );
+            if !appended_addresses.is_empty() && !replacing_existing_timestamp && !retention_trimmed
+            {
+                append_slot_index_object_pages(
+                    shard,
+                    shard_id,
+                    "feature",
+                    &key,
+                    appended_addresses,
+                    mutated,
+                    start_routing_slot,
+                    end_routing_slot,
+                );
+            } else {
+                let live_addresses = series.values().cloned().collect::<Vec<_>>();
+                sync_slot_index_object_pages(
+                    cache,
+                    shard,
+                    shard_id,
+                    "feature",
+                    &key,
+                    live_addresses,
+                    mutated,
+                    start_routing_slot,
+                    end_routing_slot,
+                );
+            }
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Empty
         }
@@ -7830,6 +7851,7 @@ fn execute_on_shard(
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             let mut accepted_points = Vec::new();
             let mut accepted_timestamps = BTreeSet::new();
+            let mut replacing_existing_timestamp = false;
             for point in sorted_feature_points(points) {
                 let exists = series.contains_key(&point.timestamp_ms)
                     || accepted_timestamps.contains(&point.timestamp_ms);
@@ -7840,10 +7862,12 @@ fn execute_on_shard(
                     FeatureWritePolicy::Block => false,
                 };
                 if should_write {
+                    replacing_existing_timestamp |= exists;
                     accepted_timestamps.insert(point.timestamp_ms);
                     accepted_points.push(point);
                 }
             }
+            let mut appended_addresses = Vec::new();
             if !accepted_points.is_empty() {
                 if let Ok(addresses) = append_timestamped_kv_pages(
                     cache,
@@ -7856,31 +7880,48 @@ fn execute_on_shard(
                     async_storage,
                 ) {
                     for (timestamp_ms, address) in addresses {
+                        appended_addresses.push(address.clone());
                         series.insert(timestamp_ms, address);
                         mutated = true;
                     }
                 }
             }
+            let mut retention_trimmed = false;
             while series.len() > feature_max_size {
                 if let Some(oldest) = series.keys().next().copied() {
                     series.remove(&oldest);
                     mutated = true;
+                    retention_trimmed = true;
                 } else {
                     break;
                 }
             }
-            let live_addresses = series.values().cloned().collect::<Vec<_>>();
-            sync_slot_index_object_pages(
-                cache,
-                shard,
-                shard_id,
-                "feature",
-                &key,
-                live_addresses,
-                mutated,
-                start_routing_slot,
-                end_routing_slot,
-            );
+            if !appended_addresses.is_empty() && !replacing_existing_timestamp && !retention_trimmed
+            {
+                append_slot_index_object_pages(
+                    shard,
+                    shard_id,
+                    "feature",
+                    &key,
+                    appended_addresses,
+                    mutated,
+                    start_routing_slot,
+                    end_routing_slot,
+                );
+            } else {
+                let live_addresses = series.values().cloned().collect::<Vec<_>>();
+                sync_slot_index_object_pages(
+                    cache,
+                    shard,
+                    shard_id,
+                    "feature",
+                    &key,
+                    live_addresses,
+                    mutated,
+                    start_routing_slot,
+                    end_routing_slot,
+                );
+            }
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Integer {
                 value: if mutated { 1 } else { 0 },
@@ -8059,6 +8100,10 @@ fn execute_on_shard(
                 })
                 .collect::<Vec<_>>();
             let points = sorted_feature_points(points);
+            let replacing_existing_timestamp = points
+                .iter()
+                .any(|point| series.contains_key(&point.timestamp_ms));
+            let mut appended_addresses = Vec::new();
             if let Ok(addresses) = append_timestamped_kv_pages(
                 cache,
                 page_store,
@@ -8070,29 +8115,46 @@ fn execute_on_shard(
                 async_storage,
             ) {
                 for (timestamp_ms, address) in addresses {
+                    appended_addresses.push(address.clone());
                     series.insert(timestamp_ms, address);
                     mutated = true;
                 }
             }
+            let mut retention_trimmed = false;
             while series.len() > feature_max_size {
                 if let Some(oldest) = series.keys().next().copied() {
                     series.remove(&oldest);
+                    retention_trimmed = true;
                 } else {
                     break;
                 }
             }
-            let live_addresses = series.values().cloned().collect::<Vec<_>>();
-            sync_slot_index_object_pages(
-                cache,
-                shard,
-                shard_id,
-                "sequence",
-                &key,
-                live_addresses,
-                mutated,
-                start_routing_slot,
-                end_routing_slot,
-            );
+            if !appended_addresses.is_empty() && !replacing_existing_timestamp && !retention_trimmed
+            {
+                append_slot_index_object_pages(
+                    shard,
+                    shard_id,
+                    "sequence",
+                    &key,
+                    appended_addresses,
+                    mutated,
+                    start_routing_slot,
+                    end_routing_slot,
+                );
+            } else {
+                let live_addresses = series.values().cloned().collect::<Vec<_>>();
+                sync_slot_index_object_pages(
+                    cache,
+                    shard,
+                    shard_id,
+                    "sequence",
+                    &key,
+                    live_addresses,
+                    mutated,
+                    start_routing_slot,
+                    end_routing_slot,
+                );
+            }
             CommandResponse::Empty
         }
         Command::SequenceQuery {
@@ -12156,6 +12218,83 @@ fn sync_slot_index_object_pages(
         shard.slot_index.rebuild_object_page_lookup();
     }
     invalidate_page_addresses_except(cache, shard_id, removed_addresses, live_address_keys);
+}
+
+fn append_slot_index_object_pages(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    kind: &str,
+    object_key: &str,
+    addresses: Vec<PageAddress>,
+    dirty: bool,
+    start_routing_slot: u32,
+    end_routing_slot: u32,
+) {
+    if addresses.is_empty() {
+        return;
+    }
+    ensure_slot_index_lookup_maps(shard);
+    let mut touched_slots = BTreeSet::new();
+    let mut unique_addresses = BTreeMap::<PagePhysicalIdentityKey, PageAddress>::new();
+    for address in addresses {
+        unique_addresses.insert(page_physical_identity_key(&address), address);
+    }
+    for address in unique_addresses.into_values() {
+        let routing_slot = address
+            .routing_slot
+            .unwrap_or_else(|| page_routing_slot(object_key, start_routing_slot, end_routing_slot));
+        let object_id = address
+            .object_id
+            .unwrap_or_else(|| stable_page_object_id(shard_id, kind, object_key, None));
+        let entry = LivePageEntry {
+            object_key: object_key.to_string(),
+            kind: kind.to_string(),
+            component: None,
+            log_backed: !page_address_is_memory_only(&address),
+            address,
+            dirty,
+            deleted: false,
+        };
+        let page_ref_key = page_index_ref_key(&entry);
+        let page_index = PageIndex {
+            object_key: entry.object_key,
+            model_id: entry.kind,
+            component: entry.component,
+            object_id,
+            address: entry.address,
+            dirty: entry.dirty,
+            deleted: entry.deleted,
+            log_backed: entry.log_backed,
+        };
+        {
+            let slot = shard
+                .slot_index
+                .slot_map
+                .entry(routing_slot)
+                .or_insert_with(|| SlotNode {
+                    routing_slot,
+                    meta_loaded: true,
+                    in_memory: true,
+                    ..SlotNode::default()
+                });
+            slot.dirty |= dirty;
+            slot.deleted = false;
+            if dirty || touched_slots.insert(routing_slot) {
+                slot.dirty_generation = slot.dirty_generation.saturating_add(1);
+            }
+            slot.meta_loaded = true;
+            slot.loading = false;
+            slot.in_memory = true;
+            slot.object_index.insert(object_id);
+            slot.deleted_object_index.remove(&object_id);
+            slot.page_index
+                .insert(page_ref_key.clone(), page_index.clone());
+            update_slot_layout(slot);
+        }
+        shard
+            .slot_index
+            .insert_object_page_lookup(routing_slot, page_ref_key, &page_index);
+    }
 }
 
 fn sync_slot_index_live_page_entries(
