@@ -13547,9 +13547,9 @@ fn storage_model_kinds() -> &'static [&'static str] {
 
 fn invalidate_record_all(cache: &MultiLayerCache, shard_id: ShardId, key: &str) {
     let _ = cache.invalidate(&CacheKey::string(shard_id, key));
-    let _ = cache.invalidate_record(shard_id, "hash", key);
-    let _ = cache.invalidate_record(shard_id, "set", key);
-    let _ = cache.invalidate_record(shard_id, "feature", key);
+    for namespace in storage_model_kinds() {
+        let _ = cache.invalidate_record(shard_id, namespace, key);
+    }
 }
 
 fn read_page_bytes(
