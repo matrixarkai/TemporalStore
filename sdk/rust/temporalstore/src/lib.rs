@@ -140,10 +140,12 @@ pub struct SequenceFeatureRow {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "proxy", derive(serde::Serialize, serde::Deserialize))]
 pub struct IpsFeatureStat {
     pub id: i64,
     pub slot: i32,
     pub has_slot: bool,
+    #[cfg_attr(feature = "proxy", serde(rename = "type"))]
     pub kind: i32,
     pub v1: i32,
     pub v2: i32,
@@ -1562,6 +1564,88 @@ impl ProxyClient {
         .map_err(json_error)
     }
 
+    pub fn add_ips_instance(&self, instance: &IpsInstance) -> Result<()> {
+        let encoded = serde_json::to_vec(&instance.features).map_err(json_error)?;
+        let body = self.proxy_service_body(
+            &instance.table,
+            &[
+                (
+                    "timestamp_ms",
+                    serde_json::json!((instance.timestamp_us.max(0) as u64) / 1000),
+                ),
+                ("instance", serde_json::json!(encoded)),
+                ("action_type", serde_json::json!(instance.action_type.max(0) as u32)),
+                ("table_id", serde_json::json!(instance.logical_table.max(0) as u64)),
+            ],
+        );
+        self.proxy_service_execute("/ProxyService/IpsAdd", body)
+            .map(|_| ())
+    }
+
+    pub fn query_ips_last_instances(&self, query: &IpsLastQuery) -> Result<Vec<IpsFeatureStat>> {
+        let body = self.proxy_service_body(
+            &query.table,
+            &[(
+                "count",
+                serde_json::json!(query.last_instances.max(0) as usize),
+            )],
+        );
+        let response = self.proxy_service_execute("/ProxyService/IpsQueryLast", body)?;
+        let points = response_feature_points(response)?;
+        let mut features = Vec::new();
+        for point in points {
+            let decoded: Vec<IpsFeatureStat> =
+                serde_json::from_slice(&point.value).map_err(json_error)?;
+            features.extend(decoded);
+        }
+        Ok(features)
+    }
+
+    pub fn risk_increment(
+        &self,
+        key: &str,
+        amount: i64,
+        ttl_seconds: u64,
+        precision: RiskPrecision,
+        _uuid: &str,
+        occur_time_seconds: u64,
+    ) -> Result<()> {
+        let timestamp_ms = proxy_timestamp_ms(occur_time_seconds);
+        let body = self.proxy_service_body(
+            key,
+            &[
+                ("timestamp_ms", serde_json::json!(timestamp_ms)),
+                ("amount", serde_json::json!(amount)),
+                ("precision_ms", serde_json::json!(risk_precision_ms(precision))),
+                ("ttl_ms", serde_json::json!(ttl_seconds.saturating_mul(1000))),
+            ],
+        );
+        self.proxy_service_execute("/ProxyService/RiskIncrement", body)
+            .map(|_| ())
+    }
+
+    pub fn risk_count(
+        &self,
+        key: &str,
+        _precision: RiskPrecision,
+        window: RiskWindow,
+    ) -> Result<i64> {
+        let (start_ms, end_ms) = risk_window_ms(window);
+        let body = self.proxy_service_body(
+            key,
+            &[
+                ("start_ms", serde_json::json!(start_ms)),
+                ("end_ms", serde_json::json!(end_ms)),
+            ],
+        );
+        let response = self.proxy_service_execute("/ProxyService/RiskCount", body)?;
+        Ok(response
+            .get("value")
+            .or_else(|| response.get("count"))
+            .and_then(|value| value.as_i64())
+            .unwrap_or_default())
+    }
+
     pub fn add_feature_points(&self, key: &str, points: &[FeaturePoint]) -> Result<()> {
         self.feature_add(key, points)
     }
@@ -2096,6 +2180,57 @@ fn response_feature_points(response: serde_json::Value) -> Result<Vec<FeaturePoi
 }
 
 #[cfg(feature = "proxy")]
+fn proxy_timestamp_ms(occur_time_seconds: u64) -> u64 {
+    if occur_time_seconds > 0 {
+        return occur_time_seconds.saturating_mul(1000);
+    }
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default()
+}
+
+#[cfg(feature = "proxy")]
+fn risk_precision_ms(precision: RiskPrecision) -> u64 {
+    match precision {
+        RiskPrecision::OneSecond => 1000,
+        RiskPrecision::FiveSeconds => 5000,
+        RiskPrecision::TenSeconds => 10000,
+        RiskPrecision::OneMinute => 60_000,
+        RiskPrecision::FiveMinutes => 5 * 60_000,
+        RiskPrecision::TenMinutes => 10 * 60_000,
+        RiskPrecision::OneHour => 60 * 60_000,
+        RiskPrecision::OneDay => 24 * 60 * 60_000,
+        RiskPrecision::OneMonth => 30 * 24 * 60 * 60_000,
+    }
+}
+
+#[cfg(feature = "proxy")]
+fn risk_window_ms(window: RiskWindow) -> (u64, u64) {
+    let end = if window.end > 0 {
+        window.end as u64
+    } else {
+        proxy_timestamp_ms(0)
+    };
+    let start = if window.start >= 0 {
+        window.start as u64
+    } else {
+        end.saturating_sub(risk_window_unit_ms(window.unit))
+    };
+    (start, end)
+}
+
+#[cfg(feature = "proxy")]
+fn risk_window_unit_ms(unit: RiskWindowUnit) -> u64 {
+    match unit {
+        RiskWindowUnit::Second => 1000,
+        RiskWindowUnit::Minute => 60_000,
+        RiskWindowUnit::Hour => 60 * 60_000,
+        RiskWindowUnit::Day => 24 * 60 * 60_000,
+    }
+}
+
+#[cfg(feature = "proxy")]
 fn io_error(err: std::io::Error) -> Error {
     Error {
         code: 0,
@@ -2502,6 +2637,25 @@ mod tests {
             Option<usize>,
             &[super::FeatureFilter],
         ) -> super::Result<Vec<super::FeaturePoint>> = ProxyClient::feature_query_filtered;
+        let _: fn(&ProxyClient, &super::IpsInstance) -> super::Result<()> =
+            ProxyClient::add_ips_instance;
+        let _: fn(&ProxyClient, &super::IpsLastQuery) -> super::Result<Vec<super::IpsFeatureStat>> =
+            ProxyClient::query_ips_last_instances;
+        let _: fn(
+            &ProxyClient,
+            &str,
+            i64,
+            u64,
+            super::RiskPrecision,
+            &str,
+            u64,
+        ) -> super::Result<()> = ProxyClient::risk_increment;
+        let _: fn(
+            &ProxyClient,
+            &str,
+            super::RiskPrecision,
+            super::RiskWindow,
+        ) -> super::Result<i64> = ProxyClient::risk_count;
         let _: fn(&ProxyClient, &str, &str) -> super::Result<()> = ProxyClient::set;
         let _: fn(&ProxyClient, &str) -> super::Result<Option<String>> = ProxyClient::get;
         let _: fn(&ProxyClient, &str, u64, i64) -> super::Result<()> = ProxyClient::risk_hset;
