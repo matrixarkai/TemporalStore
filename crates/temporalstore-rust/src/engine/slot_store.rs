@@ -286,9 +286,15 @@ pub(super) fn read_slot_index_component_values(
         }
     }
 
+    let missed_entries = missed_pages.into_iter().collect::<Vec<_>>();
+    let missed_addresses = missed_entries
+        .iter()
+        .map(|(_, address)| address.clone())
+        .collect::<Vec<_>>();
+    let missed_reads = page_store.read_batch(&missed_addresses);
     let mut missed_values = HashMap::<CacheKey, Vec<u8>>::new();
-    for (key, address) in missed_pages {
-        if let Ok(value) = page_store.read(&address) {
+    for ((key, _), read_result) in missed_entries.into_iter().zip(missed_reads) {
+        if let Ok(value) = read_result {
             missed_values.insert(key, value);
         }
     }
