@@ -5402,6 +5402,8 @@ impl TemporalEngine {
             reconcile_secondary_views_from_slot_index(&self.page_store, shard);
         }
         let mut mutated_any = false;
+        let mut needs_slot_page_ownership_rebuild = false;
+        let mut needs_slot_first_index_rebuild = false;
         let mut sync_wal_commands = Vec::new();
         for command in request.commands {
             let write_command = is_write_command(&command);
@@ -5465,12 +5467,7 @@ impl TemporalEngine {
                 mutated_any = true;
                 let object_keys = command_object_keys(&command_for_post_write);
                 if object_keys.is_empty() {
-                    rebuild_slot_page_ownership(
-                        request.shard_id,
-                        shard,
-                        start_routing_slot,
-                        end_routing_slot,
-                    );
+                    needs_slot_page_ownership_rebuild = true;
                 } else {
                     for object_key in object_keys {
                         shard.dirty_objects.insert(object_key.clone());
@@ -5485,12 +5482,7 @@ impl TemporalEngine {
                 if !command_updates_slot_index_directly(&command_for_post_write)
                     || shard.slot_index.slot_map.is_empty()
                 {
-                    rebuild_slot_first_index(
-                        request.shard_id,
-                        shard,
-                        start_routing_slot,
-                        end_routing_slot,
-                    );
+                    needs_slot_first_index_rebuild = true;
                 }
                 if write_command {
                     sync_wal_commands.push(command_for_post_write);
@@ -5502,6 +5494,21 @@ impl TemporalEngine {
             });
         }
         if mutated_any {
+            if needs_slot_first_index_rebuild {
+                rebuild_slot_first_index(
+                    request.shard_id,
+                    shard,
+                    start_routing_slot,
+                    end_routing_slot,
+                );
+            } else if needs_slot_page_ownership_rebuild {
+                rebuild_slot_page_ownership(
+                    request.shard_id,
+                    shard,
+                    start_routing_slot,
+                    end_routing_slot,
+                );
+            }
             refresh_slot_runtime_flags(shard);
             let sync_canonical_log = !config.async_storage
                 || config.canonical_log_ack_policy == CanonicalLogAckPolicy::Durable;
