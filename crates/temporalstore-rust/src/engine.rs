@@ -6231,7 +6231,7 @@ impl TemporalEngine {
             }
         }
 
-        rebuild_slot_first_index(shard_id, shard, 0, u32::MAX);
+        rebuild_slot_first_index(shard_id, shard, start_routing_slot, end_routing_slot);
         refresh_slot_runtime_flags(shard);
         let after_segments = collect_live_page_segment_ids(shard);
         let after = compaction_utility_report(&self.page_store, shard);
