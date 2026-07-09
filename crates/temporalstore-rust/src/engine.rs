@@ -32,7 +32,9 @@ use self::context::*;
 use self::packed_pages::*;
 use self::product_model::*;
 use self::reports::*;
-use self::slot_store::{read_slot_index_value, slot_index_component_page_addresses};
+use self::slot_store::{
+    read_slot_index_component_values, read_slot_index_value, slot_index_component_page_addresses,
+};
 use self::state::*;
 use crate::block_store::BlockAppendRecord;
 use crate::control::{
@@ -7470,12 +7472,11 @@ fn execute_on_shard(
                     mutated,
                 };
             }
-            let entries = slot_index_component_page_addresses(shard, "hash", &key)
+            let entries = read_slot_index_component_values(
+                cache, page_store, shard_id, shard, "hash", &key,
+            )
                 .into_iter()
-                .filter_map(|(field, address)| {
-                    read_page_bytes(cache, page_store, shard_id, &address)
-                        .map(|value| (field.unwrap_or_default(), value))
-                })
+                .map(|(field, value)| (field.unwrap_or_default(), value))
                 .collect();
             CommandResponse::HashEntries { entries }
         }
@@ -7545,11 +7546,11 @@ fn execute_on_shard(
                 };
             }
             cached_response(cache, CacheKey::set_members(shard_id, &key), || {
-                let members = slot_index_component_page_addresses(shard, "set", &key)
+                let members = read_slot_index_component_values(
+                    cache, page_store, shard_id, shard, "set", &key,
+                )
                     .into_iter()
-                    .filter_map(|(_, address)| {
-                        read_page_bytes(cache, page_store, shard_id, &address)
-                    })
+                    .map(|(_, value)| value)
                     .collect();
                 CommandResponse::Members { members }
             })
