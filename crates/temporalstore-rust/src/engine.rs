@@ -13229,6 +13229,10 @@ fn page_memory_resident(cache: &MultiLayerCache, shard_id: ShardId, address: &Pa
         .is_some()
 }
 
+fn page_address_is_memory_only(address: &PageAddress) -> bool {
+    address.page_segment_id == HOT_PAGE_SEGMENT_ID
+}
+
 fn compaction_model_layout_reports(
     page_store: &LocalPageStore,
     shard: &ShardState,
@@ -13432,6 +13436,9 @@ fn compact_page_addresses<'a>(
 ) -> Result<(), Status> {
     let mut rewritten_old_addresses = Vec::new();
     for address in addresses {
+        if page_address_is_memory_only(address) {
+            continue;
+        }
         let old_address = address.clone();
         let cold_page = !page_memory_resident(cache, shard_id, address);
         let bytes = read_page_bytes_cold(page_store, address).ok_or_else(|| {
@@ -13476,6 +13483,9 @@ fn compact_feature_page_addresses(
     let mut rewritten = HashMap::<PageAddress, PageAddress>::new();
     let mut rewritten_old_addresses = Vec::new();
     for old_address in unique_addresses {
+        if page_address_is_memory_only(&old_address) {
+            continue;
+        }
         let cold_page = !page_memory_resident(cache, shard_id, &old_address);
         let bytes = read_page_bytes_cold(page_store, &old_address).ok_or_else(|| {
             Status::error(
