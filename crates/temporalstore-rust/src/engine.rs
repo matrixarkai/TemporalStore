@@ -8208,6 +8208,11 @@ fn execute_on_shard(
         } => {
             remove_if_expired(cache, shard_id, shard, &key);
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
+            let replacing_existing_timestamp = shard
+                .ips
+                .get(&key)
+                .is_some_and(|series| series.contains_key(&timestamp_ms));
+            let mut appended_address = None;
             if let Ok(addresses) = append_timestamped_kv_pages(
                 cache,
                 page_store,
@@ -8233,30 +8238,44 @@ fn execute_on_shard(
                 shard.ips_meta.entry(key.clone()).or_default().insert(
                     timestamp_ms,
                     IpsPointMeta {
-                        address,
+                        address: address.clone(),
                         action_type: None,
                         table_id: None,
                         request_id: None,
                     },
                 );
+                appended_address = Some(address);
                 mutated = true;
             }
-            let live_addresses = shard
-                .ips
-                .get(&key)
-                .map(|series| series.values().cloned().collect::<Vec<_>>())
-                .unwrap_or_default();
-            sync_slot_index_object_pages(
-                cache,
-                shard,
-                shard_id,
-                "ips",
-                &key,
-                live_addresses,
-                mutated,
-                start_routing_slot,
-                end_routing_slot,
-            );
+            if let Some(address) = appended_address.filter(|_| !replacing_existing_timestamp) {
+                append_slot_index_object_pages(
+                    shard,
+                    shard_id,
+                    "ips",
+                    &key,
+                    vec![address],
+                    mutated,
+                    start_routing_slot,
+                    end_routing_slot,
+                );
+            } else {
+                let live_addresses = shard
+                    .ips
+                    .get(&key)
+                    .map(|series| series.values().cloned().collect::<Vec<_>>())
+                    .unwrap_or_default();
+                sync_slot_index_object_pages(
+                    cache,
+                    shard,
+                    shard_id,
+                    "ips",
+                    &key,
+                    live_addresses,
+                    mutated,
+                    start_routing_slot,
+                    end_routing_slot,
+                );
+            }
             CommandResponse::Empty
         }
         Command::IpsAddWithOptions {
@@ -8281,6 +8300,11 @@ fn execute_on_shard(
                 }
             }
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
+            let replacing_existing_timestamp = shard
+                .ips
+                .get(&key)
+                .is_some_and(|series| series.contains_key(&timestamp_ms));
+            let mut appended_address = None;
             if let Ok(addresses) = append_timestamped_kv_pages(
                 cache,
                 page_store,
@@ -8306,7 +8330,7 @@ fn execute_on_shard(
                 shard.ips_meta.entry(key.clone()).or_default().insert(
                     timestamp_ms,
                     IpsPointMeta {
-                        address,
+                        address: address.clone(),
                         action_type,
                         table_id,
                         request_id: request_id.clone(),
@@ -8319,24 +8343,38 @@ fn execute_on_shard(
                         .or_default()
                         .insert(request_id);
                 }
+                appended_address = Some(address);
                 mutated = true;
             }
-            let live_addresses = shard
-                .ips
-                .get(&key)
-                .map(|series| series.values().cloned().collect::<Vec<_>>())
-                .unwrap_or_default();
-            sync_slot_index_object_pages(
-                cache,
-                shard,
-                shard_id,
-                "ips",
-                &key,
-                live_addresses,
-                mutated,
-                start_routing_slot,
-                end_routing_slot,
-            );
+            if let Some(address) = appended_address.filter(|_| !replacing_existing_timestamp) {
+                append_slot_index_object_pages(
+                    shard,
+                    shard_id,
+                    "ips",
+                    &key,
+                    vec![address],
+                    mutated,
+                    start_routing_slot,
+                    end_routing_slot,
+                );
+            } else {
+                let live_addresses = shard
+                    .ips
+                    .get(&key)
+                    .map(|series| series.values().cloned().collect::<Vec<_>>())
+                    .unwrap_or_default();
+                sync_slot_index_object_pages(
+                    cache,
+                    shard,
+                    shard_id,
+                    "ips",
+                    &key,
+                    live_addresses,
+                    mutated,
+                    start_routing_slot,
+                    end_routing_slot,
+                );
+            }
             CommandResponse::Integer {
                 value: if mutated { 1 } else { 0 },
             }
@@ -8345,7 +8383,14 @@ fn execute_on_shard(
             remove_if_expired(cache, shard_id, shard, &key);
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             let points = sorted_feature_points(points);
+            let replacing_existing_timestamp = points.iter().any(|point| {
+                shard
+                    .ips
+                    .get(&key)
+                    .is_some_and(|series| series.contains_key(&point.timestamp_ms))
+            });
             let mut loaded = 0i64;
+            let mut appended_addresses = Vec::new();
             if let Ok(addresses) = append_timestamped_kv_pages(
                 cache,
                 page_store,
@@ -8357,6 +8402,7 @@ fn execute_on_shard(
                 async_storage,
             ) {
                 for (timestamp_ms, address) in addresses {
+                    appended_addresses.push(address.clone());
                     shard
                         .ips
                         .entry(key.clone())
@@ -8375,22 +8421,35 @@ fn execute_on_shard(
                     loaded += 1;
                 }
             }
-            let live_addresses = shard
-                .ips
-                .get(&key)
-                .map(|series| series.values().cloned().collect::<Vec<_>>())
-                .unwrap_or_default();
-            sync_slot_index_object_pages(
-                cache,
-                shard,
-                shard_id,
-                "ips",
-                &key,
-                live_addresses,
-                mutated,
-                start_routing_slot,
-                end_routing_slot,
-            );
+            if !appended_addresses.is_empty() && !replacing_existing_timestamp {
+                append_slot_index_object_pages(
+                    shard,
+                    shard_id,
+                    "ips",
+                    &key,
+                    appended_addresses,
+                    mutated,
+                    start_routing_slot,
+                    end_routing_slot,
+                );
+            } else {
+                let live_addresses = shard
+                    .ips
+                    .get(&key)
+                    .map(|series| series.values().cloned().collect::<Vec<_>>())
+                    .unwrap_or_default();
+                sync_slot_index_object_pages(
+                    cache,
+                    shard,
+                    shard_id,
+                    "ips",
+                    &key,
+                    live_addresses,
+                    mutated,
+                    start_routing_slot,
+                    end_routing_slot,
+                );
+            }
             CommandResponse::Integer { value: loaded }
         }
         Command::IpsQueryLast { key, count } => {
