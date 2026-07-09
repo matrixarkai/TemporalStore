@@ -747,6 +747,47 @@ pub(super) fn load_context_compression_events(
     events
 }
 
+pub(super) fn load_context_compression_events_cold(
+    page_store: &LocalPageStore,
+    shard: &ShardState,
+    tenant_hash: u64,
+    node_hashes: &[u64],
+    start_time_ms: u64,
+    end_time_ms: u64,
+    limit: Option<usize>,
+) -> Vec<ContextCompressionEvent> {
+    let mut events = Vec::new();
+    let mut seen_nodes = HashSet::new();
+    for node_hash in node_hashes
+        .iter()
+        .copied()
+        .filter(|node_hash| *node_hash != 0 && seen_nodes.insert(*node_hash))
+    {
+        let object_key = context_compression_key(tenant_hash, node_hash);
+        if let Some(series) = shard.context_compressions.get(&object_key) {
+            events.extend(series.iter().filter_map(|(timeline_key, address)| {
+                read_context_value_cold::<ContextCompressionEvent>(
+                    page_store,
+                    *timeline_key,
+                    address,
+                )
+                .filter(|event| {
+                    event.source_end_ms >= start_time_ms && event.source_start_ms <= end_time_ms
+                })
+            }));
+        }
+    }
+    events.sort_by(|left, right| {
+        right
+            .source_end_ms
+            .cmp(&left.source_end_ms)
+            .then_with(|| right.compressed_time_ms.cmp(&left.compressed_time_ms))
+            .then_with(|| left.compression_id_hash.cmp(&right.compression_id_hash))
+    });
+    events.truncate(context_limit(limit));
+    events
+}
+
 pub(super) fn cosine_similarity(left: &[f32], right: &[f32]) -> f32 {
     if left.is_empty() || left.len() != right.len() {
         return 0.0;
