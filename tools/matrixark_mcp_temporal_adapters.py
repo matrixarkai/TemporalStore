@@ -3810,6 +3810,20 @@ class MatrixArkRustProxyClient:
             0.0,
             float(os.environ.get("MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_WAIT_MS", "1.0")) / 1000.0,
         )
+        self._append_coalesce_enabled = (
+            os.environ.get("MATRIXARK_RUST_PROXY_APPEND_COALESCE", "1").strip().lower()
+            not in {"0", "false", "no"}
+        )
+        self._append_coalesce_max_batches = max(
+            1, int(os.environ.get("MATRIXARK_RUST_PROXY_APPEND_COALESCE_MAX_BATCHES", "32"))
+        )
+        self._append_coalesce_min_records = max(
+            1, int(os.environ.get("MATRIXARK_RUST_PROXY_APPEND_COALESCE_MIN_RECORDS", "16"))
+        )
+        self._append_coalesce_wait_s = max(
+            0.0,
+            float(os.environ.get("MATRIXARK_RUST_PROXY_APPEND_COALESCE_WAIT_MS", "1.0")) / 1000.0,
+        )
         if self._shared_process_mode:
             # The local Rust TemporalEngine is embedded in the proxy process. A
             # multi-process write lane pool can hide writes from reads until
@@ -3885,6 +3899,14 @@ class MatrixArkRustProxyClient:
         self._batch_hget_coalesced_records_total = 0
         self._batch_hget_coalesced_wait_ms_total = 0.0
         self._batch_hget_coalesced_wait_ms_max = 0.0
+        self._append_coalesce_lock = threading.Lock()
+        self._append_coalesce_queue: list[Json] = []
+        self._append_coalesce_active = False
+        self._append_coalesced_batches_total = 0
+        self._append_coalesced_calls_total = 0
+        self._append_coalesced_records_total = 0
+        self._append_coalesced_wait_ms_total = 0.0
+        self._append_coalesced_wait_ms_max = 0.0
         self._started_at = time.time()
         self._proc: subprocess.Popen[str] | None = None
 
@@ -4372,6 +4394,17 @@ class MatrixArkRustProxyClient:
                     "wait_ms_total": round(self._batch_hget_coalesced_wait_ms_total, 3),
                     "wait_ms_max": round(self._batch_hget_coalesced_wait_ms_max, 3),
                 },
+                "matrixark_append_coalescing": {
+                    "enabled": self._append_coalesce_enabled,
+                    "max_batches": self._append_coalesce_max_batches,
+                    "min_records": self._append_coalesce_min_records,
+                    "wait_ms": round(self._append_coalesce_wait_s * 1000.0, 3),
+                    "batches_total": self._append_coalesced_batches_total,
+                    "calls_total": self._append_coalesced_calls_total,
+                    "records_total": self._append_coalesced_records_total,
+                    "wait_ms_total": round(self._append_coalesced_wait_ms_total, 3),
+                    "wait_ms_max": round(self._append_coalesced_wait_ms_max, 3),
+                },
                 "last_latency_ms": round(self._last_latency_ms, 3),
                 "latency_ms_sum": round(sum(samples), 3),
                 "latency_ms_count": len(samples),
@@ -4400,6 +4433,7 @@ class MatrixArkRustProxyClient:
                 "supports_native_append_queue": True,
                 "supports_coalesced_writes": True,
                 "supports_coalesced_reads": True,
+                "supports_coalesced_appends": True,
                 "supports_placement_key_routing": True,
                 "supports_prefix_scan": True,
                 "supports_graceful_shutdown": True,
@@ -4531,13 +4565,149 @@ class MatrixArkRustProxyClient:
             for entry in entries
             if isinstance(entry, dict)
         ]
+        append_options = append_options or {}
+        if (
+            self._append_coalesce_enabled
+            and self._shared_process_mode
+            and len(compact_entries) >= self._append_coalesce_min_records
+        ):
+            self._coalesced_matrixark_batch_append_records(
+                compact_entries,
+                count_key=count_key or "",
+                count_value=count_value or "",
+                append_options=append_options,
+            )
+            return
         self._call_json(
             "matrixark_batch_append_records",
             entries_compact=compact_entries,
             key=count_key or "",
             value=count_value or "",
-            append_options=append_options or {},
+            append_options=append_options,
         )
+
+    @staticmethod
+    def _append_options_signature(append_options: Json) -> str:
+        try:
+            return json.dumps(append_options or {}, sort_keys=True, separators=(",", ":"), default=str)
+        except Exception:
+            return str(sorted((append_options or {}).items())) if isinstance(append_options, dict) else str(append_options)
+
+    @staticmethod
+    def _max_count_value(values: list[str]) -> str:
+        numeric: list[int] = []
+        for value in values:
+            try:
+                numeric.append(int(str(value)))
+            except (TypeError, ValueError):
+                continue
+        if numeric:
+            return str(max(numeric))
+        return values[-1] if values else ""
+
+    def _coalesced_matrixark_batch_append_records(
+        self,
+        compact_entries: list[list[str]],
+        *,
+        count_key: str,
+        count_value: str,
+        append_options: Json,
+    ) -> None:
+        event = threading.Event()
+        request: Json = {
+            "entries_compact": compact_entries,
+            "count_key": count_key,
+            "count_value": count_value,
+            "append_options": append_options,
+            "append_options_signature": self._append_options_signature(append_options),
+            "event": event,
+            "error": None,
+        }
+        became_leader = False
+        queued_at = time.perf_counter()
+        with self._append_coalesce_lock:
+            self._append_coalesce_queue.append(request)
+            if not self._append_coalesce_active:
+                self._append_coalesce_active = True
+                became_leader = True
+        if became_leader:
+            self._drain_append_coalescer()
+        else:
+            timeout_s = max(self._backpressure_timeout_s, self.request_timeout_ms / 1000.0 + 2.0)
+            if not event.wait(timeout=timeout_s):
+                raise MatrixArkError(f"Rust TemporalStore matrixark append coalescer timed out after {timeout_s:.1f}s")
+        wait_ms = (time.perf_counter() - queued_at) * 1000.0
+        with self._metrics_lock:
+            self._append_coalesced_wait_ms_total += wait_ms
+            self._append_coalesced_wait_ms_max = max(self._append_coalesced_wait_ms_max, wait_ms)
+        error = request.get("error")
+        if error:
+            raise error
+
+    def _drain_append_coalescer(self) -> None:
+        try:
+            if self._append_coalesce_wait_s > 0:
+                time.sleep(self._append_coalesce_wait_s)
+            while True:
+                with self._append_coalesce_lock:
+                    pending = self._append_coalesce_queue[: self._append_coalesce_max_batches]
+                    del self._append_coalesce_queue[: len(pending)]
+                if not pending:
+                    with self._append_coalesce_lock:
+                        if not self._append_coalesce_queue:
+                            self._append_coalesce_active = False
+                            return
+                    continue
+                grouped: dict[tuple[str, str], list[Json]] = {}
+                for item in pending:
+                    signature = (str(item.get("count_key") or ""), str(item.get("append_options_signature") or ""))
+                    grouped.setdefault(signature, []).append(item)
+                for items in grouped.values():
+                    merged: list[list[str]] = []
+                    count_values: list[str] = []
+                    append_options = items[0].get("append_options") or {}
+                    count_key = str(items[0].get("count_key") or "")
+                    for item in items:
+                        merged.extend(item.get("entries_compact") or [])
+                        value = str(item.get("count_value") or "")
+                        if value:
+                            count_values.append(value)
+                    error: BaseException | None = None
+                    try:
+                        self._call_json(
+                            "matrixark_batch_append_records",
+                            entries_compact=merged,
+                            key=count_key,
+                            value=self._max_count_value(count_values),
+                            append_options=append_options,
+                        )
+                    except BaseException as exc:
+                        error = exc
+                    with self._metrics_lock:
+                        self._append_coalesced_batches_total += 1
+                        self._append_coalesced_calls_total += len(items)
+                        self._append_coalesced_records_total += len(merged)
+                    for item in items:
+                        item["error"] = error
+                        item["event"].set()
+                    if error is not None:
+                        with self._append_coalesce_lock:
+                            remaining = self._append_coalesce_queue
+                            self._append_coalesce_queue = []
+                            self._append_coalesce_active = False
+                        for item in remaining:
+                            item["error"] = error
+                            item["event"].set()
+                        return
+        except BaseException as exc:
+            with self._append_coalesce_lock:
+                remaining = self._append_coalesce_queue
+                self._append_coalesce_queue = []
+                self._append_coalesce_active = False
+            for item in remaining:
+                item["error"] = exc
+                item["event"].set()
+            raise
 
     def matrixark_append_records(
         self,

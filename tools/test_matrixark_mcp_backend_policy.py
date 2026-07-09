@@ -254,6 +254,162 @@ class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
         self.assertEqual(snapshot["batch_hget_coalescing"]["calls_total"], 4)
         self.assertEqual(snapshot["batch_hget_coalescing"]["records_total"], 8)
 
+    def test_rust_bridge_coalesces_concurrent_matrixark_appends_in_shared_process(self) -> None:
+        old_env = {
+            key: os.environ.get(key)
+            for key in (
+                "MATRIXARK_RUST_PROXY_SHARED_PROCESS",
+                "MATRIXARK_RUST_PROXY_APPEND_COALESCE",
+                "MATRIXARK_RUST_PROXY_APPEND_COALESCE_MAX_BATCHES",
+                "MATRIXARK_RUST_PROXY_APPEND_COALESCE_MIN_RECORDS",
+                "MATRIXARK_RUST_PROXY_APPEND_COALESCE_WAIT_MS",
+            )
+        }
+        os.environ["MATRIXARK_RUST_PROXY_SHARED_PROCESS"] = "1"
+        os.environ["MATRIXARK_RUST_PROXY_APPEND_COALESCE"] = "1"
+        os.environ["MATRIXARK_RUST_PROXY_APPEND_COALESCE_MAX_BATCHES"] = "8"
+        os.environ["MATRIXARK_RUST_PROXY_APPEND_COALESCE_MIN_RECORDS"] = "1"
+        os.environ["MATRIXARK_RUST_PROXY_APPEND_COALESCE_WAIT_MS"] = "25"
+        try:
+            client = mcp.MatrixArkRustCliClient(
+                cli_path="matrixark_rust_proxy",
+                metaserver="127.0.0.1:18000",
+                namespace="ns",
+                table="table",
+                request_timeout_ms=10000,
+                io_timeout_ms=10000,
+            )
+            calls: list[dict] = []
+            calls_lock = threading.Lock()
+
+            def fake_call_json(op: str, **kwargs):
+                self.assertEqual(op, "matrixark_batch_append_records")
+                with calls_lock:
+                    calls.append(
+                        {
+                            "entries": list(kwargs["entries_compact"]),
+                            "key": kwargs.get("key"),
+                            "value": kwargs.get("value"),
+                            "append_options": dict(kwargs.get("append_options") or {}),
+                        }
+                    )
+                return {"ok": True, "count": len(kwargs["entries_compact"]) + (1 if kwargs.get("key") else 0)}
+
+            client._call_json = fake_call_json  # type: ignore[method-assign]
+            barrier = threading.Barrier(4)
+
+            def append_one(index: int) -> None:
+                barrier.wait(timeout=5)
+                client.matrixark_batch_append_records(
+                    [{"key": "records:000000", "field": f"{index:08d}", "value": f"value-{index}"}],
+                    count_key="matrixark:test:record_count",
+                    count_value=str(index + 1),
+                    append_options={"append_path": "native_append_queue", "coalesce_writes": True},
+                )
+
+            threads = [threading.Thread(target=append_one, args=(index,)) for index in range(4)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=5)
+                self.assertFalse(thread.is_alive())
+
+            snapshot = client.metrics_snapshot()
+        finally:
+            try:
+                client.close()  # type: ignore[name-defined]
+            except Exception:
+                pass
+            for key, value in old_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls[0]["entries"]), 4)
+        self.assertEqual(calls[0]["key"], "matrixark:test:record_count")
+        self.assertEqual(calls[0]["value"], "4")
+        self.assertEqual(calls[0]["append_options"]["append_path"], "native_append_queue")
+        self.assertEqual(snapshot["matrixark_append_coalescing"]["batches_total"], 1)
+        self.assertEqual(snapshot["matrixark_append_coalescing"]["calls_total"], 4)
+        self.assertEqual(snapshot["matrixark_append_coalescing"]["records_total"], 4)
+
+    def test_rust_bridge_keeps_incompatible_matrixark_append_groups_separate(self) -> None:
+        old_env = {
+            key: os.environ.get(key)
+            for key in (
+                "MATRIXARK_RUST_PROXY_SHARED_PROCESS",
+                "MATRIXARK_RUST_PROXY_APPEND_COALESCE",
+                "MATRIXARK_RUST_PROXY_APPEND_COALESCE_MAX_BATCHES",
+                "MATRIXARK_RUST_PROXY_APPEND_COALESCE_MIN_RECORDS",
+                "MATRIXARK_RUST_PROXY_APPEND_COALESCE_WAIT_MS",
+            )
+        }
+        os.environ["MATRIXARK_RUST_PROXY_SHARED_PROCESS"] = "1"
+        os.environ["MATRIXARK_RUST_PROXY_APPEND_COALESCE"] = "1"
+        os.environ["MATRIXARK_RUST_PROXY_APPEND_COALESCE_MAX_BATCHES"] = "8"
+        os.environ["MATRIXARK_RUST_PROXY_APPEND_COALESCE_MIN_RECORDS"] = "1"
+        os.environ["MATRIXARK_RUST_PROXY_APPEND_COALESCE_WAIT_MS"] = "25"
+        try:
+            client = mcp.MatrixArkRustCliClient(
+                cli_path="matrixark_rust_proxy",
+                metaserver="127.0.0.1:18000",
+                namespace="ns",
+                table="table",
+                request_timeout_ms=10000,
+                io_timeout_ms=10000,
+            )
+            calls: list[dict] = []
+
+            def fake_call_json(op: str, **kwargs):
+                self.assertEqual(op, "matrixark_batch_append_records")
+                calls.append(
+                    {
+                        "entries": list(kwargs["entries_compact"]),
+                        "key": kwargs.get("key"),
+                        "value": kwargs.get("value"),
+                        "append_options": dict(kwargs.get("append_options") or {}),
+                    }
+                )
+                return {"ok": True}
+
+            client._call_json = fake_call_json  # type: ignore[method-assign]
+            client.matrixark_batch_append_records(
+                [{"key": "records:000000", "field": "a", "value": "a"}],
+                count_key="matrixark:test:a:record_count",
+                count_value="1",
+                append_options={"append_path": "native_append_queue"},
+            )
+            client.matrixark_batch_append_records(
+                [{"key": "records:000000", "field": "b", "value": "b"}],
+                count_key="matrixark:test:b:record_count",
+                count_value="2",
+                append_options={"append_path": "native_append_queue"},
+            )
+            client.matrixark_batch_append_records(
+                [{"key": "records:000000", "field": "c", "value": "c"}],
+                count_key="matrixark:test:a:record_count",
+                count_value="3",
+                append_options={"append_path": "raw_ingestion"},
+            )
+            snapshot = client.metrics_snapshot()
+        finally:
+            try:
+                client.close()  # type: ignore[name-defined]
+            except Exception:
+                pass
+            for key, value in old_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.assertEqual(len(calls), 3)
+        self.assertEqual({call["key"] for call in calls}, {"matrixark:test:a:record_count", "matrixark:test:b:record_count"})
+        self.assertEqual(snapshot["matrixark_append_coalescing"]["batches_total"], 3)
+        self.assertEqual(snapshot["matrixark_append_coalescing"]["calls_total"], 3)
+
     def test_rust_bridge_can_opt_into_separate_read_write_pack_lanes(self) -> None:
         old_env = {
             key: os.environ.get(key)
