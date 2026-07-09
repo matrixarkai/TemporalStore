@@ -1340,12 +1340,13 @@ impl TemporalStoreClient {
     }
 
     pub fn close_table(&self, table: &TemporalStoreTable) -> Result<(), ClientError> {
+        let table_key = table_combine_name(table.namespace(), table.table_name());
         let removed = self
             .inner
             .tables
             .lock()
             .expect("client table cache lock poisoned")
-            .remove(&table_combine_name(table.namespace(), table.table_name()))
+            .remove(&table_key)
             .is_some();
         self.inner
             .stats
@@ -1357,12 +1358,12 @@ impl TemporalStoreClient {
                 .routes
                 .lock()
                 .expect("client route cache lock poisoned")
-                .clear();
+                .retain(|_, route| route.table_key != table_key);
             self.inner
                 .meta_sync_tables
                 .lock()
                 .expect("client meta sync table lock poisoned")
-                .remove(&table_combine_name(table.namespace(), table.table_name()));
+                .remove(&table_key);
             Ok(())
         } else {
             Err(ClientError::Status("table not found".to_string()))
