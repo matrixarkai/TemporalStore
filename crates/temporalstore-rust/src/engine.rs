@@ -14625,9 +14625,15 @@ pub(super) fn read_page_bytes_batch(
                 )
             });
     }
+    let miss_entries = misses.into_iter().collect::<Vec<_>>();
+    let miss_addresses = miss_entries
+        .iter()
+        .map(|(_, (address, _))| address.clone())
+        .collect::<Vec<_>>();
+    let miss_reads = page_store.read_batch(&miss_addresses);
     let mut refills = Vec::new();
-    for (key, (address, indexes)) in misses {
-        let Some(bytes) = page_store.read(&address).ok() else {
+    for ((key, (_, indexes)), read_result) in miss_entries.into_iter().zip(miss_reads) {
+        let Ok(bytes) = read_result else {
             continue;
         };
         for index in indexes {
