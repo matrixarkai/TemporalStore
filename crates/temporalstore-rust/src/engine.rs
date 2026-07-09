@@ -12261,6 +12261,7 @@ fn reconcile_secondary_views_from_slot_index(page_store: &LocalPageStore, shard:
     for slot in shard.slot_index.slot_map.values_mut() {
         update_slot_layout(slot);
     }
+    shard.slot_index.rebuild_object_page_lookup();
 }
 
 fn insert_timestamped_secondary_view(
