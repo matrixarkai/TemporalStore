@@ -10300,6 +10300,7 @@ fn live_page_entry(
     address: PageAddress,
 ) -> LivePageEntry {
     let dirty = page_address_is_memory_only(&address);
+    let log_backed = !dirty;
     LivePageEntry {
         object_key: object_key.into(),
         kind: kind.into(),
@@ -10307,7 +10308,7 @@ fn live_page_entry(
         address,
         dirty,
         deleted: false,
-        log_backed: true,
+        log_backed,
     }
 }
 
@@ -11029,6 +11030,10 @@ fn rebuild_slot_page_ownership(
                 ..SlotNode::default()
             });
         slot.object_index.insert(object_id);
+        slot.dirty |= entry.dirty;
+        if entry.dirty {
+            slot.dirty_generation = slot.dirty_generation.saturating_add(1).max(1);
+        }
         slot.page_index.insert(
             format!(
                 "{}:{}:{}:{}:{}",
@@ -11272,6 +11277,7 @@ fn upsert_slot_index_page(
     let object_id = address
         .object_id
         .unwrap_or_else(|| stable_page_object_id(shard_id, kind, object_key, component.as_deref()));
+    let log_backed = !page_address_is_memory_only(&address);
     let entry = LivePageEntry {
         object_key: object_key.to_string(),
         kind: kind.to_string(),
@@ -11279,7 +11285,7 @@ fn upsert_slot_index_page(
         address,
         dirty,
         deleted: false,
-        log_backed: true,
+        log_backed,
     };
     let live_address_key = page_physical_identity_key(&entry.address);
     let lookup_enabled = !shard.slot_index.object_page_lookup.is_empty();
@@ -11462,6 +11468,7 @@ fn sync_slot_index_object_pages(
         let object_id = address
             .object_id
             .unwrap_or_else(|| stable_page_object_id(shard_id, kind, object_key, None));
+        let log_backed = !page_address_is_memory_only(&address);
         let entry = LivePageEntry {
             object_key: object_key.to_string(),
             kind: kind.to_string(),
@@ -11469,7 +11476,7 @@ fn sync_slot_index_object_pages(
             address,
             dirty,
             deleted: false,
-            log_backed: true,
+            log_backed,
         };
         let slot = shard
             .slot_index
