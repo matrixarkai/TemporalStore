@@ -760,23 +760,17 @@ pub(super) fn load_context_summaries(
         .context_summaries
         .get(object_key)
         .map(|series| {
-            let mut page_cache = HashMap::new();
-            let mut summaries = series
+            let entries = series
                 .range(0..context_timeline_end(as_of_ms))
                 .rev()
-                .filter_map(|(timeline_key, address)| {
-                    read_context_value_cached::<ContextSummary>(
-                        cache,
-                        page_store,
-                        shard_id,
-                        *timeline_key,
-                        address,
-                        &mut page_cache,
-                    )
-                })
-                .filter(|summary| summary.valid_from_ms <= as_of_ms)
                 .take(context_limit(limit))
+                .map(|(timeline_key, address)| (*timeline_key, address.clone()))
                 .collect::<Vec<_>>();
+            let mut summaries =
+                read_context_values_cached::<ContextSummary>(cache, page_store, shard_id, entries)
+                    .into_iter()
+                    .filter(|summary| summary.valid_from_ms <= as_of_ms)
+                    .collect::<Vec<_>>();
             summaries.sort_by_key(|summary| summary.valid_from_ms);
             summaries
         })
