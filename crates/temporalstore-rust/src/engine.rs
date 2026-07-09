@@ -6209,6 +6209,14 @@ impl TemporalEngine {
         self.persist_index_bytes(shard_id, &index_bytes)
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
         let _ = self.index_log_store.append_json(shard_id, &index_bytes);
+        if !stale_page_segment_ids.is_empty() {
+            self.page_store
+                .gc_segments_before_with_live_refs_delayed_destroy(
+                    roll.new_page_segment_id,
+                    after_segments.iter().copied(),
+                )
+                .map_err(|err| Status::error("page_compaction_reclaim_failed", err.to_string()))?;
+        }
         let rewritten_object_pages = rewrite_stats.rewritten_page_refs;
         let slot_layout_transition_count =
             slot_layout_transition_count_after.saturating_sub(slot_layout_transition_count_before);
