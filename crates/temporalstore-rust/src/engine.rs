@@ -13514,9 +13514,17 @@ fn storage_feature_page_layout_report(
                 .saturating_add(timestamps_by_address.len());
         }
 
-        for (address, indexed_timestamps) in timestamps_by_address {
+        let timestamp_page_entries = timestamps_by_address.into_iter().collect::<Vec<_>>();
+        let timestamp_page_addresses = timestamp_page_entries
+            .iter()
+            .map(|(address, _)| address.clone())
+            .collect::<Vec<_>>();
+        let timestamp_page_reads = page_store.read_cold_batch(&timestamp_page_addresses);
+        for ((address, indexed_timestamps), read_result) in
+            timestamp_page_entries.into_iter().zip(timestamp_page_reads)
+        {
             inspected_addresses.insert(address.clone());
-            match page_store.read_cold(&address) {
+            match read_result {
                 Ok(bytes) => match decode_feature_page_strict(&bytes) {
                     PackedFeaturePageDecode::Packed(points) => {
                         report.packed_timestamped_pages =
@@ -13607,25 +13615,31 @@ fn storage_feature_page_layout_report(
             }
         }
     }
-    for entry in collect_slot_index_live_page_entries(shard) {
-        if entry.deleted || inspected_addresses.contains(&entry.address) {
-            continue;
-        }
-        if !matches!(
-            entry.kind.as_str(),
-            "feature"
-                | "sequence"
-                | "ips"
-                | "context_event"
-                | "context_index"
-                | "context_audit"
-                | "context_dirty"
-                | "context_child"
-                | "context_summary"
-                | "context_compression"
-        ) {
-            continue;
-        }
+    let orphan_page_entries = collect_slot_index_live_page_entries(shard)
+        .into_iter()
+        .filter(|entry| !entry.deleted && !inspected_addresses.contains(&entry.address))
+        .filter(|entry| {
+            matches!(
+                entry.kind.as_str(),
+                "feature"
+                    | "sequence"
+                    | "ips"
+                    | "context_event"
+                    | "context_index"
+                    | "context_audit"
+                    | "context_dirty"
+                    | "context_child"
+                    | "context_summary"
+                    | "context_compression"
+            )
+        })
+        .collect::<Vec<_>>();
+    let orphan_page_addresses = orphan_page_entries
+        .iter()
+        .map(|entry| entry.address.clone())
+        .collect::<Vec<_>>();
+    let orphan_page_reads = page_store.read_cold_batch(&orphan_page_addresses);
+    for (entry, read_result) in orphan_page_entries.into_iter().zip(orphan_page_reads) {
         let family = family_reports.entry(entry.kind.clone()).or_insert_with(|| {
             StorageTimestampedPageFamilyReport {
                 kind: entry.kind.clone(),
@@ -13637,7 +13651,7 @@ fn storage_feature_page_layout_report(
         if entry.kind == "feature" {
             report.unique_feature_page_refs = report.unique_feature_page_refs.saturating_add(1);
         }
-        match page_store.read_cold(&entry.address) {
+        match read_result {
             Ok(bytes) => match decode_feature_page_strict(&bytes) {
                 PackedFeaturePageDecode::Packed(points) => {
                     report.packed_timestamped_pages =
