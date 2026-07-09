@@ -205,44 +205,70 @@ pub(super) fn read_context_values_cached<T: ContextWire>(
     shard_id: ShardId,
     entries: Vec<(u64, PageAddress)>,
 ) -> Vec<T> {
+    let mut packed_page_cache: HashMap<PageAddress, Option<Vec<FeaturePoint>>> = HashMap::new();
+    read_context_values_cached_with_page_cache(
+        cache,
+        page_store,
+        shard_id,
+        entries,
+        &mut packed_page_cache,
+    )
+}
+
+pub(super) fn read_context_values_cached_with_page_cache<T: ContextWire>(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    entries: Vec<(u64, PageAddress)>,
+    packed_page_cache: &mut HashMap<PageAddress, Option<Vec<FeaturePoint>>>,
+) -> Vec<T> {
+    let mut values: Vec<Option<T>> = Vec::with_capacity(entries.len());
+    let mut misses = Vec::new();
     let addresses = entries
         .iter()
-        .map(|(_, address)| Some(address.clone()))
-        .collect::<Vec<_>>();
-    let bytes = read_page_bytes_batch(cache, page_store, shard_id, &addresses);
-    let mut packed_page_cache: HashMap<PageAddress, Option<Vec<FeaturePoint>>> = HashMap::new();
-    entries
-        .into_iter()
-        .zip(bytes)
-        .filter_map(|((timeline_key, address), bytes)| {
-            if let Some(points) = packed_page_cache.get(&address) {
-                return points
-                    .as_ref()
-                    .and_then(|points| {
-                        points
-                            .iter()
-                            .find(|point| point.timestamp_ms == timeline_key)
-                    })
-                    .and_then(|point| context_from_bytes::<T>(&point.value));
-            }
-            let bytes = bytes?;
-            match decode_feature_page_strict(&bytes) {
-                PackedFeaturePageDecode::Packed(points) => {
-                    let selected = points
-                        .iter()
-                        .find(|point| point.timestamp_ms == timeline_key)
-                        .and_then(|point| context_from_bytes::<T>(&point.value));
-                    packed_page_cache.insert(address, Some(points));
-                    selected
-                }
-                PackedFeaturePageDecode::Legacy => context_from_bytes::<T>(&bytes),
-                PackedFeaturePageDecode::Corrupt(_) => {
-                    packed_page_cache.insert(address, None);
-                    None
-                }
+        .enumerate()
+        .filter_map(|(index, (timeline_key, address))| {
+            if let Some(points) = packed_page_cache.get(address) {
+                values.push(
+                    points
+                        .as_ref()
+                        .and_then(|points| {
+                            points
+                                .iter()
+                                .find(|point| point.timestamp_ms == *timeline_key)
+                        })
+                        .and_then(|point| context_from_bytes::<T>(&point.value)),
+                );
+                None
+            } else {
+                values.push(None);
+                misses.push((index, *timeline_key, address.clone()));
+                Some(Some(address.clone()))
             }
         })
-        .collect()
+        .collect::<Vec<_>>();
+    let bytes = read_page_bytes_batch(cache, page_store, shard_id, &addresses);
+    for ((index, timeline_key, address), bytes) in misses.into_iter().zip(bytes) {
+        let Some(bytes) = bytes else {
+            continue;
+        };
+        values[index] = match decode_feature_page_strict(&bytes) {
+            PackedFeaturePageDecode::Packed(points) => {
+                let selected = points
+                    .iter()
+                    .find(|point| point.timestamp_ms == timeline_key)
+                    .and_then(|point| context_from_bytes::<T>(&point.value));
+                packed_page_cache.insert(address, Some(points));
+                selected
+            }
+            PackedFeaturePageDecode::Legacy => context_from_bytes::<T>(&bytes),
+            PackedFeaturePageDecode::Corrupt(_) => {
+                packed_page_cache.insert(address, None);
+                None
+            }
+        };
+    }
+    values.into_iter().flatten().collect()
 }
 
 pub(super) fn context_event_matches_filter(
@@ -680,16 +706,13 @@ pub(super) fn load_context_children_with_page_cache(
         .get(object_key)
         .map(|series| {
             let mut latest_by_child = HashMap::new();
-            for child_ref in series.iter().filter_map(|(timeline_key, address)| {
-                read_context_value_cached::<ContextChildRef>(
-                    cache,
-                    page_store,
-                    shard_id,
-                    *timeline_key,
-                    address,
-                    page_cache,
-                )
-            }) {
+            let entries = series
+                .iter()
+                .map(|(timeline_key, address)| (*timeline_key, address.clone()))
+                .collect::<Vec<_>>();
+            for child_ref in read_context_values_cached_with_page_cache::<ContextChildRef>(
+                cache, page_store, shard_id, entries, page_cache,
+            ) {
                 latest_by_child
                     .entry(child_ref.child_hash)
                     .and_modify(|stored: &mut ContextChildRef| {
