@@ -231,18 +231,18 @@ TOOLS: list[Json] = [
                 },
                 "auto_batch_extract": {
                     "type": "boolean",
-                    "default": False,
-                    "description": "If true, opt into same-session buffering and commit once session_buffer_threshold pending events accumulate. Defaults to immediate per-message handling.",
+                    "default": True,
+                    "description": "VikingMem-style default for message/business_data/feedback ingest: persist each raw message immediately, buffer session_buffer_event markers, and commit extraction once session_buffer_threshold pending events accumulate. Set false to disable automatic batch extraction.",
                 },
                 "session_buffer_enabled": {
                     "type": "boolean",
-                    "default": False,
-                    "description": "Explicitly write session_buffer_event markers for later matrixark_session_commit. Defaults to false so each message is handled immediately.",
+                    "default": True,
+                    "description": "Write session_buffer_event markers for later matrixark_session_commit while raw ContextEvent/cold storage is still persisted immediately. Set false to force immediate-only extraction behavior.",
                 },
                 "session_buffer_threshold": {
                     "type": "integer",
                     "default": 20,
-                    "description": "Pending same-session raw event threshold for opt-in automatic one-pass batch extraction.",
+                    "description": "Pending same-session raw event threshold for VikingMem-style automatic one-pass batch extraction.",
                 },
                 "idle_commit_timeout_ms": {
                     "type": "integer",
