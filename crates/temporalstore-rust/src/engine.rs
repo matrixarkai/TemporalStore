@@ -12482,6 +12482,17 @@ fn reconcile_secondary_views_from_slot_index(page_store: &LocalPageStore, shard:
     let mut context_embeddings = HashMap::new();
     let mut context_summaries = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
     let mut context_compressions = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
+    let mut feature_entries = Vec::<(String, PageAddress)>::new();
+    let mut sequence_entries = Vec::<(String, PageAddress)>::new();
+    let mut ips_entries = Vec::<(String, PageAddress)>::new();
+    let mut risk_entries = Vec::<(String, PageAddress)>::new();
+    let mut context_event_entries = Vec::<(String, PageAddress)>::new();
+    let mut context_index_entries = Vec::<(String, PageAddress)>::new();
+    let mut context_audit_entries = Vec::<(String, PageAddress)>::new();
+    let mut context_dirty_entries = Vec::<(String, PageAddress)>::new();
+    let mut context_child_entries = Vec::<(String, PageAddress)>::new();
+    let mut context_summary_entries = Vec::<(String, PageAddress)>::new();
+    let mut context_compression_entries = Vec::<(String, PageAddress)>::new();
 
     for entry in entries {
         match entry.kind.as_str() {
@@ -12509,75 +12520,36 @@ fn reconcile_secondary_views_from_slot_index(page_store: &LocalPageStore, shard:
             }
             "feature" => {
                 saw_features = true;
-                insert_timestamped_secondary_view(
-                    page_store,
-                    &mut features,
-                    entry.object_key,
-                    entry.address,
-                );
+                feature_entries.push((entry.object_key, entry.address));
             }
             "sequence" => {
                 saw_sequences = true;
-                insert_timestamped_secondary_view(
-                    page_store,
-                    &mut sequences,
-                    entry.object_key,
-                    entry.address,
-                );
+                sequence_entries.push((entry.object_key, entry.address));
             }
             "ips" => {
                 saw_ips = true;
-                insert_timestamped_secondary_view(
-                    page_store,
-                    &mut ips,
-                    entry.object_key,
-                    entry.address,
-                );
+                ips_entries.push((entry.object_key, entry.address));
             }
             "risk" => {
                 saw_risk = true;
-                if let Ok(bytes) = page_store.read_cold(&entry.address) {
-                    if let Ok(series) = serde_json::from_slice::<BTreeMap<u64, i64>>(&bytes) {
-                        risk.insert(entry.object_key.clone(), series);
-                    }
-                }
+                risk_entries.push((entry.object_key.clone(), entry.address.clone()));
                 risk_pages.insert(entry.object_key, entry.address);
             }
             "context_event" => {
                 saw_context_events = true;
-                insert_timestamped_secondary_view(
-                    page_store,
-                    &mut context_events,
-                    entry.object_key,
-                    entry.address,
-                );
+                context_event_entries.push((entry.object_key, entry.address));
             }
             "context_index" => {
                 saw_context_indexes = true;
-                insert_timestamped_secondary_view(
-                    page_store,
-                    &mut context_indexes,
-                    entry.object_key,
-                    entry.address,
-                );
+                context_index_entries.push((entry.object_key, entry.address));
             }
             "context_audit" => {
                 saw_context_audits = true;
-                insert_timestamped_secondary_view(
-                    page_store,
-                    &mut context_audits,
-                    entry.object_key,
-                    entry.address,
-                );
+                context_audit_entries.push((entry.object_key, entry.address));
             }
             "context_dirty" => {
                 saw_context_dirty = true;
-                insert_timestamped_secondary_view(
-                    page_store,
-                    &mut context_dirty,
-                    entry.object_key,
-                    entry.address,
-                );
+                context_dirty_entries.push((entry.object_key, entry.address));
             }
             "context_entity" => {
                 saw_context_entities = true;
@@ -12585,12 +12557,7 @@ fn reconcile_secondary_views_from_slot_index(page_store: &LocalPageStore, shard:
             }
             "context_child" => {
                 saw_context_children = true;
-                insert_timestamped_secondary_view(
-                    page_store,
-                    &mut context_children,
-                    entry.object_key,
-                    entry.address,
-                );
+                context_child_entries.push((entry.object_key, entry.address));
             }
             "context_embedding" => {
                 saw_context_embeddings = true;
@@ -12598,25 +12565,31 @@ fn reconcile_secondary_views_from_slot_index(page_store: &LocalPageStore, shard:
             }
             "context_summary" => {
                 saw_context_summaries = true;
-                insert_timestamped_secondary_view(
-                    page_store,
-                    &mut context_summaries,
-                    entry.object_key,
-                    entry.address,
-                );
+                context_summary_entries.push((entry.object_key, entry.address));
             }
             "context_compression" => {
                 saw_context_compressions = true;
-                insert_timestamped_secondary_view(
-                    page_store,
-                    &mut context_compressions,
-                    entry.object_key,
-                    entry.address,
-                );
+                context_compression_entries.push((entry.object_key, entry.address));
             }
             _ => {}
         }
     }
+
+    insert_timestamped_secondary_views(page_store, &mut features, feature_entries);
+    insert_timestamped_secondary_views(page_store, &mut sequences, sequence_entries);
+    insert_timestamped_secondary_views(page_store, &mut ips, ips_entries);
+    insert_risk_secondary_views(page_store, &mut risk, risk_entries);
+    insert_timestamped_secondary_views(page_store, &mut context_events, context_event_entries);
+    insert_timestamped_secondary_views(page_store, &mut context_indexes, context_index_entries);
+    insert_timestamped_secondary_views(page_store, &mut context_audits, context_audit_entries);
+    insert_timestamped_secondary_views(page_store, &mut context_dirty, context_dirty_entries);
+    insert_timestamped_secondary_views(page_store, &mut context_children, context_child_entries);
+    insert_timestamped_secondary_views(page_store, &mut context_summaries, context_summary_entries);
+    insert_timestamped_secondary_views(
+        page_store,
+        &mut context_compressions,
+        context_compression_entries,
+    );
 
     if saw_strings {
         shard.strings = strings;
@@ -12674,28 +12647,52 @@ fn reconcile_secondary_views_from_slot_index(page_store: &LocalPageStore, shard:
     shard.slot_index.rebuild_object_page_lookup();
 }
 
-fn insert_timestamped_secondary_view(
+fn insert_timestamped_secondary_views(
     page_store: &LocalPageStore,
     target: &mut HashMap<String, BTreeMap<u64, PageAddress>>,
-    object_key: String,
-    address: PageAddress,
+    entries: Vec<(String, PageAddress)>,
 ) {
-    let timestamps = page_store
-        .read_cold(&address)
-        .ok()
-        .and_then(|bytes| match decode_feature_page_strict(&bytes) {
-            PackedFeaturePageDecode::Packed(points) => Some(
-                points
-                    .into_iter()
-                    .map(|point| point.timestamp_ms)
-                    .collect::<Vec<_>>(),
-            ),
-            PackedFeaturePageDecode::Legacy | PackedFeaturePageDecode::Corrupt(_) => None,
-        })
-        .unwrap_or_default();
-    let series = target.entry(object_key).or_default();
-    for timestamp_ms in timestamps {
-        series.insert(timestamp_ms, address.clone());
+    let addresses = entries
+        .iter()
+        .map(|(_, address)| address.clone())
+        .collect::<Vec<_>>();
+    let reads = page_store.read_cold_batch(&addresses);
+    for ((object_key, address), read_result) in entries.into_iter().zip(reads) {
+        let timestamps = read_result
+            .ok()
+            .and_then(|bytes| match decode_feature_page_strict(&bytes) {
+                PackedFeaturePageDecode::Packed(points) => Some(
+                    points
+                        .into_iter()
+                        .map(|point| point.timestamp_ms)
+                        .collect::<Vec<_>>(),
+                ),
+                PackedFeaturePageDecode::Legacy | PackedFeaturePageDecode::Corrupt(_) => None,
+            })
+            .unwrap_or_default();
+        let series = target.entry(object_key).or_default();
+        for timestamp_ms in timestamps {
+            series.insert(timestamp_ms, address.clone());
+        }
+    }
+}
+
+fn insert_risk_secondary_views(
+    page_store: &LocalPageStore,
+    target: &mut HashMap<String, BTreeMap<u64, i64>>,
+    entries: Vec<(String, PageAddress)>,
+) {
+    let addresses = entries
+        .iter()
+        .map(|(_, address)| address.clone())
+        .collect::<Vec<_>>();
+    let reads = page_store.read_cold_batch(&addresses);
+    for ((object_key, _), read_result) in entries.into_iter().zip(reads) {
+        if let Ok(bytes) = read_result {
+            if let Ok(series) = serde_json::from_slice::<BTreeMap<u64, i64>>(&bytes) {
+                target.insert(object_key, series);
+            }
+        }
     }
 }
 
