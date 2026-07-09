@@ -3003,7 +3003,7 @@ impl TemporalEngine {
                     })
                     .collect::<BTreeSet<_>>();
                 for key in object_keys {
-                    if delete_record(shard, &key) {
+                    if delete_record(&self.cache, shard_id, shard, &key) {
                         dropped_object_count = dropped_object_count.saturating_add(1);
                         invalidate_record_all(&self.cache, shard_id, &key);
                     }
@@ -5690,6 +5690,7 @@ impl TemporalEngine {
                             bytes,
                         );
                         upsert_slot_index_page(
+                            &self.cache,
                             shard,
                             shard_id,
                             "string",
@@ -5718,6 +5719,7 @@ impl TemporalEngine {
                             bytes,
                         );
                         upsert_slot_index_page(
+                            &self.cache,
                             shard,
                             shard_id,
                             "hash",
@@ -5973,7 +5975,7 @@ impl TemporalEngine {
         let mut loaded_for_expire = 0usize;
         for (key, expires_at) in hot_selected.iter() {
             if *expires_at <= now {
-                if delete_record(shard, key) {
+                if delete_record(&self.cache, request.shard_id, shard, key) {
                     invalidate_record_all(&self.cache, request.shard_id, key);
                     expired_records_removed += 1;
                 }
@@ -5985,7 +5987,7 @@ impl TemporalEngine {
             if *expires_at <= now {
                 if request.load_cold_slots {
                     loaded_for_expire = loaded_for_expire.saturating_add(1);
-                    if delete_record(shard, key) {
+                    if delete_record(&self.cache, request.shard_id, shard, key) {
                         invalidate_record_all(&self.cache, request.shard_id, key);
                         expired_records_removed += 1;
                     } else {
@@ -7118,7 +7120,7 @@ fn execute_on_shard(
     let mut mutated = false;
     let response = match command {
         Command::CommonDelete { key } => {
-            mutated = delete_record(shard, &key);
+            mutated = delete_record(cache, shard_id, shard, &key);
             invalidate_record_all(cache, shard_id, &key);
             CommandResponse::Empty
         }
@@ -7139,12 +7141,12 @@ fn execute_on_shard(
                 .get(&key)
                 .map(|expires_at| *expires_at <= now_ms())
                 .unwrap_or(false);
-            let value = ttl_ms(shard, &key);
+            let value = ttl_ms(cache, shard_id, shard, &key);
             mutated = expired;
             CommandResponse::Integer { value }
         }
         Command::CommonExists { key } => {
-            if remove_if_expired(shard, &key) {
+            if remove_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 invalidate_record_all(cache, shard_id, &key);
                 return ExecuteOutcome {
@@ -7157,7 +7159,7 @@ fn execute_on_shard(
             }
         }
         Command::StringSet { key, value } => {
-            remove_if_expired(shard, &key);
+            remove_if_expired(cache, shard_id, shard, &key);
             let object_id = stable_page_object_id(shard_id, "string", &key, None);
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             if let Ok(address) = append_value(
@@ -7170,6 +7172,7 @@ fn execute_on_shard(
                 async_storage,
             ) {
                 upsert_slot_index_page(
+                    cache,
                     shard,
                     shard_id,
                     "string",
@@ -7185,7 +7188,7 @@ fn execute_on_shard(
             CommandResponse::Empty
         }
         Command::StringSetEx { key, value, ttl_ms } => {
-            remove_if_expired(shard, &key);
+            remove_if_expired(cache, shard_id, shard, &key);
             let object_id = stable_page_object_id(shard_id, "string", &key, None);
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             if let Ok(address) = append_value(
@@ -7198,6 +7201,7 @@ fn execute_on_shard(
                 async_storage,
             ) {
                 upsert_slot_index_page(
+                    cache,
                     shard,
                     shard_id,
                     "string",
@@ -7222,7 +7226,7 @@ fn execute_on_shard(
             condition,
             return_old,
         } => {
-            remove_if_expired(shard, &key);
+            remove_if_expired(cache, shard_id, shard, &key);
             let old_value = shard
                 .strings
                 .get(&key)
@@ -7246,6 +7250,7 @@ fn execute_on_shard(
                     async_storage,
                 ) {
                     upsert_slot_index_page(
+                        cache,
                         shard,
                         shard_id,
                         "string",
@@ -7275,7 +7280,7 @@ fn execute_on_shard(
             }
         }
         Command::StringGet { key } => {
-            if remove_if_expired(shard, &key) {
+            if remove_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 let _ = cache.invalidate(&CacheKey::string(shard_id, &key));
                 return ExecuteOutcome {
@@ -7292,13 +7297,13 @@ fn execute_on_shard(
             })
         }
         Command::StringDelete { key } => {
-            mutated |= mark_slot_index_object_deleted(shard, &key);
+            mutated |= mark_slot_index_object_deleted(cache, shard_id, shard, &key);
             mutated |= shard.strings.remove(&key).is_some();
             let _ = cache.invalidate(&CacheKey::string(shard_id, &key));
             CommandResponse::Empty
         }
         Command::HashSet { key, field, value } => {
-            remove_if_expired(shard, &key);
+            remove_if_expired(cache, shard_id, shard, &key);
             let object_id = stable_page_object_id(shard_id, "hash", &key, Some(&field));
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             if let Ok(address) = append_value(
@@ -7311,6 +7316,7 @@ fn execute_on_shard(
                 async_storage,
             ) {
                 upsert_slot_index_page(
+                    cache,
                     shard,
                     shard_id,
                     "hash",
@@ -7330,7 +7336,7 @@ fn execute_on_shard(
             CommandResponse::Empty
         }
         Command::HashGet { key, field } => {
-            if remove_if_expired(shard, &key) {
+            if remove_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
                 return ExecuteOutcome {
@@ -7353,7 +7359,7 @@ fn execute_on_shard(
             })
         }
         Command::HashMultiGet { key, fields } => {
-            if remove_if_expired(shard, &key) {
+            if remove_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 let _ = cache.invalidate_record(shard_id, "hash", &key);
                 return ExecuteOutcome {
@@ -7375,7 +7381,7 @@ fn execute_on_shard(
             CommandResponse::Values { values }
         }
         Command::HashMultiSet { key, entries } => {
-            remove_if_expired(shard, &key);
+            remove_if_expired(cache, shard_id, shard, &key);
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             let mut applied = Vec::with_capacity(entries.len());
             for (field, value) in entries {
@@ -7390,6 +7396,7 @@ fn execute_on_shard(
                     async_storage,
                 ) {
                     upsert_slot_index_page(
+                        cache,
                         shard,
                         shard_id,
                         "hash",
@@ -7416,7 +7423,7 @@ fn execute_on_shard(
             field,
             increment,
         } => {
-            remove_if_expired(shard, &key);
+            remove_if_expired(cache, shard_id, shard, &key);
             let current = read_slot_index_value(
                 cache,
                 page_store,
@@ -7443,6 +7450,7 @@ fn execute_on_shard(
                 async_storage,
             ) {
                 upsert_slot_index_page(
+                    cache,
                     shard,
                     shard_id,
                     "hash",
@@ -7462,7 +7470,7 @@ fn execute_on_shard(
             CommandResponse::Integer { value }
         }
         Command::HashGetAll { key } => {
-            if remove_if_expired(shard, &key) {
+            if remove_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 let _ = cache.invalidate_record(shard_id, "hash", &key);
                 return ExecuteOutcome {
@@ -7472,16 +7480,15 @@ fn execute_on_shard(
                     mutated,
                 };
             }
-            let entries = read_slot_index_component_values(
-                cache, page_store, shard_id, shard, "hash", &key,
-            )
-                .into_iter()
-                .map(|(field, value)| (field.unwrap_or_default(), value))
-                .collect();
+            let entries =
+                read_slot_index_component_values(cache, page_store, shard_id, shard, "hash", &key)
+                    .into_iter()
+                    .map(|(field, value)| (field.unwrap_or_default(), value))
+                    .collect();
             CommandResponse::HashEntries { entries }
         }
         Command::HashLen { key } => {
-            if remove_if_expired(shard, &key) {
+            if remove_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 let _ = cache.invalidate_record(shard_id, "hash", &key);
                 return ExecuteOutcome {
@@ -7494,7 +7501,14 @@ fn execute_on_shard(
             }
         }
         Command::HashDelete { key, field } => {
-            mutated |= mark_slot_index_page_deleted(shard, "hash", &key, Some(field.as_str()));
+            mutated |= mark_slot_index_page_deleted(
+                cache,
+                shard_id,
+                shard,
+                "hash",
+                &key,
+                Some(field.as_str()),
+            );
             if let Some(fields) = shard.hashes.get_mut(&key) {
                 mutated |= fields.remove(&field).is_some();
             }
@@ -7502,7 +7516,7 @@ fn execute_on_shard(
             CommandResponse::Empty
         }
         Command::SetAdd { key, member } => {
-            remove_if_expired(shard, &key);
+            remove_if_expired(cache, shard_id, shard, &key);
             let member_component = hex::encode(&member);
             let object_id = stable_page_object_id(shard_id, "set", &key, Some(&member_component));
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
@@ -7516,6 +7530,7 @@ fn execute_on_shard(
                 async_storage,
             ) {
                 upsert_slot_index_page(
+                    cache,
                     shard,
                     shard_id,
                     "set",
@@ -7535,7 +7550,7 @@ fn execute_on_shard(
             CommandResponse::Empty
         }
         Command::SetMembers { key } => {
-            if remove_if_expired(shard, &key) {
+            if remove_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 let _ = cache.invalidate_record(shard_id, "set", &key);
                 return ExecuteOutcome {
@@ -7549,15 +7564,22 @@ fn execute_on_shard(
                 let members = read_slot_index_component_values(
                     cache, page_store, shard_id, shard, "set", &key,
                 )
-                    .into_iter()
-                    .map(|(_, value)| value)
-                    .collect();
+                .into_iter()
+                .map(|(_, value)| value)
+                .collect();
                 CommandResponse::Members { members }
             })
         }
         Command::SetRemove { key, member } => {
             let member_component = hex::encode(&member);
-            mutated |= mark_slot_index_page_deleted(shard, "set", &key, Some(&member_component));
+            mutated |= mark_slot_index_page_deleted(
+                cache,
+                shard_id,
+                shard,
+                "set",
+                &key,
+                Some(&member_component),
+            );
             if let Some(set) = shard.sets.get_mut(&key) {
                 mutated |= set.remove(&member).is_some();
             }
@@ -7565,7 +7587,7 @@ fn execute_on_shard(
             CommandResponse::Empty
         }
         Command::FeatureAppend { key, points } => {
-            remove_if_expired(shard, &key);
+            remove_if_expired(cache, shard_id, shard, &key);
             let series = shard.features.entry(key.clone()).or_default();
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             let points = sorted_feature_points(points);
@@ -7595,7 +7617,15 @@ fn execute_on_shard(
                 }
             }
             let live_addresses = series.values().cloned().collect::<Vec<_>>();
-            sync_slot_index_object_pages(shard, shard_id, "feature", &key, live_addresses, mutated);
+            sync_slot_index_object_pages(
+                cache,
+                shard,
+                shard_id,
+                "feature",
+                &key,
+                live_addresses,
+                mutated,
+            );
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Empty
         }
@@ -7604,7 +7634,7 @@ fn execute_on_shard(
             points,
             policy,
         } => {
-            remove_if_expired(shard, &key);
+            remove_if_expired(cache, shard_id, shard, &key);
             let series = shard.features.entry(key.clone()).or_default();
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             let mut accepted_points = Vec::new();
@@ -7649,7 +7679,15 @@ fn execute_on_shard(
                 }
             }
             let live_addresses = series.values().cloned().collect::<Vec<_>>();
-            sync_slot_index_object_pages(shard, shard_id, "feature", &key, live_addresses, mutated);
+            sync_slot_index_object_pages(
+                cache,
+                shard,
+                shard_id,
+                "feature",
+                &key,
+                live_addresses,
+                mutated,
+            );
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Integer {
                 value: if mutated { 1 } else { 0 },
@@ -7739,7 +7777,7 @@ fn execute_on_shard(
             end_ms,
             points,
         } => {
-            remove_if_expired(shard, &key);
+            remove_if_expired(cache, shard_id, shard, &key);
             let series = shard.features.entry(key.clone()).or_default();
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             let replaced = series
@@ -7775,13 +7813,21 @@ fn execute_on_shard(
                 }
             }
             let live_addresses = series.values().cloned().collect::<Vec<_>>();
-            sync_slot_index_object_pages(shard, shard_id, "feature", &key, live_addresses, mutated);
+            sync_slot_index_object_pages(
+                cache,
+                shard,
+                shard_id,
+                "feature",
+                &key,
+                live_addresses,
+                mutated,
+            );
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Empty
         }
         Command::FeatureDelete { key } => {
             mutated = shard.features.remove(&key).is_some();
-            mutated |= mark_slot_index_object_deleted(shard, &key);
+            mutated |= mark_slot_index_object_deleted(cache, shard_id, shard, &key);
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Empty
         }
@@ -7792,7 +7838,7 @@ fn execute_on_shard(
             aggregator,
             count,
         } => {
-            if remove_if_expired(shard, &key) {
+            if remove_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 let _ = cache.invalidate_record(shard_id, "feature", &key);
                 return ExecuteOutcome {
@@ -7827,7 +7873,7 @@ fn execute_on_shard(
             }
         }
         Command::SequenceAdd { key, rows } => {
-            remove_if_expired(shard, &key);
+            remove_if_expired(cache, shard_id, shard, &key);
             let series = shard.sequences.entry(key.clone()).or_default();
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             let points = rows
@@ -7864,6 +7910,7 @@ fn execute_on_shard(
             }
             let live_addresses = series.values().cloned().collect::<Vec<_>>();
             sync_slot_index_object_pages(
+                cache,
                 shard,
                 shard_id,
                 "sequence",
@@ -7880,7 +7927,7 @@ fn execute_on_shard(
             count,
             filters,
         } => {
-            if remove_if_expired(shard, &key) {
+            if remove_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::SequenceRows { rows: Vec::new() },
@@ -7903,7 +7950,7 @@ fn execute_on_shard(
                          count,
                          filters,
                      }| {
-                        if remove_if_expired(shard, &key) {
+                        if remove_if_expired(cache, shard_id, shard, &key) {
                             mutated = true;
                             return (key, Vec::new());
                         }
@@ -7922,7 +7969,7 @@ fn execute_on_shard(
             timestamp_ms,
             instance,
         } => {
-            remove_if_expired(shard, &key);
+            remove_if_expired(cache, shard_id, shard, &key);
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             if let Ok(addresses) = append_timestamped_kv_pages(
                 cache,
@@ -7962,7 +8009,15 @@ fn execute_on_shard(
                 .get(&key)
                 .map(|series| series.values().cloned().collect::<Vec<_>>())
                 .unwrap_or_default();
-            sync_slot_index_object_pages(shard, shard_id, "ips", &key, live_addresses, mutated);
+            sync_slot_index_object_pages(
+                cache,
+                shard,
+                shard_id,
+                "ips",
+                &key,
+                live_addresses,
+                mutated,
+            );
             CommandResponse::Empty
         }
         Command::IpsAddWithOptions {
@@ -7973,7 +8028,7 @@ fn execute_on_shard(
             table_id,
             request_id,
         } => {
-            remove_if_expired(shard, &key);
+            remove_if_expired(cache, shard_id, shard, &key);
             if let Some(request_id) = &request_id {
                 if shard
                     .ips_request_ids
@@ -8032,13 +8087,21 @@ fn execute_on_shard(
                 .get(&key)
                 .map(|series| series.values().cloned().collect::<Vec<_>>())
                 .unwrap_or_default();
-            sync_slot_index_object_pages(shard, shard_id, "ips", &key, live_addresses, mutated);
+            sync_slot_index_object_pages(
+                cache,
+                shard,
+                shard_id,
+                "ips",
+                &key,
+                live_addresses,
+                mutated,
+            );
             CommandResponse::Integer {
                 value: if mutated { 1 } else { 0 },
             }
         }
         Command::IpsLoad { key, points } => {
-            remove_if_expired(shard, &key);
+            remove_if_expired(cache, shard_id, shard, &key);
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             let points = sorted_feature_points(points);
             let mut loaded = 0i64;
@@ -8076,11 +8139,19 @@ fn execute_on_shard(
                 .get(&key)
                 .map(|series| series.values().cloned().collect::<Vec<_>>())
                 .unwrap_or_default();
-            sync_slot_index_object_pages(shard, shard_id, "ips", &key, live_addresses, mutated);
+            sync_slot_index_object_pages(
+                cache,
+                shard,
+                shard_id,
+                "ips",
+                &key,
+                live_addresses,
+                mutated,
+            );
             CommandResponse::Integer { value: loaded }
         }
         Command::IpsQueryLast { key, count } => {
-            if remove_if_expired(shard, &key) {
+            if remove_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::FeaturePoints { points: Vec::new() },
@@ -8117,7 +8188,7 @@ fn execute_on_shard(
             end_ms,
             count,
         } => {
-            if remove_if_expired(shard, &key) {
+            if remove_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::FeaturePoints { points: Vec::new() },
@@ -8134,7 +8205,7 @@ fn execute_on_shard(
             let groups = keys
                 .into_iter()
                 .map(|key| {
-                    if remove_if_expired(shard, &key) {
+                    if remove_if_expired(cache, shard_id, shard, &key) {
                         mutated = true;
                         return (key, Vec::new());
                     }
@@ -8189,7 +8260,15 @@ fn execute_on_shard(
                 .get(&key)
                 .map(|series| series.values().cloned().collect::<Vec<_>>())
                 .unwrap_or_default();
-            sync_slot_index_object_pages(shard, shard_id, "ips", &key, live_addresses, mutated);
+            sync_slot_index_object_pages(
+                cache,
+                shard,
+                shard_id,
+                "ips",
+                &key,
+                live_addresses,
+                mutated,
+            );
             CommandResponse::Integer {
                 value: if mutated { 1 } else { 0 },
             }
@@ -8198,7 +8277,7 @@ fn execute_on_shard(
             mutated = shard.ips.remove(&key).is_some();
             mutated |= shard.ips_meta.remove(&key).is_some();
             shard.ips_request_ids.remove(&key);
-            mutated |= mark_slot_index_object_deleted(shard, &key);
+            mutated |= mark_slot_index_object_deleted(cache, shard_id, shard, &key);
             CommandResponse::Integer {
                 value: if mutated { 1 } else { 0 },
             }
@@ -8208,7 +8287,7 @@ fn execute_on_shard(
             start_ms,
             end_ms,
         } => {
-            if remove_if_expired(shard, &key) {
+            if remove_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::Integer { value: 0 },
@@ -8230,7 +8309,7 @@ fn execute_on_shard(
             action_type,
             table_id,
         } => {
-            if remove_if_expired(shard, &key) {
+            if remove_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::FeaturePoints { points: Vec::new() },
@@ -8258,7 +8337,7 @@ fn execute_on_shard(
             end_ms,
             count,
         } => {
-            if remove_if_expired(shard, &key) {
+            if remove_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::FeaturePoints { points: Vec::new() },
@@ -8277,7 +8356,7 @@ fn execute_on_shard(
             end_ms,
             count,
         } => {
-            if remove_if_expired(shard, &key) {
+            if remove_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::IpsSnapshotReport {
@@ -8297,7 +8376,7 @@ fn execute_on_shard(
             start_ms,
             end_ms,
         } => {
-            if remove_if_expired(shard, &key) {
+            if remove_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::IpsStats {
@@ -8324,7 +8403,7 @@ fn execute_on_shard(
             action_type,
             table_id,
         } => {
-            if remove_if_expired(shard, &key) {
+            if remove_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::FeaturePoints { points: Vec::new() },
@@ -8351,7 +8430,7 @@ fn execute_on_shard(
             timestamp_ms,
             amount,
         } => {
-            remove_if_expired(shard, &key);
+            remove_if_expired(cache, shard_id, shard, &key);
             *shard
                 .risk
                 .entry(key.clone())
@@ -8378,7 +8457,7 @@ fn execute_on_shard(
             precision_ms,
             ttl_ms,
         } => {
-            remove_if_expired(shard, &key);
+            remove_if_expired(cache, shard_id, shard, &key);
             let bucket_ms = precision_ms
                 .filter(|precision_ms| *precision_ms > 0)
                 .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
@@ -8414,7 +8493,7 @@ fn execute_on_shard(
             precision_ms,
             ttl_ms,
         } => {
-            remove_if_expired(shard, &key);
+            remove_if_expired(cache, shard_id, shard, &key);
             let bucket_ms = precision_ms
                 .filter(|precision_ms| *precision_ms > 0)
                 .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
@@ -8439,7 +8518,7 @@ fn execute_on_shard(
             start_ms,
             end_ms,
         } => {
-            if remove_if_expired(shard, &key) {
+            if remove_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::Integer { value: 0 },
@@ -8464,7 +8543,7 @@ fn execute_on_shard(
             end_ms,
             aggregator,
         } => {
-            if remove_if_expired(shard, &key) {
+            if remove_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::Integer { value: 0 },
@@ -8497,7 +8576,7 @@ fn execute_on_shard(
             end_ms,
             count,
         } => {
-            if remove_if_expired(shard, &key) {
+            if remove_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::FeaturePoints { points: Vec::new() },
@@ -8526,7 +8605,7 @@ fn execute_on_shard(
             timestamp_ms,
             amount,
         } => {
-            remove_if_expired(shard, &key);
+            remove_if_expired(cache, shard_id, shard, &key);
             let key = risk_family_key(family, &key);
             *shard
                 .risk
@@ -8556,7 +8635,7 @@ fn execute_on_shard(
             end_ms,
             aggregator,
         } => {
-            remove_if_expired(shard, &key);
+            remove_if_expired(cache, shard_id, shard, &key);
             let key = risk_family_key(family, &key);
             let series = shard.risk.entry(key.clone()).or_default();
             *series.entry(timestamp_ms).or_default() += amount;
@@ -8586,7 +8665,7 @@ fn execute_on_shard(
             end_ms,
             aggregator,
         } => {
-            if remove_if_expired(shard, &key) {
+            if remove_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::Integer { value: 0 },
@@ -8621,7 +8700,7 @@ fn execute_on_shard(
             ttl_ms,
             fol_type,
         } => {
-            remove_if_expired(shard, &key);
+            remove_if_expired(cache, shard_id, shard, &key);
             let should_store = shard
                 .risk_fol
                 .get(&key)
@@ -8649,7 +8728,7 @@ fn execute_on_shard(
             CommandResponse::Empty
         }
         Command::RiskFolQuery { key } => {
-            if remove_if_expired(shard, &key) {
+            if remove_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::Bytes { value: None },
@@ -8661,7 +8740,7 @@ fn execute_on_shard(
             }
         }
         Command::RiskManager { key } => {
-            if remove_if_expired(shard, &key) {
+            if remove_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::HashEntries {
@@ -8708,7 +8787,7 @@ fn execute_on_shard(
             start_ms,
             end_ms,
         } => {
-            if remove_if_expired(shard, &key) {
+            if remove_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
                     response: CommandResponse::HashEntries {
@@ -9808,8 +9887,8 @@ fn now_ms() -> u64 {
         .unwrap_or_default()
 }
 
-fn ttl_ms(shard: &mut ShardState, key: &str) -> i64 {
-    if remove_if_expired(shard, key) {
+fn ttl_ms(cache: &MultiLayerCache, shard_id: ShardId, shard: &mut ShardState, key: &str) -> i64 {
+    if remove_if_expired(cache, shard_id, shard, key) {
         return -2;
     }
     if !record_exists(shard, key) {
@@ -9840,7 +9919,12 @@ fn select_expiry_cursor_window(
     (std::mem::take(&mut selected), next_cursor)
 }
 
-fn remove_if_expired(shard: &mut ShardState, key: &str) -> bool {
+fn remove_if_expired(
+    cache: &MultiLayerCache,
+    shard_id: ShardId,
+    shard: &mut ShardState,
+    key: &str,
+) -> bool {
     let now = now_ms();
     let mut removed = false;
     for record_key in associated_record_keys(key) {
@@ -9850,23 +9934,33 @@ fn remove_if_expired(shard: &mut ShardState, key: &str) -> bool {
             .map(|expires_at| *expires_at <= now)
             .unwrap_or(false)
         {
-            removed |= delete_record_exact(shard, &record_key);
+            removed |= delete_record_exact(cache, shard_id, shard, &record_key);
         }
     }
     removed
 }
 
-fn delete_record(shard: &mut ShardState, key: &str) -> bool {
+fn delete_record(
+    cache: &MultiLayerCache,
+    shard_id: ShardId,
+    shard: &mut ShardState,
+    key: &str,
+) -> bool {
     let mut removed = false;
     for record_key in associated_record_keys(key) {
-        removed |= delete_record_exact(shard, &record_key);
+        removed |= delete_record_exact(cache, shard_id, shard, &record_key);
     }
     removed
 }
 
-fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
+fn delete_record_exact(
+    cache: &MultiLayerCache,
+    shard_id: ShardId,
+    shard: &mut ShardState,
+    key: &str,
+) -> bool {
     let mut removed = false;
-    removed |= mark_slot_index_object_deleted(shard, key);
+    removed |= mark_slot_index_object_deleted(cache, shard_id, shard, key);
     removed |= shard.expires_at_ms.remove(key).is_some();
     removed |= shard.strings.remove(key).is_some();
     removed |= shard.hashes.remove(key).is_some();
@@ -9893,8 +9987,14 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed
 }
 
-fn mark_slot_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
+fn mark_slot_index_object_deleted(
+    cache: &MultiLayerCache,
+    shard_id: ShardId,
+    shard: &mut ShardState,
+    key: &str,
+) -> bool {
     let mut removed = false;
+    let mut removed_addresses = Vec::new();
     let lookup_enabled = !shard.slot_index.object_component_lookup.is_empty();
     let target_slots = slot_index_target_slots_for_object_key(shard, key);
     if lookup_enabled {
@@ -9910,6 +10010,7 @@ fn mark_slot_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
         slot.page_index.retain(|_, page| {
             if page.object_key == key {
                 deleted_object_ids.insert(page.object_id);
+                removed_addresses.push(page.address.clone());
                 removed = true;
                 false
             } else {
@@ -9930,6 +10031,7 @@ fn mark_slot_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
     if removed && !lookup_enabled {
         shard.slot_index.rebuild_object_page_lookup();
     }
+    invalidate_page_addresses(cache, shard_id, removed_addresses);
     removed
 }
 
@@ -9951,12 +10053,15 @@ fn slot_index_target_slots_for_object_key(shard: &ShardState, key: &str) -> BTre
 }
 
 fn mark_slot_index_page_deleted(
+    cache: &MultiLayerCache,
+    shard_id: ShardId,
     shard: &mut ShardState,
     model_id: &str,
     key: &str,
     component: Option<&str>,
 ) -> bool {
     let mut removed = false;
+    let mut removed_addresses = Vec::new();
     let lookup_enabled = !shard.slot_index.object_page_lookup.is_empty();
     let target_slots = if !lookup_enabled {
         shard
@@ -9995,6 +10100,7 @@ fn mark_slot_index_page_deleted(
                 && page.component.as_deref() == component;
             if matches {
                 deleted_object_ids.insert(page.object_id);
+                removed_addresses.push(page.address.clone());
                 slot_removed = true;
                 removed = true;
                 false
@@ -10016,6 +10122,7 @@ fn mark_slot_index_page_deleted(
     if removed && !lookup_enabled {
         shard.slot_index.rebuild_object_page_lookup();
     }
+    invalidate_page_addresses(cache, shard_id, removed_addresses);
     removed
 }
 
@@ -11118,6 +11225,7 @@ fn page_physical_identity_key(
 }
 
 fn upsert_slot_index_page(
+    cache: &MultiLayerCache,
     shard: &mut ShardState,
     shard_id: ShardId,
     kind: &str,
@@ -11126,6 +11234,7 @@ fn upsert_slot_index_page(
     address: PageAddress,
     dirty: bool,
 ) {
+    let mut removed_addresses = Vec::new();
     let routing_slot = address
         .routing_slot
         .unwrap_or_else(|| page_routing_slot(object_key, 0, u32::MAX));
@@ -11165,10 +11274,10 @@ fn upsert_slot_index_page(
             let Some(slot) = shard.slot_index.slot_map.get_mut(&page_ref.routing_slot) else {
                 continue;
             };
-            let removed_object_id = slot
-                .page_index
-                .remove(&page_ref.page_ref_key)
-                .map(|page| page.object_id);
+            let removed_object_id = slot.page_index.remove(&page_ref.page_ref_key).map(|page| {
+                removed_addresses.push(page.address.clone());
+                page.object_id
+            });
             if let Some(removed_object_id) = removed_object_id {
                 if !slot
                     .page_index
@@ -11183,9 +11292,13 @@ fn upsert_slot_index_page(
     } else if !lookup_enabled {
         for slot in shard.slot_index.slot_map.values_mut() {
             slot.page_index.retain(|_, page| {
-                !(page.object_key == entry.object_key
+                let remove = page.object_key == entry.object_key
                     && page.model_id == entry.kind
-                    && page.component == entry.component)
+                    && page.component == entry.component;
+                if remove {
+                    removed_addresses.push(page.address.clone());
+                }
+                !remove
             });
             if !slot
                 .page_index
@@ -11233,9 +11346,11 @@ fn upsert_slot_index_page(
     shard
         .slot_index
         .insert_object_page_lookup(routing_slot, page_ref_key, &page_index);
+    invalidate_page_addresses(cache, shard_id, removed_addresses);
 }
 
 fn sync_slot_index_object_pages(
+    cache: &MultiLayerCache,
     shard: &mut ShardState,
     shard_id: ShardId,
     kind: &str,
@@ -11245,6 +11360,7 @@ fn sync_slot_index_object_pages(
 ) {
     let mut touched_slots = BTreeSet::new();
     let mut removed_any = false;
+    let mut removed_addresses = Vec::new();
     let lookup_enabled = !shard.slot_index.object_component_lookup.is_empty();
     let target_slots = if !lookup_enabled {
         shard
@@ -11276,8 +11392,13 @@ fn sync_slot_index_object_pages(
             continue;
         };
         let before = slot.page_index.len();
-        slot.page_index
-            .retain(|_, page| !(page.model_id == kind && page.object_key == object_key));
+        slot.page_index.retain(|_, page| {
+            let remove = page.model_id == kind && page.object_key == object_key;
+            if remove {
+                removed_addresses.push(page.address.clone());
+            }
+            !remove
+        });
         if slot.page_index.len() != before {
             removed_any = true;
             touched_slots.insert(routing_slot);
@@ -11368,6 +11489,7 @@ fn sync_slot_index_object_pages(
     if !lookup_enabled {
         shard.slot_index.rebuild_object_page_lookup();
     }
+    invalidate_page_addresses(cache, shard_id, removed_addresses);
 }
 
 fn classify_slot_layout(object_count: usize, page_ref_count: usize) -> SlotLayoutState {
@@ -13453,7 +13575,16 @@ fn persist_risk_page(
         Some(routing_slot),
         async_storage,
     ) {
-        upsert_slot_index_page(shard, shard_id, "risk", key, None, address.clone(), true);
+        upsert_slot_index_page(
+            cache,
+            shard,
+            shard_id,
+            "risk",
+            key,
+            None,
+            address.clone(),
+            true,
+        );
         shard.risk_pages.insert(key.to_string(), address);
         true
     } else {
@@ -13467,6 +13598,32 @@ fn invalidate_cache_key(cache: &MultiLayerCache, key: CacheKey, memory_only: boo
     } else {
         let _ = cache.invalidate(&key);
     }
+}
+
+fn page_address_cache_key(shard_id: ShardId, address: &PageAddress) -> CacheKey {
+    CacheKey::page_with_slot_generation(
+        shard_id,
+        address.page_segment_id,
+        address.offset,
+        address.length,
+        address.routing_slot,
+        address.generation,
+    )
+}
+
+fn invalidate_page_addresses(
+    cache: &MultiLayerCache,
+    shard_id: ShardId,
+    addresses: Vec<PageAddress>,
+) {
+    if addresses.is_empty() {
+        return;
+    }
+    let keys = addresses
+        .into_iter()
+        .map(|address| page_address_cache_key(shard_id, &address))
+        .collect::<Vec<_>>();
+    let _ = cache.invalidate_batch(&keys);
 }
 
 fn record_exists(shard: &ShardState, key: &str) -> bool {
