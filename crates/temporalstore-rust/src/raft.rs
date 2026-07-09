@@ -11758,6 +11758,33 @@ impl MetaRaftCluster {
         }
     }
 
+    pub fn server_notify_stop(&self, request: StateChangeRequest) -> AckResponse {
+        let status = match self.read_meta() {
+            Ok(meta) => {
+                let servers = meta.list_servers();
+                if !servers.status.ok {
+                    return AckResponse {
+                        status: servers.status,
+                    };
+                }
+                match servers
+                    .servers
+                    .iter()
+                    .find(|server| server.server_addr == request.endpoint)
+                {
+                    Some(server) if server.state == MetaEntityState::Normal => Status::ok(),
+                    Some(_) => Status::error("failed_precondition", "state not normal"),
+                    None => Status::error("not_found", "server not found"),
+                }
+            }
+            Err(status) => status,
+        };
+        if !status.ok {
+            return AckResponse { status };
+        }
+        self.drop_server(request)
+    }
+
     pub fn freeze_proxy(&self, request: StateChangeRequest) -> AckResponse {
         AckResponse {
             status: self.mutation_status(MetaMutation::FreezeProxy(request)),
@@ -11768,6 +11795,33 @@ impl MetaRaftCluster {
         AckResponse {
             status: self.mutation_status(MetaMutation::DropProxy(request)),
         }
+    }
+
+    pub fn proxy_notify_stop(&self, request: StateChangeRequest) -> AckResponse {
+        let status = match self.read_meta() {
+            Ok(meta) => {
+                let proxies = meta.list_proxies();
+                if !proxies.status.ok {
+                    return AckResponse {
+                        status: proxies.status,
+                    };
+                }
+                match proxies
+                    .proxies
+                    .iter()
+                    .find(|proxy| proxy.proxy_addr == request.endpoint)
+                {
+                    Some(proxy) if proxy.state == MetaEntityState::Normal => Status::ok(),
+                    Some(_) => Status::error("failed_precondition", "state not normal"),
+                    None => Status::error("not_found", "proxy not found"),
+                }
+            }
+            Err(status) => status,
+        };
+        if !status.ok {
+            return AckResponse { status };
+        }
+        self.drop_proxy(request)
     }
 
     pub fn freeze_stale_servers(&self, stale_after_ms: u64) -> StaleServerReport {

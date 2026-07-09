@@ -2002,6 +2002,38 @@ impl SingleNodeMeta {
         self.set_proxy_state(request, MetaEntityState::Dropped)
     }
 
+    pub fn server_notify_stop(&self, request: StateChangeRequest) -> AckResponse {
+        let state = self.inner.read().expect("meta lock poisoned");
+        let Some(server) = state.servers.get(&request.endpoint) else {
+            return AckResponse {
+                status: Status::error("not_found", "server not found"),
+            };
+        };
+        if server.state != MetaEntityState::Normal {
+            return AckResponse {
+                status: Status::error("failed_precondition", "state not normal"),
+            };
+        }
+        drop(state);
+        self.drop_server(request)
+    }
+
+    pub fn proxy_notify_stop(&self, request: StateChangeRequest) -> AckResponse {
+        let state = self.inner.read().expect("meta lock poisoned");
+        let Some(proxy) = state.proxies.get(&request.endpoint) else {
+            return AckResponse {
+                status: Status::error("not_found", "proxy not found"),
+            };
+        };
+        if proxy.state != MetaEntityState::Normal {
+            return AckResponse {
+                status: Status::error("failed_precondition", "state not normal"),
+            };
+        }
+        drop(state);
+        self.drop_proxy(request)
+    }
+
     pub fn finish_load(&self, request: LoadFinishRequest) -> AckResponse {
         self.record_mutation(MetaMutation::FinishLoad(request.clone()));
         self.apply_finish_load(request)
