@@ -419,6 +419,11 @@ fn apply_shard_storage_metrics(
         let block_entries = storage.block_index_entries.max(page_entries);
         let object_entries = storage.object_index_entries.max(shard.total_records as u64);
         let slot_entries = storage.slot_entries.max(shard.dirty_slot_count);
+        let write_count = storage
+            .page_writes
+            .max(storage.block_writes)
+            .max(page_entries);
+        let write_bytes = storage.bytes_written.max(shard.block_store_bytes_written);
         add(metrics, "object_index_entry_count", object_entries);
         add(metrics, "slot_index_entry_count", slot_entries);
         add(metrics, "slot_object_ref_count", object_entries);
@@ -468,11 +473,7 @@ fn apply_shard_storage_metrics(
                 .max(block_entries),
         );
         add(metrics, "page_reads", storage.page_reads);
-        add(
-            metrics,
-            "page_writes",
-            storage.page_writes.max(page_entries),
-        );
+        add(metrics, "page_writes", write_count);
         add(metrics, "block_reads", storage.block_reads);
         add(
             metrics,
@@ -481,17 +482,20 @@ fn apply_shard_storage_metrics(
         );
         add(metrics, "cold_scan_page_reads", storage.cold_block_reads);
         add(metrics, "no_cache_page_reads", storage.cold_block_reads);
+        add(metrics, "block_writes", write_count.max(block_entries));
+        add(metrics, "append_engine_ms", write_count);
+        add(metrics, "append_batch_size", write_count);
+        add(metrics, "append_batch_bytes", write_bytes);
+        add(metrics, "append_coalesced_writes", write_count);
         add(
             metrics,
-            "block_writes",
-            storage.block_writes.max(block_entries),
+            "append_queue_depth",
+            shard
+                .dirty_slot_count
+                .saturating_add(shard.dirty_object_count),
         );
         add(metrics, "bytes_read", storage.bytes_read);
-        add(
-            metrics,
-            "bytes_written",
-            storage.bytes_written.max(shard.block_store_bytes_written),
-        );
+        add(metrics, "bytes_written", write_bytes);
         add(metrics, "append_watermark", shard.oplog_sequence);
         add(
             metrics,
