@@ -819,7 +819,6 @@ pub(super) fn load_context_compression_events(
     let trim_threshold = event_limit.saturating_mul(2).max(event_limit);
     let mut events = Vec::with_capacity(event_limit);
     let mut seen_nodes = HashSet::new();
-    let mut page_cache = HashMap::new();
     for node_hash in node_hashes
         .iter()
         .copied()
@@ -827,23 +826,33 @@ pub(super) fn load_context_compression_events(
     {
         let object_key = context_compression_key(tenant_hash, node_hash);
         if let Some(series) = shard.context_compressions.get(&object_key) {
-            for event in series.iter().filter_map(|(timeline_key, address)| {
-                read_context_value_cached::<ContextCompressionEvent>(
-                    cache,
-                    page_store,
-                    shard_id,
-                    *timeline_key,
-                    address,
-                    &mut page_cache,
-                )
-                .filter(|event| {
-                    event.source_end_ms >= start_time_ms && event.source_start_ms <= end_time_ms
-                })
-            }) {
-                events.push(event);
-                if events.len() > trim_threshold {
-                    sort_truncate_context_compression_events(&mut events, event_limit);
+            let mut batch = Vec::with_capacity(64);
+            let drain_batch =
+                |batch: &mut Vec<(u64, PageAddress)>, events: &mut Vec<ContextCompressionEvent>| {
+                    for event in read_context_values_cached::<ContextCompressionEvent>(
+                        cache,
+                        page_store,
+                        shard_id,
+                        std::mem::take(batch),
+                    )
+                    .into_iter()
+                    .filter(|event| {
+                        event.source_end_ms >= start_time_ms && event.source_start_ms <= end_time_ms
+                    }) {
+                        events.push(event);
+                        if events.len() > trim_threshold {
+                            sort_truncate_context_compression_events(events, event_limit);
+                        }
+                    }
+                };
+            for (timeline_key, address) in series.iter() {
+                batch.push((*timeline_key, address.clone()));
+                if batch.len() >= 64 {
+                    drain_batch(&mut batch, &mut events);
                 }
+            }
+            if !batch.is_empty() {
+                drain_batch(&mut batch, &mut events);
             }
         }
     }
