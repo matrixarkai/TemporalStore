@@ -5611,10 +5611,14 @@ impl TemporalEngine {
                     "shard is not loaded on this server",
                 ));
             };
-            collect_model_live_page_entries(shard)
+            let entries = if publish_all {
+                collect_model_live_page_entries(shard)
+            } else {
+                collect_model_live_page_entries_for_keys(shard, &selected_keys)
+            };
+            entries
                 .into_iter()
                 .filter(|entry| page_address_is_memory_only(&entry.address))
-                .filter(|entry| publish_all || selected_keys.contains(&entry.object_key))
                 .collect::<Vec<_>>()
         };
         let mut publish_records = Vec::with_capacity(publish_targets.len());
@@ -11292,6 +11296,138 @@ fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
                 .into_iter()
                 .map(|address| live_page_entry(key.clone(), "context_compression", None, address)),
         );
+    }
+    entries
+}
+
+fn collect_model_live_page_entries_for_keys(
+    shard: &ShardState,
+    keys: &BTreeSet<String>,
+) -> Vec<LivePageEntry> {
+    let mut entries = Vec::new();
+    for key in keys {
+        if let Some(address) = shard.strings.get(key) {
+            entries.push(live_page_entry(
+                key.clone(),
+                "string",
+                None,
+                address.clone(),
+            ));
+        }
+        if let Some(fields) = shard.hashes.get(key) {
+            entries.extend(fields.iter().map(|(field, address)| {
+                live_page_entry(key.clone(), "hash", Some(field.clone()), address.clone())
+            }));
+        }
+        if let Some(members) = shard.sets.get(key) {
+            entries.extend(members.iter().map(|(member, address)| {
+                live_page_entry(
+                    key.clone(),
+                    "set",
+                    Some(hex::encode(member)),
+                    address.clone(),
+                )
+            }));
+        }
+        if let Some(series) = shard.features.get(key) {
+            entries.extend(
+                unique_timestamped_kv_page_addresses(series)
+                    .into_iter()
+                    .map(|address| live_page_entry(key.clone(), "feature", None, address)),
+            );
+        }
+        if let Some(series) = shard.sequences.get(key) {
+            entries.extend(
+                unique_timestamped_kv_page_addresses(series)
+                    .into_iter()
+                    .map(|address| live_page_entry(key.clone(), "sequence", None, address)),
+            );
+        }
+        if let Some(series) = shard.ips.get(key) {
+            entries.extend(
+                unique_timestamped_kv_page_addresses(series)
+                    .into_iter()
+                    .map(|address| live_page_entry(key.clone(), "ips", None, address)),
+            );
+        }
+        if let Some(address) = shard.risk_pages.get(key) {
+            entries.push(live_page_entry(key.clone(), "risk", None, address.clone()));
+        }
+        if let Some(address) = shard.context_nodes.get(key) {
+            entries.push(live_page_entry(
+                key.clone(),
+                "context_node",
+                None,
+                address.clone(),
+            ));
+        }
+        if let Some(series) = shard.context_events.get(key) {
+            entries.extend(
+                unique_timestamped_kv_page_addresses(series)
+                    .into_iter()
+                    .map(|address| live_page_entry(key.clone(), "context_event", None, address)),
+            );
+        }
+        if let Some(series) = shard.context_indexes.get(key) {
+            entries.extend(
+                unique_timestamped_kv_page_addresses(series)
+                    .into_iter()
+                    .map(|address| live_page_entry(key.clone(), "context_index", None, address)),
+            );
+        }
+        if let Some(series) = shard.context_audits.get(key) {
+            entries.extend(
+                unique_timestamped_kv_page_addresses(series)
+                    .into_iter()
+                    .map(|address| live_page_entry(key.clone(), "context_audit", None, address)),
+            );
+        }
+        if let Some(series) = shard.context_dirty.get(key) {
+            entries.extend(
+                unique_timestamped_kv_page_addresses(series)
+                    .into_iter()
+                    .map(|address| live_page_entry(key.clone(), "context_dirty", None, address)),
+            );
+        }
+        if let Some(address) = shard.context_entities.get(key) {
+            entries.push(live_page_entry(
+                key.clone(),
+                "context_entity",
+                None,
+                address.clone(),
+            ));
+        }
+        if let Some(series) = shard.context_children.get(key) {
+            entries.extend(
+                unique_timestamped_kv_page_addresses(series)
+                    .into_iter()
+                    .map(|address| live_page_entry(key.clone(), "context_child", None, address)),
+            );
+        }
+        if let Some(address) = shard.context_embeddings.get(key) {
+            entries.push(live_page_entry(
+                key.clone(),
+                "context_embedding",
+                None,
+                address.clone(),
+            ));
+        }
+        if let Some(series) = shard.context_summaries.get(key) {
+            entries.extend(
+                unique_timestamped_kv_page_addresses(series)
+                    .into_iter()
+                    .map(|address| live_page_entry(key.clone(), "context_summary", None, address)),
+            );
+        }
+        if let Some(series) = shard.context_compressions.get(key) {
+            entries.extend(
+                unique_timestamped_kv_page_addresses(series)
+                    .into_iter()
+                    .map(|address| {
+                        live_page_entry(key.clone(), "context_compression", None, address)
+                    }),
+            );
+        }
     }
     entries
 }
