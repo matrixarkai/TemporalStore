@@ -1711,6 +1711,13 @@ struct QueryListServerPartitionResponse {
     node_partitions: Vec<QueryServerNodePartitions>,
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct ManageFinishLoadPartitionRequest {
+    partition_id: u64,
+    #[serde(default)]
+    load_result: Option<Status>,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct RaftControlNode {
     #[serde(default, alias = "node_id")]
@@ -2075,6 +2082,11 @@ fn handle_manage_service_route(
                 backend_call!(meta, drop_partition, req)
             })
         }
+        ("POST", "/ManageService/FinishLoadPartition") => {
+            parse_or(&request.body, |req: ManageFinishLoadPartitionRequest| {
+                finish_load_partition_from_manage_service(meta, req)
+            })
+        }
         _ => return None,
     };
     Some(response)
@@ -2401,6 +2413,86 @@ fn query_list_server_partition(
             partitions,
         }],
     }
+}
+
+fn finish_load_partition_from_manage_service(
+    meta: &MetaBackend,
+    req: ManageFinishLoadPartitionRequest,
+) -> AckResponse {
+    let status = req.load_result.unwrap_or_else(Status::ok);
+    if !status.ok {
+        return AckResponse { status };
+    }
+    let servers = backend_call!(meta, list_servers);
+    if !servers.status.ok {
+        return AckResponse {
+            status: servers.status,
+        };
+    }
+
+    let mut candidates = Vec::new();
+    let mut already_serving = false;
+    for server in servers.servers {
+        for shard_state in server
+            .shard_states
+            .iter()
+            .filter(|state| state.shard_id == req.partition_id)
+        {
+            if matches!(shard_state.serving_state.as_str(), "serving" | "readonly") {
+                already_serving = true;
+            }
+            if matches!(
+                shard_state.serving_state.as_str(),
+                "loading" | "running" | "queued" | "serving" | "readonly"
+            ) {
+                candidates.push((
+                    server.server_addr.clone(),
+                    shard_state.load_version,
+                    shard_state.serving_state.clone(),
+                ));
+            }
+        }
+    }
+
+    if candidates.is_empty() {
+        let route = backend_call!(meta, get, req.partition_id);
+        return AckResponse {
+            status: if route.status.ok {
+                Status::ok()
+            } else {
+                Status::error(
+                    "partition_load_not_found",
+                    "no loading server state found for partition",
+                )
+            },
+        };
+    }
+    candidates.sort();
+    candidates.dedup();
+    if candidates.len() > 1 && !already_serving {
+        return AckResponse {
+            status: Status::error(
+                "ambiguous_partition_load",
+                "multiple loading server states found for partition",
+            ),
+        };
+    }
+    let (server_addr, load_version, _) = candidates
+        .into_iter()
+        .max_by_key(|(_, load_version, _)| *load_version)
+        .expect("candidate exists");
+    backend_call!(
+        meta,
+        finish_load,
+        LoadFinishRequest {
+            server_addr,
+            shard_id: req.partition_id,
+            load_version,
+            status: Status::ok(),
+            scheduler_task_id: None,
+            scheduler_generation: None,
+        }
+    )
 }
 
 fn handle_heartbeat_service_route(
@@ -2784,7 +2876,10 @@ mod tests {
     use tempfile::tempdir;
     use temporalstore_rust::data_node::DataNodeLifecycleSnapshot;
     use temporalstore_rust::http::HttpRequest;
-    use temporalstore_rust::meta::{MetaEntityState, ShardSnapshotRef, TableTopologyResponse};
+    use temporalstore_rust::meta::{
+        MetaEntityState, ServerRuntimeLoad, ServerShardServingState, ShardSnapshotRef,
+        TableTopologyResponse,
+    };
     use temporalstore_rust::rebalance::RebalanceStep;
     use temporalstore_rust::ProductionReadinessReport;
 
@@ -2940,6 +3035,77 @@ mod tests {
         assert!(partitions.status.ok);
         assert_eq!(partitions.info[0].partition_info.len(), 1);
         assert_eq!(partitions.info[0].partition_info[0].shard_id, 701);
+    }
+
+    #[test]
+    fn manage_service_finish_load_partition_uses_server_state() {
+        let meta = SingleNodeMeta::default();
+        assert!(
+            meta.register_server(RegisterServerRequest {
+                server_addr: "load-server-a".to_string(),
+                node_id: 9,
+                location: "zone-a".to_string(),
+                binary_version: "v1".to_string(),
+            })
+            .status
+            .ok
+        );
+        assert!(
+            meta.server_heartbeat(ServerHeartbeatRequest {
+                server_addr: "load-server-a".to_string(),
+                boot_time_ms: 1,
+                binary_version: "v1".to_string(),
+                shard_loads: Vec::new(),
+                partition_loads: Vec::new(),
+                runtime_load: ServerRuntimeLoad::default(),
+                shard_states: vec![ServerShardServingState {
+                    shard_id: 744,
+                    serving_state: "loading".to_string(),
+                    worker_index: 0,
+                    worker_threads: 1,
+                    loaded: false,
+                    readonly: false,
+                    load_version: 12,
+                    table_name: "partition-table".to_string(),
+                    shard_uri: "local://partition-table/744".to_string(),
+                    start_routing_slot: 0,
+                    end_routing_slot: 1023,
+                    total_records: 0,
+                    storage_bytes: 0,
+                    cache_memory_bytes: 0,
+                    storage: temporalstore_rust::control::ShardCanonicalStorageStats::default(),
+                    block_store_bytes_written: 0,
+                    oplog_sequence: 0,
+                    dirty_object_count: 0,
+                    dirty_slot_count: 0,
+                }],
+            })
+            .status
+            .ok
+        );
+        let backend = MetaBackend::Single(meta);
+        let scheduler = MetaTaskScheduler::default();
+
+        let (code, body) = handle(
+            &backend,
+            &scheduler,
+            HttpRequest {
+                method: "POST".to_string(),
+                path: "/ManageService/FinishLoadPartition".to_string(),
+                body: serde_json::to_vec(&serde_json::json!({
+                    "partition_id": 744,
+                    "load_result": Status::ok(),
+                }))
+                .unwrap(),
+            },
+        );
+        assert_eq!(code, 200);
+        let ack: AckResponse = serde_json::from_slice(&body).unwrap();
+        assert!(ack.status.ok, "{ack:?}");
+
+        let route = backend_call!(&backend, get, 744);
+        assert!(route.status.ok);
+        assert_eq!(route.location.unwrap().server_addr, "load-server-a");
     }
 
     #[test]
