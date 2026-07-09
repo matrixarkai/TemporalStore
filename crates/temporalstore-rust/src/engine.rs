@@ -1512,8 +1512,13 @@ impl TemporalEngine {
         }
         let mut unreadable_page_refs = 0usize;
         let mut unreadable_page_bytes = 0u64;
-        for entry in live_page_entries {
-            if self.page_store.read_cold(&entry.address).is_err() {
+        let live_page_addresses = live_page_entries
+            .iter()
+            .map(|entry| entry.address.clone())
+            .collect::<Vec<_>>();
+        let live_page_reads = self.page_store.read_cold_batch(&live_page_addresses);
+        for (entry, read_result) in live_page_entries.iter().zip(live_page_reads) {
+            if read_result.is_err() {
                 unreadable_page_refs = unreadable_page_refs.saturating_add(1);
                 unreadable_page_bytes = unreadable_page_bytes.saturating_add(entry.address.length);
             }
@@ -1576,16 +1581,25 @@ impl TemporalEngine {
         if !manifest.index_bytes.is_empty() && missing_page_segment_ids.is_empty() {
             if let Ok(restored) = serde_json::from_slice::<ShardState>(&manifest.index_bytes) {
                 let manifest_slots = manifest.slot_ids.iter().copied().collect::<BTreeSet<_>>();
-                for entry in collect_live_page_entries(&restored) {
-                    let routing_slot = entry.address.routing_slot.unwrap_or_else(|| {
-                        self.routing_slot_for_key(manifest.shard_id, &entry.object_key)
-                    });
-                    if manifest_slots.is_empty() || manifest_slots.contains(&routing_slot) {
-                        if self.page_store.read_cold(&entry.address).is_err() {
-                            unreadable_page_ref_count = unreadable_page_ref_count.saturating_add(1);
-                            unreadable_page_bytes =
-                                unreadable_page_bytes.saturating_add(entry.address.length);
-                        }
+                let restored_entries = collect_live_page_entries(&restored)
+                    .into_iter()
+                    .filter(|entry| {
+                        let routing_slot = entry.address.routing_slot.unwrap_or_else(|| {
+                            self.routing_slot_for_key(manifest.shard_id, &entry.object_key)
+                        });
+                        manifest_slots.is_empty() || manifest_slots.contains(&routing_slot)
+                    })
+                    .collect::<Vec<_>>();
+                let restored_addresses = restored_entries
+                    .iter()
+                    .map(|entry| entry.address.clone())
+                    .collect::<Vec<_>>();
+                let restored_reads = self.page_store.read_cold_batch(&restored_addresses);
+                for (entry, read_result) in restored_entries.iter().zip(restored_reads) {
+                    if read_result.is_err() {
+                        unreadable_page_ref_count = unreadable_page_ref_count.saturating_add(1);
+                        unreadable_page_bytes =
+                            unreadable_page_bytes.saturating_add(entry.address.length);
                     }
                 }
                 restored_index = Some(restored);
