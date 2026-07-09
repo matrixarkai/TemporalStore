@@ -31,15 +31,20 @@ sys.path.insert(0, str(ROOT / 'sdk' / 'python'))
 sys.path.insert(0, str(ROOT / 'tools'))
 
 from matrixark_mcp_core import (  # noqa: E402
-    DIRECT_RECORD_LOG_SHARD_SIZE,
     materialize_serving_record_batch,
     materialize_serving_records,
     stable_hash,
 )
 from matrixark_mcp_local_adapter import MatrixArkLocalAdapter  # noqa: E402
+from matrixark_raw_message_storage_contract import (  # noqa: E402
+    RawMessageStorageTarget,
+    contract_report as raw_message_contract_report,
+    normalize_raw_backend as normalize_raw_storage_backend,
+)
 
 Json = dict[str, Any]
 SourceRef = tuple[int, str | None] | tuple[int, str | None, str | None]
+DIRECT_RECORD_LOG_SHARD_SIZE = int(os.environ.get("MATRIXARK_DIRECT_RECORD_LOG_SHARD_SIZE", "4096"))
 
 VOLATILE_SERVING_FINGERPRINT_FIELDS = {
     'context_event_key',
@@ -644,6 +649,119 @@ class MatrixKVRecordLog:
             yield sequence, record or {}
 
 
+class RawMessageStoreReader:
+    """Backend-aware raw message reader for TemporalStore or MatrixKV logs."""
+
+    def __init__(
+        self,
+        kv: Any,
+        *,
+        prefix: str,
+        raw_backend: str = 'temporalstore',
+        shard_size: int = DIRECT_RECORD_LOG_SHARD_SIZE,
+        target: RawMessageStorageTarget | None = None,
+    ) -> None:
+        self.raw_backend = normalize_raw_storage_backend(raw_backend)
+        self.target = target or RawMessageStorageTarget(backend=self.raw_backend)
+        self.log = MatrixKVRecordLog(kv, prefix=prefix, shard_size=shard_size)
+
+    @property
+    def kv(self) -> Any:
+        return self.log.kv
+
+    @property
+    def prefix(self) -> str:
+        return self.log.prefix
+
+    @property
+    def shard_size(self) -> int:
+        return self.log.shard_size
+
+    def count(self) -> int:
+        return self.log.count()
+
+    def legacy_index(self) -> list[str]:
+        return self.log.legacy_index()
+
+    def read_at(self, sequence: int) -> Json:
+        return self.log.read_at(sequence)
+
+    def read_legacy(self, record_id: str) -> Json:
+        return self.log.read_legacy(record_id)
+
+    def read_many(self, refs: list[SourceRef]) -> list[tuple[int, Json | None, Exception | None]]:
+        return self.log.read_many(refs)
+
+    def source_range(self, *, start_seq: int, end_seq: int | None) -> Json:
+        source_range = self.log.source_range(start_seq=start_seq, end_seq=end_seq)
+        source_range['raw_backend'] = self.raw_backend
+        source_range['raw_store_reader'] = 'matrixark.raw_message_store_reader.v1'
+        return source_range
+
+    def source_refs(
+        self,
+        *,
+        start_seq: int,
+        end_seq: int | None,
+        max_empty_scan_shards: int,
+        source_range: Json | None = None,
+    ) -> tuple[Iterable[SourceRef], str]:
+        return self.log.source_refs(
+            start_seq=start_seq,
+            end_seq=end_seq,
+            max_empty_scan_shards=max_empty_scan_shards,
+            source_range=source_range,
+        )
+
+    def iter_records(self, *, start_seq: int, end_seq: int | None) -> Iterable[tuple[int, Json]]:
+        return self.log.iter_records(start_seq=start_seq, end_seq=end_seq)
+
+    def read_raw_event(self, sequence: int) -> Json:
+        record = self.read_at(sequence)
+        report = raw_message_contract_report(
+            record,
+            self.target,
+            event_id_hash=int(record.get('event_id_hash') or stable_hash(f'{self.prefix}:{sequence}')),
+        )
+        return {
+            'backend': self.raw_backend,
+            'source_prefix': self.prefix,
+            'sequence': sequence,
+            'record': record,
+            'storage_contract': report,
+        }
+
+    @staticmethod
+    def _normalize_ref(ref: SourceRef) -> tuple[int, str | None, str | None]:
+        return MatrixKVRecordLog._normalize_ref(ref)
+
+
+def make_raw_message_reader(
+    kv: Any,
+    *,
+    prefix: str,
+    raw_backend: str = 'temporalstore',
+    shard_size: int = DIRECT_RECORD_LOG_SHARD_SIZE,
+) -> RawMessageStoreReader:
+    backend = normalize_raw_storage_backend(raw_backend)
+    return RawMessageStoreReader(
+        kv,
+        prefix=prefix,
+        raw_backend=backend,
+        shard_size=shard_size,
+        target=RawMessageStorageTarget(backend=backend),
+    )
+
+
+def run_read_raw_event(args: argparse.Namespace) -> Json:
+    kv = make_kv(args)
+    reader = make_raw_message_reader(kv, prefix=args.source_prefix, raw_backend=args.raw_backend)
+    event = reader.read_raw_event(args.read_seq)
+    event['mode'] = 'read_raw_event'
+    event['raw_store_reader'] = 'matrixark.raw_message_store_reader.v1'
+    return event
+
+
 class MatrixKVBackfillTarget:
     def __init__(
         self,
@@ -903,14 +1021,10 @@ class CaptureAdapter(MatrixArkLocalAdapter):
 
 
 def normalize_raw_backend(value: str) -> str:
-    backend = str(value or 'temporalstore').strip().lower().replace('-', '_')
-    if backend in {'', 'temporal', 'temporal_store', 'ts'}:
-        backend = 'temporalstore'
-    if backend in {'matrix_kv', 'kv'}:
-        backend = 'matrixkv'
-    if backend not in {'temporalstore', 'matrixkv'}:
-        raise BackfillError('--raw-backend must be temporalstore or matrixkv')
-    return backend
+    try:
+        return normalize_raw_storage_backend(value)
+    except ValueError as exc:
+        raise BackfillError('--raw-backend must be temporalstore, matrixkv, s3, or objectstore') from exc
 
 
 def checkpoint_key(
@@ -1121,7 +1235,7 @@ def estimate_source_window_records(source_range: Json) -> int | None:
 
 
 def discover_scan_hash_source_range(
-    source: MatrixKVRecordLog,
+    source: RawMessageStoreReader,
     source_range: Json,
     *,
     end_seq: int | None,
@@ -2067,7 +2181,7 @@ def run_backfill(args: argparse.Namespace) -> Json:
 
     target_prefix = resolve_target_prefix(args)
     require_active_target_confirmation(args, kv, target_prefix)
-    source = MatrixKVRecordLog(kv, prefix=args.source_prefix)
+    source = make_raw_message_reader(kv, prefix=args.source_prefix, raw_backend=raw_backend)
     target = MatrixKVBackfillTarget(kv, prefix=target_prefix, raw_backend=raw_backend)
     metrics = BackfillMetrics()
     cp_key = checkpoint_key(
@@ -2278,6 +2392,7 @@ def run_backfill(args: argparse.Namespace) -> Json:
     )
     summary['resume_state'] = resume_state
     summary['source_range'] = source_range
+    summary['raw_store_reader'] = 'matrixark.raw_message_store_reader.v1'
     summary['dry_run'] = bool(args.dry_run)
     summary['dry_run_check_target'] = bool(getattr(args, 'dry_run_check_target', True))
     manifest = {
@@ -2294,6 +2409,7 @@ def run_backfill(args: argparse.Namespace) -> Json:
         'checkpoint': checkpoint,
         'resume_state': resume_state,
         'source_range': source_range,
+        'raw_store_reader': 'matrixark.raw_message_store_reader.v1',
         'dry_run': bool(args.dry_run),
         'dry_run_check_target': bool(getattr(args, 'dry_run_check_target', True)),
         'summary': dict(summary),
@@ -3122,7 +3238,7 @@ def run_plan(args: argparse.Namespace) -> Json:
     raw_backend = normalize_raw_backend(args.raw_backend)
     kv = make_kv(args)
     target_prefix = resolve_target_prefix(args)
-    source = MatrixKVRecordLog(kv, prefix=args.source_prefix)
+    source = make_raw_message_reader(kv, prefix=args.source_prefix, raw_backend=raw_backend)
     target = MatrixKVBackfillTarget(kv, prefix=target_prefix, raw_backend=raw_backend)
     cp_key = checkpoint_key(
         target_prefix,
@@ -3224,6 +3340,7 @@ def run_plan(args: argparse.Namespace) -> Json:
         'end_seq': args.end_seq,
         'effective_start_seq': effective_start_seq,
         'source_range': source_range,
+        'raw_store_reader': 'matrixark.raw_message_store_reader.v1',
         'plan_scan_hash_discovery_enabled': plan_scan_hash_discovery_enabled,
         'plan_scan_hash_discovery_used': bool(plan_scan_hash_discovery_enabled and source_range.get('scan_hash_max_empty_shards') is not None),
         'planned_source_records': planned_source_records,
@@ -3498,12 +3615,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--source-prefix', default='matrixark:mcp:raw_ingestion')
     parser.add_argument(
         '--raw-backend',
-        choices=['temporalstore', 'matrixkv'],
+        choices=['temporalstore', 'matrixkv', 's3', 'objectstore'],
         default=os.environ.get('MATRIXARK_RAW_INGESTION_BACKEND', 'temporalstore'),
         help='raw ingestion message store that owns source-prefix; affects checkpoints, idempotency, manifests, and metrics',
     )
     parser.add_argument('--target-prefix', default='')
-    parser.add_argument('--mode', choices=['plan', 'shadow', 'in_place', 'validate_shadow', 'activate_shadow', 'rollback_activation', 'incremental_repair', 'verify_manifest', 'verify_plan_artifacts', 'export_dead_letters'], default='shadow')
+    parser.add_argument('--mode', choices=['plan', 'shadow', 'in_place', 'validate_shadow', 'activate_shadow', 'rollback_activation', 'incremental_repair', 'verify_manifest', 'verify_plan_artifacts', 'export_dead_letters', 'read_raw_event'], default='shadow')
     parser.add_argument('--confirm-in-place', default='')
     parser.add_argument('--confirm-activate', default='')
     parser.add_argument('--confirm-rollback', default='')
@@ -3525,6 +3642,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--job-id', default=f'local-{int(time.time())}')
     parser.add_argument('--start-seq', type=int, default=0)
     parser.add_argument('--end-seq', type=int)
+    parser.add_argument('--read-seq', type=int, default=0, help='read_raw_event sequence to load through the backend-neutral raw event reader')
     parser.add_argument('--partial', type=int, choices=[0, 1], default=0, help='mark this as a partial/slice backfill')
     parser.add_argument('--partial-record-types', default='', help='comma-separated raw record_type allow-list for partial backfill')
     parser.add_argument('--partial-tenant-ids', default='', help='comma-separated tenant ids for partial backfill')
@@ -3565,6 +3683,8 @@ def main() -> int:
     args.partial_require_bounded = bool(args.partial_require_bounded)
     args.plan_discover_scan_hash = bool(args.plan_discover_scan_hash)
     args.raw_backend = normalize_raw_backend(args.raw_backend)
+    if args.read_seq < 0:
+        parser.error('--read-seq must be non-negative')
     if args.batch_size <= 0:
         parser.error('--batch-size must be positive')
     if args.plan_window_size < 0:
@@ -3596,6 +3716,8 @@ def main() -> int:
             summary = run_verify_plan_artifacts(args)
         elif args.mode == 'export_dead_letters':
             summary = run_export_dead_letters(args)
+        elif args.mode == 'read_raw_event':
+            summary = run_read_raw_event(args)
         else:
             summary = run_backfill(args)
     except Exception as exc:

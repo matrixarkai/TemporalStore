@@ -21,9 +21,15 @@ sys.path.insert(0, str(ROOT / "sdk" / "python"))
 
 from matrixark_mcp_core import stable_hash  # noqa: E402
 from matrixark_mcp_temporal_adapters import MatrixArkTemporalStoreDirectAdapter  # noqa: E402
+from matrixark_raw_message_storage_contract import (  # noqa: E402
+    RawMessageStorageTarget,
+    contract_report,
+    raw_message_marker,
+)
 
 Json = dict[str, Any]
-RAW_BACKEND_CHOICES = ["temporalstore", "matrixkv"]
+RAW_BACKEND_CHOICES = ["temporalstore", "matrixkv", "s3", "objectstore"]
+RAW_BACKEND_SWEEP_CHOICES = ["temporalstore", "matrixkv"]
 
 
 class BenchmarkError(RuntimeError):
@@ -104,6 +110,8 @@ def make_record(sequence: int, *, payload_bytes: int, scope_key: str) -> Json:
         "scope_key": scope_key,
         "node_hash": sequence % 64,
         "updated_at_ms": 1780000000000 + sequence,
+        "event_time_ms": 1780000000000 + sequence,
+        "body": text,
         "text": text,
         "source_kind": "benchmark",
     }
@@ -193,7 +201,7 @@ def parse_raw_backends(value: str, fallback: str) -> list[str]:
     if not selected:
         selected = fallback
     if selected == "both":
-        return list(RAW_BACKEND_CHOICES)
+        return list(RAW_BACKEND_SWEEP_CHOICES)
     backends: list[str] = []
     for item in selected.split(","):
         backend = item.strip()
@@ -334,6 +342,13 @@ def run_backend_sweep(args: argparse.Namespace) -> Json:
         "batch_size": args.batch_size,
         "payload_bytes": args.payload_bytes,
         "dual_write_return_policy": "append_many returns after raw message append and serving TemporalStore append both finish",
+        "raw_message_storage_contract": {
+            "schema": "matrixark.raw_message_storage_contract.v1",
+            "raw_backends": backends,
+            "default_backend": "temporalstore",
+            "uses_timestamp_and_event_key": True,
+            "stored_value_mode": "raw_body_utf8",
+        },
         "results": results,
         "summary": sweep_summary,
         "performance_gate": {
@@ -394,6 +409,26 @@ def run_benchmark(args: argparse.Namespace) -> Json:
     latencies_sorted = sorted(latencies_ms)
     raw_count = getattr(adapter, "_raw_entry_count_cache", None)
     serving_log_entries = getattr(adapter, "_entry_count_cache", None)
+    sample_record = make_record(0, payload_bytes=args.payload_bytes, scope_key=args.scope_key)
+    if args.raw_backend == "matrixkv":
+        sample_target = RawMessageStorageTarget.matrixkv(
+            args.namespace,
+            "raw_agent_messages",
+            "sample/raw-message",
+        )
+    elif args.raw_backend == "s3":
+        sample_target = RawMessageStorageTarget.s3(bucket="matrixark-large-resources", prefix="raw-agent-messages")
+    elif args.raw_backend == "objectstore":
+        sample_target = RawMessageStorageTarget.objectstore()
+    else:
+        sample_target = RawMessageStorageTarget.temporalstore()
+    raw_contract = contract_report(sample_record, sample_target, event_id_hash=int(sample_record["event_id_hash"]))
+    raw_contract["marker"] = raw_message_marker(
+        sample_record,
+        target=sample_target,
+        event_id_hash=int(sample_record["event_id_hash"]),
+    ) if args.raw_backend != "temporalstore" else {}
+
     summary: Json = {
         "status": "ok",
         "mode": args.mode,
@@ -418,6 +453,7 @@ def run_benchmark(args: argparse.Namespace) -> Json:
         },
         "dual_write_return_policy": "append_many returns after raw message append and serving TemporalStore append both finish",
         "raw_backend": args.raw_backend,
+        "raw_message_storage_contract": raw_contract,
         "storage_prefix": args.storage_prefix,
         "raw_storage_prefix": getattr(adapter, "_raw_ingestion_prefix", args.raw_storage_prefix or f"{args.storage_prefix}:raw_ingestion"),
         "raw_record_count_observed": raw_count,

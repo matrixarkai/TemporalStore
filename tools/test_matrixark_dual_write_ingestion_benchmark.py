@@ -52,6 +52,12 @@ class MatrixArkDualWriteIngestionBenchmarkTest(unittest.TestCase):
         calls = summary["local_native_call_counts"]["calls_by_append_path"]
         raw_backends = summary["local_native_call_counts"]["calls_by_raw_backend"]
         self.assertEqual(summary["raw_backend"], "temporalstore")
+        contract = summary["raw_message_storage_contract"]
+        self.assertEqual(contract["schema"], "matrixark.raw_message_storage_contract.v1")
+        self.assertEqual(contract["target"]["backend"], "temporalstore")
+        self.assertTrue(contract["uses_timestamp_and_event_key"])
+        self.assertGreater(contract["event_key_hash"], 0)
+        self.assertEqual(contract["stored_value"], contract["stored_value"].split("\n")[0])
         self.assertGreater(calls["matrixark_raw_ingestion_temporalstore_log"], 0)
         self.assertGreater(raw_backends["temporalstore"], 0)
         self.assertGreater(calls["native_append_queue"], 0)
@@ -81,10 +87,35 @@ class MatrixArkDualWriteIngestionBenchmarkTest(unittest.TestCase):
         summary = bench.run_benchmark(self.make_args(raw_backend="matrixkv"))
         self.assertTrue(summary["dual_write_counts_validated"])
         self.assertEqual(summary["raw_backend"], "matrixkv")
+        contract = summary["raw_message_storage_contract"]
+        self.assertEqual(contract["target"]["backend"], "matrixkv")
+        self.assertEqual(contract["target"]["table"], "raw_agent_messages")
+        self.assertEqual(contract["stored_value_mode"], "raw_body_utf8")
+        self.assertGreater(contract["event_key_hash"], 0)
+        self.assertEqual(contract["marker"]["backend"], "matrixkv")
+        self.assertEqual(contract["marker"]["event_key_hash"], contract["event_key_hash"])
         calls = summary["local_native_call_counts"]["calls_by_append_path"]
         raw_backends = summary["local_native_call_counts"]["calls_by_raw_backend"]
         self.assertGreater(calls["matrixark_raw_ingestion_matrixkv_log"], 0)
         self.assertGreater(raw_backends["matrixkv"], 0)
+
+
+    def test_local_benchmark_can_label_s3_object_store_backend(self) -> None:
+        summary = bench.run_benchmark(self.make_args(raw_backend="s3", payload_bytes=8))
+        self.assertEqual(summary["raw_backend"], "s3")
+        contract = summary["raw_message_storage_contract"]
+        self.assertEqual(contract["target"]["backend"], "s3")
+        self.assertEqual(contract["stored_value_mode"], "object_ref_json")
+        self.assertTrue(contract["spilled_to_object_store"])
+        self.assertEqual(contract["marker"]["backend"], "s3")
+        self.assertTrue(contract["marker"]["object_key"].startswith("s3://matrixark-large-resources/raw-agent-messages/"))
+
+    def test_backend_sweep_can_select_objectstore_explicitly(self) -> None:
+        args = self.make_args(records=20, workers=1, batch_size=10, raw_backends="objectstore")
+        summary = bench.run_backend_sweep(args)
+        self.assertEqual(summary["status"], "ok")
+        self.assertEqual(summary["raw_backends"], ["objectstore"])
+        self.assertEqual(summary["results"][0]["raw_message_storage_contract"]["target"]["backend"], "objectstore")
 
     def test_backend_sweep_covers_both_raw_options(self) -> None:
         args = self.make_args(records=40, workers=2, batch_size=10, require_dual_write_counts=1)
@@ -92,6 +123,8 @@ class MatrixArkDualWriteIngestionBenchmarkTest(unittest.TestCase):
         summary = bench.run_backend_sweep(args)
         self.assertEqual(summary["status"], "ok")
         self.assertEqual(summary["raw_backends"], ["temporalstore", "matrixkv"])
+        self.assertEqual(summary["raw_message_storage_contract"]["stored_value_mode"], "raw_body_utf8")
+        self.assertTrue(summary["raw_message_storage_contract"]["uses_timestamp_and_event_key"])
         self.assertEqual(summary["records_per_backend"], 40)
         self.assertEqual(summary["total_records"], 80)
         self.assertTrue(summary["performance_gate"]["enabled"])
