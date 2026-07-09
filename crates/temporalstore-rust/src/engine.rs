@@ -11584,20 +11584,95 @@ fn refresh_slot_runtime_flags(shard: &mut ShardState) {
     }
 }
 
+fn timestamped_series_has_hot_page(series: &BTreeMap<u64, PageAddress>) -> bool {
+    series.values().any(page_address_is_memory_only)
+}
+
 fn object_still_has_hot_page(shard: &ShardState, object_key: &str) -> bool {
     shard
         .strings
         .get(object_key)
-        .map(|address| address.page_segment_id == HOT_PAGE_SEGMENT_ID)
+        .map(page_address_is_memory_only)
         .unwrap_or(false)
         || shard
             .hashes
             .get(object_key)
-            .map(|fields| {
-                fields
-                    .values()
-                    .any(|address| address.page_segment_id == HOT_PAGE_SEGMENT_ID)
-            })
+            .map(|fields| fields.values().any(page_address_is_memory_only))
+            .unwrap_or(false)
+        || shard
+            .sets
+            .get(object_key)
+            .map(|members| members.values().any(page_address_is_memory_only))
+            .unwrap_or(false)
+        || shard
+            .features
+            .get(object_key)
+            .map(timestamped_series_has_hot_page)
+            .unwrap_or(false)
+        || shard
+            .sequences
+            .get(object_key)
+            .map(timestamped_series_has_hot_page)
+            .unwrap_or(false)
+        || shard
+            .ips
+            .get(object_key)
+            .map(timestamped_series_has_hot_page)
+            .unwrap_or(false)
+        || shard
+            .risk_pages
+            .get(object_key)
+            .map(page_address_is_memory_only)
+            .unwrap_or(false)
+        || shard
+            .context_nodes
+            .get(object_key)
+            .map(page_address_is_memory_only)
+            .unwrap_or(false)
+        || shard
+            .context_events
+            .get(object_key)
+            .map(timestamped_series_has_hot_page)
+            .unwrap_or(false)
+        || shard
+            .context_indexes
+            .get(object_key)
+            .map(timestamped_series_has_hot_page)
+            .unwrap_or(false)
+        || shard
+            .context_audits
+            .get(object_key)
+            .map(timestamped_series_has_hot_page)
+            .unwrap_or(false)
+        || shard
+            .context_dirty
+            .get(object_key)
+            .map(timestamped_series_has_hot_page)
+            .unwrap_or(false)
+        || shard
+            .context_entities
+            .get(object_key)
+            .map(page_address_is_memory_only)
+            .unwrap_or(false)
+        || shard
+            .context_children
+            .get(object_key)
+            .map(timestamped_series_has_hot_page)
+            .unwrap_or(false)
+        || shard
+            .context_embeddings
+            .get(object_key)
+            .map(page_address_is_memory_only)
+            .unwrap_or(false)
+        || shard
+            .context_summaries
+            .get(object_key)
+            .map(timestamped_series_has_hot_page)
+            .unwrap_or(false)
+        || shard
+            .context_compressions
+            .get(object_key)
+            .map(timestamped_series_has_hot_page)
             .unwrap_or(false)
 }
 
