@@ -102,8 +102,12 @@ impl BlockAddress {
 pub struct BlockStoreStats {
     pub writes: u64,
     pub reads: u64,
+    #[serde(default)]
+    pub cold_reads: u64,
     pub bytes_written: u64,
     pub bytes_read: u64,
+    #[serde(default)]
+    pub cold_bytes_read: u64,
     #[serde(default)]
     pub logical_bytes_written: u64,
     #[serde(default)]
@@ -778,7 +782,11 @@ impl LocalBlockStore {
         roll_segment_inner(&mut inner)
     }
 
-    pub fn read(&self, address: &BlockAddress) -> Result<Vec<u8>, BlockStoreError> {
+    fn read_with_cache_policy(
+        &self,
+        address: &BlockAddress,
+        no_cache_fill: bool,
+    ) -> Result<Vec<u8>, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         let path = segment_path(&inner.root, address.page_segment_id);
         let mut file = File::open(path)?;
@@ -801,11 +809,24 @@ impl LocalBlockStore {
         }
         inner.stats.reads += 1;
         inner.stats.bytes_read += address.length;
+        if no_cache_fill {
+            inner.stats.cold_reads = inner.stats.cold_reads.saturating_add(1);
+            inner.stats.cold_bytes_read =
+                inner.stats.cold_bytes_read.saturating_add(address.length);
+        }
         inner.stats.logical_bytes_read += decoded.logical_len as u64;
         if decoded.compression == PageRecordCompression::Zstd {
             inner.stats.compressed_records_read += 1;
         }
         Ok(bytes)
+    }
+
+    pub fn read(&self, address: &BlockAddress) -> Result<Vec<u8>, BlockStoreError> {
+        self.read_with_cache_policy(address, false)
+    }
+
+    pub fn read_cold(&self, address: &BlockAddress) -> Result<Vec<u8>, BlockStoreError> {
+        self.read_with_cache_policy(address, true)
     }
 
     pub fn read_range(
