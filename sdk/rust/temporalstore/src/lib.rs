@@ -1506,8 +1506,7 @@ impl ProxyClient {
     }
 
     pub fn put_string(&self, key: &str, value: &str) -> Result<()> {
-        let body = self.key_body(key, &[("value", serde_json::json!(value))]);
-        self.post("/v1/string/put", body).map(|_| ())
+        self.set(key, value)
     }
 
     pub fn put_string_with_ttl(&self, key: &str, value: &str, ttl_ms: u64) -> Result<()> {
@@ -1515,21 +1514,16 @@ impl ProxyClient {
     }
 
     pub fn get_string(&self, key: &str) -> Result<String> {
-        let body = self.key_body(key, &[]);
-        let data = self.post("/v1/string/get", body)?;
-        Ok(data
-            .get("value")
-            .and_then(|value| value.as_str())
-            .unwrap_or("")
-            .to_string())
+        self.get(key).map(|value| value.unwrap_or_default())
     }
 
     pub fn add_sequence_feature_rows(&self, key: &str, rows: &[SequenceFeatureRow]) -> Result<()> {
-        let body = self.key_body(
+        let body = self.proxy_service_body(
             key,
             &[("rows", serde_json::to_value(rows).map_err(json_error)?)],
         );
-        self.post("/v1/sequence/add", body).map(|_| ())
+        self.proxy_service_execute("/ProxyService/SequenceAdd", body)
+            .map(|_| ())
     }
 
     pub fn query_sequence_feature_rows(
@@ -1550,16 +1544,16 @@ impl ProxyClient {
                 })
             })
             .collect();
-        let body = self.key_body(
+        let body = self.proxy_service_body(
             key,
             &[
-                ("start_ts", serde_json::json!(start_ts)),
-                ("end_ts", serde_json::json!(end_ts)),
+                ("start_ms", serde_json::json!(start_ts)),
+                ("end_ms", serde_json::json!(end_ts)),
                 ("count", serde_json::json!(count)),
                 ("filters", serde_json::json!(encoded_filters)),
             ],
         );
-        let data = self.post("/v1/sequence/query", body)?;
+        let data = self.proxy_service_execute("/ProxyService/SequenceQuery", body)?;
         serde_json::from_value(
             data.get("rows")
                 .cloned()
@@ -1942,19 +1936,6 @@ impl ProxyClient {
             != 0)
     }
 
-    fn key_body(&self, key: &str, extra: &[(&str, serde_json::Value)]) -> serde_json::Value {
-        let mut body = serde_json::json!({
-            "namespace": self.options.namespace_name,
-            "table": self.options.table_name,
-            "key": key,
-        });
-        let object = body.as_object_mut().expect("object body");
-        for (name, value) in extra {
-            object.insert((*name).to_string(), value.clone());
-        }
-        body
-    }
-
     fn proxy_service_body(
         &self,
         key: &str,
@@ -2007,31 +1988,6 @@ impl ProxyClient {
             });
         }
         Ok(response)
-    }
-
-    fn post(&self, path: &str, body: serde_json::Value) -> Result<serde_json::Value> {
-        let envelope = self.post_raw(path, body)?;
-        if !envelope
-            .get("ok")
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false)
-        {
-            return Err(Error {
-                code: envelope
-                    .get("code")
-                    .and_then(|value| value.as_i64())
-                    .unwrap_or(0) as i32,
-                message: envelope
-                    .get("message")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("proxy request failed")
-                    .to_string(),
-            });
-        }
-        Ok(envelope
-            .get("data")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({})))
     }
 
     fn get_raw(&self, path: &str) -> Result<serde_json::Value> {

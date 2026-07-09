@@ -18,7 +18,7 @@ import json
 import urllib.request
 
 request = urllib.request.Request(
-    "http://127.0.0.1:8080/v1/string/get",
+    "http://127.0.0.1:8080/ProxyService/Get",
     data=json.dumps({"namespace": "sdk_ns", "table": "sdk_table", "key": "health"}).encode(),
     headers={"Content-Type": "application/json"},
     method="POST",
