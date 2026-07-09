@@ -3824,6 +3824,10 @@ class MatrixArkRustProxyClient:
             0.0,
             float(os.environ.get("MATRIXARK_RUST_PROXY_APPEND_COALESCE_WAIT_MS", "1.0")) / 1000.0,
         )
+        self._string_cache_enabled = (
+            os.environ.get("MATRIXARK_RUST_PROXY_STRING_CACHE", "1").strip().lower()
+            not in {"0", "false", "no"}
+        )
         if self._shared_process_mode:
             # The local Rust TemporalEngine is embedded in the proxy process. A
             # multi-process write lane pool can hide writes from reads until
@@ -3907,6 +3911,11 @@ class MatrixArkRustProxyClient:
         self._append_coalesced_records_total = 0
         self._append_coalesced_wait_ms_total = 0.0
         self._append_coalesced_wait_ms_max = 0.0
+        self._string_cache_lock = threading.Lock()
+        self._string_cache: dict[str, str] = {}
+        self._string_cache_hits_total = 0
+        self._string_cache_misses_total = 0
+        self._string_cache_updates_total = 0
         self._started_at = time.time()
         self._proc: subprocess.Popen[str] | None = None
 
@@ -4405,6 +4414,14 @@ class MatrixArkRustProxyClient:
                     "wait_ms_total": round(self._append_coalesced_wait_ms_total, 3),
                     "wait_ms_max": round(self._append_coalesced_wait_ms_max, 3),
                 },
+                "string_cache": {
+                    "enabled": self._string_cache_enabled,
+                    "entries": len(self._string_cache),
+                    "hits_total": self._string_cache_hits_total,
+                    "misses_total": self._string_cache_misses_total,
+                    "updates_total": self._string_cache_updates_total,
+                    "scope": "record_count_keys",
+                },
                 "last_latency_ms": round(self._last_latency_ms, 3),
                 "latency_ms_sum": round(sum(samples), 3),
                 "latency_ms_count": len(samples),
@@ -4445,11 +4462,40 @@ class MatrixArkRustProxyClient:
         response = self._call_json(op, **kwargs)
         return str(response.get("value", ""))
 
+    def _string_cache_key_allowed(self, key: str) -> bool:
+        return self._string_cache_enabled and str(key).endswith(":record_count")
+
+    def _string_cache_get(self, key: str) -> str | None:
+        if not self._string_cache_key_allowed(key):
+            return None
+        with self._string_cache_lock:
+            value = self._string_cache.get(key)
+        with self._metrics_lock:
+            if value is None:
+                self._string_cache_misses_total += 1
+            else:
+                self._string_cache_hits_total += 1
+        return value
+
+    def _string_cache_put(self, key: str, value: str) -> None:
+        if not self._string_cache_key_allowed(key):
+            return
+        with self._string_cache_lock:
+            self._string_cache[key] = str(value)
+        with self._metrics_lock:
+            self._string_cache_updates_total += 1
+
     def put_string(self, key: str, value: str) -> None:
         self._call("put_string", key=key, value=value)
+        self._string_cache_put(key, value)
 
     def get_string(self, key: str) -> str:
-        return self._call("get_string", key=key)
+        cached = self._string_cache_get(key)
+        if cached is not None:
+            return cached
+        value = self._call("get_string", key=key)
+        self._string_cache_put(key, value)
+        return value
 
     def hset(self, key: str, field: str, value: str) -> None:
         self._call("hset", key=key, field=field, value=value)
@@ -4585,6 +4631,8 @@ class MatrixArkRustProxyClient:
             value=count_value or "",
             append_options=append_options,
         )
+        if count_key:
+            self._string_cache_put(count_key, count_value or "")
 
     @staticmethod
     def _append_options_signature(append_options: Json) -> str:
@@ -4672,17 +4720,20 @@ class MatrixArkRustProxyClient:
                         value = str(item.get("count_value") or "")
                         if value:
                             count_values.append(value)
+                    count_value = self._max_count_value(count_values)
                     error: BaseException | None = None
                     try:
                         self._call_json(
                             "matrixark_batch_append_records",
                             entries_compact=merged,
                             key=count_key,
-                            value=self._max_count_value(count_values),
+                            value=count_value,
                             append_options=append_options,
                         )
                     except BaseException as exc:
                         error = exc
+                    if error is None and count_key:
+                        self._string_cache_put(count_key, count_value)
                     with self._metrics_lock:
                         self._append_coalesced_batches_total += 1
                         self._append_coalesced_calls_total += len(items)
