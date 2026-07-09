@@ -782,13 +782,13 @@ impl TemporalEngine {
         });
         let expected_stages = [
             "prepare",
-            "reclaim_oplog",
+            "reclaim",
             "expire",
             "evict",
-            "reclaim_page",
+            "page_gc",
             "index_gc",
-            "compact",
-            "reap_metrics",
+            "compaction",
+            "watermark_progress",
         ];
         let storage_manager_phase_api_ready = storage_manager.completed
             && expected_stages.iter().all(|stage| {
@@ -885,7 +885,7 @@ impl TemporalEngine {
                     .to_string(),
                 "stream-backed storage exposes active/sealed/delayed-destroy/purged extent lifecycle while accepting legacy zone aliases"
                     .to_string(),
-                "StorageManager exposes C++-style prepare/reclaim/expire/evict/reclaim-page/index-GC/compact/reap-metrics phases"
+                "StorageManager exposes canonical prepare/reclaim/expire/evict/page-GC/index-GC/compaction/watermark-progress phases"
                     .to_string(),
             ],
         }
@@ -3127,13 +3127,13 @@ impl TemporalEngine {
         let cycle_started_unix_ms = now_ms();
         let cxx_stage_order = [
             "prepare",
-            "reclaim_oplog",
+            "reclaim",
             "expire",
             "evict",
-            "reclaim_page",
+            "page_gc",
             "index_gc",
-            "compact",
-            "reap_metrics",
+            "compaction",
+            "watermark_progress",
         ]
         .into_iter()
         .map(str::to_string)
@@ -3378,7 +3378,7 @@ impl TemporalEngine {
                             .invalidate_page_segment(request.shard_id, *page_segment_id);
                     }
                 }
-                Err(err) => errors.push(format!("reclaim_page: {err}")),
+                Err(err) => errors.push(format!("page_gc: {err}")),
             }
         }
 
@@ -3450,7 +3450,7 @@ impl TemporalEngine {
         ));
 
         stages.push(StorageManagerStageReport {
-            stage: "reclaim_oplog".to_string(),
+            stage: "reclaim".to_string(),
             enabled: request.enable_oplog_reclaim,
             applied: wal_reclaim_report
                 .as_ref()
@@ -3687,7 +3687,7 @@ impl TemporalEngine {
         });
 
         stages.push(StorageManagerStageReport {
-            stage: "reclaim_page".to_string(),
+            stage: "page_gc".to_string(),
             enabled: request.enable_page_reclaim,
             applied: request.enable_page_reclaim
                 && !request.dry_run
@@ -3881,7 +3881,7 @@ impl TemporalEngine {
             None
         };
         stages.push(StorageManagerStageReport {
-            stage: "compact".to_string(),
+            stage: "compaction".to_string(),
             enabled: request.enable_page_compaction,
             applied: compaction_report.is_some(),
             skipped: !request.enable_page_compaction
@@ -3949,7 +3949,7 @@ impl TemporalEngine {
         merged_dump_load_policy.policy_ready = merged_dump_load_policy.blockers.is_empty();
 
         stages.push(StorageManagerStageReport {
-            stage: "reap_metrics".to_string(),
+            stage: "watermark_progress".to_string(),
             enabled: true,
             applied: !request.dry_run,
             skipped: false,
@@ -4238,7 +4238,7 @@ impl TemporalEngine {
                 Ok(report) => Some(report),
                 Err(err) => {
                     phases.push(StorageManagerLoopPhaseReport {
-                        phase: "compact".to_string(),
+                        phase: "compaction".to_string(),
                         attempted: true,
                         applied: false,
                         evidence: vec![
@@ -4254,7 +4254,7 @@ impl TemporalEngine {
         };
         if let Some(report) = &compaction {
             phases.push(StorageManagerLoopPhaseReport {
-                phase: "compact".to_string(),
+                phase: "compaction".to_string(),
                 attempted: true,
                 applied: report.model_layout_compaction_ready,
                 evidence: report.model_layout_compaction_evidence.clone(),
@@ -4262,7 +4262,7 @@ impl TemporalEngine {
             });
         } else if !request.compact_pages {
             phases.push(StorageManagerLoopPhaseReport {
-                phase: "compact".to_string(),
+                phase: "compaction".to_string(),
                 attempted: false,
                 applied: false,
                 evidence: vec![
@@ -4304,7 +4304,7 @@ impl TemporalEngine {
             && phases.iter().any(|phase| phase.phase == "expire")
             && phases
                 .iter()
-                .any(|phase| phase.phase == "compact" && phase.attempted)
+                .any(|phase| phase.phase == "compaction" && phase.attempted)
             && phases.iter().any(|phase| phase.phase == "index_gc");
         StorageManagerLoopReport {
             shard_id: request.shard_id,
@@ -4314,7 +4314,7 @@ impl TemporalEngine {
             expiry_sweep,
             compaction,
             evidence: vec![
-                "StorageManager loop executes prepare/reclaim/evict/expire/compact/index-GC phases through existing durable storage paths".to_string(),
+                "StorageManager loop executes prepare/reclaim/evict/expire/compaction/index-GC phases through existing durable storage paths".to_string(),
                 "loop report keeps per-phase evidence and blockers so readiness fails closed".to_string(),
             ],
             blockers,
