@@ -5855,7 +5855,8 @@ impl TemporalEngine {
             .collect::<BTreeMap<_, _>>();
         let mut live_object_ids = BTreeMap::<u64, BTreeSet<u64>>::new();
         let mut live_routing_slots = BTreeMap::<u64, BTreeSet<u32>>::new();
-        for address in &addresses {
+        let page_reads = self.page_store.read_batch(&addresses);
+        for (address, read_result) in addresses.iter().zip(page_reads) {
             let segment_report = page_segment_live_reports
                 .entry(address.page_segment_id)
                 .or_insert(StorageRecoverySegmentLiveReport {
@@ -5878,7 +5879,7 @@ impl TemporalEngine {
                 slots.insert(routing_slot);
                 segment_report.live_routing_slot_count = slots.len() as u64;
             }
-            match self.page_store.read(address) {
+            match read_result {
                 Ok(bytes) => {
                     readable_page_refs += 1;
                     segment_report.readable_live_page_refs =
