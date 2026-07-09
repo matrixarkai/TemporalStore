@@ -426,6 +426,19 @@ fn apply_shard_storage_metrics(
         add(metrics, "page_index_entry_count", page_entries);
         add(metrics, "block_index_entry_count", block_entries);
         add(metrics, "page_address_count", page_entries);
+        add(
+            metrics,
+            "object_page_index_lookup_count",
+            storage.page_reads.max(page_entries),
+        );
+        add(
+            metrics,
+            "block_index_lookup_count",
+            storage
+                .page_reads
+                .max(storage.block_reads)
+                .max(block_entries),
+        );
         add(metrics, "page_reads", storage.page_reads);
         add(
             metrics,
@@ -433,6 +446,13 @@ fn apply_shard_storage_metrics(
             storage.page_writes.max(page_entries),
         );
         add(metrics, "block_reads", storage.block_reads);
+        add(
+            metrics,
+            "cold_scan_no_cache_reads",
+            storage.cold_block_reads,
+        );
+        add(metrics, "cold_scan_page_reads", storage.cold_block_reads);
+        add(metrics, "no_cache_page_reads", storage.cold_block_reads);
         add(
             metrics,
             "block_writes",
