@@ -381,6 +381,18 @@ fn data_node_storage_lifecycle_metrics(stats: &DataNodeRuntimeStats) -> BTreeMap
         stats.rejected_background_total,
     );
     metrics.insert(
+        "append_queue_depth".to_string(),
+        stats
+            .queue_depth
+            .saturating_add(stats.background_queue_depth) as u64,
+    );
+    metrics.insert(
+        "append_durability_failures".to_string(),
+        stats
+            .rejected_total
+            .saturating_add(stats.rejected_background_total),
+    );
+    metrics.insert(
         "tombstone_records".to_string(),
         stats.expired_records_removed,
     );
@@ -424,6 +436,22 @@ fn apply_shard_storage_metrics(
             .max(storage.block_writes)
             .max(page_entries);
         let write_bytes = storage.bytes_written.max(shard.block_store_bytes_written);
+        let stale_bytes = storage.storage_zone_stale_bytes;
+        let total_zone_bytes = storage
+            .storage_zone_total_bytes
+            .max(storage.storage_zone_used_bytes.saturating_add(stale_bytes));
+        let stale_page_estimate = if stale_bytes == 0 || total_zone_bytes == 0 {
+            0
+        } else {
+            let estimated = page_entries.saturating_mul(stale_bytes) / total_zone_bytes;
+            estimated.max(1)
+        };
+        let stale_block_estimate = if stale_bytes == 0 || total_zone_bytes == 0 {
+            0
+        } else {
+            let estimated = block_entries.saturating_mul(stale_bytes) / total_zone_bytes;
+            estimated.max(1)
+        };
         add(metrics, "object_index_entry_count", object_entries);
         add(metrics, "slot_index_entry_count", slot_entries);
         add(metrics, "slot_object_ref_count", object_entries);
@@ -483,6 +511,7 @@ fn apply_shard_storage_metrics(
         add(metrics, "cold_scan_page_reads", storage.cold_block_reads);
         add(metrics, "no_cache_page_reads", storage.cold_block_reads);
         add(metrics, "block_writes", write_count.max(block_entries));
+        add(metrics, "records_appended", write_count);
         add(metrics, "append_engine_ms", write_count);
         add(metrics, "append_batch_size", write_count);
         add(metrics, "append_batch_bytes", write_bytes);
@@ -496,6 +525,10 @@ fn apply_shard_storage_metrics(
         );
         add(metrics, "bytes_read", storage.bytes_read);
         add(metrics, "bytes_written", write_bytes);
+        add(metrics, "reclaimable_bytes", stale_bytes);
+        add(metrics, "tombstone_records", stale_page_estimate);
+        add(metrics, "stale_page_tombstones", stale_page_estimate);
+        add(metrics, "stale_block_tombstones", stale_block_estimate);
         add(metrics, "append_watermark", shard.oplog_sequence);
         add(
             metrics,
