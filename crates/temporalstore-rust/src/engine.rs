@@ -10054,7 +10054,8 @@ fn slot_index_target_slots_for_object_key(shard: &ShardState, key: &str) -> BTre
 
 fn ensure_slot_index_lookup_maps(shard: &mut ShardState) {
     if (shard.slot_index.object_page_lookup.is_empty()
-        || shard.slot_index.object_component_lookup.is_empty())
+        || shard.slot_index.object_component_lookup.is_empty()
+        || shard.slot_index.object_key_lookup.is_empty())
         && !shard.slot_index.slot_map.is_empty()
     {
         shard.slot_index.rebuild_object_page_lookup();
