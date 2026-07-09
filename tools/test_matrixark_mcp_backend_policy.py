@@ -22,6 +22,7 @@ try:
         fallback_flags_from_backend,
         phase_scale_matrix_gate,
         production_policy_gate,
+        rust_proxy_breakdown_from_backend_metrics,
         selected_ref_count,
         storage_tuning_failures,
         summarize_retrieval_metrics,
@@ -40,6 +41,7 @@ except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
         fallback_flags_from_backend,
         phase_scale_matrix_gate,
         production_policy_gate,
+        rust_proxy_breakdown_from_backend_metrics,
         selected_ref_count,
         storage_tuning_failures,
         summarize_retrieval_metrics,
@@ -63,6 +65,45 @@ _SHARED_CORRECTNESS_EVIDENCE = {
 
 
 class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
+    def test_rust_proxy_breakdown_includes_dedicated_retrieve_client_metrics(self) -> None:
+        breakdown = rust_proxy_breakdown_from_backend_metrics(
+            {
+                "result": {
+                    "metrics": {
+                        "rust_client": {
+                            "commands_total": 2,
+                            "op_metrics": {
+                                "batch_hset": {
+                                    "commands_total": 2,
+                                    "latency_ms_total": 20.0,
+                                    "latency_ms_max": 12.0,
+                                }
+                            },
+                            "lanes": {"write": {"workers": 1, "commands_total": 2}},
+                        },
+                        "rust_retrieve_client": {
+                            "commands_total": 3,
+                            "op_metrics": {
+                                "matrixark_retrieve_context_pack": {
+                                    "commands_total": 3,
+                                    "latency_ms_total": 90.0,
+                                    "latency_ms_max": 40.0,
+                                }
+                            },
+                            "lanes": {"pack": {"workers": 8, "commands_total": 3}},
+                        },
+                    }
+                }
+            }
+        )
+
+        self.assertEqual(breakdown["commands_total"], 2)
+        self.assertEqual(breakdown["combined_commands_total"], 5)
+        self.assertEqual(breakdown["clients"]["retrieve"]["commands_total"], 3)
+        self.assertEqual(breakdown["clients"]["retrieve"]["lanes"]["pack"]["workers"], 8)
+        self.assertEqual(breakdown["top_ops_by_total_latency"][0]["op"], "matrixark_retrieve_context_pack")
+        self.assertEqual(breakdown["top_ops_by_total_latency"][0]["commands_total"], 3)
+
     def test_rust_bridge_defaults_to_shared_writes_and_parallel_pack_lanes(self) -> None:
         old_env = {
             key: os.environ.get(key)

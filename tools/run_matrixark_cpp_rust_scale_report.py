@@ -1820,11 +1820,98 @@ def rust_proxy_breakdown_from_backend_metrics(backend_metrics: Json) -> Json:
     if not isinstance(metrics, dict):
         return {"available": False, "reason": "missing_backend_metrics_result"}
     nested_metrics = metrics.get("metrics", {}) if isinstance(metrics.get("metrics"), dict) else {}
-    rust_client_metrics = nested_metrics.get("rust_client", {}) if isinstance(nested_metrics.get("rust_client"), dict) else {}
-    if rust_client_metrics:
-        metrics = rust_client_metrics
-    op_metrics = metrics.get("op_metrics", {})
-    lane_metrics = metrics.get("lanes", metrics.get("lane_metrics", {}))
+    primary_metrics = nested_metrics.get("rust_client", {}) if isinstance(nested_metrics.get("rust_client"), dict) else {}
+    if not primary_metrics:
+        primary_metrics = metrics
+
+    client_sources = [
+        ("primary", primary_metrics),
+        ("retrieve", nested_metrics.get("rust_retrieve_client", {})),
+        ("summary", nested_metrics.get("rust_summary_client", {})),
+    ]
+    clients: Json = {}
+    combined_ops: dict[str, Json] = {}
+    combined_commands_total = 0
+    combined_engine_total = 0.0
+    combined_serialization_total = 0.0
+    combined_queue_wait_total = 0.0
+
+    for name, client_metrics in client_sources:
+        if not isinstance(client_metrics, dict) or not client_metrics:
+            continue
+        combined_commands_total += int(client_metrics.get("commands_total") or 0)
+        combined_engine_total += float(client_metrics.get("rust_engine_ms_total") or 0.0)
+        combined_serialization_total += float(client_metrics.get("serialization_ms_total") or 0.0)
+        combined_queue_wait_total += float(client_metrics.get("proxy_queue_wait_ms_total") or 0.0)
+        op_metrics = client_metrics.get("op_metrics", {})
+        if isinstance(op_metrics, dict):
+            for op, values in op_metrics.items():
+                if not isinstance(values, dict):
+                    continue
+                bucket = combined_ops.setdefault(
+                    str(op),
+                    {"op": str(op), "commands_total": 0, "latency_ms_total": 0.0, "latency_ms_max": 0.0},
+                )
+                bucket["commands_total"] += int(values.get("commands_total") or 0)
+                bucket["latency_ms_total"] += float(values.get("latency_ms_total") or 0.0)
+                bucket["latency_ms_max"] = max(
+                    float(bucket.get("latency_ms_max") or 0.0),
+                    float(values.get("latency_ms_max") or 0.0),
+                )
+        clients[name] = {
+            "commands_total": int(client_metrics.get("commands_total") or 0),
+            "qps": round(float(client_metrics.get("qps") or 0.0), 6),
+            "top_ops_by_total_latency": _top_rust_proxy_ops(client_metrics)[:8],
+            "lanes": _rust_proxy_lanes(client_metrics),
+            "proxy_queue_wait_ms_total": round(float(client_metrics.get("proxy_queue_wait_ms_total") or 0.0), 3),
+        }
+
+    top_ops = [
+        {
+            "op": op,
+            "commands_total": int(values.get("commands_total") or 0),
+            "latency_ms_total": round(float(values.get("latency_ms_total") or 0.0), 3),
+            "latency_ms_avg": round(
+                float(values.get("latency_ms_total") or 0.0) / max(1, int(values.get("commands_total") or 0)),
+                3,
+            ),
+            "latency_ms_max": round(float(values.get("latency_ms_max") or 0.0), 3),
+        }
+        for op, values in combined_ops.items()
+    ]
+    top_ops.sort(key=lambda item: (float(item.get("latency_ms_total") or 0.0), int(item.get("commands_total") or 0)), reverse=True)
+
+    lanes = _rust_proxy_lanes(primary_metrics)
+    commands_total = int(primary_metrics.get("commands_total") or 0)
+    engine_total = float(primary_metrics.get("rust_engine_ms_total") or 0.0)
+    serialization_total = float(primary_metrics.get("serialization_ms_total") or 0.0)
+    return {
+        "available": bool(top_ops or lanes),
+        "commands_total": commands_total,
+        "combined_commands_total": combined_commands_total,
+        "qps": round(float(primary_metrics.get("qps") or 0.0), 6),
+        "engine_ms_total": round(engine_total, 3),
+        "combined_engine_ms_total": round(combined_engine_total, 3),
+        "serialization_ms_total": round(serialization_total, 3),
+        "combined_serialization_ms_total": round(combined_serialization_total, 3),
+        "proxy_queue_wait_ms_total": round(float(primary_metrics.get("proxy_queue_wait_ms_total") or 0.0), 3),
+        "combined_proxy_queue_wait_ms_total": round(combined_queue_wait_total, 3),
+        "engine_ms_per_command": round(engine_total / max(1, commands_total), 6),
+        "serialization_ms_per_command": round(serialization_total / max(1, commands_total), 6),
+        "top_ops_by_total_latency": top_ops[:8],
+        "lanes": lanes,
+        "clients": clients,
+        "publish_visibility": primary_metrics.get("publish_visibility", {}),
+        "batch_hset_coalescing": primary_metrics.get("batch_hset_coalescing", {}),
+        "batch_hget_coalescing": primary_metrics.get("batch_hget_coalescing", {}),
+        "matrixark_append_coalescing": primary_metrics.get("matrixark_append_coalescing", {}),
+        "string_cache": primary_metrics.get("string_cache", {}),
+        "scan_hash_cache": primary_metrics.get("scan_hash_cache", {}),
+    }
+
+
+def _top_rust_proxy_ops(metrics: Json) -> list[Json]:
+    op_metrics = metrics.get("op_metrics", {}) if isinstance(metrics, dict) else {}
     top_ops: list[Json] = []
     if isinstance(op_metrics, dict):
         for op, values in op_metrics.items():
@@ -1842,7 +1929,11 @@ def rust_proxy_breakdown_from_backend_metrics(backend_metrics: Json) -> Json:
                 }
             )
     top_ops.sort(key=lambda item: (float(item.get("latency_ms_total") or 0.0), int(item.get("commands_total") or 0)), reverse=True)
+    return top_ops
 
+
+def _rust_proxy_lanes(metrics: Json) -> Json:
+    lane_metrics = metrics.get("lanes", metrics.get("lane_metrics", {})) if isinstance(metrics, dict) else {}
     lanes: Json = {}
     if isinstance(lane_metrics, dict):
         for lane, values in lane_metrics.items():
@@ -1856,28 +1947,7 @@ def rust_proxy_breakdown_from_backend_metrics(backend_metrics: Json) -> Json:
                 "p95_latency_ms": round(float(values.get("p95_latency_ms") or 0.0), 3),
                 "p99_latency_ms": round(float(values.get("p99_latency_ms") or 0.0), 3),
             }
-
-    commands_total = int(metrics.get("commands_total") or 0)
-    engine_total = float(metrics.get("rust_engine_ms_total") or 0.0)
-    serialization_total = float(metrics.get("serialization_ms_total") or 0.0)
-    return {
-        "available": bool(top_ops or lanes),
-        "commands_total": commands_total,
-        "qps": round(float(metrics.get("qps") or 0.0), 6),
-        "engine_ms_total": round(engine_total, 3),
-        "serialization_ms_total": round(serialization_total, 3),
-        "proxy_queue_wait_ms_total": round(float(metrics.get("proxy_queue_wait_ms_total") or 0.0), 3),
-        "engine_ms_per_command": round(engine_total / max(1, commands_total), 6),
-        "serialization_ms_per_command": round(serialization_total / max(1, commands_total), 6),
-        "top_ops_by_total_latency": top_ops[:8],
-        "lanes": lanes,
-        "publish_visibility": metrics.get("publish_visibility", {}),
-        "batch_hset_coalescing": metrics.get("batch_hset_coalescing", {}),
-        "batch_hget_coalescing": metrics.get("batch_hget_coalescing", {}),
-        "matrixark_append_coalescing": metrics.get("matrixark_append_coalescing", {}),
-        "string_cache": metrics.get("string_cache", {}),
-        "scan_hash_cache": metrics.get("scan_hash_cache", {}),
-    }
+    return lanes
 
 
 def fallback_flags_from_backend(result: Json) -> Json:
