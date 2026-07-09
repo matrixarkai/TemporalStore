@@ -256,22 +256,32 @@ pub(super) fn read_slot_index_component_values(
         .iter()
         .map(|(_, address)| page_cache_key(shard_id, address))
         .collect::<Vec<_>>();
+    let mut unique_keys = Vec::new();
+    let mut key_indexes = HashMap::<CacheKey, Vec<usize>>::new();
+    for (index, key) in keys.iter().enumerate() {
+        if !key_indexes.contains_key(key) {
+            unique_keys.push(key.clone());
+        }
+        key_indexes.entry(key.clone()).or_default().push(index);
+    }
     let cached = cache
-        .get_batch(&keys)
-        .unwrap_or_else(|_| vec![None; keys.len()]);
+        .get_batch(&unique_keys)
+        .unwrap_or_else(|_| vec![None; unique_keys.len()]);
 
     let mut values = vec![None; refs.len()];
     let mut missed_pages = HashMap::<CacheKey, PageAddress>::new();
-    for (index, ((component, address), (key, cached_value))) in refs
-        .iter()
-        .cloned()
-        .zip(keys.iter().cloned().zip(cached.into_iter()))
-        .enumerate()
-    {
+    for (key, cached_value) in unique_keys.into_iter().zip(cached.into_iter()) {
+        let indexes = key_indexes.remove(&key).unwrap_or_default();
         match cached_value {
-            Some(value) => values[index] = Some((component, value)),
+            Some(value) => {
+                for index in indexes {
+                    values[index] = Some((refs[index].0.clone(), value.clone()));
+                }
+            }
             None => {
-                missed_pages.entry(key).or_insert(address);
+                if let Some((_, address)) = indexes.first().and_then(|index| refs.get(*index)) {
+                    missed_pages.entry(key).or_insert_with(|| address.clone());
+                }
             }
         }
     }
