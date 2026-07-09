@@ -9140,8 +9140,22 @@ fn execute_on_shard(
             let mut scanned_ref_count = 0usize;
             let mut deduped_ref_count = 0usize;
             let mut candidate_refs: Option<HashMap<(u64, u64, u64), ContextIndexRef>> = None;
+            let mut ordered_predicates = predicates.iter().collect::<Vec<_>>();
+            ordered_predicates.sort_by_key(|predicate| {
+                let object_key = context_index_key(
+                    tenant_hash,
+                    &predicate.index_name,
+                    predicate.index_value_hash,
+                    predicate.scope_hash,
+                );
+                shard
+                    .context_indexes
+                    .get(&object_key)
+                    .map(BTreeMap::len)
+                    .unwrap_or_default()
+            });
 
-            for predicate in &predicates {
+            for predicate in ordered_predicates {
                 let object_key = context_index_key(
                     tenant_hash,
                     &predicate.index_name,
