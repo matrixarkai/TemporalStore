@@ -2430,7 +2430,7 @@ fn handle_heartbeat_service_route(
                 let endpoint = heartbeat_server_addr(&req);
                 backend_call!(
                     meta,
-                    drop_server,
+                    server_notify_stop,
                     StateChangeRequest {
                         endpoint,
                         freeze_cooldown_ms: 0,
@@ -2463,7 +2463,7 @@ fn handle_heartbeat_service_route(
                 let endpoint = heartbeat_proxy_addr(&req);
                 backend_call!(
                     meta,
-                    drop_proxy,
+                    proxy_notify_stop,
                     StateChangeRequest {
                         endpoint,
                         freeze_cooldown_ms: 0,
@@ -2940,6 +2940,94 @@ mod tests {
         assert!(partitions.status.ok);
         assert_eq!(partitions.info[0].partition_info.len(), 1);
         assert_eq!(partitions.info[0].partition_info[0].shard_id, 701);
+    }
+
+    #[test]
+    fn heartbeat_notify_stop_requires_normal_state() {
+        let meta = SingleNodeMeta::default();
+        meta.register_server(RegisterServerRequest {
+            server_addr: "server-stop-a".to_string(),
+            node_id: 1,
+            location: "zone-a".to_string(),
+            binary_version: "v1".to_string(),
+        });
+        meta.register_proxy(RegisterProxyRequest {
+            proxy_addr: "proxy-stop-a".to_string(),
+            namespace: "ns".to_string(),
+            location: "zone-a".to_string(),
+            config_version: 1,
+            binary_version: "v1".to_string(),
+        });
+        let backend = MetaBackend::Single(meta);
+        let scheduler = MetaTaskScheduler::default();
+
+        for (path, body) in [
+            (
+                "/HeartbeatService/ServerNotifyStop",
+                serde_json::json!({"server_addr": "missing-server"}),
+            ),
+            (
+                "/HeartbeatService/ProxyNotifyStop",
+                serde_json::json!({"proxy_addr": "missing-proxy"}),
+            ),
+        ] {
+            let (code, body) = handle(
+                &backend,
+                &scheduler,
+                HttpRequest {
+                    method: "POST".to_string(),
+                    path: path.to_string(),
+                    body: serde_json::to_vec(&body).unwrap(),
+                },
+            );
+            assert_eq!(code, 200);
+            let ack: AckResponse = serde_json::from_slice(&body).unwrap();
+            assert_eq!(ack.status.code, "not_found");
+        }
+
+        assert!(
+            backend_call!(
+                &backend,
+                freeze_server,
+                StateChangeRequest {
+                    endpoint: "server-stop-a".to_string(),
+                    freeze_cooldown_ms: 0,
+                }
+            )
+            .status
+            .ok
+        );
+        let (code, body) = handle(
+            &backend,
+            &scheduler,
+            HttpRequest {
+                method: "POST".to_string(),
+                path: "/HeartbeatService/ServerNotifyStop".to_string(),
+                body: serde_json::to_vec(&serde_json::json!({"server_addr": "server-stop-a"}))
+                    .unwrap(),
+            },
+        );
+        assert_eq!(code, 200);
+        let ack: AckResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(ack.status.code, "failed_precondition");
+
+        let (code, body) = handle(
+            &backend,
+            &scheduler,
+            HttpRequest {
+                method: "POST".to_string(),
+                path: "/HeartbeatService/ProxyNotifyStop".to_string(),
+                body: serde_json::to_vec(&serde_json::json!({"proxy_addr": "proxy-stop-a"}))
+                    .unwrap(),
+            },
+        );
+        assert_eq!(code, 200);
+        let ack: AckResponse = serde_json::from_slice(&body).unwrap();
+        assert!(ack.status.ok);
+        assert_eq!(
+            backend_call!(&backend, list_proxies).proxies[0].state,
+            MetaEntityState::Dropped
+        );
     }
 
     #[test]
