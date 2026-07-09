@@ -10037,10 +10037,11 @@ fn mark_slot_index_object_deleted(
 
 fn slot_index_target_slots_for_object_key(shard: &ShardState, key: &str) -> BTreeSet<u32> {
     if !shard.slot_index.object_key_lookup.is_empty() {
-        return shard
-            .slot_index
-            .routing_slots_for_object_key(key)
-            .unwrap_or_default();
+        if let Some(slots) = shard.slot_index.routing_slots_for_object_key(key) {
+            if !slots.is_empty() {
+                return slots;
+            }
+        }
     }
     if shard.slot_index.object_component_lookup.is_empty() {
         return shard.slot_index.slot_map.keys().copied().collect();
@@ -10055,7 +10056,20 @@ fn slot_index_target_slots_for_object_key(shard: &ShardState, key: &str) -> BTre
             slots.extend(page_refs.iter().map(|page_ref| page_ref.routing_slot));
         }
     }
-    slots
+    if !slots.is_empty() {
+        return slots;
+    }
+    shard
+        .slot_index
+        .slot_map
+        .iter()
+        .filter_map(|(routing_slot, slot)| {
+            slot.page_index
+                .values()
+                .any(|page| page.object_key == key && !page.deleted)
+                .then_some(*routing_slot)
+        })
+        .collect()
 }
 
 fn ensure_slot_index_lookup_maps(shard: &mut ShardState) {
