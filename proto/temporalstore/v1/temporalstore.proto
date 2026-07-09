@@ -256,6 +256,8 @@ message Command {
     IpsQueryLast ips_query_last = 32;
     RiskIncrementWithOptions risk_increment_with_options = 33;
     RiskCount risk_count = 34;
+    RiskChangeAdd risk_change_add = 35;
+    RiskDetail risk_detail = 36;
   }
 }
 
@@ -450,6 +452,21 @@ message RiskCount {
   string key = 1;
   uint64 start_ms = 2;
   uint64 end_ms = 3;
+}
+
+message RiskChangeAdd {
+  string key = 1;
+  uint64 timestamp_ms = 2;
+  bytes value = 3;
+  optional uint64 precision_ms = 4;
+  optional uint64 ttl_ms = 5;
+}
+
+message RiskDetail {
+  string key = 1;
+  uint64 start_ms = 2;
+  uint64 end_ms = 3;
+  uint32 limit = 4;
 }
 
 message RiskQuery {
