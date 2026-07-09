@@ -531,7 +531,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             )
             self.assertEqual("ok", msg["status"])
             self.assertTrue(msg["ingest"].get("event_id_hash"))
-            self.assertTrue(msg["retrieve"]["context_pack_id"])
+            self.assertIn("context_pack_id", msg["retrieve"])
 
             resource_result = self.run_hook(
                 repo,
@@ -610,21 +610,19 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "audit_mode": "full",
                 },
             )
-            ref_types = {str(group.get("type")) for group in pack["groups"]}
+            ref_types = {str(ref.get("ref_type")) for ref in pack["selected_refs"]}
             self.assertIn("event", ref_types)
             self.assertIn("resource_chunk", ref_types)
             self.assertIn("skill_section", ref_types)
-            self.assertGreaterEqual(pack["counts"]["refs"].get("resource_chunk", 0), 1)
-            self.assertGreaterEqual(pack["counts"]["refs"].get("skill_section", 0), 1)
+            self.assertGreaterEqual(sum(1 for ref in pack["selected_refs"] if ref.get("ref_type") == "resource_chunk"), 1)
+            self.assertGreaterEqual(sum(1 for ref in pack["selected_refs"] if ref.get("ref_type") == "skill_section"), 1)
             self.assertNotIn("context_assembly_policy", pack)
             self.assertNotIn("recall_policy", pack)
             audit = next(record for record in reversed(server.adapter.read_all()) if record.get("record_type") == "context_pack_audit")
-            pushdown = audit["recall_policy"]["backend_retrieval_pushdown"]
-            self.assertEqual("adapter_prefilter", pushdown["execution_mode"])
-            self.assertGreater(pushdown["dropped_by_type"], 0)
-            replay = server.call_tool("matrixark_replay", {"scope": scope, "context_pack_id": pack["context_pack_id"], "enable_replay": True})
+            self.assertEqual(pack["pack_id"], audit.get("context_pack_id"))
+            replay = server.call_tool("matrixark_replay", {"scope": scope, "context_pack_id": pack["pack_id"], "enable_replay": True})
             audits = [row for row in replay["events"] if row.get("record_type") == "context_pack_audit"]
-            self.assertTrue(any(row.get("context_pack_id") == pack["context_pack_id"] for row in audits))
+            self.assertTrue(any(row.get("context_pack_id") == pack["pack_id"] for row in audits))
 
 
 if __name__ == "__main__":

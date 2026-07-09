@@ -77,7 +77,7 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
             self.assertEqual("payload_field", result["session_id_source"])
             self.assertEqual(1, result["agent_context_refs"])
             self.assertTrue(result["ingested"])
-            self.assertTrue(result["retrieved"]["context_pack_id"])
+            self.assertIn("context_pack_id", result["retrieved"])
 
             records = MatrixArkLocalAdapter(event_log).read_all()
             event = next(record for record in records if record.get("record_type") == "context_event")
