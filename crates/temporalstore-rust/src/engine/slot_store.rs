@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::page_store::{LocalPageStore, PageAddress};
 use crate::types::ShardId;
-use rustmtcache::MultiLayerCache;
+use rustmtcache::{CacheKey, MultiLayerCache};
 
 use super::read_page_bytes;
 use super::state::{
@@ -235,4 +235,58 @@ pub(super) fn read_slot_index_value(
 ) -> Option<Vec<u8>> {
     slot_index_page_address(shard, model_id, object_key, component)
         .and_then(|address| read_page_bytes(cache, page_store, shard_id, &address))
+}
+
+pub(super) fn read_slot_index_component_values(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    model_id: &str,
+    object_key: &str,
+) -> Vec<(Option<String>, Vec<u8>)> {
+    let refs = slot_index_component_page_addresses(shard, model_id, object_key);
+    if refs.is_empty() {
+        return Vec::new();
+    }
+
+    let keys = refs
+        .iter()
+        .map(|(_, address)| page_cache_key(shard_id, address))
+        .collect::<Vec<_>>();
+    let cached = cache
+        .get_batch(&keys)
+        .unwrap_or_else(|_| vec![None; keys.len()]);
+
+    let mut values = Vec::with_capacity(refs.len());
+    let mut refills = Vec::new();
+    for ((component, address), key, cached_value) in refs
+        .into_iter()
+        .zip(keys.into_iter())
+        .zip(cached.into_iter())
+        .map(|((entry, key), cached_value)| (entry, key, cached_value))
+    {
+        if let Some(value) = cached_value {
+            values.push((component, value));
+            continue;
+        }
+        if let Ok(value) = page_store.read(&address) {
+            refills.push((key, value.clone()));
+            values.push((component, value));
+        }
+    }
+
+    let _ = cache.put_batch(refills);
+    values
+}
+
+fn page_cache_key(shard_id: ShardId, address: &PageAddress) -> CacheKey {
+    CacheKey::page_with_slot_generation(
+        shard_id,
+        address.page_segment_id,
+        address.offset,
+        address.length,
+        address.routing_slot,
+        address.generation,
+    )
 }
