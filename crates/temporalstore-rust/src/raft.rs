@@ -23,13 +23,13 @@ use crate::meta::{
     GetShardResponse, GetTableTopologyRequest, ListNamespacesResponse, ListProxiesResponse,
     ListProxyGroupRequest, ListProxyGroupResponse, ListServersResponse, ListTablesResponse,
     LoadFinishRequest, ManagementInfo, MetaEntityState, MetaInfo, MetaMutation,
-    MetaPreflightReport, MetaSnapshot, MetaStats, ProxyHeartbeatRequest, ProxyHeartbeatResponse,
-    PublishShardSnapshotRequest, PutProxyGroupRequest, RegisterProxyRequest, RegisterServerRequest,
-    RegisterShardRequest, RegisterShardResponse, SafeModePolicy, SafeModeReport,
-    ServerHeartbeatRequest, ServerHeartbeatResponse, ShardLocation, ShardSnapshotRef,
-    SingleNodeMeta, StaleResourceReport, StaleServerReport, StateChangeRequest,
-    TableTopologyResponse, TopologyVersionReport, TopologyVersionRequest, UpdateManageInfoRequest,
-    UpdateServerRequest, UpdateTableRequest,
+    MetaPreflightReport, MetaSnapshot, MetaStats, PartitionStateChangeRequest,
+    ProxyHeartbeatRequest, ProxyHeartbeatResponse, PublishShardSnapshotRequest,
+    PutProxyGroupRequest, RegisterProxyRequest, RegisterServerRequest, RegisterShardRequest,
+    RegisterShardResponse, SafeModePolicy, SafeModeReport, ServerHeartbeatRequest,
+    ServerHeartbeatResponse, ShardLocation, ShardSnapshotRef, SingleNodeMeta, StaleResourceReport,
+    StaleServerReport, StateChangeRequest, TableTopologyResponse, TopologyVersionReport,
+    TopologyVersionRequest, UpdateManageInfoRequest, UpdateServerRequest, UpdateTableRequest,
 };
 use crate::rebalance::RaftPersistedSchedulerState;
 use crate::types::{Command, CommandResponse, ExecuteRequest, ShardId, Status};
@@ -11719,6 +11719,18 @@ impl MetaRaftCluster {
     pub fn unfreeze_table(&self, request: DeleteTableRequest) -> AckResponse {
         AckResponse {
             status: self.mutation_status(MetaMutation::UnfreezeTable(request)),
+        }
+    }
+
+    pub fn freeze_partition(&self, request: PartitionStateChangeRequest) -> AckResponse {
+        AckResponse {
+            status: self.mutation_status(MetaMutation::FreezePartition(request)),
+        }
+    }
+
+    pub fn drop_partition(&self, request: PartitionStateChangeRequest) -> AckResponse {
+        AckResponse {
+            status: self.mutation_status(MetaMutation::DropPartition(request)),
         }
     }
 

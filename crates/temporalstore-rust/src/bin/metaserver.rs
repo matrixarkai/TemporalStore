@@ -11,10 +11,11 @@ use temporalstore_rust::meta::{
     AckResponse, AddNamespaceRequest, AddTableRequest, DeleteTableRequest, DropProxyGroupRequest,
     FreezeStaleServersRequest, GetShardResponse, GetTableTopologyRequest, ListProxyGroupRequest,
     LoadFinishRequest, MetaSnapshot, MetaSnapshotFileRequest, MetaSnapshotFileResponse,
-    MetaSnapshotResponse, ProxyHeartbeatRequest, PublishShardSnapshotRequest, PutProxyGroupRequest,
-    RegisterProxyRequest, RegisterServerRequest, RegisterShardRequest, SafeModePolicy,
-    ServerHeartbeatRequest, SingleNodeMeta, StateChangeRequest, TopologyVersionRequest,
-    UpdateManageInfoRequest, UpdateServerRequest, UpdateTableRequest,
+    MetaSnapshotResponse, PartitionStateChangeRequest, ProxyHeartbeatRequest,
+    PublishShardSnapshotRequest, PutProxyGroupRequest, RegisterProxyRequest, RegisterServerRequest,
+    RegisterShardRequest, SafeModePolicy, ServerHeartbeatRequest, SingleNodeMeta,
+    StateChangeRequest, TopologyVersionRequest, UpdateManageInfoRequest, UpdateServerRequest,
+    UpdateTableRequest,
 };
 use temporalstore_rust::raft::{
     ProductionMetaRaftRuntime, ProductionMetaRaftRuntimeOptions, ProductionRaftEngineKind,
@@ -1622,7 +1623,7 @@ struct MasterOpenTableResponse {
     open_version: u64,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct QueryListPartitionRequest {
     #[serde(alias = "namespace_name")]
     namespace: String,
@@ -2062,6 +2063,16 @@ fn handle_manage_service_route(
         ("POST", "/ManageService/DropTable") => {
             parse_or(&request.body, |req: MasterTableRequest| {
                 backend_call!(meta, delete_table, master_delete_table_request(req))
+            })
+        }
+        ("POST", "/ManageService/FreezePartition") => {
+            parse_or(&request.body, |req: PartitionStateChangeRequest| {
+                backend_call!(meta, freeze_partition, req)
+            })
+        }
+        ("POST", "/ManageService/DropPartition") => {
+            parse_or(&request.body, |req: PartitionStateChangeRequest| {
+                backend_call!(meta, drop_partition, req)
             })
         }
         _ => return None,
@@ -2864,6 +2875,71 @@ mod tests {
                 expected_readonly
             );
         }
+    }
+
+    #[test]
+    fn manage_service_freezes_and_drops_partition() {
+        let meta = SingleNodeMeta::default();
+        assert!(
+            meta.add_table(AddTableRequest {
+                namespace: "partition-ns".to_string(),
+                table_name: "partition-table".to_string(),
+                first_shard_id: 700,
+                shard_count: 2,
+                replica_count: 1,
+                use_cpp_partition_ids: false,
+                partition_version: 0,
+                serving_options: temporalstore_rust::meta::TableServingOptions::default(),
+            })
+            .status
+            .ok
+        );
+        let backend = MetaBackend::Single(meta);
+        let scheduler = MetaTaskScheduler::default();
+
+        for (path, expected_ok) in [
+            ("/ManageService/DropPartition", false),
+            ("/ManageService/FreezePartition", true),
+            ("/ManageService/DropPartition", true),
+        ] {
+            let (code, body) = handle(
+                &backend,
+                &scheduler,
+                HttpRequest {
+                    method: "POST".to_string(),
+                    path: path.to_string(),
+                    body: serde_json::to_vec(&PartitionStateChangeRequest {
+                        partition_id: 700,
+                        force: false,
+                    })
+                    .unwrap(),
+                },
+            );
+            assert_eq!(code, 200);
+            let ack: AckResponse = serde_json::from_slice(&body).unwrap();
+            assert_eq!(ack.status.ok, expected_ok, "{ack:?}");
+        }
+
+        let (code, body) = handle(
+            &backend,
+            &scheduler,
+            HttpRequest {
+                method: "POST".to_string(),
+                path: "/QueryService/ListPartition".to_string(),
+                body: serde_json::to_vec(&QueryListPartitionRequest {
+                    namespace: "partition-ns".to_string(),
+                    table: "partition-table".to_string(),
+                    shard_id: 0,
+                    read_stale: false,
+                })
+                .unwrap(),
+            },
+        );
+        assert_eq!(code, 200);
+        let partitions: QueryListPartitionResponse = serde_json::from_slice(&body).unwrap();
+        assert!(partitions.status.ok);
+        assert_eq!(partitions.info[0].partition_info.len(), 1);
+        assert_eq!(partitions.info[0].partition_info[0].shard_id, 701);
     }
 
     #[test]

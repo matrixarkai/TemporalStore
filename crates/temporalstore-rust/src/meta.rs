@@ -400,6 +400,14 @@ pub struct DeleteTableRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PartitionStateChangeRequest {
+    #[serde(rename = "partition_id", alias = "shard_id")]
+    pub partition_id: ShardId,
+    #[serde(default)]
+    pub force: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UpdateTableRequest {
     pub namespace: String,
     pub table_name: String,
@@ -511,6 +519,8 @@ pub struct TableMetaInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TablePartition {
     pub shard_id: ShardId,
+    #[serde(default)]
+    pub state: MetaEntityState,
     pub start_slot: u64,
     pub end_slot: u64,
     pub primary: Option<String>,
@@ -700,6 +710,8 @@ pub enum MetaMutation {
     UpdateTable(UpdateTableRequest),
     FreezeTable(DeleteTableRequest),
     UnfreezeTable(DeleteTableRequest),
+    FreezePartition(PartitionStateChangeRequest),
+    DropPartition(PartitionStateChangeRequest),
     FinishLoad(LoadFinishRequest),
     FreezeServer(StateChangeRequest),
     DropServer(StateChangeRequest),
@@ -789,6 +801,7 @@ pub(crate) struct MetaState {
     proxy_groups: BTreeMap<String, ProxyGroupMetaInfo>,
     management_info: ManagementInfo,
     namespaces: BTreeMap<String, MetaEntityState>,
+    partition_states: BTreeMap<ShardId, MetaEntityState>,
     tables: BTreeMap<String, TableRecord>,
     counters: MetaCounters,
     next_table_id: u64,
@@ -809,6 +822,8 @@ pub struct MetaSnapshot {
     #[serde(default)]
     pub management_info: ManagementInfo,
     pub namespaces: BTreeMap<String, MetaEntityState>,
+    #[serde(default)]
+    pub partition_states: BTreeMap<ShardId, MetaEntityState>,
     pub tables: Vec<TableMetaInfo>,
     pub stats: MetaStats,
     pub next_table_id: u64,
@@ -905,6 +920,7 @@ impl SingleNodeMeta {
             proxy_groups: snapshot.proxy_groups,
             management_info: snapshot.management_info,
             namespaces: snapshot.namespaces,
+            partition_states: snapshot.partition_states,
             tables,
             counters: counters_from_stats(&snapshot.stats),
             next_table_id,
@@ -937,6 +953,7 @@ impl MetaSnapshot {
             proxy_groups: state.proxy_groups.clone(),
             management_info: state.management_info.clone(),
             namespaces: state.namespaces.clone(),
+            partition_states: state.partition_states.clone(),
             tables: state
                 .tables
                 .values()
@@ -1432,6 +1449,16 @@ impl SingleNodeMeta {
     pub fn unfreeze_table(&self, request: DeleteTableRequest) -> AckResponse {
         self.record_mutation(MetaMutation::UnfreezeTable(request.clone()));
         self.apply_set_table_state(request, MetaEntityState::Normal)
+    }
+
+    pub fn freeze_partition(&self, request: PartitionStateChangeRequest) -> AckResponse {
+        self.record_mutation(MetaMutation::FreezePartition(request.clone()));
+        self.apply_set_partition_state(request, MetaEntityState::Frozen)
+    }
+
+    pub fn drop_partition(&self, request: PartitionStateChangeRequest) -> AckResponse {
+        self.record_mutation(MetaMutation::DropPartition(request.clone()));
+        self.apply_set_partition_state(request, MetaEntityState::Dropped)
     }
 
     pub fn update_table(&self, request: UpdateTableRequest) -> AckResponse {
@@ -2409,6 +2436,72 @@ impl SingleNodeMeta {
         }
     }
 
+    fn apply_set_partition_state(
+        &self,
+        request: PartitionStateChangeRequest,
+        next: MetaEntityState,
+    ) -> AckResponse {
+        if request.partition_id == 0 {
+            return AckResponse {
+                status: Status::error("bad_request", "partition_id is required"),
+            };
+        }
+        let mut state = self.inner.write().expect("meta lock poisoned");
+        let Some(table) =
+            table_for_shard(&state, request.partition_id).map(|table| table.info.clone())
+        else {
+            return AckResponse {
+                status: Status::error("partition_not_found", "partition not found"),
+            };
+        };
+        if table.state == MetaEntityState::Dropped {
+            return AckResponse {
+                status: Status::error("partition_not_found", "table is dropped"),
+            };
+        }
+        let existing = state
+            .partition_states
+            .get(&request.partition_id)
+            .copied()
+            .unwrap_or(MetaEntityState::Normal);
+        match next {
+            MetaEntityState::Frozen => {
+                if existing == MetaEntityState::Dropped {
+                    return AckResponse {
+                        status: Status::error("partition_not_found", "partition is dropped"),
+                    };
+                }
+                if existing == MetaEntityState::Frozen {
+                    return AckResponse {
+                        status: Status::error("not_modified", "partition is already frozen"),
+                    };
+                }
+            }
+            MetaEntityState::Dropped => {
+                if existing != MetaEntityState::Frozen {
+                    return AckResponse {
+                        status: Status::error("failed_precondition", "partition is not frozen"),
+                    };
+                }
+            }
+            MetaEntityState::Normal => {}
+        }
+        state.partition_states.insert(request.partition_id, next);
+        let topology_version = record_topology_event(
+            &mut state,
+            "partition_state",
+            format!("partition:{}", request.partition_id),
+            format!("state={}", next.as_str()),
+        );
+        let key = table_key(&table.namespace, &table.table_name);
+        if let Some(record) = state.tables.get_mut(&key) {
+            record.info.topology_version = topology_version;
+        }
+        AckResponse {
+            status: Status::ok(),
+        }
+    }
+
     fn record_mutation(&self, mutation: MetaMutation) {
         if let Some(log) = &self.mutation_log {
             log.append(&mutation)
@@ -2442,6 +2535,14 @@ impl SingleNodeMeta {
             }
             MetaMutation::UnfreezeTable(request) => {
                 self.apply_set_table_state(request, MetaEntityState::Normal)
+                    .status
+            }
+            MetaMutation::FreezePartition(request) => {
+                self.apply_set_partition_state(request, MetaEntityState::Frozen)
+                    .status
+            }
+            MetaMutation::DropPartition(request) => {
+                self.apply_set_partition_state(request, MetaEntityState::Dropped)
                     .status
             }
             MetaMutation::FinishLoad(request) => self.apply_finish_load(request).status,
@@ -2551,6 +2652,14 @@ fn build_partitions(state: &MetaState, table: &TableMetaInfo) -> Vec<TablePartit
     let mut partitions = Vec::new();
     for offset in 0..table.shard_count {
         let shard_id = table_shard_id(table, offset).unwrap_or(table.first_shard_id + offset);
+        let partition_state = state
+            .partition_states
+            .get(&shard_id)
+            .copied()
+            .unwrap_or(MetaEntityState::Normal);
+        if partition_state == MetaEntityState::Dropped {
+            continue;
+        }
         let start_slot = slot_count * offset / table.shard_count;
         let end_slot = (slot_count * (offset + 1) / table.shard_count).saturating_sub(1);
         let mut replicas = Vec::new();
@@ -2617,6 +2726,7 @@ fn build_partitions(state: &MetaState, table: &TableMetaInfo) -> Vec<TablePartit
             .collect();
         partitions.push(TablePartition {
             shard_id,
+            state: partition_state,
             start_slot,
             end_slot,
             primary,
