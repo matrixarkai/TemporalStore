@@ -15,7 +15,7 @@ use super::packed_pages::{
     decode_feature_page_strict, read_feature_point_cold_with_cache_policy, ColdScanPackedPageCache,
 };
 use super::state::PackedFeaturePageDecode;
-use super::{read_page_bytes, read_page_bytes_batch, stable_object_hash, ShardState};
+use super::{read_page_bytes_batch, stable_object_hash, ShardState};
 pub(super) fn context_node_key(tenant_hash: u64, node_hash: u64) -> String {
     format!("ctx:node:{tenant_hash}:{node_hash}")
 }
@@ -717,39 +717,42 @@ pub(super) fn context_child_refs_may_exist(shard: &ShardState, object_key: &str)
         .unwrap_or(false)
 }
 
-pub(super) fn load_context_embedding(
+fn hydrate_context_embeddings_with_cache(
     cache: &MultiLayerCache,
     page_store: &LocalPageStore,
     shard_id: ShardId,
     shard: &ShardState,
     tenant_hash: u64,
-    ref_hash: u64,
-) -> Option<ContextEmbedding> {
-    shard
-        .context_embeddings
-        .get(&context_embedding_key(tenant_hash, ref_hash))
-        .and_then(|address| {
-            read_page_bytes(cache, page_store, shard_id, address)
-                .and_then(|bytes| context_from_bytes::<ContextEmbedding>(&bytes))
-        })
-}
-
-pub(super) fn load_context_embedding_with_cache(
-    cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
-    shard_id: ShardId,
-    shard: &ShardState,
-    tenant_hash: u64,
-    ref_hash: u64,
+    ref_hashes: impl IntoIterator<Item = u64>,
     embedding_cache: &mut HashMap<u64, Option<ContextEmbedding>>,
-) -> Option<ContextEmbedding> {
-    if let Some(cached) = embedding_cache.get(&ref_hash) {
-        return cached.clone();
+) {
+    let mut seen = HashSet::new();
+    let missing = ref_hashes
+        .into_iter()
+        .filter(|ref_hash| *ref_hash != 0 && seen.insert(*ref_hash))
+        .filter(|ref_hash| !embedding_cache.contains_key(ref_hash))
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        return;
     }
-    let embedding =
-        load_context_embedding(cache, page_store, shard_id, shard, tenant_hash, ref_hash);
-    embedding_cache.insert(ref_hash, embedding.clone());
-    embedding
+
+    let addresses = missing
+        .iter()
+        .map(|ref_hash| {
+            shard
+                .context_embeddings
+                .get(&context_embedding_key(tenant_hash, *ref_hash))
+                .cloned()
+        })
+        .collect::<Vec<_>>();
+    for (ref_hash, bytes) in missing.into_iter().zip(read_page_bytes_batch(
+        cache, page_store, shard_id, &addresses,
+    )) {
+        embedding_cache.insert(
+            ref_hash,
+            bytes.and_then(|bytes| context_from_bytes::<ContextEmbedding>(&bytes)),
+        );
+    }
 }
 
 pub(super) fn load_context_summaries(
@@ -999,6 +1002,7 @@ pub(super) fn traverse_context_tree(
     for depth in 1..=max_depth {
         let mut scored_layer = Vec::new();
         let mut child_page_cache = HashMap::new();
+        let mut children_to_score = Vec::new();
         for parent in &frontier {
             let child_key = context_child_key(tenant_hash, parent.node_hash);
             let mut children = load_context_children_with_page_cache(
@@ -1011,26 +1015,28 @@ pub(super) fn traverse_context_tree(
             );
             children.sort_by_key(|child_ref| (child_ref.updated_at_ms, child_ref.child_hash));
             children.truncate(child_limit);
-            for child in children {
-                let Some(embedding) = load_context_embedding_with_cache(
-                    cache,
-                    page_store,
-                    shard_id,
-                    shard,
-                    tenant_hash,
-                    child.child_hash,
-                    &mut embedding_cache,
-                ) else {
-                    continue;
-                };
-                let score = cosine_similarity(query_vector, &embedding.vector);
-                if score > 0.0 {
-                    scored_layer.push(ContextTraversedNode {
-                        node_hash: child.child_hash,
-                        depth,
-                        score,
-                    });
-                }
+            children_to_score.extend(children);
+        }
+        hydrate_context_embeddings_with_cache(
+            cache,
+            page_store,
+            shard_id,
+            shard,
+            tenant_hash,
+            children_to_score.iter().map(|child| child.child_hash),
+            &mut embedding_cache,
+        );
+        for child in children_to_score {
+            let Some(Some(embedding)) = embedding_cache.get(&child.child_hash) else {
+                continue;
+            };
+            let score = cosine_similarity(query_vector, &embedding.vector);
+            if score > 0.0 {
+                scored_layer.push(ContextTraversedNode {
+                    node_hash: child.child_hash,
+                    depth,
+                    score,
+                });
             }
         }
         scored_layer.sort_by(|left, right| {
