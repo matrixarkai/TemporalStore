@@ -9903,7 +9903,7 @@ fn select_expiry_cursor_window(
     limit: usize,
 ) -> (Vec<(String, u64)>, Option<String>) {
     let start = cursor
-        .and_then(|cursor| keys.iter().position(|(key, _)| key.as_str() > cursor))
+        .map(|cursor| keys.partition_point(|(key, _)| key.as_str() <= cursor))
         .unwrap_or_default();
     let mut remaining = keys.into_iter().skip(start);
     if limit == 0 {
