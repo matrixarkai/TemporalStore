@@ -450,6 +450,20 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             timestamp_ms: command.timestamp_ms,
             amount: command.delta,
         },
+        v1::command::Kind::RiskIncrementWithOptions(command) => {
+            types::Command::RiskIncrementWithOptions {
+                key: command.key,
+                timestamp_ms: command.timestamp_ms,
+                amount: command.delta,
+                precision_ms: command.precision_ms,
+                ttl_ms: command.ttl_ms,
+            }
+        }
+        v1::command::Kind::RiskCount(command) => types::Command::RiskCount {
+            key: command.key,
+            start_ms: command.start_ms,
+            end_ms: command.end_ms,
+        },
         v1::command::Kind::RiskQuery(command) => types::Command::RiskQuery {
             key: command.key,
             start_ms: command.start_ms,
