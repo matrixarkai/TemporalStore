@@ -77,6 +77,14 @@ pub struct TemporalEngine {
     admissions: Arc<RwLock<HashMap<AdmissionScope, AdmissionState>>>,
 }
 
+struct TimestampedPageBatchWrite {
+    kind: &'static str,
+    object_key: String,
+    timestamp_ms: u64,
+    value: Vec<u8>,
+    routing_slot: u32,
+}
+
 impl TemporalEngine {
     pub fn execute(&self, request: ExecuteRequest) -> ExecuteResponse {
         self.execute_with_storage_override(request, None)
@@ -9154,30 +9162,20 @@ fn execute_on_shard(
                 .or_default();
             let should_write_event =
                 !(first_write_only && event_series.contains_key(&event_timeline_key));
+            let mut pending_page_writes = Vec::new();
+            let mut pending_targets = Vec::new();
             if should_write_event {
-                let value = context_bytes(&event);
                 let routing_slot =
                     page_routing_slot(&event_object_key, start_routing_slot, end_routing_slot);
-                if let Ok(addresses) = append_timestamped_kv_pages(
-                    cache,
-                    page_store,
-                    shard_id,
-                    "context_event",
-                    &event_object_key,
-                    vec![FeaturePoint {
-                        timestamp_ms: event_timeline_key,
-                        value,
-                    }],
+                pending_page_writes.push(TimestampedPageBatchWrite {
+                    kind: "context_event",
+                    object_key: event_object_key.clone(),
+                    timestamp_ms: event_timeline_key,
+                    value: context_bytes(&event),
                     routing_slot,
-                    async_storage && !cold_storage,
-                ) {
-                    for (timestamp_ms, address) in addresses {
-                        event_series.insert(timestamp_ms, address);
-                        mutated = true;
-                    }
-                }
+                });
+                pending_targets.push((true, event_object_key.clone(), event_timeline_key));
             }
-            invalidate_record_all(cache, shard_id, &event_object_key);
 
             let index_ref = ContextIndexRef {
                 primary_node_hash: node_hash,
@@ -9185,7 +9183,6 @@ fn execute_on_shard(
                 event_id_hash: event.event_id_hash,
             };
             let mut index_object_keys = Vec::new();
-            let mut pending_index_writes = Vec::new();
             let mut collect_default_index =
                 |index_name: &str, value_hash: u64, index_time_ms: u64| {
                     if value_hash == 0 || index_time_ms == 0 {
@@ -9197,7 +9194,14 @@ fn execute_on_shard(
                     let value = context_bytes(&index_ref);
                     let routing_slot =
                         page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
-                    pending_index_writes.push((object_key, timeline_key, value, routing_slot));
+                    pending_page_writes.push(TimestampedPageBatchWrite {
+                        kind: "context_index",
+                        object_key: object_key.clone(),
+                        timestamp_ms: timeline_key,
+                        value,
+                        routing_slot,
+                    });
+                    pending_targets.push((false, object_key, timeline_key));
                 };
 
             if should_write_event {
@@ -9230,80 +9234,32 @@ fn execute_on_shard(
                     }
                 }
             }
-            if !pending_index_writes.is_empty() {
-                let async_index_storage = async_storage && !cold_storage;
-                let addresses = if async_index_storage {
-                    let start_offset = HOT_PAGE_OFFSET
-                        .fetch_add(pending_index_writes.len() as u64, Ordering::Relaxed);
-                    let mut page_cache_entries = Vec::with_capacity(pending_index_writes.len());
-                    let addresses = pending_index_writes
-                        .iter()
-                        .enumerate()
-                        .map(|(index, (object_key, timeline_key, value, routing_slot))| {
-                            let object_id =
-                                stable_page_object_id(shard_id, "context_index", object_key, None);
-                            let packed = encode_feature_page(&[FeaturePoint {
-                                timestamp_ms: *timeline_key,
-                                value: value.clone(),
-                            }]);
-                            let address = PageAddress {
-                                page_segment_id: HOT_PAGE_SEGMENT_ID,
-                                offset: start_offset.saturating_add(index as u64),
-                                length: packed.len() as u64,
-                                page_id: None,
-                                object_id: Some(object_id),
-                                routing_slot: Some(*routing_slot),
-                                generation: Some(object_id),
-                                extent_id: None,
-                                sha256: None,
-                            };
-                            page_cache_entries.push((
-                                CacheKey::page_with_slot_generation(
-                                    shard_id,
-                                    address.page_segment_id,
-                                    address.offset,
-                                    address.length,
-                                    address.routing_slot,
-                                    address.generation,
-                                ),
-                                packed,
-                            ));
-                            address
-                        })
-                        .collect::<Vec<_>>();
-                    cache.put_memory_only_batch(page_cache_entries);
-                    Some(addresses)
-                } else {
-                    let writes = pending_index_writes
-                        .iter()
-                        .map(|(object_key, timeline_key, value, routing_slot)| {
-                            let object_id =
-                                stable_page_object_id(shard_id, "context_index", object_key, None);
-                            (
-                                encode_feature_page(&[FeaturePoint {
-                                    timestamp_ms: *timeline_key,
-                                    value: value.clone(),
-                                }]),
-                                Some(object_id),
-                                Some(*routing_slot),
-                            )
-                        })
-                        .collect::<Vec<_>>();
-                    page_store.append_batch_with_page_metadata(writes).ok()
-                };
-                if let Some(addresses) = addresses {
-                    for ((object_key, timeline_key, _, _), address) in
-                        pending_index_writes.into_iter().zip(addresses)
-                    {
+            if let Some(addresses) = append_timestamped_single_pages_batch(
+                cache,
+                page_store,
+                shard_id,
+                &pending_page_writes,
+                async_storage && !cold_storage,
+            ) {
+                for ((is_event, object_key, timeline_key), address) in
+                    pending_targets.into_iter().zip(addresses)
+                {
+                    if is_event {
+                        shard
+                            .context_events
+                            .entry(object_key.clone())
+                            .or_default()
+                            .insert(timeline_key, address);
+                    } else {
                         shard
                             .context_indexes
                             .entry(object_key.clone())
                             .or_default()
                             .insert(timeline_key, address);
-                        invalidate_record_all(cache, shard_id, &object_key);
-                        index_object_keys.push(object_key);
-                        mutated = true;
+                        index_object_keys.push(object_key.clone());
                     }
+                    invalidate_record_all(cache, shard_id, &object_key);
+                    mutated = true;
                 }
             }
             CommandResponse::ContextExtractedEventWrite {
@@ -14464,6 +14420,77 @@ fn append_value(
         bytes,
     );
     Ok(address)
+}
+
+fn append_timestamped_single_pages_batch(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    writes: &[TimestampedPageBatchWrite],
+    async_storage: bool,
+) -> Option<Vec<PageAddress>> {
+    if writes.is_empty() {
+        return Some(Vec::new());
+    }
+    if !async_storage {
+        let append_records = writes
+            .iter()
+            .map(|write| {
+                let object_id =
+                    stable_page_object_id(shard_id, write.kind, &write.object_key, None);
+                (
+                    encode_feature_page(&[FeaturePoint {
+                        timestamp_ms: write.timestamp_ms,
+                        value: write.value.clone(),
+                    }]),
+                    Some(object_id),
+                    Some(write.routing_slot),
+                )
+            })
+            .collect::<Vec<_>>();
+        return page_store
+            .append_batch_with_page_metadata(append_records)
+            .ok();
+    }
+
+    let start_offset = HOT_PAGE_OFFSET.fetch_add(writes.len() as u64, Ordering::Relaxed);
+    let mut page_cache_entries = Vec::with_capacity(writes.len());
+    let addresses = writes
+        .iter()
+        .enumerate()
+        .map(|(index, write)| {
+            let object_id = stable_page_object_id(shard_id, write.kind, &write.object_key, None);
+            let packed = encode_feature_page(&[FeaturePoint {
+                timestamp_ms: write.timestamp_ms,
+                value: write.value.clone(),
+            }]);
+            let address = PageAddress {
+                page_segment_id: HOT_PAGE_SEGMENT_ID,
+                offset: start_offset.saturating_add(index as u64),
+                length: packed.len() as u64,
+                page_id: None,
+                object_id: Some(object_id),
+                routing_slot: Some(write.routing_slot),
+                generation: Some(object_id),
+                extent_id: None,
+                sha256: None,
+            };
+            page_cache_entries.push((
+                CacheKey::page_with_slot_generation(
+                    shard_id,
+                    address.page_segment_id,
+                    address.offset,
+                    address.length,
+                    address.routing_slot,
+                    address.generation,
+                ),
+                packed,
+            ));
+            address
+        })
+        .collect::<Vec<_>>();
+    cache.put_memory_only_batch(page_cache_entries);
+    Some(addresses)
 }
 
 fn hash_multiset_batch_memory_put_min() -> usize {
