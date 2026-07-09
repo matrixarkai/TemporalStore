@@ -410,6 +410,87 @@ class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
         self.assertEqual(snapshot["matrixark_append_coalescing"]["batches_total"], 3)
         self.assertEqual(snapshot["matrixark_append_coalescing"]["calls_total"], 3)
 
+    def test_rust_bridge_caches_record_count_get_string(self) -> None:
+        old_env = {key: os.environ.get(key) for key in ("MATRIXARK_RUST_PROXY_STRING_CACHE",)}
+        os.environ["MATRIXARK_RUST_PROXY_STRING_CACHE"] = "1"
+        try:
+            client = mcp.MatrixArkRustCliClient(
+                cli_path="matrixark_rust_proxy",
+                metaserver="127.0.0.1:18000",
+                namespace="ns",
+                table="table",
+                request_timeout_ms=10000,
+                io_timeout_ms=10000,
+            )
+            calls: list[dict] = []
+
+            def fake_call_json(op: str, **kwargs):
+                calls.append({"op": op, **kwargs})
+                return {"ok": True, "value": "42"}
+
+            client._call_json = fake_call_json  # type: ignore[method-assign]
+            self.assertEqual(client.get_string("matrixark:test:record_count"), "42")
+            self.assertEqual(client.get_string("matrixark:test:record_count"), "42")
+            snapshot = client.metrics_snapshot()
+        finally:
+            try:
+                client.close()  # type: ignore[name-defined]
+            except Exception:
+                pass
+            for key, value in old_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.assertEqual([call["op"] for call in calls], ["get_string"])
+        self.assertEqual(snapshot["string_cache"]["misses_total"], 1)
+        self.assertEqual(snapshot["string_cache"]["hits_total"], 1)
+        self.assertEqual(snapshot["string_cache"]["updates_total"], 1)
+
+    def test_rust_bridge_updates_record_count_cache_after_matrixark_append(self) -> None:
+        old_env = {key: os.environ.get(key) for key in ("MATRIXARK_RUST_PROXY_STRING_CACHE",)}
+        os.environ["MATRIXARK_RUST_PROXY_STRING_CACHE"] = "1"
+        try:
+            client = mcp.MatrixArkRustCliClient(
+                cli_path="matrixark_rust_proxy",
+                metaserver="127.0.0.1:18000",
+                namespace="ns",
+                table="table",
+                request_timeout_ms=10000,
+                io_timeout_ms=10000,
+            )
+            calls: list[dict] = []
+
+            def fake_call_json(op: str, **kwargs):
+                calls.append({"op": op, **kwargs})
+                return {"ok": True}
+
+            client._call_json = fake_call_json  # type: ignore[method-assign]
+            client.matrixark_batch_append_records(
+                [{"key": "records:000000", "field": "a", "value": "a"}],
+                count_key="matrixark:test:record_count",
+                count_value="7",
+                append_options={"append_path": "native_append_queue"},
+            )
+            self.assertEqual(client.get_string("matrixark:test:record_count"), "7")
+            snapshot = client.metrics_snapshot()
+        finally:
+            try:
+                client.close()  # type: ignore[name-defined]
+            except Exception:
+                pass
+            for key, value in old_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.assertEqual([call["op"] for call in calls], ["matrixark_batch_append_records"])
+        self.assertEqual(snapshot["string_cache"]["hits_total"], 1)
+        self.assertEqual(snapshot["string_cache"]["misses_total"], 0)
+        self.assertGreaterEqual(snapshot["string_cache"]["updates_total"], 1)
+
     def test_rust_bridge_can_opt_into_separate_read_write_pack_lanes(self) -> None:
         old_env = {
             key: os.environ.get(key)
