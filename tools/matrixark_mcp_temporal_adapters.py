@@ -4260,6 +4260,8 @@ class MatrixArkRustProxyClient:
     def _count_context_record(self, value: Any) -> None:
         if not isinstance(value, str) or not value.startswith("{"):
             return
+        if '"record_type"' not in value:
+            return
         try:
             payload = json.loads(value)
         except Exception:
