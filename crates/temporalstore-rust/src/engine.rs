@@ -7803,12 +7803,20 @@ fn execute_on_shard(
                 .features
                 .get(&key)
                 .map(|series| {
+                    let mut page_cache = HashMap::new();
                     series
                         .range(start_ms..=end_ms)
                         .take(count.unwrap_or(5000))
                         .filter_map(|(timestamp_ms, address)| {
-                            read_feature_point(cache, page_store, shard_id, *timestamp_ms, address)
-                                .map(|point| point.value)
+                            read_feature_point_cached(
+                                cache,
+                                page_store,
+                                shard_id,
+                                *timestamp_ms,
+                                address,
+                                &mut page_cache,
+                            )
+                            .map(|point| point.value)
                         })
                         .collect::<Vec<_>>()
                 })
@@ -8097,12 +8105,20 @@ fn execute_on_shard(
                 .ips
                 .get(&key)
                 .map(|series| {
+                    let mut page_cache = HashMap::new();
                     series
                         .iter()
                         .rev()
                         .take(count)
                         .filter_map(|(timestamp_ms, address)| {
-                            read_feature_point(cache, page_store, shard_id, *timestamp_ms, address)
+                            read_feature_point_cached(
+                                cache,
+                                page_store,
+                                shard_id,
+                                *timestamp_ms,
+                                address,
+                                &mut page_cache,
+                            )
                         })
                         .collect()
                 })
@@ -8140,17 +8156,19 @@ fn execute_on_shard(
                         .ips
                         .get(&key)
                         .map(|series| {
+                            let mut page_cache = HashMap::new();
                             series
                                 .iter()
                                 .rev()
                                 .take(count)
                                 .filter_map(|(timestamp_ms, address)| {
-                                    read_feature_point(
+                                    read_feature_point_cached(
                                         cache,
                                         page_store,
                                         shard_id,
                                         *timestamp_ms,
                                         address,
+                                        &mut page_cache,
                                     )
                                 })
                                 .collect()

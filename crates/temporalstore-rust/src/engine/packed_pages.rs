@@ -169,26 +169,6 @@ pub(super) fn decode_feature_page_strict(bytes: &[u8]) -> PackedFeaturePageDecod
     PackedFeaturePageDecode::Packed(page.points)
 }
 
-pub(super) fn read_feature_point(
-    cache: &MultiLayerCache,
-    block_store: &LocalBlockStore,
-    shard_id: ShardId,
-    timestamp_ms: u64,
-    address: &BlockAddress,
-) -> Option<FeaturePoint> {
-    let bytes = read_page_bytes(cache, block_store, shard_id, address)?;
-    match decode_feature_page_strict(&bytes) {
-        PackedFeaturePageDecode::Packed(points) => points
-            .into_iter()
-            .find(|point| point.timestamp_ms == timestamp_ms),
-        PackedFeaturePageDecode::Legacy => Some(FeaturePoint {
-            timestamp_ms,
-            value: bytes,
-        }),
-        PackedFeaturePageDecode::Corrupt(_) => None,
-    }
-}
-
 pub(super) fn read_feature_point_cold(
     block_store: &LocalBlockStore,
     timestamp_ms: u64,
