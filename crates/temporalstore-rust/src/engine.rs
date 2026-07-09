@@ -9757,10 +9757,8 @@ fn execute_on_shard(
             let cold_window_summaries = if cold_start_time_ms == 0 && cold_end_time_ms == 0 {
                 Vec::new()
             } else {
-                load_context_compression_events(
-                    cache,
+                load_context_compression_events_cold(
                     page_store,
-                    shard_id,
                     shard,
                     tenant_hash,
                     &[node_hash],
