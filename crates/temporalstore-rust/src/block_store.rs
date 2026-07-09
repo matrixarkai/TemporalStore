@@ -978,10 +978,11 @@ impl LocalBlockStore {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         let path = segment_path(&inner.root, page_segment_id);
         let segment = fs::read(path)?;
+        let physical_bytes_read = segment.len() as u64;
         let range = logical_range_from_segment(&segment, page_segment_id, offset, size)?;
         let bytes = range.bytes;
         inner.stats.reads += 1;
-        inner.stats.bytes_read += bytes.len() as u64;
+        inner.stats.bytes_read += physical_bytes_read;
         inner.stats.logical_bytes_read += bytes.len() as u64;
         inner.stats.compressed_records_read += range.compressed_records_read;
         Ok(bytes)
