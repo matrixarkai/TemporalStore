@@ -626,6 +626,14 @@ pub(super) fn load_context_children(
         .unwrap_or_default()
 }
 
+pub(super) fn context_child_refs_may_exist(shard: &ShardState, object_key: &str) -> bool {
+    shard
+        .context_children
+        .get(object_key)
+        .map(|series| !series.is_empty())
+        .unwrap_or(false)
+}
+
 pub(super) fn load_context_embedding(
     cache: &MultiLayerCache,
     page_store: &LocalPageStore,
@@ -894,8 +902,7 @@ pub(super) fn traverse_context_tree(
         let mut next_frontier = Vec::new();
         for node in scored_layer {
             let child_key = context_child_key(tenant_hash, node.node_hash);
-            let is_leaf =
-                load_context_children(cache, page_store, shard_id, shard, &child_key).is_empty();
+            let is_leaf = !context_child_refs_may_exist(shard, &child_key);
             next_frontier.push(node.clone());
             if !leaf_only || is_leaf {
                 results.push(node);
