@@ -9367,6 +9367,7 @@ fn execute_on_shard(
                     .unwrap_or_default()
             });
 
+            let mut page_cache = HashMap::new();
             for predicate in ordered_predicates {
                 let object_key = context_index_key(
                     tenant_hash,
@@ -9375,8 +9376,8 @@ fn execute_on_shard(
                     predicate.scope_hash,
                 );
                 let mut seen_for_predicate = HashMap::new();
+                let existing_candidates = candidate_refs.as_ref();
                 if let Some(series) = shard.context_indexes.get(&object_key) {
-                    let mut page_cache = HashMap::new();
                     for (timeline_key, address) in series.range(
                         context_timeline_start(predicate.start_time_ms)
                             ..context_timeline_end(predicate.end_time_ms),
@@ -9391,6 +9392,12 @@ fn execute_on_shard(
                         ) {
                             scanned_ref_count += 1;
                             let key = context_index_ref_identity(&index_ref);
+                            if existing_candidates
+                                .map(|existing| !existing.contains_key(&key))
+                                .unwrap_or(false)
+                            {
+                                continue;
+                            }
                             if seen_for_predicate.insert(key, index_ref).is_some() {
                                 deduped_ref_count += 1;
                             }
