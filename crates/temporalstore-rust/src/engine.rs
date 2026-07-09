@@ -9873,7 +9873,7 @@ fn execute_on_shard(
             let object_key = context_compression_key(tenant_hash, node_hash);
             let source_limit = context_limit(max_source_events);
             let source_scan_limit = source_limit.saturating_add(1);
-            let mut cold_page_cache = HashMap::new();
+            let mut cold_page_cache = ColdScanPackedPageCache::default();
             let mut selected = shard
                 .context_events
                 .get(&context_event_key(tenant_hash, node_hash))

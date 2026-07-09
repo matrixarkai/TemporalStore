@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use crate::block_store::{BlockAddress, BlockStoreError, LocalBlockStore};
 use crate::types::{FeaturePoint, ShardId};
@@ -10,6 +10,41 @@ use super::{append_value, read_page_bytes, read_page_bytes_cold, stable_page_obj
 use crate::storage_config::{cold_scan_no_cache_fill, context_page_target_bytes};
 
 const COLD_SCAN_PACKED_PAGE_CACHE_LIMIT: usize = 128;
+
+pub(super) struct ColdScanPackedPageCache {
+    pages: HashMap<BlockAddress, Option<Vec<FeaturePoint>>>,
+    order: VecDeque<BlockAddress>,
+    limit: usize,
+}
+
+impl Default for ColdScanPackedPageCache {
+    fn default() -> Self {
+        Self {
+            pages: HashMap::new(),
+            order: VecDeque::new(),
+            limit: COLD_SCAN_PACKED_PAGE_CACHE_LIMIT,
+        }
+    }
+}
+
+impl ColdScanPackedPageCache {
+    pub(super) fn get(&self, address: &BlockAddress) -> Option<&Option<Vec<FeaturePoint>>> {
+        self.pages.get(address)
+    }
+
+    pub(super) fn insert(&mut self, address: BlockAddress, points: Option<Vec<FeaturePoint>>) {
+        if !self.pages.contains_key(&address) {
+            while self.pages.len() >= self.limit {
+                let Some(evicted) = self.order.pop_front() else {
+                    break;
+                };
+                self.pages.remove(&evicted);
+            }
+            self.order.push_back(address.clone());
+        }
+        self.pages.insert(address, points);
+    }
+}
 
 pub(super) fn sorted_feature_points(mut points: Vec<FeaturePoint>) -> Vec<FeaturePoint> {
     if points
@@ -178,7 +213,7 @@ pub(super) fn read_feature_point_cold_with_cache_policy(
     shard_id: ShardId,
     timestamp_ms: u64,
     address: &BlockAddress,
-    packed_page_cache: &mut HashMap<BlockAddress, Option<Vec<FeaturePoint>>>,
+    packed_page_cache: &mut ColdScanPackedPageCache,
 ) -> Option<FeaturePoint> {
     if cold_scan_no_cache_fill() {
         return read_feature_point_cold_scan_cached(
@@ -196,13 +231,14 @@ pub(super) fn read_feature_point_cold_with_cache_policy(
             packed_page_cache,
         );
     };
+    let mut cache_fill_page_cache = HashMap::new();
     read_feature_point_cached(
         cache,
         block_store,
         shard_id,
         timestamp_ms,
         address,
-        packed_page_cache,
+        &mut cache_fill_page_cache,
     )
 }
 
@@ -210,7 +246,7 @@ pub(super) fn read_feature_point_cold_scan_cached(
     block_store: &LocalBlockStore,
     timestamp_ms: u64,
     address: &BlockAddress,
-    packed_page_cache: &mut HashMap<BlockAddress, Option<Vec<FeaturePoint>>>,
+    packed_page_cache: &mut ColdScanPackedPageCache,
 ) -> Option<FeaturePoint> {
     if let Some(points) = packed_page_cache.get(address) {
         return points
@@ -230,9 +266,6 @@ pub(super) fn read_feature_point_cold_scan_cached(
                 .iter()
                 .find(|point| point.timestamp_ms == timestamp_ms)
                 .cloned();
-            if packed_page_cache.len() >= COLD_SCAN_PACKED_PAGE_CACHE_LIMIT {
-                packed_page_cache.clear();
-            }
             packed_page_cache.insert(address.clone(), Some(points));
             selected
         }
@@ -241,9 +274,6 @@ pub(super) fn read_feature_point_cold_scan_cached(
             value: bytes,
         }),
         PackedFeaturePageDecode::Corrupt(_) => {
-            if packed_page_cache.len() >= COLD_SCAN_PACKED_PAGE_CACHE_LIMIT {
-                packed_page_cache.clear();
-            }
             packed_page_cache.insert(address.clone(), None);
             None
         }

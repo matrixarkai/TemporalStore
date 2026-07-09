@@ -11,7 +11,9 @@ use crate::types::{
 };
 use rustmtcache::MultiLayerCache;
 
-use super::packed_pages::{read_feature_point_cached, read_feature_point_cold_with_cache_policy};
+use super::packed_pages::{
+    read_feature_point_cached, read_feature_point_cold_with_cache_policy, ColdScanPackedPageCache,
+};
 use super::{read_page_bytes, stable_object_hash, ShardState};
 pub(super) fn context_node_key(tenant_hash: u64, node_hash: u64) -> String {
     format!("ctx:node:{tenant_hash}:{node_hash}")
@@ -163,7 +165,7 @@ pub(super) fn read_context_value_cold<T: ContextWire>(
     shard_id: ShardId,
     timeline_key: u64,
     address: &PageAddress,
-    packed_page_cache: &mut HashMap<PageAddress, Option<Vec<FeaturePoint>>>,
+    packed_page_cache: &mut ColdScanPackedPageCache,
 ) -> Option<T> {
     let point = read_feature_point_cold_with_cache_policy(
         cache,
@@ -780,7 +782,7 @@ pub(super) fn load_context_compression_events_cold(
     let trim_threshold = event_limit.saturating_mul(2).max(event_limit);
     let mut events = Vec::with_capacity(event_limit);
     let mut seen_nodes = HashSet::new();
-    let mut packed_page_cache = HashMap::new();
+    let mut packed_page_cache = ColdScanPackedPageCache::default();
     for node_hash in node_hashes
         .iter()
         .copied()
