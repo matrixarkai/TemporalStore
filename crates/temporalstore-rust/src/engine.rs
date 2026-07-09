@@ -13431,6 +13431,7 @@ fn compact_page_addresses<'a>(
     rewrite_stats: &mut CompactionRewriteStats,
 ) -> Result<(), Status> {
     for address in addresses {
+        let old_address = address.clone();
         let cold_page = !page_memory_resident(cache, shard_id, address);
         let bytes = read_page_bytes_cold(page_store, address).ok_or_else(|| {
             Status::error(
@@ -13442,6 +13443,7 @@ fn compact_page_addresses<'a>(
             .append_with_page_metadata(&bytes, address.object_id, address.routing_slot)
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
         *address = new_address.clone();
+        invalidate_page_addresses(cache, shard_id, vec![old_address]);
         if !cold_page {
             let _ = cache.put(
                 CacheKey::page_with_slot_generation(
@@ -13481,6 +13483,7 @@ fn compact_feature_page_addresses(
         let new_address = page_store
             .append_with_page_metadata(&bytes, old_address.object_id, old_address.routing_slot)
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
+        invalidate_page_addresses(cache, shard_id, vec![old_address.clone()]);
         if !cold_page {
             let _ = cache.put(
                 CacheKey::page_with_slot_generation(
