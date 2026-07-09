@@ -11758,6 +11758,13 @@ fn sync_slot_index_live_page_entries(
     shard_id: ShardId,
     entries: Vec<LivePageEntry>,
 ) {
+    if (shard.slot_index.object_page_lookup.is_empty()
+        || shard.slot_index.object_component_lookup.is_empty())
+        && !shard.slot_index.slot_map.is_empty()
+    {
+        shard.slot_index.rebuild_object_page_lookup();
+    }
+
     let mut object_pages = BTreeMap::<(String, String), Vec<PageAddress>>::new();
     for entry in entries {
         if let Some(component) = entry.component {
