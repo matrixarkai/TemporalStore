@@ -65,6 +65,15 @@ _SHARED_CORRECTNESS_EVIDENCE = {
 
 
 class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
+    def test_rust_proxy_context_record_counter_skips_non_context_json(self) -> None:
+        client = mcp.MatrixArkRustCliClient.__new__(mcp.MatrixArkRustCliClient)
+        client._context_record_counts = {}
+
+        client._count_context_record('{"payload":"raw-message"}')
+        client._count_context_record('{"record_type":"context_event","payload":"served"}')
+
+        self.assertEqual(client._context_record_counts, {"context_event": 1})
+
     def test_rust_proxy_breakdown_includes_dedicated_retrieve_client_metrics(self) -> None:
         breakdown = rust_proxy_breakdown_from_backend_metrics(
             {
