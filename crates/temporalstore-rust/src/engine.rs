@@ -10028,7 +10028,7 @@ fn mark_slot_index_object_deleted(
             update_slot_layout(slot);
         }
     }
-    if removed && !lookup_enabled {
+    if removed {
         shard.slot_index.rebuild_object_page_lookup();
     }
     invalidate_page_addresses(cache, shard_id, removed_addresses);
@@ -11889,7 +11889,7 @@ fn sync_slot_index_object_pages(
             .slot_map
             .retain(|_, slot| !slot.page_index.is_empty() || !slot.object_index.is_empty());
     }
-    if !lookup_enabled {
+    if removed_any || !lookup_enabled {
         shard.slot_index.rebuild_object_page_lookup();
     }
     invalidate_page_addresses_except(cache, shard_id, removed_addresses, live_address_keys);
