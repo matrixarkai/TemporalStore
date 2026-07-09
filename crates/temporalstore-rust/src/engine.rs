@@ -9693,10 +9693,14 @@ fn execute_on_shard(
             child_ref,
         } => {
             let object_key = context_child_key(tenant_hash, child_ref.parent_hash);
-            let existing = load_context_children(cache, page_store, shard_id, shard, &object_key);
-            let created = existing
-                .iter()
-                .all(|stored| stored.child_hash != child_ref.child_hash);
+            let created = !context_child_ref_exists(
+                cache,
+                page_store,
+                shard_id,
+                shard,
+                &object_key,
+                child_ref.child_hash,
+            );
             if created {
                 let timeline_key =
                     context_timeline_key(child_ref.updated_at_ms, child_ref.child_hash);
