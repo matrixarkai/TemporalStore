@@ -5931,19 +5931,16 @@ impl TemporalEngine {
             return Err(Status::error("shard_not_loaded", "shard is not loaded"));
         };
         let now = now_ms();
-        let mut hot_keys = shard
-            .expires_at_ms
-            .iter()
-            .filter(|(key, _)| record_exists(shard, key))
-            .map(|(key, expires_at)| (key.clone(), *expires_at))
-            .collect::<Vec<_>>();
+        let mut hot_keys = Vec::new();
+        let mut cold_keys = Vec::new();
+        for (key, expires_at) in &shard.expires_at_ms {
+            if record_exists(shard, key) {
+                hot_keys.push((key.clone(), *expires_at));
+            } else {
+                cold_keys.push((key.clone(), *expires_at));
+            }
+        }
         hot_keys.sort_by(|left, right| left.0.cmp(&right.0));
-        let mut cold_keys = shard
-            .expires_at_ms
-            .iter()
-            .filter(|(key, _)| !record_exists(shard, key))
-            .map(|(key, expires_at)| (key.clone(), *expires_at))
-            .collect::<Vec<_>>();
         cold_keys.sort_by(|left, right| left.0.cmp(&right.0));
 
         let hot_limit = request.max_hot_slots_per_round;
