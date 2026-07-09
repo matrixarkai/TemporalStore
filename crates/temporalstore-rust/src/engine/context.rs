@@ -711,7 +711,9 @@ pub(super) fn load_context_compression_events(
     end_time_ms: u64,
     limit: Option<usize>,
 ) -> Vec<ContextCompressionEvent> {
-    let mut events = Vec::new();
+    let event_limit = context_limit(limit);
+    let trim_threshold = event_limit.saturating_mul(2).max(event_limit);
+    let mut events = Vec::with_capacity(event_limit);
     let mut seen_nodes = HashSet::new();
     let mut page_cache = HashMap::new();
     for node_hash in node_hashes
@@ -721,7 +723,7 @@ pub(super) fn load_context_compression_events(
     {
         let object_key = context_compression_key(tenant_hash, node_hash);
         if let Some(series) = shard.context_compressions.get(&object_key) {
-            events.extend(series.iter().filter_map(|(timeline_key, address)| {
+            for event in series.iter().filter_map(|(timeline_key, address)| {
                 read_context_value_cached::<ContextCompressionEvent>(
                     cache,
                     page_store,
@@ -733,17 +735,15 @@ pub(super) fn load_context_compression_events(
                 .filter(|event| {
                     event.source_end_ms >= start_time_ms && event.source_start_ms <= end_time_ms
                 })
-            }));
+            }) {
+                events.push(event);
+                if events.len() > trim_threshold {
+                    sort_truncate_context_compression_events(&mut events, event_limit);
+                }
+            }
         }
     }
-    events.sort_by(|left, right| {
-        right
-            .source_end_ms
-            .cmp(&left.source_end_ms)
-            .then_with(|| right.compressed_time_ms.cmp(&left.compressed_time_ms))
-            .then_with(|| left.compression_id_hash.cmp(&right.compression_id_hash))
-    });
-    events.truncate(context_limit(limit));
+    sort_truncate_context_compression_events(&mut events, event_limit);
     events
 }
 
@@ -756,7 +756,9 @@ pub(super) fn load_context_compression_events_cold(
     end_time_ms: u64,
     limit: Option<usize>,
 ) -> Vec<ContextCompressionEvent> {
-    let mut events = Vec::new();
+    let event_limit = context_limit(limit);
+    let trim_threshold = event_limit.saturating_mul(2).max(event_limit);
+    let mut events = Vec::with_capacity(event_limit);
     let mut seen_nodes = HashSet::new();
     for node_hash in node_hashes
         .iter()
@@ -765,7 +767,7 @@ pub(super) fn load_context_compression_events_cold(
     {
         let object_key = context_compression_key(tenant_hash, node_hash);
         if let Some(series) = shard.context_compressions.get(&object_key) {
-            events.extend(series.iter().filter_map(|(timeline_key, address)| {
+            for event in series.iter().filter_map(|(timeline_key, address)| {
                 read_context_value_cold::<ContextCompressionEvent>(
                     page_store,
                     *timeline_key,
@@ -774,9 +776,22 @@ pub(super) fn load_context_compression_events_cold(
                 .filter(|event| {
                     event.source_end_ms >= start_time_ms && event.source_start_ms <= end_time_ms
                 })
-            }));
+            }) {
+                events.push(event);
+                if events.len() > trim_threshold {
+                    sort_truncate_context_compression_events(&mut events, event_limit);
+                }
+            }
         }
     }
+    sort_truncate_context_compression_events(&mut events, event_limit);
+    events
+}
+
+fn sort_truncate_context_compression_events(
+    events: &mut Vec<ContextCompressionEvent>,
+    limit: usize,
+) {
     events.sort_by(|left, right| {
         right
             .source_end_ms
@@ -784,8 +799,7 @@ pub(super) fn load_context_compression_events_cold(
             .then_with(|| right.compressed_time_ms.cmp(&left.compressed_time_ms))
             .then_with(|| left.compression_id_hash.cmp(&right.compression_id_hash))
     });
-    events.truncate(context_limit(limit));
-    events
+    events.truncate(limit);
 }
 
 pub(super) fn cosine_similarity(left: &[f32], right: &[f32]) -> f32 {
