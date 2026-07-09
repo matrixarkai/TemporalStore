@@ -9741,6 +9741,7 @@ fn execute_on_shard(
         } => {
             let object_key = context_compression_key(tenant_hash, node_hash);
             let source_limit = context_limit(max_source_events);
+            let source_scan_limit = source_limit.saturating_add(1);
             let mut selected = shard
                 .context_events
                 .get(&context_event_key(tenant_hash, node_hash))
@@ -9760,6 +9761,7 @@ fn execute_on_shard(
                         .filter(|event| {
                             event.confidence >= min_confidence && event.importance >= min_importance
                         })
+                        .take(source_scan_limit)
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
