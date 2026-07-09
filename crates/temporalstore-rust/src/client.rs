@@ -5,6 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use thiserror::Error;
 
 use crate::http::{
@@ -78,6 +79,56 @@ pub struct MatrixArkRecordAppend {
     pub key: String,
     pub field: String,
     pub value: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MatrixArkRetrieveContextPackRequest {
+    #[serde(default)]
+    pub metaserver: String,
+    #[serde(default)]
+    pub namespace: String,
+    #[serde(default)]
+    pub table: String,
+    pub storage_prefix: String,
+    pub query: String,
+    #[serde(default)]
+    pub max_selected_refs: usize,
+    #[serde(default)]
+    pub record: Value,
+    #[serde(default)]
+    pub scope: Option<Value>,
+    #[serde(default)]
+    pub secondary_index_groups: Vec<Vec<String>>,
+    #[serde(default)]
+    pub top_level_response: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct MatrixArkRecordLogRetrieveRequest {
+    op: &'static str,
+    metaserver: String,
+    namespace: String,
+    table: String,
+    storage_prefix: String,
+    query: String,
+    max_selected_refs: usize,
+    record: Value,
+    scope: Option<Value>,
+    secondary_index_groups: Vec<Vec<String>>,
+    top_level_response: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct MatrixArkRecordLogResponse {
+    ok: bool,
+    #[serde(default)]
+    value: String,
+    #[serde(default)]
+    error: String,
+    #[serde(default)]
+    error_code: String,
+    #[serde(flatten)]
+    extra: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1840,6 +1891,57 @@ impl TemporalStoreClient {
             }
         }
         Ok(record_count)
+    }
+
+    pub fn matrixark_retrieve_context_pack_request_json(
+        &self,
+        request: MatrixArkRetrieveContextPackRequest,
+    ) -> Result<String, ClientError> {
+        let metaserver = if request.metaserver.trim().is_empty() {
+            self.inner.options.proxy_addr.clone()
+        } else {
+            request.metaserver
+        };
+        serde_json::to_string(&MatrixArkRecordLogRetrieveRequest {
+            op: "matrixark_retrieve_context_pack",
+            metaserver,
+            namespace: request.namespace,
+            table: request.table,
+            storage_prefix: request.storage_prefix,
+            query: request.query,
+            max_selected_refs: request.max_selected_refs,
+            record: request.record,
+            scope: request.scope,
+            secondary_index_groups: request.secondary_index_groups,
+            top_level_response: request.top_level_response,
+        })
+        .map_err(|err| ClientError::InvalidRequest(err.to_string()))
+    }
+
+    pub fn parse_matrixark_retrieve_context_pack_response(
+        &self,
+        response_line: &str,
+    ) -> Result<Value, ClientError> {
+        let response: MatrixArkRecordLogResponse = serde_json::from_str(response_line)
+            .map_err(|err| ClientError::InvalidRequest(err.to_string()))?;
+        if !response.ok {
+            let code = if response.error_code.is_empty() {
+                "matrixark_retrieve_context_pack_failed"
+            } else {
+                response.error_code.as_str()
+            };
+            return Err(ClientError::Status(format!("{code}: {}", response.error)));
+        }
+        if let Some(pack) = response.extra.get("context_pack") {
+            return Ok(pack.clone());
+        }
+        if response.value.trim().is_empty() {
+            return Err(ClientError::Status(
+                "matrixark context pack missing".to_string(),
+            ));
+        }
+        serde_json::from_str(&response.value)
+            .map_err(|err| ClientError::InvalidRequest(err.to_string()))
     }
 
     pub fn batch_execute_with_options(

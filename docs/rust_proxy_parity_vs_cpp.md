@@ -47,6 +47,8 @@ The Rust SDK proxy client now exposes direct-method parity for common C++ client
 - `expire`
 - `ttl`
 - `matrixark_batch_append_records`
+- `matrixark_retrieve_context_pack_request_json`
+- `parse_matrixark_retrieve_context_pack_response`
 
 These helpers call the `/ProxyService/...` routes and parse native proxy responses. The Rust proxy surface intentionally excludes the old C++ frontend `/v1/string/...` and `/v1/common/...` aliases.
 
@@ -61,5 +63,4 @@ For MatrixArk production workloads:
 
 ## Remaining Work
 
-- Add typed Rust SDK helper for native `matrixark_retrieve_context_pack` when the Rust proxy API stabilizes.
 - Keep direct Rust SDK/C ABI parity as an embedded/local optimization alongside the proxy path.

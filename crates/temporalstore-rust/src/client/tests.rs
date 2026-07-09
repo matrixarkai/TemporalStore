@@ -2567,6 +2567,50 @@ fn matrixark_batch_append_records_uses_proxy_table_batch_route() {
     );
 }
 
+#[test]
+fn matrixark_retrieve_context_pack_helper_uses_record_log_protocol() {
+    let client = TemporalStoreClient::with_options(ClientOptions {
+        proxy_addr: "127.0.0.1:17000".to_string(),
+        ..ClientOptions::default()
+    });
+    let request_json = client
+        .matrixark_retrieve_context_pack_request_json(MatrixArkRetrieveContextPackRequest {
+            metaserver: String::new(),
+            namespace: "matrixark".to_string(),
+            table: "records".to_string(),
+            storage_prefix: "tenant-a:session-a".to_string(),
+            query: "who owns gpu procurement".to_string(),
+            max_selected_refs: 8,
+            record: serde_json::json!({
+                "query": "who owns gpu procurement",
+                "ranking": {"max_selected_refs": 8}
+            }),
+            scope: Some(serde_json::json!(["tenant-a", "session-a"])),
+            secondary_index_groups: vec![vec!["keyword:gpu".to_string()]],
+            top_level_response: true,
+        })
+        .expect("record-log request json");
+    let envelope: serde_json::Value = serde_json::from_str(&request_json).unwrap();
+    assert_eq!(envelope["op"], "matrixark_retrieve_context_pack");
+    assert_eq!(envelope["metaserver"], "127.0.0.1:17000");
+    assert_eq!(envelope["storage_prefix"], "tenant-a:session-a");
+    assert!(envelope["top_level_response"].as_bool().unwrap());
+
+    let response = serde_json::json!({
+        "ok": true,
+        "op": "matrixark_retrieve_context_pack",
+        "context_pack": {
+            "native_context_pack": true,
+            "selected_refs": [{"ref_hash": "r1"}]
+        }
+    });
+    let pack = client
+        .parse_matrixark_retrieve_context_pack_response(&response.to_string())
+        .expect("context pack response");
+    assert!(pack["native_context_pack"].as_bool().unwrap());
+    assert_eq!(pack["selected_refs"][0]["ref_hash"], "r1");
+}
+
 fn key_for_shard(table: &TemporalStoreTable, shard_id: ShardId) -> String {
     (0..10_000)
         .map(|index| format!("key-{shard_id}-{index}"))
