@@ -2155,14 +2155,14 @@ impl DataNodeRuntime {
                 stats.storage_manager_reclaim_oplog_runs += 1;
             }
             lifecycle_report = Some(response.report);
-            executed_stages.push("reclaim_oplog".to_string());
+            executed_stages.push("reclaim".to_string());
         } else if !options.enable_oplog_reclaim {
-            skipped_stages.push("reclaim_oplog_disabled".to_string());
+            skipped_stages.push("reclaim_disabled".to_string());
         } else {
-            skipped_stages.push("reclaim_oplog_no_pressure".to_string());
+            skipped_stages.push("reclaim_no_pressure".to_string());
         }
         pressure_decisions.push(storage_manager_pressure_decision(
-            "reclaim_oplog",
+            "reclaim",
             options.enable_oplog_reclaim,
             dump_pressure,
             options.enable_oplog_reclaim && dump_pressure,
@@ -2188,11 +2188,7 @@ impl DataNodeRuntime {
                     "undumped_oplog_pressure",
                 ),
             ]),
-            storage_manager_skip_reason(
-                options.enable_oplog_reclaim,
-                dump_pressure,
-                "reclaim_oplog",
-            ),
+            storage_manager_skip_reason(options.enable_oplog_reclaim, dump_pressure, "reclaim"),
         ));
 
         if options.enable_memory_reclaim && cache_pressure {
@@ -2319,14 +2315,14 @@ impl DataNodeRuntime {
                 .lock()
                 .expect("runtime stats lock poisoned")
                 .storage_manager_reclaim_page_runs += 1;
-            executed_stages.push("reclaim_page".to_string());
+            executed_stages.push("page_gc".to_string());
         } else if !options.enable_page_gc {
-            skipped_stages.push("reclaim_page_disabled".to_string());
+            skipped_stages.push("page_gc_disabled".to_string());
         } else {
-            skipped_stages.push("reclaim_page_no_pressure".to_string());
+            skipped_stages.push("page_gc_no_pressure".to_string());
         }
         pressure_decisions.push(storage_manager_pressure_decision(
-            "reclaim_page",
+            "page_gc",
             options.enable_page_gc,
             stale_page_pressure,
             options.enable_page_gc && stale_page_pressure,
@@ -2362,11 +2358,7 @@ impl DataNodeRuntime {
                     "reclaimable_physical_bytes_pressure",
                 ),
             ]),
-            storage_manager_skip_reason(
-                options.enable_page_gc,
-                stale_page_pressure,
-                "reclaim_page",
-            ),
+            storage_manager_skip_reason(options.enable_page_gc, stale_page_pressure, "page_gc"),
         ));
 
         if options.enable_page_compaction && stale_page_pressure {
@@ -2380,14 +2372,14 @@ impl DataNodeRuntime {
                 .lock()
                 .expect("runtime stats lock poisoned")
                 .storage_manager_compact_runs += 1;
-            executed_stages.push("compact_pages".to_string());
+            executed_stages.push("compaction".to_string());
         } else if !options.enable_page_compaction {
-            skipped_stages.push("compact_pages_disabled".to_string());
+            skipped_stages.push("compaction_disabled".to_string());
         } else {
-            skipped_stages.push("compact_pages_no_pressure".to_string());
+            skipped_stages.push("compaction_no_pressure".to_string());
         }
         pressure_decisions.push(storage_manager_pressure_decision(
-            "compact_pages",
+            "compaction",
             options.enable_page_compaction,
             stale_page_pressure,
             options.enable_page_compaction && stale_page_pressure,
@@ -2426,7 +2418,7 @@ impl DataNodeRuntime {
             storage_manager_skip_reason(
                 options.enable_page_compaction,
                 stale_page_pressure,
-                "compact_pages",
+                "compaction",
             ),
         ));
 
