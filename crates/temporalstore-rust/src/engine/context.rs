@@ -743,17 +743,23 @@ pub(super) fn load_latest_context_summary(
     object_key: &str,
     as_of_ms: u64,
 ) -> Option<ContextSummary> {
-    load_context_summaries(
-        cache,
-        page_store,
-        shard_id,
-        shard,
-        object_key,
-        as_of_ms,
-        Some(1),
-    )
-    .into_iter()
-    .next()
+    shard.context_summaries.get(object_key).and_then(|series| {
+        let mut page_cache = HashMap::new();
+        series
+            .range(0..context_timeline_end(as_of_ms))
+            .rev()
+            .filter_map(|(timeline_key, address)| {
+                read_context_value_cached::<ContextSummary>(
+                    cache,
+                    page_store,
+                    shard_id,
+                    *timeline_key,
+                    address,
+                    &mut page_cache,
+                )
+            })
+            .find(|summary| summary.valid_from_ms <= as_of_ms)
+    })
 }
 
 pub(super) fn load_context_compression_events(
