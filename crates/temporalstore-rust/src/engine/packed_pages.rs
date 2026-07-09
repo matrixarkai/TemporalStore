@@ -162,7 +162,9 @@ pub(super) fn append_timestamped_kv_pages(
                 .map(|point| (point.timestamp_ms, address.clone())),
         );
     }
-    cache.put_memory_only_batch(page_cache_entries);
+    for (key, bytes) in page_cache_entries {
+        cache.put_memory_only(key, bytes);
+    }
     Ok(refs)
 }
 

@@ -445,7 +445,7 @@ impl LocalWriteAheadLogStore {
         shard_id: ShardId,
         retain_from_sequence: u64,
     ) -> Result<WriteAheadLogGcReport, WriteAheadLogError> {
-        let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         fs::create_dir_all(&inner.root)?;
         let path = write_ahead_log_path(&inner.root, shard_id);
         if !path.exists() {
@@ -487,6 +487,8 @@ impl LocalWriteAheadLogStore {
         fs::rename(&temp_path, &path)?;
         sync_parent_dir(&path)?;
         let bytes_after = path.metadata()?.len();
+        inner.stats.bytes_written = bytes_after;
+        inner.stats.persistent_bytes = bytes_after;
         Ok(WriteAheadLogGcReport {
             shard_id,
             retain_from_sequence,
