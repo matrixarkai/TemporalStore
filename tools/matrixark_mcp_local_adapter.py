@@ -693,8 +693,19 @@ class MatrixArkLocalAdapter:
             }
         )
 
-    def session_buffer_enabled(self, args: Json) -> bool:
-        return bool(args.get("session_buffer_enabled", False) or args.get("auto_batch_extract", False))
+    def session_buffer_enabled(self, args: Json, *, kind: str = "message") -> bool:
+        if kind not in {"message", "business_data", "feedback"}:
+            return bool(args.get("session_buffer_enabled", False) or args.get("auto_batch_extract", False))
+        if args.get("session_buffer_enabled") is False or args.get("auto_batch_extract") is False:
+            return False
+        return True
+
+    def auto_batch_extract_enabled(self, args: Json, *, kind: str = "message") -> bool:
+        if kind not in {"message", "business_data", "feedback"}:
+            return bool(args.get("auto_batch_extract", False))
+        if args.get("auto_batch_extract") is False or args.get("session_buffer_enabled") is False:
+            return False
+        return True
 
     def default_session_node_path(self, scope: Json) -> list[str]:
         tenant_id = str(scope.get("tenant_id") or "tenant_local_agent")
@@ -2252,7 +2263,9 @@ class MatrixArkLocalAdapter:
                 hook=hook,
             )
         lightweight_async_accept = envelope["kind"] in {"message", "business_data", "feedback"} and (
-            bool(args.get("async_processing", False)) or args.get("wait") is False
+            bool(args.get("async_processing", False))
+            or args.get("wait") is False
+            or self.auto_batch_extract_enabled(args, kind=envelope["kind"])
         )
         if lightweight_async_accept:
             text = text_from_messages(envelope["messages"])
@@ -2302,7 +2315,7 @@ class MatrixArkLocalAdapter:
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
-                if self.session_buffer_enabled(args):
+                if self.session_buffer_enabled(args, kind=envelope["kind"]):
                     self.append_session_buffer_event(envelope=envelope, event_id_hash=event_id_hash, node_hash=node_hash, node_path=node_path, hook=hook)
                 self.append(
                     {
@@ -2319,8 +2332,34 @@ class MatrixArkLocalAdapter:
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
-            session_buffer_enabled = self.session_buffer_enabled(args)
+            session_buffer_enabled = self.session_buffer_enabled(args, kind=envelope["kind"])
             pending_event_count = len(self.pending_session_events(envelope["scope"])) if session_buffer_enabled else 0
+            auto_batch_extract = self.auto_batch_extract_enabled(args, kind=envelope["kind"])
+            auto_batch_result: Json | None = None
+            session_buffer_threshold = args.get("session_buffer_threshold", 20)
+            if not isinstance(session_buffer_threshold, int) or session_buffer_threshold <= 0:
+                raise MatrixArkError("session_buffer_threshold must be a positive integer")
+            if auto_batch_extract and pending_event_count >= session_buffer_threshold:
+                auto_batch_result = self.session_commit(
+                    {
+                        "scope": envelope["scope"],
+                        "metadata": envelope["metadata"],
+                        "threshold_messages": session_buffer_threshold,
+                        "force": False,
+                        "max_messages": session_buffer_threshold,
+                        "commit_reason": "threshold",
+                        "understanding_provider": args.get("understanding_provider"),
+                        "extraction_provider": args.get("extraction_provider"),
+                        "segment_provider": args.get("segment_provider"),
+                        "segment_model": args.get("segment_model"),
+                        "segment_model_path": args.get("segment_model_path"),
+                        "segment_max_new_tokens": args.get("segment_max_new_tokens"),
+                        "segment_provider_fallback": args.get("segment_provider_fallback"),
+                        "skip_prior_context": bool(args.get("skip_prior_context", False)),
+                        "storage_options": envelope.get("storage_options", {}),
+                    },
+                    hook=hook,
+                )
             return {
                 "status": "accepted",
                 "sync_write_mode": "lightweight_event",
@@ -2342,9 +2381,10 @@ class MatrixArkLocalAdapter:
                     "enabled": session_buffer_enabled,
                     "buffer_key": list(session_buffer_key(envelope)),
                     "pending_event_count": pending_event_count,
-                    "threshold_messages": args.get("session_buffer_threshold", 20),
-                    "auto_batch_extract": bool(args.get("auto_batch_extract", False)),
+                    "threshold_messages": session_buffer_threshold,
+                    "auto_batch_extract": auto_batch_extract,
                 },
+                "auto_batch_extract_result": auto_batch_result,
                 "idle_commit_result": idle_commit_result,
                 "quality_warnings": ["async_processing_pending:extraction,summary,compression,embedding"],
             }
@@ -3315,7 +3355,7 @@ class MatrixArkLocalAdapter:
                 )
             if event_index_records:
                 self.append_many(event_index_records)
-            if self.session_buffer_enabled(args):
+            if self.session_buffer_enabled(args, kind=envelope["kind"]):
                 self.append_session_buffer_event(envelope=envelope, event_id_hash=event_id_hash, node_hash=node_hash, node_path=node_path, hook=hook)
             summary_refresh = self.append_node_summary_embeddings(
                 node_path=node_path,
@@ -3325,10 +3365,10 @@ class MatrixArkLocalAdapter:
                 source_hash_field="source_event_hash",
                 source_hash=event_id_hash,
             )
-        session_buffer_enabled = self.session_buffer_enabled(args)
+        session_buffer_enabled = self.session_buffer_enabled(args, kind=envelope["kind"])
         pending_event_count = len(self.pending_session_events(envelope["scope"])) if session_buffer_enabled else 0
         auto_batch_result: Json | None = None
-        auto_batch_extract = bool(args.get("auto_batch_extract", False))
+        auto_batch_extract = self.auto_batch_extract_enabled(args, kind=envelope["kind"])
         session_buffer_threshold = args.get("session_buffer_threshold", 20)
         if not isinstance(session_buffer_threshold, int) or session_buffer_threshold <= 0:
             raise MatrixArkError("session_buffer_threshold must be a positive integer")

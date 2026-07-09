@@ -84,7 +84,7 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
             self.assertIn("Claude owns the GPU release checklist", event.get("text", ""))
             self.assertIn("scope_key", event)
             self.assertTrue(any(record.get("record_type") == "context_summary_dirty" for record in records))
-            self.assertFalse(any(record.get("record_type") == "session_buffer_event" for record in records))
+            self.assertTrue(any(record.get("record_type") == "session_buffer_event" for record in records))
 
     def test_openclaw_resource_hook_imports_resource_with_agent_scope(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

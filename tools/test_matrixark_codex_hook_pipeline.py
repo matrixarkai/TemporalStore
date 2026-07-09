@@ -91,6 +91,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                         "session_id": "session_batch",
                     },
                     "metadata": {"node_path": ["tenant:tenant_batch", "user:user_batch", "session:session_batch"]},
+                    "session_buffer_enabled": False,
+                    "auto_batch_extract": False,
                 },
             )
             self.assertEqual("accepted", result["status"])
@@ -108,7 +110,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(all(isinstance(record.get("ref_hashes"), list) for record in index_records))
             self.assertTrue(all("index_hash" not in record for record in index_records))
 
-    def test_message_ingest_writes_session_buffer_only_when_enabled(self) -> None:
+    def test_message_ingest_writes_session_buffer_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             event_log = Path(tmp_dir) / "matrixark-message-session-buffer.jsonl"
             adapter = CountingLocalAdapter(event_log)
@@ -124,15 +126,19 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                         "session_id": "session_batch",
                     },
                     "metadata": {"node_path": ["tenant:tenant_batch", "user:user_batch", "session:session_batch"]},
-                    "session_buffer_enabled": True,
                 },
             )
             self.assertEqual("accepted", result["status"])
+            self.assertEqual("lightweight_event", result["sync_write_mode"])
+            self.assertEqual("async_pending", result["extraction_mode"])
             self.assertTrue(result["session_buffer"]["enabled"])
+            self.assertTrue(result["session_buffer"]["auto_batch_extract"])
             records = adapter.read_all()
             self.assertTrue(any(record.get("record_type") == "session_buffer_event" for record in records))
+            self.assertTrue(any(record.get("record_type") == "context_event" for record in records))
+            self.assertFalse(any(record.get("record_type") == "context_embedding" for record in records))
 
-    def test_message_ingest_does_not_buffer_session_by_default(self) -> None:
+    def test_message_ingest_can_opt_out_of_session_buffering(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             event_log = Path(tmp_dir) / "matrixark-message-no-session-buffer.jsonl"
             adapter = CountingLocalAdapter(event_log)
@@ -148,6 +154,8 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                         "session_id": "session_immediate",
                     },
                     "metadata": {"node_path": ["tenant:tenant_immediate", "user:user_immediate", "session:session_immediate"]},
+                    "session_buffer_enabled": False,
+                    "auto_batch_extract": False,
                 },
             )
             self.assertEqual("accepted", result["status"])
@@ -155,6 +163,32 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             records = adapter.read_all()
             self.assertTrue(any(record.get("record_type") == "context_event" for record in records))
             self.assertFalse(any(record.get("record_type") == "session_buffer_event" for record in records))
+
+    def test_default_session_buffer_commits_at_vikingmem_threshold(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            event_log = Path(tmp_dir) / "matrixark-vikingmem-threshold.jsonl"
+            adapter = CountingLocalAdapter(event_log)
+            server = MatrixArkMcpServer(adapter, line_json=True, access_mode="dev")
+            result = {}
+            for index in range(20):
+                result = server.call_tool(
+                    "matrixark_ingest",
+                    {
+                        "messages": [{"role": "user", "content": f"Threshold batch message {index}."}],
+                        "scope": {
+                            "account_id": "acct_threshold",
+                            "tenant_id": "tenant_threshold",
+                            "user_id": "user_threshold",
+                            "session_id": "session_threshold",
+                        },
+                        "metadata": {"node_path": ["tenant:tenant_threshold", "user:user_threshold", "session:session_threshold"]},
+                    },
+                )
+            self.assertEqual("accepted", result["status"])
+            self.assertEqual("committed", result["auto_batch_extract_result"]["status"])
+            self.assertEqual(20, result["auto_batch_extract_result"]["committed_event_count"])
+            records = adapter.read_all()
+            self.assertTrue(any(record.get("record_type") == "context_batch_commit" for record in records))
 
     def test_batch_extract_events_are_timestamp_keyed_under_segment_parent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
