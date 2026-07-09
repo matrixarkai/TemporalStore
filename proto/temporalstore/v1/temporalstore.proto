@@ -248,6 +248,9 @@ message Command {
     HashLen hash_len = 24;
     SetRemove set_remove = 25;
     CommonTtl common_ttl = 26;
+    FeatureReplace feature_replace = 27;
+    FeatureDelete feature_delete = 28;
+    FeatureAggQuery feature_agg_query = 29;
   }
 }
 
@@ -344,6 +347,25 @@ message FeatureQuery {
   uint64 start_ms = 2;
   uint64 end_ms = 3;
   uint32 limit = 4;
+}
+
+message FeatureReplace {
+  string key = 1;
+  uint64 start_ms = 2;
+  uint64 end_ms = 3;
+  repeated FeaturePoint points = 4;
+}
+
+message FeatureDelete {
+  string key = 1;
+}
+
+message FeatureAggQuery {
+  string key = 1;
+  uint64 start_ms = 2;
+  uint64 end_ms = 3;
+  string aggregator = 4;
+  uint32 limit = 5;
 }
 
 message SequenceFeatureRow {
