@@ -10036,6 +10036,9 @@ fn mark_slot_index_object_deleted(
 }
 
 fn slot_index_target_slots_for_object_key(shard: &ShardState, key: &str) -> BTreeSet<u32> {
+    if let Some(slots) = shard.slot_index.routing_slots_for_object_key(key) {
+        return slots;
+    }
     if shard.slot_index.object_component_lookup.is_empty() {
         return shard.slot_index.slot_map.keys().copied().collect();
     }

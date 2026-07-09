@@ -322,6 +322,15 @@ impl CoreIndex {
         })
     }
 
+    pub(super) fn routing_slots_for_object_key(&self, object_key: &str) -> Option<BTreeSet<u32>> {
+        self.object_key_lookup.get(object_key).map(|page_refs| {
+            page_refs
+                .iter()
+                .map(|page_ref| page_ref.routing_slot)
+                .collect()
+        })
+    }
+
     pub(super) fn contains_object_page_address(
         &self,
         model_id: &str,
