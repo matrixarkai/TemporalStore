@@ -326,7 +326,13 @@ impl CoreIndex {
         self.object_key_lookup.get(object_key).map(|page_refs| {
             page_refs
                 .iter()
-                .map(|page_ref| page_ref.routing_slot)
+                .filter_map(|page_ref| {
+                    self.slot_map
+                        .get(&page_ref.routing_slot)
+                        .and_then(|slot| slot.page_index.get(&page_ref.page_ref_key))
+                        .filter(|page| !page.deleted && page.object_key == object_key)
+                        .map(|_| page_ref.routing_slot)
+                })
                 .collect()
         })
     }
