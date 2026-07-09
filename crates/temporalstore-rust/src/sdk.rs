@@ -483,6 +483,39 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             end_ms: command.end_ms,
             aggregator: command.family,
         },
+        v1::command::Kind::RiskFamilySet(command) => types::Command::RiskSet {
+            family: sdk_risk_family_to_types(command.family)?,
+            key: command.key,
+            timestamp_ms: command.timestamp_ms,
+            amount: command.amount,
+        },
+        v1::command::Kind::RiskFamilyQuery(command) => types::Command::RiskFamilyQuery {
+            family: sdk_risk_family_to_types(command.family)?,
+            key: command.key,
+            start_ms: command.start_ms,
+            end_ms: command.end_ms,
+            aggregator: command.aggregator,
+        },
+        v1::command::Kind::RiskFamilySetAndGet(command) => types::Command::RiskSetAndGet {
+            family: sdk_risk_family_to_types(command.family)?,
+            key: command.key,
+            timestamp_ms: command.timestamp_ms,
+            amount: command.amount,
+            start_ms: command.start_ms,
+            end_ms: command.end_ms,
+            aggregator: command.aggregator,
+        },
+        v1::command::Kind::RiskFolSet(command) => types::Command::RiskFolSet {
+            key: command.key,
+            value: command.value,
+            occur_time_ms: command.occur_time_ms,
+            ttl_ms: command.ttl_ms,
+            fol_type: sdk_risk_fol_type_to_types(command.fol_type)?,
+        },
+        v1::command::Kind::RiskFolQuery(command) => {
+            types::Command::RiskFolQuery { key: command.key }
+        }
+        v1::command::Kind::RiskManager(command) => types::Command::RiskManager { key: command.key },
         v1::command::Kind::ContextNodeUpsert(command) => {
             let node = command
                 .node
@@ -509,6 +542,27 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
 
 fn nonzero_limit(limit: u32) -> Option<usize> {
     (limit > 0).then_some(limit as usize)
+}
+
+fn sdk_risk_family_to_types(family: i32) -> Result<types::RiskFamily, TonicStatus> {
+    match v1::RiskFamily::try_from(family) {
+        Ok(v1::RiskFamily::H) => Ok(types::RiskFamily::H),
+        Ok(v1::RiskFamily::Cpc) => Ok(types::RiskFamily::Cpc),
+        Ok(v1::RiskFamily::Fol) => Ok(types::RiskFamily::Fol),
+        Ok(v1::RiskFamily::Unspecified) | Err(_) => Err(TonicStatus::invalid_argument(
+            "risk family missing or invalid",
+        )),
+    }
+}
+
+fn sdk_risk_fol_type_to_types(fol_type: i32) -> Result<types::RiskFolType, TonicStatus> {
+    match v1::RiskFolType::try_from(fol_type) {
+        Ok(v1::RiskFolType::First) => Ok(types::RiskFolType::First),
+        Ok(v1::RiskFolType::Last) => Ok(types::RiskFolType::Last),
+        Ok(v1::RiskFolType::Unspecified) | Err(_) => Err(TonicStatus::invalid_argument(
+            "risk fol_type missing or invalid",
+        )),
+    }
 }
 
 fn sdk_feature_point_to_types(point: v1::FeaturePoint) -> types::FeaturePoint {
