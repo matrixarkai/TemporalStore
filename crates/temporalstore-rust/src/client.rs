@@ -73,6 +73,20 @@ pub struct ClientOptions {
     pub drop_percent: u8,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MatrixArkRecordAppend {
+    pub key: String,
+    pub field: String,
+    pub value: Vec<u8>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ProxyTableBatchExecuteClientRequest {
+    namespace: String,
+    table_name: String,
+    commands: Vec<Command>,
+}
+
 impl ClientOptions {
     pub fn proxy(proxy_addr: impl Into<String>) -> Self {
         Self {
@@ -1765,6 +1779,67 @@ impl TemporalStoreClient {
         request: BatchExecuteRequest,
     ) -> Result<BatchExecuteResponse, HttpError> {
         post_json(&self.inner.options.proxy_addr, "/batch_execute", &request)
+    }
+
+    pub fn batch_execute_table(
+        &self,
+        namespace: impl Into<String>,
+        table_name: impl Into<String>,
+        commands: Vec<Command>,
+    ) -> Result<BatchExecuteResponse, ClientError> {
+        let response = post_json_with_options::<_, BatchExecuteResponse>(
+            &self.inner.options.proxy_addr,
+            "/ProxyService/BatchExecuteTableCmd",
+            &ProxyTableBatchExecuteClientRequest {
+                namespace: namespace.into(),
+                table_name: table_name.into(),
+                commands,
+            },
+            self.inner.options.http_options(),
+        )?;
+        if !response.status.ok {
+            return Err(ClientError::Status(response.status.message));
+        }
+        Ok(response)
+    }
+
+    pub fn matrixark_batch_append_records(
+        &self,
+        namespace: impl Into<String>,
+        table_name: impl Into<String>,
+        records: Vec<MatrixArkRecordAppend>,
+    ) -> Result<usize, ClientError> {
+        let record_count = records.len();
+        let mut grouped: BTreeMap<String, Vec<(String, Vec<u8>)>> = BTreeMap::new();
+        for record in records {
+            grouped
+                .entry(record.key)
+                .or_default()
+                .push((record.field, record.value));
+        }
+        let commands = grouped
+            .into_iter()
+            .map(|(key, entries)| Command::HashMultiSet { key, entries })
+            .collect::<Vec<_>>();
+        let expected_responses = commands.len();
+        let response = self.batch_execute_table(namespace, table_name, commands)?;
+        if response.responses.len() != expected_responses {
+            return Err(ClientError::Status(
+                "batch response length mismatch".to_string(),
+            ));
+        }
+        for item in &response.responses {
+            if !item.status.ok {
+                return Err(ClientError::Status(item.status.message.clone()));
+            }
+            if !matches!(item.response, CommandResponse::Empty) {
+                return Err(ClientError::UnexpectedResponse {
+                    operation: "matrixark_batch_append_records",
+                    response: item.response.clone(),
+                });
+            }
+        }
+        Ok(record_count)
     }
 
     pub fn batch_execute_with_options(

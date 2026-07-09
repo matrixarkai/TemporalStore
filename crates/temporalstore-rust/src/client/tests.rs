@@ -2475,6 +2475,98 @@ fn pipeline_batches_partial_failures_and_timeout_budget_contract() {
     assert!(stale_route_retry.would_retry);
 }
 
+#[test]
+fn matrixark_batch_append_records_uses_proxy_table_batch_route() {
+    let proxy_addr = free_local_addr();
+    let seen_path = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let seen_path_for_server = std::sync::Arc::clone(&seen_path);
+    let proxy_addr_for_listener = proxy_addr.clone();
+    std::thread::spawn(move || {
+        serve(&proxy_addr_for_listener, move |request| {
+            match (request.method.as_str(), request.path.as_str()) {
+                ("POST", "/ProxyService/BatchExecuteTableCmd") => {
+                    *seen_path_for_server.lock().unwrap() = request.path.clone();
+                    let req =
+                        parse_json::<ProxyTableBatchExecuteClientRequest>(&request.body).unwrap();
+                    assert_eq!(req.namespace, "matrixark");
+                    assert_eq!(req.table_name, "records");
+                    assert_eq!(req.commands.len(), 2);
+                    match &req.commands[0] {
+                        Command::HashMultiSet { key, entries } => {
+                            assert_eq!(key, "session-a");
+                            assert_eq!(entries.len(), 2);
+                            assert_eq!(entries[0].0, "record-1");
+                            assert_eq!(entries[1].0, "record-2");
+                        }
+                        other => panic!("unexpected first command: {other:?}"),
+                    }
+                    match &req.commands[1] {
+                        Command::HashMultiSet { key, entries } => {
+                            assert_eq!(key, "session-b");
+                            assert_eq!(entries.len(), 1);
+                            assert_eq!(entries[0].0, "record-3");
+                        }
+                        other => panic!("unexpected second command: {other:?}"),
+                    }
+                    json_response(
+                        200,
+                        &BatchExecuteResponse {
+                            status: Status::ok(),
+                            responses: vec![
+                                ExecuteResponse {
+                                    status: Status::ok(),
+                                    response: CommandResponse::Empty,
+                                },
+                                ExecuteResponse {
+                                    status: Status::ok(),
+                                    response: CommandResponse::Empty,
+                                },
+                            ],
+                        },
+                    )
+                }
+                _ => json_response(404, &Status::error("not_found", "not found")),
+            }
+        })
+        .unwrap();
+    });
+    wait_for_http(&proxy_addr);
+
+    let client = TemporalStoreClient::with_options(ClientOptions {
+        proxy_addr,
+        max_retries: 0,
+        ..ClientOptions::default()
+    });
+    let written = client
+        .matrixark_batch_append_records(
+            "matrixark",
+            "records",
+            vec![
+                MatrixArkRecordAppend {
+                    key: "session-a".to_string(),
+                    field: "record-1".to_string(),
+                    value: b"one".to_vec(),
+                },
+                MatrixArkRecordAppend {
+                    key: "session-a".to_string(),
+                    field: "record-2".to_string(),
+                    value: b"two".to_vec(),
+                },
+                MatrixArkRecordAppend {
+                    key: "session-b".to_string(),
+                    field: "record-3".to_string(),
+                    value: b"three".to_vec(),
+                },
+            ],
+        )
+        .expect("matrixark append");
+    assert_eq!(written, 3);
+    assert_eq!(
+        seen_path.lock().unwrap().as_str(),
+        "/ProxyService/BatchExecuteTableCmd"
+    );
+}
+
 fn key_for_shard(table: &TemporalStoreTable, shard_id: ShardId) -> String {
     (0..10_000)
         .map(|index| format!("key-{shard_id}-{index}"))
