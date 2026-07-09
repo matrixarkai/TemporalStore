@@ -3,10 +3,10 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::block_store::{BlockStoreExtentSummary, BlockStoreStats};
-use crate::cache::CacheStats;
 use crate::types::{BatchExecuteResponse, Command, ExecuteResponse};
 use crate::types::{ShardId, Status};
 use crate::wal::WriteAheadLogStats;
+use rustmtcache::CacheStats;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Config {

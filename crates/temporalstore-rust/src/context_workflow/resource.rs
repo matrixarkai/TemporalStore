@@ -17,6 +17,14 @@ pub fn parse_context_resource(request: ContextResourceParseRequest) -> ContextRe
     };
     let max_chunk_chars = request.max_chunk_chars.max(1);
     let overlap_chars = request.overlap_chars.min(max_chunk_chars.saturating_sub(1));
+    let payload_size_bytes = request.text.as_bytes().len();
+    let max_inline_bytes = default_context_resource_max_inline_bytes();
+    let inline_payload = payload_size_bytes <= max_inline_bytes;
+    let external_object_uri = if inline_payload {
+        String::new()
+    } else {
+        context_resource_object_store_uri(&request.raw_uri, payload_size_bytes)
+    };
     let units = context_resource_units(&request.text, &resource_type, &request.raw_uri);
     let mut chunks = Vec::new();
     let mut parser_warnings = Vec::new();
@@ -85,6 +93,29 @@ pub fn parse_context_resource(request: ContextResourceParseRequest) -> ContextRe
             );
             if let Some(extension) = context_resource_extension(&request.raw_uri) {
                 unit.insert("source_extension".to_string(), extension);
+            }
+            unit.insert(
+                "payload_size_bytes".to_string(),
+                payload_size_bytes.to_string(),
+            );
+            unit.insert("max_inline_bytes".to_string(), max_inline_bytes.to_string());
+            unit.insert("inline_payload".to_string(), inline_payload.to_string());
+            if !external_object_uri.is_empty() {
+                unit.insert(
+                    "external_object_uri".to_string(),
+                    external_object_uri.clone(),
+                );
+                unit.insert("storage_backend".to_string(), "objectstore".to_string());
+                unit.insert(
+                    "storage_value_mode".to_string(),
+                    "object_ref_json".to_string(),
+                );
+            } else {
+                unit.insert("storage_backend".to_string(), "temporalstore".to_string());
+                unit.insert(
+                    "storage_value_mode".to_string(),
+                    "raw_body_utf8".to_string(),
+                );
             }
             let source_ref = context_resource_source_ref(&request.raw_uri, &unit);
             unit.insert("source_ref".to_string(), source_ref.clone());
@@ -165,6 +196,10 @@ pub fn parse_context_resource(request: ContextResourceParseRequest) -> ContextRe
         next_refresh_after_ms: request.watch_interval_minutes.saturating_mul(60_000),
         deleted: false,
         chunk_count: chunks.len(),
+        payload_size_bytes,
+        max_inline_bytes,
+        inline_payload,
+        external_object_uri: external_object_uri.clone(),
     };
     ContextResourceParseReport {
         status: Status::ok(),
@@ -181,6 +216,10 @@ pub fn parse_context_resource(request: ContextResourceParseRequest) -> ContextRe
             .collect(),
         chunks,
         total_tokens,
+        payload_size_bytes,
+        max_inline_bytes,
+        inline_payload,
+        external_object_uri,
         parser_warnings,
     }
 }
@@ -270,6 +309,11 @@ pub(super) fn default_resource_max_chunk_chars() -> usize {
 
 pub(super) fn default_resource_overlap_chars() -> usize {
     120
+}
+
+fn context_resource_object_store_uri(raw_uri: &str, payload_size_bytes: usize) -> String {
+    let resource_hash = stable_hash64(&format!("resource_object:{raw_uri}:{payload_size_bytes}"));
+    format!("objectstore://matrixark/resources/{resource_hash:016x}.bin")
 }
 
 pub(super) fn default_resource_parser_name() -> String {

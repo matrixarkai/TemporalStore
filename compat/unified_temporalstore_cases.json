@@ -12198,6 +12198,123 @@
           }
         }
       ]
+    },
+    {
+      "name": "context_raw_backfill_cold_ingest",
+      "shard_id": 1,
+      "description": "Raw/backfill context event ingestion can force direct cold block-store persistence without hot cache promotion.",
+      "steps": [
+        {
+          "name": "write_raw_backfill_cold_event",
+          "command": {
+            "kind": "context_write_event",
+            "tenant_hash": 3010,
+            "node_hash": 9200,
+            "event_id_hash": 8000,
+            "event_time_ms": 1782400000000,
+            "ingestion_time_ms": 1782400000000,
+            "event_type": 7,
+            "text": "Cold backfill event 0",
+            "source_ref": "backfill://raw-query",
+            "confidence": 0.95,
+            "importance": 0.85,
+            "first_write_only": false,
+            "cold_storage": true
+          },
+          "expect": {
+            "kind": "context_object_key",
+            "object_key": "ctx:event:3010:9200"
+          }
+        },
+        {
+          "name": "query_raw_backfill_cold_event",
+          "command": {
+            "kind": "context_query_events",
+            "tenant_hash": 3010,
+            "node_hash": 9200,
+            "start_time_ms": 1782400000000,
+            "end_time_ms": 1782400000000,
+            "limit": 10
+          },
+          "expect": {
+            "kind": "context_events",
+            "min_count": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "context_temporal_compression_cold_scan",
+      "shard_id": 1,
+      "description": "Temporal compression scans old context events through the cold block-store path and must not promote source event blocks into the hot cache.",
+      "steps": [
+        {
+          "name": "write_compression_source_cold_event",
+          "command": {
+            "kind": "context_write_event",
+            "tenant_hash": 3011,
+            "node_hash": 9201,
+            "event_id_hash": 8100,
+            "event_time_ms": 1782500000000,
+            "ingestion_time_ms": 1782500000000,
+            "event_type": 7,
+            "text": "Old event used only for temporal compression",
+            "source_ref": "backfill://temporal-compression",
+            "confidence": 0.95,
+            "importance": 0.85,
+            "first_write_only": false,
+            "cold_storage": true
+          },
+          "expect": {
+            "kind": "context_object_key",
+            "object_key": "ctx:event:3011:9201"
+          }
+        },
+        {
+          "name": "compress_old_events_without_cache_promotion",
+          "command": {
+            "kind": "context_compress_events",
+            "tenant_hash": 3011,
+            "node_hash": 9201,
+            "source_start_ms": 1782500000000,
+            "source_end_ms": 1782500000000,
+            "compressed_time_ms": 1782500001000,
+            "max_source_events": 3,
+            "min_confidence": 0.9,
+            "min_importance": 0.8,
+            "require_no_cache_promotion": true
+          },
+          "expect": {
+            "kind": "context_compression_events",
+            "min_count": 1,
+            "source_event_count": 1
+          }
+        }
+      ]
+    },
+    {
+      "name": "context_resource_large_object_store_spill",
+      "shard_id": 1,
+      "description": "Large resource bodies exceed the KV inline limit and are represented by object-store refs while chunks remain queryable.",
+      "steps": [
+        {
+          "name": "parse_large_resource_spills_to_object_ref",
+          "command": {
+            "kind": "existing_test",
+            "suite": "context_resource_pipeline",
+            "mode": "rust_and_cpp_shared",
+            "description": "Parse a large PDF/document resource and require payload_size_bytes, max_inline_bytes, inline_payload=false, external_object_uri, and object_ref_json storage metadata.",
+            "rust_test": "context_resource_parser_spills_large_resource_body_to_object_store_ref",
+            "cpp_adapter_status": "pending_adapter",
+            "required_paths": [
+              "crates/temporalstore-rust/src/context_workflow/resource.rs",
+              "crates/temporalstore-rust/src/context_workflow.rs",
+              "crates/temporalstore-rust/src/context_workflow/tests.rs",
+              "tools/matrixark_raw_message_storage_contract.py"
+            ]
+          }
+        }
+      ]
     }
   ],
   "coverage": {
@@ -12758,6 +12875,9 @@
       "feature_policy_filter_aggregate_lifecycle",
       "redis_feature_module_flow",
       "sequence_cpp_feature_rows"
+    ],
+    "shared_cases": [
+      "context_resource_large_object_store_spill"
     ]
   },
   "description": "Shared behavioral corpus for validating Rust and C++ TemporalStore implementations with the same ordered operations and expected responses.",

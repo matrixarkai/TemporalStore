@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::cache::{CacheEntryInfo, CacheStats};
 use crate::page_store::{
     PageStoreSegmentReport, PageStoreStats, PageStoreZoneDescriptor, PageStoreZoneSummary,
 };
@@ -12,6 +11,7 @@ use crate::storage_config::{
     TS_PAGE_INDEX_CACHE_BYTES, TS_STORAGE_ZONE_SIZE, TS_STREAM_MAX_BLOB_SIZE,
 };
 use crate::types::{ShardId, Status};
+use rustmtcache::{CacheEntryInfo, CacheStats};
 
 fn public_storage_strings(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| (*value).to_string()).collect()
@@ -916,12 +916,7 @@ impl Default for PublicStorageFeatureShapes {
                 "generation",
             ]),
             block_address_fields: public_storage_strings(&[
-                "shard_id",
-                "zone_id",
-                "block_id",
-                "offset",
-                "length",
-                "checksum",
+                "shard_id", "zone_id", "block_id", "offset", "length", "checksum",
             ]),
             page_index_entry_fields: public_storage_strings(&[
                 "logical_key",
@@ -1177,14 +1172,21 @@ impl StorageLifecycleReport {
         put(
             &mut metrics,
             "storage_manager_index_gc_count",
-            flag(!self.manifest_prune_plan.prunable_manifest_ids.is_empty()
-                || !self.manifest_prune_plan.prunable_marker_manifest_ids.is_empty()),
+            flag(
+                !self.manifest_prune_plan.prunable_manifest_ids.is_empty()
+                    || !self
+                        .manifest_prune_plan
+                        .prunable_marker_manifest_ids
+                        .is_empty(),
+            ),
         );
         put(
             &mut metrics,
             "storage_manager_delayed_destroy_count",
-            flag(!plan.delayed_destroy_page_segment_ids.is_empty()
-                || !self.delayed_destroy_purged_segments.is_empty()),
+            flag(
+                !plan.delayed_destroy_page_segment_ids.is_empty()
+                    || !self.delayed_destroy_purged_segments.is_empty(),
+            ),
         );
         put(
             &mut metrics,
@@ -1192,7 +1194,11 @@ impl StorageLifecycleReport {
             flag(follower_retention_block_count > 0),
         );
         put(&mut metrics, "storage_manager_watermark_progress_count", 1);
-        put(&mut metrics, "segment_open_count", plan.selected_dump_slots.len() as u64);
+        put(
+            &mut metrics,
+            "segment_open_count",
+            plan.selected_dump_slots.len() as u64,
+        );
         put(
             &mut metrics,
             "segment_sealed_count",
@@ -1226,7 +1232,8 @@ impl StorageLifecycleReport {
         put(
             &mut metrics,
             "slot_stale_ref_count",
-            object_lifecycle.stale_object_ids
+            object_lifecycle
+                .stale_object_ids
                 .saturating_add(object_lifecycle.missing_owner_page_refs)
                 .saturating_add(object_lifecycle.owner_mismatch_page_refs),
         );
@@ -1386,14 +1393,17 @@ impl StorageLifecycleReport {
 
         self.storage_lifecycle_metrics = metrics;
         self.effective_storage_tuning = effective_storage_tuning_from_env();
-        self.storage_write_contract = default_storage_write_contract(&self.storage_lifecycle_metrics);
+        self.storage_write_contract =
+            default_storage_write_contract(&self.storage_lifecycle_metrics);
         self.storage_read_contract = default_storage_read_contract(&self.storage_lifecycle_metrics);
         self.storage_cold_scan_contract =
             default_storage_cold_scan_contract(&self.storage_lifecycle_metrics);
         self.storage_manager_contract =
             default_storage_manager_contract(&self.storage_lifecycle_metrics);
-        self.storage_index_contract = default_storage_index_contract(&self.storage_lifecycle_metrics);
-        self.storage_cache_contract = default_storage_cache_contract(&self.storage_lifecycle_metrics);
+        self.storage_index_contract =
+            default_storage_index_contract(&self.storage_lifecycle_metrics);
+        self.storage_cache_contract =
+            default_storage_cache_contract(&self.storage_lifecycle_metrics);
         self.storage_reclaim_contract =
             default_storage_reclaim_contract(&self.storage_lifecycle_metrics);
         self.storage_safety_snapshot =
@@ -1587,8 +1597,7 @@ pub fn storage_watermark_snapshot_from_metrics(
 ) -> StorageWatermarkSnapshot {
     let append_watermark = metric(metrics, "append_watermark");
     let compaction_watermark = metric(metrics, "compaction_watermark");
-    let follower_cursor_retention_floor =
-        metric(metrics, "follower_cursor_retention_floor");
+    let follower_cursor_retention_floor = metric(metrics, "follower_cursor_retention_floor");
     let follower_cursor_safe_watermark = if follower_cursor_retention_floor > 0 {
         compaction_watermark.min(follower_cursor_retention_floor)
     } else {
@@ -1658,9 +1667,7 @@ pub struct StorageGcSnapshot {
     pub follower_cursor_safety_samples: Vec<StorageFollowerCursorSafetySample>,
 }
 
-pub fn storage_gc_snapshot_from_metrics(
-    metrics: &BTreeMap<String, u64>,
-) -> StorageGcSnapshot {
+pub fn storage_gc_snapshot_from_metrics(metrics: &BTreeMap<String, u64>) -> StorageGcSnapshot {
     let stale_page_tombstones = metric(metrics, "stale_page_tombstones");
     let stale_block_tombstones = metric(metrics, "stale_block_tombstones");
     let tombstone_records = metric(metrics, "tombstone_records");
@@ -2095,9 +2102,18 @@ pub fn default_storage_write_contract(
         "append_durability_failures".to_string(),
         contract_u64(metric(metrics, "append_durability_failures")),
     );
-    contract.insert("page_writes".to_string(), contract_u64(metric(metrics, "page_writes")));
-    contract.insert("block_writes".to_string(), contract_u64(metric(metrics, "block_writes")));
-    contract.insert("bytes_written".to_string(), contract_u64(metric(metrics, "bytes_written")));
+    contract.insert(
+        "page_writes".to_string(),
+        contract_u64(metric(metrics, "page_writes")),
+    );
+    contract.insert(
+        "block_writes".to_string(),
+        contract_u64(metric(metrics, "block_writes")),
+    );
+    contract.insert(
+        "bytes_written".to_string(),
+        contract_u64(metric(metrics, "bytes_written")),
+    );
     contract
 }
 
@@ -2109,7 +2125,10 @@ pub fn default_storage_read_contract(
     let mut contract = BTreeMap::new();
     contract.insert("logical_key".to_string(), contract_text("storage:parity"));
     contract.insert("timestamp_range".to_string(), contract_text("all"));
-    contract.insert("object_index_entry".to_string(), contract_text("ObjectIndexEntry"));
+    contract.insert(
+        "object_index_entry".to_string(),
+        contract_text("ObjectIndexEntry"),
+    );
     contract.insert("page_index_entries".to_string(), contract_u64(1));
     contract.insert("page_addresses".to_string(), contract_u64(1));
     contract.insert("block_index_entries".to_string(), contract_u64(1));
@@ -2144,7 +2163,10 @@ pub fn default_storage_read_contract(
         "block_index_lookup_ms".to_string(),
         contract_u64(metric(metrics, "block_index_lookup_ms")),
     );
-    contract.insert("page_reads".to_string(), contract_u64(metric(metrics, "page_reads")));
+    contract.insert(
+        "page_reads".to_string(),
+        contract_u64(metric(metrics, "page_reads")),
+    );
     contract.insert(
         "decode_records_ms".to_string(),
         contract_u64(metric(metrics, "decode_records_ms")),
@@ -2161,7 +2183,10 @@ pub fn default_storage_cold_scan_contract(
     let mut contract = BTreeMap::new();
     contract.insert("timestamp_range".to_string(), contract_text("cold"));
     contract.insert("page_index_scan".to_string(), contract_text("PageIndex"));
-    contract.insert("no_cache_page_reads".to_string(), contract_u64(no_cache_reads));
+    contract.insert(
+        "no_cache_page_reads".to_string(),
+        contract_u64(no_cache_reads),
+    );
     contract.insert(
         "decode_batch_limit".to_string(),
         contract_u64(metric(metrics, "cold_scan_decode_batch_limit")),
@@ -2179,7 +2204,10 @@ pub fn default_storage_cold_scan_contract(
     );
     contract.insert("cache_fill".to_string(), contract_bool(false));
     contract.insert("promotion_policy".to_string(), contract_text("no_promote"));
-    contract.insert("cold_scan_no_cache_reads".to_string(), contract_u64(no_cache_reads));
+    contract.insert(
+        "cold_scan_no_cache_reads".to_string(),
+        contract_u64(no_cache_reads),
+    );
     contract.insert(
         "cold_scan_page_index_scan_count".to_string(),
         contract_u64(metric(metrics, "cold_scan_page_index_scan_count")),
@@ -2188,13 +2216,22 @@ pub fn default_storage_cold_scan_contract(
         "cold_scan_page_index_scan_ms".to_string(),
         contract_u64(metric(metrics, "cold_scan_page_index_scan_ms")),
     );
-    contract.insert("cold_scan_page_reads".to_string(), contract_u64(no_cache_reads));
+    contract.insert(
+        "cold_scan_page_reads".to_string(),
+        contract_u64(no_cache_reads),
+    );
     contract.insert(
         "cold_scan_decode_records_ms".to_string(),
         contract_u64(metric(metrics, "cold_scan_decode_records_ms")),
     );
-    contract.insert("cold_scan_records_decoded".to_string(), contract_u64(decoded));
-    contract.insert("cold_scan_records_returned".to_string(), contract_u64(returned));
+    contract.insert(
+        "cold_scan_records_decoded".to_string(),
+        contract_u64(decoded),
+    );
+    contract.insert(
+        "cold_scan_records_returned".to_string(),
+        contract_u64(returned),
+    );
     contract.insert(
         "cold_scan_decode_batch_limit".to_string(),
         contract_u64(metric(metrics, "cold_scan_decode_batch_limit")),
@@ -2223,7 +2260,10 @@ pub fn default_storage_manager_contract(
             "follower_cursor_safety",
             "storage_manager_follower_cursor_safety_count",
         ),
-        ("watermark_progress", "storage_manager_watermark_progress_count"),
+        (
+            "watermark_progress",
+            "storage_manager_watermark_progress_count",
+        ),
     ];
     let mut phase_metrics = BTreeMap::new();
     let mut phase_counts = BTreeMap::new();
@@ -2236,8 +2276,14 @@ pub fn default_storage_manager_contract(
         "manager_identity".to_string(),
         contract_text("StorageManager/StoreManager"),
     );
-    contract.insert("cpp_public_name".to_string(), contract_text("StorageManager"));
-    contract.insert("rust_public_name".to_string(), contract_text("StoreManager"));
+    contract.insert(
+        "cpp_public_name".to_string(),
+        contract_text("StorageManager"),
+    );
+    contract.insert(
+        "rust_public_name".to_string(),
+        contract_text("StoreManager"),
+    );
     contract.insert(
         "phase_order".to_string(),
         StorageContractValue::StringList(default_storage_lifecycle_phases()),
@@ -2250,7 +2296,10 @@ pub fn default_storage_manager_contract(
         "phase_counts".to_string(),
         StorageContractValue::U64Map(phase_counts),
     );
-    contract.insert("loop_metric".to_string(), contract_text("storage_manager_loop_ms"));
+    contract.insert(
+        "loop_metric".to_string(),
+        contract_text("storage_manager_loop_ms"),
+    );
     contract.insert(
         "loop_ms".to_string(),
         contract_u64(metric(metrics, "storage_manager_loop_ms")),
@@ -2264,13 +2313,22 @@ pub fn default_storage_index_contract(
     metrics: &BTreeMap<String, u64>,
 ) -> BTreeMap<String, StorageContractValue> {
     let mut contract = BTreeMap::new();
-    contract.insert("page_address_codec".to_string(), contract_text("PageAddress"));
-    contract.insert("block_address_codec".to_string(), contract_text("BlockAddress"));
+    contract.insert(
+        "page_address_codec".to_string(),
+        contract_text("PageAddress"),
+    );
+    contract.insert(
+        "block_address_codec".to_string(),
+        contract_text("BlockAddress"),
+    );
     contract.insert(
         "stable_order".to_string(),
         contract_string_list(&["shard_id", "zone_id", "segment_id", "page_id", "offset"]),
     );
-    contract.insert("slot_index".to_string(), contract_text("slot -> object/page refs"));
+    contract.insert(
+        "slot_index".to_string(),
+        contract_text("slot -> object/page refs"),
+    );
     contract.insert(
         "object_index_entry".to_string(),
         contract_text("{model/table/object_key} -> current page chain"),
@@ -2296,10 +2354,19 @@ pub fn default_storage_index_contract(
             "restart_rebuilds_page_block_object_indexes",
         ]),
     );
-    contract.insert("page_address_encode_decode".to_string(), contract_bool(true));
-    contract.insert("block_address_encode_decode".to_string(), contract_bool(true));
+    contract.insert(
+        "page_address_encode_decode".to_string(),
+        contract_bool(true),
+    );
+    contract.insert(
+        "block_address_encode_decode".to_string(),
+        contract_bool(true),
+    );
     contract.insert("stable_order_verified".to_string(), contract_bool(true));
-    contract.insert("timestamp_range_lookup_verified".to_string(), contract_bool(true));
+    contract.insert(
+        "timestamp_range_lookup_verified".to_string(),
+        contract_bool(true),
+    );
     contract.insert(
         "slot_index_entry_count".to_string(),
         contract_u64(metric(metrics, "slot_index_entry_count").max(1)),
@@ -2368,11 +2435,23 @@ pub fn default_storage_cache_contract(
     );
     contract.insert("hot_to_cold_lookup".to_string(), contract_bool(true));
     contract.insert("durable_refill_on_miss".to_string(), contract_bool(true));
-    contract.insert("append_watermark_invalidation".to_string(), contract_bool(true));
-    contract.insert("compaction_watermark_invalidation".to_string(), contract_bool(true));
+    contract.insert(
+        "append_watermark_invalidation".to_string(),
+        contract_bool(true),
+    );
+    contract.insert(
+        "compaction_watermark_invalidation".to_string(),
+        contract_bool(true),
+    );
     contract.insert("cold_scan_no_promote".to_string(), contract_bool(true));
-    contract.insert("writeback_backpressure_measured".to_string(), contract_bool(true));
-    contract.insert("cache_refills".to_string(), contract_u64(metric(metrics, "cache_refills")));
+    contract.insert(
+        "writeback_backpressure_measured".to_string(),
+        contract_bool(true),
+    );
+    contract.insert(
+        "cache_refills".to_string(),
+        contract_u64(metric(metrics, "cache_refills")),
+    );
     contract.insert(
         "cache_invalidations".to_string(),
         contract_u64(metric(metrics, "cache_invalidations")),
@@ -2396,8 +2475,14 @@ pub fn default_storage_reclaim_contract(
     metrics: &BTreeMap<String, u64>,
 ) -> BTreeMap<String, StorageContractValue> {
     let mut contract = BTreeMap::new();
-    contract.insert("cache_eviction_frees_memory_only".to_string(), contract_bool(true));
-    contract.insert("logical_gc_marks_expired_deletable".to_string(), contract_bool(true));
+    contract.insert(
+        "cache_eviction_frees_memory_only".to_string(),
+        contract_bool(true),
+    );
+    contract.insert(
+        "logical_gc_marks_expired_deletable".to_string(),
+        contract_bool(true),
+    );
     contract.insert(
         "physical_reclaim_requires_compaction_or_safe_skip".to_string(),
         contract_bool(true),

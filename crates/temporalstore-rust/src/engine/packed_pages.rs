@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::block_store::{BlockAddress, BlockStoreError, LocalBlockStore};
-use crate::cache::MultiLayerCache;
 use crate::types::{FeaturePoint, ShardId};
+use rustmtcache::MultiLayerCache;
 
 use super::constants::FEATURE_PAGE_MAGIC;
 use super::state::{PackedFeaturePage, PackedFeaturePageDecode};
-use super::{append_value, read_page_bytes, stable_page_object_id};
+use super::{append_value, read_page_bytes, read_page_bytes_cold, stable_page_object_id};
 use crate::storage_config::context_page_target_bytes;
 pub(super) fn sorted_feature_points(mut points: Vec<FeaturePoint>) -> Vec<FeaturePoint> {
     if points
@@ -177,6 +177,24 @@ pub(super) fn read_feature_point(
     address: &BlockAddress,
 ) -> Option<FeaturePoint> {
     let bytes = read_page_bytes(cache, block_store, shard_id, address)?;
+    match decode_feature_page_strict(&bytes) {
+        PackedFeaturePageDecode::Packed(points) => points
+            .into_iter()
+            .find(|point| point.timestamp_ms == timestamp_ms),
+        PackedFeaturePageDecode::Legacy => Some(FeaturePoint {
+            timestamp_ms,
+            value: bytes,
+        }),
+        PackedFeaturePageDecode::Corrupt(_) => None,
+    }
+}
+
+pub(super) fn read_feature_point_cold(
+    block_store: &LocalBlockStore,
+    timestamp_ms: u64,
+    address: &BlockAddress,
+) -> Option<FeaturePoint> {
+    let bytes = read_page_bytes_cold(block_store, address)?;
     match decode_feature_page_strict(&bytes) {
         PackedFeaturePageDecode::Packed(points) => points
             .into_iter()

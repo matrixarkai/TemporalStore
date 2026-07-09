@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::block_store::{BlockAddress, LocalBlockStore};
-use crate::cache::MultiLayerCache;
 use crate::types::{
     FeatureFilter, FeatureFilterOp, FeaturePoint, IpsSnapshotReport, IpsStats, RiskFamily,
     SequenceFeatureRow, ShardId,
 };
+use rustmtcache::MultiLayerCache;
 
 use super::packed_pages::{decode_feature_page_strict, read_feature_point};
 use super::state::PackedFeaturePageDecode;

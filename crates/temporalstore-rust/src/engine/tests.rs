@@ -22,7 +22,7 @@ fn wait_for_fresh_admission_second() {
     }
 }
 
-fn assert_cache_latency_histograms_observed(stats: crate::cache::CacheStats) {
+fn assert_cache_latency_histograms_observed(stats: rustmtcache::CacheStats) {
     assert!(stats.read_through_latency_samples > 0);
     assert!(stats.refill_latency_samples > 0);
     assert!(stats.writeback_latency_samples > 0);
@@ -278,6 +278,7 @@ fn context_models_match_cpp_keys_timeline_pages_and_filters() {
                 node_hash: 42,
                 event,
                 first_write_only: true,
+                cold_storage: false,
             },
         });
         assert!(write.status.ok);
@@ -297,6 +298,7 @@ fn context_models_match_cpp_keys_timeline_pages_and_filters() {
                 ..event_a.clone()
             },
             first_write_only: true,
+            cold_storage: false,
         },
     });
     assert!(duplicate.status.ok);
@@ -394,6 +396,7 @@ fn context_models_match_cpp_keys_timeline_pages_and_filters() {
                 disabled_indexes: Vec::new(),
             },
             first_write_only: true,
+            cold_storage: false,
         },
     });
     assert!(matches!(
@@ -469,6 +472,7 @@ fn context_models_match_cpp_keys_timeline_pages_and_filters() {
                 disabled_indexes: vec![InternalContextIndex::Source],
             },
             first_write_only: false,
+            cold_storage: false,
         },
     });
     assert!(matches!(
@@ -855,6 +859,7 @@ fn context_temporal_compression_builds_replayable_summary_without_deleting_sourc
                     compact_attrs: Vec::new(),
                 },
                 first_write_only: false,
+                cold_storage: false,
             },
         });
         assert!(response.status.ok);
@@ -906,6 +911,82 @@ fn context_temporal_compression_builds_replayable_summary_without_deleting_sourc
         raw_events.response,
         CommandResponse::ContextEvents { ref events, .. } if events.len() == 3
     ));
+}
+
+// shared-corpus: context_temporal_compression_cold_scan context_raw_backfill_cold_ingest
+#[test]
+fn context_temporal_compression_and_raw_backfill_use_cold_storage_without_cache_promotion() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    const TENANT: u64 = 3010;
+    const NODE: u64 = 9200;
+    const START: u64 = 1_782_400_000_000;
+
+    let cache_puts_before = engine.cache().stats().puts;
+    let block_writes_before = engine.block_store().stats().writes;
+    for idx in 0..3 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextWriteEvent {
+                tenant_hash: TENANT,
+                node_hash: NODE,
+                event: ContextEvent {
+                    event_id_hash: 8000 + idx,
+                    event_time_ms: START + idx * 10,
+                    ingestion_time_ms: START + idx * 10,
+                    kind: 7,
+                    event_type: 7,
+                    actor_hash: 0,
+                    status: 0,
+                    valid_until_ms: 0,
+                    confidence: 0.95,
+                    importance: 0.85,
+                    text: format!("Cold backfill event {idx}"),
+                    source_ref: "backfill://raw-query".to_string(),
+                    related_node_hashes: Vec::new(),
+                    compact_attrs: Vec::new(),
+                },
+                first_write_only: false,
+                cold_storage: true,
+            },
+        });
+        assert!(response.status.ok);
+    }
+    assert!(engine.block_store().stats().writes > block_writes_before);
+    assert_eq!(engine.cache().stats().puts, cache_puts_before);
+
+    let block_reads_before = engine.block_store().stats().reads;
+    let cache_puts_before_compress = engine.cache().stats().puts;
+    let compressed = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextCompressEvents {
+            tenant_hash: TENANT,
+            node_hash: NODE,
+            source_start_ms: START,
+            source_end_ms: START + 20,
+            compressed_time_ms: START + 1_000,
+            max_source_events: Some(3),
+            min_confidence: 0.9,
+            min_importance: 0.8,
+        },
+    });
+    assert!(compressed.status.ok);
+    assert!(matches!(
+        compressed.response,
+        CommandResponse::ContextCompressionEvents {
+            ref events,
+            source_event_count: Some(3),
+            ..
+        } if events.len() == 1
+    ));
+    assert!(engine.block_store().stats().reads > block_reads_before);
+    assert_eq!(engine.cache().stats().puts, cache_puts_before_compress);
 }
 
 #[test]
@@ -1264,6 +1345,7 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
                 compact_attrs: Vec::new(),
             },
             first_write_only: false,
+            cold_storage: false,
         },
         Command::ContextUpsertEmbedding {
             tenant_hash: 7,
@@ -2886,9 +2968,9 @@ fn cache_replacement_policy_soak() {
 // shared-corpus: storage_cache_replacement_policy_soak;
 fn cache_dram_pmem_ssd_tiers_admit_refill_and_evict() {
     let dir = tempfile::tempdir().unwrap();
-    let cache = crate::cache::MultiLayerCache::with_tiering_policy(
+    let cache = rustmtcache::MultiLayerCache::with_tiering_policy(
         dir.path(),
-        crate::cache::CacheTieringPolicy {
+        rustmtcache::CacheTieringPolicy {
             memory_capacity_bytes: 16,
             pmem_capacity_bytes: 24,
             ssd_capacity_bytes: 4096,
@@ -2900,11 +2982,11 @@ fn cache_dram_pmem_ssd_tiers_admit_refill_and_evict() {
             max_ssd_block_bytes: 128,
             ssd_write_through: true,
         },
-        crate::cache::CacheBlockOptions::default(),
+        rustmtcache::CacheBlockOptions::default(),
     );
     let key = CacheKey::page_with_slot(9, 1, 0, 16, Some(11));
-    let request = crate::cache::CacheAdmissionRequest {
-        block_kind: crate::cache::CacheBlockKind::Page,
+    let request = rustmtcache::CacheAdmissionRequest {
+        block_kind: rustmtcache::CacheBlockKind::Page,
         shard_id: 9,
         routing_slot: Some(11),
         block_bytes: 16,
@@ -2944,8 +3026,8 @@ fn cache_dram_pmem_ssd_tiers_admit_refill_and_evict() {
             .put_with_admission(
                 cold_key,
                 vec![b'a' + idx as u8; 16],
-                crate::cache::CacheAdmissionRequest {
-                    block_kind: crate::cache::CacheBlockKind::Page,
+                rustmtcache::CacheAdmissionRequest {
+                    block_kind: rustmtcache::CacheBlockKind::Page,
                     shard_id: 9,
                     routing_slot: Some(11),
                     block_bytes: 16,
@@ -3073,8 +3155,8 @@ fn page_reads_fill_compressed_block_cache() {
     let cache = MultiLayerCache::with_block_options(
         1024 * 1024,
         dir.path().join("cache"),
-        crate::cache::CacheBlockOptions {
-            compression: crate::cache::CacheCompression::Zstd { level: 1 },
+        rustmtcache::CacheBlockOptions {
+            compression: rustmtcache::CacheCompression::Zstd { level: 1 },
             min_compress_bytes: 16,
         },
     );
@@ -5505,6 +5587,7 @@ fn recovery_validates_all_timestamped_kv_page_families() {
                         compact_attrs: vec![1, 2, 3],
                     },
                     first_write_only: false,
+                    cold_storage: false,
                 },
             })
             .status

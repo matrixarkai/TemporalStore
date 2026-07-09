@@ -15,29 +15,28 @@ use crate::control::{
     UnloadShardResponse,
 };
 use crate::engine::reports::{
-    default_storage_cache_contract_empty, default_storage_cache_layers,
-    default_storage_cache_contract, default_storage_cache_semantics,
+    default_storage_cache_contract, default_storage_cache_contract_empty,
+    default_storage_cache_layers, default_storage_cache_semantics,
     default_storage_cold_scan_contract, default_storage_cold_scan_contract_empty,
-    default_storage_cold_scan_sequence, default_storage_index_contract,
-    default_storage_index_contract_empty, default_storage_lifecycle_metrics,
+    default_storage_cold_scan_sequence, default_storage_gc_snapshot,
+    default_storage_index_contract, default_storage_index_contract_empty,
+    default_storage_index_snapshot, default_storage_lifecycle_metrics,
     default_storage_lifecycle_phases, default_storage_manager_contract,
     default_storage_manager_contract_empty, default_storage_read_contract,
-    default_storage_read_contract_empty, default_storage_reclaim_contract,
-    default_storage_read_sequence, default_storage_reclaim_contract_empty,
-    default_storage_gc_snapshot, default_storage_reclaim_scope, default_storage_reclaim_semantics,
-    default_storage_index_snapshot, default_storage_write_contract,
-    default_storage_write_contract_empty, default_storage_safety_snapshot,
-    default_storage_topology_snapshot, default_storage_watermark_snapshot,
-    default_storage_write_sequence,
-    effective_storage_tuning_from_env,
+    default_storage_read_contract_empty, default_storage_read_sequence,
+    default_storage_reclaim_contract, default_storage_reclaim_contract_empty,
+    default_storage_reclaim_scope, default_storage_reclaim_semantics,
+    default_storage_safety_snapshot, default_storage_topology_snapshot,
+    default_storage_watermark_snapshot, default_storage_write_contract,
+    default_storage_write_contract_empty, default_storage_write_sequence,
+    effective_storage_tuning_from_env, storage_gc_snapshot_from_metrics,
     storage_index_snapshot_from_metrics, storage_safety_snapshot_from_metrics,
-    storage_gc_snapshot_from_metrics, storage_topology_snapshot_from_metrics,
-    storage_watermark_snapshot_from_metrics, PublicStorageContract, PublicStorageFeatureShapes,
-    ShardCompactionModelLayoutReport,
-    ShardCompactionUtilityReport, SlotDumpManifest, StorageLifecyclePlan, StorageLifecycleReport,
-    StorageLifecycleRequest, StorageManagerCycleReport, StorageManagerCycleRequest,
-    StorageManagerStageReport, StorageProductionReadinessPolicy, StorageProductionReadinessReport,
-    StorageContractValue, StorageGcSnapshot, StorageIndexSnapshot, StorageReclaimScope,
+    storage_topology_snapshot_from_metrics, storage_watermark_snapshot_from_metrics,
+    PublicStorageContract, PublicStorageFeatureShapes, ShardCompactionModelLayoutReport,
+    ShardCompactionUtilityReport, SlotDumpManifest, StorageContractValue, StorageGcSnapshot,
+    StorageIndexSnapshot, StorageLifecyclePlan, StorageLifecycleReport, StorageLifecycleRequest,
+    StorageManagerCycleReport, StorageManagerCycleRequest, StorageManagerStageReport,
+    StorageProductionReadinessPolicy, StorageProductionReadinessReport, StorageReclaimScope,
     StorageSafetySnapshot, StorageTopologySnapshot, StorageWatermarkSnapshot,
 };
 use crate::engine::TemporalEngine;
@@ -324,15 +323,21 @@ fn data_node_storage_lifecycle_metrics(stats: &DataNodeRuntimeStats) -> BTreeMap
     );
     metrics.insert(
         "storage_manager_expire_count".to_string(),
-        stats.storage_manager_expire_runs.saturating_add(stats.expiry_sweeps),
+        stats
+            .storage_manager_expire_runs
+            .saturating_add(stats.expiry_sweeps),
     );
     metrics.insert(
         "storage_manager_page_gc_count".to_string(),
-        stats.storage_manager_reclaim_page_runs.saturating_add(stats.gc_runs),
+        stats
+            .storage_manager_reclaim_page_runs
+            .saturating_add(stats.gc_runs),
     );
     metrics.insert(
         "storage_manager_block_gc_count".to_string(),
-        stats.storage_manager_reclaim_page_runs.saturating_add(stats.gc_runs),
+        stats
+            .storage_manager_reclaim_page_runs
+            .saturating_add(stats.gc_runs),
     );
     metrics.insert(
         "storage_manager_compaction_count".to_string(),
@@ -358,9 +363,15 @@ fn data_node_storage_lifecycle_metrics(stats: &DataNodeRuntimeStats) -> BTreeMap
             .storage_lifecycle_runs
             .saturating_add(stats.storage_manager_loops),
     );
-    metrics.insert("cache_evictions".to_string(), stats.storage_manager_reclaim_memory_runs);
+    metrics.insert(
+        "cache_evictions".to_string(),
+        stats.storage_manager_reclaim_memory_runs,
+    );
     metrics.insert("cache_refills".to_string(), stats.load_safe_count_hint());
-    metrics.insert("cache_invalidations".to_string(), stats.dirty_object_count as u64);
+    metrics.insert(
+        "cache_invalidations".to_string(),
+        stats.dirty_object_count as u64,
+    );
     metrics.insert(
         "cache_writeback_queue_depth".to_string(),
         stats.background_queue_depth as u64,
@@ -369,7 +380,10 @@ fn data_node_storage_lifecycle_metrics(stats: &DataNodeRuntimeStats) -> BTreeMap
         "cache_writeback_rejections".to_string(),
         stats.rejected_background_total,
     );
-    metrics.insert("tombstone_records".to_string(), stats.expired_records_removed);
+    metrics.insert(
+        "tombstone_records".to_string(),
+        stats.expired_records_removed,
+    );
     metrics.insert(
         "stale_page_tombstones".to_string(),
         stats.storage_manager_reclaim_page_runs,
@@ -413,9 +427,17 @@ fn apply_shard_storage_metrics(
         add(metrics, "block_index_entry_count", block_entries);
         add(metrics, "page_address_count", page_entries);
         add(metrics, "page_reads", storage.page_reads);
-        add(metrics, "page_writes", storage.page_writes.max(page_entries));
+        add(
+            metrics,
+            "page_writes",
+            storage.page_writes.max(page_entries),
+        );
         add(metrics, "block_reads", storage.block_reads);
-        add(metrics, "block_writes", storage.block_writes.max(block_entries));
+        add(
+            metrics,
+            "block_writes",
+            storage.block_writes.max(block_entries),
+        );
         add(metrics, "bytes_read", storage.bytes_read);
         add(
             metrics,
@@ -423,14 +445,42 @@ fn apply_shard_storage_metrics(
             storage.bytes_written.max(shard.block_store_bytes_written),
         );
         add(metrics, "append_watermark", shard.oplog_sequence);
-        add(metrics, "compaction_watermark", storage.compaction_watermark);
+        add(
+            metrics,
+            "compaction_watermark",
+            storage.compaction_watermark,
+        );
         add(metrics, "storage_zone_count", storage.storage_zone_count);
-        add(metrics, "active_storage_zones", storage.active_storage_zones);
-        add(metrics, "sealed_storage_zones", storage.sealed_storage_zones);
-        add(metrics, "stream_segment_count", storage.stream_segment_count);
-        add(metrics, "storage_zone_total_bytes", storage.storage_zone_total_bytes);
-        add(metrics, "storage_zone_used_bytes", storage.storage_zone_used_bytes);
-        add(metrics, "storage_zone_stale_bytes", storage.storage_zone_stale_bytes);
+        add(
+            metrics,
+            "active_storage_zones",
+            storage.active_storage_zones,
+        );
+        add(
+            metrics,
+            "sealed_storage_zones",
+            storage.sealed_storage_zones,
+        );
+        add(
+            metrics,
+            "stream_segment_count",
+            storage.stream_segment_count,
+        );
+        add(
+            metrics,
+            "storage_zone_total_bytes",
+            storage.storage_zone_total_bytes,
+        );
+        add(
+            metrics,
+            "storage_zone_used_bytes",
+            storage.storage_zone_used_bytes,
+        );
+        add(
+            metrics,
+            "storage_zone_stale_bytes",
+            storage.storage_zone_stale_bytes,
+        );
     }
 }
 
@@ -2976,12 +3026,8 @@ impl DataNodeRuntime {
             storage_watermark_snapshot: storage_watermark_snapshot_from_metrics(
                 &storage_lifecycle_metrics,
             ),
-            storage_gc_snapshot: storage_gc_snapshot_from_metrics(
-                &storage_lifecycle_metrics,
-            ),
-            storage_index_snapshot: storage_index_snapshot_from_metrics(
-                &storage_lifecycle_metrics,
-            ),
+            storage_gc_snapshot: storage_gc_snapshot_from_metrics(&storage_lifecycle_metrics),
+            storage_index_snapshot: storage_index_snapshot_from_metrics(&storage_lifecycle_metrics),
             storage_topology_snapshot: storage_topology_snapshot_from_metrics(
                 &storage_lifecycle_metrics,
             ),

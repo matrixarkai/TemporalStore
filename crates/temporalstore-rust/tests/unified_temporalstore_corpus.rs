@@ -4,9 +4,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::{fs, path::Path};
 
+use rustmtcache::CacheKey;
 use serde::Deserialize;
 use serde_json::Value;
-use temporalstore_rust::cache::CacheKey;
 use temporalstore_rust::client::{
     ClientMetaSyncLoopOptions, ReplicaReadPolicy as ClientReplicaReadPolicy,
 };
@@ -4107,7 +4107,7 @@ fn string_page_cache_key(engine: &TemporalEngine, shard_id: u64, key: &str) -> C
         .unwrap_or_else(|| panic!("key {key} should have a page address"))
 }
 
-fn assert_cache_latency_histograms_observed(stats: temporalstore_rust::cache::CacheStats) {
+fn assert_cache_latency_histograms_observed(stats: rustmtcache::CacheStats) {
     assert_eq!(
         stats.refill_latency_samples,
         stats.refill_latency_le_10us

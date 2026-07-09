@@ -1895,10 +1895,7 @@ fn handle_manage_service_route(
     Some(response)
 }
 
-fn handle_query_service_route(
-    meta: &MetaBackend,
-    request: &HttpRequest,
-) -> Option<(u16, Vec<u8>)> {
+fn handle_query_service_route(meta: &MetaBackend, request: &HttpRequest) -> Option<(u16, Vec<u8>)> {
     let response = match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/QueryService/QueryManageInfo") | ("POST", "/QueryService/QueryManageInfo") => {
             json_response(200, &backend_call!(meta, info))
