@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::engine::constants::*;
 use crate::page_store::LocalPageStore;
@@ -605,15 +605,17 @@ pub(super) fn load_context_children(
         .context_children
         .get(object_key)
         .map(|series| {
+            let mut page_cache = HashMap::new();
             series
                 .iter()
                 .filter_map(|(timeline_key, address)| {
-                    read_context_value::<ContextChildRef>(
+                    read_context_value_cached::<ContextChildRef>(
                         cache,
                         page_store,
                         shard_id,
                         *timeline_key,
                         address,
+                        &mut page_cache,
                     )
                 })
                 .collect()
@@ -651,16 +653,18 @@ pub(super) fn load_context_summaries(
         .context_summaries
         .get(object_key)
         .map(|series| {
+            let mut page_cache = HashMap::new();
             series
                 .range(0..context_timeline_end(as_of_ms))
                 .take(context_limit(limit))
                 .filter_map(|(timeline_key, address)| {
-                    read_context_value::<ContextSummary>(
+                    read_context_value_cached::<ContextSummary>(
                         cache,
                         page_store,
                         shard_id,
                         *timeline_key,
                         address,
+                        &mut page_cache,
                     )
                 })
                 .filter(|summary| summary.valid_from_ms <= as_of_ms)
@@ -696,28 +700,28 @@ pub(super) fn load_context_compression_events(
     limit: Option<usize>,
 ) -> Vec<ContextCompressionEvent> {
     let mut events = Vec::new();
+    let mut seen_nodes = HashSet::new();
+    let mut page_cache = HashMap::new();
     for node_hash in node_hashes
         .iter()
         .copied()
-        .filter(|node_hash| *node_hash != 0)
+        .filter(|node_hash| *node_hash != 0 && seen_nodes.insert(*node_hash))
     {
         let object_key = context_compression_key(tenant_hash, node_hash);
         if let Some(series) = shard.context_compressions.get(&object_key) {
             events.extend(series.iter().filter_map(|(timeline_key, address)| {
-                read_context_value::<ContextCompressionEvent>(
+                read_context_value_cached::<ContextCompressionEvent>(
                     cache,
                     page_store,
                     shard_id,
                     *timeline_key,
                     address,
+                    &mut page_cache,
                 )
                 .filter(|event| {
                     event.source_end_ms >= start_time_ms && event.source_start_ms <= end_time_ms
                 })
             }));
-        }
-        if events.len() >= context_limit(limit) {
-            break;
         }
     }
     events.sort_by(|left, right| {
