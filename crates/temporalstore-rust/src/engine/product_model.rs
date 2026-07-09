@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::block_store::{BlockAddress, LocalBlockStore};
 use crate::types::{
@@ -7,7 +7,7 @@ use crate::types::{
 };
 use rustmtcache::MultiLayerCache;
 
-use super::packed_pages::{decode_feature_page_strict, read_feature_point};
+use super::packed_pages::{decode_feature_page_strict, read_feature_point_cached};
 use super::state::PackedFeaturePageDecode;
 use super::{parse_i64, read_page_bytes, ShardState};
 pub(super) fn read_sequence_row(
@@ -157,11 +157,19 @@ pub(super) fn ips_points_in_range(
         .ips
         .get(key)
         .map(|series| {
+            let mut page_cache = HashMap::new();
             series
                 .range(start_ms..=end_ms)
                 .take(count.unwrap_or(usize::MAX))
                 .filter_map(|(timestamp_ms, address)| {
-                    read_feature_point(cache, block_store, shard_id, *timestamp_ms, address)
+                    read_feature_point_cached(
+                        cache,
+                        block_store,
+                        shard_id,
+                        *timestamp_ms,
+                        address,
+                        &mut page_cache,
+                    )
                 })
                 .collect()
         })
@@ -203,9 +211,17 @@ pub(super) fn ips_points_in_range_with_options(
                     .unwrap_or(true)
         })
         .take(count.unwrap_or(usize::MAX))
-        .filter_map(|(timestamp_ms, meta)| {
-            read_feature_point(cache, block_store, shard_id, *timestamp_ms, &meta.address)
+        .scan(HashMap::new(), |page_cache, (timestamp_ms, meta)| {
+            Some(read_feature_point_cached(
+                cache,
+                block_store,
+                shard_id,
+                *timestamp_ms,
+                &meta.address,
+                page_cache,
+            ))
         })
+        .flatten()
         .collect()
 }
 
