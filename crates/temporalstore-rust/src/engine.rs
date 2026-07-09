@@ -8831,7 +8831,7 @@ fn execute_on_shard(
             tenant_hash,
             node_hashes,
         } => {
-            let nodes = node_hashes
+            let nodes = dedupe_nonzero_u64_preserve_order(node_hashes)
                 .into_iter()
                 .filter_map(|node_hash| {
                     let object_key = context_node_key(tenant_hash, node_hash);
@@ -9362,9 +9362,8 @@ fn execute_on_shard(
             limit,
         } => {
             let object_key = context_entity_collection_key(tenant_hash, node_hash);
-            let entities = entity_hashes
-                .iter()
-                .copied()
+            let entities = dedupe_nonzero_u64_preserve_order(entity_hashes)
+                .into_iter()
                 .take(context_limit(limit))
                 .filter_map(|entity_hash| {
                     let entity_key = context_entity_key(tenant_hash, node_hash, entity_hash);
@@ -9465,10 +9464,8 @@ fn execute_on_shard(
             ref_hashes,
             limit,
         } => {
-            let embeddings = ref_hashes
-                .iter()
-                .copied()
-                .filter(|ref_hash| *ref_hash != 0)
+            let embeddings = dedupe_nonzero_u64_preserve_order(ref_hashes)
+                .into_iter()
                 .take(context_limit(limit))
                 .filter_map(|ref_hash| {
                     let object_key = context_embedding_key(tenant_hash, ref_hash);
@@ -13529,6 +13526,14 @@ fn read_page_bytes(
 
 fn read_page_bytes_cold(page_store: &LocalPageStore, address: &PageAddress) -> Option<Vec<u8>> {
     page_store.read(address).ok()
+}
+
+fn dedupe_nonzero_u64_preserve_order(values: Vec<u64>) -> Vec<u64> {
+    let mut seen = HashSet::new();
+    values
+        .into_iter()
+        .filter(|value| *value != 0 && seen.insert(*value))
+        .collect()
 }
 
 fn cache_entry_routing_slot(entry: &CacheEntryInfo) -> Option<u32> {
