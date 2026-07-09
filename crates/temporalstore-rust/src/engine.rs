@@ -58,7 +58,9 @@ use crate::types::{
     ShardId, Status, StringSetCondition,
 };
 use crate::wal::LocalWriteAheadLogStore;
-use context::{context_index_ref_identity, validate_context_index_lookup};
+use context::{
+    context_index_ref_identity, read_context_values_cached, validate_context_index_lookup,
+};
 use rustmtcache::{CacheEntryInfo, CacheGcReport, CacheKey, MultiLayerCache};
 
 #[derive(Debug, Clone)]
@@ -9320,24 +9322,17 @@ fn execute_on_shard(
                 .context_indexes
                 .get(&object_key)
                 .map(|series| {
-                    let mut page_cache = HashMap::new();
-                    series
+                    let entries = series
                         .range(
                             context_timeline_start(start_time_ms)
                                 ..context_timeline_end(end_time_ms),
                         )
                         .take(context_limit(limit))
-                        .filter_map(|(timeline_key, address)| {
-                            read_context_value_cached::<ContextIndexRef>(
-                                cache,
-                                page_store,
-                                shard_id,
-                                *timeline_key,
-                                address,
-                                &mut page_cache,
-                            )
-                        })
-                        .collect()
+                        .map(|(timeline_key, address)| (*timeline_key, address.clone()))
+                        .collect::<Vec<_>>();
+                    read_context_values_cached::<ContextIndexRef>(
+                        cache, page_store, shard_id, entries,
+                    )
                 })
                 .unwrap_or_default();
             CommandResponse::ContextIndexRefs { object_key, refs }
@@ -9471,24 +9466,17 @@ fn execute_on_shard(
                 .context_audits
                 .get(&object_key)
                 .map(|series| {
-                    let mut page_cache = HashMap::new();
-                    series
+                    let entries = series
                         .range(
                             context_timeline_start(start_time_ms)
                                 ..context_timeline_end(end_time_ms),
                         )
                         .take(context_limit(limit))
-                        .filter_map(|(timeline_key, address)| {
-                            read_context_value_cached::<ContextPackAudit>(
-                                cache,
-                                page_store,
-                                shard_id,
-                                *timeline_key,
-                                address,
-                                &mut page_cache,
-                            )
-                        })
-                        .collect()
+                        .map(|(timeline_key, address)| (*timeline_key, address.clone()))
+                        .collect::<Vec<_>>();
+                    read_context_values_cached::<ContextPackAudit>(
+                        cache, page_store, shard_id, entries,
+                    )
                 })
                 .unwrap_or_default();
             CommandResponse::ContextPackAudits { object_key, audits }
@@ -9535,24 +9523,17 @@ fn execute_on_shard(
                 .context_dirty
                 .get(&object_key)
                 .map(|series| {
-                    let mut page_cache = HashMap::new();
-                    series
+                    let entries = series
                         .range(
                             context_timeline_start(start_time_ms)
                                 ..context_timeline_end(end_time_ms),
                         )
                         .take(context_limit(limit))
-                        .filter_map(|(timeline_key, address)| {
-                            read_context_value_cached::<ContextSummaryDirtyMarker>(
-                                cache,
-                                page_store,
-                                shard_id,
-                                *timeline_key,
-                                address,
-                                &mut page_cache,
-                            )
-                        })
-                        .collect()
+                        .map(|(timeline_key, address)| (*timeline_key, address.clone()))
+                        .collect::<Vec<_>>();
+                    read_context_values_cached::<ContextSummaryDirtyMarker>(
+                        cache, page_store, shard_id, entries,
+                    )
                 })
                 .unwrap_or_default();
             CommandResponse::ContextSummaryDirtyMarkers {
@@ -14494,7 +14475,7 @@ fn read_page_bytes(
     Some(bytes)
 }
 
-fn read_page_bytes_batch(
+pub(super) fn read_page_bytes_batch(
     cache: &MultiLayerCache,
     page_store: &LocalPageStore,
     shard_id: ShardId,

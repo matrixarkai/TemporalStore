@@ -12,9 +12,11 @@ use crate::types::{
 use rustmtcache::MultiLayerCache;
 
 use super::packed_pages::{
-    read_feature_point_cached, read_feature_point_cold_with_cache_policy, ColdScanPackedPageCache,
+    decode_feature_page_strict, read_feature_point_cached,
+    read_feature_point_cold_with_cache_policy, ColdScanPackedPageCache,
 };
-use super::{read_page_bytes, stable_object_hash, ShardState};
+use super::state::PackedFeaturePageDecode;
+use super::{read_page_bytes, read_page_bytes_batch, stable_object_hash, ShardState};
 pub(super) fn context_node_key(tenant_hash: u64, node_hash: u64) -> String {
     format!("ctx:node:{tenant_hash}:{node_hash}")
 }
@@ -195,6 +197,52 @@ pub(super) fn read_context_value_cached<T: ContextWire>(
         packed_page_cache,
     )?;
     context_from_bytes(&point.value)
+}
+
+pub(super) fn read_context_values_cached<T: ContextWire>(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    entries: Vec<(u64, PageAddress)>,
+) -> Vec<T> {
+    let addresses = entries
+        .iter()
+        .map(|(_, address)| Some(address.clone()))
+        .collect::<Vec<_>>();
+    let bytes = read_page_bytes_batch(cache, page_store, shard_id, &addresses);
+    let mut packed_page_cache: HashMap<PageAddress, Option<Vec<FeaturePoint>>> = HashMap::new();
+    entries
+        .into_iter()
+        .zip(bytes)
+        .filter_map(|((timeline_key, address), bytes)| {
+            if let Some(points) = packed_page_cache.get(&address) {
+                return points
+                    .as_ref()
+                    .and_then(|points| {
+                        points
+                            .iter()
+                            .find(|point| point.timestamp_ms == timeline_key)
+                    })
+                    .and_then(|point| context_from_bytes::<T>(&point.value));
+            }
+            let bytes = bytes?;
+            match decode_feature_page_strict(&bytes) {
+                PackedFeaturePageDecode::Packed(points) => {
+                    let selected = points
+                        .iter()
+                        .find(|point| point.timestamp_ms == timeline_key)
+                        .and_then(|point| context_from_bytes::<T>(&point.value));
+                    packed_page_cache.insert(address, Some(points));
+                    selected
+                }
+                PackedFeaturePageDecode::Legacy => context_from_bytes::<T>(&bytes),
+                PackedFeaturePageDecode::Corrupt(_) => {
+                    packed_page_cache.insert(address, None);
+                    None
+                }
+            }
+        })
+        .collect()
 }
 
 pub(super) fn context_event_matches_filter(
