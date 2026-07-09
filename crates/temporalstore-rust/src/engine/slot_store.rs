@@ -169,6 +169,25 @@ pub(super) fn slot_index_page_address(
         return None;
     }
 
+    if let Some(routing_slots) = shard
+        .slot_index
+        .routing_slots_for_object_key(object_key)
+        .filter(|slots| !slots.is_empty())
+    {
+        return routing_slots
+            .iter()
+            .filter_map(|routing_slot| shard.slot_index.slot_map.get(routing_slot))
+            .flat_map(|slot| slot.page_index.values())
+            .filter(|page| {
+                !page.deleted
+                    && page.model_id == model_id
+                    && page.object_key == object_key
+                    && page.component.as_deref() == component
+            })
+            .map(|page| page.address.clone())
+            .next();
+    }
+
     shard
         .slot_index
         .slot_map
@@ -214,14 +233,32 @@ pub(super) fn slot_index_component_page_addresses(
         return Vec::new();
     }
 
-    let mut refs = shard
+    let mut refs = if let Some(routing_slots) = shard
         .slot_index
-        .slot_map
-        .values()
-        .flat_map(|slot| slot.page_index.values())
-        .filter(|page| !page.deleted && page.model_id == model_id && page.object_key == object_key)
-        .map(|page| (page.component.clone(), page.address.clone()))
-        .collect::<Vec<_>>();
+        .routing_slots_for_object_key(object_key)
+        .filter(|slots| !slots.is_empty())
+    {
+        routing_slots
+            .iter()
+            .filter_map(|routing_slot| shard.slot_index.slot_map.get(routing_slot))
+            .flat_map(|slot| slot.page_index.values())
+            .filter(|page| {
+                !page.deleted && page.model_id == model_id && page.object_key == object_key
+            })
+            .map(|page| (page.component.clone(), page.address.clone()))
+            .collect::<Vec<_>>()
+    } else {
+        shard
+            .slot_index
+            .slot_map
+            .values()
+            .flat_map(|slot| slot.page_index.values())
+            .filter(|page| {
+                !page.deleted && page.model_id == model_id && page.object_key == object_key
+            })
+            .map(|page| (page.component.clone(), page.address.clone()))
+            .collect::<Vec<_>>()
+    };
     refs.sort_by(|left, right| left.0.cmp(&right.0));
     refs
 }
