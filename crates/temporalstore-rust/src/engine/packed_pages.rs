@@ -1,12 +1,13 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::sync::atomic::Ordering;
 
 use crate::block_store::{BlockAddress, BlockStoreError, LocalBlockStore};
 use crate::types::{FeaturePoint, ShardId};
-use rustmtcache::MultiLayerCache;
+use rustmtcache::{CacheKey, MultiLayerCache};
 
-use super::constants::FEATURE_PAGE_MAGIC;
+use super::constants::{FEATURE_PAGE_MAGIC, HOT_PAGE_OFFSET, HOT_PAGE_SEGMENT_ID};
 use super::state::{PackedFeaturePage, PackedFeaturePageDecode};
-use super::{append_value, read_page_bytes, read_page_bytes_cold, stable_page_object_id};
+use super::{read_page_bytes, read_page_bytes_cold, stable_page_object_id};
 use crate::storage_config::{cold_scan_no_cache_fill, context_page_target_bytes};
 
 const COLD_SCAN_PACKED_PAGE_CACHE_LIMIT: usize = 128;
@@ -129,23 +130,39 @@ pub(super) fn append_timestamped_kv_pages(
         return Ok(refs);
     }
 
-    for chunk in chunks {
+    let start_offset = HOT_PAGE_OFFSET.fetch_add(chunks.len() as u64, Ordering::Relaxed);
+    let mut page_cache_entries = Vec::with_capacity(chunks.len());
+    for (index, chunk) in chunks.into_iter().enumerate() {
         let packed = encode_feature_page(&chunk);
-        let address = append_value(
-            cache,
-            block_store,
-            shard_id,
-            &packed,
-            Some(object_id),
-            Some(routing_slot),
-            async_storage,
-        )?;
+        let address = BlockAddress {
+            page_segment_id: HOT_PAGE_SEGMENT_ID,
+            offset: start_offset.saturating_add(index as u64),
+            length: packed.len() as u64,
+            page_id: None,
+            object_id: Some(object_id),
+            routing_slot: Some(routing_slot),
+            generation: Some(object_id),
+            extent_id: None,
+            sha256: None,
+        };
+        page_cache_entries.push((
+            CacheKey::page_with_slot_generation(
+                shard_id,
+                address.page_segment_id,
+                address.offset,
+                address.length,
+                address.routing_slot,
+                address.generation,
+            ),
+            packed,
+        ));
         refs.extend(
             chunk
                 .into_iter()
                 .map(|point| (point.timestamp_ms, address.clone())),
         );
     }
+    cache.put_memory_only_batch(page_cache_entries);
     Ok(refs)
 }
 
