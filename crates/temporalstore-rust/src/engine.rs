@@ -59,7 +59,8 @@ use crate::types::{
 };
 use crate::wal::LocalWriteAheadLogStore;
 use context::{
-    context_index_ref_identity, read_context_values_cached, validate_context_index_lookup,
+    context_index_ref_identity, read_context_values_cached,
+    read_context_values_cached_with_page_cache, validate_context_index_lookup,
 };
 use rustmtcache::{CacheEntryInfo, CacheGcReport, CacheKey, MultiLayerCache};
 
@@ -9384,30 +9385,55 @@ fn execute_on_shard(
                 let mut seen_for_predicate = HashMap::new();
                 let existing_candidates = candidate_refs.as_ref();
                 if let Some(series) = shard.context_indexes.get(&object_key) {
+                    let mut batch = Vec::with_capacity(64);
+                    let mut drain_batch =
+                        |batch: &mut Vec<(u64, PageAddress)>,
+                         seen_for_predicate: &mut HashMap<(u64, u64, u64), ContextIndexRef>,
+                         scanned_ref_count: &mut usize,
+                         deduped_ref_count: &mut usize| {
+                            for index_ref in
+                                read_context_values_cached_with_page_cache::<ContextIndexRef>(
+                                    cache,
+                                    page_store,
+                                    shard_id,
+                                    std::mem::take(batch),
+                                    &mut page_cache,
+                                )
+                            {
+                                *scanned_ref_count += 1;
+                                let key = context_index_ref_identity(&index_ref);
+                                if existing_candidates
+                                    .map(|existing| !existing.contains_key(&key))
+                                    .unwrap_or(false)
+                                {
+                                    continue;
+                                }
+                                if seen_for_predicate.insert(key, index_ref).is_some() {
+                                    *deduped_ref_count += 1;
+                                }
+                            }
+                        };
                     for (timeline_key, address) in series.range(
                         context_timeline_start(predicate.start_time_ms)
                             ..context_timeline_end(predicate.end_time_ms),
                     ) {
-                        if let Some(index_ref) = read_context_value_cached::<ContextIndexRef>(
-                            cache,
-                            page_store,
-                            shard_id,
-                            *timeline_key,
-                            address,
-                            &mut page_cache,
-                        ) {
-                            scanned_ref_count += 1;
-                            let key = context_index_ref_identity(&index_ref);
-                            if existing_candidates
-                                .map(|existing| !existing.contains_key(&key))
-                                .unwrap_or(false)
-                            {
-                                continue;
-                            }
-                            if seen_for_predicate.insert(key, index_ref).is_some() {
-                                deduped_ref_count += 1;
-                            }
+                        batch.push((*timeline_key, address.clone()));
+                        if batch.len() >= 64 {
+                            drain_batch(
+                                &mut batch,
+                                &mut seen_for_predicate,
+                                &mut scanned_ref_count,
+                                &mut deduped_ref_count,
+                            );
                         }
+                    }
+                    if !batch.is_empty() {
+                        drain_batch(
+                            &mut batch,
+                            &mut seen_for_predicate,
+                            &mut scanned_ref_count,
+                            &mut deduped_ref_count,
+                        );
                     }
                 }
 
