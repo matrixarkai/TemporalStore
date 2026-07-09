@@ -601,19 +601,27 @@ pub(super) fn load_context_children(
         .get(object_key)
         .map(|series| {
             let mut page_cache = HashMap::new();
-            series
-                .iter()
-                .filter_map(|(timeline_key, address)| {
-                    read_context_value_cached::<ContextChildRef>(
-                        cache,
-                        page_store,
-                        shard_id,
-                        *timeline_key,
-                        address,
-                        &mut page_cache,
-                    )
-                })
-                .collect()
+            let mut latest_by_child = HashMap::new();
+            for child_ref in series.iter().filter_map(|(timeline_key, address)| {
+                read_context_value_cached::<ContextChildRef>(
+                    cache,
+                    page_store,
+                    shard_id,
+                    *timeline_key,
+                    address,
+                    &mut page_cache,
+                )
+            }) {
+                latest_by_child
+                    .entry(child_ref.child_hash)
+                    .and_modify(|stored: &mut ContextChildRef| {
+                        if child_ref.updated_at_ms > stored.updated_at_ms {
+                            *stored = child_ref.clone();
+                        }
+                    })
+                    .or_insert(child_ref);
+            }
+            latest_by_child.into_values().collect()
         })
         .unwrap_or_default()
 }
