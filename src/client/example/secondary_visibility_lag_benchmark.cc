@@ -319,12 +319,16 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
-    if (background_reader_threads > 0 &&
-        !WaitSeedVisibleOnSecondary(metaserver, idc, namespace_name, table_name, prefix,
-                                    value_bytes, kSeedCount, max_wait_ms)) {
-        std::cerr << "seed keys did not become visible on secondary before background load"
-                  << std::endl;
-        return 1;
+    bool seed_visible_on_secondary = true;
+    if (background_reader_threads > 0) {
+        seed_visible_on_secondary = WaitSeedVisibleOnSecondary(
+            metaserver, idc, namespace_name, table_name, prefix, value_bytes, kSeedCount,
+            max_wait_ms);
+        if (!seed_visible_on_secondary) {
+            std::cerr << "seed keys did not become visible on secondary before background "
+                         "load; continuing with bounded primary fallback"
+                      << std::endl;
+        }
     }
 
     std::atomic<bool> stop_background{false};
@@ -479,6 +483,8 @@ int main(int argc, char** argv) {
               << "," << max_wait_ms << "," << background_writer_threads << ","
               << background_reader_threads << "," << background_writer_pause_us << ","
               << background_reader_pause_us << std::endl;
+    std::cout << "warmup,seed_visible_on_secondary" << std::endl;
+    std::cout << "warmup," << (seed_visible_on_secondary ? 1 : 0) << std::endl;
     PrintSummary("secondary_visibility_lag_after_primary_set",
                  Summarize(std::move(successful_lag), errors.load()), probe_threads, total_ms);
     PrintSummary("secondary_visibility_poll_attempts",
