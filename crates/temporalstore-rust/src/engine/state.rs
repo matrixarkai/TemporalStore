@@ -302,13 +302,9 @@ impl CoreIndex {
 
     pub(super) fn contains_object_key(&self, object_key: &str) -> bool {
         if let Some(page_refs) = self.object_key_lookup.get(object_key) {
-            return page_refs.iter().any(|page_ref| {
-                self.slot_map
-                    .get(&page_ref.routing_slot)
-                    .and_then(|slot| slot.page_index.get(&page_ref.page_ref_key))
-                    .map(|page| !page.deleted && page.object_key == object_key)
-                    .unwrap_or(false)
-            });
+            return page_refs
+                .iter()
+                .any(|page_ref| self.object_key_ref_is_live(object_key, page_ref));
         }
 
         if !self.object_key_lookup.is_empty() {
@@ -326,15 +322,18 @@ impl CoreIndex {
         self.object_key_lookup.get(object_key).map(|page_refs| {
             page_refs
                 .iter()
-                .filter_map(|page_ref| {
-                    self.slot_map
-                        .get(&page_ref.routing_slot)
-                        .and_then(|slot| slot.page_index.get(&page_ref.page_ref_key))
-                        .filter(|page| !page.deleted && page.object_key == object_key)
-                        .map(|_| page_ref.routing_slot)
-                })
+                .filter(|page_ref| self.object_key_ref_is_live(object_key, page_ref))
+                .map(|page_ref| page_ref.routing_slot)
                 .collect()
         })
+    }
+
+    fn object_key_ref_is_live(&self, object_key: &str, page_ref: &ObjectKeyPageLookupRef) -> bool {
+        self.slot_map
+            .get(&page_ref.routing_slot)
+            .and_then(|slot| slot.page_index.get(&page_ref.page_ref_key))
+            .map(|page| !page.deleted && page.object_key == object_key)
+            .unwrap_or(false)
     }
 
     pub(super) fn contains_object_page_address(
