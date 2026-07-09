@@ -5674,6 +5674,7 @@ impl TemporalEngine {
                 ));
             };
             let mut published_object_keys = BTreeSet::new();
+            let mut published_entries = Vec::new();
             let mut durable_cache_refills = Vec::new();
             let mut published_memory_only_keys = Vec::new();
             for ((target, original, bytes, _, _), published) in
@@ -5682,6 +5683,15 @@ impl TemporalEngine {
                 if !replace_model_page_address(shard, &target, &original, &published) {
                     continue;
                 }
+                published_entries.push(LivePageEntry {
+                    object_key: target.object_key.clone(),
+                    kind: target.kind.clone(),
+                    component: target.component.clone(),
+                    address: published.clone(),
+                    dirty: false,
+                    deleted: false,
+                    log_backed: true,
+                });
                 durable_cache_refills.push((
                     CacheKey::page_with_slot_generation(
                         shard_id,
@@ -5703,7 +5713,11 @@ impl TemporalEngine {
             for object_key in published_object_keys {
                 clear_published_object_dirty_state(shard, &object_key);
             }
-            rebuild_slot_page_ownership(shard_id, shard, start_routing_slot, end_routing_slot);
+            if publish_all {
+                rebuild_slot_page_ownership(shard_id, shard, start_routing_slot, end_routing_slot);
+            } else {
+                sync_slot_index_live_page_entries(&self.cache, shard, shard_id, published_entries);
+            }
             refresh_slot_runtime_flags(shard);
             serialize_index(shard)
         };
@@ -11732,6 +11746,37 @@ fn sync_slot_index_object_pages(
         shard.slot_index.rebuild_object_page_lookup();
     }
     invalidate_page_addresses_except(cache, shard_id, removed_addresses, live_address_keys);
+}
+
+fn sync_slot_index_live_page_entries(
+    cache: &MultiLayerCache,
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    entries: Vec<LivePageEntry>,
+) {
+    let mut object_pages = BTreeMap::<(String, String), Vec<PageAddress>>::new();
+    for entry in entries {
+        if let Some(component) = entry.component {
+            upsert_slot_index_page(
+                cache,
+                shard,
+                shard_id,
+                &entry.kind,
+                &entry.object_key,
+                Some(component),
+                entry.address,
+                entry.dirty,
+            );
+        } else {
+            object_pages
+                .entry((entry.kind, entry.object_key))
+                .or_default()
+                .push(entry.address);
+        }
+    }
+    for ((kind, object_key), addresses) in object_pages {
+        sync_slot_index_object_pages(cache, shard, shard_id, &kind, &object_key, addresses, false);
+    }
 }
 
 fn classify_slot_layout(object_count: usize, page_ref_count: usize) -> SlotLayoutState {
