@@ -2701,6 +2701,113 @@ fn verify_client_deployment_placement_routing() {
     assert_eq!(primary_reads.load(std::sync::atomic::Ordering::SeqCst), 0);
     assert_eq!(replica_reads.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!(replica_writes.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+    let fallback_primary_addr = free_local_addr();
+    let fallback_replica_addr = free_local_addr();
+    let fallback_meta_addr = free_local_addr();
+    let fallback_primary_reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let fallback_replica_reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    start_replica_fallback_endpoint(
+        fallback_primary_addr.clone(),
+        Arc::clone(&fallback_primary_reads),
+        Status::ok(),
+        Some(b"primary-fallback".to_vec()),
+    );
+    start_replica_fallback_endpoint(
+        fallback_replica_addr.clone(),
+        Arc::clone(&fallback_replica_reads),
+        Status::error("replica_not_ready", "secondary behind durable sequence"),
+        None,
+    );
+
+    let fallback_meta_for_listener = fallback_meta_addr.clone();
+    let fallback_primary_for_meta = fallback_primary_addr.clone();
+    let fallback_replica_for_meta = fallback_replica_addr.clone();
+    std::thread::spawn(move || {
+        serve(&fallback_meta_for_listener, move |request| {
+            match (request.method.as_str(), request.path.as_str()) {
+                ("POST", "/tables/topology") => json_response(
+                    200,
+                    &TableTopologyResponse {
+                        status: Status::ok(),
+                        table: Some(TableMetaInfo {
+                            table_id: 82,
+                            namespace: "ns".to_string(),
+                            table_name: "fallback".to_string(),
+                            state: MetaEntityState::Normal,
+                            topology_version: 12,
+                            first_shard_id: 82,
+                            shard_count: 1,
+                            replica_count: 2,
+                            use_cpp_partition_ids: false,
+                            partition_version: 4,
+                            serving_options: temporalstore_rust::meta::TableServingOptions {
+                                pin_primary: false,
+                                replica_read_policy: "round_robin_replica".to_string(),
+                                preferred_location: String::new(),
+                                drop_percent: 0,
+                                max_read_retries: 1,
+                                max_write_retries: 0,
+                                retry_backoff_ms: 0,
+                                continuous_failed_time_ms: 100,
+                                io_timeout_ms: 1_000,
+                                connect_timeout_ms: 1_000,
+                            },
+                        }),
+                        partitions: vec![TablePartition {
+                            shard_id: 82,
+                            start_slot: 0,
+                            end_slot: u64::MAX,
+                            primary: Some(fallback_primary_for_meta.clone()),
+                            replicas: vec![
+                                fallback_primary_for_meta.clone(),
+                                fallback_replica_for_meta.clone(),
+                            ],
+                            primary_endpoint: Some(ServerEndpoint {
+                                server_addr: fallback_primary_for_meta.clone(),
+                                location: "zone-primary".to_string(),
+                            }),
+                            replica_endpoints: vec![ServerEndpoint {
+                                server_addr: fallback_replica_for_meta.clone(),
+                                location: "zone-local".to_string(),
+                            }],
+                        }],
+                        unchanged: false,
+                    },
+                ),
+                _ => json_response(404, &Status::error("not_found", "not found")),
+            }
+        })
+        .unwrap();
+    });
+
+    wait_for_http(&fallback_primary_addr);
+    wait_for_http(&fallback_replica_addr);
+    wait_for_http(&fallback_meta_addr);
+
+    let fallback_client = TemporalStoreClient::with_options(ClientOptions {
+        proxy_addr: "127.0.0.1:1".to_string(),
+        meta_addr: Some(fallback_meta_addr),
+        local_location: "zone-local".to_string(),
+        route_cache_ttl_ms: 60_000,
+        ..ClientOptions::default()
+    });
+    let fallback_table = fallback_client
+        .open_table_from_meta("ns", "fallback")
+        .unwrap();
+    assert_eq!(
+        fallback_table.get("placed-key").unwrap(),
+        Some(b"primary-fallback".to_vec())
+    );
+    assert_eq!(
+        fallback_replica_reads.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    assert_eq!(
+        fallback_primary_reads.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
 }
 
 fn verify_metaserver_scheduler_control_plane() {
@@ -4681,6 +4788,40 @@ fn start_client_placement_endpoint(
                                     status: Status::ok(),
                                     response: CommandResponse::Bytes {
                                         value: Some(read_value.clone()),
+                                    },
+                                },
+                            )
+                        }
+                        _ => json_response(400, &Status::error("bad_request", "unexpected")),
+                    }
+                }
+                _ => json_response(404, &Status::error("not_found", "not found")),
+            }
+        })
+        .unwrap();
+    });
+}
+
+fn start_replica_fallback_endpoint(
+    addr: String,
+    reads: Arc<std::sync::atomic::AtomicUsize>,
+    status: Status,
+    read_value: Option<Vec<u8>>,
+) {
+    std::thread::spawn(move || {
+        serve(&addr, move |request| {
+            match (request.method.as_str(), request.path.as_str()) {
+                ("POST", "/execute") => {
+                    let req = parse_json::<ExecuteRequest>(&request.body).unwrap();
+                    match req.command {
+                        Command::StringGet { .. } => {
+                            reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            json_response(
+                                200,
+                                &ExecuteResponse {
+                                    status: status.clone(),
+                                    response: CommandResponse::Bytes {
+                                        value: read_value.clone(),
                                     },
                                 },
                             )

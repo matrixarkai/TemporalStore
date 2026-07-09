@@ -25,7 +25,7 @@ mod routing;
 use commands::{command_is_dropped, command_key, command_routing_key, is_write};
 use retry::{
     classify_cpp_retry_decision, replica_read_policy_from_meta, retry_attempts_for,
-    sleep_before_retry,
+    sleep_before_retry, status_is_replica_read_not_ready,
 };
 pub use routing::{
     crc64_jones, key_is_dropped_by_percent, shard_id_for_key, slot_id_for_key, stable_key_hash,
@@ -3597,25 +3597,49 @@ impl TemporalStoreTable {
             });
         }
         let force_primary = write || table_options.pin_primary;
+        let replica_fallback_allowed = !write
+            && !force_primary
+            && table_options.replica_read_policy != ReplicaReadPolicy::PinPrimary;
+        let mut current_force_primary = force_primary;
+        let mut replica_primary_fallback_used = false;
         let retry_budget_attempts = retry_attempts_for(&table_options, write);
         let mut attempt = 0;
         let mut topology_refresh_used = false;
         let response = loop {
-            let current = self.client.execute_routed_with_http_and_policy(
+            let current_result = self.client.execute_routed_with_http_and_policy(
                 ExecuteRequest {
                     shard_id,
                     command: command.clone(),
                 },
-                force_primary,
+                current_force_primary,
                 self.http_options(),
                 Some(table_options.continuous_failed_time_ms),
-                table_options.replica_read_policy,
+                if current_force_primary {
+                    ReplicaReadPolicy::PinPrimary
+                } else {
+                    table_options.replica_read_policy
+                },
                 if table_options.preferred_location.is_empty() {
                     None
                 } else {
                     Some(table_options.preferred_location.as_str())
                 },
-            )?;
+            );
+            let current = match current_result {
+                Ok(current) => current,
+                Err(err) => {
+                    if replica_fallback_allowed && !replica_primary_fallback_used {
+                        replica_primary_fallback_used = true;
+                        current_force_primary = true;
+                        topology_refresh_used = true;
+                        self.refresh_table_topology_after_status();
+                        sleep_before_retry(&table_options, attempt);
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(err);
+                }
+            };
             let decision = classify_cpp_retry_decision(
                 &current.status,
                 write,
@@ -3624,11 +3648,31 @@ impl TemporalStoreTable {
                 topology_refresh_used,
             );
             if current.status.ok || !decision.would_retry {
+                if replica_fallback_allowed
+                    && !replica_primary_fallback_used
+                    && !current.status.ok
+                    && status_is_replica_read_not_ready(&current.status)
+                {
+                    replica_primary_fallback_used = true;
+                    current_force_primary = true;
+                    topology_refresh_used = true;
+                    self.refresh_table_topology_after_status();
+                    sleep_before_retry(&table_options, attempt);
+                    attempt += 1;
+                    continue;
+                }
                 break current;
             }
             if decision.topology_retry && !topology_refresh_used {
                 topology_refresh_used = true;
                 self.refresh_table_topology_after_status();
+            }
+            if replica_fallback_allowed
+                && !replica_primary_fallback_used
+                && status_is_replica_read_not_ready(&current.status)
+            {
+                replica_primary_fallback_used = true;
+                current_force_primary = true;
             }
             sleep_before_retry(&table_options, attempt);
             attempt += 1;

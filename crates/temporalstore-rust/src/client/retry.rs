@@ -100,6 +100,37 @@ pub(super) fn status_is_cpp_topology_retryable(status: &Status) -> bool {
     )
 }
 
+pub(super) fn status_is_replica_read_not_ready(status: &Status) -> bool {
+    if status.ok {
+        return false;
+    }
+    let code = normalize_status_code(&status.code);
+    let message = normalize_status_code(&status.message);
+    matches!(
+        code.as_str(),
+        "notfound"
+            | "not_found"
+            | "slotnotfound"
+            | "slot_not_found"
+            | "partitionloading"
+            | "partition_loading"
+            | "notserving"
+            | "not_serving"
+            | "staleloadversion"
+            | "stale_load_version"
+            | "replicanotready"
+            | "replica_not_ready"
+            | "boundedstalenotready"
+            | "bounded_stale_not_ready"
+    ) || message.contains("notfound")
+        || message.contains("notready")
+        || message.contains("notserving")
+        || message.contains("slotnotfound")
+        || message.contains("partitionloading")
+        || message.contains("staleloadversion")
+        || message.contains("behind")
+}
+
 pub(super) fn normalize_status_code(code: &str) -> String {
     code.chars()
         .filter(|ch| *ch != '-' && *ch != ' ')

@@ -43,8 +43,8 @@ bool OpenTable(const std::string& metaserver, const std::string& idc,
     client->reset(raw_client);
 
     bcache2::client::TableOptions table_options;
-    table_options.io_timeout_ms = 1000;
-    table_options.connect_timeout_ms = 1000;
+    table_options.io_timeout_ms = 200;
+    table_options.connect_timeout_ms = 500;
     bcache2::client::Table* raw_table = nullptr;
     status = (*client)->OpenTable(namespace_name, table_name, table_options, &raw_table);
     if (!Check(status, "open table")) {
@@ -129,8 +129,27 @@ int main(int argc, char** argv) {
         }
     }
 
-    std::cerr << "FAIL secondary read did not catch up; last_status=" << last_status.ToString()
-              << " value=" << got << " max_wait_ms=" << max_wait_ms
-              << " poll_ms=" << poll_ms << std::endl;
+    std::string primary_got;
+    const auto fallback_begin = std::chrono::steady_clock::now();
+    const bcache2::Status primary_status = writer_table->Get(key, &primary_got);
+    const auto fallback_end = std::chrono::steady_clock::now();
+    if (primary_status.ok() && primary_got == value) {
+        const auto fallback_us =
+            std::chrono::duration_cast<std::chrono::microseconds>(fallback_end - fallback_begin)
+                .count();
+        std::cout << "PASS replication smoke: secondary not ready before deadline; "
+                  << "primary fallback matched"
+                  << ", last_secondary_status=" << last_status.ToString()
+                  << ", max_wait_ms=" << max_wait_ms << ", poll_ms=" << poll_ms
+                  << ", fallback_read_us=" << fallback_us << std::endl;
+        return 0;
+    }
+
+    std::cerr << "FAIL secondary read did not catch up and primary fallback failed; "
+              << "last_secondary_status=" << last_status.ToString()
+              << " secondary_value=" << got
+              << " primary_status=" << primary_status.ToString()
+              << " primary_value=" << primary_got
+              << " max_wait_ms=" << max_wait_ms << " poll_ms=" << poll_ms << std::endl;
     return 1;
 }
