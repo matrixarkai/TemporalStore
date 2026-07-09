@@ -12145,6 +12145,9 @@ fn rebuild_slot_first_index(
         let routing_slot = entry.address.routing_slot.unwrap_or_else(|| {
             page_routing_slot(&entry.object_key, start_routing_slot, end_routing_slot)
         });
+        if routing_slot < start_routing_slot || routing_slot > end_routing_slot {
+            continue;
+        }
         let object_id = entry.address.object_id.unwrap_or_else(|| {
             stable_page_object_id(
                 shard_id,
