@@ -95,11 +95,11 @@ pub use context_workflow::{
     ContextTreeTraversalDebug, ContextWorkflowStateReport,
 };
 pub use control::{
-    CheckedBatchExecuteRequest, CheckedBatchExecuteResponse, CheckedExecuteRequest,
-    CheckedExecuteResponse, Config, GetConfigResponse, GetInfoResponse, GetStatsResponse,
-    LoadShardRequest, LoadShardResponse, MembershipUpdateRequest, ScanStreamRequest,
-    ScanStreamResponse, SetConfigRequest, ShardCanonicalStorageStats, StreamKind,
-    StreamReadRequest, StreamReadResponse, UnloadShardRequest, UnloadShardResponse,
+    CanonicalLogAckPolicy, CheckedBatchExecuteRequest, CheckedBatchExecuteResponse,
+    CheckedExecuteRequest, CheckedExecuteResponse, Config, GetConfigResponse, GetInfoResponse,
+    GetStatsResponse, LoadShardRequest, LoadShardResponse, MembershipUpdateRequest,
+    ScanStreamRequest, ScanStreamResponse, SetConfigRequest, ShardCanonicalStorageStats,
+    StreamKind, StreamReadRequest, StreamReadResponse, UnloadShardRequest, UnloadShardResponse,
 };
 pub use data_node::{
     CompactionRequest, CompactionResponse, DataNodeLifecycleReport, DataNodePreflightReport,

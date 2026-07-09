@@ -36,14 +36,14 @@ BRPC_VALIDATE_GFLAG(storage_enable_index_gc, brpc::PassValidate);
 DEFINE_uint64(storage_dump_index_meta_oplog_gap, 1 * 1024 * 1024,
               "oplog gap in bytes to dump index meta");
 BRPC_VALIDATE_GFLAG(storage_dump_index_meta_oplog_gap, brpc::PassValidate);
-DEFINE_bool(storage_async, false, "async write storage");
+DEFINE_bool(storage_async, true, "async write storage");
 BRPC_VALIDATE_GFLAG(storage_async, brpc::PassValidate);
 DEFINE_bool(partition_commit_oplog, true, "commit oplog after execute cmd finish");
-DEFINE_string(storage_canonical_log_ack_policy, "durable",
-              "Write ack boundary for the minimal canonical oplog. durable waits for the "
-              "oplog stream commit before acknowledging, while best_effort keeps the legacy "
-              "async fire-and-ack behavior and can lose the last acknowledged commands on an "
-              "unexpected primary shutdown.");
+DEFINE_string(storage_canonical_log_ack_policy, "best_effort",
+              "Write ack boundary for the minimal canonical oplog. best_effort keeps the "
+              "legacy async fire-and-ack behavior and can lose the last acknowledged commands "
+              "on an unexpected primary shutdown, while durable waits for the oplog stream "
+              "commit before acknowledging.");
 DEFINE_string(data_replication_mode, "shared_store",
               "data-node replication mode: shared_store, primary_pull, or raft_consensus. "
               "shared_store preserves the existing shared stream/object-store replay path; "

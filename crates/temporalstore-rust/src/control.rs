@@ -8,6 +8,19 @@ use crate::types::{ShardId, Status};
 use crate::wal::WriteAheadLogStats;
 use rustmtcache::CacheStats;
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CanonicalLogAckPolicy {
+    BestEffort,
+    Durable,
+}
+
+impl Default for CanonicalLogAckPolicy {
+    fn default() -> Self {
+        Self::BestEffort
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Config {
     pub version: u64,
@@ -28,6 +41,8 @@ pub struct Config {
     pub extend_config: BTreeMap<String, String>,
     pub feature_max_size: usize,
     pub async_storage: bool,
+    #[serde(default)]
+    pub canonical_log_ack_policy: CanonicalLogAckPolicy,
 }
 
 impl Default for Config {
@@ -44,7 +59,8 @@ impl Default for Config {
             tenant_write_qps: None,
             extend_config: BTreeMap::new(),
             feature_max_size: 5000,
-            async_storage: false,
+            async_storage: true,
+            canonical_log_ack_policy: CanonicalLogAckPolicy::BestEffort,
         }
     }
 }
