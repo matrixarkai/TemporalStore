@@ -409,6 +409,19 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             count: command.limit.max(1) as usize,
             filters: Vec::new(),
         },
+        v1::command::Kind::SequenceBatchQuery(command) => types::Command::SequenceBatchQuery {
+            queries: command
+                .queries
+                .into_iter()
+                .map(|query| types::SequenceQuerySpec {
+                    key: query.key,
+                    start_ms: query.start_ms,
+                    end_ms: query.end_ms,
+                    count: query.limit.max(1) as usize,
+                    filters: Vec::new(),
+                })
+                .collect(),
+        },
         v1::command::Kind::IpsAdd(command) => types::Command::IpsAdd {
             key: command.key,
             timestamp_ms: command.timestamp_ms,
