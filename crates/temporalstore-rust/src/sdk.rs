@@ -534,6 +534,31 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             tenant_hash: stable_hash(&command.key),
             node_hash: stable_hash(&command.node_id),
         },
+        v1::command::Kind::ContextWriteEvent(command) => {
+            let event = command
+                .event
+                .ok_or_else(|| TonicStatus::invalid_argument("context event missing"))?;
+            types::Command::ContextWriteEvent {
+                tenant_hash: stable_hash(&command.key),
+                node_hash: stable_hash(&command.node_id),
+                event: sdk_context_event_to_types(event),
+                first_write_only: command.first_write_only,
+                cold_storage: command.cold_storage,
+            }
+        }
+        v1::command::Kind::ContextQueryEvents(command) => types::Command::ContextQueryEvents {
+            tenant_hash: stable_hash(&command.key),
+            node_hash: stable_hash(&command.node_id),
+            start_time_ms: command.start_time_ms,
+            end_time_ms: command.end_time_ms,
+            limit: nonzero_limit(command.limit),
+            current_valid_only: command.current_valid_only,
+            as_of_ms: command.as_of_ms,
+            kinds: command.kinds,
+            statuses: command.statuses,
+            min_confidence: command.min_confidence,
+            min_importance: command.min_importance,
+        },
         v1::command::Kind::CommonExpire(command) => types::Command::CommonExpire {
             key: command.key,
             ttl_ms: command.ttl_ms,
@@ -605,6 +630,25 @@ fn types_context_node_to_sdk(node: types::ContextNode) -> v1::ContextNode {
         model: node.l0,
         payload: node.raw_metadata_ref.into_bytes(),
         updated_at_ms: node.last_event_time_ms,
+    }
+}
+
+fn sdk_context_event_to_types(event: v1::ContextEvent) -> types::ContextEvent {
+    types::ContextEvent {
+        event_id_hash: event.event_id_hash,
+        event_time_ms: event.event_time_ms,
+        ingestion_time_ms: event.ingestion_time_ms,
+        kind: 0,
+        event_type: event.event_type,
+        actor_hash: 0,
+        status: 0,
+        valid_until_ms: 0,
+        confidence: event.confidence,
+        importance: event.importance,
+        text: event.text,
+        source_ref: String::new(),
+        related_node_hashes: Vec::new(),
+        compact_attrs: Vec::new(),
     }
 }
 
