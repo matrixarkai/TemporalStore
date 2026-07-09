@@ -14517,19 +14517,54 @@ fn read_page_bytes_batch(
         return values;
     }
 
+    let mut unique_keys = Vec::new();
+    let mut lookup_indexes_by_key = HashMap::<CacheKey, Vec<usize>>::new();
+    for (lookup_index, (_, _, key)) in lookup.iter().enumerate() {
+        if !lookup_indexes_by_key.contains_key(key) {
+            unique_keys.push(key.clone());
+        }
+        lookup_indexes_by_key
+            .entry(key.clone())
+            .or_default()
+            .push(lookup_index);
+    }
     let cached = cache
-        .get_batch(&keys)
-        .unwrap_or_else(|_| vec![None; keys.len()]);
+        .get_batch(&unique_keys)
+        .unwrap_or_else(|_| vec![None; unique_keys.len()]);
     let mut misses = HashMap::<CacheKey, (PageAddress, Vec<usize>)>::new();
-    for ((index, address, key), cached_value) in lookup.into_iter().zip(cached.into_iter()) {
+    for (key, cached_value) in unique_keys.into_iter().zip(cached.into_iter()) {
+        let lookup_indexes = lookup_indexes_by_key.remove(&key).unwrap_or_default();
         if let Some(bytes) = cached_value {
-            values[index] = Some(bytes);
+            for lookup_index in lookup_indexes {
+                let (index, _, _) = &lookup[lookup_index];
+                values[*index] = Some(bytes.clone());
+            }
             continue;
         }
+        let Some((_, address, _)) = lookup_indexes
+            .first()
+            .and_then(|lookup_index| lookup.get(*lookup_index))
+        else {
+            continue;
+        };
         misses
             .entry(key)
-            .and_modify(|(_, indexes)| indexes.push(index))
-            .or_insert_with(|| (address, vec![index]));
+            .and_modify(|(_, indexes)| {
+                indexes.extend(
+                    lookup_indexes
+                        .iter()
+                        .map(|lookup_index| lookup[*lookup_index].0),
+                )
+            })
+            .or_insert_with(|| {
+                (
+                    address.clone(),
+                    lookup_indexes
+                        .iter()
+                        .map(|lookup_index| lookup[*lookup_index].0)
+                        .collect(),
+                )
+            });
     }
     let mut refills = Vec::new();
     for (key, (address, indexes)) in misses {
