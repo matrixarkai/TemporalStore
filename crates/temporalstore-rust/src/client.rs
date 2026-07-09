@@ -1897,13 +1897,28 @@ impl TemporalStoreClient {
         &self,
         request: MatrixArkRetrieveContextPackRequest,
     ) -> Result<String, ClientError> {
+        self.matrixark_record_log_context_request_json("matrixark_retrieve_context_pack", request)
+    }
+
+    pub fn matrixark_scan_candidates_request_json(
+        &self,
+        request: MatrixArkRetrieveContextPackRequest,
+    ) -> Result<String, ClientError> {
+        self.matrixark_record_log_context_request_json("matrixark_scan_candidates", request)
+    }
+
+    fn matrixark_record_log_context_request_json(
+        &self,
+        op: &'static str,
+        request: MatrixArkRetrieveContextPackRequest,
+    ) -> Result<String, ClientError> {
         let metaserver = if request.metaserver.trim().is_empty() {
             self.inner.options.proxy_addr.clone()
         } else {
             request.metaserver
         };
         serde_json::to_string(&MatrixArkRecordLogRetrieveRequest {
-            op: "matrixark_retrieve_context_pack",
+            op,
             metaserver,
             namespace: request.namespace,
             table: request.table,
