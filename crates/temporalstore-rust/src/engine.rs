@@ -7598,7 +7598,9 @@ fn execute_on_shard(
                     invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
                     applied.push((field, address));
                 }
-                cache.put_memory_only_batch(page_cache_entries);
+                for (cache_key, value) in page_cache_entries {
+                    cache.put_memory_only(cache_key, value);
+                }
             } else {
                 let object_id_prefix = stable_page_object_id_prefix(shard_id, "hash", &key);
                 for (field, value) in entries {
@@ -14748,7 +14750,9 @@ fn append_timestamped_single_pages_batch(
             address
         })
         .collect::<Vec<_>>();
-    cache.put_memory_only_batch(page_cache_entries);
+    for (cache_key, value) in page_cache_entries {
+        cache.put_memory_only(cache_key, value);
+    }
     Some(addresses)
 }
 
