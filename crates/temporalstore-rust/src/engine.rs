@@ -11232,7 +11232,8 @@ fn sync_slot_index_object_pages(
 ) {
     let mut touched_slots = BTreeSet::new();
     let mut removed_any = false;
-    let target_slots = if shard.slot_index.object_component_lookup.is_empty() {
+    let lookup_enabled = !shard.slot_index.object_component_lookup.is_empty();
+    let target_slots = if !lookup_enabled {
         shard
             .slot_index
             .slot_map
@@ -11252,6 +11253,11 @@ fn sync_slot_index_object_pages(
             })
             .unwrap_or_default()
     };
+    if lookup_enabled {
+        shard
+            .slot_index
+            .remove_object_page_lookup_entry(kind, object_key, None);
+    }
     for routing_slot in target_slots {
         let Some(slot) = shard.slot_index.slot_map.get_mut(&routing_slot) else {
             continue;
@@ -11346,7 +11352,9 @@ fn sync_slot_index_object_pages(
             .slot_map
             .retain(|_, slot| !slot.page_index.is_empty() || !slot.object_index.is_empty());
     }
-    shard.slot_index.rebuild_object_page_lookup();
+    if !lookup_enabled {
+        shard.slot_index.rebuild_object_page_lookup();
+    }
 }
 
 fn classify_slot_layout(object_count: usize, page_ref_count: usize) -> SlotLayoutState {
