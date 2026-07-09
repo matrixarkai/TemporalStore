@@ -1874,6 +1874,7 @@ def rust_proxy_breakdown_from_backend_metrics(backend_metrics: Json) -> Json:
         "publish_visibility": metrics.get("publish_visibility", {}),
         "batch_hset_coalescing": metrics.get("batch_hset_coalescing", {}),
         "batch_hget_coalescing": metrics.get("batch_hget_coalescing", {}),
+        "matrixark_append_coalescing": metrics.get("matrixark_append_coalescing", {}),
     }
 
 
