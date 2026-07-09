@@ -5730,7 +5730,14 @@ impl TemporalEngine {
             if publish_all {
                 rebuild_slot_page_ownership(shard_id, shard, start_routing_slot, end_routing_slot);
             } else {
-                sync_slot_index_live_page_entries(&self.cache, shard, shard_id, published_entries);
+                sync_slot_index_live_page_entries(
+                    &self.cache,
+                    shard,
+                    shard_id,
+                    published_entries,
+                    start_routing_slot,
+                    end_routing_slot,
+                );
             }
             refresh_slot_runtime_flags(shard);
             serialize_index(shard)
@@ -7186,6 +7193,8 @@ fn execute_on_shard(
                     None,
                     address.clone(),
                     true,
+                    start_routing_slot,
+                    end_routing_slot,
                 );
                 shard.strings.insert(key.clone(), address);
                 mutated = true;
@@ -7215,6 +7224,8 @@ fn execute_on_shard(
                     None,
                     address.clone(),
                     true,
+                    start_routing_slot,
+                    end_routing_slot,
                 );
                 shard.strings.insert(key.clone(), address);
                 shard
@@ -7264,6 +7275,8 @@ fn execute_on_shard(
                         None,
                         address.clone(),
                         true,
+                        start_routing_slot,
+                        end_routing_slot,
                     );
                     shard.strings.insert(key.clone(), address);
                     if let Some(ttl_ms) = ttl_ms {
@@ -7330,6 +7343,8 @@ fn execute_on_shard(
                     Some(field.clone()),
                     address.clone(),
                     true,
+                    start_routing_slot,
+                    end_routing_slot,
                 );
                 shard
                     .hashes
@@ -7410,6 +7425,8 @@ fn execute_on_shard(
                         Some(field.clone()),
                         address.clone(),
                         true,
+                        start_routing_slot,
+                        end_routing_slot,
                     );
                     invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
                     applied.push((field, address));
@@ -7464,6 +7481,8 @@ fn execute_on_shard(
                     Some(field.clone()),
                     address.clone(),
                     true,
+                    start_routing_slot,
+                    end_routing_slot,
                 );
                 shard
                     .hashes
@@ -7544,6 +7563,8 @@ fn execute_on_shard(
                     Some(member_component.clone()),
                     address.clone(),
                     true,
+                    start_routing_slot,
+                    end_routing_slot,
                 );
                 shard
                     .sets
@@ -7631,6 +7652,8 @@ fn execute_on_shard(
                 &key,
                 live_addresses,
                 mutated,
+                start_routing_slot,
+                end_routing_slot,
             );
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Empty
@@ -7693,6 +7716,8 @@ fn execute_on_shard(
                 &key,
                 live_addresses,
                 mutated,
+                start_routing_slot,
+                end_routing_slot,
             );
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Integer {
@@ -7827,6 +7852,8 @@ fn execute_on_shard(
                 &key,
                 live_addresses,
                 mutated,
+                start_routing_slot,
+                end_routing_slot,
             );
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Empty
@@ -7923,6 +7950,8 @@ fn execute_on_shard(
                 &key,
                 live_addresses,
                 mutated,
+                start_routing_slot,
+                end_routing_slot,
             );
             CommandResponse::Empty
         }
@@ -8023,6 +8052,8 @@ fn execute_on_shard(
                 &key,
                 live_addresses,
                 mutated,
+                start_routing_slot,
+                end_routing_slot,
             );
             CommandResponse::Empty
         }
@@ -8101,6 +8132,8 @@ fn execute_on_shard(
                 &key,
                 live_addresses,
                 mutated,
+                start_routing_slot,
+                end_routing_slot,
             );
             CommandResponse::Integer {
                 value: if mutated { 1 } else { 0 },
@@ -8153,6 +8186,8 @@ fn execute_on_shard(
                 &key,
                 live_addresses,
                 mutated,
+                start_routing_slot,
+                end_routing_slot,
             );
             CommandResponse::Integer { value: loaded }
         }
@@ -8274,6 +8309,8 @@ fn execute_on_shard(
                 &key,
                 live_addresses,
                 mutated,
+                start_routing_slot,
+                end_routing_slot,
             );
             CommandResponse::Integer {
                 value: if mutated { 1 } else { 0 },
@@ -11602,11 +11639,13 @@ fn upsert_slot_index_page(
     component: Option<String>,
     address: PageAddress,
     dirty: bool,
+    start_routing_slot: u32,
+    end_routing_slot: u32,
 ) {
     let mut removed_addresses = Vec::new();
     let routing_slot = address
         .routing_slot
-        .unwrap_or_else(|| page_routing_slot(object_key, 0, u32::MAX));
+        .unwrap_or_else(|| page_routing_slot(object_key, start_routing_slot, end_routing_slot));
     let object_id = address
         .object_id
         .unwrap_or_else(|| stable_page_object_id(shard_id, kind, object_key, component.as_deref()));
@@ -11778,6 +11817,8 @@ fn sync_slot_index_object_pages(
     object_key: &str,
     addresses: Vec<PageAddress>,
     dirty: bool,
+    start_routing_slot: u32,
+    end_routing_slot: u32,
 ) {
     let mut touched_slots = BTreeSet::new();
     let mut removed_any = false;
@@ -11866,7 +11907,7 @@ fn sync_slot_index_object_pages(
     for address in unique_addresses.into_values() {
         let routing_slot = address
             .routing_slot
-            .unwrap_or_else(|| page_routing_slot(object_key, 0, u32::MAX));
+            .unwrap_or_else(|| page_routing_slot(object_key, start_routing_slot, end_routing_slot));
         let object_id = address
             .object_id
             .unwrap_or_else(|| stable_page_object_id(shard_id, kind, object_key, None));
@@ -11933,6 +11974,8 @@ fn sync_slot_index_live_page_entries(
     shard: &mut ShardState,
     shard_id: ShardId,
     entries: Vec<LivePageEntry>,
+    start_routing_slot: u32,
+    end_routing_slot: u32,
 ) {
     ensure_slot_index_lookup_maps(shard);
 
@@ -11948,6 +11991,8 @@ fn sync_slot_index_live_page_entries(
                 Some(component),
                 entry.address,
                 entry.dirty,
+                start_routing_slot,
+                end_routing_slot,
             );
         } else {
             object_pages
@@ -11957,7 +12002,17 @@ fn sync_slot_index_live_page_entries(
         }
     }
     for ((kind, object_key), addresses) in object_pages {
-        sync_slot_index_object_pages(cache, shard, shard_id, &kind, &object_key, addresses, false);
+        sync_slot_index_object_pages(
+            cache,
+            shard,
+            shard_id,
+            &kind,
+            &object_key,
+            addresses,
+            false,
+            start_routing_slot,
+            end_routing_slot,
+        );
     }
 }
 
@@ -14155,6 +14210,8 @@ fn persist_risk_page(
             None,
             address.clone(),
             true,
+            start_routing_slot,
+            end_routing_slot,
         );
         shard.risk_pages.insert(key.to_string(), address);
         true
