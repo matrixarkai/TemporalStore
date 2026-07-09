@@ -152,6 +152,25 @@ class ProxyClient:
         data = self._post("/ProxyService/HGet", body)
         return str(data.get("value", ""))
 
+    def hmset(self, key: str, entries: Dict[str, str]) -> None:
+        body = self._key_body(key)
+        body["entries"] = [[field, _bytes_value(value)] for field, value in entries.items()]
+        self._post("/ProxyService/HMSet", body)
+
+    def hmget(self, key: str, fields: Iterable[str]) -> List[Optional[str]]:
+        body = self._key_body(key)
+        body["fields"] = list(fields)
+        data = self._post("/ProxyService/HMGet", body)
+        return data.get("values", [])
+
+    def hgetall(self, key: str) -> Dict[str, str]:
+        data = self._post("/ProxyService/HGetAll", self._key_body(key))
+        return dict(data.get("entries", {}))
+
+    def hlen(self, key: str) -> int:
+        data = self._post("/ProxyService/HLen", self._key_body(key))
+        return int(data.get("value", 0))
+
     def hdel(self, key: str, field: str) -> None:
         body = self._key_body(key)
         body["field"] = field
@@ -165,6 +184,15 @@ class ProxyClient:
     def smembers(self, key: str) -> List[str]:
         data = self._post("/ProxyService/SMembers", self._key_body(key))
         return [str(item) for item in data.get("members", [])]
+
+    def srem(self, key: str, member: str) -> None:
+        body = self._key_body(key)
+        body["member"] = _bytes_value(member)
+        self._post("/ProxyService/SRem", body)
+
+    def exists(self, key: str) -> bool:
+        data = self._post("/ProxyService/Exists", self._key_body(key))
+        return int(data.get("value", 0)) != 0
 
     def add_feature_points(self, key: str, points: Iterable[FeaturePoint]) -> None:
         body = self._key_body(key)
@@ -185,6 +213,46 @@ class ProxyClient:
             FeaturePoint(int(row.get("timestamp", row.get("timestamp_ms", 0))), _string_value(row.get("value", "")))
             for row in data.get("points", [])
         ]
+
+    def replace_feature_points(
+        self,
+        key: str,
+        start_ts: int,
+        end_ts: int,
+        points: Iterable[FeaturePoint],
+    ) -> None:
+        body = self._key_body(key)
+        body.update(
+            {
+                "start_ms": start_ts,
+                "end_ms": end_ts,
+                "points": [_feature_point_body(point) for point in points],
+            }
+        )
+        self._post("/ProxyService/FeatureReplace", body)
+
+    def delete_feature_points(self, key: str) -> None:
+        self._post("/ProxyService/FeatureDelete", self._key_body(key))
+
+    def aggregate_feature_points(
+        self,
+        key: str,
+        start_ts: int,
+        end_ts: int,
+        aggregator: str,
+        count: Optional[int] = None,
+    ) -> int:
+        body = self._key_body(key)
+        body.update(
+            {
+                "start_ms": start_ts,
+                "end_ms": end_ts,
+                "aggregator": aggregator,
+                "count": count,
+            }
+        )
+        data = self._post("/ProxyService/FeatureAggQuery", body)
+        return int(data.get("value", 0))
 
     def add_sequence_feature_rows(self, key: str, rows: Iterable[SequenceFeatureRow]) -> None:
         body = self._key_body(key)
@@ -322,6 +390,38 @@ class ProxyClient:
         data = self._post("/ProxyService/RiskCount", body)
         return int(data.get("count", 0))
 
+    def risk_hset(self, key: str, timestamp_ms: int, amount: int) -> None:
+        body = self._key_body(key)
+        body.update({"timestamp_ms": timestamp_ms, "amount": amount})
+        self._post("/ProxyService/RiskHset", body)
+
+    def risk_fol_set(
+        self,
+        key: str,
+        value: str,
+        occur_time_ms: int,
+        ttl_ms: int,
+        fol_type: str = "last",
+    ) -> None:
+        body = self._key_body(key)
+        body.update(
+            {
+                "value": _bytes_value(value),
+                "occur_time_ms": occur_time_ms,
+                "ttl_ms": ttl_ms,
+                "fol_type": fol_type,
+            }
+        )
+        self._post("/ProxyService/RiskFolSet", body)
+
+    def risk_fol_query(self, key: str) -> str:
+        data = self._post("/ProxyService/RiskFolQuery", self._key_body(key))
+        return str(data.get("value", ""))
+
+    def risk_manager(self, key: str) -> Dict[str, str]:
+        data = self._post("/ProxyService/RiskManager", self._key_body(key))
+        return dict(data.get("entries", {}))
+
     def _key_body(self, key: str) -> Dict[str, Any]:
         return {
             "namespace": self.options.namespace_name,
@@ -440,6 +540,19 @@ def _flatten_command_response(response: Any) -> Dict[str, Any]:
         return {"value": value, "count": value, "ttl_ms": value}
     if kind == "members":
         return {"members": [_string_value(item) for item in response.get("members", [])]}
+    if kind == "values":
+        return {
+            "values": [
+                None if item is None else _string_value(item)
+                for item in response.get("values", [])
+            ]
+        }
+    if kind == "hash_entries":
+        entries: Dict[str, str] = {}
+        for item in response.get("entries", []):
+            if isinstance(item, list) and len(item) >= 2:
+                entries[str(item[0])] = _string_value(item[1])
+        return {"entries": entries}
     if kind == "feature_points":
         return {"points": [_feature_point_result(item) for item in response.get("points", [])]}
     if kind == "sequence_rows":

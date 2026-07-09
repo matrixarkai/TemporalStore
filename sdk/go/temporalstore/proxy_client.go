@@ -89,6 +89,42 @@ func (c *ProxyClient) HGet(key, field string) (string, error) {
 	return data.Value, err
 }
 
+func (c *ProxyClient) HMSet(key string, entries map[string]string) error {
+	body := c.keyBody(key)
+	encoded := make([][]interface{}, 0, len(entries))
+	for field, value := range entries {
+		encoded = append(encoded, []interface{}{field, bytesValue(value)})
+	}
+	body["entries"] = encoded
+	return c.post("/ProxyService/HMSet", body, nil)
+}
+
+func (c *ProxyClient) HMGet(key string, fields []string) ([]string, error) {
+	body := c.keyBody(key)
+	body["fields"] = fields
+	var data struct {
+		Values []string `json:"values"`
+	}
+	err := c.post("/ProxyService/HMGet", body, &data)
+	return data.Values, err
+}
+
+func (c *ProxyClient) HGetAll(key string) (map[string]string, error) {
+	var data struct {
+		Entries map[string]string `json:"entries"`
+	}
+	err := c.post("/ProxyService/HGetAll", c.keyBody(key), &data)
+	return data.Entries, err
+}
+
+func (c *ProxyClient) HLen(key string) (int64, error) {
+	var data struct {
+		Value int64 `json:"value"`
+	}
+	err := c.post("/ProxyService/HLen", c.keyBody(key), &data)
+	return data.Value, err
+}
+
 func (c *ProxyClient) HDel(key, field string) error {
 	body := c.keyBody(key)
 	body["field"] = field
@@ -107,6 +143,20 @@ func (c *ProxyClient) SMembers(key string) ([]string, error) {
 	}
 	err := c.post("/ProxyService/SMembers", c.keyBody(key), &data)
 	return data.Members, err
+}
+
+func (c *ProxyClient) SRem(key, member string) error {
+	body := c.keyBody(key)
+	body["member"] = bytesValue(member)
+	return c.post("/ProxyService/SRem", body, nil)
+}
+
+func (c *ProxyClient) Exists(key string) (bool, error) {
+	var data struct {
+		Value int64 `json:"value"`
+	}
+	err := c.post("/ProxyService/Exists", c.keyBody(key), &data)
+	return data.Value != 0, err
 }
 
 func (c *ProxyClient) AddFeaturePoints(key string, points []FeaturePoint) error {
@@ -128,6 +178,39 @@ func (c *ProxyClient) QueryFeaturePoints(
 	}
 	err := c.post("/ProxyService/FeatureQuery", body, &data)
 	return data.Points, err
+}
+
+func (c *ProxyClient) ReplaceFeaturePoints(key string, startTs uint64, endTs uint64, points []FeaturePoint) error {
+	body := c.keyBody(key)
+	body["start_ms"] = startTs
+	body["end_ms"] = endTs
+	body["points"] = featurePointBodies(points)
+	return c.post("/ProxyService/FeatureReplace", body, nil)
+}
+
+func (c *ProxyClient) DeleteFeaturePoints(key string) error {
+	return c.post("/ProxyService/FeatureDelete", c.keyBody(key), nil)
+}
+
+func (c *ProxyClient) AggregateFeaturePoints(
+	key string,
+	startTs uint64,
+	endTs uint64,
+	aggregator string,
+	count uint64,
+) (int64, error) {
+	body := c.keyBody(key)
+	body["start_ms"] = startTs
+	body["end_ms"] = endTs
+	body["aggregator"] = aggregator
+	if count > 0 {
+		body["count"] = count
+	}
+	var data struct {
+		Value int64 `json:"value"`
+	}
+	err := c.post("/ProxyService/FeatureAggQuery", body, &data)
+	return data.Value, err
 }
 
 func (c *ProxyClient) AddSequenceFeatureRows(key string, rows []SequenceFeatureRow) error {
@@ -251,6 +334,38 @@ func (c *ProxyClient) RiskCount(
 	}
 	err := c.post("/ProxyService/RiskCount", body, &data)
 	return data.Count, err
+}
+
+func (c *ProxyClient) RiskHSet(key string, timestampMs uint64, amount int64) error {
+	body := c.keyBody(key)
+	body["timestamp_ms"] = timestampMs
+	body["amount"] = amount
+	return c.post("/ProxyService/RiskHset", body, nil)
+}
+
+func (c *ProxyClient) RiskFOLSet(key, value string, occurTimeMs uint64, ttlMs uint64, folType string) error {
+	body := c.keyBody(key)
+	body["value"] = bytesValue(value)
+	body["occur_time_ms"] = occurTimeMs
+	body["ttl_ms"] = ttlMs
+	body["fol_type"] = folType
+	return c.post("/ProxyService/RiskFolSet", body, nil)
+}
+
+func (c *ProxyClient) RiskFOLQuery(key string) (string, error) {
+	var data struct {
+		Value string `json:"value"`
+	}
+	err := c.post("/ProxyService/RiskFolQuery", c.keyBody(key), &data)
+	return data.Value, err
+}
+
+func (c *ProxyClient) RiskManager(key string) (map[string]string, error) {
+	var data struct {
+		Entries map[string]string `json:"entries"`
+	}
+	err := c.post("/ProxyService/RiskManager", c.keyBody(key), &data)
+	return data.Entries, err
 }
 
 func (c *ProxyClient) keyBody(key string) map[string]interface{} {
@@ -384,6 +499,35 @@ func flattenCommandResponse(raw json.RawMessage) (json.RawMessage, error) {
 			values = append(values, intsToString(member))
 		}
 		return json.Marshal(map[string]interface{}{"members": values})
+	case "values":
+		var rawValues []json.RawMessage
+		_ = json.Unmarshal(response["values"], &rawValues)
+		values := make([]string, 0, len(rawValues))
+		for _, rawValue := range rawValues {
+			if bytes.Equal(rawValue, []byte("null")) {
+				values = append(values, "")
+				continue
+			}
+			var value []int
+			_ = json.Unmarshal(rawValue, &value)
+			values = append(values, intsToString(value))
+		}
+		return json.Marshal(map[string]interface{}{"values": values})
+	case "hash_entries":
+		var rawEntries [][]json.RawMessage
+		_ = json.Unmarshal(response["entries"], &rawEntries)
+		entries := make(map[string]string, len(rawEntries))
+		for _, rawEntry := range rawEntries {
+			if len(rawEntry) < 2 {
+				continue
+			}
+			var field string
+			var value []int
+			_ = json.Unmarshal(rawEntry[0], &field)
+			_ = json.Unmarshal(rawEntry[1], &value)
+			entries[field] = intsToString(value)
+		}
+		return json.Marshal(map[string]interface{}{"entries": entries})
 	case "feature_points":
 		return flattenFeaturePoints(response["points"])
 	case "sequence_rows":
