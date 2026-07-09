@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -831,6 +831,10 @@ impl LocalBlockStore {
         no_cache_fill: bool,
     ) -> Vec<Result<Vec<u8>, BlockStoreError>> {
         if addresses.len() < 2 {
+            return self.read_batch_with_cache_policy_deduped(addresses, no_cache_fill);
+        }
+        let mut seen = HashSet::with_capacity(addresses.len());
+        if addresses.iter().all(|address| seen.insert(address)) {
             return self.read_batch_with_cache_policy_deduped(addresses, no_cache_fill);
         }
         let mut duplicate_groups = HashMap::<BlockAddress, Vec<usize>>::new();
