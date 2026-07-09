@@ -3822,7 +3822,7 @@ class MatrixArkRustProxyClient:
         )
         self._append_coalesce_wait_s = max(
             0.0,
-            float(os.environ.get("MATRIXARK_RUST_PROXY_APPEND_COALESCE_WAIT_MS", "1.0")) / 1000.0,
+            float(os.environ.get("MATRIXARK_RUST_PROXY_APPEND_COALESCE_WAIT_MS", "0.0")) / 1000.0,
         )
         self._string_cache_enabled = (
             os.environ.get("MATRIXARK_RUST_PROXY_STRING_CACHE", "1").strip().lower()
