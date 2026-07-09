@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -826,6 +826,58 @@ impl LocalBlockStore {
     }
 
     fn read_batch_with_cache_policy(
+        &self,
+        addresses: &[BlockAddress],
+        no_cache_fill: bool,
+    ) -> Vec<Result<Vec<u8>, BlockStoreError>> {
+        let mut duplicate_groups = HashMap::<BlockAddress, Vec<usize>>::new();
+        for (index, address) in addresses.iter().enumerate() {
+            duplicate_groups
+                .entry(address.clone())
+                .or_default()
+                .push(index);
+        }
+        if duplicate_groups.len() < addresses.len() {
+            let unique_addresses = duplicate_groups.keys().cloned().collect::<Vec<_>>();
+            let unique_results =
+                self.read_batch_with_cache_policy_deduped(&unique_addresses, no_cache_fill);
+            let mut results = (0..addresses.len())
+                .map(|_| {
+                    Err(BlockStoreError::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "coalesced block read result missing",
+                    )))
+                })
+                .collect::<Vec<_>>();
+            for (address, read_result) in unique_addresses.into_iter().zip(unique_results) {
+                let indexes = duplicate_groups.remove(&address).unwrap_or_default();
+                match read_result {
+                    Ok(bytes) => {
+                        for index in indexes {
+                            results[index] = Ok(bytes.clone());
+                        }
+                    }
+                    Err(err) => {
+                        let err_text = err.to_string();
+                        let mut iter = indexes.into_iter();
+                        if let Some(first_index) = iter.next() {
+                            results[first_index] = Err(err);
+                        }
+                        for index in iter {
+                            results[index] = Err(BlockStoreError::Io(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                err_text.clone(),
+                            )));
+                        }
+                    }
+                }
+            }
+            return results;
+        }
+        self.read_batch_with_cache_policy_deduped(addresses, no_cache_fill)
+    }
+
+    fn read_batch_with_cache_policy_deduped(
         &self,
         addresses: &[BlockAddress],
         no_cache_fill: bool,
