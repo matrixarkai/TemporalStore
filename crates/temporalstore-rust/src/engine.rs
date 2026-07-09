@@ -2576,7 +2576,10 @@ impl TemporalEngine {
             install_roll_forward_reports,
             object_lifecycle,
         };
-        report.refresh_public_lifecycle_metrics();
+        report.refresh_public_lifecycle_metrics_with_runtime(
+            self.page_store.stats(),
+            self.cache.stats(),
+        );
         if let Some(shard) = self
             .shards
             .read()

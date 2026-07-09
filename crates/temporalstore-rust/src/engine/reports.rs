@@ -1418,6 +1418,118 @@ impl StorageLifecycleReport {
             storage_topology_snapshot_from_metrics(&self.storage_lifecycle_metrics);
         self.storage_reclaim_scope = default_storage_reclaim_scope();
     }
+
+    pub fn refresh_public_lifecycle_metrics_with_runtime(
+        &mut self,
+        page_store: PageStoreStats,
+        cache: CacheStats,
+    ) {
+        self.refresh_public_lifecycle_metrics();
+
+        fn put(metrics: &mut BTreeMap<String, u64>, name: &str, value: u64) {
+            metrics.insert(name.to_string(), value);
+        }
+
+        put(
+            &mut self.storage_lifecycle_metrics,
+            "page_reads",
+            page_store.reads,
+        );
+        put(
+            &mut self.storage_lifecycle_metrics,
+            "block_reads",
+            page_store.reads,
+        );
+        put(
+            &mut self.storage_lifecycle_metrics,
+            "cold_scan_no_cache_reads",
+            page_store.cold_reads,
+        );
+        put(
+            &mut self.storage_lifecycle_metrics,
+            "cold_scan_page_reads",
+            page_store.cold_reads,
+        );
+        put(
+            &mut self.storage_lifecycle_metrics,
+            "page_writes",
+            page_store.writes,
+        );
+        put(
+            &mut self.storage_lifecycle_metrics,
+            "block_writes",
+            page_store.writes,
+        );
+        put(
+            &mut self.storage_lifecycle_metrics,
+            "bytes_read",
+            page_store.bytes_read,
+        );
+        put(
+            &mut self.storage_lifecycle_metrics,
+            "bytes_written",
+            page_store.bytes_written,
+        );
+        put(
+            &mut self.storage_lifecycle_metrics,
+            "cache_refills",
+            cache
+                .memory_fills
+                .saturating_add(cache.disk_fills)
+                .saturating_add(cache.pmem_fills),
+        );
+        put(
+            &mut self.storage_lifecycle_metrics,
+            "cache_invalidations",
+            cache.invalidations,
+        );
+        put(
+            &mut self.storage_lifecycle_metrics,
+            "cache_writeback_queue_depth",
+            cache.async_writeback_queue_depth,
+        );
+        put(
+            &mut self.storage_lifecycle_metrics,
+            "cache_writeback_rejections",
+            cache
+                .async_writeback_backpressure_rejections
+                .saturating_add(cache.writeback_backpressure_events),
+        );
+        put(
+            &mut self.storage_lifecycle_metrics,
+            "hot_cache_promotions",
+            cache.hotness_promotions,
+        );
+        put(
+            &mut self.storage_lifecycle_metrics,
+            "append_watermark",
+            page_store.writes,
+        );
+
+        self.storage_write_contract =
+            default_storage_write_contract(&self.storage_lifecycle_metrics);
+        self.storage_read_contract = default_storage_read_contract(&self.storage_lifecycle_metrics);
+        self.storage_cold_scan_contract =
+            default_storage_cold_scan_contract(&self.storage_lifecycle_metrics);
+        self.storage_manager_contract =
+            default_storage_manager_contract(&self.storage_lifecycle_metrics);
+        self.storage_index_contract =
+            default_storage_index_contract(&self.storage_lifecycle_metrics);
+        self.storage_cache_contract =
+            default_storage_cache_contract(&self.storage_lifecycle_metrics);
+        self.storage_reclaim_contract =
+            default_storage_reclaim_contract(&self.storage_lifecycle_metrics);
+        self.storage_safety_snapshot =
+            storage_safety_snapshot_from_metrics(&self.storage_lifecycle_metrics);
+        self.storage_watermark_snapshot =
+            storage_watermark_snapshot_from_metrics(&self.storage_lifecycle_metrics);
+        self.storage_gc_snapshot =
+            storage_gc_snapshot_from_metrics(&self.storage_lifecycle_metrics);
+        self.storage_index_snapshot =
+            storage_index_snapshot_from_metrics(&self.storage_lifecycle_metrics);
+        self.storage_topology_snapshot =
+            storage_topology_snapshot_from_metrics(&self.storage_lifecycle_metrics);
+    }
 }
 
 pub fn default_storage_write_sequence() -> Vec<String> {
