@@ -10072,6 +10072,9 @@ fn delete_record_exact(
     removed |= shard.context_embeddings.remove(key).is_some();
     removed |= shard.context_summaries.remove(key).is_some();
     removed |= shard.context_compressions.remove(key).is_some();
+    if removed {
+        invalidate_record_all(cache, shard_id, key);
+    }
     removed
 }
 
