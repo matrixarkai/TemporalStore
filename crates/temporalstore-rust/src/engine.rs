@@ -307,7 +307,7 @@ impl TemporalEngine {
                 let index_bytes = serialize_index(shard);
                 let _ = self
                     .index_log_store
-                    .append_json(request.shard_id, &index_bytes);
+                    .append_index_bytes(request.shard_id, &index_bytes);
                 let _ = self.persist_index_bytes(request.shard_id, &index_bytes);
             }
         }
@@ -3030,7 +3030,9 @@ impl TemporalEngine {
                 if dropped_object_count > 0 {
                     if let Ok(index_bytes) = serde_json::to_vec_pretty(shard) {
                         let _ = self.persist_index_bytes(shard_id, &index_bytes);
-                        let _ = self.index_log_store.append_json(shard_id, &index_bytes);
+                        let _ = self
+                            .index_log_store
+                            .append_index_bytes(shard_id, &index_bytes);
                     }
                 }
             }
@@ -5529,7 +5531,7 @@ impl TemporalEngine {
                 let index_bytes = serialize_index(shard);
                 let _ = self
                     .index_log_store
-                    .append_json(request.shard_id, &index_bytes);
+                    .append_index_bytes(request.shard_id, &index_bytes);
                 let _ = self.persist_index_bytes(request.shard_id, &index_bytes);
             }
         }
@@ -5987,7 +5989,7 @@ impl TemporalEngine {
                 .map_err(|err| Status::error("expire_sweep_failed", err.to_string()))?;
             let _ = self
                 .index_log_store
-                .append_json(request.shard_id, &index_bytes);
+                .append_index_bytes(request.shard_id, &index_bytes);
         }
         Ok(ShardExpirySweepReport {
             shard_id: request.shard_id,
@@ -6269,7 +6271,9 @@ impl TemporalEngine {
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
         self.persist_index_bytes(shard_id, &index_bytes)
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
-        let _ = self.index_log_store.append_json(shard_id, &index_bytes);
+        let _ = self
+            .index_log_store
+            .append_index_bytes(shard_id, &index_bytes);
         if !stale_page_segment_ids.is_empty() {
             self.page_store
                 .gc_segments_before_with_live_refs_delayed_destroy(
