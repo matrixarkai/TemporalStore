@@ -169,46 +169,76 @@ pub(super) fn decode_feature_page_strict(bytes: &[u8]) -> PackedFeaturePageDecod
     PackedFeaturePageDecode::Packed(page.points)
 }
 
-pub(super) fn read_feature_point_cold(
-    block_store: &LocalBlockStore,
-    timestamp_ms: u64,
-    address: &BlockAddress,
-) -> Option<FeaturePoint> {
-    let bytes = read_page_bytes_cold(block_store, address)?;
-    match decode_feature_page_strict(&bytes) {
-        PackedFeaturePageDecode::Packed(points) => points
-            .into_iter()
-            .find(|point| point.timestamp_ms == timestamp_ms),
-        PackedFeaturePageDecode::Legacy => Some(FeaturePoint {
-            timestamp_ms,
-            value: bytes,
-        }),
-        PackedFeaturePageDecode::Corrupt(_) => None,
-    }
-}
-
 pub(super) fn read_feature_point_cold_with_cache_policy(
     cache: Option<&MultiLayerCache>,
     block_store: &LocalBlockStore,
     shard_id: ShardId,
     timestamp_ms: u64,
     address: &BlockAddress,
+    packed_page_cache: &mut HashMap<BlockAddress, Option<Vec<FeaturePoint>>>,
 ) -> Option<FeaturePoint> {
     if cold_scan_no_cache_fill() {
-        return read_feature_point_cold(block_store, timestamp_ms, address);
+        return read_feature_point_cold_scan_cached(
+            block_store,
+            timestamp_ms,
+            address,
+            packed_page_cache,
+        );
     }
     let Some(cache) = cache else {
-        return read_feature_point_cold(block_store, timestamp_ms, address);
+        return read_feature_point_cold_scan_cached(
+            block_store,
+            timestamp_ms,
+            address,
+            packed_page_cache,
+        );
     };
-    let mut packed_page_cache = HashMap::new();
     read_feature_point_cached(
         cache,
         block_store,
         shard_id,
         timestamp_ms,
         address,
-        &mut packed_page_cache,
+        packed_page_cache,
     )
+}
+
+pub(super) fn read_feature_point_cold_scan_cached(
+    block_store: &LocalBlockStore,
+    timestamp_ms: u64,
+    address: &BlockAddress,
+    packed_page_cache: &mut HashMap<BlockAddress, Option<Vec<FeaturePoint>>>,
+) -> Option<FeaturePoint> {
+    if let Some(points) = packed_page_cache.get(address) {
+        return points
+            .as_ref()
+            .and_then(|points| {
+                points
+                    .iter()
+                    .find(|point| point.timestamp_ms == timestamp_ms)
+            })
+            .cloned();
+    }
+
+    let bytes = read_page_bytes_cold(block_store, address)?;
+    match decode_feature_page_strict(&bytes) {
+        PackedFeaturePageDecode::Packed(points) => {
+            let selected = points
+                .iter()
+                .find(|point| point.timestamp_ms == timestamp_ms)
+                .cloned();
+            packed_page_cache.insert(address.clone(), Some(points));
+            selected
+        }
+        PackedFeaturePageDecode::Legacy => Some(FeaturePoint {
+            timestamp_ms,
+            value: bytes,
+        }),
+        PackedFeaturePageDecode::Corrupt(_) => {
+            packed_page_cache.insert(address.clone(), None);
+            None
+        }
+    }
 }
 
 pub(super) fn read_feature_point_cached(

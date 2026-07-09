@@ -163,6 +163,7 @@ pub(super) fn read_context_value_cold<T: ContextWire>(
     shard_id: ShardId,
     timeline_key: u64,
     address: &PageAddress,
+    packed_page_cache: &mut HashMap<PageAddress, Option<Vec<FeaturePoint>>>,
 ) -> Option<T> {
     let point = read_feature_point_cold_with_cache_policy(
         cache,
@@ -170,6 +171,7 @@ pub(super) fn read_context_value_cold<T: ContextWire>(
         shard_id,
         timeline_key,
         address,
+        packed_page_cache,
     )?;
     context_from_bytes(&point.value)
 }
@@ -778,6 +780,7 @@ pub(super) fn load_context_compression_events_cold(
     let trim_threshold = event_limit.saturating_mul(2).max(event_limit);
     let mut events = Vec::with_capacity(event_limit);
     let mut seen_nodes = HashSet::new();
+    let mut packed_page_cache = HashMap::new();
     for node_hash in node_hashes
         .iter()
         .copied()
@@ -792,6 +795,7 @@ pub(super) fn load_context_compression_events_cold(
                     shard_id,
                     *timeline_key,
                     address,
+                    &mut packed_page_cache,
                 )
                 .filter(|event| {
                     event.source_end_ms >= start_time_ms && event.source_start_ms <= end_time_ms
