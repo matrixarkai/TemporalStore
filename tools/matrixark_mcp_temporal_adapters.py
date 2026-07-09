@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import queue
+from collections import defaultdict, deque
 
 try:
     from tools.matrixark_mcp_core import *
@@ -3795,6 +3796,20 @@ class MatrixArkRustProxyClient:
             0.0,
             float(os.environ.get("MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE_WAIT_MS", "1.0")) / 1000.0,
         )
+        self._batch_hget_coalesce_enabled = (
+            os.environ.get("MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE", "1").strip().lower()
+            not in {"0", "false", "no"}
+        )
+        self._batch_hget_coalesce_max_batches = max(
+            1, int(os.environ.get("MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_MAX_BATCHES", "32"))
+        )
+        self._batch_hget_coalesce_min_records = max(
+            1, int(os.environ.get("MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_MIN_RECORDS", "16"))
+        )
+        self._batch_hget_coalesce_wait_s = max(
+            0.0,
+            float(os.environ.get("MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_WAIT_MS", "1.0")) / 1000.0,
+        )
         if self._shared_process_mode:
             # The local Rust TemporalEngine is embedded in the proxy process. A
             # multi-process write lane pool can hide writes from reads until
@@ -3862,6 +3877,14 @@ class MatrixArkRustProxyClient:
         self._batch_hset_coalesced_records_total = 0
         self._batch_hset_coalesced_wait_ms_total = 0.0
         self._batch_hset_coalesced_wait_ms_max = 0.0
+        self._batch_hget_coalesce_lock = threading.Lock()
+        self._batch_hget_coalesce_queue: list[Json] = []
+        self._batch_hget_coalesce_active = False
+        self._batch_hget_coalesced_batches_total = 0
+        self._batch_hget_coalesced_calls_total = 0
+        self._batch_hget_coalesced_records_total = 0
+        self._batch_hget_coalesced_wait_ms_total = 0.0
+        self._batch_hget_coalesced_wait_ms_max = 0.0
         self._started_at = time.time()
         self._proc: subprocess.Popen[str] | None = None
 
@@ -4338,6 +4361,17 @@ class MatrixArkRustProxyClient:
                     "wait_ms_total": round(self._batch_hset_coalesced_wait_ms_total, 3),
                     "wait_ms_max": round(self._batch_hset_coalesced_wait_ms_max, 3),
                 },
+                "batch_hget_coalescing": {
+                    "enabled": self._batch_hget_coalesce_enabled,
+                    "max_batches": self._batch_hget_coalesce_max_batches,
+                    "min_records": self._batch_hget_coalesce_min_records,
+                    "wait_ms": round(self._batch_hget_coalesce_wait_s * 1000.0, 3),
+                    "batches_total": self._batch_hget_coalesced_batches_total,
+                    "calls_total": self._batch_hget_coalesced_calls_total,
+                    "records_total": self._batch_hget_coalesced_records_total,
+                    "wait_ms_total": round(self._batch_hget_coalesced_wait_ms_total, 3),
+                    "wait_ms_max": round(self._batch_hget_coalesced_wait_ms_max, 3),
+                },
                 "last_latency_ms": round(self._last_latency_ms, 3),
                 "latency_ms_sum": round(sum(samples), 3),
                 "latency_ms_count": len(samples),
@@ -4365,6 +4399,7 @@ class MatrixArkRustProxyClient:
                 "supports_context_pack_telemetry": True,
                 "supports_native_append_queue": True,
                 "supports_coalesced_writes": True,
+                "supports_coalesced_reads": True,
                 "supports_placement_key_routing": True,
                 "supports_prefix_scan": True,
                 "supports_graceful_shutdown": True,
@@ -4563,9 +4598,112 @@ class MatrixArkRustProxyClient:
             for entry in entries
             if isinstance(entry, dict)
         ]
+        if (
+            self._batch_hget_coalesce_enabled
+            and self._shared_process_mode
+            and len(compact_entries) >= self._batch_hget_coalesce_min_records
+        ):
+            return self._coalesced_batch_hget(compact_entries)
         response = self._call_json("batch_hget", entries_compact=compact_entries)
         records = response.get("records", [])
         return records if isinstance(records, list) else []
+
+    def _coalesced_batch_hget(self, compact_entries: list[list[str]]) -> list[Json]:
+        event = threading.Event()
+        request: Json = {
+            "entries_compact": compact_entries,
+            "event": event,
+            "error": None,
+            "records": None,
+        }
+        became_leader = False
+        queued_at = time.perf_counter()
+        with self._batch_hget_coalesce_lock:
+            self._batch_hget_coalesce_queue.append(request)
+            if not self._batch_hget_coalesce_active:
+                self._batch_hget_coalesce_active = True
+                became_leader = True
+        if became_leader:
+            self._drain_batch_hget_coalescer()
+        else:
+            timeout_s = max(self._backpressure_timeout_s, self.request_timeout_ms / 1000.0 + 2.0)
+            if not event.wait(timeout=timeout_s):
+                raise MatrixArkError(f"Rust TemporalStore batch_hget coalescer timed out after {timeout_s:.1f}s")
+        wait_ms = (time.perf_counter() - queued_at) * 1000.0
+        with self._metrics_lock:
+            self._batch_hget_coalesced_wait_ms_total += wait_ms
+            self._batch_hget_coalesced_wait_ms_max = max(self._batch_hget_coalesced_wait_ms_max, wait_ms)
+        error = request.get("error")
+        if error:
+            raise error
+        records = request.get("records")
+        return records if isinstance(records, list) else []
+
+    def _drain_batch_hget_coalescer(self) -> None:
+        try:
+            if self._batch_hget_coalesce_wait_s > 0:
+                time.sleep(self._batch_hget_coalesce_wait_s)
+            while True:
+                with self._batch_hget_coalesce_lock:
+                    pending = self._batch_hget_coalesce_queue[: self._batch_hget_coalesce_max_batches]
+                    del self._batch_hget_coalesce_queue[: len(pending)]
+                if not pending:
+                    with self._batch_hget_coalesce_lock:
+                        if not self._batch_hget_coalesce_queue:
+                            self._batch_hget_coalesce_active = False
+                            return
+                    continue
+                merged: list[list[str]] = []
+                for item in pending:
+                    merged.extend(item.get("entries_compact") or [])
+                error: BaseException | None = None
+                rows: list[Json] = []
+                try:
+                    response = self._call_json("batch_hget", entries_compact=merged)
+                    response_rows = response.get("records", [])
+                    rows = response_rows if isinstance(response_rows, list) else []
+                except BaseException as exc:
+                    error = exc
+                if error is None:
+                    records_by_entry: dict[tuple[str, str], deque[Json]] = defaultdict(deque)
+                    for row in rows:
+                        if not isinstance(row, dict):
+                            continue
+                        records_by_entry[(str(row.get("key") or ""), str(row.get("field") or ""))].append(row)
+                    for item in pending:
+                        item_records: list[Json] = []
+                        for key, field, _ in item.get("entries_compact") or []:
+                            bucket = records_by_entry.get((key, field))
+                            if bucket:
+                                item_records.append(bucket.popleft())
+                            else:
+                                item_records.append({"key": key, "field": field, "value": ""})
+                        item["records"] = item_records
+                with self._metrics_lock:
+                    self._batch_hget_coalesced_batches_total += 1
+                    self._batch_hget_coalesced_calls_total += len(pending)
+                    self._batch_hget_coalesced_records_total += len(merged)
+                for item in pending:
+                    item["error"] = error
+                    item["event"].set()
+                if error is not None:
+                    with self._batch_hget_coalesce_lock:
+                        remaining = self._batch_hget_coalesce_queue
+                        self._batch_hget_coalesce_queue = []
+                        self._batch_hget_coalesce_active = False
+                    for item in remaining:
+                        item["error"] = error
+                        item["event"].set()
+                    return
+        except BaseException as exc:
+            with self._batch_hget_coalesce_lock:
+                remaining = self._batch_hget_coalesce_queue
+                self._batch_hget_coalesce_queue = []
+                self._batch_hget_coalesce_active = False
+            for item in remaining:
+                item["error"] = exc
+                item["event"].set()
+            raise
 
     def scan_hash(self, key: str) -> Json:
         return self._call_json("scan_hash", key=key)
