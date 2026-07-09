@@ -889,13 +889,22 @@ impl LocalBlockStore {
         addresses: &[BlockAddress],
         no_cache_fill: bool,
     ) -> Vec<Result<Vec<u8>, BlockStoreError>> {
-        let mut inner = self.inner.lock().expect("block store lock poisoned");
+        let root = {
+            let inner = self.inner.lock().expect("block store lock poisoned");
+            inner.root.clone()
+        };
         let mut files = BTreeMap::<u64, File>::new();
         let mut results = Vec::with_capacity(addresses.len());
+        let mut stats_reads = 0_u64;
+        let mut stats_bytes_read = 0_u64;
+        let mut stats_cold_reads = 0_u64;
+        let mut stats_cold_bytes_read = 0_u64;
+        let mut stats_logical_bytes_read = 0_u64;
+        let mut stats_compressed_records_read = 0_u64;
         for address in addresses {
             let result = (|| {
                 if !files.contains_key(&address.page_segment_id) {
-                    let path = segment_path(&inner.root, address.page_segment_id);
+                    let path = segment_path(&root, address.page_segment_id);
                     files.insert(address.page_segment_id, File::open(path)?);
                 }
                 let file = files
@@ -918,20 +927,38 @@ impl LocalBlockStore {
                         });
                     }
                 }
-                inner.stats.reads += 1;
-                inner.stats.bytes_read += address.length;
+                stats_reads = stats_reads.saturating_add(1);
+                stats_bytes_read = stats_bytes_read.saturating_add(address.length);
                 if no_cache_fill {
-                    inner.stats.cold_reads = inner.stats.cold_reads.saturating_add(1);
-                    inner.stats.cold_bytes_read =
-                        inner.stats.cold_bytes_read.saturating_add(address.length);
+                    stats_cold_reads = stats_cold_reads.saturating_add(1);
+                    stats_cold_bytes_read = stats_cold_bytes_read.saturating_add(address.length);
                 }
-                inner.stats.logical_bytes_read += decoded.logical_len as u64;
+                stats_logical_bytes_read =
+                    stats_logical_bytes_read.saturating_add(decoded.logical_len as u64);
                 if decoded.compression == PageRecordCompression::Zstd {
-                    inner.stats.compressed_records_read += 1;
+                    stats_compressed_records_read = stats_compressed_records_read.saturating_add(1);
                 }
                 Ok(bytes)
             })();
             results.push(result);
+        }
+        if stats_reads > 0 {
+            let mut inner = self.inner.lock().expect("block store lock poisoned");
+            inner.stats.reads = inner.stats.reads.saturating_add(stats_reads);
+            inner.stats.bytes_read = inner.stats.bytes_read.saturating_add(stats_bytes_read);
+            inner.stats.cold_reads = inner.stats.cold_reads.saturating_add(stats_cold_reads);
+            inner.stats.cold_bytes_read = inner
+                .stats
+                .cold_bytes_read
+                .saturating_add(stats_cold_bytes_read);
+            inner.stats.logical_bytes_read = inner
+                .stats
+                .logical_bytes_read
+                .saturating_add(stats_logical_bytes_read);
+            inner.stats.compressed_records_read = inner
+                .stats
+                .compressed_records_read
+                .saturating_add(stats_compressed_records_read);
         }
         results
     }
