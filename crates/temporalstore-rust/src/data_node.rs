@@ -423,6 +423,25 @@ fn apply_shard_storage_metrics(
         add(metrics, "slot_index_entry_count", slot_entries);
         add(metrics, "slot_object_ref_count", object_entries);
         add(metrics, "slot_page_ref_count", page_entries);
+        add(metrics, "cache_admissions", shard.cache.puts);
+        add(metrics, "cache_evictions", shard.cache.memory_evictions);
+        add(
+            metrics,
+            "cache_rehydrates",
+            shard.cache.disk_hits.saturating_add(shard.cache.pmem_fills),
+        );
+        add(metrics, "memory_cache_hits", shard.cache.memory_hits);
+        add(metrics, "memory_cache_misses", shard.cache.misses);
+        add(metrics, "disk_cache_hits", shard.cache.disk_hits);
+        add(metrics, "disk_cache_misses", shard.cache.misses);
+        add(metrics, "shared_store_read_throughs", shard.cache.disk_hits);
+        add(metrics, "cache_refills", shard.cache.puts);
+        add(metrics, "cache_invalidations", shard.cache.invalidations);
+        add(
+            metrics,
+            "hot_cache_promotions",
+            shard.cache.pmem_hits.saturating_add(shard.cache.disk_hits),
+        );
         add(metrics, "page_index_entry_count", page_entries);
         add(metrics, "block_index_entry_count", block_entries);
         add(metrics, "page_address_count", page_entries);
@@ -3332,6 +3351,7 @@ impl DataNodeRuntime {
                     total_records: stats.total_records,
                     storage_bytes: stats.storage_bytes,
                     cache_memory_bytes: stats.cache.memory_bytes,
+                    cache: stats.cache.clone(),
                     storage: stats.storage.clone(),
                     block_store_bytes_written: stats.block_store.bytes_written,
                     oplog_sequence: stats.write_ahead_log.last_sequence,

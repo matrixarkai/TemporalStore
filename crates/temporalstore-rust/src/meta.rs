@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::control::{PartitionInfoStats, ShardCanonicalStorageStats};
 use crate::partition_id::{validate_partition_set_count, PartitionId, MAX_TABLE_ID};
 use crate::types::{ShardId, Status};
+use rustmtcache::CacheStats;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -185,6 +186,8 @@ pub struct ServerShardServingState {
     pub total_records: usize,
     pub storage_bytes: u64,
     pub cache_memory_bytes: u64,
+    #[serde(default)]
+    pub cache: CacheStats,
     #[serde(default)]
     pub storage: ShardCanonicalStorageStats,
     #[serde(alias = "page_store_bytes_written")]
