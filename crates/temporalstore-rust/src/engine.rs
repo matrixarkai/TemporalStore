@@ -377,17 +377,23 @@ impl TemporalEngine {
                     .hashes
                     .get(key)
                     .map(|fields| {
-                        let mut entries = fields
+                        let refs = fields
                             .iter()
-                            .filter_map(|(field, address)| {
-                                read_page_bytes(
-                                    &self.cache,
-                                    &self.page_store,
-                                    request.shard_id,
-                                    address,
-                                )
-                                .map(|value| (field.clone(), value))
-                            })
+                            .map(|(field, address)| (field.clone(), Some(address.clone())))
+                            .collect::<Vec<_>>();
+                        let addresses = refs
+                            .iter()
+                            .map(|(_, address)| address.clone())
+                            .collect::<Vec<_>>();
+                        let mut entries = refs
+                            .into_iter()
+                            .zip(read_page_bytes_batch(
+                                &self.cache,
+                                &self.page_store,
+                                request.shard_id,
+                                &addresses,
+                            ))
+                            .filter_map(|((field, _), value)| value.map(|value| (field, value)))
                             .collect::<Vec<_>>();
                         entries.sort_by(|a, b| a.0.cmp(&b.0));
                         entries
