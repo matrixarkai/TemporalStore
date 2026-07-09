@@ -527,6 +527,20 @@ pub fn types_command_response_to_sdk(response: types::CommandResponse) -> v1::Co
             feature_points: points.into_iter().map(types_feature_point_to_sdk).collect(),
             ..Default::default()
         },
+        types::CommandResponse::FeaturePointGroups { groups } => v1::CommandResponse {
+            status: Some(types_status_to_sdk(types::Status::ok())),
+            feature_points: groups
+                .into_iter()
+                .flat_map(|(_, points)| points)
+                .map(types_feature_point_to_sdk)
+                .collect(),
+            ..Default::default()
+        },
+        types::CommandResponse::Aggregate { value } => v1::CommandResponse {
+            status: Some(types_status_to_sdk(types::Status::ok())),
+            count: value.max(0) as u64,
+            ..Default::default()
+        },
         types::CommandResponse::SequenceRows { rows } => v1::CommandResponse {
             status: Some(types_status_to_sdk(types::Status::ok())),
             sequence_rows: rows
@@ -541,9 +555,34 @@ pub fn types_command_response_to_sdk(response: types::CommandResponse) -> v1::Co
                 .collect(),
             ..Default::default()
         },
+        types::CommandResponse::SequenceRowGroups { groups } => v1::CommandResponse {
+            status: Some(types_status_to_sdk(types::Status::ok())),
+            sequence_rows: groups
+                .into_iter()
+                .flat_map(|(_, rows)| rows)
+                .map(|row| v1::SequenceFeatureRow {
+                    timestamp_ms: row.timestamp_ms,
+                    gid: row.gid,
+                    action_type: row.action_type,
+                    duration: row.duration,
+                    author_id: row.author_id,
+                })
+                .collect(),
+            ..Default::default()
+        },
         types::CommandResponse::ContextNode { node, .. } => v1::CommandResponse {
             status: Some(types_status_to_sdk(types::Status::ok())),
             context_nodes: node.into_iter().map(types_context_node_to_sdk).collect(),
+            ..Default::default()
+        },
+        types::CommandResponse::ContextNodes { nodes } => v1::CommandResponse {
+            status: Some(types_status_to_sdk(types::Status::ok())),
+            context_nodes: nodes.into_iter().map(types_context_node_to_sdk).collect(),
+            ..Default::default()
+        },
+        types::CommandResponse::ContextObjectKey { object_key } => v1::CommandResponse {
+            status: Some(types_status_to_sdk(types::Status::ok())),
+            value: object_key.into_bytes(),
             ..Default::default()
         },
         other => v1::CommandResponse {
