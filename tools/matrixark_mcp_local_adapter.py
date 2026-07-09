@@ -32,6 +32,7 @@ RETRIEVAL_HOT_RECORD_TYPES = {
 
 RESOURCE_IMPORT_IGNORE_DIRS = {".git", "node_modules", "target", "build", "dist", ".venv", "__pycache__"}
 LOCAL_READ_CACHE_COPY = os.environ.get("MATRIXARK_LOCAL_READ_CACHE_COPY", "1").strip().lower() not in {"0", "false", "no"}
+DEFAULT_SESSION_IDLE_COMMIT_TIMEOUT_MS = 5 * 60 * 1000
 
 _LOCAL_READ_CACHE_LOCK = threading.RLock()
 _LOCAL_READ_CACHE: dict[str, tuple[int, int, list[Json]]] = {}
@@ -2274,10 +2275,15 @@ class MatrixArkLocalAdapter:
         if envelope["kind"] in {"resource", "skill"}:
             backend_readiness = self.ensure_backend_ready(reason=f"{envelope['kind']}_ingest")
         idle_commit_result: Json | None = None
-        idle_commit_timeout_ms = args.get("idle_commit_timeout_ms")
+        idle_commit_timeout_ms = args.get("idle_commit_timeout_ms", DEFAULT_SESSION_IDLE_COMMIT_TIMEOUT_MS)
         if idle_commit_timeout_ms is not None:
             if not isinstance(idle_commit_timeout_ms, int) or idle_commit_timeout_ms < 0:
                 raise MatrixArkError("idle_commit_timeout_ms must be a non-negative integer")
+        if (
+            isinstance(idle_commit_timeout_ms, int)
+            and idle_commit_timeout_ms > 0
+            and self.auto_batch_extract_enabled(args, kind=envelope["kind"])
+        ):
             idle_commit_result = self.session_commit(
                 {
                     "scope": envelope["scope"],

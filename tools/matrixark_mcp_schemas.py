@@ -246,8 +246,9 @@ TOOLS: list[Json] = [
                 },
                 "idle_commit_timeout_ms": {
                     "type": "integer",
+                    "default": 300000,
                     "minimum": 0,
-                    "description": "Optional idle timeout. If previous pending same-session messages are older than this, MatrixArk commits that window before ingesting the new message.",
+                    "description": "Idle timeout trigger in milliseconds. Defaults to 5 minutes; if previous pending same-session messages are older than this, MatrixArk commits that window before ingesting the new message. Set 0 to disable.",
                 },
                 "flush_session_buffer": {
                     "type": "boolean",

@@ -242,6 +242,86 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("hook_boundary", result["auto_batch_extract_result"]["commit_reason"])
             self.assertEqual(1, result["auto_batch_extract_result"]["committed_event_count"])
 
+    def test_default_idle_timeout_commits_previous_buffered_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            event_log = Path(tmp_dir) / "matrixark-default-idle-timeout.jsonl"
+            adapter = CountingLocalAdapter(event_log)
+            server = MatrixArkMcpServer(adapter, line_json=True, access_mode="dev")
+            scope = {
+                "account_id": "acct_idle",
+                "tenant_id": "tenant_idle",
+                "user_id": "user_idle",
+                "session_id": "session_idle",
+            }
+            metadata = {"node_path": ["tenant:tenant_idle", "user:user_idle", "session:session_idle"]}
+            with mock.patch("tools.matrixark_mcp_core.now_ms", return_value=1_000), mock.patch(
+                "tools.matrixark_mcp_local_adapter.now_ms", return_value=1_000
+            ):
+                first = server.call_tool(
+                    "matrixark_ingest",
+                    {
+                        "messages": [{"role": "user", "content": "Start a short idle session."}],
+                        "scope": scope,
+                        "metadata": metadata,
+                    },
+                )
+            self.assertEqual("deferred", first["idle_commit_result"]["status"])
+            with mock.patch("tools.matrixark_mcp_core.now_ms", return_value=301_001), mock.patch(
+                "tools.matrixark_mcp_local_adapter.now_ms", return_value=301_001
+            ):
+                second = server.call_tool(
+                    "matrixark_ingest",
+                    {
+                        "messages": [{"role": "user", "content": "Resume after the default idle timeout."}],
+                        "scope": scope,
+                        "metadata": metadata,
+                    },
+                )
+            self.assertEqual("committed", second["idle_commit_result"]["status"])
+            self.assertEqual("idle_timeout", second["idle_commit_result"]["commit_reason"])
+            self.assertEqual(1, second["idle_commit_result"]["committed_event_count"])
+            self.assertGreaterEqual(second["idle_commit_result"]["idle_elapsed_ms"], 300_000)
+            self.assertEqual(1, second["session_buffer"]["pending_event_count"])
+
+    def test_idle_timeout_zero_disables_default_idle_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            event_log = Path(tmp_dir) / "matrixark-idle-timeout-disabled.jsonl"
+            adapter = CountingLocalAdapter(event_log)
+            server = MatrixArkMcpServer(adapter, line_json=True, access_mode="dev")
+            scope = {
+                "account_id": "acct_idle_off",
+                "tenant_id": "tenant_idle_off",
+                "user_id": "user_idle_off",
+                "session_id": "session_idle_off",
+            }
+            metadata = {"node_path": ["tenant:tenant_idle_off", "user:user_idle_off", "session:session_idle_off"]}
+            with mock.patch("tools.matrixark_mcp_core.now_ms", return_value=1_000), mock.patch(
+                "tools.matrixark_mcp_local_adapter.now_ms", return_value=1_000
+            ):
+                server.call_tool(
+                    "matrixark_ingest",
+                    {
+                        "messages": [{"role": "user", "content": "Do not idle commit this session."}],
+                        "scope": scope,
+                        "metadata": metadata,
+                        "idle_commit_timeout_ms": 0,
+                    },
+                )
+            with mock.patch("tools.matrixark_mcp_core.now_ms", return_value=601_001), mock.patch(
+                "tools.matrixark_mcp_local_adapter.now_ms", return_value=601_001
+            ):
+                result = server.call_tool(
+                    "matrixark_ingest",
+                    {
+                        "messages": [{"role": "user", "content": "Still no idle commit because timeout is disabled."}],
+                        "scope": scope,
+                        "metadata": metadata,
+                        "idle_commit_timeout_ms": 0,
+                    },
+                )
+            self.assertIsNone(result["idle_commit_result"])
+            self.assertEqual(2, result["session_buffer"]["pending_event_count"])
+
     def test_batch_extract_events_are_timestamp_keyed_under_segment_parent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-batch-segment-time.jsonl")
