@@ -134,6 +134,12 @@ pub struct DataNodeRuntimeStats {
     pub rejected_background_total: u64,
     pub timed_out_total: u64,
     pub canceled_total: u64,
+    #[serde(default)]
+    pub append_queue_wait_count: u64,
+    #[serde(default)]
+    pub append_queue_wait_total_ms: u64,
+    #[serde(default)]
+    pub append_queue_wait_max_ms: u64,
     pub queue_depth: usize,
     pub background_queue_depth: usize,
     pub queued_shard_count: usize,
@@ -385,6 +391,18 @@ fn data_node_storage_lifecycle_metrics(stats: &DataNodeRuntimeStats) -> BTreeMap
         stats
             .queue_depth
             .saturating_add(stats.background_queue_depth) as u64,
+    );
+    metrics.insert(
+        "append_queue_wait_count".to_string(),
+        stats.append_queue_wait_count,
+    );
+    metrics.insert(
+        "append_queue_wait_total_ms".to_string(),
+        stats.append_queue_wait_total_ms,
+    );
+    metrics.insert(
+        "append_queue_wait_ms".to_string(),
+        stats.append_queue_wait_max_ms,
     );
     metrics.insert(
         "append_durability_failures".to_string(),
@@ -1302,6 +1320,9 @@ struct MutableRuntimeStats {
     rejected_background_total: u64,
     timed_out_total: u64,
     canceled_total: u64,
+    append_queue_wait_count: u64,
+    append_queue_wait_total_ms: u64,
+    append_queue_wait_max_ms: u64,
     expiry_sweeps: u64,
     expired_records_removed: u64,
     dump_runs: u64,
@@ -2948,6 +2969,9 @@ impl DataNodeRuntime {
             rejected_background_total: stats.rejected_background_total,
             timed_out_total: stats.timed_out_total,
             canceled_total: stats.canceled_total,
+            append_queue_wait_count: stats.append_queue_wait_count,
+            append_queue_wait_total_ms: stats.append_queue_wait_total_ms,
+            append_queue_wait_max_ms: stats.append_queue_wait_max_ms,
             queue_depth,
             background_queue_depth: queue.background_queued_total,
             queued_shard_count,
@@ -3638,6 +3662,14 @@ fn worker_loop(inner: Arc<DataNodeRuntimeInner>) {
                     .expect("runtime queue lock poisoned");
             }
         };
+        if is_append_queue_task(task.kind) {
+            let wait_ms = now_ms().saturating_sub(task.submitted_at_ms);
+            let mut stats = inner.stats.lock().expect("runtime stats lock poisoned");
+            stats.append_queue_wait_count = stats.append_queue_wait_count.saturating_add(1);
+            stats.append_queue_wait_total_ms =
+                stats.append_queue_wait_total_ms.saturating_add(wait_ms);
+            stats.append_queue_wait_max_ms = stats.append_queue_wait_max_ms.max(wait_ms);
+        }
         let shard_id = task.request.shard_id();
         let output = if Instant::now() > task.deadline {
             inner
@@ -3692,6 +3724,13 @@ fn worker_loop(inner: Arc<DataNodeRuntimeInner>) {
             .expect("runtime stats lock poisoned")
             .completed_total += 1;
     }
+}
+
+fn is_append_queue_task(kind: DataNodeTaskKind) -> bool {
+    matches!(
+        kind,
+        DataNodeTaskKind::Execute | DataNodeTaskKind::CheckedExecute
+    )
 }
 
 fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTaskOutput {
