@@ -7886,24 +7886,9 @@ fn execute_on_shard(
                     mutated,
                 };
             }
-            let rows = shard
-                .sequences
-                .get(&key)
-                .map(|series| {
-                    series
-                        .range(start_ms..=end_ms)
-                        .take(count)
-                        .filter_map(|(timestamp_ms, address)| {
-                            read_sequence_row(cache, page_store, shard_id, *timestamp_ms, address)
-                        })
-                        .filter(|row| {
-                            filters
-                                .iter()
-                                .all(|filter| sequence_filter_matches(row, filter))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+            let rows = sequence_rows_in_range(
+                cache, page_store, shard_id, shard, &key, start_ms, end_ms, count, &filters,
+            );
             CommandResponse::SequenceRows { rows }
         }
         Command::SequenceBatchQuery { queries } => {
