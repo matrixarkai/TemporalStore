@@ -9,7 +9,7 @@ use rustmtcache::MultiLayerCache;
 
 use super::packed_pages::{decode_feature_page_strict, read_feature_points_cached_batch};
 use super::state::PackedFeaturePageDecode;
-use super::{parse_i64, read_page_bytes_cold, ShardState};
+use super::{parse_i64, ShardState};
 
 fn decode_sequence_row_value(bytes: &[u8]) -> Option<SequenceFeatureRow> {
     serde_json::from_slice(bytes).ok()
@@ -241,26 +241,27 @@ pub(super) fn ips_snapshot_report_in_range(
     );
     let stats = ips_stats_in_range(shard, &key, start_ms, end_ms);
     let mut page_refs = HashSet::<BlockAddress>::new();
+    let mut unique_page_refs = Vec::<BlockAddress>::new();
     let mut page_segment_ids = BTreeSet::<u64>::new();
-    let mut packed_timestamped_page_count = 0usize;
     if let Some(series) = shard.ips.get(&key) {
         for (_, address) in series.range(start_ms..=end_ms) {
             if page_refs.insert(address.clone()) {
                 page_segment_ids.insert(address.page_segment_id);
-                if read_page_bytes_cold(block_store, address)
-                    .map(|bytes| {
-                        matches!(
-                            decode_feature_page_strict(&bytes),
-                            PackedFeaturePageDecode::Packed(_)
-                        )
-                    })
-                    .unwrap_or(false)
-                {
-                    packed_timestamped_page_count += 1;
-                }
+                unique_page_refs.push(address.clone());
             }
         }
     }
+    let packed_timestamped_page_count = block_store
+        .read_cold_batch(&unique_page_refs)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|bytes| {
+            matches!(
+                decode_feature_page_strict(bytes),
+                PackedFeaturePageDecode::Packed(_)
+            )
+        })
+        .count();
     IpsSnapshotReport {
         key,
         start_ms,
