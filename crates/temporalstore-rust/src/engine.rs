@@ -7776,7 +7776,7 @@ fn execute_on_shard(
             CommandResponse::Empty
         }
         Command::FeatureAppend { key, points } => {
-            remove_if_expired(cache, shard_id, shard, &key);
+            let expired = remove_if_expired(cache, shard_id, shard, &key);
             let series = shard.features.entry(key.clone()).or_default();
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             let points = sorted_feature_points(points);
@@ -7824,7 +7824,7 @@ fn execute_on_shard(
                     start_routing_slot,
                     end_routing_slot,
                 );
-            } else {
+            } else if expired || mutated || retention_trimmed {
                 let live_addresses = series.values().cloned().collect::<Vec<_>>();
                 sync_slot_index_object_pages(
                     cache,
@@ -7846,7 +7846,7 @@ fn execute_on_shard(
             points,
             policy,
         } => {
-            remove_if_expired(cache, shard_id, shard, &key);
+            let expired = remove_if_expired(cache, shard_id, shard, &key);
             let series = shard.features.entry(key.clone()).or_default();
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             let mut accepted_points = Vec::new();
@@ -7908,7 +7908,7 @@ fn execute_on_shard(
                     start_routing_slot,
                     end_routing_slot,
                 );
-            } else {
+            } else if expired || mutated || retention_trimmed {
                 let live_addresses = series.values().cloned().collect::<Vec<_>>();
                 sync_slot_index_object_pages(
                     cache,
@@ -8087,7 +8087,7 @@ fn execute_on_shard(
             }
         }
         Command::SequenceAdd { key, rows } => {
-            remove_if_expired(cache, shard_id, shard, &key);
+            let expired = remove_if_expired(cache, shard_id, shard, &key);
             let series = shard.sequences.entry(key.clone()).or_default();
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             let points = rows
@@ -8141,7 +8141,7 @@ fn execute_on_shard(
                     start_routing_slot,
                     end_routing_slot,
                 );
-            } else {
+            } else if expired || mutated || retention_trimmed {
                 let live_addresses = series.values().cloned().collect::<Vec<_>>();
                 sync_slot_index_object_pages(
                     cache,
@@ -8206,7 +8206,7 @@ fn execute_on_shard(
             timestamp_ms,
             instance,
         } => {
-            remove_if_expired(cache, shard_id, shard, &key);
+            let expired = remove_if_expired(cache, shard_id, shard, &key);
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             let replacing_existing_timestamp = shard
                 .ips
@@ -8258,7 +8258,7 @@ fn execute_on_shard(
                     start_routing_slot,
                     end_routing_slot,
                 );
-            } else {
+            } else if expired || mutated {
                 let live_addresses = shard
                     .ips
                     .get(&key)
@@ -8286,7 +8286,7 @@ fn execute_on_shard(
             table_id,
             request_id,
         } => {
-            remove_if_expired(cache, shard_id, shard, &key);
+            let expired = remove_if_expired(cache, shard_id, shard, &key);
             if let Some(request_id) = &request_id {
                 if shard
                     .ips_request_ids
@@ -8357,7 +8357,7 @@ fn execute_on_shard(
                     start_routing_slot,
                     end_routing_slot,
                 );
-            } else {
+            } else if expired || mutated {
                 let live_addresses = shard
                     .ips
                     .get(&key)
@@ -8380,7 +8380,7 @@ fn execute_on_shard(
             }
         }
         Command::IpsLoad { key, points } => {
-            remove_if_expired(cache, shard_id, shard, &key);
+            let expired = remove_if_expired(cache, shard_id, shard, &key);
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             let points = sorted_feature_points(points);
             let replacing_existing_timestamp = points.iter().any(|point| {
@@ -8432,7 +8432,7 @@ fn execute_on_shard(
                     start_routing_slot,
                     end_routing_slot,
                 );
-            } else {
+            } else if expired || mutated {
                 let live_addresses = shard
                     .ips
                     .get(&key)
