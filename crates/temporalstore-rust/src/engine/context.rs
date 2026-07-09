@@ -908,7 +908,9 @@ pub(super) fn load_context_compression_events(
                         }
                     }
                 };
-            for (timeline_key, address) in series.iter() {
+            for (timeline_key, address) in series
+                .range(context_timeline_start(start_time_ms)..context_timeline_end(end_time_ms))
+            {
                 batch.push((*timeline_key, address.clone()));
                 if batch.len() >= 64 {
                     drain_batch(&mut batch, &mut events);
@@ -946,19 +948,22 @@ pub(super) fn load_context_compression_events_cold(
     {
         let object_key = context_compression_key(tenant_hash, node_hash);
         if let Some(series) = shard.context_compressions.get(&object_key) {
-            for event in series.iter().filter_map(|(timeline_key, address)| {
-                read_context_value_cold::<ContextCompressionEvent>(
-                    cache,
-                    page_store,
-                    shard_id,
-                    *timeline_key,
-                    address,
-                    &mut packed_page_cache,
-                )
-                .filter(|event| {
-                    event.source_end_ms >= start_time_ms && event.source_start_ms <= end_time_ms
+            for event in series
+                .range(context_timeline_start(start_time_ms)..context_timeline_end(end_time_ms))
+                .filter_map(|(timeline_key, address)| {
+                    read_context_value_cold::<ContextCompressionEvent>(
+                        cache,
+                        page_store,
+                        shard_id,
+                        *timeline_key,
+                        address,
+                        &mut packed_page_cache,
+                    )
+                    .filter(|event| {
+                        event.source_end_ms >= start_time_ms && event.source_start_ms <= end_time_ms
+                    })
                 })
-            }) {
+            {
                 events.push(event);
                 if events.len() > trim_threshold {
                     sort_truncate_context_compression_events(&mut events, event_limit);
