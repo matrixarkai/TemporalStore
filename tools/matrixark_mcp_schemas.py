@@ -232,12 +232,17 @@ TOOLS: list[Json] = [
                 "auto_batch_extract": {
                     "type": "boolean",
                     "default": False,
-                    "description": "If true, commit the same-session buffer once session_buffer_threshold pending events accumulate.",
+                    "description": "If true, opt into same-session buffering and commit once session_buffer_threshold pending events accumulate. Defaults to immediate per-message handling.",
+                },
+                "session_buffer_enabled": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Explicitly write session_buffer_event markers for later matrixark_session_commit. Defaults to false so each message is handled immediately.",
                 },
                 "session_buffer_threshold": {
                     "type": "integer",
                     "default": 20,
-                    "description": "Pending same-session raw event threshold for automatic one-pass batch extraction.",
+                    "description": "Pending same-session raw event threshold for opt-in automatic one-pass batch extraction.",
                 },
                 "idle_commit_timeout_ms": {
                     "type": "integer",

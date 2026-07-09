@@ -510,7 +510,6 @@ def main() -> int:
             "agent_hook": hook_meta,
         }
         if should_retrieve(args.event):
-            ingest_args["auto_batch_extract"] = True
             ingest_args["session_buffer_threshold"] = args.session_commit_threshold
             if args.idle_commit_timeout_ms > 0:
                 ingest_args["idle_commit_timeout_ms"] = args.idle_commit_timeout_ms
