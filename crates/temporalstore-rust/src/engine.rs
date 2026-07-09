@@ -8975,7 +8975,7 @@ fn execute_on_shard(
                             value,
                         }],
                         routing_slot,
-                        async_storage,
+                        async_storage && !cold_storage,
                     ) {
                         let series = shard.context_indexes.entry(object_key.clone()).or_default();
                         for (timestamp_ms, address) in addresses {

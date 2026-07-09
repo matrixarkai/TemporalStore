@@ -8,7 +8,7 @@ use crate::types::{
     ContextExtractedEventIndexes, ContextSummary, ContextWire, FeatureFilter, FeatureFilterOp,
     ReplicatedCommand,
 };
-use crate::{BlockAddress, BlockStoreOptions, LocalBlockStore};
+use crate::{BlockAddress, BlockStoreOptions, LocalBlockStore, WriteAheadLogRecord};
 
 fn wait_for_fresh_admission_second() {
     loop {
@@ -930,6 +930,12 @@ fn context_temporal_compression_and_raw_backfill_use_cold_storage_without_cache_
 
     let cache_puts_before = engine.cache().stats().puts;
     let block_writes_before = engine.block_store().stats().writes;
+    let wal_sequence_before = engine
+        .get_stats(1)
+        .stats
+        .unwrap()
+        .write_ahead_log
+        .last_sequence;
     for idx in 0..3 {
         let response = engine.execute(ExecuteRequest {
             shard_id: 1,
@@ -960,6 +966,91 @@ fn context_temporal_compression_and_raw_backfill_use_cold_storage_without_cache_
     }
     assert!(engine.block_store().stats().writes > block_writes_before);
     assert_eq!(engine.cache().stats().puts, cache_puts_before);
+    assert_eq!(
+        engine
+            .get_stats(1)
+            .stats
+            .unwrap()
+            .write_ahead_log
+            .last_sequence,
+        wal_sequence_before + 3
+    );
+
+    let cache_puts_before_extracted = engine.cache().stats().puts;
+    let extracted = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextWriteExtractedEvent {
+            tenant_hash: TENANT,
+            node_hash: NODE,
+            event: ContextEvent {
+                event_id_hash: 9001,
+                event_time_ms: START + 30,
+                ingestion_time_ms: START + 30,
+                kind: 9,
+                event_type: 9,
+                actor_hash: 0,
+                status: 0,
+                valid_until_ms: 0,
+                confidence: 0.97,
+                importance: 0.9,
+                text: "Cold extracted backfill event".to_string(),
+                source_ref: "backfill://raw-query".to_string(),
+                related_node_hashes: Vec::new(),
+                compact_attrs: Vec::new(),
+            },
+            indexes: ContextExtractedEventIndexes {
+                scope_hash: 77,
+                entity_hashes: vec![901, 902],
+                status_hash: 55,
+                source_hash: 66,
+                event_time_bucket_ms: START,
+                disabled_indexes: Vec::new(),
+            },
+            first_write_only: false,
+            cold_storage: true,
+        },
+    });
+    assert!(extracted.status.ok);
+    assert!(matches!(
+        extracted.response,
+        CommandResponse::ContextExtractedEventWrite {
+            written_index_count,
+            ..
+        } if written_index_count >= 4
+    ));
+    assert_eq!(engine.cache().stats().puts, cache_puts_before_extracted);
+
+    let cache_puts_before_wal_scan = engine.cache().stats().puts;
+    let wal_scan = engine.scan_stream(ScanStreamRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Wal,
+        page_segment_id: 0,
+        start_offset: 0,
+        end_offset: 64 * 1024,
+        max_bytes: 64 * 1024,
+    });
+    assert!(wal_scan.status.ok);
+    let wal_records = wal_scan
+        .records
+        .iter()
+        .map(|record| serde_json::from_slice::<WriteAheadLogRecord>(&record.data).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(wal_records.len(), 4);
+    assert_eq!(engine.cache().stats().puts, cache_puts_before_wal_scan);
+    assert!(wal_records.iter().take(3).all(|record| matches!(
+        record.command,
+        Command::ContextWriteEvent {
+            cold_storage: true,
+            ..
+        }
+    )));
+    assert!(matches!(
+        wal_records.last().unwrap().command,
+        Command::ContextWriteExtractedEvent {
+            cold_storage: true,
+            ..
+        }
+    ));
 
     let block_reads_before = engine.block_store().stats().reads;
     let cache_puts_before_compress = engine.cache().stats().puts;
@@ -969,9 +1060,9 @@ fn context_temporal_compression_and_raw_backfill_use_cold_storage_without_cache_
             tenant_hash: TENANT,
             node_hash: NODE,
             source_start_ms: START,
-            source_end_ms: START + 20,
+            source_end_ms: START + 30,
             compressed_time_ms: START + 1_000,
-            max_source_events: Some(3),
+            max_source_events: Some(4),
             min_confidence: 0.9,
             min_importance: 0.8,
         },
@@ -981,7 +1072,7 @@ fn context_temporal_compression_and_raw_backfill_use_cold_storage_without_cache_
         compressed.response,
         CommandResponse::ContextCompressionEvents {
             ref events,
-            source_event_count: Some(3),
+            source_event_count: Some(4),
             ..
         } if events.len() == 1
     ));
