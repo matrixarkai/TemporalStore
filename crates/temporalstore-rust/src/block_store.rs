@@ -977,7 +977,19 @@ impl LocalBlockStore {
     ) -> Result<Vec<u8>, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         let path = segment_path(&inner.root, page_segment_id);
-        let segment = fs::read(path)?;
+        let physical_len = path.metadata()?.len();
+        let physical_limit = inner
+            .extents
+            .get(&page_segment_id)
+            .map(|extent| extent.readable_prefix_physical_bytes)
+            .filter(|prefix| *prefix > 0)
+            .unwrap_or(physical_len)
+            .min(physical_len);
+        let mut file = File::open(path)?;
+        let mut segment = Vec::with_capacity(physical_limit as usize);
+        Read::by_ref(&mut file)
+            .take(physical_limit)
+            .read_to_end(&mut segment)?;
         let physical_bytes_read = segment.len() as u64;
         let range = logical_range_from_segment(&segment, page_segment_id, offset, size)?;
         let bytes = range.bytes;
