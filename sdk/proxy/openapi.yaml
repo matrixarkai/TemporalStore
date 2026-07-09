@@ -5,9 +5,17 @@ info:
 paths:
   /ProxyService/Set:
     post:
-      summary: Put a string value with optional TTL.
+      summary: Put a string value.
       requestBody:
         $ref: '#/components/requestBodies/StringPut'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /ProxyService/SetEx:
+    post:
+      summary: Put a string value with TTL.
+      requestBody:
+        $ref: '#/components/requestBodies/StringPutWithTtl'
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
@@ -192,6 +200,12 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/StringPutRequest'
+    StringPutWithTtl:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/StringPutWithTtlRequest'
     Expire:
       required: true
       content:
@@ -291,14 +305,20 @@ components:
           type: object
     KeyRequest:
       type: object
-      required: [namespace, table, key]
+      required: [namespace, table_name, key]
       properties:
         namespace:
           type: string
-        table:
+        table_name:
           type: string
         key:
           type: string
+    ByteArray:
+      type: array
+      items:
+        type: integer
+        minimum: 0
+        maximum: 255
     StringPutRequest:
       allOf:
         - $ref: '#/components/schemas/KeyRequest'
@@ -306,7 +326,13 @@ components:
           required: [value]
           properties:
             value:
-              type: string
+              $ref: '#/components/schemas/ByteArray'
+    StringPutWithTtlRequest:
+      allOf:
+        - $ref: '#/components/schemas/StringPutRequest'
+        - type: object
+          required: [ttl_ms]
+          properties:
             ttl_ms:
               type: integer
               format: int64
@@ -328,7 +354,7 @@ components:
             field:
               type: string
             value:
-              type: string
+              $ref: '#/components/schemas/ByteArray'
     HashFieldRequest:
       allOf:
         - $ref: '#/components/schemas/KeyRequest'
@@ -344,16 +370,16 @@ components:
           required: [member]
           properties:
             member:
-              type: string
+              $ref: '#/components/schemas/ByteArray'
     FeaturePoint:
       type: object
-      required: [timestamp, value]
+      required: [timestamp_ms, value]
       properties:
-        timestamp:
+        timestamp_ms:
           type: integer
           format: int64
         value:
-          type: string
+          $ref: '#/components/schemas/ByteArray'
     FeatureFilter:
       type: object
       required: [field, op, value]
@@ -361,7 +387,8 @@ components:
         field:
           type: string
         op:
-          type: integer
+          type: string
+          enum: [equal, not_equal, greater_than, greater_or_equal, less_than, less_or_equal]
         value:
           type: integer
           format: int64
@@ -377,9 +404,9 @@ components:
                 $ref: '#/components/schemas/FeaturePoint'
     SequenceFeatureRow:
       type: object
-      required: [timestamp, gid, action_type, duration, author_id]
+      required: [timestamp_ms, gid, action_type, duration, author_id]
       properties:
-        timestamp:
+        timestamp_ms:
           type: integer
           format: int64
         gid:
@@ -406,12 +433,12 @@ components:
       allOf:
         - $ref: '#/components/schemas/KeyRequest'
         - type: object
-          required: [start_ts, end_ts, count]
+          required: [start_ms, end_ms, count]
           properties:
-            start_ts:
+            start_ms:
               type: integer
               format: int64
-            end_ts:
+            end_ms:
               type: integer
               format: int64
             count:
@@ -440,87 +467,68 @@ components:
           type: integer
     IpsAddRequest:
       type: object
-      required: [namespace, table, ips_table, uid, timestamp_us, action_type, logical_table, features]
+      required: [namespace, table_name, key, timestamp_ms, instance]
       properties:
         namespace:
           type: string
-        table:
+        table_name:
           type: string
-        ips_table:
+        key:
           type: string
-        uid:
+        timestamp_ms:
           type: integer
           format: int64
-        timestamp_us:
-          type: integer
-          format: int64
+        instance:
+          $ref: '#/components/schemas/ByteArray'
         action_type:
           type: integer
-        logical_table:
+        table_id:
           type: integer
-        features:
-          type: array
-          items:
-            $ref: '#/components/schemas/IpsFeatureStat'
+          format: int64
+        request_id:
+          type: string
     IpsQueryLastRequest:
       type: object
-      required: [namespace, table, ips_table, uid, action_type, logical_table, slot]
+      required: [namespace, table_name, key, count]
       properties:
         namespace:
           type: string
-        table:
+        table_name:
           type: string
-        ips_table:
+        key:
           type: string
-        uid:
+        count:
           type: integer
-          format: int64
-        action_type:
-          type: integer
-        logical_table:
-          type: integer
-        slot:
-          type: integer
-        top_k:
-          type: integer
-        last_instances:
-          type: integer
-          format: int64
     RiskIncrementRequest:
       allOf:
         - $ref: '#/components/schemas/KeyRequest'
         - type: object
-          required: [amount, ttl_seconds, precision]
+          required: [timestamp_ms, amount]
           properties:
+            timestamp_ms:
+              type: integer
+              format: int64
             amount:
               type: integer
               format: int64
-            ttl_seconds:
+            precision_ms:
               type: integer
               format: int64
-            precision:
-              type: integer
-            uuid:
-              type: string
-            occur_time_seconds:
+            ttl_ms:
               type: integer
               format: int64
     RiskCountRequest:
       allOf:
         - $ref: '#/components/schemas/KeyRequest'
         - type: object
-          required: [precision, window_start, window_end, window_unit]
+          required: [start_ms, end_ms]
           properties:
-            precision:
-              type: integer
-            window_start:
+            start_ms:
               type: integer
               format: int64
-            window_end:
+            end_ms:
               type: integer
               format: int64
-            window_unit:
-              type: integer
     MatrixArkHashEntry:
       type: object
       required: [key, field, value]
@@ -533,9 +541,11 @@ components:
           type: string
     MatrixArkAppendRecordsRequest:
       type: object
-      required: [namespace, table, entries]
+      required: [namespace, table_name, entries]
       properties:
         namespace:
+          type: string
+        table_name:
           type: string
         table:
           type: string
@@ -549,9 +559,11 @@ components:
           type: string
     MatrixArkScanCandidatesRequest:
       type: object
-      required: [namespace, table, count_key, record_hash_key, shard_size]
+      required: [namespace, table_name, count_key, record_hash_key, shard_size]
       properties:
         namespace:
+          type: string
+        table_name:
           type: string
         table:
           type: string
@@ -581,9 +593,11 @@ components:
             format: int64
     MatrixArkRetrieveContextPackRequest:
       type: object
-      required: [namespace, table, count_key, record_hash_key, shard_size, request]
+      required: [namespace, table_name, count_key, record_hash_key, shard_size, request]
       properties:
         namespace:
+          type: string
+        table_name:
           type: string
         table:
           type: string
