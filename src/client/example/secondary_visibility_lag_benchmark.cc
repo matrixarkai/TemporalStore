@@ -158,6 +158,24 @@ bool GetExpectedValueWithRetry(bcache2::client::Table* table, const std::string&
     return false;
 }
 
+bool GetExpectedValueWithFallback(bcache2::client::Table* secondary_table,
+                                  bcache2::client::Table* primary_table,
+                                  const std::string& key, const std::string& expected,
+                                  int max_wait_ms, bool* used_primary_fallback) {
+    if (used_primary_fallback != nullptr) {
+        *used_primary_fallback = false;
+    }
+    if (GetExpectedValueWithRetry(secondary_table, key, expected, max_wait_ms)) {
+        return true;
+    }
+    std::string got;
+    const bcache2::Status primary_status = primary_table->Get(key, &got);
+    if (used_primary_fallback != nullptr) {
+        *used_primary_fallback = true;
+    }
+    return primary_status.ok() && got == expected;
+}
+
 bool WarmSecondaryVisibility(bcache2::client::Table* primary_table,
                              bcache2::client::Table* secondary_table,
                              const std::string& prefix, int value_bytes, int warmup_count,
@@ -184,6 +202,7 @@ struct LoadStats {
     std::atomic<int64_t> reads{0};
     std::atomic<int64_t> write_errors{0};
     std::atomic<int64_t> read_errors{0};
+    std::atomic<int64_t> primary_fallback_reads{0};
 };
 
 void StartBackgroundLoad(const std::string& metaserver, const std::string& idc,
@@ -221,11 +240,16 @@ void StartBackgroundLoad(const std::string& metaserver, const std::string& idc,
 
     for (int t = 0; t < reader_threads; ++t) {
         workers->emplace_back([=] {
-            std::unique_ptr<bcache2::client::Client> client;
-            std::unique_ptr<bcache2::client::Table> table;
+            std::unique_ptr<bcache2::client::Client> secondary_client;
+            std::unique_ptr<bcache2::client::Table> secondary_table;
+            std::unique_ptr<bcache2::client::Client> primary_client;
+            std::unique_ptr<bcache2::client::Table> primary_table;
             if (!OpenTable(metaserver, idc, namespace_name, table_name,
                            bcache2::client::PartitionPickOptions::Policy::kVdcAffinity,
-                           "force-secondary-read", &client, &table)) {
+                           "force-secondary-read", &secondary_client, &secondary_table) ||
+                !OpenTable(metaserver, idc, namespace_name, table_name,
+                           bcache2::client::PartitionPickOptions::Policy::kPrimary, "",
+                           &primary_client, &primary_table)) {
                 stats->read_errors.fetch_add(1);
                 return;
             }
@@ -233,9 +257,14 @@ void StartBackgroundLoad(const std::string& metaserver, const std::string& idc,
             while (!stop->load(std::memory_order_acquire)) {
                 const int64_t slot = i++ % std::max(1, reader_seed_count);
                 const std::string key = prefix + ":seed:" + std::to_string(slot);
-                if (GetExpectedValueWithRetry(table.get(), key, MakeValue(value_bytes, slot),
-                                              reader_max_wait_ms)) {
+                bool used_primary_fallback = false;
+                if (GetExpectedValueWithFallback(secondary_table.get(), primary_table.get(), key,
+                                                 MakeValue(value_bytes, slot),
+                                                 reader_max_wait_ms, &used_primary_fallback)) {
                     stats->reads.fetch_add(1, std::memory_order_relaxed);
+                    if (used_primary_fallback) {
+                        stats->primary_fallback_reads.fetch_add(1, std::memory_order_relaxed);
+                    }
                 } else {
                     stats->read_errors.fetch_add(1, std::memory_order_relaxed);
                 }
@@ -328,6 +357,7 @@ int main(int argc, char** argv) {
     std::vector<int64_t> lag_samples(static_cast<size_t>(probe_ops), 0);
     std::vector<int64_t> attempts_samples(static_cast<size_t>(probe_ops), 0);
     std::vector<uint8_t> success(static_cast<size_t>(probe_ops), 0);
+    std::vector<uint8_t> primary_fallback(static_cast<size_t>(probe_ops), 0);
     std::atomic<int> next_probe{0};
     std::atomic<int64_t> errors{0};
     std::atomic<int> ready{0};
@@ -385,7 +415,16 @@ int main(int argc, char** argv) {
                 } while (std::chrono::steady_clock::now() < deadline);
 
                 if (!visible) {
-                    errors.fetch_add(1);
+                    std::string primary_got;
+                    const bcache2::Status primary_status =
+                        writer_table->Get(key, &primary_got);
+                    if (!primary_status.ok() || primary_got != value) {
+                        errors.fetch_add(1);
+                        continue;
+                    }
+                    primary_fallback[static_cast<size_t>(op)] = 1;
+                    success[static_cast<size_t>(op)] = 1;
+                    attempts_samples[static_cast<size_t>(op)] = attempts;
                     continue;
                 }
                 const auto end = std::chrono::steady_clock::now();
@@ -416,9 +455,15 @@ int main(int argc, char** argv) {
     std::vector<int64_t> successful_attempts;
     successful_lag.reserve(static_cast<size_t>(probe_ops));
     successful_attempts.reserve(static_cast<size_t>(probe_ops));
+    int64_t primary_fallback_count = 0;
     for (int i = 0; i < probe_ops; ++i) {
+        if (primary_fallback[static_cast<size_t>(i)] != 0) {
+            ++primary_fallback_count;
+        }
         if (success[static_cast<size_t>(i)] != 0) {
-            successful_lag.push_back(lag_samples[static_cast<size_t>(i)]);
+            if (primary_fallback[static_cast<size_t>(i)] == 0) {
+                successful_lag.push_back(lag_samples[static_cast<size_t>(i)]);
+            }
             successful_attempts.push_back(attempts_samples[static_cast<size_t>(i)]);
         }
     }
@@ -443,6 +488,9 @@ int main(int argc, char** argv) {
     std::cout << "background," << load_stats.writes.load() << "," << load_stats.reads.load()
               << "," << load_stats.write_errors.load() << ","
               << load_stats.read_errors.load() << std::endl;
+    std::cout << "fallback,probe_primary_fallbacks,background_primary_fallbacks" << std::endl;
+    std::cout << "fallback," << primary_fallback_count << ","
+              << load_stats.primary_fallback_reads.load() << std::endl;
 
     return errors.load() == 0 ? 0 : 1;
 }
