@@ -14520,16 +14520,25 @@ fn read_page_bytes_batch(
     let cached = cache
         .get_batch(&keys)
         .unwrap_or_else(|_| vec![None; keys.len()]);
-    let mut refills = Vec::new();
+    let mut misses = HashMap::<CacheKey, (PageAddress, Vec<usize>)>::new();
     for ((index, address, key), cached_value) in lookup.into_iter().zip(cached.into_iter()) {
         if let Some(bytes) = cached_value {
             values[index] = Some(bytes);
             continue;
         }
+        misses
+            .entry(key)
+            .and_modify(|(_, indexes)| indexes.push(index))
+            .or_insert_with(|| (address, vec![index]));
+    }
+    let mut refills = Vec::new();
+    for (key, (address, indexes)) in misses {
         let Some(bytes) = page_store.read(&address).ok() else {
             continue;
         };
-        values[index] = Some(bytes.clone());
+        for index in indexes {
+            values[index] = Some(bytes.clone());
+        }
         refills.push((key, bytes));
     }
     if !refills.is_empty() {
