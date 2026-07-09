@@ -9029,7 +9029,6 @@ fn execute_on_shard(
                             context_timeline_start(start_time_ms)
                                 ..context_timeline_end(end_time_ms),
                         )
-                        .take(context_limit(limit))
                         .filter_map(|(timeline_key, address)| {
                             read_context_value_cached::<ContextEvent>(
                                 cache,
@@ -9052,6 +9051,7 @@ fn execute_on_shard(
                                 min_importance,
                             )
                         })
+                        .take(context_limit(limit))
                         .collect()
                 })
                 .unwrap_or_default();
