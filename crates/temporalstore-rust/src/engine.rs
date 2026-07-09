@@ -10299,12 +10299,13 @@ fn live_page_entry(
     component: Option<String>,
     address: PageAddress,
 ) -> LivePageEntry {
+    let dirty = page_address_is_memory_only(&address);
     LivePageEntry {
         object_key: object_key.into(),
         kind: kind.into(),
         component,
         address,
-        dirty: false,
+        dirty,
         deleted: false,
         log_backed: true,
     }
