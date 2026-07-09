@@ -267,6 +267,7 @@ message Command {
     RiskDebug risk_debug = 43;
     ContextWriteEvent context_write_event = 44;
     ContextQueryEvents context_query_events = 45;
+    ContextNodesGet context_nodes_get = 46;
   }
 }
 
@@ -592,6 +593,11 @@ message ContextNodeUpsert {
 message ContextNodeGet {
   string key = 1;
   string node_id = 2;
+}
+
+message ContextNodesGet {
+  string key = 1;
+  repeated string node_ids = 2;
 }
 
 message CommonExpire {
