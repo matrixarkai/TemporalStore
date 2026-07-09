@@ -7,8 +7,8 @@ strings = {}
 sequences = {}
 
 
-def envelope(data=None):
-    return {"ok": True, "code": 0, "message": "", "data": data or {}}
+def proxy_execute(response=None):
+    return {"status": {"ok": True, "code": "ok", "message": ""}, "response": response or {}}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -16,7 +16,7 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         body = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
         data = self.handle_request(self.path, body)
-        payload = json.dumps(envelope(data)).encode("utf-8")
+        payload = json.dumps(data).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(payload)))
@@ -28,17 +28,22 @@ class Handler(BaseHTTPRequestHandler):
 
     def handle_request(self, path, body):
         key = body.get("key", "")
-        if path == "/v1/string/put":
-            strings[key] = body.get("value", "")
-            return {}
-        if path == "/v1/string/get":
-            return {"value": strings.get(key, "")}
-        if path == "/v1/sequence/add":
+        if path == "/ProxyService/Set":
+            value = body.get("value", "")
+            if isinstance(value, list):
+                value = bytes(value).decode("utf-8")
+            strings[key] = value
+            return proxy_execute({})
+        if path == "/ProxyService/Get":
+            return proxy_execute(
+                {"kind": "value", "value": list(strings.get(key, "").encode("utf-8"))}
+            )
+        if path == "/ProxyService/SequenceAdd":
             sequences.setdefault(key, []).extend(body.get("rows", []))
-            return {}
-        if path == "/v1/sequence/query":
-            start_ts = int(body.get("start_ts", 0))
-            end_ts = int(body.get("end_ts", 2**63 - 1))
+            return proxy_execute({})
+        if path == "/ProxyService/SequenceQuery":
+            start_ts = int(body.get("start_ms", 0))
+            end_ts = int(body.get("end_ms", 2**63 - 1))
             count = int(body.get("count", 100))
             rows = [
                 row
@@ -57,8 +62,8 @@ class Handler(BaseHTTPRequestHandler):
                     rows = [row for row in rows if int(row.get(field, 0)) > value]
                 elif op == 3:
                     rows = [row for row in rows if int(row.get(field, 0)) < value]
-            return {"rows": rows[:count]}
-        return {}
+            return proxy_execute({"kind": "sequence_rows", "rows": rows[:count]})
+        return proxy_execute({})
 
 
 if __name__ == "__main__":

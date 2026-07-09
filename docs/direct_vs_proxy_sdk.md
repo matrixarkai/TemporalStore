@@ -90,24 +90,25 @@ Endpoints:
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /v1/string/put` | set string value, optional `ttl_ms` |
-| `POST /v1/string/get` | get string value |
-| `POST /v1/common/delete` | delete object |
-| `POST /v1/common/expire` | set object TTL |
-| `POST /v1/common/ttl` | read object TTL |
-| `POST /v1/hash/hset` | set hash field |
-| `POST /v1/hash/hget` | get hash field |
-| `POST /v1/hash/hdel` | delete hash field |
-| `POST /v1/set/sadd` | add set member |
-| `POST /v1/set/smembers` | list set members |
-| `POST /v1/feature/add` | add raw feature points |
-| `POST /v1/feature/query` | query raw feature points |
-| `POST /v1/sequence/add` | add typed sequence rows |
-| `POST /v1/sequence/query` | query typed sequence rows |
-| `POST /v1/ips/add` | add IPS instance |
-| `POST /v1/ips/query_last` | query IPS last instances |
-| `POST /v1/risk/increment` | increment risk counter |
-| `POST /v1/risk/count` | query risk window counter |
+| `POST /ProxyService/Set` | set string value |
+| `POST /ProxyService/SetEx` | set string value with `ttl_ms` |
+| `POST /ProxyService/Get` | get string value |
+| `POST /ProxyService/Delete` | delete object |
+| `POST /ProxyService/Expire` | set object TTL |
+| `POST /ProxyService/Ttl` | read object TTL |
+| `POST /ProxyService/HSet` | set hash field |
+| `POST /ProxyService/HGet` | get hash field |
+| `POST /ProxyService/HDel` | delete hash field |
+| `POST /ProxyService/SAdd` | add set member |
+| `POST /ProxyService/SMembers` | list set members |
+| `POST /ProxyService/FeatureAdd` | add raw feature points |
+| `POST /ProxyService/FeatureQuery` | query raw feature points |
+| `POST /ProxyService/SequenceAdd` | add typed sequence rows |
+| `POST /ProxyService/SequenceQuery` | query typed sequence rows |
+| `POST /ProxyService/IpsAdd` | add IPS instance |
+| `POST /ProxyService/IpsQueryLast` | query IPS last instances |
+| `POST /ProxyService/RiskIncrement` | increment risk counter |
+| `POST /ProxyService/RiskCount` | query risk window counter |
 
 ## Direct vs Proxy Tradeoff
 
