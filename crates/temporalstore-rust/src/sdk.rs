@@ -516,6 +516,11 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             types::Command::RiskFolQuery { key: command.key }
         }
         v1::command::Kind::RiskManager(command) => types::Command::RiskManager { key: command.key },
+        v1::command::Kind::RiskDebug(command) => types::Command::RiskDebug {
+            key: command.key,
+            start_ms: command.start_ms,
+            end_ms: command.end_ms,
+        },
         v1::command::Kind::ContextNodeUpsert(command) => {
             let node = command
                 .node
