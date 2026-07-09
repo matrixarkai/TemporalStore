@@ -3017,6 +3017,13 @@ impl TemporalEngine {
         }
         let mut dropped_object_count = 0usize;
         if delete_drop && !victims.is_empty() {
+            let (start_routing_slot, end_routing_slot) = self
+                .infos
+                .read()
+                .expect("shard info lock poisoned")
+                .get(&shard_id)
+                .map(|info| (info.start_routing_slot, info.end_routing_slot))
+                .unwrap_or((0, u32::MAX));
             let victim_slots = victims
                 .iter()
                 .map(|victim| victim.routing_slot)
@@ -3026,10 +3033,9 @@ impl TemporalEngine {
                 let object_keys = collect_live_page_entries(shard)
                     .into_iter()
                     .filter_map(|entry| {
-                        let slot = entry
-                            .address
-                            .routing_slot
-                            .unwrap_or_else(|| slot_for_object(&entry.object_key, 0, u32::MAX));
+                        let slot = entry.address.routing_slot.unwrap_or_else(|| {
+                            slot_for_object(&entry.object_key, start_routing_slot, end_routing_slot)
+                        });
                         victim_slots.contains(&slot).then_some(entry.object_key)
                     })
                     .collect::<BTreeSet<_>>();
