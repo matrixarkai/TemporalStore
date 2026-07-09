@@ -11202,9 +11202,7 @@ fn page_index_ref_key(entry: &LivePageEntry) -> String {
     )
 }
 
-fn page_physical_identity_key(
-    address: &PageAddress,
-) -> (
+type PagePhysicalIdentityKey = (
     u64,
     u64,
     u64,
@@ -11212,7 +11210,9 @@ fn page_physical_identity_key(
     Option<u64>,
     Option<u32>,
     Option<u64>,
-) {
+);
+
+fn page_physical_identity_key(address: &PageAddress) -> PagePhysicalIdentityKey {
     (
         address.page_segment_id,
         address.offset,
@@ -11250,6 +11250,7 @@ fn upsert_slot_index_page(
         deleted: false,
         log_backed: true,
     };
+    let live_address_key = page_physical_identity_key(&entry.address);
     let lookup_enabled = !shard.slot_index.object_page_lookup.is_empty();
     let direct_page_refs = if lookup_enabled {
         shard
@@ -11346,7 +11347,12 @@ fn upsert_slot_index_page(
     shard
         .slot_index
         .insert_object_page_lookup(routing_slot, page_ref_key, &page_index);
-    invalidate_page_addresses(cache, shard_id, removed_addresses);
+    invalidate_page_addresses_except(
+        cache,
+        shard_id,
+        removed_addresses,
+        BTreeSet::from([live_address_key]),
+    );
 }
 
 fn sync_slot_index_object_pages(
@@ -11412,21 +11418,11 @@ fn sync_slot_index_object_pages(
         }
     }
 
-    let mut unique_addresses = BTreeMap::<
-        (
-            u64,
-            u64,
-            u64,
-            Option<u64>,
-            Option<u64>,
-            Option<u32>,
-            Option<u64>,
-        ),
-        PageAddress,
-    >::new();
+    let mut unique_addresses = BTreeMap::<PagePhysicalIdentityKey, PageAddress>::new();
     for address in addresses {
         unique_addresses.insert(page_physical_identity_key(&address), address);
     }
+    let live_address_keys = unique_addresses.keys().copied().collect::<BTreeSet<_>>();
 
     for address in unique_addresses.into_values() {
         let routing_slot = address
@@ -11489,7 +11485,7 @@ fn sync_slot_index_object_pages(
     if !lookup_enabled {
         shard.slot_index.rebuild_object_page_lookup();
     }
-    invalidate_page_addresses(cache, shard_id, removed_addresses);
+    invalidate_page_addresses_except(cache, shard_id, removed_addresses, live_address_keys);
 }
 
 fn classify_slot_layout(object_count: usize, page_ref_count: usize) -> SlotLayoutState {
@@ -13616,13 +13612,26 @@ fn invalidate_page_addresses(
     shard_id: ShardId,
     addresses: Vec<PageAddress>,
 ) {
+    invalidate_page_addresses_except(cache, shard_id, addresses, BTreeSet::new());
+}
+
+fn invalidate_page_addresses_except(
+    cache: &MultiLayerCache,
+    shard_id: ShardId,
+    addresses: Vec<PageAddress>,
+    live_address_keys: BTreeSet<PagePhysicalIdentityKey>,
+) {
     if addresses.is_empty() {
         return;
     }
     let keys = addresses
         .into_iter()
+        .filter(|address| !live_address_keys.contains(&page_physical_identity_key(address)))
         .map(|address| page_address_cache_key(shard_id, &address))
         .collect::<Vec<_>>();
+    if keys.is_empty() {
+        return;
+    }
     let _ = cache.invalidate_batch(&keys);
 }
 
