@@ -5618,10 +5618,19 @@ impl TemporalEngine {
                 .collect::<Vec<_>>()
         };
         let mut publish_records = Vec::with_capacity(publish_targets.len());
-        for target in publish_targets {
-            if let Some(bytes) =
+        let cache_keys = publish_targets
+            .iter()
+            .map(|target| page_address_cache_key(shard_id, &target.address))
+            .collect::<Vec<_>>();
+        let cached_pages = self
+            .cache
+            .get_batch(&cache_keys)
+            .unwrap_or_else(|_| vec![None; cache_keys.len()]);
+        for (target, cached_page) in publish_targets.into_iter().zip(cached_pages) {
+            let bytes = cached_page.or_else(|| {
                 read_page_bytes(&self.cache, &self.page_store, shard_id, &target.address)
-            {
+            });
+            if let Some(bytes) = bytes {
                 let original = target.address.clone();
                 publish_records.push((
                     target,
