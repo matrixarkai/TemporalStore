@@ -3309,7 +3309,10 @@ fn async_storage_string_write_stays_on_hot_memory_path() {
     });
     assert!(write.status.ok);
     assert_eq!(engine.block_store().stats().writes, 0);
-    assert_eq!(engine.write_ahead_log_store().stats(1).writes, 0);
+    let wal_stats = engine.write_ahead_log_store().stats(1);
+    assert_eq!(wal_stats.writes, 1);
+    assert_eq!(wal_stats.syncs, 1);
+    assert_eq!(wal_stats.last_flushed_sequence, 1);
     assert_eq!(engine.index_log_store().stats(1).writes, 0);
 
     let read = engine.execute(ExecuteRequest {

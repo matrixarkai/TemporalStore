@@ -286,8 +286,16 @@ impl TemporalEngine {
                 );
             }
             refresh_slot_runtime_flags(shard);
-            if write_command && !config.async_storage {
-                let _ = self.wal_store.append(request.shard_id, command);
+            if write_command {
+                if let Err(error) = self.wal_store.append(request.shard_id, command.clone()) {
+                    return ExecuteResponse {
+                        status: Status::error(
+                            "canonical_log_append_failed",
+                            format!("append canonical write-ahead log failed: {error}"),
+                        ),
+                        response: CommandResponse::Empty,
+                    };
+                }
             }
             if !config.async_storage {
                 let index_bytes = serialize_index(shard);
@@ -5475,7 +5483,7 @@ impl TemporalEngine {
                         end_routing_slot,
                     );
                 }
-                if write_command && !config.async_storage {
+                if write_command {
                     sync_wal_commands.push(command_for_post_write);
                 }
             }
@@ -5486,10 +5494,18 @@ impl TemporalEngine {
         }
         if mutated_any {
             refresh_slot_runtime_flags(shard);
-            if !config.async_storage {
-                for command in sync_wal_commands {
-                    let _ = self.wal_store.append(request.shard_id, command);
+            for command in sync_wal_commands {
+                if let Err(error) = self.wal_store.append(request.shard_id, command) {
+                    return BatchExecuteResponse {
+                        status: Status::error(
+                            "canonical_log_append_failed",
+                            format!("append canonical write-ahead log failed: {error}"),
+                        ),
+                        responses,
+                    };
                 }
+            }
+            if !config.async_storage {
                 let index_bytes = serialize_index(shard);
                 let _ = self
                     .index_log_store
