@@ -1287,6 +1287,28 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
     def _append_log_records(self, records: list[Json]) -> list[Json]:
         return [record for record in records if latest_context_state_key(record) is None]
 
+    def _split_compacted_latest_context_state(self, records: list[Json]) -> tuple[list[Json], list[Json]]:
+        """Split an already-compacted batch into latest-state writes and append-log rows."""
+        latest_state_entries: list[Json] = []
+        append_records_for_log: list[Json] = []
+        latest_state_key = self._latest_context_state_key()
+        for record in records:
+            field = self._latest_context_state_field(record)
+            if not field:
+                append_records_for_log.append(record)
+                continue
+            payload_record = dict(record)
+            payload_record.pop("summary_version_hash", None)
+            latest_state_entries.append(
+                {
+                    "key": latest_state_key,
+                    "field": field,
+                    "value": json.dumps(payload_record, sort_keys=True, separators=(",", ":")),
+                    "storage_route": record.get("storage_route") if isinstance(record.get("storage_route"), dict) else {},
+                }
+            )
+        return latest_state_entries, append_records_for_log
+
     def _load_latest_context_state_records(self) -> list[Json]:
         scanner = getattr(getattr(self, "_client", None), "scan_hash", None)
         if not callable(scanner):
@@ -1622,8 +1644,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         if not records:
             return
         records = compact_latest_context_state_records(records)
-        latest_state_entries = self._latest_context_state_entries(records)
-        append_records_for_log = self._append_log_records(records)
+        latest_state_entries, append_records_for_log = self._split_compacted_latest_context_state(records)
         self._validate_storage_routes_available(records)
         if latest_state_entries and not append_records_for_log:
             self._hset_many_with_backoff(latest_state_entries)
