@@ -561,6 +561,71 @@ pub struct ProxyFeatureAggQueryCommandRequest {
     pub count: Option<usize>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxySequenceAddCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub rows: Vec<crate::types::SequenceFeatureRow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxySequenceQueryCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub count: usize,
+    #[serde(default)]
+    pub filters: Vec<FeatureFilter>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyIpsAddCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub timestamp_ms: u64,
+    pub instance: Vec<u8>,
+    #[serde(default)]
+    pub action_type: Option<u32>,
+    #[serde(default)]
+    pub table_id: Option<u64>,
+    #[serde(default)]
+    pub request_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyIpsQueryLastCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyRiskIncrementCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub timestamp_ms: u64,
+    pub amount: i64,
+    #[serde(default)]
+    pub precision_ms: Option<u64>,
+    #[serde(default)]
+    pub ttl_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyRiskCountCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyRiskHsetCommandRequest {
     pub namespace: String,
@@ -987,6 +1052,139 @@ impl ProxyService {
                             end_ms: req.end_ms,
                             aggregator: req.aggregator,
                             count: req.count,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/SequenceAdd") => {
+                match parse_json::<ProxySequenceAddCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::SequenceAdd {
+                            key: req.key,
+                            rows: req.rows,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/SequenceQuery") => {
+                match parse_json::<ProxySequenceQueryCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::SequenceQuery {
+                            key: req.key,
+                            start_ms: req.start_ms,
+                            end_ms: req.end_ms,
+                            count: req.count,
+                            filters: req.filters,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/IpsAdd") => {
+                match parse_json::<ProxyIpsAddCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::IpsAddWithOptions {
+                            key: req.key,
+                            timestamp_ms: req.timestamp_ms,
+                            instance: req.instance,
+                            action_type: req.action_type,
+                            table_id: req.table_id,
+                            request_id: req.request_id,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/IpsQueryLast") => {
+                match parse_json::<ProxyIpsQueryLastCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::IpsQueryLast {
+                            key: req.key,
+                            count: req.count,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/RiskIncrement") => {
+                match parse_json::<ProxyRiskIncrementCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = if req.precision_ms.is_some() || req.ttl_ms.is_some() {
+                            Command::RiskIncrementWithOptions {
+                                key: req.key,
+                                timestamp_ms: req.timestamp_ms,
+                                amount: req.amount,
+                                precision_ms: req.precision_ms,
+                                ttl_ms: req.ttl_ms,
+                            }
+                        } else {
+                            Command::RiskIncrement {
+                                key: req.key,
+                                timestamp_ms: req.timestamp_ms,
+                                amount: req.amount,
+                            }
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/RiskCount") => {
+                match parse_json::<ProxyRiskCountCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::RiskCount {
+                            key: req.key,
+                            start_ms: req.start_ms,
+                            end_ms: req.end_ms,
                         };
                         json_response(
                             200,

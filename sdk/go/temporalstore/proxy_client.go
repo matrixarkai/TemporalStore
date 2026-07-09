@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -37,44 +38,45 @@ func ConnectProxy(options ProxyOptions) *ProxyClient {
 
 func (c *ProxyClient) PutString(key, value string, ttlMs uint64) error {
 	body := c.keyBody(key)
-	body["value"] = value
+	body["value"] = bytesValue(value)
 	if ttlMs > 0 {
 		body["ttl_ms"] = ttlMs
+		return c.post("/ProxyService/SetEx", body, nil)
 	}
-	return c.post("/v1/string/put", body, nil)
+	return c.post("/ProxyService/Set", body, nil)
 }
 
 func (c *ProxyClient) GetString(key string) (string, error) {
 	var data struct {
 		Value string `json:"value"`
 	}
-	err := c.post("/v1/string/get", c.keyBody(key), &data)
+	err := c.post("/ProxyService/Get", c.keyBody(key), &data)
 	return data.Value, err
 }
 
 func (c *ProxyClient) DeleteObject(key string) error {
-	return c.post("/v1/common/delete", c.keyBody(key), nil)
+	return c.post("/ProxyService/Delete", c.keyBody(key), nil)
 }
 
 func (c *ProxyClient) Expire(key string, ttlMs uint64) error {
 	body := c.keyBody(key)
 	body["ttl_ms"] = ttlMs
-	return c.post("/v1/common/expire", body, nil)
+	return c.post("/ProxyService/Expire", body, nil)
 }
 
 func (c *ProxyClient) TTL(key string) (uint64, error) {
 	var data struct {
 		TTL uint64 `json:"ttl_ms"`
 	}
-	err := c.post("/v1/common/ttl", c.keyBody(key), &data)
+	err := c.post("/ProxyService/Ttl", c.keyBody(key), &data)
 	return data.TTL, err
 }
 
 func (c *ProxyClient) HSet(key, field, value string) error {
 	body := c.keyBody(key)
 	body["field"] = field
-	body["value"] = value
-	return c.post("/v1/hash/hset", body, nil)
+	body["value"] = bytesValue(value)
+	return c.post("/ProxyService/HSet", body, nil)
 }
 
 func (c *ProxyClient) HGet(key, field string) (string, error) {
@@ -83,34 +85,34 @@ func (c *ProxyClient) HGet(key, field string) (string, error) {
 	var data struct {
 		Value string `json:"value"`
 	}
-	err := c.post("/v1/hash/hget", body, &data)
+	err := c.post("/ProxyService/HGet", body, &data)
 	return data.Value, err
 }
 
 func (c *ProxyClient) HDel(key, field string) error {
 	body := c.keyBody(key)
 	body["field"] = field
-	return c.post("/v1/hash/hdel", body, nil)
+	return c.post("/ProxyService/HDel", body, nil)
 }
 
 func (c *ProxyClient) SAdd(key, member string) error {
 	body := c.keyBody(key)
-	body["member"] = member
-	return c.post("/v1/set/sadd", body, nil)
+	body["member"] = bytesValue(member)
+	return c.post("/ProxyService/SAdd", body, nil)
 }
 
 func (c *ProxyClient) SMembers(key string) ([]string, error) {
 	var data struct {
 		Members []string `json:"members"`
 	}
-	err := c.post("/v1/set/smembers", c.keyBody(key), &data)
+	err := c.post("/ProxyService/SMembers", c.keyBody(key), &data)
 	return data.Members, err
 }
 
 func (c *ProxyClient) AddFeaturePoints(key string, points []FeaturePoint) error {
 	body := c.keyBody(key)
-	body["points"] = points
-	return c.post("/v1/feature/add", body, nil)
+	body["points"] = featurePointBodies(points)
+	return c.post("/ProxyService/FeatureAdd", body, nil)
 }
 
 func (c *ProxyClient) QueryFeaturePoints(
@@ -124,14 +126,14 @@ func (c *ProxyClient) QueryFeaturePoints(
 	var data struct {
 		Points []FeaturePoint `json:"points"`
 	}
-	err := c.post("/v1/feature/query", body, &data)
+	err := c.post("/ProxyService/FeatureQuery", body, &data)
 	return data.Points, err
 }
 
 func (c *ProxyClient) AddSequenceFeatureRows(key string, rows []SequenceFeatureRow) error {
 	body := c.keyBody(key)
-	body["rows"] = rows
-	return c.post("/v1/sequence/add", body, nil)
+	body["rows"] = sequenceRowBodies(rows)
+	return c.post("/ProxyService/SequenceAdd", body, nil)
 }
 
 func (c *ProxyClient) QuerySequenceFeatureRows(
@@ -145,7 +147,7 @@ func (c *ProxyClient) QuerySequenceFeatureRows(
 	var data struct {
 		Rows []SequenceFeatureRow `json:"rows"`
 	}
-	err := c.post("/v1/sequence/query", body, &data)
+	err := c.post("/ProxyService/SequenceQuery", body, &data)
 	return data.Rows, err
 }
 
@@ -160,14 +162,23 @@ func (c *ProxyClient) AddIPSInstance(
 	body := map[string]interface{}{
 		"namespace":     c.options.NamespaceName,
 		"table":         c.options.TableName,
+		"table_name":    c.options.TableName,
 		"ips_table":     ipsTable,
+		"key":           ipsTable,
 		"uid":           uid,
 		"timestamp_us":  timestampUs,
+		"timestamp_ms":  timestampUs / 1000,
 		"action_type":   actionType,
+		"table_id":      logicalTable,
 		"logical_table": logicalTable,
 		"features":      features,
 	}
-	return c.post("/v1/ips/add", body, nil)
+	instance, err := json.Marshal(features)
+	if err != nil {
+		return err
+	}
+	body["instance"] = bytesValue(string(instance))
+	return c.post("/ProxyService/IpsAdd", body, nil)
 }
 
 func (c *ProxyClient) QueryIPSLastInstances(
@@ -182,18 +193,21 @@ func (c *ProxyClient) QueryIPSLastInstances(
 	body := map[string]interface{}{
 		"namespace":      c.options.NamespaceName,
 		"table":          c.options.TableName,
+		"table_name":     c.options.TableName,
 		"ips_table":      ipsTable,
+		"key":            ipsTable,
 		"uid":            uid,
 		"action_type":    actionType,
 		"logical_table":  logicalTable,
 		"slot":           slot,
 		"top_k":          topK,
 		"last_instances": lastInstances,
+		"count":          lastInstances,
 	}
 	var data struct {
 		Features []IpsFeatureStat `json:"features"`
 	}
-	err := c.post("/v1/ips/query_last", body, &data)
+	err := c.post("/ProxyService/IpsQueryLast", body, &data)
 	return data.Features, err
 }
 
@@ -208,10 +222,13 @@ func (c *ProxyClient) RiskIncrement(
 	body := c.keyBody(key)
 	body["amount"] = amount
 	body["ttl_seconds"] = ttlSeconds
+	body["ttl_ms"] = ttlSeconds * 1000
 	body["precision"] = precision
+	body["precision_ms"] = riskPrecisionMs(precision)
 	body["uuid"] = uuid
 	body["occur_time_seconds"] = occurTimeSeconds
-	return c.post("/v1/risk/increment", body, nil)
+	body["timestamp_ms"] = proxyTimestampMs(occurTimeSeconds)
+	return c.post("/ProxyService/RiskIncrement", body, nil)
 }
 
 func (c *ProxyClient) RiskCount(
@@ -226,18 +243,22 @@ func (c *ProxyClient) RiskCount(
 	body["window_start"] = windowStart
 	body["window_end"] = windowEnd
 	body["window_unit"] = windowUnit
+	startMs, endMs := riskWindowMs(windowStart, windowEnd, windowUnit)
+	body["start_ms"] = startMs
+	body["end_ms"] = endMs
 	var data struct {
 		Count int64 `json:"count"`
 	}
-	err := c.post("/v1/risk/count", body, &data)
+	err := c.post("/ProxyService/RiskCount", body, &data)
 	return data.Count, err
 }
 
 func (c *ProxyClient) keyBody(key string) map[string]interface{} {
 	return map[string]interface{}{
-		"namespace": c.options.NamespaceName,
-		"table":     c.options.TableName,
-		"key":       key,
+		"namespace":  c.options.NamespaceName,
+		"table":      c.options.TableName,
+		"table_name": c.options.TableName,
+		"key":        key,
 	}
 }
 
@@ -251,8 +272,10 @@ func (c *ProxyClient) queryBody(
 	body := c.keyBody(key)
 	body["start_ts"] = startTs
 	body["end_ts"] = endTs
+	body["start_ms"] = startTs
+	body["end_ms"] = endTs
 	body["count"] = count
-	body["filters"] = filters
+	body["filters"] = featureFilterBodies(filters)
 	return body
 }
 
@@ -276,23 +299,256 @@ func (c *ProxyClient) post(path string, body interface{}, out interface{}) error
 	}
 	defer resp.Body.Close()
 
-	var envelope struct {
-		OK      bool            `json:"ok"`
-		Code    int             `json:"code"`
-		Message string          `json:"message"`
-		Data    json.RawMessage `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
 		return err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("temporalstore proxy http %d: %s", resp.StatusCode, envelope.Message)
+		return fmt.Errorf("temporalstore proxy http %d: %s", resp.StatusCode, string(responseBody))
 	}
-	if !envelope.OK {
-		return fmt.Errorf("temporalstore proxy code %d: %s", envelope.Code, envelope.Message)
+	if len(responseBody) == 0 {
+		return nil
 	}
-	if out != nil && len(envelope.Data) > 0 {
-		return json.Unmarshal(envelope.Data, out)
+	data, err := unwrapProxyResponse(responseBody)
+	if err != nil {
+		return err
+	}
+	if out == nil {
+		return nil
+	}
+	if len(data) > 0 {
+		return json.Unmarshal(data, out)
 	}
 	return nil
+}
+
+func unwrapProxyResponse(body []byte) (json.RawMessage, error) {
+	var envelope struct {
+		OK      *bool           `json:"ok"`
+		Code    interface{}     `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(body, &envelope); err == nil && envelope.OK != nil {
+		if !*envelope.OK {
+			return nil, fmt.Errorf("temporalstore proxy code %v: %s", envelope.Code, envelope.Message)
+		}
+		return envelope.Data, nil
+	}
+
+	var executed struct {
+		Status struct {
+			OK      bool   `json:"ok"`
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"status"`
+		Response json.RawMessage `json:"response"`
+	}
+	if err := json.Unmarshal(body, &executed); err == nil && len(executed.Response) > 0 {
+		if !executed.Status.OK {
+			return nil, fmt.Errorf("temporalstore proxy code %s: %s", executed.Status.Code, executed.Status.Message)
+		}
+		return flattenCommandResponse(executed.Response)
+	}
+
+	return body, nil
+}
+
+func flattenCommandResponse(raw json.RawMessage) (json.RawMessage, error) {
+	var response map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return nil, err
+	}
+	var kind string
+	_ = json.Unmarshal(response["kind"], &kind)
+	switch kind {
+	case "empty":
+		return []byte("{}"), nil
+	case "bytes":
+		var value []int
+		if len(response["value"]) > 0 && !bytes.Equal(response["value"], []byte("null")) {
+			_ = json.Unmarshal(response["value"], &value)
+		}
+		payload := map[string]interface{}{"value": intsToString(value)}
+		return json.Marshal(payload)
+	case "integer", "aggregate":
+		var value int64
+		_ = json.Unmarshal(response["value"], &value)
+		payload := map[string]interface{}{"value": value, "count": value, "ttl_ms": uint64(value)}
+		return json.Marshal(payload)
+	case "members":
+		var members [][]int
+		_ = json.Unmarshal(response["members"], &members)
+		values := make([]string, 0, len(members))
+		for _, member := range members {
+			values = append(values, intsToString(member))
+		}
+		return json.Marshal(map[string]interface{}{"members": values})
+	case "feature_points":
+		return flattenFeaturePoints(response["points"])
+	case "sequence_rows":
+		return flattenSequenceRows(response["rows"])
+	default:
+		return raw, nil
+	}
+}
+
+func featurePointBodies(points []FeaturePoint) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(points))
+	for _, point := range points {
+		out = append(out, map[string]interface{}{
+			"timestamp":    point.Timestamp,
+			"timestamp_ms": point.Timestamp,
+			"value":        bytesValue(point.Value),
+		})
+	}
+	return out
+}
+
+func sequenceRowBodies(rows []SequenceFeatureRow) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, map[string]interface{}{
+			"timestamp":    row.Timestamp,
+			"timestamp_ms": row.Timestamp,
+			"gid":          row.GID,
+			"action_type":  row.ActionType,
+			"duration":     row.Duration,
+			"author_id":    row.AuthorID,
+		})
+	}
+	return out
+}
+
+func featureFilterBodies(filters []FeatureFilter) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(filters))
+	for _, filter := range filters {
+		out = append(out, map[string]interface{}{
+			"field": filter.Field,
+			"op":    featureFilterOpName(filter.Op),
+			"value": filter.Value,
+		})
+	}
+	return out
+}
+
+func featureFilterOpName(op FeatureFilterOp) string {
+	switch op {
+	case FeatureFilterNotEqual:
+		return "not_equal"
+	case FeatureFilterGreaterThan:
+		return "greater_than"
+	case FeatureFilterLessThan:
+		return "less_than"
+	default:
+		return "equal"
+	}
+}
+
+func flattenFeaturePoints(raw json.RawMessage) (json.RawMessage, error) {
+	var points []map[string]json.RawMessage
+	_ = json.Unmarshal(raw, &points)
+	outPoints := make([]map[string]interface{}, 0, len(points))
+	features := make([]IpsFeatureStat, 0)
+	for _, point := range points {
+		var timestamp uint64
+		_ = json.Unmarshal(point["timestamp_ms"], &timestamp)
+		var value []int
+		_ = json.Unmarshal(point["value"], &value)
+		text := intsToString(value)
+		outPoints = append(outPoints, map[string]interface{}{"timestamp": timestamp, "timestamp_ms": timestamp, "value": text})
+		var decoded []IpsFeatureStat
+		if err := json.Unmarshal([]byte(text), &decoded); err == nil {
+			features = append(features, decoded...)
+		}
+	}
+	return json.Marshal(map[string]interface{}{"points": outPoints, "features": features})
+}
+
+func flattenSequenceRows(raw json.RawMessage) (json.RawMessage, error) {
+	var rows []map[string]interface{}
+	_ = json.Unmarshal(raw, &rows)
+	for _, row := range rows {
+		if timestamp, ok := row["timestamp_ms"]; ok {
+			row["timestamp"] = timestamp
+		}
+	}
+	return json.Marshal(map[string]interface{}{"rows": rows})
+}
+
+func proxyTimestampMs(occurTimeSeconds uint64) uint64 {
+	if occurTimeSeconds == 0 {
+		return uint64(time.Now().UnixMilli())
+	}
+	return occurTimeSeconds * 1000
+}
+
+func riskPrecisionMs(precision RiskPrecision) uint64 {
+	switch precision {
+	case RiskOneSecond:
+		return 1000
+	case RiskFiveSeconds:
+		return 5000
+	case RiskTenSeconds:
+		return 10000
+	case RiskOneMinute:
+		return 60000
+	case RiskFiveMinutes:
+		return 5 * 60000
+	case RiskTenMinutes:
+		return 10 * 60000
+	case RiskOneHour:
+		return 60 * 60000
+	case RiskOneDay:
+		return 24 * 60 * 60000
+	case RiskOneMonth:
+		return 30 * 24 * 60 * 60000
+	default:
+		return 60000
+	}
+}
+
+func riskWindowMs(windowStart int64, windowEnd int64, unit WindowUnit) (uint64, uint64) {
+	now := time.Now().UnixMilli()
+	end := windowEnd
+	if end <= 0 {
+		end = now
+	}
+	start := windowStart
+	if start < 0 {
+		start = end - int64(windowUnitMs(unit))
+	}
+	if start < 0 {
+		start = 0
+	}
+	return uint64(start), uint64(end)
+}
+
+func windowUnitMs(unit WindowUnit) uint64 {
+	switch unit {
+	case WindowSecond:
+		return 1000
+	case WindowMinute:
+		return 60000
+	case WindowDay:
+		return 24 * 60 * 60000
+	default:
+		return 60 * 60000
+	}
+}
+
+func bytesValue(value string) []int {
+	out := make([]int, 0, len(value))
+	for _, b := range []byte(value) {
+		out = append(out, int(b))
+	}
+	return out
+}
+
+func intsToString(value []int) string {
+	out := make([]byte, 0, len(value))
+	for _, b := range value {
+		out = append(out, byte(b))
+	}
+	return string(out)
 }

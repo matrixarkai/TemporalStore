@@ -3,7 +3,7 @@ info:
   title: TemporalStore Proxy API
   version: 0.1.0
 paths:
-  /v1/string/put:
+  /ProxyService/Set:
     post:
       summary: Put a string value with optional TTL.
       requestBody:
@@ -11,7 +11,7 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /v1/string/get:
+  /ProxyService/Get:
     post:
       summary: Get a string value.
       requestBody:
@@ -19,7 +19,7 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /v1/common/delete:
+  /ProxyService/Delete:
     post:
       summary: Delete an object.
       requestBody:
@@ -27,7 +27,7 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /v1/common/expire:
+  /ProxyService/Expire:
     post:
       summary: Set object TTL.
       requestBody:
@@ -35,7 +35,7 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /v1/common/ttl:
+  /ProxyService/Ttl:
     post:
       summary: Read object TTL.
       requestBody:
@@ -43,7 +43,7 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /v1/hash/hset:
+  /ProxyService/HSet:
     post:
       summary: Set a hash field.
       requestBody:
@@ -51,7 +51,7 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /v1/hash/hget:
+  /ProxyService/HGet:
     post:
       summary: Get a hash field.
       requestBody:
@@ -59,7 +59,7 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /v1/hash/hdel:
+  /ProxyService/HDel:
     post:
       summary: Delete a hash field.
       requestBody:
@@ -67,7 +67,7 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /v1/set/sadd:
+  /ProxyService/SAdd:
     post:
       summary: Add a set member.
       requestBody:
@@ -75,7 +75,7 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /v1/set/smembers:
+  /ProxyService/SMembers:
     post:
       summary: List set members.
       requestBody:
@@ -83,7 +83,7 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /v1/feature/add:
+  /ProxyService/FeatureAdd:
     post:
       summary: Add raw timestamped feature points.
       requestBody:
@@ -91,7 +91,7 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /v1/feature/query:
+  /ProxyService/FeatureQuery:
     post:
       summary: Query raw timestamped feature points.
       requestBody:
@@ -99,7 +99,7 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /v1/sequence/add:
+  /ProxyService/SequenceAdd:
     post:
       summary: Add typed long-sequence feature rows.
       requestBody:
@@ -107,7 +107,7 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /v1/sequence/query:
+  /ProxyService/SequenceQuery:
     post:
       summary: Query typed long-sequence feature rows.
       requestBody:
@@ -115,7 +115,7 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /v1/ips/add:
+  /ProxyService/IpsAdd:
     post:
       summary: Add an IPS instance.
       requestBody:
@@ -123,7 +123,7 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /v1/ips/query_last:
+  /ProxyService/IpsQueryLast:
     post:
       summary: Query recent IPS instances.
       requestBody:
@@ -131,7 +131,7 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /v1/risk/increment:
+  /ProxyService/RiskIncrement:
     post:
       summary: Increment a risk counter.
       requestBody:
@@ -139,7 +139,7 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /v1/risk/count:
+  /ProxyService/RiskCount:
     post:
       summary: Query a risk counter window.
       requestBody:
@@ -147,7 +147,7 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /v1/matrixark/append_records:
+  /matrixark/append_records:
     post:
       summary: Append MatrixArk record bundles natively through the proxy.
       requestBody:
@@ -155,7 +155,7 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /v1/matrixark/scan_candidates:
+  /matrixark/scan_candidates:
     post:
       summary: Scan MatrixArk candidates with scope and secondary-index prefiltering in the proxy.
       requestBody:
@@ -163,7 +163,7 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /v1/matrixark/retrieve_context_pack:
+  /matrixark/retrieve_context_pack:
     post:
       summary: Return a fully assembled MatrixArk ContextPack from the proxy.
       requestBody:
