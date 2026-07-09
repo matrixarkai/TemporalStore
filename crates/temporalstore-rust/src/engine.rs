@@ -7885,25 +7885,16 @@ fn execute_on_shard(
                     .features
                     .get(&key)
                     .map(|series| {
-                        let mut page_cache = HashMap::new();
                         // feature_append_keeps_oversized_single_timestamped_value_readable:
-                        // range queries rehydrate each timestamp through the packed
-                        // page reader, so a large single timestamped value remains
-                        // readable when it occupies its own page.
-                        series
+                        // range queries rehydrate each timestamp through the packed page
+                        // reader, so a large single timestamped value remains readable
+                        // when it occupies its own page.
+                        let refs = series
                             .range(start_ms..=end_ms)
                             .take(count.unwrap_or(5000))
-                            .filter_map(|(timestamp_ms, address)| {
-                                read_feature_point_cached(
-                                    cache,
-                                    page_store,
-                                    shard_id,
-                                    *timestamp_ms,
-                                    address,
-                                    &mut page_cache,
-                                )
-                            })
-                            .collect()
+                            .map(|(timestamp_ms, address)| (*timestamp_ms, address.clone()))
+                            .collect::<Vec<_>>();
+                        read_feature_points_cached_batch(cache, page_store, shard_id, &refs)
                     })
                     .unwrap_or_default();
                 CommandResponse::FeaturePoints { points }
@@ -7921,29 +7912,23 @@ fn execute_on_shard(
                 .features
                 .get(&key)
                 .map(|series| {
-                    let mut page_cache = HashMap::new();
-                    series
+                    let refs = series
                         .range(start_ms..=end_ms)
                         .take(limit)
-                        .filter_map(|(timestamp_ms, address)| {
-                            read_feature_point_cached(
-                                cache,
-                                page_store,
-                                shard_id,
-                                *timestamp_ms,
-                                address,
-                                &mut page_cache,
-                            )
-                            .and_then(|point| {
-                                let row = SequenceFeatureRow::decode_cpp_feature_value(
-                                    point.timestamp_ms,
-                                    &point.value,
-                                )?;
-                                filters
-                                    .iter()
-                                    .all(|filter| sequence_filter_matches(&row, filter))
-                                    .then_some(point)
-                            })
+                        .map(|(timestamp_ms, address)| (*timestamp_ms, address.clone()))
+                        .collect::<Vec<_>>();
+                    read_feature_points_cached_batch(cache, page_store, shard_id, &refs)
+                        .into_iter()
+                        .filter(|point| {
+                            let Some(row) = SequenceFeatureRow::decode_cpp_feature_value(
+                                point.timestamp_ms,
+                                &point.value,
+                            ) else {
+                                return false;
+                            };
+                            filters
+                                .iter()
+                                .all(|filter| sequence_filter_matches(&row, filter))
                         })
                         .collect()
                 })
@@ -8031,21 +8016,14 @@ fn execute_on_shard(
                 .features
                 .get(&key)
                 .map(|series| {
-                    let mut page_cache = HashMap::new();
-                    series
+                    let refs = series
                         .range(start_ms..=end_ms)
                         .take(count.unwrap_or(5000))
-                        .filter_map(|(timestamp_ms, address)| {
-                            read_feature_point_cached(
-                                cache,
-                                page_store,
-                                shard_id,
-                                *timestamp_ms,
-                                address,
-                                &mut page_cache,
-                            )
-                            .map(|point| point.value)
-                        })
+                        .map(|(timestamp_ms, address)| (*timestamp_ms, address.clone()))
+                        .collect::<Vec<_>>();
+                    read_feature_points_cached_batch(cache, page_store, shard_id, &refs)
+                        .into_iter()
+                        .map(|point| point.value)
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
@@ -8351,22 +8329,13 @@ fn execute_on_shard(
                 .ips
                 .get(&key)
                 .map(|series| {
-                    let mut page_cache = HashMap::new();
-                    series
+                    let refs = series
                         .iter()
                         .rev()
                         .take(count)
-                        .filter_map(|(timestamp_ms, address)| {
-                            read_feature_point_cached(
-                                cache,
-                                page_store,
-                                shard_id,
-                                *timestamp_ms,
-                                address,
-                                &mut page_cache,
-                            )
-                        })
-                        .collect()
+                        .map(|(timestamp_ms, address)| (*timestamp_ms, address.clone()))
+                        .collect::<Vec<_>>();
+                    read_feature_points_cached_batch(cache, page_store, shard_id, &refs)
                 })
                 .unwrap_or_default();
             CommandResponse::FeaturePoints { points }
@@ -8402,22 +8371,13 @@ fn execute_on_shard(
                         .ips
                         .get(&key)
                         .map(|series| {
-                            let mut page_cache = HashMap::new();
-                            series
+                            let refs = series
                                 .iter()
                                 .rev()
                                 .take(count)
-                                .filter_map(|(timestamp_ms, address)| {
-                                    read_feature_point_cached(
-                                        cache,
-                                        page_store,
-                                        shard_id,
-                                        *timestamp_ms,
-                                        address,
-                                        &mut page_cache,
-                                    )
-                                })
-                                .collect()
+                                .map(|(timestamp_ms, address)| (*timestamp_ms, address.clone()))
+                                .collect::<Vec<_>>();
+                            read_feature_points_cached_batch(cache, page_store, shard_id, &refs)
                         })
                         .unwrap_or_default();
                     (key, points)

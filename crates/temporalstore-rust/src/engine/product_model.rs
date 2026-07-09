@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::block_store::{BlockAddress, LocalBlockStore};
 use crate::types::{
@@ -7,31 +7,12 @@ use crate::types::{
 };
 use rustmtcache::MultiLayerCache;
 
-use super::packed_pages::{decode_feature_page_strict, read_feature_point_cached};
+use super::packed_pages::{decode_feature_page_strict, read_feature_points_cached_batch};
 use super::state::PackedFeaturePageDecode;
 use super::{parse_i64, read_page_bytes_cold, ShardState};
 
 fn decode_sequence_row_value(bytes: &[u8]) -> Option<SequenceFeatureRow> {
     serde_json::from_slice(bytes).ok()
-}
-
-fn read_sequence_row_cached(
-    cache: &MultiLayerCache,
-    block_store: &LocalBlockStore,
-    shard_id: ShardId,
-    timestamp_ms: u64,
-    address: &BlockAddress,
-    page_cache: &mut HashMap<BlockAddress, Option<Vec<FeaturePoint>>>,
-) -> Option<SequenceFeatureRow> {
-    let point = read_feature_point_cached(
-        cache,
-        block_store,
-        shard_id,
-        timestamp_ms,
-        address,
-        page_cache,
-    )?;
-    decode_sequence_row_value(&point.value)
 }
 
 pub(super) fn sequence_filter_matches(row: &SequenceFeatureRow, filter: &FeatureFilter) -> bool {
@@ -67,20 +48,14 @@ pub(super) fn sequence_rows_in_range(
         .sequences
         .get(key)
         .map(|series| {
-            let mut page_cache = HashMap::new();
-            series
+            let refs = series
                 .range(start_ms..=end_ms)
                 .take(count)
-                .filter_map(|(timestamp_ms, address)| {
-                    read_sequence_row_cached(
-                        cache,
-                        block_store,
-                        shard_id,
-                        *timestamp_ms,
-                        address,
-                        &mut page_cache,
-                    )
-                })
+                .map(|(timestamp_ms, address)| (*timestamp_ms, address.clone()))
+                .collect::<Vec<_>>();
+            read_feature_points_cached_batch(cache, block_store, shard_id, &refs)
+                .into_iter()
+                .filter_map(|point| decode_sequence_row_value(&point.value))
                 .filter(|row| {
                     filters
                         .iter()
@@ -171,21 +146,12 @@ pub(super) fn ips_points_in_range(
         .ips
         .get(key)
         .map(|series| {
-            let mut page_cache = HashMap::new();
-            series
+            let refs = series
                 .range(start_ms..=end_ms)
                 .take(count.unwrap_or(usize::MAX))
-                .filter_map(|(timestamp_ms, address)| {
-                    read_feature_point_cached(
-                        cache,
-                        block_store,
-                        shard_id,
-                        *timestamp_ms,
-                        address,
-                        &mut page_cache,
-                    )
-                })
-                .collect()
+                .map(|(timestamp_ms, address)| (*timestamp_ms, address.clone()))
+                .collect::<Vec<_>>();
+            read_feature_points_cached_batch(cache, block_store, shard_id, &refs)
         })
         .unwrap_or_default()
 }
@@ -214,7 +180,7 @@ pub(super) fn ips_points_in_range_with_options(
             count,
         );
     };
-    series
+    let refs = series
         .range(start_ms..=end_ms)
         .filter(|(_, meta)| {
             action_type
@@ -225,18 +191,9 @@ pub(super) fn ips_points_in_range_with_options(
                     .unwrap_or(true)
         })
         .take(count.unwrap_or(usize::MAX))
-        .scan(HashMap::new(), |page_cache, (timestamp_ms, meta)| {
-            Some(read_feature_point_cached(
-                cache,
-                block_store,
-                shard_id,
-                *timestamp_ms,
-                &meta.address,
-                page_cache,
-            ))
-        })
-        .flatten()
-        .collect()
+        .map(|(timestamp_ms, meta)| (*timestamp_ms, meta.address.clone()))
+        .collect::<Vec<_>>();
+    read_feature_points_cached_batch(cache, block_store, shard_id, &refs)
 }
 
 pub(super) fn empty_ips_snapshot_report(
