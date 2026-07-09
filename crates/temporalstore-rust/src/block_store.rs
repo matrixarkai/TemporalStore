@@ -957,13 +957,19 @@ impl LocalBlockStore {
         offset: u64,
         size: u64,
     ) -> Result<Vec<u8>, BlockStoreError> {
-        let mut inner = self.inner.lock().expect("block store lock poisoned");
-        let path = segment_path(&inner.root, page_segment_id);
+        let root = self
+            .inner
+            .lock()
+            .expect("block store lock poisoned")
+            .root
+            .clone();
+        let path = segment_path(&root, page_segment_id);
         let mut file = File::open(path)?;
         file.seek(SeekFrom::Start(offset))?;
         let mut bytes = vec![0; size as usize];
         let read = file.read(&mut bytes)?;
         bytes.truncate(read);
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
         inner.stats.reads += 1;
         inner.stats.bytes_read += read as u64;
         Ok(bytes)
@@ -975,14 +981,20 @@ impl LocalBlockStore {
         offset: u64,
         size: u64,
     ) -> Result<Vec<u8>, BlockStoreError> {
-        let mut inner = self.inner.lock().expect("block store lock poisoned");
-        let path = segment_path(&inner.root, page_segment_id);
+        let (root, readable_prefix_physical_bytes) = {
+            let inner = self.inner.lock().expect("block store lock poisoned");
+            (
+                inner.root.clone(),
+                inner
+                    .extents
+                    .get(&page_segment_id)
+                    .map(|extent| extent.readable_prefix_physical_bytes)
+                    .filter(|prefix| *prefix > 0),
+            )
+        };
+        let path = segment_path(&root, page_segment_id);
         let physical_len = path.metadata()?.len();
-        let physical_limit = inner
-            .extents
-            .get(&page_segment_id)
-            .map(|extent| extent.readable_prefix_physical_bytes)
-            .filter(|prefix| *prefix > 0)
+        let physical_limit = readable_prefix_physical_bytes
             .unwrap_or(physical_len)
             .min(physical_len);
         let mut file = File::open(path)?;
@@ -993,6 +1005,7 @@ impl LocalBlockStore {
         let physical_bytes_read = segment.len() as u64;
         let range = logical_range_from_segment(&segment, page_segment_id, offset, size)?;
         let bytes = range.bytes;
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
         inner.stats.reads += 1;
         inner.stats.bytes_read += physical_bytes_read;
         inner.stats.logical_bytes_read += bytes.len() as u64;
