@@ -608,11 +608,29 @@ pub(super) fn load_context_children(
     shard: &ShardState,
     object_key: &str,
 ) -> Vec<ContextChildRef> {
+    let mut page_cache = HashMap::new();
+    load_context_children_with_page_cache(
+        cache,
+        page_store,
+        shard_id,
+        shard,
+        object_key,
+        &mut page_cache,
+    )
+}
+
+pub(super) fn load_context_children_with_page_cache(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    object_key: &str,
+    page_cache: &mut HashMap<PageAddress, Option<Vec<FeaturePoint>>>,
+) -> Vec<ContextChildRef> {
     shard
         .context_children
         .get(object_key)
         .map(|series| {
-            let mut page_cache = HashMap::new();
             let mut latest_by_child = HashMap::new();
             for child_ref in series.iter().filter_map(|(timeline_key, address)| {
                 read_context_value_cached::<ContextChildRef>(
@@ -621,7 +639,7 @@ pub(super) fn load_context_children(
                     shard_id,
                     *timeline_key,
                     address,
-                    &mut page_cache,
+                    page_cache,
                 )
             }) {
                 latest_by_child
@@ -882,10 +900,17 @@ pub(super) fn traverse_context_tree(
     let mut results = Vec::new();
     for depth in 1..=max_depth {
         let mut scored_layer = Vec::new();
+        let mut child_page_cache = HashMap::new();
         for parent in &frontier {
             let child_key = context_child_key(tenant_hash, parent.node_hash);
-            let mut children =
-                load_context_children(cache, page_store, shard_id, shard, &child_key);
+            let mut children = load_context_children_with_page_cache(
+                cache,
+                page_store,
+                shard_id,
+                shard,
+                &child_key,
+                &mut child_page_cache,
+            );
             children.sort_by_key(|child_ref| (child_ref.updated_at_ms, child_ref.child_hash));
             children.truncate(child_limit);
             for child in children {
