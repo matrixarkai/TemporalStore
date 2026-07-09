@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::env;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
@@ -7445,17 +7446,32 @@ fn execute_on_shard(
             remove_if_expired(cache, shard_id, shard, &key);
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             let mut applied = Vec::with_capacity(entries.len());
-            for (field, value) in entries {
-                let object_id = stable_page_object_id(shard_id, "hash", &key, Some(&field));
-                if let Ok(address) = append_value(
-                    cache,
-                    page_store,
-                    shard_id,
-                    &value,
-                    Some(object_id),
-                    Some(routing_slot),
-                    async_storage,
-                ) {
+            if async_storage && entries.len() >= hash_multiset_batch_memory_put_min() {
+                let mut page_cache_entries = Vec::with_capacity(entries.len());
+                for (field, value) in entries {
+                    let object_id = stable_page_object_id(shard_id, "hash", &key, Some(&field));
+                    let address = PageAddress {
+                        page_segment_id: HOT_PAGE_SEGMENT_ID,
+                        offset: HOT_PAGE_OFFSET.fetch_add(1, Ordering::Relaxed),
+                        length: value.len() as u64,
+                        page_id: None,
+                        object_id: Some(object_id),
+                        routing_slot: Some(routing_slot),
+                        generation: Some(object_id),
+                        extent_id: None,
+                        sha256: None,
+                    };
+                    page_cache_entries.push((
+                        CacheKey::page_with_slot_generation(
+                            shard_id,
+                            address.page_segment_id,
+                            address.offset,
+                            address.length,
+                            address.routing_slot,
+                            address.generation,
+                        ),
+                        value,
+                    ));
                     upsert_slot_index_page(
                         cache,
                         shard,
@@ -7470,6 +7486,35 @@ fn execute_on_shard(
                     );
                     invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
                     applied.push((field, address));
+                }
+                cache.put_memory_only_batch(page_cache_entries);
+            } else {
+                for (field, value) in entries {
+                    let object_id = stable_page_object_id(shard_id, "hash", &key, Some(&field));
+                    if let Ok(address) = append_value(
+                        cache,
+                        page_store,
+                        shard_id,
+                        &value,
+                        Some(object_id),
+                        Some(routing_slot),
+                        async_storage,
+                    ) {
+                        upsert_slot_index_page(
+                            cache,
+                            shard,
+                            shard_id,
+                            "hash",
+                            &key,
+                            Some(field.clone()),
+                            address.clone(),
+                            true,
+                            start_routing_slot,
+                            end_routing_slot,
+                        );
+                        invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
+                        applied.push((field, address));
+                    }
                 }
             }
             if !applied.is_empty() {
@@ -14221,6 +14266,17 @@ fn append_value(
         bytes,
     );
     Ok(address)
+}
+
+fn hash_multiset_batch_memory_put_min() -> usize {
+    static MIN: OnceLock<usize> = OnceLock::new();
+    *MIN.get_or_init(|| {
+        env::var("TEMPORALSTORE_HASH_MULTISET_BATCH_MEMORY_PUT_MIN")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(64)
+            .max(2)
+    })
 }
 
 fn persist_risk_page(
