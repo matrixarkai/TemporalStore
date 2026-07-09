@@ -72,6 +72,7 @@ set(BCACHE2_CLIENT_EXAMPLE_LIBS
     absl_symbolize
     absl_synchronization
     absl_time
+    /usr/lib/x86_64-linux-gnu/libabsl_time_zone.so
     gflags
     brpc-static
     ${BCACHE2_CLIENT_EXAMPLE_OPTIONAL_LIBS}

@@ -4256,11 +4256,11 @@ def candidate_index_terms(
         terms.add(context_index_name("event_type", record.get("event_type")))
         if not require_oss_understanding() and not record.get("event_type"):
             terms.add(context_index_name("event_type", infer_event_type(str(record.get("text", "")))))
-        classification = non_default_classification(extraction.get("classification"))
+        classification = non_default_classification(record.get("classification"))
         if classification:
             terms.add(context_index_name("classification", classification))
-        terms.add(context_index_name("status", extraction.get("status") or "observed"))
-        terms.add(context_index_name("source_type", envelope.get("kind") or "message"))
+        terms.add(context_index_name("status", record.get("status") or "observed"))
+        terms.add(context_index_name("source_type", record.get("source_type") or "message"))
     elif record_type == "context_entity":
         terms.add(context_index_name("entity_type", record.get("entity_type")))
     elif record_type == "context_segment":

@@ -4217,6 +4217,7 @@ class MatrixArkLocalAdapter:
             secondary_index_filter_mode=secondary_index_filter_mode,
             reference_time_ms=reference_time_ms,
         )
+        debug_refs = bool(args.get("include_debug_refs") or ranking.get("include_debug_refs") or CONTEXT_PACK_DEBUG_REFS)
         pack_cache_enabled = (
             self._context_pack_cache_max_entries > 0
             and self._context_pack_cache_ttl_s > 0
@@ -4305,7 +4306,6 @@ class MatrixArkLocalAdapter:
             selected_refs = native_pack.get("selected_refs", []) if isinstance(native_pack.get("selected_refs"), list) else []
             context_pack_id_text = str(native_pack.get("context_pack_id") or stable_hash(f"native:{query}:{selected_refs}:{now_ms()}"))
             native_pack["context_pack_id"] = context_pack_id_text
-            debug_refs = bool(args.get("include_debug_refs") or ranking.get("include_debug_refs") or CONTEXT_PACK_DEBUG_REFS)
             if audit_mode == "full" and audit_sample_rate > 0 and (audit_sample_rate >= 1.0 or stable_hash(context_pack_id_text) % 10000 < int(audit_sample_rate * 10000)):
                 self.append_audit(
                     compact_context_pack_audit_record({
