@@ -11399,7 +11399,7 @@ fn update_slot_layout(slot: &mut SlotNode) {
         .collect();
     if !live_object_ids.is_empty() {
         slot.object_index = live_object_ids;
-    } else if !slot.page_index.is_empty() {
+    } else {
         slot.object_index.clear();
     }
     slot.layout = classify_slot_layout(slot.object_index.len(), slot.page_index.len());
