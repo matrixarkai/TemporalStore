@@ -63,7 +63,7 @@ _SHARED_CORRECTNESS_EVIDENCE = {
 
 
 class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
-    def test_rust_bridge_defaults_to_separate_read_write_pack_lanes(self) -> None:
+    def test_rust_bridge_defaults_to_shared_writes_and_parallel_pack_lanes(self) -> None:
         old_env = {
             key: os.environ.get(key)
             for key in (
@@ -72,6 +72,7 @@ class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
                 "MATRIXARK_RUST_PROXY_PACK_LANES",
                 "MATRIXARK_RUST_PROXY_CONTROL_LANES",
                 "MATRIXARK_RUST_PROXY_SHARED_PROCESS",
+                "MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES",
             )
         }
         for key in old_env:
@@ -94,11 +95,11 @@ class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
                     os.environ[key] = value
 
         self.assertTrue(snapshot["shared_process_mode"])
-        self.assertEqual(snapshot["lane_pool"], {"write": 1, "read": 1, "pack": 1, "control": 1})
-        self.assertEqual(snapshot["max_inflight"], 4)
+        self.assertEqual(snapshot["lane_pool"], {"write": 1, "read": 1, "pack": 8, "control": 1})
+        self.assertEqual(snapshot["max_inflight"], 11)
         self.assertFalse(snapshot["write_pool_enabled"])
         self.assertFalse(snapshot["read_pool_enabled"])
-        self.assertFalse(snapshot["pack_pool_enabled"])
+        self.assertTrue(snapshot["pack_pool_enabled"])
         self.assertEqual(client._lane_group_for_op("matrixark_batch_append_records"), "write")
         self.assertEqual(client._lane_group_for_op("matrixark_batch_append_raw_ingestion_records"), "write")
         self.assertEqual(client._lane_group_for_op("batch_hget"), "read")
@@ -150,8 +151,8 @@ class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
         allow_body = source[allow_start : source.index("else:", allow_start)]
 
         self.assertIn('os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS", "1")', allow_body)
-        self.assertIn('os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES", "0")', allow_body)
-        self.assertNotIn('os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES", "1")', allow_body)
+        self.assertIn('os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES", "1")', allow_body)
+        self.assertNotIn('os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES", "0")', allow_body)
 
 
 class _NativeAppendClient:

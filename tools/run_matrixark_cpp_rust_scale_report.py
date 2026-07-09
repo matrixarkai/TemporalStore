@@ -2118,18 +2118,17 @@ def make_adapter(backend: str, args: argparse.Namespace, storage_prefix: str):
         return MatrixArkTemporalStoreDirectAdapter(library_path=args.cpp_lib, **common)
     if backend == "rust":
         validate_rust_runtime_path(args)
-        # Correctness comes before latency in scale/parity runs. The current Rust
-        # proxy embeds MatrixArk index/cache state inside the long-lived process,
-        # so process-level isolated retrieve/pack clients can miss freshly written
-        # records and return empty ContextPacks. Keep one shared proxy process by
-        # default; isolated clients are an explicit diagnostic until Rust exposes a
-        # shared-state proxy/server or direct SDK path with equivalent visibility.
+        # Correctness comes before latency in scale/parity runs. Keep writes,
+        # reads, and control on the shared Rust proxy process by default so
+        # freshly written MatrixArk records remain visible. ContextPack assembly
+        # is read-mostly after ingest and is correctness-gated below, so use the
+        # dedicated pack lane pool by default to avoid stdio head-of-line stalls.
         if os.environ.get("MATRIXARK_RUST_PROXY_ALLOW_ISOLATED_CLIENTS", "").strip().lower() in {"1", "true", "yes"}:
             os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS", "1")
-            os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES", "0")
+            os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES", "1")
         else:
             os.environ["MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS"] = "0"
-            os.environ["MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES"] = "0"
+            os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES", "1")
         allow_c_api_bridge = bool(getattr(args, "allow_rust_cpp_c_api_bridge", False))
         direct_lib_raw = os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_LIB", "").strip()
         direct_lib = Path(direct_lib_raw) if direct_lib_raw else Path("/__matrixark_missing_rust_direct_lib__")
@@ -2544,7 +2543,7 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
             "MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS": "0",
         }
         if not allow_isolated_rust_clients:
-            rust_proxy_lane_defaults["MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES"] = "0"
+            rust_proxy_lane_defaults["MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES"] = "1"
         for key, value in rust_proxy_lane_defaults.items():
             previous_queue_env[key] = os.environ.get(key)
             os.environ[key] = value
