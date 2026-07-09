@@ -19,6 +19,7 @@ use temporalstore_rust::meta::{
 use temporalstore_rust::raft::{
     ProductionMetaRaftRuntime, ProductionMetaRaftRuntimeOptions, ProductionRaftEngineKind,
     ProductionRaftNode, RaftClusterStatus, RaftConfig, RaftMembershipChangeReport, RaftNodeId,
+    RaftReplicaRole,
 };
 use temporalstore_rust::rebalance::{
     DeterministicTaskScheduler, MembershipUpdateTaskPlan, RebalanceStep, SchedulerRunReport,
@@ -1137,6 +1138,9 @@ fn handle(
     if let Some(response) = handle_heartbeat_service_route(meta, &request) {
         return response;
     }
+    if let Some(response) = handle_raft_control_service_route(meta, &request) {
+        return response;
+    }
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/health") => json_response(200, &Status::ok()),
         ("GET", "/metrics") | ("GET", "/MasterService/Metrics") => (
@@ -1706,6 +1710,34 @@ struct QueryListServerPartitionResponse {
     node_partitions: Vec<QueryServerNodePartitions>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct RaftControlNode {
+    #[serde(default, alias = "node_id")]
+    peer_id: RaftNodeId,
+    #[serde(default)]
+    raft_addr: String,
+    #[serde(default)]
+    snapshot_addr: String,
+    #[serde(default)]
+    role: serde_json::Value,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct RaftControlNodeRequest {
+    #[serde(default)]
+    node: Option<RaftControlNode>,
+    #[serde(default, alias = "peer_id")]
+    node_id: RaftNodeId,
+    #[serde(default)]
+    role: serde_json::Value,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct RaftControlListMembershipResponse {
+    status: Status,
+    nodes: Vec<RaftControlNode>,
+}
+
 #[allow(dead_code)]
 #[derive(Debug, serde::Deserialize)]
 struct MasterGetTableTopoRequest {
@@ -2014,6 +2046,135 @@ fn handle_manage_service_route(
         _ => return None,
     };
     Some(response)
+}
+
+fn handle_raft_control_service_route(
+    meta: &MetaBackend,
+    request: &HttpRequest,
+) -> Option<(u16, Vec<u8>)> {
+    let response = match (request.method.as_str(), request.path.as_str()) {
+        ("POST", "/RaftControlService/AddNode") => {
+            parse_or(&request.body, |req: RaftControlNodeRequest| {
+                raft_control_add_node(meta, req)
+            })
+        }
+        ("POST", "/RaftControlService/RemoveNode") => {
+            parse_or(&request.body, |req: RaftControlNodeRequest| {
+                raft_control_remove_node(meta, req)
+            })
+        }
+        ("GET", "/RaftControlService/ListMembership")
+        | ("POST", "/RaftControlService/ListMembership") => {
+            json_response(200, &raft_control_list_membership(meta))
+        }
+        ("GET", "/RaftControlService/TriggerSnapshot")
+        | ("POST", "/RaftControlService/TriggerSnapshot") => {
+            json_response(200, &raft_control_trigger_snapshot(meta))
+        }
+        _ => return None,
+    };
+    Some(response)
+}
+
+fn raft_control_add_node(meta: &MetaBackend, req: RaftControlNodeRequest) -> AckResponse {
+    let Some((node_id, role)) = raft_control_node_id_and_role(req) else {
+        return AckResponse {
+            status: Status::error("bad_request", "raft node id is required"),
+        };
+    };
+    match meta {
+        MetaBackend::Single(_) => AckResponse {
+            status: Status::error("raft_disabled", "meta raft is disabled"),
+        },
+        MetaBackend::Raft(runtime) => AckResponse {
+            status: runtime
+                .add_node(node_id, role)
+                .map(|_| Status::ok())
+                .unwrap_or_else(|err| Status::error("raft_control_failed", err.to_string())),
+        },
+    }
+}
+
+fn raft_control_remove_node(meta: &MetaBackend, req: RaftControlNodeRequest) -> AckResponse {
+    let Some((node_id, _)) = raft_control_node_id_and_role(req) else {
+        return AckResponse {
+            status: Status::error("bad_request", "raft node id is required"),
+        };
+    };
+    match meta {
+        MetaBackend::Single(_) => AckResponse {
+            status: Status::error("raft_disabled", "meta raft is disabled"),
+        },
+        MetaBackend::Raft(runtime) => AckResponse {
+            status: runtime
+                .remove_node(node_id)
+                .map(|_| Status::ok())
+                .unwrap_or_else(|err| Status::error("raft_control_failed", err.to_string())),
+        },
+    }
+}
+
+fn raft_control_list_membership(meta: &MetaBackend) -> RaftControlListMembershipResponse {
+    match meta {
+        MetaBackend::Single(_) => RaftControlListMembershipResponse {
+            status: Status::error("raft_disabled", "meta raft is disabled"),
+            nodes: Vec::new(),
+        },
+        MetaBackend::Raft(runtime) => RaftControlListMembershipResponse {
+            status: Status::ok(),
+            nodes: runtime
+                .list_membership()
+                .into_iter()
+                .map(|node_id| RaftControlNode {
+                    peer_id: node_id,
+                    raft_addr: runtime.node_addr(node_id).unwrap_or_default().to_string(),
+                    snapshot_addr: String::new(),
+                    role: serde_json::json!("NORMAL"),
+                })
+                .collect(),
+        },
+    }
+}
+
+fn raft_control_trigger_snapshot(meta: &MetaBackend) -> AckResponse {
+    match meta {
+        MetaBackend::Single(_) => AckResponse {
+            status: Status::error("raft_disabled", "meta raft is disabled"),
+        },
+        MetaBackend::Raft(runtime) => AckResponse {
+            status: runtime
+                .trigger_snapshot()
+                .map(|_| Status::ok())
+                .unwrap_or_else(|err| Status::error("raft_control_failed", err.to_string())),
+        },
+    }
+}
+
+fn raft_control_node_id_and_role(
+    req: RaftControlNodeRequest,
+) -> Option<(RaftNodeId, RaftReplicaRole)> {
+    if let Some(node) = req.node {
+        let role = raft_control_role(&node.role);
+        return (node.peer_id > 0).then_some((node.peer_id, role));
+    }
+    (req.node_id > 0).then_some((req.node_id, raft_control_role(&req.role)))
+}
+
+fn raft_control_role(role: &serde_json::Value) -> RaftReplicaRole {
+    match role {
+        serde_json::Value::Number(number) => match number.as_u64().unwrap_or_default() {
+            1 => RaftReplicaRole::Learner,
+            2 => RaftReplicaRole::Witness,
+            _ => RaftReplicaRole::Voter,
+        },
+        serde_json::Value::String(role) if role.eq_ignore_ascii_case("learner") => {
+            RaftReplicaRole::Learner
+        }
+        serde_json::Value::String(role) if role.eq_ignore_ascii_case("witness") => {
+            RaftReplicaRole::Witness
+        }
+        _ => RaftReplicaRole::Voter,
+    }
 }
 
 fn handle_query_service_route(meta: &MetaBackend, request: &HttpRequest) -> Option<(u16, Vec<u8>)> {
