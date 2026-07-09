@@ -2606,6 +2606,29 @@ mod tests {
     use std::time::Instant;
 
     #[test]
+    fn proxy_rejects_v1_frontend_aliases() {
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr: "127.0.0.1:1".to_string(),
+            ..ProxyOptions::default()
+        });
+
+        for (method, path) in [
+            ("POST", "/v1/string/put"),
+            ("POST", "/v1/string/get"),
+            ("POST", "/v1/common/delete"),
+        ] {
+            let (code, body) = proxy.handle(HttpRequest {
+                method: method.to_string(),
+                path: path.to_string(),
+                body: Vec::new(),
+            });
+            assert_eq!(code, 404, "{path} must not be a Rust proxy route");
+            let status = parse_json::<Status>(&body).unwrap();
+            assert_eq!(status.code, "not_found");
+        }
+    }
+
+    #[test]
     fn proxy_exposes_cpp_parity_readiness_report() {
         let proxy = ProxyService::new(ProxyOptions {
             meta_addr: "127.0.0.1:1".to_string(),

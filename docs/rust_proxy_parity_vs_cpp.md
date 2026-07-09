@@ -47,7 +47,7 @@ The Rust SDK proxy client now exposes direct-method parity for common C++ client
 - `expire`
 - `ttl`
 
-These helpers call the `/ProxyService/...` routes and parse native proxy responses. The Rust proxy no longer exposes `/v1/...` compatibility aliases.
+These helpers call the `/ProxyService/...` routes and parse native proxy responses. The Rust proxy surface intentionally excludes the old C++ frontend `/v1/string/...` and `/v1/common/...` aliases.
 
 ## MatrixArk Path
 
