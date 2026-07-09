@@ -23,11 +23,12 @@ use crate::meta::{
     GetTableTopologyRequest, ListNamespacesResponse, ListProxiesResponse, ListServersResponse,
     ListTablesResponse, LoadFinishRequest, MetaEntityState, MetaInfo, MetaMutation,
     MetaPreflightReport, MetaSnapshot, MetaStats, ProxyHeartbeatRequest, ProxyHeartbeatResponse,
-    PublishShardSnapshotRequest, RegisterProxyRequest, RegisterServerRequest, RegisterShardRequest,
-    RegisterShardResponse, SafeModePolicy, SafeModeReport, ServerHeartbeatRequest,
-    ServerHeartbeatResponse, ShardLocation, ShardSnapshotRef, SingleNodeMeta, StaleResourceReport,
-    StaleServerReport, StateChangeRequest, TableTopologyResponse, TopologyVersionReport,
-    TopologyVersionRequest, UpdateServerRequest, UpdateTableRequest,
+    PublishShardSnapshotRequest, PutProxyGroupRequest, RegisterProxyRequest, RegisterServerRequest,
+    RegisterShardRequest, RegisterShardResponse, SafeModePolicy, SafeModeReport,
+    ServerHeartbeatRequest, ServerHeartbeatResponse, ShardLocation, ShardSnapshotRef,
+    SingleNodeMeta, StaleResourceReport, StaleServerReport, StateChangeRequest,
+    TableTopologyResponse, TopologyVersionReport, TopologyVersionRequest, UpdateServerRequest,
+    UpdateTableRequest, DropProxyGroupRequest, ListProxyGroupRequest, ListProxyGroupResponse,
 };
 use crate::rebalance::RaftPersistedSchedulerState;
 use crate::types::{Command, CommandResponse, ExecuteRequest, ShardId, Status};
@@ -11641,6 +11642,28 @@ impl MetaRaftCluster {
                 drop_percent: 0,
             },
             |meta| meta.proxy_heartbeat(request),
+        )
+    }
+
+    pub fn put_proxy_group(&self, request: PutProxyGroupRequest) -> AckResponse {
+        AckResponse {
+            status: self.mutation_status(MetaMutation::PutProxyGroup(request)),
+        }
+    }
+
+    pub fn drop_proxy_group(&self, request: DropProxyGroupRequest) -> AckResponse {
+        AckResponse {
+            status: self.mutation_status(MetaMutation::DropProxyGroup(request)),
+        }
+    }
+
+    pub fn list_proxy_groups(&self, request: ListProxyGroupRequest) -> ListProxyGroupResponse {
+        self.read_meta().map_or_else(
+            |status| ListProxyGroupResponse {
+                status,
+                groups: Vec::new(),
+            },
+            |meta| meta.list_proxy_groups(request),
         )
     }
 
