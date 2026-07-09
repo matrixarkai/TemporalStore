@@ -9908,13 +9908,15 @@ fn select_expiry_cursor_window(
     let start = cursor
         .and_then(|cursor| keys.iter().position(|(key, _)| key.as_str() > cursor))
         .unwrap_or_default();
-    let remaining = keys.into_iter().skip(start).collect::<Vec<_>>();
-    if limit == 0 || remaining.len() <= limit {
-        return (remaining, None);
+    let mut remaining = keys.into_iter().skip(start);
+    if limit == 0 {
+        return (remaining.collect(), None);
     }
-    let mut selected = remaining.into_iter().take(limit).collect::<Vec<_>>();
-    let next_cursor = selected.last().map(|(key, _)| key.clone());
-    (std::mem::take(&mut selected), next_cursor)
+    let selected = remaining.by_ref().take(limit).collect::<Vec<_>>();
+    let next_cursor = remaining
+        .next()
+        .and_then(|_| selected.last().map(|(key, _)| key.clone()));
+    (selected, next_cursor)
 }
 
 fn remove_if_expired(
