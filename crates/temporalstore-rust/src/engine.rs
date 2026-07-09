@@ -9604,15 +9604,18 @@ fn execute_on_shard(
             limit,
         } => {
             let object_key = context_entity_collection_key(tenant_hash, node_hash);
-            let entities = dedupe_nonzero_u64_preserve_order(entity_hashes)
+            let addresses = dedupe_nonzero_u64_preserve_order(entity_hashes)
                 .into_iter()
                 .take(context_limit(limit))
-                .filter_map(|entity_hash| {
+                .map(|entity_hash| {
                     let entity_key = context_entity_key(tenant_hash, node_hash, entity_hash);
-                    shard.context_entities.get(&entity_key).and_then(|address| {
-                        read_page_bytes(cache, page_store, shard_id, address)
-                            .and_then(|bytes| context_from_bytes::<ContextEntity>(&bytes))
-                    })
+                    shard.context_entities.get(&entity_key).cloned()
+                })
+                .collect::<Vec<_>>();
+            let entities = read_page_bytes_batch(cache, page_store, shard_id, &addresses)
+                .into_iter()
+                .filter_map(|bytes| {
+                    bytes.and_then(|bytes| context_from_bytes::<ContextEntity>(&bytes))
                 })
                 .collect();
             CommandResponse::ContextEntities {
@@ -9706,18 +9709,18 @@ fn execute_on_shard(
             ref_hashes,
             limit,
         } => {
-            let embeddings = dedupe_nonzero_u64_preserve_order(ref_hashes)
+            let addresses = dedupe_nonzero_u64_preserve_order(ref_hashes)
                 .into_iter()
                 .take(context_limit(limit))
-                .filter_map(|ref_hash| {
+                .map(|ref_hash| {
                     let object_key = context_embedding_key(tenant_hash, ref_hash);
-                    shard
-                        .context_embeddings
-                        .get(&object_key)
-                        .and_then(|address| {
-                            read_page_bytes(cache, page_store, shard_id, address)
-                                .and_then(|bytes| context_from_bytes::<ContextEmbedding>(&bytes))
-                        })
+                    shard.context_embeddings.get(&object_key).cloned()
+                })
+                .collect::<Vec<_>>();
+            let embeddings = read_page_bytes_batch(cache, page_store, shard_id, &addresses)
+                .into_iter()
+                .filter_map(|bytes| {
+                    bytes.and_then(|bytes| context_from_bytes::<ContextEmbedding>(&bytes))
                 })
                 .collect();
             CommandResponse::ContextEmbeddings { embeddings }
