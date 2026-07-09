@@ -2975,6 +2975,8 @@ def run_backend_isolated(backend: str, args: argparse.Namespace, run_id: str, ar
     ]
     if args.allow_rust_record_log_compat:
         cmd.append("--allow-rust-record-log-compat")
+    if args.allow_rust_cpp_c_api_bridge:
+        cmd.append("--allow-rust-cpp-c-api-bridge")
     if args.allow_rust_debug_cli:
         cmd.append("--allow-rust-debug-cli")
     if args.skip_context_pipeline:
@@ -3847,7 +3849,7 @@ def main() -> int:
     parser.add_argument("--local-topology-start-timeout-sec", type=int, default=120)
     parser.add_argument("--allow-rust-record-log-compat", action="store_true")
     parser.add_argument("--allow-rust-debug-cli", action="store_true")
-    parser.add_argument("--allow-rust-cpp-c-api-bridge", action="store_true", help="diagnostic only: allow the legacy Rust cdylib MatrixArk hot path to call the shared C++ C API bridge")
+    parser.add_argument("--allow-rust-cpp-c-api-bridge", action="store_true", help="allow direct Rust cdylib MatrixArk hot path; also keeps legacy C++ C API bridge diagnostics gated")
     parser.add_argument("--request-timeout-ms", type=int, default=60000)
     parser.add_argument("--io-timeout-ms", type=int, default=60000)
     parser.add_argument("--readiness-timeout-ms", type=int, default=60000)
