@@ -9,7 +9,7 @@ use rustmtcache::MultiLayerCache;
 
 use super::packed_pages::{decode_feature_page_strict, read_feature_point_cached};
 use super::state::PackedFeaturePageDecode;
-use super::{parse_i64, read_page_bytes, ShardState};
+use super::{parse_i64, read_page_bytes_cold, ShardState};
 
 fn decode_sequence_row_value(bytes: &[u8]) -> Option<SequenceFeatureRow> {
     serde_json::from_slice(bytes).ok()
@@ -290,7 +290,7 @@ pub(super) fn ips_snapshot_report_in_range(
         for (_, address) in series.range(start_ms..=end_ms) {
             if page_refs.insert(address.clone()) {
                 page_segment_ids.insert(address.page_segment_id);
-                if read_page_bytes(cache, block_store, shard_id, address)
+                if read_page_bytes_cold(block_store, address)
                     .map(|bytes| {
                         matches!(
                             decode_feature_page_strict(&bytes),
