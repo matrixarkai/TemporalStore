@@ -8909,7 +8909,9 @@ fn execute_on_shard(
                 .context_events
                 .entry(event_object_key.clone())
                 .or_default();
-            if !(first_write_only && event_series.contains_key(&event_timeline_key)) {
+            let should_write_event =
+                !(first_write_only && event_series.contains_key(&event_timeline_key));
+            if should_write_event {
                 let value = context_bytes(&event);
                 let routing_slot =
                     page_routing_slot(&event_object_key, start_routing_slot, end_routing_slot);
@@ -8974,31 +8976,33 @@ fn execute_on_shard(
                     }
                 };
 
-            if !context_index_disabled(&indexes, InternalContextIndex::EventKind) {
-                write_default_index(
-                    "event_kind",
-                    context_event_kind_hash(&event),
-                    primary_time_ms,
-                );
-            }
-            if !context_index_disabled(&indexes, InternalContextIndex::Status) {
-                write_default_index("status", indexes.status_hash, primary_time_ms);
-            }
-            if !context_index_disabled(&indexes, InternalContextIndex::Source) {
-                write_default_index("source", indexes.source_hash, primary_time_ms);
-            }
-            if !context_index_disabled(&indexes, InternalContextIndex::EventTimeBucket) {
-                write_default_index(
-                    "event_time_bucket",
-                    indexes.event_time_bucket_ms,
-                    indexes.event_time_bucket_ms,
-                );
-            }
-            if !context_index_disabled(&indexes, InternalContextIndex::Entity) {
-                let mut seen_entity_hashes = HashSet::new();
-                for entity_hash in indexes.entity_hashes.iter().copied() {
-                    if seen_entity_hashes.insert(entity_hash) {
-                        write_default_index("entity", entity_hash, primary_time_ms);
+            if should_write_event {
+                if !context_index_disabled(&indexes, InternalContextIndex::EventKind) {
+                    write_default_index(
+                        "event_kind",
+                        context_event_kind_hash(&event),
+                        primary_time_ms,
+                    );
+                }
+                if !context_index_disabled(&indexes, InternalContextIndex::Status) {
+                    write_default_index("status", indexes.status_hash, primary_time_ms);
+                }
+                if !context_index_disabled(&indexes, InternalContextIndex::Source) {
+                    write_default_index("source", indexes.source_hash, primary_time_ms);
+                }
+                if !context_index_disabled(&indexes, InternalContextIndex::EventTimeBucket) {
+                    write_default_index(
+                        "event_time_bucket",
+                        indexes.event_time_bucket_ms,
+                        indexes.event_time_bucket_ms,
+                    );
+                }
+                if !context_index_disabled(&indexes, InternalContextIndex::Entity) {
+                    let mut seen_entity_hashes = HashSet::new();
+                    for entity_hash in indexes.entity_hashes.iter().copied() {
+                        if seen_entity_hashes.insert(entity_hash) {
+                            write_default_index("entity", entity_hash, primary_time_ms);
+                        }
                     }
                 }
             }
