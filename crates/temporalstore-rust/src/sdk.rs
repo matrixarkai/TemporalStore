@@ -534,6 +534,14 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             tenant_hash: stable_hash(&command.key),
             node_hash: stable_hash(&command.node_id),
         },
+        v1::command::Kind::ContextNodesGet(command) => types::Command::ContextGetNodes {
+            tenant_hash: stable_hash(&command.key),
+            node_hashes: command
+                .node_ids
+                .into_iter()
+                .map(|node_id| stable_hash(&node_id))
+                .collect(),
+        },
         v1::command::Kind::ContextWriteEvent(command) => {
             let event = command
                 .event
