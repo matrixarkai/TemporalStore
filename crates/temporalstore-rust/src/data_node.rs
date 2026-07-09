@@ -432,6 +432,10 @@ fn apply_shard_storage_metrics(
         );
         add(metrics, "memory_cache_hits", shard.cache.memory_hits);
         add(metrics, "memory_cache_misses", shard.cache.misses);
+        add(metrics, "page_index_cache_hits", shard.cache.memory_hits);
+        add(metrics, "page_index_cache_misses", shard.cache.misses);
+        add(metrics, "block_index_cache_hits", shard.cache.disk_hits);
+        add(metrics, "block_index_cache_misses", shard.cache.misses);
         add(metrics, "disk_cache_hits", shard.cache.disk_hits);
         add(metrics, "disk_cache_misses", shard.cache.misses);
         add(metrics, "shared_store_read_throughs", shard.cache.disk_hits);
