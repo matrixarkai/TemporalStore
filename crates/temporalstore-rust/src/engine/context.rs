@@ -649,8 +649,9 @@ pub(super) fn load_context_summaries(
         .get(object_key)
         .map(|series| {
             let mut page_cache = HashMap::new();
-            series
+            let mut summaries = series
                 .range(0..context_timeline_end(as_of_ms))
+                .rev()
                 .filter_map(|(timeline_key, address)| {
                     read_context_value_cached::<ContextSummary>(
                         cache,
@@ -663,7 +664,9 @@ pub(super) fn load_context_summaries(
                 })
                 .filter(|summary| summary.valid_from_ms <= as_of_ms)
                 .take(context_limit(limit))
-                .collect()
+                .collect::<Vec<_>>();
+            summaries.sort_by_key(|summary| summary.valid_from_ms);
+            summaries
         })
         .unwrap_or_default()
 }
@@ -677,10 +680,16 @@ pub(super) fn load_latest_context_summary(
     as_of_ms: u64,
 ) -> Option<ContextSummary> {
     load_context_summaries(
-        cache, page_store, shard_id, shard, object_key, as_of_ms, None,
+        cache,
+        page_store,
+        shard_id,
+        shard,
+        object_key,
+        as_of_ms,
+        Some(1),
     )
     .into_iter()
-    .max_by_key(|summary| summary.valid_from_ms)
+    .next()
 }
 
 pub(super) fn load_context_compression_events(
