@@ -327,6 +327,12 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             key: command.key,
             field: command.field,
         },
+        v1::command::Kind::HashDelete(command) => types::Command::HashDelete {
+            key: command.key,
+            field: command.field,
+        },
+        v1::command::Kind::HashGetAll(command) => types::Command::HashGetAll { key: command.key },
+        v1::command::Kind::HashLen(command) => types::Command::HashLen { key: command.key },
         v1::command::Kind::HashMultiSet(command) => types::Command::HashMultiSet {
             key: command.key,
             entries: command
@@ -340,6 +346,10 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             fields: command.fields,
         },
         v1::command::Kind::SetAdd(command) => types::Command::SetAdd {
+            key: command.key,
+            member: command.member,
+        },
+        v1::command::Kind::SetRemove(command) => types::Command::SetRemove {
             key: command.key,
             member: command.member,
         },
@@ -418,6 +428,7 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             key: command.key,
             ttl_ms: command.ttl_ms,
         },
+        v1::command::Kind::CommonTtl(command) => types::Command::CommonTtl { key: command.key },
         v1::command::Kind::CommonExists(command) => {
             types::Command::CommonExists { key: command.key }
         }

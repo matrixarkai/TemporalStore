@@ -243,6 +243,11 @@ message Command {
     ContextNodeGet context_node_get = 19;
     CommonExpire common_expire = 20;
     CommonExists common_exists = 21;
+    HashDelete hash_delete = 22;
+    HashGetAll hash_get_all = 23;
+    HashLen hash_len = 24;
+    SetRemove set_remove = 25;
+    CommonTtl common_ttl = 26;
   }
 }
 
@@ -282,6 +287,19 @@ message HashGet {
   string field = 2;
 }
 
+message HashDelete {
+  string key = 1;
+  string field = 2;
+}
+
+message HashGetAll {
+  string key = 1;
+}
+
+message HashLen {
+  string key = 1;
+}
+
 message HashEntry {
   string field = 1;
   bytes value = 2;
@@ -304,6 +322,11 @@ message SetAdd {
 
 message SetMembers {
   string key = 1;
+}
+
+message SetRemove {
+  string key = 1;
+  bytes member = 2;
 }
 
 message FeaturePoint {
@@ -393,5 +416,9 @@ message CommonExpire {
 }
 
 message CommonExists {
+  string key = 1;
+}
+
+message CommonTtl {
   string key = 1;
 }
