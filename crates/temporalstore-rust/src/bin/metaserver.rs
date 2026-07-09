@@ -1617,6 +1617,30 @@ struct MasterOpenTableResponse {
     open_version: u64,
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct QueryListPartitionRequest {
+    #[serde(alias = "namespace_name")]
+    namespace: String,
+    #[serde(alias = "table_name", alias = "name")]
+    table: String,
+    #[serde(default, alias = "partition_id")]
+    shard_id: u64,
+    #[serde(default)]
+    read_stale: bool,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct QueryPartitionSetBlock {
+    set_info: Option<temporalstore_rust::meta::TableMetaInfo>,
+    partition_info: Vec<temporalstore_rust::meta::TablePartition>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct QueryListPartitionResponse {
+    status: Status,
+    info: Vec<QueryPartitionSetBlock>,
+}
+
 #[allow(dead_code)]
 #[derive(Debug, serde::Deserialize)]
 struct MasterGetTableTopoRequest {
@@ -1916,9 +1940,52 @@ fn handle_query_service_route(meta: &MetaBackend, request: &HttpRequest) -> Opti
         ("GET", "/QueryService/ListTable") | ("POST", "/QueryService/ListTable") => {
             json_response(200, &backend_call!(meta, list_tables))
         }
+        ("POST", "/QueryService/ListPartition") => {
+            parse_or(&request.body, |req: QueryListPartitionRequest| {
+                query_list_partition(meta, req)
+            })
+        }
         _ => return None,
     };
     Some(response)
+}
+
+fn query_list_partition(
+    meta: &MetaBackend,
+    req: QueryListPartitionRequest,
+) -> QueryListPartitionResponse {
+    let _ = req.read_stale;
+    let topology = backend_call!(
+        meta,
+        get_table_topology,
+        GetTableTopologyRequest {
+            namespace: req.namespace,
+            table_name: req.table,
+            old_topology_version: 0,
+        }
+    );
+    if !topology.status.ok {
+        return QueryListPartitionResponse {
+            status: topology.status,
+            info: Vec::new(),
+        };
+    }
+    let partitions = if req.shard_id > 0 {
+        topology
+            .partitions
+            .into_iter()
+            .filter(|partition| partition.shard_id == req.shard_id)
+            .collect()
+    } else {
+        topology.partitions
+    };
+    QueryListPartitionResponse {
+        status: topology.status,
+        info: vec![QueryPartitionSetBlock {
+            set_info: topology.table,
+            partition_info: partitions,
+        }],
+    }
 }
 
 fn handle_heartbeat_service_route(
