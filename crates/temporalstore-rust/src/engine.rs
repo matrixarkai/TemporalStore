@@ -9034,19 +9034,22 @@ fn execute_on_shard(
             tenant_hash,
             node_hashes,
         } => {
-            let nodes = dedupe_nonzero_u64_preserve_order(node_hashes)
+            let node_addresses = dedupe_nonzero_u64_preserve_order(node_hashes)
                 .into_iter()
-                .filter_map(|node_hash| {
+                .map(|node_hash| {
                     let object_key = context_node_key(tenant_hash, node_hash);
                     shard
                         .hashes
                         .get(&object_key)
                         .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
                         .or_else(|| shard.context_nodes.get(&object_key))
-                        .and_then(|address| {
-                            read_page_bytes(cache, page_store, shard_id, address)
-                                .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
-                        })
+                        .cloned()
+                })
+                .collect::<Vec<_>>();
+            let nodes = read_page_bytes_batch(cache, page_store, shard_id, &node_addresses)
+                .into_iter()
+                .filter_map(|bytes| {
+                    bytes.and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
                 })
                 .collect();
             CommandResponse::ContextNodes { nodes }
