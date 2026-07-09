@@ -14449,7 +14449,7 @@ fn hash_multiset_batch_memory_put_min() -> usize {
         env::var("TEMPORALSTORE_HASH_MULTISET_BATCH_MEMORY_PUT_MIN")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
-            .unwrap_or(64)
+            .unwrap_or(2)
             .max(2)
     })
 }
