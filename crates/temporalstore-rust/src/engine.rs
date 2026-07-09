@@ -14047,7 +14047,31 @@ fn record_exists(shard: &ShardState, key: &str) -> bool {
 }
 
 fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
-    let slot_index_exists = if shard.slot_index.object_component_lookup.is_empty() {
+    if shard.strings.contains_key(key)
+        || shard.hashes.contains_key(key)
+        || shard.sets.contains_key(key)
+        || shard.features.contains_key(key)
+        || shard.sequences.contains_key(key)
+        || shard.ips.contains_key(key)
+        || shard.risk.contains_key(key)
+        || shard.risk_pages.contains_key(key)
+        || shard.risk_changes.contains_key(key)
+        || shard.risk_fol.contains_key(key)
+        || shard.context_nodes.contains_key(key)
+        || shard.context_events.contains_key(key)
+        || shard.context_indexes.contains_key(key)
+        || shard.context_audits.contains_key(key)
+        || shard.context_dirty.contains_key(key)
+        || shard.context_entities.contains_key(key)
+        || shard.context_children.contains_key(key)
+        || shard.context_embeddings.contains_key(key)
+        || shard.context_summaries.contains_key(key)
+        || shard.context_compressions.contains_key(key)
+    {
+        return true;
+    }
+
+    if shard.slot_index.object_component_lookup.is_empty() {
         shard.slot_index.slot_map.values().any(|slot| {
             slot.page_index
                 .values()
@@ -14074,28 +14098,7 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
                 })
                 .unwrap_or(false)
         })
-    };
-    slot_index_exists
-        || shard.strings.contains_key(key)
-        || shard.hashes.contains_key(key)
-        || shard.sets.contains_key(key)
-        || shard.features.contains_key(key)
-        || shard.sequences.contains_key(key)
-        || shard.ips.contains_key(key)
-        || shard.risk.contains_key(key)
-        || shard.risk_pages.contains_key(key)
-        || shard.risk_changes.contains_key(key)
-        || shard.risk_fol.contains_key(key)
-        || shard.context_nodes.contains_key(key)
-        || shard.context_events.contains_key(key)
-        || shard.context_indexes.contains_key(key)
-        || shard.context_audits.contains_key(key)
-        || shard.context_dirty.contains_key(key)
-        || shard.context_entities.contains_key(key)
-        || shard.context_children.contains_key(key)
-        || shard.context_embeddings.contains_key(key)
-        || shard.context_summaries.contains_key(key)
-        || shard.context_compressions.contains_key(key)
+    }
 }
 
 fn storage_model_kinds() -> &'static [&'static str] {
