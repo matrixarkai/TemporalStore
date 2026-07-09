@@ -491,6 +491,49 @@ class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
         self.assertEqual(snapshot["string_cache"]["misses_total"], 0)
         self.assertGreaterEqual(snapshot["string_cache"]["updates_total"], 1)
 
+    def test_rust_bridge_caches_record_index_and_refreshes_on_put_string(self) -> None:
+        old_env = {key: os.environ.get(key) for key in ("MATRIXARK_RUST_PROXY_STRING_CACHE",)}
+        os.environ["MATRIXARK_RUST_PROXY_STRING_CACHE"] = "1"
+        try:
+            client = mcp.MatrixArkRustCliClient(
+                cli_path="matrixark_rust_proxy",
+                metaserver="127.0.0.1:18000",
+                namespace="ns",
+                table="table",
+                request_timeout_ms=10000,
+                io_timeout_ms=10000,
+            )
+            calls: list[dict] = []
+
+            def fake_call_json(op: str, **kwargs):
+                calls.append({"op": op, **kwargs})
+                if op == "get_string":
+                    return {"ok": True, "value": '["old"]'}
+                return {"ok": True}
+
+            client._call_json = fake_call_json  # type: ignore[method-assign]
+            self.assertEqual(client.get_string("matrixark:test:record_index"), '["old"]')
+            self.assertEqual(client.get_string("matrixark:test:record_index"), '["old"]')
+            client.put_string("matrixark:test:record_index", '["new"]')
+            self.assertEqual(client.get_string("matrixark:test:record_index"), '["new"]')
+            snapshot = client.metrics_snapshot()
+        finally:
+            try:
+                client.close()  # type: ignore[name-defined]
+            except Exception:
+                pass
+            for key, value in old_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.assertEqual([call["op"] for call in calls], ["get_string", "put_string"])
+        self.assertEqual(snapshot["string_cache"]["misses_total"], 1)
+        self.assertEqual(snapshot["string_cache"]["hits_total"], 2)
+        self.assertEqual(snapshot["string_cache"]["updates_total"], 2)
+        self.assertEqual(snapshot["string_cache"]["scope"], "record_count_and_record_index_keys")
+
     def test_rust_bridge_caches_scan_hash_until_key_write(self) -> None:
         old_env = {
             key: os.environ.get(key)

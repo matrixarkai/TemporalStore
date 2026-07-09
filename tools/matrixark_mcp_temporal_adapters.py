@@ -4433,7 +4433,7 @@ class MatrixArkRustProxyClient:
                     "hits_total": self._string_cache_hits_total,
                     "misses_total": self._string_cache_misses_total,
                     "updates_total": self._string_cache_updates_total,
-                    "scope": "record_count_keys",
+                    "scope": "record_count_and_record_index_keys",
                 },
                 "scan_hash_cache": {
                     "enabled": self._scan_hash_cache_enabled,
@@ -4486,7 +4486,7 @@ class MatrixArkRustProxyClient:
         return str(response.get("value", ""))
 
     def _string_cache_key_allowed(self, key: str) -> bool:
-        return self._string_cache_enabled and str(key).endswith(":record_count")
+        return self._string_cache_enabled and str(key).endswith((":record_count", ":record_index"))
 
     def _string_cache_get(self, key: str) -> str | None:
         if not self._string_cache_key_allowed(key):
