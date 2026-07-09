@@ -2545,7 +2545,7 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
             "MATRIXARK_RUST_PROXY_ALLOW_ISOLATED_CLIENTS", ""
         ).strip().lower() in {"1", "true", "yes"}
         rust_proxy_lane_defaults = {
-            "MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS": "0",
+            "MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS": "1" if allow_isolated_rust_clients else "0",
         }
         if not allow_isolated_rust_clients:
             rust_proxy_lane_defaults["MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES"] = "1"

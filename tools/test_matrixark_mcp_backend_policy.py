@@ -694,10 +694,13 @@ class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
         source = (repo / "tools" / "run_matrixark_cpp_rust_scale_report.py").read_text()
         allow_start = source.index("MATRIXARK_RUST_PROXY_ALLOW_ISOLATED_CLIENTS")
         allow_body = source[allow_start : source.index("else:", allow_start)]
+        pin_start = source.index("rust_proxy_lane_defaults")
+        pin_body = source[pin_start : source.index("if not allow_isolated_rust_clients:", pin_start)]
 
         self.assertIn('os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS", "1")', allow_body)
         self.assertIn('os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES", "1")', allow_body)
         self.assertNotIn('os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES", "0")', allow_body)
+        self.assertIn('"MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS": "1" if allow_isolated_rust_clients else "0"', pin_body)
 
 
 class _NativeAppendClient:
