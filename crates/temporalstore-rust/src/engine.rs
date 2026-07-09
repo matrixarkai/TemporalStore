@@ -11268,7 +11268,7 @@ fn sync_slot_index_object_pages(
     if lookup_enabled {
         shard
             .slot_index
-            .remove_object_page_lookup_entry(kind, object_key, None);
+            .remove_all_object_page_lookup_entries(kind, object_key);
     }
     for routing_slot in target_slots {
         let Some(slot) = shard.slot_index.slot_map.get_mut(&routing_slot) else {
