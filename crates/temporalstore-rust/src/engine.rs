@@ -14227,16 +14227,14 @@ impl CompactionRewriteStats {
 }
 
 fn page_memory_resident(cache: &MultiLayerCache, shard_id: ShardId, address: &PageAddress) -> bool {
-    cache
-        .get_memory(&CacheKey::page_with_slot_generation(
-            shard_id,
-            address.page_segment_id,
-            address.offset,
-            address.length,
-            address.routing_slot,
-            address.generation,
-        ))
-        .is_some()
+    cache.peek(&CacheKey::page_with_slot_generation(
+        shard_id,
+        address.page_segment_id,
+        address.offset,
+        address.length,
+        address.routing_slot,
+        address.generation,
+    ))
 }
 
 fn page_address_is_memory_only(address: &PageAddress) -> bool {
