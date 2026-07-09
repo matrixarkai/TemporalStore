@@ -1492,7 +1492,7 @@ impl TemporalEngine {
         let mut unreadable_page_refs = 0usize;
         let mut unreadable_page_bytes = 0u64;
         for entry in live_page_entries {
-            if self.page_store.read(&entry.address).is_err() {
+            if self.page_store.read_cold(&entry.address).is_err() {
                 unreadable_page_refs = unreadable_page_refs.saturating_add(1);
                 unreadable_page_bytes = unreadable_page_bytes.saturating_add(entry.address.length);
             }
@@ -1560,7 +1560,7 @@ impl TemporalEngine {
                         self.routing_slot_for_key(manifest.shard_id, &entry.object_key)
                     });
                     if manifest_slots.is_empty() || manifest_slots.contains(&routing_slot) {
-                        if self.page_store.read(&entry.address).is_err() {
+                        if self.page_store.read_cold(&entry.address).is_err() {
                             unreadable_page_ref_count = unreadable_page_ref_count.saturating_add(1);
                             unreadable_page_bytes =
                                 unreadable_page_bytes.saturating_add(entry.address.length);
@@ -6508,8 +6508,10 @@ impl TemporalEngine {
                 storage_zone_used_bytes: page_store_zones.live_physical_bytes,
                 storage_zone_stale_bytes: page_store_zones.reclaimable_physical_bytes,
                 page_reads: page_store.reads,
+                cold_scan_no_cache_reads: page_store.cold_reads,
                 page_writes: page_store.writes,
                 block_reads: page_store.reads,
+                cold_block_reads: page_store.cold_reads,
                 block_writes: page_store.writes,
                 bytes_read: page_store.bytes_read,
                 bytes_written: page_store.bytes_written,
@@ -11881,7 +11883,7 @@ fn reconcile_secondary_views_from_slot_index(page_store: &LocalPageStore, shard:
             }
             "risk" => {
                 saw_risk = true;
-                if let Ok(bytes) = page_store.read(&entry.address) {
+                if let Ok(bytes) = page_store.read_cold(&entry.address) {
                     if let Ok(series) = serde_json::from_slice::<BTreeMap<u64, i64>>(&bytes) {
                         risk.insert(entry.object_key.clone(), series);
                     }
@@ -12025,7 +12027,7 @@ fn insert_timestamped_secondary_view(
     address: PageAddress,
 ) {
     let timestamps = page_store
-        .read(&address)
+        .read_cold(&address)
         .ok()
         .and_then(|bytes| match decode_feature_page_strict(&bytes) {
             PackedFeaturePageDecode::Packed(points) => Some(
@@ -12896,7 +12898,7 @@ fn storage_feature_page_layout_report(
 
         for (address, indexed_timestamps) in timestamps_by_address {
             inspected_addresses.insert(address.clone());
-            match page_store.read(&address) {
+            match page_store.read_cold(&address) {
                 Ok(bytes) => match decode_feature_page_strict(&bytes) {
                     PackedFeaturePageDecode::Packed(points) => {
                         report.packed_timestamped_pages =
@@ -13017,7 +13019,7 @@ fn storage_feature_page_layout_report(
         if entry.kind == "feature" {
             report.unique_feature_page_refs = report.unique_feature_page_refs.saturating_add(1);
         }
-        match page_store.read(&entry.address) {
+        match page_store.read_cold(&entry.address) {
             Ok(bytes) => match decode_feature_page_strict(&bytes) {
                 PackedFeaturePageDecode::Packed(points) => {
                     report.packed_timestamped_pages =
@@ -13904,7 +13906,7 @@ fn read_page_bytes(
 }
 
 fn read_page_bytes_cold(page_store: &LocalPageStore, address: &PageAddress) -> Option<Vec<u8>> {
-    page_store.read(address).ok()
+    page_store.read_cold(address).ok()
 }
 
 fn dedupe_nonzero_u64_preserve_order(values: Vec<u64>) -> Vec<u64> {

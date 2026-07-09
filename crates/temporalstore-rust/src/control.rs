@@ -170,8 +170,12 @@ pub struct ShardCanonicalStorageStats {
     pub storage_zone_used_bytes: u64,
     pub storage_zone_stale_bytes: u64,
     pub page_reads: u64,
+    #[serde(default)]
+    pub cold_scan_no_cache_reads: u64,
     pub page_writes: u64,
     pub block_reads: u64,
+    #[serde(default)]
+    pub cold_block_reads: u64,
     pub block_writes: u64,
     pub bytes_read: u64,
     pub bytes_written: u64,
