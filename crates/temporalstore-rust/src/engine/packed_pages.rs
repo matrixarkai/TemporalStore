@@ -7,7 +7,7 @@ use rustmtcache::{CacheKey, MultiLayerCache};
 
 use super::constants::{FEATURE_PAGE_MAGIC, HOT_PAGE_OFFSET, HOT_PAGE_SEGMENT_ID};
 use super::state::{PackedFeaturePage, PackedFeaturePageDecode};
-use super::{read_page_bytes, read_page_bytes_cold, stable_page_object_id};
+use super::{read_page_bytes, read_page_bytes_batch, read_page_bytes_cold, stable_page_object_id};
 use crate::storage_config::{cold_scan_no_cache_fill, context_page_target_bytes};
 
 const COLD_SCAN_PACKED_PAGE_CACHE_LIMIT: usize = 128;
@@ -336,42 +336,37 @@ pub(super) fn read_feature_point_cache_fill_scan_cached(
     }
 }
 
-pub(super) fn read_feature_point_cached(
+pub(super) fn read_feature_points_cached_batch(
     cache: &MultiLayerCache,
     block_store: &LocalBlockStore,
     shard_id: ShardId,
-    timestamp_ms: u64,
-    address: &BlockAddress,
-    packed_page_cache: &mut HashMap<BlockAddress, Option<Vec<FeaturePoint>>>,
-) -> Option<FeaturePoint> {
-    if let Some(points) = packed_page_cache.get(address) {
-        return points
-            .as_ref()
-            .and_then(|points| {
-                points
-                    .iter()
-                    .find(|point| point.timestamp_ms == timestamp_ms)
-            })
-            .cloned();
-    }
+    refs: &[(u64, BlockAddress)],
+) -> Vec<FeaturePoint> {
+    let addresses = refs
+        .iter()
+        .map(|(_, address)| Some(address.clone()))
+        .collect::<Vec<_>>();
+    let page_bytes = read_page_bytes_batch(cache, block_store, shard_id, &addresses);
+    let mut decoded_pages = HashMap::<BlockAddress, PackedFeaturePageDecode>::new();
 
-    let bytes = read_page_bytes(cache, block_store, shard_id, address)?;
-    match decode_feature_page_strict(&bytes) {
-        PackedFeaturePageDecode::Packed(points) => {
-            let selected = points
-                .iter()
-                .find(|point| point.timestamp_ms == timestamp_ms)
-                .cloned();
-            packed_page_cache.insert(address.clone(), Some(points));
-            selected
-        }
-        PackedFeaturePageDecode::Legacy => Some(FeaturePoint {
-            timestamp_ms,
-            value: bytes,
-        }),
-        PackedFeaturePageDecode::Corrupt(_) => {
-            packed_page_cache.insert(address.clone(), None);
-            None
-        }
-    }
+    refs.iter()
+        .zip(page_bytes)
+        .filter_map(|((timestamp_ms, address), bytes)| {
+            let bytes = bytes?;
+            let decoded = decoded_pages
+                .entry(address.clone())
+                .or_insert_with(|| decode_feature_page_strict(&bytes));
+            match decoded {
+                PackedFeaturePageDecode::Packed(points) => points
+                    .iter()
+                    .find(|point| point.timestamp_ms == *timestamp_ms)
+                    .cloned(),
+                PackedFeaturePageDecode::Legacy => Some(FeaturePoint {
+                    timestamp_ms: *timestamp_ms,
+                    value: bytes,
+                }),
+                PackedFeaturePageDecode::Corrupt(_) => None,
+            }
+        })
+        .collect()
 }
