@@ -14298,25 +14298,51 @@ fn compact_feature_page_addresses(
     rewrite_stats: &mut CompactionRewriteStats,
 ) -> Result<(), Status> {
     let unique_addresses = unique_feature_page_addresses(series);
-    let mut rewritten = HashMap::<PageAddress, PageAddress>::new();
-    let mut rewritten_old_addresses = Vec::new();
-    for old_address in unique_addresses {
-        if page_address_is_memory_only(&old_address) {
-            continue;
-        }
-        let cold_page = !page_memory_resident(cache, shard_id, &old_address);
-        let bytes = read_page_bytes_cold(page_store, &old_address).ok_or_else(|| {
+    let compactable_addresses = unique_addresses
+        .into_iter()
+        .filter(|address| !page_address_is_memory_only(address))
+        .collect::<Vec<_>>();
+    let cold_pages = compactable_addresses
+        .iter()
+        .map(|address| !page_memory_resident(cache, shard_id, address))
+        .collect::<Vec<_>>();
+    let page_reads = page_store.read_cold_batch(&compactable_addresses);
+    let mut rewrite_inputs = Vec::with_capacity(compactable_addresses.len());
+    for ((old_address, cold_page), read_result) in compactable_addresses
+        .into_iter()
+        .zip(cold_pages.into_iter())
+        .zip(page_reads)
+    {
+        let bytes = read_result.map_err(|_| {
             Status::error(
                 "page_compaction_failed",
                 "missing feature page bytes during compaction",
             )
         })?;
-        let new_address = page_store
-            .append_with_page_metadata(&bytes, old_address.object_id, old_address.routing_slot)
-            .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
+        rewrite_inputs.push((old_address, cold_page, bytes));
+    }
+    let append_records = rewrite_inputs
+        .iter()
+        .map(|(old_address, _, bytes)| {
+            (
+                bytes.clone(),
+                old_address.object_id,
+                old_address.routing_slot,
+            )
+        })
+        .collect::<Vec<BlockAppendRecord>>();
+    let new_addresses = page_store
+        .append_batch_with_page_metadata(append_records)
+        .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
+    let mut rewritten = HashMap::<PageAddress, PageAddress>::new();
+    let mut rewritten_old_addresses = Vec::new();
+    let mut hot_refills = Vec::new();
+    for ((old_address, cold_page, bytes), new_address) in
+        rewrite_inputs.into_iter().zip(new_addresses)
+    {
         rewritten_old_addresses.push(old_address.clone());
         if !cold_page {
-            let _ = cache.put(
+            hot_refills.push((
                 CacheKey::page_with_slot_generation(
                     shard_id,
                     new_address.page_segment_id,
@@ -14326,10 +14352,13 @@ fn compact_feature_page_addresses(
                     new_address.generation,
                 ),
                 bytes,
-            );
+            ));
         }
         rewritten.insert(old_address, new_address);
         rewrite_stats.record(model_id, cold_page);
+    }
+    if !hot_refills.is_empty() {
+        let _ = cache.put_batch(hot_refills);
     }
     invalidate_page_addresses(cache, shard_id, rewritten_old_addresses);
     for address in series.values_mut() {
