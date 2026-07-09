@@ -8,6 +8,9 @@ use super::constants::FEATURE_PAGE_MAGIC;
 use super::state::{PackedFeaturePage, PackedFeaturePageDecode};
 use super::{append_value, read_page_bytes, read_page_bytes_cold, stable_page_object_id};
 use crate::storage_config::{cold_scan_no_cache_fill, context_page_target_bytes};
+
+const COLD_SCAN_PACKED_PAGE_CACHE_LIMIT: usize = 128;
+
 pub(super) fn sorted_feature_points(mut points: Vec<FeaturePoint>) -> Vec<FeaturePoint> {
     if points
         .windows(2)
@@ -227,6 +230,9 @@ pub(super) fn read_feature_point_cold_scan_cached(
                 .iter()
                 .find(|point| point.timestamp_ms == timestamp_ms)
                 .cloned();
+            if packed_page_cache.len() >= COLD_SCAN_PACKED_PAGE_CACHE_LIMIT {
+                packed_page_cache.clear();
+            }
             packed_page_cache.insert(address.clone(), Some(points));
             selected
         }
@@ -235,6 +241,9 @@ pub(super) fn read_feature_point_cold_scan_cached(
             value: bytes,
         }),
         PackedFeaturePageDecode::Corrupt(_) => {
+            if packed_page_cache.len() >= COLD_SCAN_PACKED_PAGE_CACHE_LIMIT {
+                packed_page_cache.clear();
+            }
             packed_page_cache.insert(address.clone(), None);
             None
         }
