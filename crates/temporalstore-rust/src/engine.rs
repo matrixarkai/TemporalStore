@@ -4625,6 +4625,7 @@ impl TemporalEngine {
         let Some(shard) = shards.get(&shard_id) else {
             return report;
         };
+        let mut selected_entries = Vec::new();
         for entry in collect_live_page_entries(shard) {
             let routing_slot = entry
                 .address
@@ -4643,25 +4644,51 @@ impl TemporalEngine {
                 entry.address.routing_slot,
                 entry.address.generation,
             );
-            if self.cache.get(&key).ok().flatten().is_some() {
+            selected_entries.push((key, entry.address));
+        }
+        let keys = selected_entries
+            .iter()
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        let cached = self
+            .cache
+            .get_batch(&keys)
+            .unwrap_or_else(|_| vec![None; keys.len()]);
+        let mut miss_entries = Vec::new();
+        for ((key, address), cached_value) in selected_entries.into_iter().zip(cached) {
+            if cached_value.is_some() {
                 report.already_cached_page_refs = report.already_cached_page_refs.saturating_add(1);
                 report.warmed_page_refs = report.warmed_page_refs.saturating_add(1);
-            } else if let Ok(bytes) = self.page_store.read(&entry.address) {
+            } else {
+                miss_entries.push((key, address));
+            }
+        }
+        let miss_addresses = miss_entries
+            .iter()
+            .map(|(_, address)| address.clone())
+            .collect::<Vec<_>>();
+        let miss_reads = self.page_store.read_batch(&miss_addresses);
+        let mut refills = Vec::new();
+        let mut refill_page_refs = 0usize;
+        let mut refill_bytes = 0u64;
+        for ((key, _), read_result) in miss_entries.into_iter().zip(miss_reads) {
+            if let Ok(bytes) = read_result {
                 report.page_store_reads = report.page_store_reads.saturating_add(1);
                 report.block_store_reads = report.block_store_reads.saturating_add(1);
                 let byte_len = bytes.len() as u64;
-                match self.cache.put(key, bytes) {
-                    Ok(()) => {
-                        report.warmed_page_refs = report.warmed_page_refs.saturating_add(1);
-                        report.warmed_bytes = report.warmed_bytes.saturating_add(byte_len);
-                    }
-                    Err(_) => {
-                        report.failed_page_refs = report.failed_page_refs.saturating_add(1);
-                    }
-                }
+                report.warmed_page_refs = report.warmed_page_refs.saturating_add(1);
+                report.warmed_bytes = report.warmed_bytes.saturating_add(byte_len);
+                refill_page_refs = refill_page_refs.saturating_add(1);
+                refill_bytes = refill_bytes.saturating_add(byte_len);
+                refills.push((key, bytes));
             } else {
                 report.failed_page_refs = report.failed_page_refs.saturating_add(1);
             }
+        }
+        if !refills.is_empty() && self.cache.put_batch(refills).is_err() {
+            report.failed_page_refs = report.failed_page_refs.saturating_add(refill_page_refs);
+            report.warmed_page_refs = report.already_cached_page_refs;
+            report.warmed_bytes = report.warmed_bytes.saturating_sub(refill_bytes);
         }
         report
     }
