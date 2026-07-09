@@ -1642,6 +1642,26 @@ struct QueryListPartitionResponse {
 }
 
 #[derive(Debug, serde::Deserialize)]
+struct QueryLeaderRequest {
+    #[serde(default)]
+    cluster_name: String,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct QueryLeaderEndpoint {
+    ip4: String,
+    port: u32,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct QueryLeaderResponse {
+    status: Status,
+    is_leader: bool,
+    leader: Option<QueryLeaderEndpoint>,
+    leader_id: Option<RaftNodeId>,
+}
+
+#[derive(Debug, serde::Deserialize)]
 struct QueryListServerPartitionRequest {
     #[serde(default)]
     read_stale: bool,
@@ -1965,6 +1985,12 @@ fn handle_manage_service_route(
 
 fn handle_query_service_route(meta: &MetaBackend, request: &HttpRequest) -> Option<(u16, Vec<u8>)> {
     let response = match (request.method.as_str(), request.path.as_str()) {
+        ("GET", "/QueryService/QueryLeader") => json_response(200, &query_leader(meta, None)),
+        ("POST", "/QueryService/QueryLeader") => {
+            parse_or(&request.body, |req: QueryLeaderRequest| {
+                query_leader(meta, Some(req))
+            })
+        }
         ("GET", "/QueryService/QueryManageInfo") | ("POST", "/QueryService/QueryManageInfo") => {
             json_response(200, &backend_call!(meta, info))
         }
@@ -1997,6 +2023,39 @@ fn handle_query_service_route(meta: &MetaBackend, request: &HttpRequest) -> Opti
         _ => return None,
     };
     Some(response)
+}
+
+fn query_leader(meta: &MetaBackend, req: Option<QueryLeaderRequest>) -> QueryLeaderResponse {
+    if let Some(req) = req {
+        let _ = req.cluster_name;
+    }
+    match meta {
+        MetaBackend::Single(_) => QueryLeaderResponse {
+            status: Status::ok(),
+            is_leader: true,
+            leader: None,
+            leader_id: None,
+        },
+        MetaBackend::Raft(runtime) => {
+            let status = runtime.status();
+            let leader_id = status.leader_id;
+            QueryLeaderResponse {
+                status: Status::ok(),
+                is_leader: leader_id == runtime.local_node_id(),
+                leader: runtime.node_addr(leader_id).and_then(query_leader_endpoint),
+                leader_id: Some(leader_id),
+            }
+        }
+    }
+}
+
+fn query_leader_endpoint(addr: &str) -> Option<QueryLeaderEndpoint> {
+    let (host, port) = addr.rsplit_once(':')?;
+    let port = port.parse().ok()?;
+    Some(QueryLeaderEndpoint {
+        ip4: host.to_string(),
+        port,
+    })
 }
 
 fn query_list_partition(
