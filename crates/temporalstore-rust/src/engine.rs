@@ -9431,6 +9431,7 @@ fn execute_on_shard(
                 );
                 let mut seen_for_predicate = HashMap::new();
                 let existing_candidates = candidate_refs.as_ref();
+                let expected_candidate_count = existing_candidates.map(HashMap::len);
                 if let Some(series) = shard.context_indexes.get(&object_key) {
                     let mut batch = Vec::with_capacity(64);
                     let mut drain_batch =
@@ -9458,6 +9459,11 @@ fn execute_on_shard(
                                 if seen_for_predicate.insert(key, index_ref).is_some() {
                                     *deduped_ref_count += 1;
                                 }
+                                if expected_candidate_count
+                                    .is_some_and(|expected| seen_for_predicate.len() >= expected)
+                                {
+                                    break;
+                                }
                             }
                         };
                     for (timeline_key, address) in series.range(
@@ -9472,6 +9478,11 @@ fn execute_on_shard(
                                 &mut scanned_ref_count,
                                 &mut deduped_ref_count,
                             );
+                            if expected_candidate_count
+                                .is_some_and(|expected| seen_for_predicate.len() >= expected)
+                            {
+                                break;
+                            }
                         }
                     }
                     if !batch.is_empty() {
