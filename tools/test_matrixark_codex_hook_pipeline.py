@@ -100,13 +100,61 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("context_event", record_types)
             self.assertIn("context_embedding", record_types)
             self.assertIn("context_index", record_types)
-            self.assertIn("session_buffer_event", record_types)
+            self.assertNotIn("session_buffer_event", record_types)
             self.assertIn("context_summary_dirty", record_types)
             index_records = [record for record in records if record.get("record_type") == "context_index"]
             self.assertTrue(index_records)
             self.assertTrue(all("timestamp_key_ms" in record for record in index_records))
             self.assertTrue(all(isinstance(record.get("ref_hashes"), list) for record in index_records))
             self.assertTrue(all("index_hash" not in record for record in index_records))
+
+    def test_message_ingest_writes_session_buffer_only_when_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            event_log = Path(tmp_dir) / "matrixark-message-session-buffer.jsonl"
+            adapter = CountingLocalAdapter(event_log)
+            server = MatrixArkMcpServer(adapter, line_json=True, access_mode="dev")
+            result = server.call_tool(
+                "matrixark_ingest",
+                {
+                    "messages": [{"role": "user", "content": "Batch this session message explicitly."}],
+                    "scope": {
+                        "account_id": "acct_batch",
+                        "tenant_id": "tenant_batch",
+                        "user_id": "user_batch",
+                        "session_id": "session_batch",
+                    },
+                    "metadata": {"node_path": ["tenant:tenant_batch", "user:user_batch", "session:session_batch"]},
+                    "session_buffer_enabled": True,
+                },
+            )
+            self.assertEqual("accepted", result["status"])
+            self.assertTrue(result["session_buffer"]["enabled"])
+            records = adapter.read_all()
+            self.assertTrue(any(record.get("record_type") == "session_buffer_event" for record in records))
+
+    def test_message_ingest_does_not_buffer_session_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            event_log = Path(tmp_dir) / "matrixark-message-no-session-buffer.jsonl"
+            adapter = CountingLocalAdapter(event_log)
+            server = MatrixArkMcpServer(adapter, line_json=True, access_mode="dev")
+            result = server.call_tool(
+                "matrixark_ingest",
+                {
+                    "messages": [{"role": "user", "content": "Handle this message immediately."}],
+                    "scope": {
+                        "account_id": "acct_immediate",
+                        "tenant_id": "tenant_immediate",
+                        "user_id": "user_immediate",
+                        "session_id": "session_immediate",
+                    },
+                    "metadata": {"node_path": ["tenant:tenant_immediate", "user:user_immediate", "session:session_immediate"]},
+                },
+            )
+            self.assertEqual("accepted", result["status"])
+            self.assertFalse(result["session_buffer"]["enabled"])
+            records = adapter.read_all()
+            self.assertTrue(any(record.get("record_type") == "context_event" for record in records))
+            self.assertFalse(any(record.get("record_type") == "session_buffer_event" for record in records))
 
     def test_batch_extract_events_are_timestamp_keyed_under_segment_parent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

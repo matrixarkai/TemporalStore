@@ -693,6 +693,9 @@ class MatrixArkLocalAdapter:
             }
         )
 
+    def session_buffer_enabled(self, args: Json) -> bool:
+        return bool(args.get("session_buffer_enabled", False) or args.get("auto_batch_extract", False))
+
     def default_session_node_path(self, scope: Json) -> list[str]:
         tenant_id = str(scope.get("tenant_id") or "tenant_local_agent")
         user_id = str(scope.get("user_id") or local_account_user_id())
@@ -2299,7 +2302,8 @@ class MatrixArkLocalAdapter:
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
-                self.append_session_buffer_event(envelope=envelope, event_id_hash=event_id_hash, node_hash=node_hash, node_path=node_path, hook=hook)
+                if self.session_buffer_enabled(args):
+                    self.append_session_buffer_event(envelope=envelope, event_id_hash=event_id_hash, node_hash=node_hash, node_path=node_path, hook=hook)
                 self.append(
                     {
                         "record_type": "matrixark_async_pipeline_task",
@@ -2315,7 +2319,8 @@ class MatrixArkLocalAdapter:
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
-            pending_event_count = len(self.pending_session_events(envelope["scope"]))
+            session_buffer_enabled = self.session_buffer_enabled(args)
+            pending_event_count = len(self.pending_session_events(envelope["scope"])) if session_buffer_enabled else 0
             return {
                 "status": "accepted",
                 "sync_write_mode": "lightweight_event",
@@ -2334,6 +2339,7 @@ class MatrixArkLocalAdapter:
                 },
                 "node_materialization": node_materialization,
                 "session_buffer": {
+                    "enabled": session_buffer_enabled,
                     "buffer_key": list(session_buffer_key(envelope)),
                     "pending_event_count": pending_event_count,
                     "threshold_messages": args.get("session_buffer_threshold", 20),
@@ -3309,7 +3315,8 @@ class MatrixArkLocalAdapter:
                 )
             if event_index_records:
                 self.append_many(event_index_records)
-            self.append_session_buffer_event(envelope=envelope, event_id_hash=event_id_hash, node_hash=node_hash, node_path=node_path, hook=hook)
+            if self.session_buffer_enabled(args):
+                self.append_session_buffer_event(envelope=envelope, event_id_hash=event_id_hash, node_hash=node_hash, node_path=node_path, hook=hook)
             summary_refresh = self.append_node_summary_embeddings(
                 node_path=node_path,
                 source_text=text,
@@ -3318,7 +3325,8 @@ class MatrixArkLocalAdapter:
                 source_hash_field="source_event_hash",
                 source_hash=event_id_hash,
             )
-        pending_event_count = len(self.pending_session_events(envelope["scope"]))
+        session_buffer_enabled = self.session_buffer_enabled(args)
+        pending_event_count = len(self.pending_session_events(envelope["scope"])) if session_buffer_enabled else 0
         auto_batch_result: Json | None = None
         auto_batch_extract = bool(args.get("auto_batch_extract", False))
         session_buffer_threshold = args.get("session_buffer_threshold", 20)
@@ -3413,6 +3421,7 @@ class MatrixArkLocalAdapter:
             "resource_index_cap_per_fact": MAX_INDEX_TERMS_PER_RESOURCE_FACT,
             "skill_hash": skill_hash,
             "session_buffer": {
+                "enabled": session_buffer_enabled,
                 "buffer_key": list(session_buffer_key(envelope)),
                 "pending_event_count": pending_event_count,
                 "threshold_messages": session_buffer_threshold,
