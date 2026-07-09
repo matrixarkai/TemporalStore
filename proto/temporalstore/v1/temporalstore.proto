@@ -265,6 +265,8 @@ message Command {
     RiskFolQuery risk_fol_query = 41;
     RiskManager risk_manager = 42;
     RiskDebug risk_debug = 43;
+    ContextWriteEvent context_write_event = 44;
+    ContextQueryEvents context_query_events = 45;
   }
 }
 
@@ -548,6 +550,38 @@ message ContextNode {
   string model = 2;
   bytes payload = 3;
   uint64 updated_at_ms = 4;
+}
+
+message ContextEvent {
+  uint64 event_id_hash = 1;
+  uint64 event_time_ms = 2;
+  uint64 ingestion_time_ms = 3;
+  uint32 event_type = 4;
+  float confidence = 5;
+  float importance = 6;
+  string text = 7;
+}
+
+message ContextWriteEvent {
+  string key = 1;
+  string node_id = 2;
+  ContextEvent event = 3;
+  bool first_write_only = 4;
+  bool cold_storage = 5;
+}
+
+message ContextQueryEvents {
+  string key = 1;
+  string node_id = 2;
+  uint64 start_time_ms = 3;
+  uint64 end_time_ms = 4;
+  uint32 limit = 5;
+  bool current_valid_only = 6;
+  uint64 as_of_ms = 7;
+  repeated uint32 kinds = 8;
+  repeated uint32 statuses = 9;
+  float min_confidence = 10;
+  float min_importance = 11;
 }
 
 message ContextNodeUpsert {
