@@ -266,6 +266,15 @@ pub(super) fn logical_range_from_segment(
                 "payload length mismatch".to_string(),
             ));
         }
+        let logical_end = logical_offset.saturating_add(header.payload_len);
+        if logical_end <= requested_start {
+            physical_offset = physical_offset.saturating_add(record_len);
+            logical_offset = logical_end;
+            continue;
+        }
+        if logical_offset >= requested_end {
+            break;
+        }
         let address = BlockAddress {
             length: record_len as u64,
             page_id: header.page_id,
@@ -285,7 +294,6 @@ pub(super) fn logical_range_from_segment(
             compressed_records_read += 1;
         }
 
-        let logical_end = logical_offset.saturating_add(header.payload_len);
         let overlap_start = requested_start.max(logical_offset);
         let overlap_end = requested_end.min(logical_end);
         if overlap_start < overlap_end {
