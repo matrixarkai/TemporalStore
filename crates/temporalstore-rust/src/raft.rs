@@ -3037,6 +3037,18 @@ impl ProductionMetaRaftRuntime {
         self.cluster.status()
     }
 
+    pub fn local_node_id(&self) -> RaftNodeId {
+        self.options.local_node_id
+    }
+
+    pub fn node_addr(&self, node_id: RaftNodeId) -> Option<&str> {
+        self.options
+            .nodes
+            .iter()
+            .find(|node| node.node_id == node_id)
+            .map(|node| node.addr.as_str())
+    }
+
     pub fn validate_ready(&self) -> Result<(), RaftError> {
         self.options.validate()?;
         let status = self.status();
