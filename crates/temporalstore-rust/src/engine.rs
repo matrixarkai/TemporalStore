@@ -7432,14 +7432,11 @@ fn execute_on_shard(
                 };
             }
             let hash_fields = shard.hashes.get(&key);
-            let values = fields
+            let addresses = fields
                 .iter()
-                .map(|field| {
-                    hash_fields
-                        .and_then(|entries| entries.get(field))
-                        .and_then(|address| read_page_bytes(cache, page_store, shard_id, address))
-                })
-                .collect();
+                .map(|field| hash_fields.and_then(|entries| entries.get(field)).cloned())
+                .collect::<Vec<_>>();
+            let values = read_page_bytes_batch(cache, page_store, shard_id, &addresses);
             CommandResponse::Values { values }
         }
         Command::HashMultiSet { key, entries } => {
@@ -14481,6 +14478,48 @@ fn read_page_bytes(
     let bytes = page_store.read(address).ok()?;
     let _ = cache.put(cache_key, bytes.clone());
     Some(bytes)
+}
+
+fn read_page_bytes_batch(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    addresses: &[Option<PageAddress>],
+) -> Vec<Option<Vec<u8>>> {
+    let mut values = vec![None; addresses.len()];
+    let mut lookup = Vec::new();
+    let mut keys = Vec::new();
+    for (index, address) in addresses.iter().enumerate() {
+        let Some(address) = address else {
+            continue;
+        };
+        let key = page_address_cache_key(shard_id, address);
+        lookup.push((index, address.clone(), key.clone()));
+        keys.push(key);
+    }
+    if lookup.is_empty() {
+        return values;
+    }
+
+    let cached = cache
+        .get_batch(&keys)
+        .unwrap_or_else(|_| vec![None; keys.len()]);
+    let mut refills = Vec::new();
+    for ((index, address, key), cached_value) in lookup.into_iter().zip(cached.into_iter()) {
+        if let Some(bytes) = cached_value {
+            values[index] = Some(bytes);
+            continue;
+        }
+        let Some(bytes) = page_store.read(&address).ok() else {
+            continue;
+        };
+        values[index] = Some(bytes.clone());
+        refills.push((key, bytes));
+    }
+    if !refills.is_empty() {
+        let _ = cache.put_batch(refills);
+    }
+    values
 }
 
 fn read_page_bytes_cold(page_store: &LocalPageStore, address: &PageAddress) -> Option<Vec<u8>> {
