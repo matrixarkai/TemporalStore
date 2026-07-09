@@ -36,24 +36,37 @@ pub trait TemporalStoreSdkExecutor: Send + Sync + 'static {
         types::BatchExecuteResponse { status, responses }
     }
 
-    fn open_table_sdk(&self, _request: v1::OpenTableRequest) -> v1::OpenTableResponse {
+    fn open_table_sdk(&self, request: v1::OpenTableRequest) -> v1::OpenTableResponse {
         v1::OpenTableResponse {
-            status: Some(error_status(
-                "not_implemented",
-                "open_table tonic adapter is not wired to metaserver yet",
+            status: Some(types_status_to_sdk(types::Status::ok())),
+            topology: Some(local_sdk_topology(
+                request.namespace_name,
+                request.table_name,
+                request.local_location,
             )),
-            topology: None,
         }
     }
 
-    fn sync_topology_sdk(&self, _request: v1::SyncTopologyRequest) -> v1::SyncTopologyResponse {
+    fn sync_topology_sdk(&self, request: v1::SyncTopologyRequest) -> v1::SyncTopologyResponse {
+        let mut topologies = Vec::new();
+        let mut failures = Vec::new();
+        for key in request.table_keys {
+            match split_table_key(&key) {
+                Some((namespace, table_name)) => {
+                    topologies.push(local_sdk_topology(namespace, table_name, String::new()));
+                }
+                None => failures.push(format!("{key}:invalid_table_key")),
+            }
+        }
+        let status = if failures.is_empty() {
+            types::Status::ok()
+        } else {
+            types::Status::error("partial_sync_topology", failures.join(","))
+        };
         v1::SyncTopologyResponse {
-            status: Some(error_status(
-                "not_implemented",
-                "sync_topology tonic adapter is not wired to metaserver yet",
-            )),
-            topologies: Vec::new(),
-            topology_version: 0,
+            status: Some(types_status_to_sdk(status)),
+            topologies,
+            topology_version: 1,
         }
     }
 
@@ -551,10 +564,6 @@ fn types_status_to_sdk(status: types::Status) -> v1::Status {
     }
 }
 
-fn error_status(code: impl Into<String>, message: impl Into<String>) -> v1::Status {
-    types_status_to_sdk(types::Status::error(code, message))
-}
-
 fn stable_hash(value: &str) -> u64 {
     crate::client::stable_key_hash(value)
 }
@@ -588,6 +597,34 @@ fn table_to_sdk_topology(
         drop_percent: options.drop_percent as u32,
         topology_version: cache.max_topology_version,
         shards,
+    }
+}
+
+fn local_sdk_topology(
+    namespace_name: String,
+    table_name: String,
+    local_location: String,
+) -> v1::TableTopology {
+    v1::TableTopology {
+        namespace_name,
+        table_name,
+        state: "serving".to_string(),
+        readonly: false,
+        write_disabled: false,
+        drop_percent: 0,
+        topology_version: 1,
+        shards: vec![v1::ShardTopology {
+            shard_id: 1,
+            primary: Some(v1::ServerEndpoint {
+                server_id: "local-engine".to_string(),
+                host: "local-engine".to_string(),
+                port: 0,
+                location: local_location,
+            }),
+            replicas: Vec::new(),
+            load_generation: 1,
+            lifecycle_state: "serving".to_string(),
+        }],
     }
 }
 
@@ -762,6 +799,45 @@ mod tests {
         assert!(response.status.expect("status").ok);
         assert_eq!(response.responses.len(), 2);
         assert_eq!(response.responses[1].value, b"batch");
+    }
+
+    #[tokio::test]
+    async fn tonic_adapter_exposes_engine_open_and_sync_topology_paths() {
+        let engine = TemporalEngine::new(MultiLayerCache::default());
+        let adapter = TemporalStoreTonicAdapter::new(engine);
+
+        let open = adapter
+            .open_table(Request::new(OpenTableRequest {
+                namespace_name: "local".to_string(),
+                table_name: "embedded".to_string(),
+                local_location: "dev-zone".to_string(),
+            }))
+            .await
+            .expect("open table")
+            .into_inner();
+        assert!(open.status.expect("open status").ok);
+        let topology = open.topology.expect("open topology");
+        assert_eq!(topology.namespace_name, "local");
+        assert_eq!(topology.table_name, "embedded");
+        assert_eq!(topology.topology_version, 1);
+        assert_eq!(
+            topology.shards[0].primary.as_ref().unwrap().location,
+            "dev-zone"
+        );
+
+        let sync = adapter
+            .sync_topology(Request::new(SyncTopologyRequest {
+                table_keys: vec!["local/embedded".to_string()],
+                min_topology_version: 0,
+                deadline_ms: 100,
+            }))
+            .await
+            .expect("sync topology")
+            .into_inner();
+        assert!(sync.status.expect("sync status").ok);
+        assert_eq!(sync.topologies.len(), 1);
+        assert_eq!(sync.topologies[0].namespace_name, "local");
+        assert_eq!(sync.topologies[0].table_name, "embedded");
     }
 
     #[tokio::test]
