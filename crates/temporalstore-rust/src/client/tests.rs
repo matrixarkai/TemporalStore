@@ -2341,11 +2341,32 @@ fn table_routes_keys_to_shards_and_pipeline_splits_batches() {
     assert!(stats.route_cache_hits > 0);
     assert!(stats.route_refreshes >= 2);
     assert_eq!(client.route_cache_size(), 2);
+    let other = client.open_table(
+        "ns",
+        "other",
+        TableOptions {
+            first_shard_id: 99,
+            ..TableOptions::default()
+        },
+    );
+    let mut other_route = CachedRoute::for_shard(99, "127.0.0.1:19999", "test_other_table");
+    other_route.table_key = table_combine_name("ns", "other");
+    client
+        .inner
+        .routes
+        .lock()
+        .expect("client route cache lock poisoned")
+        .insert(99, other_route);
+    assert_eq!(client.route_cache_size(), 3);
     client.close_table(&table).unwrap();
-    assert_eq!(client.route_cache_size(), 0);
+    assert_eq!(client.route_cache_size(), 1);
     assert!(client
         .cached_table("ns".to_string(), "tbl".to_string())
         .is_none());
+    assert!(client
+        .cached_table("ns".to_string(), "other".to_string())
+        .is_some());
+    assert_eq!(other.shard_id_for_key("other-key"), 99);
 }
 
 // shared-corpus: control_client_pipeline_batch_partial_timeout_contract
