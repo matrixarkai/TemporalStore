@@ -5505,19 +5505,18 @@ impl TemporalEngine {
             refresh_slot_runtime_flags(shard);
             let sync_canonical_log = !config.async_storage
                 || config.canonical_log_ack_policy == CanonicalLogAckPolicy::Durable;
-            for command in sync_wal_commands {
-                if let Err(error) =
-                    self.wal_store
-                        .append_with_sync(request.shard_id, command, sync_canonical_log)
-                {
-                    return BatchExecuteResponse {
-                        status: Status::error(
-                            "canonical_log_append_failed",
-                            format!("append canonical write-ahead log failed: {error}"),
-                        ),
-                        responses,
-                    };
-                }
+            if let Err(error) = self.wal_store.append_batch_with_sync(
+                request.shard_id,
+                sync_wal_commands,
+                sync_canonical_log,
+            ) {
+                return BatchExecuteResponse {
+                    status: Status::error(
+                        "canonical_log_append_failed",
+                        format!("append canonical write-ahead log failed: {error}"),
+                    ),
+                    responses,
+                };
             }
             if !config.async_storage {
                 let index_bytes = serialize_index(shard);
