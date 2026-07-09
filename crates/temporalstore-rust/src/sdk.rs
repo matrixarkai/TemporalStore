@@ -636,7 +636,8 @@ fn client_error_code(err: &ClientError) -> &'static str {
 mod tests {
     use tonic::Request;
 
-    use crate::{engine::TemporalEngine, MultiLayerCache};
+    use crate::engine::TemporalEngine;
+    use rustmtcache::MultiLayerCache;
 
     use super::v1::{
         temporal_store_service_client::TemporalStoreServiceClient,

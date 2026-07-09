@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
 
-use crate::cache::MultiLayerCache;
 use crate::engine::constants::*;
 use crate::page_store::LocalPageStore;
 use crate::page_store::PageAddress;
@@ -10,8 +9,9 @@ use crate::types::{
     ContextPackAudit, ContextSummary, ContextSummaryDirtyMarker, ContextTraversedNode, ContextWire,
     FeaturePoint, InternalContextIndex, ShardId, Status,
 };
+use rustmtcache::MultiLayerCache;
 
-use super::packed_pages::{read_feature_point, read_feature_point_cached};
+use super::packed_pages::{read_feature_point, read_feature_point_cached, read_feature_point_cold};
 use super::{read_page_bytes, stable_object_hash, ShardState};
 pub(super) fn context_node_key(tenant_hash: u64, node_hash: u64) -> String {
     format!("ctx:node:{tenant_hash}:{node_hash}")
@@ -159,6 +159,15 @@ pub(super) fn read_context_value<T: ContextWire>(
     address: &PageAddress,
 ) -> Option<T> {
     let point = read_feature_point(cache, page_store, shard_id, timeline_key, address)?;
+    context_from_bytes(&point.value)
+}
+
+pub(super) fn read_context_value_cold<T: ContextWire>(
+    page_store: &LocalPageStore,
+    timeline_key: u64,
+    address: &PageAddress,
+) -> Option<T> {
+    let point = read_feature_point_cold(page_store, timeline_key, address)?;
     context_from_bytes(&point.value)
 }
 

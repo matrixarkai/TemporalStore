@@ -2930,6 +2930,7 @@ impl TemporalStoreTable {
                 node_hash,
                 event,
                 first_write_only,
+                cold_storage: false,
             })?
             .response
         {

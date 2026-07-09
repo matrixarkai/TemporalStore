@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::cache::MultiLayerCache;
 use crate::page_store::{LocalPageStore, PageAddress};
 use crate::types::ShardId;
+use rustmtcache::MultiLayerCache;
 
 use super::read_page_bytes;
 use super::state::{

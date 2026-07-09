@@ -1448,6 +1448,8 @@ pub enum Command {
         event: ContextEvent,
         #[serde(default)]
         first_write_only: bool,
+        #[serde(default)]
+        cold_storage: bool,
     },
     ContextWriteExtractedEvent {
         tenant_hash: u64,
@@ -1457,6 +1459,8 @@ pub enum Command {
         indexes: ContextExtractedEventIndexes,
         #[serde(default)]
         first_write_only: bool,
+        #[serde(default)]
+        cold_storage: bool,
     },
     ContextQueryEvents {
         tenant_hash: u64,

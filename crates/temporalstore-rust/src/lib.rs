@@ -1,7 +1,6 @@
 #![doc = include_str!("../README.md")]
 
 pub mod block_store;
-pub mod cache;
 pub mod client;
 pub mod context_workflow;
 pub mod control;
@@ -59,7 +58,6 @@ pub use block_store::{
     BlockAddress, BlockStoreExtentDescriptor, BlockStoreExtentState, BlockStoreExtentSummary,
     BlockStoreOptions, BlockStoreSegmentReport, BlockStoreStats, LocalBlockStore,
 };
-pub use cache::{CacheEntryInfo, CacheGcReport, CacheKey, CacheStats, MultiLayerCache};
 pub use client::{
     crc64_jones, key_is_dropped_by_percent, shard_id_for_key, slot_id_for_key, stable_key_hash,
     ClientError, ClientOptions, ClientPreflightReport, ClientStats, RequestOptions, TableOptions,
@@ -228,6 +226,7 @@ pub use replica_replay::{
     ReplicaReplayOptions, ReplicaReplayReport, ReplicaReplayRequest, ReplicaReplayResponse,
     ReplicaStreamSource,
 };
+pub use rustmtcache::{CacheEntryInfo, CacheGcReport, CacheKey, CacheStats, MultiLayerCache};
 pub use shared_store::{
     ReplayReport, SharedStoreCheckpointManifest, SharedStoreFlushReport, SharedStoreGcReport,
     SharedStoreOplogEntry, SharedStoreOplogObject, SharedStorePageSegment, SharedStoreReplayCursor,
