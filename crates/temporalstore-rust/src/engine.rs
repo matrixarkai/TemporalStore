@@ -7121,11 +7121,13 @@ fn execute_on_shard(
         }
         Command::CommonExpire { key, ttl_ms } => {
             let expires_at = now_ms().saturating_add(ttl_ms);
-            for record_key in associated_record_keys(&key) {
-                if record_exists_exact(shard, &record_key) {
-                    shard.expires_at_ms.insert(record_key, expires_at);
+            visit_associated_record_keys(&key, |record_key| {
+                if record_exists_exact(shard, record_key) {
+                    shard
+                        .expires_at_ms
+                        .insert(record_key.to_string(), expires_at);
                 }
-            }
+            });
             mutated = true;
             invalidate_record_all(cache, shard_id, &key);
             CommandResponse::Empty
