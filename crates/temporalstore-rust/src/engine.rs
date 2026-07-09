@@ -13635,6 +13635,8 @@ fn invalidate_page_addresses_except(
         .into_iter()
         .filter(|address| !live_address_keys.contains(&page_physical_identity_key(address)))
         .map(|address| page_address_cache_key(shard_id, &address))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .collect::<Vec<_>>();
     if keys.is_empty() {
         return;
