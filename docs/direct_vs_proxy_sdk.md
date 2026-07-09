@@ -99,16 +99,29 @@ Endpoints:
 | `POST /ProxyService/HSet` | set hash field |
 | `POST /ProxyService/HGet` | get hash field |
 | `POST /ProxyService/HDel` | delete hash field |
+| `POST /ProxyService/HMSet` | set multiple hash fields |
+| `POST /ProxyService/HMGet` | get multiple hash fields |
+| `POST /ProxyService/HGetAll` | get all hash fields |
+| `POST /ProxyService/HLen` | count hash fields |
 | `POST /ProxyService/SAdd` | add set member |
 | `POST /ProxyService/SMembers` | list set members |
+| `POST /ProxyService/SRem` | remove set member |
+| `POST /ProxyService/Exists` | check object existence |
 | `POST /ProxyService/FeatureAdd` | add raw feature points |
 | `POST /ProxyService/FeatureQuery` | query raw feature points |
+| `POST /ProxyService/FeatureReplace` | replace raw feature points in a time range |
+| `POST /ProxyService/FeatureDelete` | delete raw feature points for a key |
+| `POST /ProxyService/FeatureAggQuery` | aggregate raw feature points |
 | `POST /ProxyService/SequenceAdd` | add typed sequence rows |
 | `POST /ProxyService/SequenceQuery` | query typed sequence rows |
 | `POST /ProxyService/IpsAdd` | add IPS instance |
 | `POST /ProxyService/IpsQueryLast` | query IPS last instances |
 | `POST /ProxyService/RiskIncrement` | increment risk counter |
 | `POST /ProxyService/RiskCount` | query risk window counter |
+| `POST /ProxyService/RiskHset` | set timestamped risk value |
+| `POST /ProxyService/RiskFolSet` | set first-or-last risk value |
+| `POST /ProxyService/RiskFolQuery` | query first-or-last risk value |
+| `POST /ProxyService/RiskManager` | query risk manager entries |
 
 ## Direct vs Proxy Tradeoff
 

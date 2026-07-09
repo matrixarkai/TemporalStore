@@ -75,6 +75,38 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
+  /ProxyService/HMGet:
+    post:
+      summary: Get multiple hash fields.
+      requestBody:
+        $ref: '#/components/requestBodies/HashMultiGet'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /ProxyService/HMSet:
+    post:
+      summary: Set multiple hash fields.
+      requestBody:
+        $ref: '#/components/requestBodies/HashMultiSet'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /ProxyService/HGetAll:
+    post:
+      summary: Get all hash fields.
+      requestBody:
+        $ref: '#/components/requestBodies/Key'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /ProxyService/HLen:
+    post:
+      summary: Count hash fields.
+      requestBody:
+        $ref: '#/components/requestBodies/Key'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
   /ProxyService/SAdd:
     post:
       summary: Add a set member.
@@ -86,6 +118,22 @@ paths:
   /ProxyService/SMembers:
     post:
       summary: List set members.
+      requestBody:
+        $ref: '#/components/requestBodies/Key'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /ProxyService/SRem:
+    post:
+      summary: Remove a set member.
+      requestBody:
+        $ref: '#/components/requestBodies/SetAdd'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /ProxyService/Exists:
+    post:
+      summary: Check whether an object exists.
       requestBody:
         $ref: '#/components/requestBodies/Key'
       responses:
@@ -104,6 +152,30 @@ paths:
       summary: Query raw timestamped feature points.
       requestBody:
         $ref: '#/components/requestBodies/FeatureQuery'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /ProxyService/FeatureReplace:
+    post:
+      summary: Replace raw timestamped feature points in a time range.
+      requestBody:
+        $ref: '#/components/requestBodies/FeatureReplace'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /ProxyService/FeatureDelete:
+    post:
+      summary: Delete raw feature points for a key.
+      requestBody:
+        $ref: '#/components/requestBodies/Key'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /ProxyService/FeatureAggQuery:
+    post:
+      summary: Aggregate raw timestamped feature points.
+      requestBody:
+        $ref: '#/components/requestBodies/FeatureAggregate'
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
@@ -152,6 +224,38 @@ paths:
       summary: Query a risk counter window.
       requestBody:
         $ref: '#/components/requestBodies/RiskCount'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /ProxyService/RiskHset:
+    post:
+      summary: Set a timestamped risk value.
+      requestBody:
+        $ref: '#/components/requestBodies/RiskHset'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /ProxyService/RiskFolSet:
+    post:
+      summary: Set first-or-last risk value.
+      requestBody:
+        $ref: '#/components/requestBodies/RiskFolSet'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /ProxyService/RiskFolQuery:
+    post:
+      summary: Query first-or-last risk value.
+      requestBody:
+        $ref: '#/components/requestBodies/Key'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /ProxyService/RiskManager:
+    post:
+      summary: Query risk manager entries.
+      requestBody:
+        $ref: '#/components/requestBodies/Key'
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
@@ -224,6 +328,18 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/HashFieldRequest'
+    HashMultiGet:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/HashMultiGetRequest'
+    HashMultiSet:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/HashMultiSetRequest'
     SetAdd:
       required: true
       content:
@@ -248,6 +364,18 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/FeatureQueryRequest'
+    FeatureReplace:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/FeatureReplaceRequest'
+    FeatureAggregate:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/FeatureAggregateRequest'
     IpsAdd:
       required: true
       content:
@@ -272,6 +400,18 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/RiskCountRequest'
+    RiskHset:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RiskHsetRequest'
+    RiskFolSet:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RiskFolSetRequest'
     MatrixArkAppendRecords:
       required: true
       content:
@@ -363,6 +503,34 @@ components:
           properties:
             field:
               type: string
+    HashMultiGetRequest:
+      allOf:
+        - $ref: '#/components/schemas/KeyRequest'
+        - type: object
+          required: [fields]
+          properties:
+            fields:
+              type: array
+              items:
+                type: string
+    HashEntry:
+      type: array
+      minItems: 2
+      maxItems: 2
+      items:
+        oneOf:
+          - type: string
+          - $ref: '#/components/schemas/ByteArray'
+    HashMultiSetRequest:
+      allOf:
+        - $ref: '#/components/schemas/KeyRequest'
+        - type: object
+          required: [entries]
+          properties:
+            entries:
+              type: array
+              items:
+                $ref: '#/components/schemas/HashEntry'
     SetAddRequest:
       allOf:
         - $ref: '#/components/schemas/KeyRequest'
@@ -448,6 +616,39 @@ components:
               type: array
               items:
                 $ref: '#/components/schemas/FeatureFilter'
+    FeatureReplaceRequest:
+      allOf:
+        - $ref: '#/components/schemas/KeyRequest'
+        - type: object
+          required: [start_ms, end_ms, points]
+          properties:
+            start_ms:
+              type: integer
+              format: int64
+            end_ms:
+              type: integer
+              format: int64
+            points:
+              type: array
+              items:
+                $ref: '#/components/schemas/FeaturePoint'
+    FeatureAggregateRequest:
+      allOf:
+        - $ref: '#/components/schemas/KeyRequest'
+        - type: object
+          required: [start_ms, end_ms, aggregator]
+          properties:
+            start_ms:
+              type: integer
+              format: int64
+            end_ms:
+              type: integer
+              format: int64
+            aggregator:
+              type: string
+            count:
+              type: integer
+              format: int64
     IpsFeatureStat:
       type: object
       required: [id, slot, has_slot, type, v1, v2]
@@ -529,6 +730,35 @@ components:
             end_ms:
               type: integer
               format: int64
+    RiskHsetRequest:
+      allOf:
+        - $ref: '#/components/schemas/KeyRequest'
+        - type: object
+          required: [timestamp_ms, amount]
+          properties:
+            timestamp_ms:
+              type: integer
+              format: int64
+            amount:
+              type: integer
+              format: int64
+    RiskFolSetRequest:
+      allOf:
+        - $ref: '#/components/schemas/KeyRequest'
+        - type: object
+          required: [value, occur_time_ms, ttl_ms, fol_type]
+          properties:
+            value:
+              $ref: '#/components/schemas/ByteArray'
+            occur_time_ms:
+              type: integer
+              format: int64
+            ttl_ms:
+              type: integer
+              format: int64
+            fol_type:
+              type: string
+              enum: [first, last]
     MatrixArkHashEntry:
       type: object
       required: [key, field, value]
