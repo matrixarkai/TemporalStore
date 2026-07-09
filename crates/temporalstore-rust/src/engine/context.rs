@@ -12,8 +12,7 @@ use crate::types::{
 use rustmtcache::MultiLayerCache;
 
 use super::packed_pages::{
-    decode_feature_page_strict, read_feature_point_cached,
-    read_feature_point_cold_with_cache_policy, ColdScanPackedPageCache,
+    decode_feature_page_strict, read_feature_point_cold_with_cache_policy, ColdScanPackedPageCache,
 };
 use super::state::PackedFeaturePageDecode;
 use super::{read_page_bytes, read_page_bytes_batch, stable_object_hash, ShardState};
@@ -115,14 +114,16 @@ pub(super) fn context_event_timeline_key_for_write(
         let Some(address) = series.get(&timeline_key) else {
             return Some(timeline_key);
         };
-        if let Some(existing) = read_context_value_cached::<ContextEvent>(
+        if let Some(existing) = read_context_values_cached_with_page_cache::<ContextEvent>(
             cache,
             page_store,
             shard_id,
-            timeline_key,
-            address,
+            vec![(timeline_key, address.clone())],
             &mut page_cache,
-        ) {
+        )
+        .into_iter()
+        .next()
+        {
             if existing.event_id_hash == event.event_id_hash {
                 return if first_write_only {
                     None
@@ -170,25 +171,6 @@ pub(super) fn read_context_value_cold<T: ContextWire>(
     packed_page_cache: &mut ColdScanPackedPageCache,
 ) -> Option<T> {
     let point = read_feature_point_cold_with_cache_policy(
-        cache,
-        page_store,
-        shard_id,
-        timeline_key,
-        address,
-        packed_page_cache,
-    )?;
-    context_from_bytes(&point.value)
-}
-
-pub(super) fn read_context_value_cached<T: ContextWire>(
-    cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
-    shard_id: ShardId,
-    timeline_key: u64,
-    address: &PageAddress,
-    packed_page_cache: &mut HashMap<PageAddress, Option<Vec<FeaturePoint>>>,
-) -> Option<T> {
-    let point = read_feature_point_cached(
         cache,
         page_store,
         shard_id,
@@ -810,20 +792,37 @@ pub(super) fn load_latest_context_summary(
 ) -> Option<ContextSummary> {
     shard.context_summaries.get(object_key).and_then(|series| {
         let mut page_cache = HashMap::new();
-        series
-            .range(0..context_timeline_end(as_of_ms))
-            .rev()
-            .filter_map(|(timeline_key, address)| {
-                read_context_value_cached::<ContextSummary>(
+        let mut batch = Vec::with_capacity(16);
+        for (timeline_key, address) in series.range(0..context_timeline_end(as_of_ms)).rev() {
+            batch.push((*timeline_key, address.clone()));
+            if batch.len() >= 16 {
+                if let Some(summary) = read_context_values_cached_with_page_cache::<ContextSummary>(
                     cache,
                     page_store,
                     shard_id,
-                    *timeline_key,
-                    address,
+                    std::mem::take(&mut batch),
                     &mut page_cache,
                 )
-            })
+                .into_iter()
+                .find(|summary| summary.valid_from_ms <= as_of_ms)
+                {
+                    return Some(summary);
+                }
+            }
+        }
+        if batch.is_empty() {
+            None
+        } else {
+            read_context_values_cached_with_page_cache::<ContextSummary>(
+                cache,
+                page_store,
+                shard_id,
+                batch,
+                &mut page_cache,
+            )
+            .into_iter()
             .find(|summary| summary.valid_from_ms <= as_of_ms)
+        }
     })
 }
 
