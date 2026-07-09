@@ -93,6 +93,17 @@ pub struct RegisterServerRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdateServerRequest {
+    pub server_addr: String,
+    #[serde(default)]
+    pub node_id: u64,
+    #[serde(default)]
+    pub location: String,
+    #[serde(default)]
+    pub binary_version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ServerHeartbeatRequest {
     pub server_addr: String,
     #[serde(default)]
@@ -613,6 +624,7 @@ pub enum MetaMutation {
     RegisterShard(RegisterShardRequest),
     PublishShardSnapshot(PublishShardSnapshotRequest),
     RegisterServer(RegisterServerRequest),
+    UpdateServer(UpdateServerRequest),
     RegisterProxy(RegisterProxyRequest),
     AddNamespace(AddNamespaceRequest),
     AddTable(AddTableRequest),
@@ -1019,6 +1031,43 @@ impl SingleNodeMeta {
             "register_server",
             format!("server:{server_addr}"),
             "state=normal",
+        );
+        AckResponse {
+            status: Status::ok(),
+        }
+    }
+
+    pub fn update_server(&self, request: UpdateServerRequest) -> AckResponse {
+        self.record_mutation(MetaMutation::UpdateServer(request.clone()));
+        self.apply_update_server(request)
+    }
+
+    fn apply_update_server(&self, request: UpdateServerRequest) -> AckResponse {
+        let mut state = self.inner.write().expect("meta lock poisoned");
+        let Some(server) = state.servers.get_mut(&request.server_addr) else {
+            return AckResponse {
+                status: Status::error("not_found", "server not found"),
+            };
+        };
+        if server.state != MetaEntityState::Normal {
+            return AckResponse {
+                status: Status::error("failed_precondition", "server state is not normal"),
+            };
+        }
+        if request.node_id > 0 {
+            server.node_id = request.node_id;
+        }
+        if !request.location.is_empty() {
+            server.location = request.location;
+        }
+        if !request.binary_version.is_empty() {
+            server.binary_version = request.binary_version;
+        }
+        record_topology_event(
+            &mut state,
+            "update_server",
+            format!("server:{}", request.server_addr),
+            "metadata_updated",
         );
         AckResponse {
             status: Status::ok(),
@@ -2141,6 +2190,7 @@ impl SingleNodeMeta {
                 self.apply_publish_shard_snapshot(request).status
             }
             MetaMutation::RegisterServer(request) => self.apply_register_server(request).status,
+            MetaMutation::UpdateServer(request) => self.apply_update_server(request).status,
             MetaMutation::RegisterProxy(request) => self.apply_register_proxy(request).status,
             MetaMutation::AddNamespace(request) => self.apply_add_namespace(request).status,
             MetaMutation::AddTable(request) => self.apply_add_table(request).status,

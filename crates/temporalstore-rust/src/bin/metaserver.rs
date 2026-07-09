@@ -13,7 +13,8 @@ use temporalstore_rust::meta::{
     MetaSnapshot, MetaSnapshotFileRequest, MetaSnapshotFileResponse, MetaSnapshotResponse,
     ProxyHeartbeatRequest, PublishShardSnapshotRequest, RegisterProxyRequest,
     RegisterServerRequest, RegisterShardRequest, SafeModePolicy, ServerHeartbeatRequest,
-    SingleNodeMeta, StateChangeRequest, TopologyVersionRequest, UpdateTableRequest,
+    SingleNodeMeta, StateChangeRequest, TopologyVersionRequest, UpdateServerRequest,
+    UpdateTableRequest,
 };
 use temporalstore_rust::raft::{
     ProductionMetaRaftRuntime, ProductionMetaRaftRuntimeOptions, ProductionRaftEngineKind,
@@ -1772,6 +1773,24 @@ struct HeartbeatServerRequest {
 }
 
 #[derive(Debug, serde::Deserialize)]
+struct ManageUpdateServerRequest {
+    #[serde(default)]
+    server_addr: String,
+    #[serde(default)]
+    host: String,
+    #[serde(default)]
+    port: u32,
+    #[serde(default)]
+    endpoint: Option<HeartbeatEndpoint>,
+    #[serde(default)]
+    node_id: u64,
+    #[serde(default, alias = "location_tag_name")]
+    location: String,
+    #[serde(default)]
+    binary_version: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
 struct HeartbeatProxyRequest {
     #[serde(default)]
     proxy_addr: String,
@@ -1898,6 +1917,20 @@ fn handle_manage_service_route(
                     StateChangeRequest {
                         endpoint: heartbeat_server_addr(&req),
                         freeze_cooldown_ms: 0,
+                    }
+                )
+            })
+        }
+        ("POST", "/ManageService/UpdateServer") => {
+            parse_or(&request.body, |req: ManageUpdateServerRequest| {
+                backend_call!(
+                    meta,
+                    update_server,
+                    UpdateServerRequest {
+                        server_addr: manage_update_server_addr(&req),
+                        node_id: req.node_id,
+                        location: req.location,
+                        binary_version: req.binary_version,
                     }
                 )
             })
@@ -2246,6 +2279,14 @@ fn handle_heartbeat_service_route(
 }
 
 fn heartbeat_server_addr(request: &HeartbeatServerRequest) -> String {
+    if !request.server_addr.is_empty() {
+        request.server_addr.clone()
+    } else {
+        heartbeat_addr(&request.host, request.port, request.endpoint.as_ref())
+    }
+}
+
+fn manage_update_server_addr(request: &ManageUpdateServerRequest) -> String {
     if !request.server_addr.is_empty() {
         request.server_addr.clone()
     } else {
