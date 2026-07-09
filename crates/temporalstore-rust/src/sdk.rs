@@ -368,6 +368,26 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             end_ms: command.end_ms,
             count: nonzero_limit(command.limit),
         },
+        v1::command::Kind::FeatureReplace(command) => types::Command::FeatureReplace {
+            key: command.key,
+            start_ms: command.start_ms,
+            end_ms: command.end_ms,
+            points: command
+                .points
+                .into_iter()
+                .map(sdk_feature_point_to_types)
+                .collect(),
+        },
+        v1::command::Kind::FeatureDelete(command) => {
+            types::Command::FeatureDelete { key: command.key }
+        }
+        v1::command::Kind::FeatureAggQuery(command) => types::Command::FeatureAggQuery {
+            key: command.key,
+            start_ms: command.start_ms,
+            end_ms: command.end_ms,
+            aggregator: command.aggregator,
+            count: nonzero_limit(command.limit),
+        },
         v1::command::Kind::SequenceAppend(command) => types::Command::SequenceAdd {
             key: command.key,
             rows: command
