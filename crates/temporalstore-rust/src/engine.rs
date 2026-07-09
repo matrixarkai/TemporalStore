@@ -4660,43 +4660,57 @@ impl TemporalEngine {
             );
             selected_entries.push((key, entry.address));
         }
-        let keys = selected_entries
+        let mut unique_entries = Vec::<(CacheKey, PageAddress, usize)>::new();
+        let mut key_indexes = HashMap::<CacheKey, usize>::new();
+        for (key, address) in selected_entries {
+            if let Some(index) = key_indexes.get(&key).copied() {
+                unique_entries[index].2 = unique_entries[index].2.saturating_add(1);
+            } else {
+                key_indexes.insert(key.clone(), unique_entries.len());
+                unique_entries.push((key, address, 1));
+            }
+        }
+        let keys = unique_entries
             .iter()
-            .map(|(key, _)| key.clone())
+            .map(|(key, _, _)| key.clone())
             .collect::<Vec<_>>();
         let cached = self
             .cache
             .get_batch(&keys)
             .unwrap_or_else(|_| vec![None; keys.len()]);
         let mut miss_entries = Vec::new();
-        for ((key, address), cached_value) in selected_entries.into_iter().zip(cached) {
+        for ((key, address, logical_ref_count), cached_value) in
+            unique_entries.into_iter().zip(cached)
+        {
             if cached_value.is_some() {
-                report.already_cached_page_refs = report.already_cached_page_refs.saturating_add(1);
-                report.warmed_page_refs = report.warmed_page_refs.saturating_add(1);
+                report.already_cached_page_refs = report
+                    .already_cached_page_refs
+                    .saturating_add(logical_ref_count);
+                report.warmed_page_refs = report.warmed_page_refs.saturating_add(logical_ref_count);
             } else {
-                miss_entries.push((key, address));
+                miss_entries.push((key, address, logical_ref_count));
             }
         }
         let miss_addresses = miss_entries
             .iter()
-            .map(|(_, address)| address.clone())
+            .map(|(_, address, _)| address.clone())
             .collect::<Vec<_>>();
         let miss_reads = self.page_store.read_batch(&miss_addresses);
         let mut refills = Vec::new();
         let mut refill_page_refs = 0usize;
         let mut refill_bytes = 0u64;
-        for ((key, _), read_result) in miss_entries.into_iter().zip(miss_reads) {
+        for ((key, _, logical_ref_count), read_result) in miss_entries.into_iter().zip(miss_reads) {
             if let Ok(bytes) = read_result {
                 report.page_store_reads = report.page_store_reads.saturating_add(1);
                 report.block_store_reads = report.block_store_reads.saturating_add(1);
                 let byte_len = bytes.len() as u64;
-                report.warmed_page_refs = report.warmed_page_refs.saturating_add(1);
+                report.warmed_page_refs = report.warmed_page_refs.saturating_add(logical_ref_count);
                 report.warmed_bytes = report.warmed_bytes.saturating_add(byte_len);
-                refill_page_refs = refill_page_refs.saturating_add(1);
+                refill_page_refs = refill_page_refs.saturating_add(logical_ref_count);
                 refill_bytes = refill_bytes.saturating_add(byte_len);
                 refills.push((key, bytes));
             } else {
-                report.failed_page_refs = report.failed_page_refs.saturating_add(1);
+                report.failed_page_refs = report.failed_page_refs.saturating_add(logical_ref_count);
             }
         }
         if !refills.is_empty() && self.cache.put_batch(refills).is_err() {
@@ -15337,10 +15351,7 @@ fn stable_object_hash_update_u64_decimal(hash: &mut u64, mut value: u64) {
 }
 
 fn stable_page_object_id(shard_id: ShardId, kind: &str, key: &str, component: Option<&str>) -> u64 {
-    stable_page_object_id_from_prefix(
-        stable_page_object_id_prefix(shard_id, kind, key),
-        component,
-    )
+    stable_page_object_id_from_prefix(stable_page_object_id_prefix(shard_id, kind, key), component)
 }
 
 fn stable_page_object_id_prefix(shard_id: ShardId, kind: &str, key: &str) -> u64 {
