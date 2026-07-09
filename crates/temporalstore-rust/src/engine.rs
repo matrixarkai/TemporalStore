@@ -9238,36 +9238,49 @@ fn execute_on_shard(
                 .context_events
                 .get(&object_key)
                 .map(|series| {
-                    let mut page_cache = HashMap::new();
-                    series
-                        .range(
-                            context_timeline_start(start_time_ms)
-                                ..context_timeline_end(end_time_ms),
-                        )
-                        .filter_map(|(timeline_key, address)| {
-                            read_context_value_cached::<ContextEvent>(
+                    let event_limit = context_limit(limit);
+                    let mut events = Vec::with_capacity(event_limit);
+                    let mut batch = Vec::with_capacity(64);
+                    let drain_batch =
+                        |batch: &mut Vec<(u64, PageAddress)>, events: &mut Vec<ContextEvent>| {
+                            for event in read_context_values_cached::<ContextEvent>(
                                 cache,
                                 page_store,
                                 shard_id,
-                                *timeline_key,
-                                address,
-                                &mut page_cache,
-                            )
-                        })
-                        .filter(|event| {
-                            context_event_matches_filter(
-                                event,
-                                current_valid_only,
-                                as_of_ms,
-                                end_time_ms,
-                                &kinds,
-                                &statuses,
-                                min_confidence,
-                                min_importance,
-                            )
-                        })
-                        .take(context_limit(limit))
-                        .collect()
+                                std::mem::take(batch),
+                            ) {
+                                if context_event_matches_filter(
+                                    &event,
+                                    current_valid_only,
+                                    as_of_ms,
+                                    end_time_ms,
+                                    &kinds,
+                                    &statuses,
+                                    min_confidence,
+                                    min_importance,
+                                ) {
+                                    events.push(event);
+                                    if events.len() >= event_limit {
+                                        break;
+                                    }
+                                }
+                            }
+                        };
+                    for (timeline_key, address) in series.range(
+                        context_timeline_start(start_time_ms)..context_timeline_end(end_time_ms),
+                    ) {
+                        batch.push((*timeline_key, address.clone()));
+                        if batch.len() >= 64 {
+                            drain_batch(&mut batch, &mut events);
+                            if events.len() >= event_limit {
+                                break;
+                            }
+                        }
+                    }
+                    if events.len() < event_limit && !batch.is_empty() {
+                        drain_batch(&mut batch, &mut events);
+                    }
+                    events
                 })
                 .unwrap_or_default();
             CommandResponse::ContextEvents { object_key, events }
