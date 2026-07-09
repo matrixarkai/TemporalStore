@@ -27,7 +27,7 @@ use crate::meta::{
     RegisterShardResponse, SafeModePolicy, SafeModeReport, ServerHeartbeatRequest,
     ServerHeartbeatResponse, ShardLocation, ShardSnapshotRef, SingleNodeMeta, StaleResourceReport,
     StaleServerReport, StateChangeRequest, TableTopologyResponse, TopologyVersionReport,
-    TopologyVersionRequest, UpdateTableRequest,
+    TopologyVersionRequest, UpdateServerRequest, UpdateTableRequest,
 };
 use crate::rebalance::RaftPersistedSchedulerState;
 use crate::types::{Command, CommandResponse, ExecuteRequest, ShardId, Status};
@@ -11603,6 +11603,12 @@ impl MetaRaftCluster {
     pub fn register_server(&self, request: RegisterServerRequest) -> AckResponse {
         AckResponse {
             status: self.mutation_status(MetaMutation::RegisterServer(request)),
+        }
+    }
+
+    pub fn update_server(&self, request: UpdateServerRequest) -> AckResponse {
+        AckResponse {
+            status: self.mutation_status(MetaMutation::UpdateServer(request)),
         }
     }
 
