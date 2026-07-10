@@ -290,6 +290,9 @@ message Command {
     ContextQueryNodeContext context_query_node_context = 66;
     ContextWriteExtractedEvent context_write_extracted_event = 67;
     ContextQueryIndexIntersection context_query_index_intersection = 68;
+    IpsRemove ips_remove = 69;
+    IpsDelete ips_delete = 70;
+    IpsCount ips_count = 71;
   }
 }
 
@@ -463,6 +466,21 @@ message IpsQuery {
 message IpsQueryLast {
   string key = 1;
   uint32 limit = 2;
+}
+
+message IpsRemove {
+  string key = 1;
+  uint64 timestamp_ms = 2;
+}
+
+message IpsDelete {
+  string key = 1;
+}
+
+message IpsCount {
+  string key = 1;
+  uint64 start_ms = 2;
+  uint64 end_ms = 3;
 }
 
 enum RiskFamily {
