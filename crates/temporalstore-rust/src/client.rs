@@ -2777,6 +2777,19 @@ impl TemporalStoreTable {
         })
     }
 
+    pub fn sequence_add_with_policy(
+        &self,
+        key: impl Into<String>,
+        rows: Vec<SequenceFeatureRow>,
+        policy: FeatureWritePolicy,
+    ) -> Result<(), ClientError> {
+        self.expect_empty(Command::SequenceAddWithPolicy {
+            key: key.into(),
+            rows,
+            policy,
+        })
+    }
+
     pub fn sequence_query(
         &self,
         key: impl Into<String>,

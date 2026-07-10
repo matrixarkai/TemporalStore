@@ -22,6 +22,7 @@ pub(super) fn is_write(command: &Command) -> bool {
             | Command::FeatureReplace { .. }
             | Command::FeatureDelete { .. }
             | Command::SequenceAdd { .. }
+            | Command::SequenceAddWithPolicy { .. }
             | Command::IpsAdd { .. }
             | Command::IpsAddWithOptions { .. }
             | Command::IpsLoad { .. }
@@ -78,6 +79,7 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::FeatureDelete { key }
         | Command::FeatureAggQuery { key, .. }
         | Command::SequenceAdd { key, .. }
+        | Command::SequenceAddWithPolicy { key, .. }
         | Command::SequenceQuery { key, .. }
         | Command::IpsAdd { key, .. }
         | Command::IpsAddWithOptions { key, .. }

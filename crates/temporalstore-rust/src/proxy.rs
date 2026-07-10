@@ -591,6 +591,8 @@ pub struct ProxySequenceAddCommandRequest {
     pub table_name: String,
     pub key: String,
     pub rows: Vec<crate::types::SequenceFeatureRow>,
+    #[serde(default)]
+    pub policy: Option<FeatureWritePolicy>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1544,12 +1546,21 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/SequenceAdd") => {
+            ("POST", "/ProxyService/SequenceAdd")
+            | ("POST", "/ProxyService/SequenceAddWithPolicy") => {
                 match parse_json::<ProxySequenceAddCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let command = Command::SequenceAdd {
-                            key: req.key,
-                            rows: req.rows,
+                        let command = if let Some(policy) = req.policy {
+                            Command::SequenceAddWithPolicy {
+                                key: req.key,
+                                rows: req.rows,
+                                policy,
+                            }
+                        } else {
+                            Command::SequenceAdd {
+                                key: req.key,
+                                rows: req.rows,
+                            }
                         };
                         json_response(
                             200,

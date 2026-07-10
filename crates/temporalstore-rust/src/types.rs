@@ -1250,6 +1250,11 @@ pub enum Command {
         key: String,
         rows: Vec<SequenceFeatureRow>,
     },
+    SequenceAddWithPolicy {
+        key: String,
+        rows: Vec<SequenceFeatureRow>,
+        policy: FeatureWritePolicy,
+    },
     SequenceQuery {
         key: String,
         start_ms: u64,
