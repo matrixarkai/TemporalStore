@@ -15102,14 +15102,12 @@ pub(super) fn read_page_bytes_batch(
 ) -> Vec<Option<Vec<u8>>> {
     let mut values = vec![None; addresses.len()];
     let mut lookup = Vec::new();
-    let mut keys = Vec::new();
     for (index, address) in addresses.iter().enumerate() {
         let Some(address) = address else {
             continue;
         };
         let key = page_address_cache_key(shard_id, address);
         lookup.push((index, address.clone(), key.clone()));
-        keys.push(key);
     }
     if lookup.is_empty() {
         return values;
