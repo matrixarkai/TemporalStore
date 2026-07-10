@@ -204,6 +204,29 @@ pub(super) fn slot_index_page_address(
         return None;
     }
 
+    if let Some(page_refs) = shard.slot_index.live_page_refs_for_object_key(object_key) {
+        let mut selected = None;
+        for page_ref in page_refs {
+            if page_ref.model_id != model_id || page_ref.component.as_deref() != component {
+                continue;
+            }
+            let Some(slot) = shard.slot_index.slot_map.get(&page_ref.routing_slot) else {
+                continue;
+            };
+            let Some(page) = slot.page_index.get(&page_ref.page_ref_key) else {
+                continue;
+            };
+            if !page.deleted
+                && page.model_id == model_id
+                && page.object_key == object_key
+                && page.component.as_deref() == component
+            {
+                select_earliest_page_address(&mut selected, &page.address);
+            }
+        }
+        return selected.map(|(_, address)| address);
+    }
+
     if let Some(routing_slots) = shard
         .slot_index
         .routing_slots_for_object_key(object_key)
