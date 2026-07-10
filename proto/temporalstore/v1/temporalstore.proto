@@ -279,6 +279,9 @@ message Command {
     ContextQueryEntities context_query_entities = 55;
     ContextUpsertChildRef context_upsert_child_ref = 56;
     ContextQueryChildren context_query_children = 57;
+    ContextUpsertEmbedding context_upsert_embedding = 58;
+    ContextQueryEmbeddings context_query_embeddings = 59;
+    ContextTraverseTree context_traverse_tree = 60;
   }
 }
 
@@ -731,6 +734,36 @@ message ContextQueryChildren {
   string key = 1;
   uint64 parent_hash = 2;
   uint32 limit = 3;
+}
+
+message ContextEmbedding {
+  uint64 ref_hash = 1;
+  uint32 level = 2;
+  uint64 model_hash = 3;
+  repeated float vector = 4;
+  uint64 updated_at_ms = 5;
+}
+
+message ContextUpsertEmbedding {
+  string key = 1;
+  ContextEmbedding embedding = 2;
+}
+
+message ContextQueryEmbeddings {
+  string key = 1;
+  repeated uint64 ref_hashes = 2;
+  uint32 limit = 3;
+}
+
+message ContextTraverseTree {
+  string key = 1;
+  uint64 start_node_hash = 2;
+  repeated float query_vector = 3;
+  uint32 max_depth = 4;
+  uint32 top_k_per_depth = 5;
+  uint32 max_children_scored_per_parent = 6;
+  uint32 max_candidate_nodes = 7;
+  bool leaf_only = 8;
 }
 
 message CommonExpire {
