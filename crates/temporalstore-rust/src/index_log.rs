@@ -284,7 +284,12 @@ impl LocalIndexLogStore {
         let mut records_before = 0usize;
         let mut removed_this_round = 0usize;
         let mut removable_records_before_budget = 0usize;
-        let mut retained = Vec::new();
+        let retained_capacity = bytes_before
+            .saturating_div(INDEX_LOG_SCAN_RECORD_ESTIMATE_BYTES)
+            .saturating_add(1)
+            .min(INDEX_LOG_SCAN_MAX_PREALLOC_RECORDS as u64)
+            as usize;
+        let mut retained = Vec::with_capacity(retained_capacity);
         for line in reader.lines() {
             let line = line?;
             if line.trim().is_empty() {
