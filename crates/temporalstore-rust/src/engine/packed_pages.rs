@@ -351,36 +351,65 @@ pub(super) fn read_feature_points_cached_batch(
     shard_id: ShardId,
     refs: &[(u64, BlockAddress)],
 ) -> Vec<FeaturePoint> {
-    let mut addresses = Vec::with_capacity(refs.len());
-    addresses.extend(refs.iter().map(|(_, address)| Some(address.clone())));
-    let page_bytes = read_page_bytes_batch(cache, block_store, shard_id, &addresses);
-    let mut decoded_pages =
-        HashMap::<BlockAddress, PackedFeaturePageDecode>::with_capacity(refs.len());
-    let mut points = Vec::with_capacity(refs.len());
+    let mut unique_pages = Vec::<PackedPageReadRequest>::with_capacity(refs.len());
+    let mut unique_page_by_address = HashMap::<BlockAddress, usize>::with_capacity(refs.len());
+    for (result_index, (timestamp_ms, address)) in refs.iter().enumerate() {
+        if let Some(page_index) = unique_page_by_address.get(address).copied() {
+            unique_pages[page_index]
+                .timestamp_refs
+                .push((result_index, *timestamp_ms));
+        } else {
+            let page_index = unique_pages.len();
+            unique_page_by_address.insert(address.clone(), page_index);
+            unique_pages.push(PackedPageReadRequest {
+                address: address.clone(),
+                timestamp_refs: vec![(result_index, *timestamp_ms)],
+            });
+        }
+    }
+    if unique_pages.is_empty() {
+        return Vec::new();
+    }
 
-    for ((timestamp_ms, address), bytes) in refs.iter().zip(page_bytes) {
+    let mut addresses = Vec::with_capacity(unique_pages.len());
+    addresses.extend(
+        unique_pages
+            .iter()
+            .map(|request| Some(request.address.clone())),
+    );
+    let page_bytes = read_page_bytes_batch(cache, block_store, shard_id, &addresses);
+    let mut ordered_points = vec![None; refs.len()];
+    for (request, bytes) in unique_pages.into_iter().zip(page_bytes) {
         let Some(bytes) = bytes else {
             continue;
         };
-        let decoded = decoded_pages
-            .entry(address.clone())
-            .or_insert_with(|| decode_feature_page_strict(&bytes));
-        match decoded {
+        match decode_feature_page_strict(&bytes) {
             PackedFeaturePageDecode::Packed(page_points) => {
-                if let Some(point) = page_points
-                    .iter()
-                    .find(|point| point.timestamp_ms == *timestamp_ms)
-                    .cloned()
-                {
-                    points.push(point);
+                for (result_index, timestamp_ms) in request.timestamp_refs {
+                    if let Some(point) = page_points
+                        .iter()
+                        .find(|point| point.timestamp_ms == timestamp_ms)
+                        .cloned()
+                    {
+                        ordered_points[result_index] = Some(point);
+                    }
                 }
             }
-            PackedFeaturePageDecode::Legacy => points.push(FeaturePoint {
-                timestamp_ms: *timestamp_ms,
-                value: bytes,
-            }),
+            PackedFeaturePageDecode::Legacy => {
+                for (result_index, timestamp_ms) in request.timestamp_refs {
+                    ordered_points[result_index] = Some(FeaturePoint {
+                        timestamp_ms,
+                        value: bytes.clone(),
+                    });
+                }
+            }
             PackedFeaturePageDecode::Corrupt(_) => {}
         }
     }
-    points
+    ordered_points.into_iter().flatten().collect()
+}
+
+struct PackedPageReadRequest {
+    address: BlockAddress,
+    timestamp_refs: Vec<(usize, u64)>,
 }
