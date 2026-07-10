@@ -35,6 +35,14 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
+  /ProxyService/CommonDelete:
+    post:
+      summary: Delete an object using the common command alias.
+      requestBody:
+        $ref: '#/components/requestBodies/Key'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
   /ProxyService/Expire:
     post:
       summary: Set object TTL.
@@ -99,6 +107,14 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
+  /ProxyService/HashIncrBy:
+    post:
+      summary: Increment a hash field using the hash command alias.
+      requestBody:
+        $ref: '#/components/requestBodies/HashIncrBy'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
   /ProxyService/HGetAll:
     post:
       summary: Get all hash fields.
@@ -144,6 +160,14 @@ paths:
       summary: Check whether an object exists.
       requestBody:
         $ref: '#/components/requestBodies/Key'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /ProxyService/StringSetConditional:
+    post:
+      summary: Conditionally put a string value.
+      requestBody:
+        $ref: '#/components/requestBodies/StringSetConditional'
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
@@ -318,6 +342,12 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/StringPutWithTtlRequest'
+    StringSetConditional:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/StringSetConditionalRequest'
     Expire:
       required: true
       content:
@@ -490,6 +520,21 @@ components:
             ttl_ms:
               type: integer
               format: int64
+    StringSetConditionalRequest:
+      allOf:
+        - $ref: '#/components/schemas/StringPutRequest'
+        - type: object
+          required: [condition]
+          properties:
+            ttl_ms:
+              type: integer
+              format: int64
+            condition:
+              type: string
+              enum: [always, if_exists, if_not_exists]
+            return_old:
+              type: boolean
+              default: false
     ExpireRequest:
       allOf:
         - $ref: '#/components/schemas/KeyRequest'
