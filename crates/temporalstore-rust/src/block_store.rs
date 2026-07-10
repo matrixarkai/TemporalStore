@@ -945,6 +945,7 @@ impl LocalBlockStore {
             inner.root.clone()
         };
         let mut files = BTreeMap::<u64, File>::new();
+        let mut file_lengths = BTreeMap::<u64, u64>::new();
         let mut results = (0..addresses.len()).map(|_| None).collect::<Vec<_>>();
         let mut read_order = addresses.iter().enumerate().collect::<Vec<_>>();
         read_order.sort_by(|(_, left), (_, right)| {
@@ -981,12 +982,17 @@ impl LocalBlockStore {
             let group_bytes = (|| {
                 if !files.contains_key(&page_segment_id) {
                     let path = segment_path(&root, page_segment_id);
-                    files.insert(page_segment_id, File::open(path)?);
+                    let file = File::open(path)?;
+                    file_lengths.insert(page_segment_id, file.metadata()?.len());
+                    files.insert(page_segment_id, file);
                 }
                 let file = files
                     .get_mut(&page_segment_id)
                     .expect("segment file is opened before read");
-                let file_len = file.metadata()?.len();
+                let file_len = file_lengths
+                    .get(&page_segment_id)
+                    .copied()
+                    .expect("segment length is recorded before read");
                 if group_offset >= file_len || group_end > file_len {
                     return Err(BlockStoreError::Io(std::io::Error::new(
                         std::io::ErrorKind::UnexpectedEof,
