@@ -2296,6 +2296,9 @@ fn handle_query_service_route(meta: &MetaBackend, request: &HttpRequest) -> Opti
         ("POST", "/query/listx") => parse_or(&request.body, |req: FeQueryActionRequest| {
             fe_query_action(meta, req)
         }),
+        ("GET", "/query/list_cluster") | ("POST", "/query/list_cluster") => {
+            json_response(200, &fe_list_cluster())
+        }
         ("GET", "/query/info") | ("POST", "/query/info") => {
             json_response(200, &backend_call!(meta, info))
         }
@@ -2368,15 +2371,7 @@ fn fe_query_action(meta: &MetaBackend, req: FeQueryActionRequest) -> serde_json:
             body,
         },
         "list_cluster" => {
-            return serde_json::json!({
-                "status": Status::ok(),
-                "data": {
-                    "options": [{
-                        "value": "default",
-                        "label": "default"
-                    }]
-                }
-            });
+            return fe_list_cluster();
         }
         _ => {
             return serde_json::json!({
@@ -2394,6 +2389,18 @@ fn fe_query_action(meta: &MetaBackend, req: FeQueryActionRequest) -> serde_json:
             "status": Status::error("not_found", format!("unknown query action {}", action)),
         }),
     }
+}
+
+fn fe_list_cluster() -> serde_json::Value {
+    serde_json::json!({
+        "status": Status::ok(),
+        "data": {
+            "options": [{
+                "value": "default",
+                "label": "default"
+            }]
+        }
+    })
 }
 
 fn query_leader(meta: &MetaBackend, req: Option<QueryLeaderRequest>) -> QueryLeaderResponse {
