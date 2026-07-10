@@ -2275,6 +2275,36 @@ impl TemporalStoreClient {
         self.risk_count_table(namespace, table_name, key, precision, window)
     }
 
+    pub fn risk_cpc_set(
+        &self,
+        key: impl Into<String>,
+        values: Vec<String>,
+        ttl_seconds: u64,
+        precision: ClientRiskPrecision,
+        occur_time_seconds: u64,
+    ) -> Result<(), ClientError> {
+        let (namespace, table_name) = self.default_table_names()?;
+        self.risk_cpc_set_table(
+            namespace,
+            table_name,
+            key,
+            values,
+            ttl_seconds,
+            precision,
+            occur_time_seconds,
+        )
+    }
+
+    pub fn risk_cpc_query(
+        &self,
+        key: impl Into<String>,
+        precision: ClientRiskPrecision,
+        window: ClientRiskWindow,
+    ) -> Result<i64, ClientError> {
+        let (namespace, table_name) = self.default_table_names()?;
+        self.risk_cpc_query_table(namespace, table_name, key, precision, window)
+    }
+
     pub fn risk_increment_table(
         &self,
         namespace: impl Into<String>,
@@ -2311,6 +2341,38 @@ impl TemporalStoreClient {
         let table = self.table_for_command(namespace.into(), table_name.into())?;
         let (start_ms, end_ms) = client_risk_window_bounds_ms(window, precision);
         table.risk_count(key, start_ms, end_ms)
+    }
+
+    pub fn risk_cpc_set_table(
+        &self,
+        namespace: impl Into<String>,
+        table_name: impl Into<String>,
+        key: impl Into<String>,
+        values: Vec<String>,
+        _ttl_seconds: u64,
+        _precision: ClientRiskPrecision,
+        occur_time_seconds: u64,
+    ) -> Result<(), ClientError> {
+        let table = self.table_for_command(namespace.into(), table_name.into())?;
+        let timestamp_ms = if occur_time_seconds == 0 {
+            now_unix_ms()
+        } else {
+            occur_time_seconds.saturating_mul(1_000)
+        };
+        table.risk_family_set(RiskFamily::Cpc, key, timestamp_ms, values.len() as i64)
+    }
+
+    pub fn risk_cpc_query_table(
+        &self,
+        namespace: impl Into<String>,
+        table_name: impl Into<String>,
+        key: impl Into<String>,
+        precision: ClientRiskPrecision,
+        window: ClientRiskWindow,
+    ) -> Result<i64, ClientError> {
+        let table = self.table_for_command(namespace.into(), table_name.into())?;
+        let (start_ms, end_ms) = client_risk_window_bounds_ms(window, precision);
+        table.risk_family_query(RiskFamily::Cpc, key, start_ms, end_ms, "sum")
     }
 
     fn table_for_command(
@@ -4787,6 +4849,24 @@ impl TemporalStoreTable {
                 response,
             }),
         }
+    }
+
+    pub fn risk_cpc_set(
+        &self,
+        key: impl Into<String>,
+        values: Vec<String>,
+        timestamp_ms: u64,
+    ) -> Result<(), ClientError> {
+        self.risk_family_set(RiskFamily::Cpc, key, timestamp_ms, values.len() as i64)
+    }
+
+    pub fn risk_cpc_query(
+        &self,
+        key: impl Into<String>,
+        start_ms: u64,
+        end_ms: u64,
+    ) -> Result<i64, ClientError> {
+        self.risk_family_query(RiskFamily::Cpc, key, start_ms, end_ms, "sum")
     }
 
     pub fn risk_family_set_and_get(

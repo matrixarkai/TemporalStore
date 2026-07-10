@@ -30,9 +30,9 @@ use crate::meta::{
     TopologyVersionReport, TopologyVersionRequest,
 };
 use crate::types::{
-    BatchExecuteRequest, BatchExecuteResponse, Command, ExecuteRequest, ExecuteResponse,
-    FeatureFilter, FeaturePoint, FeatureWritePolicy, RiskFamily, RiskFolType, SequenceQuerySpec,
-    ShardId, Status, StringSetCondition,
+    BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
+    ExecuteResponse, FeatureFilter, FeaturePoint, FeatureWritePolicy, RiskFamily, RiskFolType,
+    SequenceQuerySpec, ShardId, Status, StringSetCondition,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1088,6 +1088,79 @@ pub struct ProxyRiskFolSetCommandRequest {
     pub fol_type: RiskFolType,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyRiskCpcSetCommandRequest {
+    #[serde(alias = "namespace_name")]
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    #[serde(default)]
+    pub values: Vec<String>,
+    #[serde(default, alias = "occur_time")]
+    pub timestamp_ms: u64,
+    #[serde(default, alias = "ttl")]
+    pub ttl_ms: u64,
+    #[serde(default)]
+    pub precision_ms: Option<u64>,
+    #[serde(default)]
+    pub dont_upgrade_cpc: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyRiskCpcQueryCommandRequest {
+    #[serde(alias = "namespace_name")]
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    #[serde(default)]
+    pub start_ms: Option<u64>,
+    #[serde(default)]
+    pub end_ms: Option<u64>,
+    #[serde(default = "default_risk_cpc_aggregator")]
+    pub aggregator: String,
+    #[serde(default)]
+    pub windows: Vec<ProxyRiskWindow>,
+    #[serde(default)]
+    pub with_detail: bool,
+    #[serde(default)]
+    pub precision_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyRiskWindow {
+    #[serde(default)]
+    pub start_offset: i64,
+    #[serde(default)]
+    pub end_offset: i64,
+    #[serde(default)]
+    pub unit: ProxyRiskWindowUnit,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProxyRiskWindowUnit {
+    Second,
+    Minute,
+    #[default]
+    Hour,
+    Day,
+}
+
+impl ProxyRiskWindowUnit {
+    fn duration_ms(self) -> i64 {
+        match self {
+            Self::Second => 1_000,
+            Self::Minute => 60_000,
+            Self::Hour => 60 * 60_000,
+            Self::Day => 24 * 60 * 60_000,
+        }
+    }
+}
+
+fn default_risk_cpc_aggregator() -> String {
+    "sum".to_string()
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProxyReplicaReadPolicy {
@@ -2073,6 +2146,33 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
+            ("POST", "/ProxyService/RiskCPCSet") => {
+                match parse_json::<ProxyRiskCpcSetCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::RiskSet {
+                            family: RiskFamily::Cpc,
+                            key: req.key,
+                            timestamp_ms: risk_cpc_timestamp_ms(req.timestamp_ms),
+                            amount: req.values.len() as i64,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/RiskCPCQuery") => {
+                match parse_json::<ProxyRiskCpcQueryCommandRequest>(&request.body) {
+                    Ok(req) => json_response(200, &self.risk_cpc_query(req)),
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
             ("POST", "/ProxyService/RiskFolSet") => {
                 match parse_json::<ProxyRiskFolSetCommandRequest>(&request.body) {
                     Ok(req) => {
@@ -2875,6 +2975,49 @@ impl ProxyService {
             namespace: request.namespace,
             table_name: request.table_name,
             command: command(request.key),
+        })
+    }
+
+    fn risk_cpc_query(&self, request: ProxyRiskCpcQueryCommandRequest) -> serde_json::Value {
+        let bounds = risk_cpc_query_bounds(&request);
+        let mut count_list = Vec::with_capacity(bounds.len());
+        let mut responses = Vec::with_capacity(bounds.len());
+        let mut status = Status::ok();
+        for (start_ms, end_ms) in bounds {
+            let response = self.table_execute(ProxyTableExecuteRequest {
+                namespace: request.namespace.clone(),
+                table_name: request.table_name.clone(),
+                command: Command::RiskFamilyQuery {
+                    family: RiskFamily::Cpc,
+                    key: request.key.clone(),
+                    start_ms,
+                    end_ms,
+                    aggregator: request.aggregator.clone(),
+                },
+            });
+            if !response.status.ok && status.ok {
+                status = response.status.clone();
+            }
+            let count = match &response.response {
+                CommandResponse::Integer { value } => *value,
+                _ => 0,
+            };
+            count_list.push(count);
+            responses.push(response);
+        }
+        let detail_lists: Vec<serde_json::Value> = if request.with_detail {
+            count_list
+                .iter()
+                .map(|count| serde_json::json!({ "detail": [count.to_string()] }))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        serde_json::json!({
+            "status": status,
+            "count_list": count_list,
+            "detail_lists": detail_lists,
+            "responses": responses,
         })
     }
 
@@ -3803,6 +3946,36 @@ impl ProxyService {
         self.inc_bad_request();
         json_response(400, &execute_error("bad_request", err.to_string()))
     }
+}
+
+fn risk_cpc_timestamp_ms(timestamp_ms: u64) -> u64 {
+    if timestamp_ms == 0 {
+        now_ms()
+    } else if timestamp_ms < 10_000_000_000 {
+        timestamp_ms.saturating_mul(1_000)
+    } else {
+        timestamp_ms
+    }
+}
+
+fn risk_cpc_query_bounds(request: &ProxyRiskCpcQueryCommandRequest) -> Vec<(u64, u64)> {
+    if let (Some(start_ms), Some(end_ms)) = (request.start_ms, request.end_ms) {
+        return vec![(start_ms, end_ms)];
+    }
+    if request.windows.is_empty() {
+        return vec![(0, u64::MAX)];
+    }
+    let now = now_ms() as i64;
+    request
+        .windows
+        .iter()
+        .map(|window| {
+            let unit_ms = window.unit.duration_ms();
+            let start = now.saturating_add(window.start_offset.saturating_mul(unit_ms));
+            let end = now.saturating_add(window.end_offset.saturating_mul(unit_ms));
+            (start.max(0) as u64, end.max(0) as u64)
+        })
+        .collect()
 }
 
 fn proxy_operational_surface_entry(
