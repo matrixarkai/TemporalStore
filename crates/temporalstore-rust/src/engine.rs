@@ -15444,6 +15444,15 @@ pub(super) fn read_page_bytes_batch(
             .as_ref()
             .and_then(|address| read_page_bytes(cache, page_store, shard_id, address))];
     }
+    if addresses.windows(2).all(|window| window[0] == window[1]) {
+        return match &addresses[0] {
+            Some(address) => duplicate_page_read_values(
+                addresses.len(),
+                read_page_bytes(cache, page_store, shard_id, address),
+            ),
+            None => vec![None; addresses.len()],
+        };
+    }
 
     let mut values = vec![None; addresses.len()];
     let mut unique_entries = Vec::<BatchPageReadEntry>::with_capacity(addresses.len());
@@ -15555,6 +15564,24 @@ fn fill_page_read_values_owned(
         values[*index] = Some(bytes.clone());
     }
     values[entry.first_index] = Some(bytes);
+}
+
+fn duplicate_page_read_values(len: usize, bytes: Option<Vec<u8>>) -> Vec<Option<Vec<u8>>> {
+    let Some(bytes) = bytes else {
+        return vec![None; len];
+    };
+    let mut values = Vec::with_capacity(len);
+    let mut remaining = len;
+    while remaining > 0 {
+        if remaining == 1 {
+            values.push(Some(bytes));
+            break;
+        } else {
+            values.push(Some(bytes.clone()));
+            remaining = remaining.saturating_sub(1);
+        }
+    }
+    values
 }
 
 fn read_page_bytes_cold(page_store: &LocalPageStore, address: &PageAddress) -> Option<Vec<u8>> {
