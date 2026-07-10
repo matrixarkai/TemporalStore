@@ -12203,6 +12203,45 @@ fn page_physical_identity_key(address: &PageAddress) -> PagePhysicalIdentityKey 
     )
 }
 
+fn remove_slot_index_pages_from_slots(
+    shard: &mut ShardState,
+    routing_slots: BTreeSet<u32>,
+    object_id: u64,
+    entry: &LivePageEntry,
+    removed_addresses: &mut Vec<PageAddress>,
+) {
+    for routing_slot in routing_slots {
+        let Some(slot) = shard.slot_index.slot_map.get_mut(&routing_slot) else {
+            continue;
+        };
+        let before = slot.page_index.len();
+        slot.page_index.retain(|_, page| {
+            let remove = page.object_key == entry.object_key
+                && page.model_id == entry.kind
+                && page.component == entry.component;
+            if remove {
+                removed_addresses.push(page.address.clone());
+            }
+            !remove
+        });
+        if !slot
+            .page_index
+            .values()
+            .any(|page| page.object_id == object_id)
+        {
+            slot.object_index.remove(&object_id);
+        }
+        if slot.page_index.len() != before {
+            slot.dirty = true;
+            slot.deleted = slot.page_index.is_empty();
+            slot.dirty_generation = slot.dirty_generation.saturating_add(1);
+            slot.meta_loaded = true;
+            slot.in_memory = !slot.page_index.is_empty();
+        }
+        update_slot_layout(slot);
+    }
+}
+
 fn upsert_slot_index_page(
     cache: &MultiLayerCache,
     shard: &mut ShardState,
@@ -12281,62 +12320,30 @@ fn upsert_slot_index_page(
             }
         }
         if !removed_direct {
-            for slot in shard.slot_index.slot_map.values_mut() {
-                let before = slot.page_index.len();
-                slot.page_index.retain(|_, page| {
-                    let remove = page.object_key == entry.object_key
-                        && page.model_id == entry.kind
-                        && page.component == entry.component;
-                    if remove {
-                        removed_addresses.push(page.address.clone());
-                    }
-                    !remove
-                });
-                if !slot
-                    .page_index
-                    .values()
-                    .any(|page| page.object_id == object_id)
-                {
-                    slot.object_index.remove(&object_id);
-                }
-                if slot.page_index.len() != before {
-                    slot.dirty = true;
-                    slot.deleted = slot.page_index.is_empty();
-                    slot.dirty_generation = slot.dirty_generation.saturating_add(1);
-                    slot.meta_loaded = true;
-                    slot.in_memory = !slot.page_index.is_empty();
-                }
-                update_slot_layout(slot);
-            }
+            let fallback_slots = shard
+                .slot_index
+                .routing_slots_for_object_key(&entry.object_key)
+                .unwrap_or_else(|| shard.slot_index.slot_map.keys().copied().collect());
+            remove_slot_index_pages_from_slots(
+                shard,
+                fallback_slots,
+                object_id,
+                &entry,
+                &mut removed_addresses,
+            );
         }
     } else if !lookup_enabled {
-        for slot in shard.slot_index.slot_map.values_mut() {
-            let before = slot.page_index.len();
-            slot.page_index.retain(|_, page| {
-                let remove = page.object_key == entry.object_key
-                    && page.model_id == entry.kind
-                    && page.component == entry.component;
-                if remove {
-                    removed_addresses.push(page.address.clone());
-                }
-                !remove
-            });
-            if !slot
-                .page_index
-                .values()
-                .any(|page| page.object_id == object_id)
-            {
-                slot.object_index.remove(&object_id);
-            }
-            if slot.page_index.len() != before {
-                slot.dirty = true;
-                slot.deleted = slot.page_index.is_empty();
-                slot.dirty_generation = slot.dirty_generation.saturating_add(1);
-                slot.meta_loaded = true;
-                slot.in_memory = !slot.page_index.is_empty();
-            }
-            update_slot_layout(slot);
-        }
+        let fallback_slots = shard
+            .slot_index
+            .routing_slots_for_object_key(&entry.object_key)
+            .unwrap_or_else(|| shard.slot_index.slot_map.keys().copied().collect());
+        remove_slot_index_pages_from_slots(
+            shard,
+            fallback_slots,
+            object_id,
+            &entry,
+            &mut removed_addresses,
+        );
     }
     let page_ref_key = page_index_ref_key(&entry);
     let page_index = PageIndex {
