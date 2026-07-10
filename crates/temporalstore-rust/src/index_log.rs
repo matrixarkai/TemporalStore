@@ -309,10 +309,13 @@ impl LocalIndexLogStore {
     }
 
     pub fn stats(&self, shard_id: ShardId) -> IndexLogStats {
-        let inner = self.inner.lock().expect("index log lock poisoned");
+        let (root, stats) = {
+            let inner = self.inner.lock().expect("index log lock poisoned");
+            (inner.root.clone(), inner.stats)
+        };
         IndexLogStats {
-            last_sequence: last_sequence_at(&inner.root, shard_id).unwrap_or_default(),
-            ..inner.stats
+            last_sequence: last_sequence_at(&root, shard_id).unwrap_or_default(),
+            ..stats
         }
     }
 }
