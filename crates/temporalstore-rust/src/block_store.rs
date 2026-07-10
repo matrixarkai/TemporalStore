@@ -697,7 +697,6 @@ impl LocalBlockStore {
         }
         fs::create_dir_all(&inner.root)?;
         let segment_target_bytes = effective_block_segment_target_bytes();
-        let mut file = None::<File>;
         let mut addresses = Vec::with_capacity(records.len());
         let mut writes = 0u64;
         let mut bytes_written = 0u64;
@@ -721,12 +720,6 @@ impl LocalBlockStore {
                 record.bytes.len() as u64,
                 segment_target_bytes,
             ) {
-                if let Some(mut current) = file.take() {
-                    current.flush()?;
-                    if inner.options.sync_on_append {
-                        current.sync_data()?;
-                    }
-                }
                 roll_segment_inner(&mut inner)?;
                 page_id = inner.next_page_id;
                 extent_id = extent_id_for_segment(inner.page_segment_id);
@@ -739,9 +732,10 @@ impl LocalBlockStore {
                     inner.options,
                 )?;
             }
-            if file.is_none() {
+            if inner.active_append_file.is_none() {
                 let path = segment_path(&inner.root, inner.page_segment_id);
-                file = Some(OpenOptions::new().create(true).append(true).open(path)?);
+                inner.active_append_file =
+                    Some(OpenOptions::new().create(true).append(true).open(path)?);
             }
             let address = BlockAddress {
                 page_segment_id: inner.page_segment_id,
@@ -754,7 +748,7 @@ impl LocalBlockStore {
                 extent_id: Some(extent_id),
                 sha256: Some(record.sha256_hex.clone()),
             };
-            if let Some(current) = file.as_mut() {
+            if let Some(current) = inner.active_append_file.as_mut() {
                 current.write_all(&record.bytes)?;
             }
             inner.next_page_id = inner.next_page_id.saturating_add(1);
@@ -778,9 +772,10 @@ impl LocalBlockStore {
             }
             addresses.push(address);
         }
-        if let Some(mut current) = file {
+        let sync_on_append = inner.options.sync_on_append;
+        if let Some(current) = inner.active_append_file.as_mut() {
             current.flush()?;
-            if inner.options.sync_on_append {
+            if sync_on_append {
                 current.sync_data()?;
             }
         }
