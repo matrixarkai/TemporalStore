@@ -11,6 +11,7 @@ use crate::types::ShardId;
 
 const INDEX_LOG_SCAN_RECORD_ESTIMATE_BYTES: u64 = 192;
 const INDEX_LOG_SCAN_MAX_PREALLOC_RECORDS: usize = 4096;
+const INDEX_LOG_SCAN_READER_BUFFER_MAX_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Error)]
 pub enum IndexLogError {
@@ -215,7 +216,11 @@ impl LocalIndexLogStore {
         let path = index_log_path(&root, shard_id);
         let mut file = File::open(path)?;
         file.seek(SeekFrom::Start(start_offset))?;
-        let mut reader = BufReader::new(file);
+        let reader_capacity =
+            usize::try_from(max_bytes.min(INDEX_LOG_SCAN_READER_BUFFER_MAX_BYTES as u64))
+                .unwrap_or(INDEX_LOG_SCAN_READER_BUFFER_MAX_BYTES)
+                .max(1024);
+        let mut reader = BufReader::with_capacity(reader_capacity, file);
         let mut offset = start_offset;
         let mut total = 0;
         let scan_capacity = max_bytes
