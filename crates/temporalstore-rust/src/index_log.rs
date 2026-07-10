@@ -157,15 +157,19 @@ impl LocalIndexLogStore {
         offset: u64,
         size: u64,
     ) -> Result<Vec<u8>, IndexLogError> {
-        let mut inner = self.inner.lock().expect("index log lock poisoned");
-        let path = index_log_path(&inner.root, shard_id);
+        let root = {
+            let inner = self.inner.lock().expect("index log lock poisoned");
+            inner.root.clone()
+        };
+        let path = index_log_path(&root, shard_id);
         let mut file = File::open(path)?;
         file.seek(SeekFrom::Start(offset))?;
         let mut bytes = vec![0; size as usize];
         let read = file.read(&mut bytes)?;
         bytes.truncate(read);
-        inner.stats.reads += 1;
-        inner.stats.bytes_read += read as u64;
+        let mut inner = self.inner.lock().expect("index log lock poisoned");
+        inner.stats.reads = inner.stats.reads.saturating_add(1);
+        inner.stats.bytes_read = inner.stats.bytes_read.saturating_add(read as u64);
         Ok(bytes)
     }
 
@@ -176,9 +180,12 @@ impl LocalIndexLogStore {
         end_offset: u64,
         max_bytes: u64,
     ) -> Result<Vec<(u64, Vec<u8>)>, IndexLogError> {
-        let mut inner = self.inner.lock().expect("index log lock poisoned");
-        let _ = last_sequence_at(&inner.root, shard_id)?;
-        let path = index_log_path(&inner.root, shard_id);
+        let root = {
+            let inner = self.inner.lock().expect("index log lock poisoned");
+            inner.root.clone()
+        };
+        let _ = last_sequence_at(&root, shard_id)?;
+        let path = index_log_path(&root, shard_id);
         let mut file = File::open(path)?;
         file.seek(SeekFrom::Start(start_offset))?;
         let mut reader = BufReader::new(file);
@@ -199,8 +206,9 @@ impl LocalIndexLogStore {
             offset = next_offset;
             total += read as u64;
         }
-        inner.stats.scans += 1;
-        inner.stats.bytes_read += total;
+        let mut inner = self.inner.lock().expect("index log lock poisoned");
+        inner.stats.scans = inner.stats.scans.saturating_add(1);
+        inner.stats.bytes_read = inner.stats.bytes_read.saturating_add(total);
         Ok(records)
     }
 
