@@ -78,9 +78,9 @@ class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
             )
         )
 
-        self.assertEqual(default_retrieve_warmup_queries(server, 12, -1), 16)
-        self.assertEqual(default_retrieve_warmup_queries(wrapped, 12, -1), 16)
-        self.assertEqual(default_retrieve_warmup_queries(lazy_wrapped, 12, -1), 20)
+        self.assertEqual(default_retrieve_warmup_queries(server, 12, -1), 64)
+        self.assertEqual(default_retrieve_warmup_queries(wrapped, 12, -1), 64)
+        self.assertEqual(default_retrieve_warmup_queries(lazy_wrapped, 12, -1), 80)
         self.assertEqual(default_retrieve_warmup_queries(server, 12, 3), 3)
 
     def test_rust_proxy_context_record_counter_skips_non_context_json(self) -> None:
