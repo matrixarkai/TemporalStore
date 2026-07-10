@@ -823,6 +823,13 @@ impl LocalBlockStore {
             inner.root.clone()
         };
         let path = segment_path(&root, address.page_segment_id);
+        let file_len = path.metadata()?.len();
+        if address.offset >= file_len || address.length > file_len.saturating_sub(address.offset) {
+            return Err(BlockStoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "block address range exceeds segment length",
+            )));
+        }
         let mut file = File::open(path)?;
         file.seek(SeekFrom::Start(address.offset))?;
         let mut encoded = vec![0; address.length as usize];
