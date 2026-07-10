@@ -15136,6 +15136,43 @@ fn append_timestamped_single_pages_batch(
     if writes.is_empty() {
         return Some(Vec::new());
     }
+    if writes.len() == 1 {
+        let write = &writes[0];
+        let object_id = stable_page_object_id(shard_id, write.kind, &write.object_key, None);
+        let packed = encode_feature_page(&[FeaturePoint {
+            timestamp_ms: write.timestamp_ms,
+            value: write.value.clone(),
+        }]);
+        if !async_storage {
+            return page_store
+                .append_with_page_metadata(&packed, Some(object_id), Some(write.routing_slot))
+                .ok()
+                .map(|address| vec![address]);
+        }
+        let address = PageAddress {
+            page_segment_id: HOT_PAGE_SEGMENT_ID,
+            offset: HOT_PAGE_OFFSET.fetch_add(1, Ordering::Relaxed),
+            length: packed.len() as u64,
+            page_id: None,
+            object_id: Some(object_id),
+            routing_slot: Some(write.routing_slot),
+            generation: Some(object_id),
+            extent_id: None,
+            sha256: None,
+        };
+        cache.put_memory_only(
+            CacheKey::page_with_slot_generation(
+                shard_id,
+                address.page_segment_id,
+                address.offset,
+                address.length,
+                address.routing_slot,
+                address.generation,
+            ),
+            packed,
+        );
+        return Some(vec![address]);
+    }
     if !async_storage {
         let mut append_records = Vec::with_capacity(writes.len());
         for write in writes {
