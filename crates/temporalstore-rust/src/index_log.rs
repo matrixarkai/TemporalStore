@@ -97,22 +97,22 @@ impl LocalIndexLogStore {
             sequence: next_sequence,
             index: serde_json::from_slice(index_bytes)?,
         };
-        let mut bytes = Vec::with_capacity(index_bytes.len().saturating_add(96));
-        write!(
-            &mut bytes,
-            "{{\"shard_id\":{shard_id},\"sequence\":{next_sequence},\"index\":"
-        )?;
-        bytes.extend_from_slice(index_bytes);
-        bytes.extend_from_slice(b"}\n");
+        let header = format!("{{\"shard_id\":{shard_id},\"sequence\":{next_sequence},\"index\":");
+        let bytes_written = header
+            .len()
+            .saturating_add(index_bytes.len())
+            .saturating_add(2);
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(index_log_path(&inner.root, shard_id))?;
-        file.write_all(&bytes)?;
+        file.write_all(header.as_bytes())?;
+        file.write_all(index_bytes)?;
+        file.write_all(b"}\n")?;
         file.flush()?;
         file.sync_data()?;
         inner.stats.writes += 1;
-        inner.stats.bytes_written += bytes.len() as u64;
+        inner.stats.bytes_written += bytes_written as u64;
         inner.stats.last_sequence = next_sequence;
         inner.last_sequence_by_shard.insert(shard_id, next_sequence);
         Ok(record)
@@ -135,22 +135,22 @@ impl LocalIndexLogStore {
             }
         };
         let next_sequence = last_sequence.saturating_add(1);
-        let mut bytes = Vec::with_capacity(index_bytes.len().saturating_add(96));
-        write!(
-            &mut bytes,
-            "{{\"shard_id\":{shard_id},\"sequence\":{next_sequence},\"index\":"
-        )?;
-        bytes.extend_from_slice(index_bytes);
-        bytes.extend_from_slice(b"}\n");
+        let header = format!("{{\"shard_id\":{shard_id},\"sequence\":{next_sequence},\"index\":");
+        let bytes_written = header
+            .len()
+            .saturating_add(index_bytes.len())
+            .saturating_add(2);
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(index_log_path(&inner.root, shard_id))?;
-        file.write_all(&bytes)?;
+        file.write_all(header.as_bytes())?;
+        file.write_all(index_bytes)?;
+        file.write_all(b"}\n")?;
         file.flush()?;
         file.sync_data()?;
         inner.stats.writes += 1;
-        inner.stats.bytes_written += bytes.len() as u64;
+        inner.stats.bytes_written += bytes_written as u64;
         inner.stats.last_sequence = next_sequence;
         inner.last_sequence_by_shard.insert(shard_id, next_sequence);
         Ok(next_sequence)
