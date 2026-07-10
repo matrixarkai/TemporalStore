@@ -377,11 +377,33 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                 .map(sdk_feature_point_to_types)
                 .collect(),
         },
+        v1::command::Kind::FeatureAppendWithPolicy(command) => {
+            types::Command::FeatureAppendWithPolicy {
+                key: command.key,
+                points: command
+                    .points
+                    .into_iter()
+                    .map(sdk_feature_point_to_types)
+                    .collect(),
+                policy: sdk_feature_write_policy_to_types(command.policy)?,
+            }
+        }
         v1::command::Kind::FeatureQuery(command) => types::Command::FeatureQuery {
             key: command.key,
             start_ms: command.start_ms,
             end_ms: command.end_ms,
             count: nonzero_limit(command.limit),
+        },
+        v1::command::Kind::FeatureQueryFiltered(command) => types::Command::FeatureQueryFiltered {
+            key: command.key,
+            start_ms: command.start_ms,
+            end_ms: command.end_ms,
+            count: nonzero_limit(command.limit),
+            filters: command
+                .filters
+                .into_iter()
+                .map(sdk_feature_filter_to_types)
+                .collect::<Result<Vec<_>, _>>()?,
         },
         v1::command::Kind::FeatureReplace(command) => types::Command::FeatureReplace {
             key: command.key,
@@ -825,6 +847,45 @@ fn sdk_string_set_condition_to_types(
         Ok(v1::StringSetCondition::Always) | Ok(v1::StringSetCondition::Unspecified) | Err(_) => {
             Ok(types::StringSetCondition::Always)
         }
+    }
+}
+
+fn sdk_feature_write_policy_to_types(
+    policy: i32,
+) -> Result<types::FeatureWritePolicy, TonicStatus> {
+    match v1::FeatureWritePolicy::try_from(policy) {
+        Ok(v1::FeatureWritePolicy::InsertIfAbsent) => Ok(types::FeatureWritePolicy::InsertIfAbsent),
+        Ok(v1::FeatureWritePolicy::ReplaceExisting) => {
+            Ok(types::FeatureWritePolicy::ReplaceExisting)
+        }
+        Ok(v1::FeatureWritePolicy::Block) => Ok(types::FeatureWritePolicy::Block),
+        Ok(v1::FeatureWritePolicy::Upsert) | Ok(v1::FeatureWritePolicy::Unspecified) | Err(_) => {
+            Ok(types::FeatureWritePolicy::Upsert)
+        }
+    }
+}
+
+fn sdk_feature_filter_to_types(
+    filter: v1::FeatureFilter,
+) -> Result<types::FeatureFilter, TonicStatus> {
+    Ok(types::FeatureFilter {
+        field: filter.field,
+        op: sdk_feature_filter_op_to_types(filter.op)?,
+        value: filter.value,
+    })
+}
+
+fn sdk_feature_filter_op_to_types(op: i32) -> Result<types::FeatureFilterOp, TonicStatus> {
+    match v1::FeatureFilterOp::try_from(op) {
+        Ok(v1::FeatureFilterOp::Equal) => Ok(types::FeatureFilterOp::Equal),
+        Ok(v1::FeatureFilterOp::NotEqual) => Ok(types::FeatureFilterOp::NotEqual),
+        Ok(v1::FeatureFilterOp::GreaterThan) => Ok(types::FeatureFilterOp::GreaterThan),
+        Ok(v1::FeatureFilterOp::GreaterOrEqual) => Ok(types::FeatureFilterOp::GreaterOrEqual),
+        Ok(v1::FeatureFilterOp::LessThan) => Ok(types::FeatureFilterOp::LessThan),
+        Ok(v1::FeatureFilterOp::LessOrEqual) => Ok(types::FeatureFilterOp::LessOrEqual),
+        Ok(v1::FeatureFilterOp::Unspecified) | Err(_) => Err(TonicStatus::invalid_argument(
+            "feature filter op missing or invalid",
+        )),
     }
 }
 

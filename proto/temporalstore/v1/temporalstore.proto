@@ -296,6 +296,8 @@ message Command {
     CommonDelete common_delete = 72;
     StringSetConditional string_set_conditional = 73;
     HashIncrBy hash_incr_by = 74;
+    FeatureAppendWithPolicy feature_append_with_policy = 75;
+    FeatureQueryFiltered feature_query_filtered = 76;
   }
 }
 
@@ -412,11 +414,49 @@ message FeatureAppend {
   repeated FeaturePoint points = 2;
 }
 
+enum FeatureWritePolicy {
+  FEATURE_WRITE_POLICY_UNSPECIFIED = 0;
+  FEATURE_WRITE_POLICY_UPSERT = 1;
+  FEATURE_WRITE_POLICY_INSERT_IF_ABSENT = 2;
+  FEATURE_WRITE_POLICY_REPLACE_EXISTING = 3;
+  FEATURE_WRITE_POLICY_BLOCK = 4;
+}
+
+message FeatureAppendWithPolicy {
+  string key = 1;
+  repeated FeaturePoint points = 2;
+  FeatureWritePolicy policy = 3;
+}
+
 message FeatureQuery {
   string key = 1;
   uint64 start_ms = 2;
   uint64 end_ms = 3;
   uint32 limit = 4;
+}
+
+enum FeatureFilterOp {
+  FEATURE_FILTER_OP_UNSPECIFIED = 0;
+  FEATURE_FILTER_OP_EQUAL = 1;
+  FEATURE_FILTER_OP_NOT_EQUAL = 2;
+  FEATURE_FILTER_OP_GREATER_THAN = 3;
+  FEATURE_FILTER_OP_GREATER_OR_EQUAL = 4;
+  FEATURE_FILTER_OP_LESS_THAN = 5;
+  FEATURE_FILTER_OP_LESS_OR_EQUAL = 6;
+}
+
+message FeatureFilter {
+  string field = 1;
+  FeatureFilterOp op = 2;
+  uint64 value = 3;
+}
+
+message FeatureQueryFiltered {
+  string key = 1;
+  uint64 start_ms = 2;
+  uint64 end_ms = 3;
+  uint32 limit = 4;
+  repeated FeatureFilter filters = 5;
 }
 
 message FeatureReplace {
