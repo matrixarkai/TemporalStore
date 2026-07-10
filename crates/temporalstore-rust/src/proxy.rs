@@ -20,8 +20,8 @@ use response::execute_error;
 
 use crate::client::{
     ClientStats, ClientTopologyCacheReport, ClientTopologyRefreshReport,
-    MatrixArkRetrieveContextPackRequest, ReplicaReadPolicy, RequestOptions, TableOptions,
-    TemporalStoreClient,
+    MatrixArkBatchAppendRequest, MatrixArkRetrieveContextPackRequest, ReplicaReadPolicy,
+    RequestOptions, TableOptions, TemporalStoreClient,
 };
 use crate::http::{get_json_with_options, post_json_with_options, HttpRequest, HttpRequestOptions};
 use crate::meta::GetShardResponse;
@@ -1316,6 +1316,25 @@ impl ProxyService {
                         self.inc_bad_request();
                         json_response(400, &Status::error("bad_request", err.to_string()))
                     }
+                }
+            }
+            ("POST", "/ProxyService/MatrixArkBatchAppendRecords")
+            | ("POST", "/matrixark/batch_append_records") => {
+                match parse_json::<MatrixArkBatchAppendRequest>(&request.body) {
+                    Ok(req) => match self.client().matrixark_batch_append_records_request(req) {
+                        Ok(appended_records) => json_response(
+                            200,
+                            &serde_json::json!({
+                                "status": Status::ok(),
+                                "appended_records": appended_records,
+                            }),
+                        ),
+                        Err(err) => json_response(
+                            400,
+                            &Status::error("matrixark_batch_append_error", err.to_string()),
+                        ),
+                    },
+                    Err(err) => self.bad_execute_request(err),
                 }
             }
             ("POST", "/ProxyService/Get") => {
