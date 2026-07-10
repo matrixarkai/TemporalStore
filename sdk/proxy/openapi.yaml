@@ -963,11 +963,19 @@ components:
       allOf:
         - $ref: '#/components/schemas/KeyRequest'
         - type: object
-          required: [value, occur_time_ms, ttl_ms, fol_type]
+          required: [value, fol_type]
           properties:
             value:
-              $ref: '#/components/schemas/ByteArray'
+              oneOf:
+                - type: string
+                - $ref: '#/components/schemas/ByteArray'
+            occur_time:
+              type: integer
+              format: int64
             occur_time_ms:
+              type: integer
+              format: int64
+            ttl:
               type: integer
               format: int64
             ttl_ms:

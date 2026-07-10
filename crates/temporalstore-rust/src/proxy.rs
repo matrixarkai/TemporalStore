@@ -1133,12 +1133,19 @@ impl ProxyRiskHType {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyRiskFolSetCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
-    pub value: Vec<u8>,
+    pub value: serde_json::Value,
+    #[serde(default)]
     pub occur_time_ms: u64,
+    #[serde(default, alias = "occur_time")]
+    pub occur_time_seconds: u64,
+    #[serde(default)]
     pub ttl_ms: u64,
+    #[serde(default, alias = "ttl")]
+    pub ttl_seconds: u64,
     pub fol_type: RiskFolType,
 }
 
@@ -2238,9 +2245,12 @@ impl ProxyService {
                     Ok(req) => {
                         let command = Command::RiskFolSet {
                             key: req.key,
-                            value: req.value,
-                            occur_time_ms: req.occur_time_ms,
-                            ttl_ms: req.ttl_ms,
+                            value: risk_fol_value_bytes(&req.value),
+                            occur_time_ms: risk_fol_time_ms(
+                                req.occur_time_ms,
+                                req.occur_time_seconds,
+                            ),
+                            ttl_ms: risk_fol_ttl_ms(req.ttl_ms, req.ttl_seconds),
                             fol_type: req.fol_type,
                         };
                         json_response(
@@ -4091,6 +4101,38 @@ fn risk_hset_amount(request: &ProxyRiskHsetCommandRequest) -> i64 {
                 0
             }
         }
+    }
+}
+
+fn risk_fol_value_bytes(value: &serde_json::Value) -> Vec<u8> {
+    if let Some(text) = value.as_str() {
+        return text.as_bytes().to_vec();
+    }
+    if let Some(items) = value.as_array() {
+        return items
+            .iter()
+            .map(|item| item.as_u64().unwrap_or_default() as u8)
+            .collect();
+    }
+    if value.is_null() {
+        Vec::new()
+    } else {
+        value.to_string().into_bytes()
+    }
+}
+
+fn risk_fol_time_ms(occur_time_ms: u64, occur_time_seconds: u64) -> u64 {
+    if occur_time_ms != 0 {
+        return risk_cpc_timestamp_ms(occur_time_ms);
+    }
+    risk_cpc_timestamp_ms(occur_time_seconds)
+}
+
+fn risk_fol_ttl_ms(ttl_ms: u64, ttl_seconds: u64) -> u64 {
+    if ttl_ms != 0 {
+        ttl_ms
+    } else {
+        ttl_seconds.saturating_mul(1_000)
     }
 }
 

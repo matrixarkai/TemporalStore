@@ -492,8 +492,11 @@ class ProxyClient:
         body = self._key_body(key)
         body.update(
             {
-                "value": _bytes_value(value),
+                "value": value,
+                "value_bytes": _bytes_value(value),
+                "occur_time": int(occur_time_ms) // 1000,
                 "occur_time_ms": occur_time_ms,
+                "ttl": int(ttl_ms) // 1000,
                 "ttl_ms": ttl_ms,
                 "fol_type": fol_type,
             }
