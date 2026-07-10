@@ -267,6 +267,15 @@ impl LocalWriteAheadLogStore {
         if commands.is_empty() {
             return Ok(Vec::new());
         }
+        if commands.len() == 1 {
+            let command = commands
+                .into_iter()
+                .next()
+                .expect("one-command WAL batch has exactly one command");
+            return self
+                .append_with_sync(shard_id, command, sync)
+                .map(|record| vec![record]);
+        }
 
         let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
         fs::create_dir_all(&inner.root)?;
