@@ -291,6 +291,7 @@ impl LocalWriteAheadLogStore {
         let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
         let mut records = Vec::with_capacity(commands.len());
         let mut bytes_written = 0_u64;
+        let mut batch_bytes = Vec::new();
 
         for (index, command) in commands.into_iter().enumerate() {
             let sequence = last_sequence.saturating_add(index as u64).saturating_add(1);
@@ -302,10 +303,11 @@ impl LocalWriteAheadLogStore {
             };
             let mut bytes = serde_json::to_vec(&record)?;
             bytes.push(b'\n');
-            file.write_all(&bytes)?;
             bytes_written = bytes_written.saturating_add(bytes.len() as u64);
+            batch_bytes.extend_from_slice(&bytes);
             records.push(record);
         }
+        file.write_all(&batch_bytes)?;
 
         if sync {
             file.flush()?;
