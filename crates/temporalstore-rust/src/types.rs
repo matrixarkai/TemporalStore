@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 pub type ShardId = u64;
 
@@ -29,12 +29,15 @@ impl Status {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FeaturePoint {
+    #[serde(alias = "ts", alias = "timestamp")]
     pub timestamp_ms: u64,
+    #[serde(deserialize_with = "bytes_from_json")]
     pub value: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SequenceFeatureRow {
+    #[serde(alias = "ts", alias = "timestamp")]
     pub timestamp_ms: u64,
     pub gid: u64,
     pub action_type: u32,
@@ -89,6 +92,33 @@ impl SequenceFeatureRow {
             duration: duration?,
             author_id: author_id?,
         })
+    }
+}
+
+fn bytes_from_json<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    bytes_value(value).map_err(serde::de::Error::custom)
+}
+
+fn bytes_value(value: serde_json::Value) -> Result<Vec<u8>, String> {
+    match value {
+        serde_json::Value::Null => Ok(Vec::new()),
+        serde_json::Value::String(value) => Ok(value.into_bytes()),
+        serde_json::Value::Array(_) => serde_json::from_value(value).map_err(|err| err.to_string()),
+        serde_json::Value::Object(mut object) => {
+            if let Some(bytes) = object.remove("bytes") {
+                serde_json::from_value(bytes).map_err(|err| err.to_string())
+            } else if let Some(value) = object.remove("value") {
+                bytes_value(value)
+            } else {
+                serde_json::to_vec(&serde_json::Value::Object(object))
+                    .map_err(|err| err.to_string())
+            }
+        }
+        value => serde_json::to_vec(&value).map_err(|err| err.to_string()),
     }
 }
 
