@@ -263,11 +263,35 @@ pub enum RiskFamily {
     Fol,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RiskFolType {
     First,
     Last,
+}
+
+impl<'de> Deserialize<'de> for RiskFolType {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value {
+            serde_json::Value::Number(number) => match number.as_i64() {
+                Some(0) => Ok(Self::First),
+                Some(1) => Ok(Self::Last),
+                _ => Err(serde::de::Error::custom("unknown RiskFolType value")),
+            },
+            serde_json::Value::String(value) => match value.as_str() {
+                "FIRST" | "first" | "First" | "0" => Ok(Self::First),
+                "LAST" | "last" | "Last" | "1" => Ok(Self::Last),
+                _ => Err(serde::de::Error::custom("unknown RiskFolType value")),
+            },
+            _ => Err(serde::de::Error::custom(
+                "RiskFolType must be a string or integer",
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
