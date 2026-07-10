@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
 
@@ -382,7 +383,7 @@ impl CoreIndex {
 }
 
 pub(super) fn object_component_lookup_key(model_id: &str, object_key: &str) -> String {
-    let mut key = String::new();
+    let mut key = String::with_capacity(lookup_key_capacity(&[model_id, object_key]));
     push_lookup_part(&mut key, model_id);
     push_lookup_part(&mut key, object_key);
     key
@@ -393,7 +394,11 @@ pub(super) fn object_page_lookup_key(
     object_key: &str,
     component: Option<&str>,
 ) -> String {
-    let mut key = String::new();
+    let mut key = String::with_capacity(
+        lookup_key_capacity(&[model_id, object_key])
+            + component.map(lookup_part_capacity).unwrap_or_default()
+            + 2,
+    );
     push_lookup_part(&mut key, model_id);
     push_lookup_part(&mut key, object_key);
     match component {
@@ -407,10 +412,26 @@ pub(super) fn object_page_lookup_key(
 }
 
 fn push_lookup_part(buffer: &mut String, value: &str) {
-    buffer.push_str(&value.len().to_string());
-    buffer.push(':');
+    let _ = write!(buffer, "{}:", value.len());
     buffer.push_str(value);
     buffer.push('|');
+}
+
+fn lookup_key_capacity(parts: &[&str]) -> usize {
+    parts.iter().map(|part| lookup_part_capacity(part)).sum()
+}
+
+fn lookup_part_capacity(value: &str) -> usize {
+    decimal_digit_count(value.len()) + 1 + value.len() + 1
+}
+
+fn decimal_digit_count(mut value: usize) -> usize {
+    let mut digits = 1;
+    while value >= 10 {
+        value /= 10;
+        digits += 1;
+    }
+    digits
 }
 
 fn same_page_address(left: &PageAddress, right: &PageAddress) -> bool {
