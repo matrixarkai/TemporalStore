@@ -1580,8 +1580,11 @@ impl LocalBlockStore {
     pub fn purge_delayed_destroy_segments_with_report(
         &self,
     ) -> Result<BlockStorePurgeDelayedDestroyReport, BlockStoreError> {
-        let mut inner = self.inner.lock().expect("block store lock poisoned");
-        let trash_dir = delayed_destroy_dir(&inner.root);
+        let root = {
+            let inner = self.inner.lock().expect("block store lock poisoned");
+            inner.root.clone()
+        };
+        let trash_dir = delayed_destroy_dir(&root);
         let mut purged = Vec::new();
         let mut purged_physical_bytes = 0;
         if !trash_dir.exists() {
@@ -1597,12 +1600,17 @@ impl LocalBlockStore {
                 .map(|metadata| metadata.len())
                 .unwrap_or_default();
             fs::remove_file(entry.path())?;
-            set_extent_state(&mut inner.extents, id, BlockStoreExtentState::Purged);
             purged.push(id);
         }
         purged.sort_unstable();
         sync_dir(&trash_dir)?;
-        persist_extent_manifest(&inner.root, &inner.extents)?;
+        if !purged.is_empty() {
+            let mut inner = self.inner.lock().expect("block store lock poisoned");
+            for id in &purged {
+                set_extent_state(&mut inner.extents, *id, BlockStoreExtentState::Purged);
+            }
+            persist_extent_manifest(&inner.root, &inner.extents)?;
+        }
         Ok(BlockStorePurgeDelayedDestroyReport {
             purged_page_segment_ids: purged,
             purged_physical_bytes,
