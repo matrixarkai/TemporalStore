@@ -1987,8 +1987,11 @@ impl ProxyClient {
         let body = self.proxy_service_body(
             key,
             &[
-                ("value", serde_json::json!(value.as_bytes())),
+                ("value", serde_json::json!(value)),
+                ("value_bytes", serde_json::json!(value.as_bytes())),
+                ("occur_time", serde_json::json!(occur_time_ms / 1000)),
                 ("occur_time_ms", serde_json::json!(occur_time_ms)),
+                ("ttl", serde_json::json!(ttl_ms / 1000)),
                 ("ttl_ms", serde_json::json!(ttl_ms)),
                 (
                     "fol_type",
