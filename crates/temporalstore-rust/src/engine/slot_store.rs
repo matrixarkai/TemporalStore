@@ -406,6 +406,15 @@ pub(super) fn read_slot_index_component_values(
     if refs.is_empty() {
         return Vec::new();
     }
+    if refs.len() == 1 {
+        let (component, address) = refs
+            .into_iter()
+            .next()
+            .expect("single component ref is present");
+        return read_page_bytes(cache, page_store, shard_id, &address)
+            .map(|value| vec![(component, value)])
+            .unwrap_or_default();
+    }
 
     let mut addresses = Vec::with_capacity(refs.len());
     addresses.extend(refs.iter().map(|(_, address)| Some(address.clone())));
