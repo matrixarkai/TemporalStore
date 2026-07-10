@@ -179,16 +179,41 @@ pub enum StringSetCondition {
     IfNotExists,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FeatureWritePolicy {
     Upsert,
-    #[serde(alias = "FIRST", alias = "first", alias = "NX", alias = "nx")]
     InsertIfAbsent,
-    #[serde(alias = "UPDATE", alias = "update", alias = "XX", alias = "xx")]
     ReplaceExisting,
-    #[serde(alias = "BLOCK", alias = "block")]
     Block,
+}
+
+impl<'de> Deserialize<'de> for FeatureWritePolicy {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value {
+            serde_json::Value::Number(number) => match number.as_i64() {
+                Some(0) => Ok(Self::Upsert),
+                Some(1) => Ok(Self::Block),
+                Some(2) => Ok(Self::InsertIfAbsent),
+                Some(3) => Ok(Self::ReplaceExisting),
+                _ => Err(serde::de::Error::custom("unknown WritePolicy value")),
+            },
+            serde_json::Value::String(value) => match value.as_str() {
+                "UPSERT" | "upsert" | "Upsert" | "0" => Ok(Self::Upsert),
+                "BLOCK" | "block" | "Block" | "1" => Ok(Self::Block),
+                "FIRST" | "first" | "First" | "NX" | "nx" | "2" => Ok(Self::InsertIfAbsent),
+                "UPDATE" | "update" | "Update" | "XX" | "xx" | "3" => Ok(Self::ReplaceExisting),
+                _ => Err(serde::de::Error::custom("unknown WritePolicy value")),
+            },
+            _ => Err(serde::de::Error::custom(
+                "WritePolicy must be a string or integer",
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
