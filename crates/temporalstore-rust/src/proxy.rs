@@ -741,6 +741,7 @@ pub struct ProxySequenceQueryCommandRequest {
     pub start_ms: u64,
     #[serde(alias = "end_ts")]
     pub end_ms: u64,
+    #[serde(alias = "limit")]
     pub count: usize,
     #[serde(default)]
     pub filters: Vec<FeatureFilter>,
