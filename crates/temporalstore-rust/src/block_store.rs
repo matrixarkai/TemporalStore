@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -128,6 +129,8 @@ pub struct BlockStoreOptions {
     pub compression_min_bytes: usize,
     #[serde(default = "default_page_record_compression_level")]
     pub compression_level: i32,
+    #[serde(default = "default_block_store_sync_on_append")]
+    pub sync_on_append: bool,
 }
 
 pub type BlockAppendRecord = (Vec<u8>, Option<u64>, Option<u32>);
@@ -138,7 +141,18 @@ impl Default for BlockStoreOptions {
             compression_enabled: default_page_record_compression_enabled(),
             compression_min_bytes: default_page_record_compression_min_bytes(),
             compression_level: default_page_record_compression_level(),
+            sync_on_append: default_block_store_sync_on_append(),
         }
+    }
+}
+
+fn default_block_store_sync_on_append() -> bool {
+    match env::var("TEMPORALSTORE_BLOCK_STORE_SYNC_ON_APPEND") {
+        Ok(value) => {
+            let normalized = value.trim().to_ascii_lowercase();
+            !matches!(normalized.as_str(), "0" | "false" | "off" | "no")
+        }
+        Err(_) => true,
     }
 }
 
@@ -642,7 +656,9 @@ impl LocalBlockStore {
         };
         file.write_all(&record.bytes)?;
         file.flush()?;
-        file.sync_data()?;
+        if inner.options.sync_on_append {
+            file.sync_data()?;
+        }
         inner.next_page_id = inner.next_page_id.saturating_add(1);
         inner.write_offset += address.length;
         let page_segment_id = inner.page_segment_id;
@@ -654,7 +670,11 @@ impl LocalBlockStore {
             record.logical_len as u64,
             page_id,
         );
-        persist_extent_manifest(&inner.root, &inner.extents)?;
+        persist_extent_manifest_with_policy(
+            &inner.root,
+            &inner.extents,
+            inner.options.sync_on_append,
+        )?;
         inner.stats.writes += 1;
         inner.stats.bytes_written += address.length;
         inner.stats.logical_bytes_written += record.logical_len as u64;
@@ -702,7 +722,9 @@ impl LocalBlockStore {
             ) {
                 if let Some(mut current) = file.take() {
                     current.flush()?;
-                    current.sync_data()?;
+                    if inner.options.sync_on_append {
+                        current.sync_data()?;
+                    }
                 }
                 roll_segment_inner(&mut inner)?;
                 page_id = inner.next_page_id;
@@ -757,9 +779,15 @@ impl LocalBlockStore {
         }
         if let Some(mut current) = file {
             current.flush()?;
-            current.sync_data()?;
+            if inner.options.sync_on_append {
+                current.sync_data()?;
+            }
         }
-        persist_extent_manifest(&inner.root, &inner.extents)?;
+        persist_extent_manifest_with_policy(
+            &inner.root,
+            &inner.extents,
+            inner.options.sync_on_append,
+        )?;
         inner.stats.writes = inner.stats.writes.saturating_add(writes);
         inner.stats.bytes_written = inner.stats.bytes_written.saturating_add(bytes_written);
         inner.stats.logical_bytes_written = inner
@@ -1936,8 +1964,10 @@ fn roll_segment_inner(
     inner.write_offset = 0;
     let path = segment_path(&inner.root, inner.page_segment_id);
     let file = File::create(&path)?;
-    file.sync_all()?;
-    sync_parent_dir(&path)?;
+    if inner.options.sync_on_append {
+        file.sync_all()?;
+        sync_parent_dir(&path)?;
+    }
     let transition_unix_ms = now_unix_ms();
     if let Some(previous) = inner.extents.get_mut(&previous_page_segment_id) {
         previous.state = BlockStoreExtentState::Sealed;
@@ -1960,7 +1990,7 @@ fn roll_segment_inner(
     };
     let page_segment_id = inner.page_segment_id;
     inner.extents.insert(page_segment_id, new_extent);
-    persist_extent_manifest(&inner.root, &inner.extents)?;
+    persist_extent_manifest_with_policy(&inner.root, &inner.extents, inner.options.sync_on_append)?;
     Ok(BlockStoreRollReport {
         previous_page_segment_id,
         new_page_segment_id: inner.page_segment_id,
@@ -2428,6 +2458,14 @@ fn persist_extent_manifest(
     root: &Path,
     extents: &BTreeMap<u64, BlockStoreExtentDescriptor>,
 ) -> Result<(), BlockStoreError> {
+    persist_extent_manifest_with_policy(root, extents, true)
+}
+
+fn persist_extent_manifest_with_policy(
+    root: &Path,
+    extents: &BTreeMap<u64, BlockStoreExtentDescriptor>,
+    sync_manifest: bool,
+) -> Result<(), BlockStoreError> {
     fs::create_dir_all(root)?;
     let path = extent_manifest_path(root);
     let temp_path = path.with_extension(format!(
@@ -2452,10 +2490,14 @@ fn persist_extent_manifest(
         })?;
         temp.write_all(b"\n")?;
         temp.flush()?;
-        temp.sync_all()?;
+        if sync_manifest {
+            temp.sync_all()?;
+        }
     }
     fs::rename(&temp_path, &path)?;
-    sync_parent_dir(&path)?;
+    if sync_manifest {
+        sync_parent_dir(&path)?;
+    }
     Ok(())
 }
 

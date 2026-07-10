@@ -422,7 +422,11 @@ fn serve() -> i32 {
         }
         if !matches!(
             response.op.as_str(),
-            "metrics_prometheus" | "matrixark_backend_metrics" | "health" | "readiness" | "preflight"
+            "metrics_prometheus"
+                | "matrixark_backend_metrics"
+                | "health"
+                | "readiness"
+                | "preflight"
         ) {
             let stats = op_stats.entry(response.op.clone()).or_default();
             stats.commands_total = stats.commands_total.saturating_add(1);
@@ -709,13 +713,28 @@ fn render_backend_metrics(
 
     let mut metrics = BTreeMap::new();
     metrics.insert("backend".to_string(), json!("rust"));
-    metrics.insert("storage_mode".to_string(), json!(matrixark_rust_storage_mode()));
-    metrics.insert("service_mode".to_string(), json!(matrixark_rust_service_mode()));
+    metrics.insert(
+        "storage_mode".to_string(),
+        json!(matrixark_rust_storage_mode()),
+    );
+    metrics.insert(
+        "service_mode".to_string(),
+        json!(matrixark_rust_service_mode()),
+    );
     metrics.insert("commands_total".to_string(), json!(command_count));
     metrics.insert("errors_total".to_string(), json!(failed_count));
-    metrics.insert("qps".to_string(), json!(command_count as f64 / uptime_seconds));
-    metrics.insert("rust_engine_ms_total".to_string(), json!(latency_sum_ms as f64));
-    metrics.insert("rust_engine_ms_max".to_string(), json!(latency_max_ms as f64));
+    metrics.insert(
+        "qps".to_string(),
+        json!(command_count as f64 / uptime_seconds),
+    );
+    metrics.insert(
+        "rust_engine_ms_total".to_string(),
+        json!(latency_sum_ms as f64),
+    );
+    metrics.insert(
+        "rust_engine_ms_max".to_string(),
+        json!(latency_max_ms as f64),
+    );
     metrics.insert("serialization_ms_total".to_string(), json!(0.0));
     metrics.insert("proxy_queue_wait_ms_total".to_string(), json!(0.0));
     metrics.insert("records_written_total".to_string(), json!(records_written));
@@ -2557,7 +2576,10 @@ fn execute_record_log_request(
                     .push((entry.field, entry.value.into_bytes()));
             }
             for CompactHashEntry(key, field, value) in request.entries_compact {
-                grouped.entry(key).or_default().push((field, value.into_bytes()));
+                grouped
+                    .entry(key)
+                    .or_default()
+                    .push((field, value.into_bytes()));
             }
             let commands = grouped
                 .into_iter()
@@ -2972,6 +2994,15 @@ fn matrixark_proxy_block_store_options() -> BlockStoreOptions {
                 "TS_PAGE_STORE_COMPRESSION_LEVEL",
             ],
             defaults.compression_level,
+        ),
+        sync_on_append: env_bool_any(
+            &[
+                "MATRIXARK_RUST_PROXY_BLOCK_STORE_SYNC_ON_APPEND",
+                "TEMPORALSTORE_BLOCK_STORE_SYNC_ON_APPEND",
+                "TS_BLOCK_STORE_SYNC_ON_APPEND",
+                "TS_PAGE_STORE_SYNC_ON_APPEND",
+            ],
+            defaults.sync_on_append,
         ),
     }
 }
@@ -4195,9 +4226,8 @@ mod tests {
             format!("{storage_prefix}:record_count"),
             format!("{storage_prefix}:records:000000"),
         ];
-        let publish_output =
-            execute_record_log_request(&engine, publish.clone(), root.clone())
-                .expect("publish selected visibility");
+        let publish_output = execute_record_log_request(&engine, publish.clone(), root.clone())
+            .expect("publish selected visibility");
         assert!(
             publish_output.count.unwrap_or_default() > 0,
             "first targeted publish should persist selected hot pages"
@@ -4212,9 +4242,8 @@ mod tests {
             Some(&json!(false)),
             "targeted publish diagnostics should not look like a full-shard publish"
         );
-        let republish_output =
-            execute_record_log_request(&engine, publish, root.clone())
-                .expect("republish selected visibility");
+        let republish_output = execute_record_log_request(&engine, publish, root.clone())
+            .expect("republish selected visibility");
         assert_eq!(
             republish_output.count,
             Some(0),
