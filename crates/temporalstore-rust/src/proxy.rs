@@ -1187,6 +1187,30 @@ pub struct ProxyRiskCpcQueryCommandRequest {
     pub precision_ms: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyRiskManagerCommandRequest {
+    #[serde(alias = "namespace_name")]
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    #[serde(default)]
+    pub op_type: Option<serde_json::Value>,
+    #[serde(default)]
+    pub field_list: Vec<ProxyRiskManagerKvPair>,
+    #[serde(default)]
+    pub start_offset: String,
+    #[serde(default)]
+    pub end_offset: String,
+    #[serde(default)]
+    pub is_cpc: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyRiskManagerKvPair {
+    pub key: String,
+    pub value: String,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyRiskWindow {
     #[serde(default)]
@@ -2275,10 +2299,14 @@ impl ProxyService {
                 }
             }
             ("POST", "/ProxyService/RiskManager") => {
-                match parse_json::<ProxyKeyCommandRequest>(&request.body) {
+                match parse_json::<ProxyRiskManagerCommandRequest>(&request.body) {
                     Ok(req) => json_response(
                         200,
-                        &self.table_command(req, |key| Command::RiskManager { key }),
+                        &self.table_execute(ProxyTableExecuteRequest {
+                            namespace: req.namespace,
+                            table_name: req.table_name,
+                            command: Command::RiskManager { key: req.key },
+                        }),
                     ),
                     Err(err) => self.bad_execute_request(err),
                 }

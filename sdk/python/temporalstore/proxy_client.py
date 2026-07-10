@@ -511,6 +511,28 @@ class ProxyClient:
         data = self._post("/ProxyService/RiskManager", self._key_body(key))
         return dict(data.get("entries", {}))
 
+    def risk_manager_with_options(
+        self,
+        key: str,
+        op_type: str,
+        field_list: Optional[Iterable[Dict[str, str]]] = None,
+        start_offset: str = "",
+        end_offset: str = "",
+        is_cpc: bool = False,
+    ) -> Dict[str, str]:
+        body = self._key_body(key)
+        body.update(
+            {
+                "op_type": op_type,
+                "field_list": list(field_list or []),
+                "start_offset": start_offset,
+                "end_offset": end_offset,
+                "is_cpc": is_cpc,
+            }
+        )
+        data = self._post("/ProxyService/RiskManager", body)
+        return dict(data.get("entries", {}))
+
     def _key_body(self, key: str) -> Dict[str, Any]:
         return {
             "namespace": self.options.namespace_name,
