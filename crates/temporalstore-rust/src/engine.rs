@@ -15114,6 +15114,11 @@ pub(super) fn read_page_bytes_batch(
     if lookup.is_empty() {
         return values;
     }
+    if lookup.len() == 1 {
+        let (index, address, _) = &lookup[0];
+        values[*index] = read_page_bytes(cache, page_store, shard_id, address);
+        return values;
+    }
 
     let mut unique_keys = Vec::new();
     let mut lookup_indexes_by_key = HashMap::<CacheKey, Vec<usize>>::new();
