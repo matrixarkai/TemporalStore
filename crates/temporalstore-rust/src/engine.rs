@@ -15245,6 +15245,15 @@ pub(super) fn read_page_bytes_batch(
     shard_id: ShardId,
     addresses: &[Option<PageAddress>],
 ) -> Vec<Option<Vec<u8>>> {
+    if addresses.is_empty() {
+        return Vec::new();
+    }
+    if addresses.len() == 1 {
+        return vec![addresses[0]
+            .as_ref()
+            .and_then(|address| read_page_bytes(cache, page_store, shard_id, address))];
+    }
+
     let mut values = vec![None; addresses.len()];
     let mut unique_entries = Vec::<BatchPageReadEntry>::with_capacity(addresses.len());
     let mut unique_index_by_key = HashMap::<CacheKey, usize>::with_capacity(addresses.len());
