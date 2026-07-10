@@ -7656,12 +7656,14 @@ fn execute_on_shard(
                 }
             } else if async_storage && entries.len() >= hash_multiset_batch_memory_put_min() {
                 let object_id_prefix = stable_page_object_id_prefix(shard_id, "hash", &key);
-                for (field, value) in entries {
+                let start_offset =
+                    HOT_PAGE_OFFSET.fetch_add(entries.len() as u64, Ordering::Relaxed);
+                for (index, (field, value)) in entries.into_iter().enumerate() {
                     let object_id =
                         stable_page_object_id_from_prefix(object_id_prefix, Some(&field));
                     let address = PageAddress {
                         page_segment_id: HOT_PAGE_SEGMENT_ID,
-                        offset: HOT_PAGE_OFFSET.fetch_add(1, Ordering::Relaxed),
+                        offset: start_offset.saturating_add(index as u64),
                         length: value.len() as u64,
                         page_id: None,
                         object_id: Some(object_id),
