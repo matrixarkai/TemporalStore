@@ -2204,6 +2204,36 @@ impl TemporalStoreClient {
         )
     }
 
+    pub fn risk_increment(
+        &self,
+        key: impl Into<String>,
+        amount: i64,
+        ttl_seconds: u64,
+        precision: ClientRiskPrecision,
+        occur_time_seconds: u64,
+    ) -> Result<(), ClientError> {
+        let (namespace, table_name) = self.default_table_names()?;
+        self.risk_increment_table(
+            namespace,
+            table_name,
+            key,
+            amount,
+            ttl_seconds,
+            precision,
+            occur_time_seconds,
+        )
+    }
+
+    pub fn risk_count(
+        &self,
+        key: impl Into<String>,
+        precision: ClientRiskPrecision,
+        window: ClientRiskWindow,
+    ) -> Result<i64, ClientError> {
+        let (namespace, table_name) = self.default_table_names()?;
+        self.risk_count_table(namespace, table_name, key, precision, window)
+    }
+
     pub fn risk_increment_table(
         &self,
         namespace: impl Into<String>,
