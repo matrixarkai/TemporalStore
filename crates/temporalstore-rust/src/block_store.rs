@@ -138,6 +138,8 @@ pub type BlockAppendRecord = (Vec<u8>, Option<u64>, Option<u32>);
 
 const BATCH_APPEND_BUFFER_TARGET_BYTES: usize = 1024 * 1024;
 const BATCH_APPEND_RECORD_ENVELOPE_ESTIMATE_BYTES: usize = 192;
+const COALESCED_READ_MAX_GAP_BYTES: u64 = 4 * 1024;
+const COALESCED_READ_MAX_GROUP_BYTES: u64 = 1024 * 1024;
 
 impl Default for BlockStoreOptions {
     fn default() -> Self {
@@ -979,12 +981,26 @@ impl LocalBlockStore {
             cursor += 1;
             while cursor < read_order.len() {
                 let (_, next_address) = read_order[cursor];
-                if next_address.page_segment_id != page_segment_id
-                    || next_address.offset != group_end
+                if next_address.page_segment_id != page_segment_id {
+                    break;
+                }
+                let next_end = next_address.offset.saturating_add(next_address.length);
+                if next_address.offset == group_end {
+                    group_end = next_end;
+                    cursor += 1;
+                    continue;
+                }
+                if next_address.offset <= group_end {
+                    break;
+                }
+                let gap = next_address.offset.saturating_sub(group_end);
+                let coalesced_len = next_end.saturating_sub(group_offset);
+                if gap > COALESCED_READ_MAX_GAP_BYTES
+                    || coalesced_len > COALESCED_READ_MAX_GROUP_BYTES
                 {
                     break;
                 }
-                group_end = group_end.saturating_add(next_address.length);
+                group_end = next_end;
                 cursor += 1;
             }
 
