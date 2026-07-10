@@ -183,6 +183,7 @@ pub struct WriteAheadLogInfo {
 }
 
 pub const WRITE_AHEAD_LOG_FORMAT_VERSION: u32 = 1;
+const WRITE_AHEAD_LOG_BATCH_RECORD_ESTIMATE_BYTES: usize = 192;
 
 #[derive(Debug, Clone)]
 pub struct LocalWriteAheadLogStore {
@@ -291,7 +292,11 @@ impl LocalWriteAheadLogStore {
         let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
         let mut records = Vec::with_capacity(commands.len());
         let mut bytes_written = 0_u64;
-        let mut batch_bytes = Vec::new();
+        let mut batch_bytes = Vec::with_capacity(
+            commands
+                .len()
+                .saturating_mul(WRITE_AHEAD_LOG_BATCH_RECORD_ESTIMATE_BYTES),
+        );
 
         for (index, command) in commands.into_iter().enumerate() {
             let sequence = last_sequence.saturating_add(index as u64).saturating_add(1);
