@@ -1495,7 +1495,7 @@ fn escape_meta_metric_label(value: &str) -> String {
         .replace('"', "\\\"")
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct MasterTableOptionsRequest {
     #[serde(default)]
     partition_num: u64,
@@ -1573,7 +1573,7 @@ impl MasterTableOptionsRequest {
     }
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct MasterCreateTableRequest {
     #[serde(alias = "namespace_name")]
     namespace: String,
@@ -1593,6 +1593,42 @@ struct MasterCreateTableRequest {
     use_cpp_partition_ids: bool,
     #[serde(default)]
     partition_version: u32,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct FeLegacyAddTableRequest {
+    #[serde(default, alias = "namespace")]
+    namespace_name: String,
+    #[serde(default, alias = "table_name")]
+    name: String,
+    #[serde(default)]
+    partition_set_num: u64,
+    #[serde(default)]
+    partition_units: Vec<FeLegacyPartitionUnit>,
+    #[serde(default)]
+    table_options: Option<MasterTableOptionsRequest>,
+    #[serde(default)]
+    config: Option<MasterTableOptionsRequest>,
+    #[serde(default)]
+    use_cpp_partition_ids: bool,
+    #[serde(default)]
+    partition_version: u32,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct FeLegacyPartitionUnit {
+    #[serde(default)]
+    partition_num: u64,
+    #[serde(default)]
+    placement_set: Vec<FeLegacyLocation>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct FeLegacyLocation {
+    #[serde(default)]
+    vdc: String,
+    #[serde(default)]
+    tag: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1920,6 +1956,95 @@ fn master_add_table_request(req: MasterCreateTableRequest) -> AddTableRequest {
     }
 }
 
+fn fe_manage_data_value(data: serde_json::Value) -> Result<serde_json::Value, String> {
+    match data {
+        serde_json::Value::String(raw) => serde_json::from_str(&raw).map_err(|err| err.to_string()),
+        value => Ok(value),
+    }
+}
+
+fn fe_manage_request_body(method: &str, data: serde_json::Value) -> Result<Vec<u8>, String> {
+    let data = fe_manage_data_value(data)?;
+    let data = if method == "AddTable" {
+        fe_convert_legacy_add_table_form(data)?
+    } else {
+        data
+    };
+    serde_json::to_vec(&data).map_err(|err| err.to_string())
+}
+
+fn fe_convert_legacy_add_table_form(data: serde_json::Value) -> Result<serde_json::Value, String> {
+    let has_legacy_partition_units = data
+        .as_object()
+        .map(|object| object.contains_key("partition_units"))
+        .unwrap_or(false);
+    if !has_legacy_partition_units {
+        return Ok(data);
+    }
+
+    let legacy: FeLegacyAddTableRequest =
+        serde_json::from_value(data).map_err(|err| err.to_string())?;
+    let replica_count: u64 = legacy
+        .partition_units
+        .iter()
+        .map(|unit| unit.partition_num)
+        .sum::<u64>()
+        .max(1);
+    let shard_count = if legacy.partition_set_num > 0 {
+        legacy.partition_set_num
+    } else {
+        replica_count
+    };
+    let mut table_options =
+        legacy
+            .table_options
+            .or(legacy.config)
+            .unwrap_or(MasterTableOptionsRequest {
+                partition_num: 0,
+                pin_primary: None,
+                replica_read_policy: None,
+                preferred_location: None,
+                drop_percent: None,
+                max_read_retries: None,
+                max_write_retries: None,
+                retry_backoff_ms: None,
+                continuous_failed_time_ms: None,
+                io_timeout_ms: None,
+                connect_timeout_ms: None,
+            });
+    if table_options.preferred_location.is_none() {
+        table_options.preferred_location = legacy
+            .partition_units
+            .iter()
+            .flat_map(|unit| unit.placement_set.iter())
+            .find_map(|loc| {
+                if loc.vdc.is_empty() {
+                    None
+                } else if loc.tag.is_empty() {
+                    Some(loc.vdc.clone())
+                } else {
+                    Some(format!("{}-{}", loc.vdc, loc.tag))
+                }
+            });
+    }
+    if table_options.partition_num == 0 {
+        table_options.partition_num = shard_count;
+    }
+
+    serde_json::to_value(MasterCreateTableRequest {
+        namespace: legacy.namespace_name,
+        table_name: legacy.name,
+        first_shard_id: 0,
+        shard_count,
+        partition_set_num: legacy.partition_set_num,
+        replica_count,
+        table_options: Some(table_options),
+        use_cpp_partition_ids: legacy.use_cpp_partition_ids,
+        partition_version: legacy.partition_version,
+    })
+    .map_err(|err| err.to_string())
+}
+
 fn master_update_table_request(req: MasterUpdateTableRequest) -> UpdateTableRequest {
     let shard_count = req.shard_count.or_else(|| {
         req.table_options
@@ -2167,7 +2292,7 @@ fn fe_manage(meta: &MetaBackend, req: FeManageRequest) -> serde_json::Value {
             "status": Status::error("bad_request", "missing method"),
         });
     }
-    let body = match serde_json::to_vec(&req.data) {
+    let body = match fe_manage_request_body(&req.method, req.data) {
         Ok(body) => body,
         Err(err) => {
             return serde_json::json!({
