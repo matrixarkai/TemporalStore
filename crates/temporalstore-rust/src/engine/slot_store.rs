@@ -277,6 +277,29 @@ pub(super) fn slot_index_component_page_addresses(
         return Vec::new();
     }
 
+    if let Some(page_refs) = shard.slot_index.live_page_refs_for_object_key(object_key) {
+        let mut refs = Vec::with_capacity(page_refs.len());
+        for page_ref in page_refs {
+            if page_ref.model_id != model_id {
+                continue;
+            }
+            let Some(slot) = shard.slot_index.slot_map.get(&page_ref.routing_slot) else {
+                continue;
+            };
+            let Some(page) = slot.page_index.get(&page_ref.page_ref_key) else {
+                continue;
+            };
+            if !page.deleted && page.model_id == model_id && page.object_key == object_key {
+                refs.push((
+                    page.component.clone(),
+                    slot_page_identity_key(&page.address),
+                    page.address.clone(),
+                ));
+            }
+        }
+        return sorted_slot_component_refs(refs);
+    }
+
     let mut refs = Vec::new();
     if let Some(routing_slots) = shard
         .slot_index
