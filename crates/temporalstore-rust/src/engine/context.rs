@@ -16,6 +16,9 @@ use super::packed_pages::{
 };
 use super::state::PackedFeaturePageDecode;
 use super::{read_page_bytes_batch, stable_object_hash, ShardState};
+
+const CONTEXT_PAGE_HASH_LOOKUP_MIN_REFS: usize = 16;
+
 pub(super) fn context_node_key(tenant_hash: u64, node_hash: u64) -> String {
     format!("ctx:node:{tenant_hash}:{node_hash}")
 }
@@ -212,12 +215,7 @@ pub(super) fn read_context_values_cached_with_page_cache<T: ContextWire>(
             values.push(
                 points
                     .as_ref()
-                    .and_then(|points| {
-                        points
-                            .iter()
-                            .find(|point| point.timestamp_ms == *timeline_key)
-                    })
-                    .and_then(|point| context_from_bytes::<T>(&point.value)),
+                    .and_then(|points| context_from_packed_page_point::<T>(points, *timeline_key)),
             );
         } else {
             values.push(None);
@@ -238,12 +236,7 @@ pub(super) fn read_context_values_cached_with_page_cache<T: ContextWire>(
         let lookups = miss_groups.remove(&address).unwrap_or_default();
         match decode_feature_page_strict(&bytes) {
             PackedFeaturePageDecode::Packed(points) => {
-                for (index, timeline_key) in lookups {
-                    values[index] = points
-                        .iter()
-                        .find(|point| point.timestamp_ms == timeline_key)
-                        .and_then(|point| context_from_bytes::<T>(&point.value));
-                }
+                fill_context_values_from_packed_page(&mut values, lookups, &points);
                 packed_page_cache.insert(address, Some(points));
             }
             PackedFeaturePageDecode::Legacy => {
@@ -257,6 +250,46 @@ pub(super) fn read_context_values_cached_with_page_cache<T: ContextWire>(
         }
     }
     values.into_iter().flatten().collect()
+}
+
+fn fill_context_values_from_packed_page<T: ContextWire>(
+    values: &mut [Option<T>],
+    lookups: Vec<(usize, u64)>,
+    points: &[FeaturePoint],
+) {
+    if lookups.len() >= CONTEXT_PAGE_HASH_LOOKUP_MIN_REFS
+        && points.len() >= CONTEXT_PAGE_HASH_LOOKUP_MIN_REFS
+    {
+        let points_by_timestamp = points
+            .iter()
+            .map(|point| (point.timestamp_ms, point))
+            .collect::<HashMap<_, _>>();
+        for (index, timeline_key) in lookups {
+            values[index] = points_by_timestamp
+                .get(&timeline_key)
+                .and_then(|point| context_from_bytes::<T>(&point.value));
+        }
+        return;
+    }
+
+    for (index, timeline_key) in lookups {
+        values[index] = context_from_packed_page_point(points, timeline_key);
+    }
+}
+
+fn context_from_packed_page_point<T: ContextWire>(
+    points: &[FeaturePoint],
+    timeline_key: u64,
+) -> Option<T> {
+    match points.binary_search_by_key(&timeline_key, |point| point.timestamp_ms) {
+        Ok(index) => points
+            .get(index)
+            .and_then(|point| context_from_bytes::<T>(&point.value)),
+        Err(_) => points
+            .iter()
+            .find(|point| point.timestamp_ms == timeline_key)
+            .and_then(|point| context_from_bytes::<T>(&point.value)),
+    }
 }
 
 pub(super) fn context_event_matches_filter(
