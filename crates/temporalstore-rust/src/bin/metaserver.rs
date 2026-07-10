@@ -2341,7 +2341,7 @@ fn handle_query_service_route(meta: &MetaBackend, request: &HttpRequest) -> Opti
             json_response(200, &fe_list_cluster())
         }
         ("GET", "/query/info") | ("POST", "/query/info") => {
-            json_response(200, &backend_call!(meta, info))
+            json_response(200, &fe_query_info(meta))
         }
         ("GET", "/QueryService/QueryClusterStatus")
         | ("POST", "/QueryService/QueryClusterStatus") => {
@@ -2648,6 +2648,44 @@ fn fe_list_cluster() -> serde_json::Value {
         "status": Status::ok(),
         "data": {
             "options": options
+        }
+    })
+}
+
+fn fe_query_info(meta: &MetaBackend) -> serde_json::Value {
+    let clusters = FE_CLUSTER_REGISTRY
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .expect("FE cluster registry lock poisoned")
+        .clone();
+    let info = serde_json::to_value(backend_call!(meta, info)).unwrap_or_else(|err| {
+        serde_json::json!({
+            "status": Status::error("query_response_error", err.to_string()),
+        })
+    });
+    let mut items = clusters
+        .iter()
+        .map(|(cluster, uri)| {
+            serde_json::json!({
+                "cluster": cluster,
+                "uri": uri,
+                "leader": "",
+                "info": info,
+            })
+        })
+        .collect::<Vec<_>>();
+    if items.is_empty() {
+        items.push(serde_json::json!({
+            "cluster": "default",
+            "uri": "",
+            "leader": "",
+            "info": info,
+        }));
+    }
+    serde_json::json!({
+        "status": Status::ok(),
+        "data": {
+            "items": items
         }
     })
 }
