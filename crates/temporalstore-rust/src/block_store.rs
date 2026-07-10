@@ -614,7 +614,6 @@ impl LocalBlockStore {
         routing_slot: Option<u32>,
     ) -> Result<BlockAddress, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
-        fs::create_dir_all(&inner.root)?;
         let segment_target_bytes = effective_block_segment_target_bytes();
         let mut page_id = inner.next_page_id;
         let mut extent_id = extent_id_for_segment(inner.page_segment_id);
@@ -710,7 +709,6 @@ impl LocalBlockStore {
         }
 
         let mut inner = self.inner.lock().expect("block store lock poisoned");
-        fs::create_dir_all(&inner.root)?;
         let segment_target_bytes = effective_block_segment_target_bytes();
         let mut addresses = Vec::with_capacity(records.len());
         let mut writes = 0u64;
