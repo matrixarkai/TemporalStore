@@ -529,6 +529,7 @@ pub struct ProxyHashMultiGetCommandRequest {
     pub namespace: String,
     pub table_name: String,
     pub key: String,
+    #[serde(default, deserialize_with = "proxy_string_vec_from_json")]
     pub fields: Vec<String>,
 }
 
@@ -540,7 +541,7 @@ pub struct ProxyHashMultiSetCommandRequest {
     pub key: String,
     #[serde(default, deserialize_with = "proxy_hash_entries_from_json")]
     pub entries: Vec<(String, Vec<u8>)>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "proxy_string_vec_from_json")]
     pub fields: Vec<String>,
     #[serde(default, deserialize_with = "proxy_vec_bytes_from_json")]
     pub values: Vec<Vec<u8>>,
@@ -598,6 +599,25 @@ where
         .map(proxy_bytes_value)
         .collect::<Result<Vec<_>, _>>()
         .map_err(serde::de::Error::custom)
+}
+
+fn proxy_string_vec_from_json<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let values = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    values
+        .into_iter()
+        .map(proxy_string_value)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(serde::de::Error::custom)
+}
+
+fn proxy_string_value(value: serde_json::Value) -> Result<String, String> {
+    match value {
+        serde_json::Value::String(value) => Ok(value),
+        value => proxy_bytes_value(value).map(|bytes| String::from_utf8_lossy(&bytes).into_owned()),
+    }
 }
 
 fn proxy_hash_entries_from_json<'de, D>(deserializer: D) -> Result<Vec<(String, Vec<u8>)>, D::Error>
