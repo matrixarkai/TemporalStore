@@ -395,6 +395,29 @@ class ProxyClient:
         body.update({"timestamp_ms": timestamp_ms, "amount": amount})
         self._post("/ProxyService/RiskHset", body)
 
+    def risk_hset_with_options(
+        self,
+        key: str,
+        value: str,
+        ttl_seconds: int,
+        htype: str = "count",
+        occur_time_seconds: int = 0,
+        precision: RiskPrecision = RiskPrecision.ONE_MINUTE,
+    ) -> None:
+        body = self._key_body(key)
+        body.update(
+            {
+                "value": value,
+                "ttl": int(ttl_seconds),
+                "ttl_ms": int(ttl_seconds) * 1000,
+                "htype": htype,
+                "occur_time": int(occur_time_seconds),
+                "timestamp_ms": _proxy_timestamp_ms(occur_time_seconds),
+                "precision_ms": _risk_precision_ms(precision),
+            }
+        )
+        self._post("/ProxyService/RiskHset", body)
+
     def risk_hquery(
         self,
         key: str,

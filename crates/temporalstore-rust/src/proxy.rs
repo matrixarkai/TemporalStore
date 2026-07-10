@@ -1070,11 +1070,24 @@ pub struct ProxyContextQueryNodeContextCommandRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyRiskHsetCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
+    #[serde(default)]
     pub timestamp_ms: u64,
+    #[serde(default)]
     pub amount: i64,
+    #[serde(default)]
+    pub value: Option<serde_json::Value>,
+    #[serde(default, alias = "occur_time")]
+    pub occur_time_seconds: u64,
+    #[serde(default, alias = "ttl")]
+    pub ttl_ms: u64,
+    #[serde(default)]
+    pub precision_ms: Option<u64>,
+    #[serde(default)]
+    pub htype: ProxyRiskHType,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2171,9 +2184,9 @@ impl ProxyService {
                     Ok(req) => {
                         let command = Command::RiskSet {
                             family: crate::types::RiskFamily::H,
-                            key: req.key,
-                            timestamp_ms: req.timestamp_ms,
-                            amount: req.amount,
+                            key: req.key.clone(),
+                            timestamp_ms: risk_hset_timestamp_ms(&req),
+                            amount: risk_hset_amount(&req),
                         };
                         json_response(
                             200,
@@ -4046,6 +4059,41 @@ fn risk_cpc_timestamp_ms(timestamp_ms: u64) -> u64 {
     }
 }
 
+fn risk_hset_timestamp_ms(request: &ProxyRiskHsetCommandRequest) -> u64 {
+    if request.timestamp_ms != 0 {
+        return risk_cpc_timestamp_ms(request.timestamp_ms);
+    }
+    risk_cpc_timestamp_ms(request.occur_time_seconds)
+}
+
+fn risk_hset_amount(request: &ProxyRiskHsetCommandRequest) -> i64 {
+    if request.amount != 0 {
+        return request.amount;
+    }
+    match request.value.as_ref() {
+        Some(value) if value.is_i64() => value.as_i64().unwrap_or_default(),
+        Some(value) if value.is_u64() => value.as_u64().unwrap_or_default() as i64,
+        Some(value) if value.is_f64() => value.as_f64().unwrap_or_default() as i64,
+        Some(value) => value
+            .as_str()
+            .and_then(|text| text.trim().parse::<i64>().ok())
+            .unwrap_or_else(|| {
+                if matches!(request.htype, ProxyRiskHType::Count) {
+                    1
+                } else {
+                    0
+                }
+            }),
+        None => {
+            if matches!(request.htype, ProxyRiskHType::Count) {
+                1
+            } else {
+                0
+            }
+        }
+    }
+}
+
 fn risk_cpc_query_bounds(request: &ProxyRiskCpcQueryCommandRequest) -> Vec<(u64, u64)> {
     if let (Some(start_ms), Some(end_ms)) = (request.start_ms, request.end_ms) {
         return vec![(start_ms, end_ms)];
@@ -5400,6 +5448,11 @@ mod tests {
                     key: "cpp-proxy-risk".to_string(),
                     timestamp_ms: 10,
                     amount: 5,
+                    value: None,
+                    occur_time_seconds: 0,
+                    ttl_ms: 0,
+                    precision_ms: None,
+                    htype: ProxyRiskHType::Count,
                 })
                 .unwrap(),
             )
