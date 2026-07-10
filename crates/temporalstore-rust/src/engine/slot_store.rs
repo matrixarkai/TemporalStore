@@ -260,16 +260,15 @@ pub(super) fn slot_index_component_page_addresses(
                 continue;
             };
             if !page.deleted && page.model_id == model_id && page.object_key == object_key {
-                refs.push((page.component.clone(), page.address.clone()));
+                refs.push((
+                    page.component.clone(),
+                    slot_page_identity_key(&page.address),
+                    page.address.clone(),
+                ));
             }
         }
         if !refs.is_empty() {
-            refs.sort_by(|left, right| {
-                left.0.cmp(&right.0).then_with(|| {
-                    slot_page_identity_key(&left.1).cmp(&slot_page_identity_key(&right.1))
-                })
-            });
-            return refs;
+            return sorted_slot_component_refs(refs);
         }
         return Vec::new();
     }
@@ -296,7 +295,11 @@ pub(super) fn slot_index_component_page_addresses(
             };
             for page in slot.page_index.values() {
                 if !page.deleted && page.model_id == model_id && page.object_key == object_key {
-                    refs.push((page.component.clone(), page.address.clone()));
+                    refs.push((
+                        page.component.clone(),
+                        slot_page_identity_key(&page.address),
+                        page.address.clone(),
+                    ));
                 }
             }
         }
@@ -311,17 +314,25 @@ pub(super) fn slot_index_component_page_addresses(
         for slot in shard.slot_index.slot_map.values() {
             for page in slot.page_index.values() {
                 if !page.deleted && page.model_id == model_id && page.object_key == object_key {
-                    refs.push((page.component.clone(), page.address.clone()));
+                    refs.push((
+                        page.component.clone(),
+                        slot_page_identity_key(&page.address),
+                        page.address.clone(),
+                    ));
                 }
             }
         }
     };
-    refs.sort_by(|left, right| {
-        left.0
-            .cmp(&right.0)
-            .then_with(|| slot_page_identity_key(&left.1).cmp(&slot_page_identity_key(&right.1)))
-    });
-    refs
+    sorted_slot_component_refs(refs)
+}
+
+fn sorted_slot_component_refs(
+    mut refs: Vec<(Option<String>, SlotPageIdentityKey, PageAddress)>,
+) -> Vec<(Option<String>, PageAddress)> {
+    refs.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    refs.into_iter()
+        .map(|(component, _, address)| (component, address))
+        .collect()
 }
 
 pub(super) fn read_slot_index_value(
