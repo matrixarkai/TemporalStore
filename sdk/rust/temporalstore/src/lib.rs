@@ -30,7 +30,12 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[cfg(feature = "direct")]
 fn cpp_matrixark_c_api_bridge_allowed(op: &str) -> Result<()> {
     let allowed = std::env::var("TEMPORALSTORE_RUST_ALLOW_CPP_MATRIXARK_C_API")
-        .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false);
     if allowed {
         return Ok(());
@@ -1443,9 +1448,10 @@ impl ProxyClient {
             "pin_primary": pin_primary,
         });
         if let Some(replica_read_policy) = replica_read_policy {
-            body.as_object_mut()
-                .expect("object body")
-                .insert("replica_read_policy".to_string(), serde_json::json!(replica_read_policy));
+            body.as_object_mut().expect("object body").insert(
+                "replica_read_policy".to_string(),
+                serde_json::json!(replica_read_policy),
+            );
         }
         self.post_raw("/ProxyService/OpenTable", body)
     }
@@ -1574,8 +1580,14 @@ impl ProxyClient {
                     serde_json::json!((instance.timestamp_us.max(0) as u64) / 1000),
                 ),
                 ("instance", serde_json::json!(encoded)),
-                ("action_type", serde_json::json!(instance.action_type.max(0) as u32)),
-                ("table_id", serde_json::json!(instance.logical_table.max(0) as u64)),
+                (
+                    "action_type",
+                    serde_json::json!(instance.action_type.max(0) as u32),
+                ),
+                (
+                    "table_id",
+                    serde_json::json!(instance.logical_table.max(0) as u64),
+                ),
             ],
         );
         self.proxy_service_execute("/ProxyService/IpsAdd", body)
@@ -1616,8 +1628,14 @@ impl ProxyClient {
             &[
                 ("timestamp_ms", serde_json::json!(timestamp_ms)),
                 ("amount", serde_json::json!(amount)),
-                ("precision_ms", serde_json::json!(risk_precision_ms(precision))),
-                ("ttl_ms", serde_json::json!(ttl_seconds.saturating_mul(1000))),
+                (
+                    "precision_ms",
+                    serde_json::json!(risk_precision_ms(precision)),
+                ),
+                (
+                    "ttl_ms",
+                    serde_json::json!(ttl_seconds.saturating_mul(1000)),
+                ),
             ],
         );
         self.proxy_service_execute("/ProxyService/RiskIncrement", body)
@@ -1725,7 +1743,10 @@ impl ProxyClient {
                 ("start_ms", serde_json::json!(start_ms)),
                 ("end_ms", serde_json::json!(end_ms)),
                 ("count", serde_json::json!(count)),
-                ("filters", serde_json::to_value(filters).map_err(json_error)?),
+                (
+                    "filters",
+                    serde_json::to_value(filters).map_err(json_error)?,
+                ),
             ],
         );
         let response = self.proxy_service_execute("/ProxyService/FeatureQuery", body)?;
@@ -1819,6 +1840,96 @@ impl ProxyClient {
         );
         self.proxy_service_execute("/ProxyService/RiskHset", body)
             .map(|_| ())
+    }
+
+    pub fn risk_hquery(
+        &self,
+        key: &str,
+        precision: RiskPrecision,
+        window: RiskWindow,
+        aggregator: &str,
+    ) -> Result<Vec<i64>> {
+        let (start_ms, end_ms) = risk_window_ms(window);
+        let body = self.proxy_service_body(
+            key,
+            &[
+                ("start_ms", serde_json::json!(start_ms)),
+                ("end_ms", serde_json::json!(end_ms)),
+                (
+                    "precision_ms",
+                    serde_json::json!(risk_precision_ms(precision)),
+                ),
+                ("aggregator", serde_json::json!(aggregator)),
+            ],
+        );
+        let response = self.proxy_service_execute("/ProxyService/RiskHquery", body)?;
+        Ok(response
+            .get("result_list")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|item| {
+                item.get("result")
+                    .and_then(|value| value.as_i64())
+                    .unwrap_or_default()
+            })
+            .collect())
+    }
+
+    pub fn risk_cpc_set(
+        &self,
+        key: &str,
+        values: &[&str],
+        timestamp_ms: u64,
+        ttl_ms: u64,
+        precision: RiskPrecision,
+        dont_upgrade_cpc: bool,
+    ) -> Result<()> {
+        let body = self.proxy_service_body(
+            key,
+            &[
+                ("values", serde_json::json!(values)),
+                ("timestamp_ms", serde_json::json!(timestamp_ms)),
+                ("ttl_ms", serde_json::json!(ttl_ms)),
+                (
+                    "precision_ms",
+                    serde_json::json!(risk_precision_ms(precision)),
+                ),
+                ("dont_upgrade_cpc", serde_json::json!(dont_upgrade_cpc)),
+            ],
+        );
+        self.proxy_service_execute("/ProxyService/RiskCPCSet", body)
+            .map(|_| ())
+    }
+
+    pub fn risk_cpc_query(
+        &self,
+        key: &str,
+        precision: RiskPrecision,
+        window: RiskWindow,
+    ) -> Result<Vec<i64>> {
+        let (start_ms, end_ms) = risk_window_ms(window);
+        let body = self.proxy_service_body(
+            key,
+            &[
+                ("start_ms", serde_json::json!(start_ms)),
+                ("end_ms", serde_json::json!(end_ms)),
+                (
+                    "precision_ms",
+                    serde_json::json!(risk_precision_ms(precision)),
+                ),
+            ],
+        );
+        let response = self.proxy_service_execute("/ProxyService/RiskCPCQuery", body)?;
+        Ok(response
+            .get("count_list")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|value| value.as_i64().unwrap_or_default())
+            .collect())
     }
 
     pub fn risk_fol_set(
@@ -2328,7 +2439,10 @@ fn options_from_json(raw: &str) -> Result<Options> {
             .unwrap_or(default)
     };
     let get_bool = |name: &str, default: bool| -> bool {
-        value.get(name).and_then(|item| item.as_bool()).unwrap_or(default)
+        value
+            .get(name)
+            .and_then(|item| item.as_bool())
+            .unwrap_or(default)
     };
     let mut options = Options::new(
         get_str("metaserver_addr", "127.0.0.1:18000"),
@@ -2506,11 +2620,31 @@ pub unsafe extern "C" fn temporalstore_rust_matrixark_batch_append_records_json(
             .iter()
             .map(|(key, field, value)| (key.as_str(), field.as_str(), value.as_str()))
             .collect();
-        let count_key = if count_key.is_null() { String::new() } else { cstr_arg(count_key, "count_key")? };
-        let count_value = if count_value.is_null() { String::new() } else { cstr_arg(count_value, "count_value")? };
-        let count_key_opt = if count_key.is_empty() { None } else { Some(count_key.as_str()) };
-        let count_value_opt = if count_value.is_empty() { None } else { Some(count_value.as_str()) };
-        client_from_handle(handle)?.matrixark_batch_append_records(&entries, count_key_opt, count_value_opt)
+        let count_key = if count_key.is_null() {
+            String::new()
+        } else {
+            cstr_arg(count_key, "count_key")?
+        };
+        let count_value = if count_value.is_null() {
+            String::new()
+        } else {
+            cstr_arg(count_value, "count_value")?
+        };
+        let count_key_opt = if count_key.is_empty() {
+            None
+        } else {
+            Some(count_key.as_str())
+        };
+        let count_value_opt = if count_value.is_empty() {
+            None
+        } else {
+            Some(count_value.as_str())
+        };
+        client_from_handle(handle)?.matrixark_batch_append_records(
+            &entries,
+            count_key_opt,
+            count_value_opt,
+        )
     })
 }
 
@@ -2553,11 +2687,15 @@ pub unsafe extern "C" fn temporalstore_rust_matrixark_retrieve_context_pack_json
             shard_size,
             &cstr_arg(request_json, "request_json")?,
         )?;
-        let mut pack: serde_json::Value = serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({}));
+        let mut pack: serde_json::Value =
+            serde_json::from_str(&raw).unwrap_or_else(|_| serde_json::json!({}));
         if pack.get("context_pack").is_some() {
             if let Some(obj) = pack.as_object_mut() {
                 obj.insert("ok".to_string(), serde_json::Value::Bool(true));
-                obj.insert("native_pack_assembly".to_string(), serde_json::Value::Bool(true));
+                obj.insert(
+                    "native_pack_assembly".to_string(),
+                    serde_json::Value::Bool(true),
+                );
             }
             return Ok(pack.to_string());
         }
@@ -2565,7 +2703,8 @@ pub unsafe extern "C" fn temporalstore_rust_matrixark_retrieve_context_pack_json
             "ok": true,
             "native_pack_assembly": true,
             "context_pack": pack
-        }).to_string())
+        })
+        .to_string())
     })
 }
 
@@ -2607,15 +2746,8 @@ mod tests {
         let _: fn(&Client, &super::IpsInstance) -> super::Result<()> = Client::add_ips_instance;
         let _: fn(&Client, &super::IpsLastQuery) -> super::Result<Vec<super::IpsFeatureStat>> =
             Client::query_ips_last_instances;
-        let _: fn(
-            &Client,
-            &str,
-            i64,
-            u64,
-            super::RiskPrecision,
-            &str,
-            u64,
-        ) -> super::Result<()> = Client::risk_increment;
+        let _: fn(&Client, &str, i64, u64, super::RiskPrecision, &str, u64) -> super::Result<()> =
+            Client::risk_increment;
         let _: fn(&Client, &str, super::RiskPrecision, super::RiskWindow) -> super::Result<i64> =
             Client::risk_count;
         let _: fn(&Client, &[(&str, &str, &str)], Option<&str>, Option<&str>) -> super::Result<()> =
@@ -2627,8 +2759,13 @@ mod tests {
     fn proxy_client_exposes_cpp_proxy_parity_methods() {
         let _: fn(&ProxyClient, &str, &[super::FeaturePoint]) -> super::Result<()> =
             ProxyClient::feature_add;
-        let _: fn(&ProxyClient, &str, u64, u64, Option<usize>) -> super::Result<Vec<super::FeaturePoint>> =
-            ProxyClient::feature_query;
+        let _: fn(
+            &ProxyClient,
+            &str,
+            u64,
+            u64,
+            Option<usize>,
+        ) -> super::Result<Vec<super::FeaturePoint>> = ProxyClient::feature_query;
         let _: fn(
             &ProxyClient,
             &str,
@@ -2659,6 +2796,28 @@ mod tests {
         let _: fn(&ProxyClient, &str, &str) -> super::Result<()> = ProxyClient::set;
         let _: fn(&ProxyClient, &str) -> super::Result<Option<String>> = ProxyClient::get;
         let _: fn(&ProxyClient, &str, u64, i64) -> super::Result<()> = ProxyClient::risk_hset;
+        let _: fn(
+            &ProxyClient,
+            &str,
+            super::RiskPrecision,
+            super::RiskWindow,
+            &str,
+        ) -> super::Result<Vec<i64>> = ProxyClient::risk_hquery;
+        let _: fn(
+            &ProxyClient,
+            &str,
+            &[&str],
+            u64,
+            u64,
+            super::RiskPrecision,
+            bool,
+        ) -> super::Result<()> = ProxyClient::risk_cpc_set;
+        let _: fn(
+            &ProxyClient,
+            &str,
+            super::RiskPrecision,
+            super::RiskWindow,
+        ) -> super::Result<Vec<i64>> = ProxyClient::risk_cpc_query;
         let _: fn(&ProxyClient, &str, &str, u64, u64, super::RiskFolType) -> super::Result<()> =
             ProxyClient::risk_fol_set;
         let _: fn(&ProxyClient, &str) -> super::Result<Option<String>> =
