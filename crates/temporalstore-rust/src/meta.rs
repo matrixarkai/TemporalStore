@@ -13,6 +13,78 @@ use crate::partition_id::{validate_partition_set_count, PartitionId, MAX_TABLE_I
 use crate::types::{ShardId, Status};
 use rustmtcache::CacheStats;
 
+fn endpoint_string_from_json<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    endpoint_string_value(&value).map_err(serde::de::Error::custom)
+}
+
+fn endpoint_string_value(value: &serde_json::Value) -> Result<String, String> {
+    match value {
+        serde_json::Value::String(value) => Ok(value.clone()),
+        serde_json::Value::Object(map) => {
+            for key in ["server_addr", "proxy_addr", "endpoint", "addr", "address"] {
+                if let Some(value) = map.get(key).and_then(|value| value.as_str()) {
+                    if !value.is_empty() {
+                        return Ok(value.to_string());
+                    }
+                }
+            }
+            let host = map
+                .get("ip4")
+                .or_else(|| map.get("ip6"))
+                .or_else(|| map.get("host"))
+                .or_else(|| map.get("hostname"))
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            let port = map
+                .get("port")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            if host.is_empty() || port == 0 {
+                return Err(
+                    "endpoint must contain server_addr/proxy_addr or ip4/ip6/host plus port"
+                        .to_string(),
+                );
+            }
+            Ok(format!("{}:{}", host, port))
+        }
+        serde_json::Value::Null => Ok(String::new()),
+        _ => Err("endpoint must be a string or object".to_string()),
+    }
+}
+
+fn location_string_from_json<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    location_string_value(&value).map_err(serde::de::Error::custom)
+}
+
+fn location_string_value(value: &serde_json::Value) -> Result<String, String> {
+    match value {
+        serde_json::Value::String(value) => Ok(value.clone()),
+        serde_json::Value::Object(map) => {
+            if let Some(tag) = map.get("tag").and_then(|value| value.as_str()) {
+                if !tag.is_empty() {
+                    return Ok(tag.to_string());
+                }
+            }
+            let parts: Vec<&str> = ["vregion", "vdc", "vau"]
+                .iter()
+                .filter_map(|key| map.get(*key).and_then(|value| value.as_str()))
+                .filter(|value| !value.is_empty())
+                .collect();
+            Ok(parts.join("/"))
+        }
+        serde_json::Value::Null => Ok(String::new()),
+        _ => Err("location must be a string or object".to_string()),
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MetaEntityState {
@@ -84,10 +156,11 @@ pub struct AckResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RegisterServerRequest {
+    #[serde(alias = "endpoint", deserialize_with = "endpoint_string_from_json")]
     pub server_addr: String,
     #[serde(default)]
     pub node_id: u64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "location_string_from_json")]
     pub location: String,
     #[serde(default)]
     pub binary_version: String,
@@ -95,10 +168,15 @@ pub struct RegisterServerRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UpdateServerRequest {
+    #[serde(alias = "endpoint", deserialize_with = "endpoint_string_from_json")]
     pub server_addr: String,
     #[serde(default)]
     pub node_id: u64,
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "location_tag_name",
+        deserialize_with = "location_string_from_json"
+    )]
     pub location: String,
     #[serde(default)]
     pub binary_version: String,
@@ -106,6 +184,7 @@ pub struct UpdateServerRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ServerHeartbeatRequest {
+    #[serde(alias = "endpoint", deserialize_with = "endpoint_string_from_json")]
     pub server_addr: String,
     #[serde(default)]
     pub boot_time_ms: u64,
@@ -260,10 +339,11 @@ pub struct SafeModeReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RegisterProxyRequest {
+    #[serde(alias = "endpoint", deserialize_with = "endpoint_string_from_json")]
     pub proxy_addr: String,
-    #[serde(default)]
+    #[serde(default, alias = "namespace_name")]
     pub namespace: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "location_string_from_json")]
     pub location: String,
     #[serde(default)]
     pub config_version: u64,
@@ -273,8 +353,9 @@ pub struct RegisterProxyRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyHeartbeatRequest {
+    #[serde(alias = "endpoint", deserialize_with = "endpoint_string_from_json")]
     pub proxy_addr: String,
-    #[serde(default)]
+    #[serde(default, alias = "namespace_name")]
     pub namespace: String,
     #[serde(default)]
     pub config_version: u64,
@@ -667,6 +748,11 @@ pub struct ListProxiesResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StateChangeRequest {
+    #[serde(
+        alias = "server_addr",
+        alias = "proxy_addr",
+        deserialize_with = "endpoint_string_from_json"
+    )]
     pub endpoint: String,
     #[serde(default)]
     pub freeze_cooldown_ms: u64,
@@ -4772,6 +4858,36 @@ mod tests {
             recovered.list_proxies().proxies[0].state,
             MetaEntityState::Frozen
         );
+    }
+
+    #[test]
+    fn cxx_endpoint_and_location_shapes_deserialize_for_meta_requests() {
+        let server: RegisterServerRequest = serde_json::from_value(serde_json::json!({
+            "endpoint": {"ip4": "10.0.0.7", "port": 9081},
+            "location": {"vregion": "r1", "vdc": "d1", "vau": "a1"},
+            "node_id": 7
+        }))
+        .unwrap();
+        assert_eq!(server.server_addr, "10.0.0.7:9081");
+        assert_eq!(server.location, "r1/d1/a1");
+
+        let proxy: RegisterProxyRequest = serde_json::from_value(serde_json::json!({
+            "endpoint": {"ip6": "fd00::1", "port": 9181},
+            "namespace_name": "ns",
+            "location": {"tag": "zone-a"}
+        }))
+        .unwrap();
+        assert_eq!(proxy.proxy_addr, "fd00::1:9181");
+        assert_eq!(proxy.namespace, "ns");
+        assert_eq!(proxy.location, "zone-a");
+
+        let state_change: StateChangeRequest = serde_json::from_value(serde_json::json!({
+            "endpoint": {"ip4": "10.0.0.8", "port": 9082},
+            "freeze_cooldown_ms": 50
+        }))
+        .unwrap();
+        assert_eq!(state_change.endpoint, "10.0.0.8:9082");
+        assert_eq!(state_change.freeze_cooldown_ms, 50);
     }
 
     #[test]
