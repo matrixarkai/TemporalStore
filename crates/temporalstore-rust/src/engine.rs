@@ -15255,81 +15255,58 @@ pub(super) fn read_page_bytes_batch(
     addresses: &[Option<PageAddress>],
 ) -> Vec<Option<Vec<u8>>> {
     let mut values = vec![None; addresses.len()];
-    let mut lookup = Vec::with_capacity(addresses.len());
+    let mut unique_entries =
+        Vec::<(CacheKey, PageAddress, Vec<usize>)>::with_capacity(addresses.len());
+    let mut unique_index_by_key = HashMap::<CacheKey, usize>::with_capacity(addresses.len());
     for (index, address) in addresses.iter().enumerate() {
         let Some(address) = address else {
             continue;
         };
         let key = page_address_cache_key(shard_id, address);
-        lookup.push((index, address.clone(), key.clone()));
+        if let Some(entry_index) = unique_index_by_key.get(&key).copied() {
+            unique_entries[entry_index].2.push(index);
+        } else {
+            let entry_index = unique_entries.len();
+            unique_index_by_key.insert(key.clone(), entry_index);
+            unique_entries.push((key, address.clone(), vec![index]));
+        }
     }
-    if lookup.is_empty() {
+    if unique_entries.is_empty() {
         return values;
     }
-    if lookup.len() == 1 {
-        let (index, address, _) = &lookup[0];
-        values[*index] = read_page_bytes(cache, page_store, shard_id, address);
+    if unique_entries.len() == 1 {
+        let (_, address, indexes) = &unique_entries[0];
+        let index = indexes[0];
+        values[index] = read_page_bytes(cache, page_store, shard_id, address);
         return values;
     }
 
-    let mut unique_keys = Vec::with_capacity(lookup.len());
-    let mut lookup_indexes_by_key = HashMap::<CacheKey, Vec<usize>>::with_capacity(lookup.len());
-    for (lookup_index, (_, _, key)) in lookup.iter().enumerate() {
-        if !lookup_indexes_by_key.contains_key(key) {
-            unique_keys.push(key.clone());
-        }
-        lookup_indexes_by_key
-            .entry(key.clone())
-            .or_default()
-            .push(lookup_index);
-    }
+    let unique_keys = unique_entries
+        .iter()
+        .map(|(key, _, _)| key.clone())
+        .collect::<Vec<_>>();
     let cached = cache
         .get_batch(&unique_keys)
         .unwrap_or_else(|_| vec![None; unique_keys.len()]);
-    let mut misses =
-        HashMap::<CacheKey, (PageAddress, Vec<usize>)>::with_capacity(unique_keys.len());
-    for (key, cached_value) in unique_keys.into_iter().zip(cached.into_iter()) {
-        let lookup_indexes = lookup_indexes_by_key.remove(&key).unwrap_or_default();
+    let mut miss_entries = Vec::with_capacity(unique_entries.len());
+    for ((key, address, indexes), cached_value) in
+        unique_entries.into_iter().zip(cached.into_iter())
+    {
         if let Some(bytes) = cached_value {
-            for lookup_index in lookup_indexes {
-                let (index, _, _) = &lookup[lookup_index];
-                values[*index] = Some(bytes.clone());
+            for index in indexes {
+                values[index] = Some(bytes.clone());
             }
             continue;
         }
-        let Some((_, address, _)) = lookup_indexes
-            .first()
-            .and_then(|lookup_index| lookup.get(*lookup_index))
-        else {
-            continue;
-        };
-        misses
-            .entry(key)
-            .and_modify(|(_, indexes)| {
-                indexes.extend(
-                    lookup_indexes
-                        .iter()
-                        .map(|lookup_index| lookup[*lookup_index].0),
-                )
-            })
-            .or_insert_with(|| {
-                (
-                    address.clone(),
-                    lookup_indexes
-                        .iter()
-                        .map(|lookup_index| lookup[*lookup_index].0)
-                        .collect(),
-                )
-            });
+        miss_entries.push((key, address, indexes));
     }
-    let miss_entries = misses.into_iter().collect::<Vec<_>>();
     let miss_addresses = miss_entries
         .iter()
-        .map(|(_, (address, _))| address.clone())
+        .map(|(_, address, _)| address.clone())
         .collect::<Vec<_>>();
     let miss_reads = page_store.read_batch(&miss_addresses);
     let mut refills = Vec::with_capacity(miss_entries.len());
-    for ((key, (_, indexes)), read_result) in miss_entries.into_iter().zip(miss_reads) {
+    for ((key, _, indexes), read_result) in miss_entries.into_iter().zip(miss_reads) {
         let Ok(bytes) = read_result else {
             continue;
         };
