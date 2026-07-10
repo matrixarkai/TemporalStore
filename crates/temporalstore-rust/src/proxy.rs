@@ -30,7 +30,7 @@ use crate::meta::{
 };
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, ExecuteRequest, ExecuteResponse,
-    FeatureFilter, FeaturePoint, FeatureWritePolicy, RiskFolType, ShardId, Status,
+    FeatureFilter, FeaturePoint, FeatureWritePolicy, RiskFamily, RiskFolType, ShardId, Status,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -663,6 +663,65 @@ pub struct ProxyRiskCountCommandRequest {
     pub key: String,
     pub start_ms: u64,
     pub end_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyRiskQueryCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub aggregator: String,
+    #[serde(default)]
+    pub count: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyRiskChangeAddCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub timestamp_ms: u64,
+    pub value: Vec<u8>,
+    #[serde(default)]
+    pub precision_ms: Option<u64>,
+    #[serde(default)]
+    pub ttl_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyRiskFamilySetCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub family: RiskFamily,
+    pub key: String,
+    pub timestamp_ms: u64,
+    pub amount: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyRiskFamilyQueryCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub family: RiskFamily,
+    pub key: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub aggregator: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyRiskFamilySetAndGetCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub family: RiskFamily,
+    pub key: String,
+    pub timestamp_ms: u64,
+    pub amount: i64,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub aggregator: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1431,6 +1490,137 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
+            ("POST", "/ProxyService/RiskQuery") => {
+                match parse_json::<ProxyRiskQueryCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::RiskQuery {
+                            key: req.key,
+                            start_ms: req.start_ms,
+                            end_ms: req.end_ms,
+                            aggregator: req.aggregator,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/RiskDetail") => {
+                match parse_json::<ProxyRiskQueryCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::RiskDetail {
+                            key: req.key,
+                            start_ms: req.start_ms,
+                            end_ms: req.end_ms,
+                            count: req.count,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/RiskChangeAdd") => {
+                match parse_json::<ProxyRiskChangeAddCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::RiskChangeAdd {
+                            key: req.key,
+                            timestamp_ms: req.timestamp_ms,
+                            value: req.value,
+                            precision_ms: req.precision_ms,
+                            ttl_ms: req.ttl_ms,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/RiskFamilySet") => {
+                match parse_json::<ProxyRiskFamilySetCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::RiskSet {
+                            family: req.family,
+                            key: req.key,
+                            timestamp_ms: req.timestamp_ms,
+                            amount: req.amount,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/RiskFamilyQuery") => {
+                match parse_json::<ProxyRiskFamilyQueryCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::RiskFamilyQuery {
+                            family: req.family,
+                            key: req.key,
+                            start_ms: req.start_ms,
+                            end_ms: req.end_ms,
+                            aggregator: req.aggregator,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/RiskFamilySetAndGet") => {
+                match parse_json::<ProxyRiskFamilySetAndGetCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::RiskSetAndGet {
+                            family: req.family,
+                            key: req.key,
+                            timestamp_ms: req.timestamp_ms,
+                            amount: req.amount,
+                            start_ms: req.start_ms,
+                            end_ms: req.end_ms,
+                            aggregator: req.aggregator,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
             ("POST", "/ProxyService/RiskHset") => {
                 match parse_json::<ProxyRiskHsetCommandRequest>(&request.body) {
                     Ok(req) => {
@@ -1489,6 +1679,26 @@ impl ProxyService {
                         200,
                         &self.table_command(req, |key| Command::RiskManager { key }),
                     ),
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/RiskDebug") => {
+                match parse_json::<ProxyRiskCountCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::RiskDebug {
+                            key: req.key,
+                            start_ms: req.start_ms,
+                            end_ms: req.end_ms,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
                     Err(err) => self.bad_execute_request(err),
                 }
             }
