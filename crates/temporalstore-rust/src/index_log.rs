@@ -226,9 +226,12 @@ impl LocalIndexLogStore {
         retain_from_sequence: u64,
         max_entries_per_round: usize,
     ) -> Result<IndexLogGcReport, IndexLogError> {
-        let mut inner = self.inner.lock().expect("index log lock poisoned");
-        fs::create_dir_all(&inner.root)?;
-        let path = index_log_path(&inner.root, shard_id);
+        let root = {
+            let inner = self.inner.lock().expect("index log lock poisoned");
+            inner.root.clone()
+        };
+        fs::create_dir_all(&root)?;
+        let path = index_log_path(&root, shard_id);
         if !path.exists() {
             return Ok(IndexLogGcReport {
                 shard_id,
@@ -239,7 +242,7 @@ impl LocalIndexLogStore {
         }
 
         let bytes_before = path.metadata()?.len();
-        let _ = last_sequence_at(&inner.root, shard_id)?;
+        let _ = last_sequence_at(&root, shard_id)?;
         let file = File::open(&path)?;
         let reader = BufReader::new(file);
         let mut records_before = 0usize;
@@ -278,6 +281,7 @@ impl LocalIndexLogStore {
         fs::rename(&temp_path, &path)?;
         sync_parent_dir(&path)?;
         let bytes_after = path.metadata()?.len();
+        let mut inner = self.inner.lock().expect("index log lock poisoned");
         inner.stats.bytes_written = bytes_after;
         Ok(IndexLogGcReport {
             shard_id,
