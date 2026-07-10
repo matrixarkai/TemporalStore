@@ -2479,7 +2479,7 @@ fn handle_query_service_route(meta: &MetaBackend, request: &HttpRequest) -> Opti
             json_response(200, &fe_query_list_servers(meta, request))
         }
         ("GET", "/QueryService/ListProxy") | ("POST", "/QueryService/ListProxy") => {
-            json_response(200, &backend_call!(meta, list_proxies))
+            json_response(200, &query_list_proxies(meta, request))
         }
         ("POST", "/QueryService/ListProxyGroup") => {
             parse_or(&request.body, |req: ListProxyGroupRequest| {
@@ -2601,6 +2601,50 @@ fn query_params_value(request: &HttpRequest) -> serde_json::Value {
     serde_json::Value::Object(object)
 }
 
+fn request_location_filter(
+    request: &HttpRequest,
+    params: &BTreeMap<String, String>,
+) -> Option<String> {
+    if let Some(tag) = params
+        .get("tag")
+        .or_else(|| params.get("location"))
+        .filter(|tag| !tag.is_empty())
+    {
+        return Some(tag.clone());
+    }
+    let value = serde_json::from_slice::<serde_json::Value>(&request.body).ok()?;
+    let location = value.get("location")?.as_object()?;
+    if let Some(tag) = location.get("tag").and_then(serde_json::Value::as_str) {
+        if !tag.is_empty() {
+            return Some(tag.to_string());
+        }
+    }
+    let parts: Vec<&str> = ["vregion", "vdc", "vau"]
+        .iter()
+        .filter_map(|key| location.get(*key).and_then(serde_json::Value::as_str))
+        .filter(|value| !value.is_empty())
+        .collect();
+    (!parts.is_empty()).then(|| parts.join("/"))
+}
+
+fn cxx_server_state_filter(state: &str) -> Option<&'static str> {
+    match state.to_ascii_lowercase().as_str() {
+        "1" | "normal" | "server_normal" => Some("normal"),
+        "2" | "frozen" | "server_frozen" => Some("frozen"),
+        "3" | "dropped" => Some("dropped"),
+        _ => None,
+    }
+}
+
+fn cxx_proxy_state_filter(state: &str) -> Option<&'static str> {
+    match state.to_ascii_lowercase().as_str() {
+        "2" | "normal" | "proxy_normal" => Some("normal"),
+        "3" | "frozen" | "proxy_frozen" => Some("frozen"),
+        "4" | "dropped" => Some("dropped"),
+        _ => None,
+    }
+}
+
 fn fe_query_action_from_query(meta: &MetaBackend, request: &HttpRequest) -> serde_json::Value {
     let mut params = query_params_value(request);
     let action = params
@@ -2668,15 +2712,70 @@ fn fe_query_action(meta: &MetaBackend, req: FeQueryActionRequest) -> serde_json:
 fn query_list_servers(meta: &MetaBackend, request: &HttpRequest) -> serde_json::Value {
     let mut response = backend_call!(meta, list_servers);
     let params = request_params(request);
-    if let Some(prefix) = params.get("prefix").filter(|prefix| !prefix.is_empty()) {
+    if let Some(prefix) = params
+        .get("prefix")
+        .or_else(|| params.get("ip_substr"))
+        .filter(|prefix| !prefix.is_empty())
+    {
         response
             .servers
             .retain(|server| server.server_addr.contains(prefix));
     }
-    if let Some(tag) = params.get("tag").filter(|tag| !tag.is_empty()) {
+    if let Some(location) = request_location_filter(request, &params).filter(|tag| !tag.is_empty())
+    {
         response
             .servers
-            .retain(|server| server.location.contains(tag));
+            .retain(|server| server.location.contains(&location));
+    }
+    if let Some(state) = params
+        .get("state")
+        .and_then(|state| cxx_server_state_filter(state))
+    {
+        response
+            .servers
+            .retain(|server| server.state.as_str() == state);
+    }
+    serde_json::to_value(response).unwrap_or_else(|err| {
+        serde_json::json!({
+            "status": Status::error("query_response_error", err.to_string()),
+        })
+    })
+}
+
+fn query_list_proxies(meta: &MetaBackend, request: &HttpRequest) -> serde_json::Value {
+    let mut response = backend_call!(meta, list_proxies);
+    let params = request_params(request);
+    if let Some(prefix) = params
+        .get("prefix")
+        .or_else(|| params.get("ip_substr"))
+        .filter(|prefix| !prefix.is_empty())
+    {
+        response
+            .proxies
+            .retain(|proxy| proxy.proxy_addr.contains(prefix));
+    }
+    if let Some(location) = request_location_filter(request, &params).filter(|tag| !tag.is_empty())
+    {
+        response
+            .proxies
+            .retain(|proxy| proxy.location.contains(&location));
+    }
+    if let Some(namespace) = params
+        .get("namespace")
+        .or_else(|| params.get("namespace_name"))
+        .filter(|namespace| !namespace.is_empty())
+    {
+        response
+            .proxies
+            .retain(|proxy| proxy.namespace == *namespace);
+    }
+    if let Some(state) = params
+        .get("state")
+        .and_then(|state| cxx_proxy_state_filter(state))
+    {
+        response
+            .proxies
+            .retain(|proxy| proxy.state.as_str() == state);
     }
     serde_json::to_value(response).unwrap_or_else(|err| {
         serde_json::json!({
