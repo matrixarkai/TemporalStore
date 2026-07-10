@@ -2140,6 +2140,65 @@ impl TemporalStoreClient {
             .sequence_query(key, start_ms, end_ms, count, filters)
     }
 
+    pub fn add_ips_instance(
+        &self,
+        uid: u64,
+        timestamp_us: u64,
+        instance: impl Into<Vec<u8>>,
+        action_type: Option<u32>,
+        table_id: Option<u64>,
+        request_id: Option<String>,
+    ) -> Result<bool, ClientError> {
+        if uid == 0 {
+            return Err(ClientError::InvalidRequest("uid is required".to_string()));
+        }
+        if timestamp_us == 0 {
+            return Err(ClientError::InvalidRequest(
+                "timestamp_us is required".to_string(),
+            ));
+        }
+        self.default_table()?.ips_add_with_options(
+            uid.to_string(),
+            timestamp_us / 1_000,
+            instance,
+            action_type,
+            table_id,
+            request_id,
+        )
+    }
+
+    pub fn query_ips_last_instances(
+        &self,
+        uid: u64,
+        last_instances: usize,
+    ) -> Result<Vec<FeaturePoint>, ClientError> {
+        if uid == 0 {
+            return Err(ClientError::InvalidRequest("uid is required".to_string()));
+        }
+        self.default_table()?
+            .ips_query_last(uid.to_string(), last_instances)
+    }
+
+    pub fn query_ips_last_instances_with_options(
+        &self,
+        uid: u64,
+        last_instances: usize,
+        action_type: Option<u32>,
+        table_id: Option<u64>,
+    ) -> Result<Vec<FeaturePoint>, ClientError> {
+        if uid == 0 {
+            return Err(ClientError::InvalidRequest("uid is required".to_string()));
+        }
+        self.default_table()?.ips_filter(
+            uid.to_string(),
+            0,
+            u64::MAX,
+            Some(last_instances),
+            action_type,
+            table_id,
+        )
+    }
+
     pub fn risk_increment_table(
         &self,
         namespace: impl Into<String>,
