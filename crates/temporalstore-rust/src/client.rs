@@ -33,10 +33,10 @@ pub use routing::{
 
 use crate::types::{
     parse_cpp_feature_filters, BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse,
-    ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit, ContextSummaryDirtyMarker,
-    ExecuteRequest, ExecuteResponse, FeatureFilter, FeaturePoint, FeatureWritePolicy,
-    IpsSnapshotReport, IpsStats, RiskFamily, RiskFolType, SequenceFeatureRow, SequenceQuerySpec,
-    ShardId, Status,
+    ContextChildRef, ContextEntity, ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit,
+    ContextSummaryDirtyMarker, ExecuteRequest, ExecuteResponse, FeatureFilter, FeaturePoint,
+    FeatureWritePolicy, IpsSnapshotReport, IpsStats, RiskFamily, RiskFolType, SequenceFeatureRow,
+    SequenceQuerySpec, ShardId, Status,
 };
 
 #[derive(Debug, Error)]
@@ -3316,6 +3316,114 @@ impl TemporalStoreTable {
             CommandResponse::ContextSummaryDirtyMarkers { markers, .. } => Ok(markers),
             response => Err(ClientError::UnexpectedResponse {
                 operation: "context_query_summary_dirty",
+                response,
+            }),
+        }
+    }
+
+    pub fn context_upsert_entity(
+        &self,
+        tenant_hash: u64,
+        entity: ContextEntity,
+    ) -> Result<String, ClientError> {
+        match self
+            .execute(Command::ContextUpsertEntity {
+                tenant_hash,
+                entity,
+            })?
+            .response
+        {
+            CommandResponse::ContextObjectKey { object_key } => Ok(object_key),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "context_upsert_entity",
+                response,
+            }),
+        }
+    }
+
+    pub fn context_get_entity(
+        &self,
+        tenant_hash: u64,
+        node_hash: u64,
+        entity_hash: u64,
+    ) -> Result<Option<ContextEntity>, ClientError> {
+        match self
+            .execute(Command::ContextGetEntity {
+                tenant_hash,
+                node_hash,
+                entity_hash,
+            })?
+            .response
+        {
+            CommandResponse::ContextEntity { entity, .. } => Ok(entity),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "context_get_entity",
+                response,
+            }),
+        }
+    }
+
+    pub fn context_query_entities(
+        &self,
+        tenant_hash: u64,
+        node_hash: u64,
+        entity_hashes: Vec<u64>,
+        limit: Option<usize>,
+    ) -> Result<Vec<ContextEntity>, ClientError> {
+        match self
+            .execute(Command::ContextQueryEntities {
+                tenant_hash,
+                node_hash,
+                entity_hashes,
+                limit,
+            })?
+            .response
+        {
+            CommandResponse::ContextEntities { entities, .. } => Ok(entities),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "context_query_entities",
+                response,
+            }),
+        }
+    }
+
+    pub fn context_upsert_child_ref(
+        &self,
+        tenant_hash: u64,
+        child_ref: ContextChildRef,
+    ) -> Result<bool, ClientError> {
+        match self
+            .execute(Command::ContextUpsertChildRef {
+                tenant_hash,
+                child_ref,
+            })?
+            .response
+        {
+            CommandResponse::ContextChildRefs { created, .. } => Ok(created.unwrap_or(false)),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "context_upsert_child_ref",
+                response,
+            }),
+        }
+    }
+
+    pub fn context_query_children(
+        &self,
+        tenant_hash: u64,
+        parent_hash: u64,
+        limit: Option<usize>,
+    ) -> Result<Vec<ContextChildRef>, ClientError> {
+        match self
+            .execute(Command::ContextQueryChildren {
+                tenant_hash,
+                parent_hash,
+                limit,
+            })?
+            .response
+        {
+            CommandResponse::ContextChildRefs { refs, .. } => Ok(refs),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "context_query_children",
                 response,
             }),
         }
