@@ -2291,23 +2291,23 @@ impl ProxyService {
             }
             ("POST", "/ProxyService/RiskFolQuery") => {
                 match parse_json::<ProxyKeyCommandRequest>(&request.body) {
-                    Ok(req) => json_response(
-                        200,
-                        &self.table_command(req, |key| Command::RiskFolQuery { key }),
-                    ),
+                    Ok(req) => {
+                        let response = self.table_command(req, |key| Command::RiskFolQuery { key });
+                        json_response(200, &risk_fol_query_response_json(response))
+                    }
                     Err(err) => self.bad_execute_request(err),
                 }
             }
             ("POST", "/ProxyService/RiskManager") => {
                 match parse_json::<ProxyRiskManagerCommandRequest>(&request.body) {
-                    Ok(req) => json_response(
-                        200,
-                        &self.table_execute(ProxyTableExecuteRequest {
+                    Ok(req) => {
+                        let response = self.table_execute(ProxyTableExecuteRequest {
                             namespace: req.namespace,
                             table_name: req.table_name,
                             command: Command::RiskManager { key: req.key },
-                        }),
-                    ),
+                        });
+                        json_response(200, &hash_entries_response_json(response, true))
+                    }
                     Err(err) => self.bad_execute_request(err),
                 }
             }
@@ -2831,14 +2831,12 @@ impl ProxyService {
                             key: req.key,
                             fields: req.fields,
                         };
-                        json_response(
-                            200,
-                            &self.table_execute(ProxyTableExecuteRequest {
-                                namespace: req.namespace,
-                                table_name: req.table_name,
-                                command,
-                            }),
-                        )
+                        let response = self.table_execute(ProxyTableExecuteRequest {
+                            namespace: req.namespace,
+                            table_name: req.table_name,
+                            command,
+                        });
+                        json_response(200, &hmget_response_json(response))
                     }
                     Err(err) => self.bad_execute_request(err),
                 }
@@ -2864,19 +2862,19 @@ impl ProxyService {
             }
             ("POST", "/ProxyService/HGetAll") => {
                 match parse_json::<ProxyKeyCommandRequest>(&request.body) {
-                    Ok(req) => json_response(
-                        200,
-                        &self.table_command(req, |key| Command::HashGetAll { key }),
-                    ),
+                    Ok(req) => {
+                        let response = self.table_command(req, |key| Command::HashGetAll { key });
+                        json_response(200, &hash_entries_response_json(response, false))
+                    }
                     Err(err) => self.bad_execute_request(err),
                 }
             }
             ("POST", "/ProxyService/HLen") => {
                 match parse_json::<ProxyKeyCommandRequest>(&request.body) {
-                    Ok(req) => json_response(
-                        200,
-                        &self.table_command(req, |key| Command::HashLen { key }),
-                    ),
+                    Ok(req) => {
+                        let response = self.table_command(req, |key| Command::HashLen { key });
+                        json_response(200, &integer_response_json(response, "len"))
+                    }
                     Err(err) => self.bad_execute_request(err),
                 }
             }
@@ -4095,6 +4093,106 @@ fn risk_cpc_timestamp_ms(timestamp_ms: u64) -> u64 {
     } else {
         timestamp_ms
     }
+}
+
+fn execute_response_json(response: ExecuteResponse) -> serde_json::Value {
+    serde_json::to_value(response).unwrap_or_else(|err| {
+        serde_json::json!({
+            "status": Status::error("serialization_error", err.to_string()),
+            "response": CommandResponse::Empty,
+        })
+    })
+}
+
+fn response_object_mut(
+    value: &mut serde_json::Value,
+) -> Option<&mut serde_json::Map<String, serde_json::Value>> {
+    value
+        .get_mut("response")
+        .and_then(|response| response.as_object_mut())
+}
+
+fn hmget_response_json(response: ExecuteResponse) -> serde_json::Value {
+    let exists = match &response.response {
+        CommandResponse::Values { values } => Some(
+            values
+                .iter()
+                .map(|value| value.is_some())
+                .collect::<Vec<bool>>(),
+        ),
+        _ => None,
+    };
+    let mut value = execute_response_json(response);
+    if let (Some(exists), Some(response)) = (exists, response_object_mut(&mut value)) {
+        response.insert("exists".to_string(), serde_json::json!(exists));
+    }
+    value
+}
+
+fn hash_entries_response_json(
+    response: ExecuteResponse,
+    include_result: bool,
+) -> serde_json::Value {
+    let aliases = match &response.response {
+        CommandResponse::HashEntries { entries } => {
+            let fields = entries
+                .iter()
+                .map(|(field, _)| field.clone())
+                .collect::<Vec<_>>();
+            let values = entries
+                .iter()
+                .map(|(_, value)| value.clone())
+                .collect::<Vec<_>>();
+            let result = entries
+                .iter()
+                .map(|(key, value)| {
+                    serde_json::json!({
+                        "key": key,
+                        "value": String::from_utf8_lossy(value).into_owned(),
+                    })
+                })
+                .collect::<Vec<_>>();
+            Some((fields, values, result))
+        }
+        _ => None,
+    };
+    let mut value = execute_response_json(response);
+    if let (Some((fields, values, result)), Some(response)) =
+        (aliases, response_object_mut(&mut value))
+    {
+        response.insert("fields".to_string(), serde_json::json!(fields));
+        response.insert("values".to_string(), serde_json::json!(values));
+        if include_result {
+            response.insert("result".to_string(), serde_json::json!(result));
+        }
+    }
+    value
+}
+
+fn integer_response_json(response: ExecuteResponse, alias: &str) -> serde_json::Value {
+    let integer = match &response.response {
+        CommandResponse::Integer { value } => Some(*value),
+        _ => None,
+    };
+    let mut value = execute_response_json(response);
+    if let (Some(integer), Some(response)) = (integer, response_object_mut(&mut value)) {
+        response.insert(alias.to_string(), serde_json::json!(integer));
+    }
+    value
+}
+
+fn risk_fol_query_response_json(response: ExecuteResponse) -> serde_json::Value {
+    let result = match &response.response {
+        CommandResponse::Bytes { value } => value
+            .as_ref()
+            .map(|bytes| String::from_utf8_lossy(bytes).into_owned()),
+        _ => None,
+    };
+    let mut value = execute_response_json(response);
+    if let (Some(result), Some(response)) = (result, response_object_mut(&mut value)) {
+        response.insert("result".to_string(), serde_json::json!(result));
+    }
+    value
 }
 
 fn risk_hset_timestamp_ms(request: &ProxyRiskHsetCommandRequest) -> u64 {

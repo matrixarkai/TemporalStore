@@ -150,7 +150,7 @@ class ProxyClient:
         body = self._key_body(key)
         body["field"] = field
         data = self._post("/ProxyService/HGet", body)
-        return str(data.get("value", ""))
+        return _string_value(data.get("value", ""))
 
     def hmset(self, key: str, entries: Dict[str, str]) -> None:
         body = self._key_body(key)
@@ -161,15 +161,24 @@ class ProxyClient:
         body = self._key_body(key)
         body["fields"] = list(fields)
         data = self._post("/ProxyService/HMGet", body)
-        return data.get("values", [])
+        return [None if value is None else _string_value(value) for value in data.get("values", [])]
 
     def hgetall(self, key: str) -> Dict[str, str]:
         data = self._post("/ProxyService/HGetAll", self._key_body(key))
-        return dict(data.get("entries", {}))
+        if "fields" in data and "values" in data:
+            return {
+                str(field): _string_value(value)
+                for field, value in zip(data.get("fields", []), data.get("values", []))
+            }
+        return {
+            str(entry[0]): _string_value(entry[1])
+            for entry in data.get("entries", [])
+            if isinstance(entry, list) and len(entry) >= 2
+        }
 
     def hlen(self, key: str) -> int:
         data = self._post("/ProxyService/HLen", self._key_body(key))
-        return int(data.get("value", 0))
+        return int(data.get("len", data.get("value", 0)))
 
     def hdel(self, key: str, field: str) -> None:
         body = self._key_body(key)
@@ -505,7 +514,7 @@ class ProxyClient:
 
     def risk_fol_query(self, key: str) -> str:
         data = self._post("/ProxyService/RiskFolQuery", self._key_body(key))
-        return str(data.get("value", ""))
+        return str(data.get("result", _string_value(data.get("value", ""))))
 
     def risk_manager(self, key: str) -> Dict[str, str]:
         data = self._post("/ProxyService/RiskManager", self._key_body(key))
