@@ -395,6 +395,69 @@ class ProxyClient:
         body.update({"timestamp_ms": timestamp_ms, "amount": amount})
         self._post("/ProxyService/RiskHset", body)
 
+    def risk_hquery(
+        self,
+        key: str,
+        precision: RiskPrecision = RiskPrecision.ONE_MINUTE,
+        window_start: int = -1,
+        window_end: int = 0,
+        window_unit: WindowUnit = WindowUnit.HOUR,
+        aggregator: str = "sum",
+    ) -> List[int]:
+        body = self._key_body(key)
+        start_ms, end_ms = _risk_window_ms(window_start, window_end, window_unit)
+        body.update(
+            {
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+                "precision_ms": _risk_precision_ms(precision),
+                "aggregator": aggregator,
+            }
+        )
+        data = self._post("/ProxyService/RiskHquery", body)
+        return [int(item.get("result", 0)) for item in data.get("result_list", [])]
+
+    def risk_cpc_set(
+        self,
+        key: str,
+        values: Iterable[str],
+        timestamp_ms: Optional[int] = None,
+        ttl_ms: int = 0,
+        precision: RiskPrecision = RiskPrecision.ONE_MINUTE,
+        dont_upgrade_cpc: bool = False,
+    ) -> None:
+        body = self._key_body(key)
+        body.update(
+            {
+                "values": list(values),
+                "timestamp_ms": int(timestamp_ms if timestamp_ms is not None else time.time() * 1000),
+                "ttl_ms": ttl_ms,
+                "precision_ms": _risk_precision_ms(precision),
+                "dont_upgrade_cpc": dont_upgrade_cpc,
+            }
+        )
+        self._post("/ProxyService/RiskCPCSet", body)
+
+    def risk_cpc_query(
+        self,
+        key: str,
+        precision: RiskPrecision = RiskPrecision.ONE_MINUTE,
+        window_start: int = -1,
+        window_end: int = 0,
+        window_unit: WindowUnit = WindowUnit.HOUR,
+    ) -> List[int]:
+        body = self._key_body(key)
+        start_ms, end_ms = _risk_window_ms(window_start, window_end, window_unit)
+        body.update(
+            {
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+                "precision_ms": _risk_precision_ms(precision),
+            }
+        )
+        data = self._post("/ProxyService/RiskCPCQuery", body)
+        return [int(value) for value in data.get("count_list", [])]
+
     def risk_fol_set(
         self,
         key: str,
