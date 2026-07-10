@@ -15496,6 +15496,16 @@ pub(super) fn read_page_bytes_batch(
     if miss_entries.is_empty() {
         return values;
     }
+    if miss_entries.len() == 1 {
+        let entry = miss_entries
+            .pop()
+            .expect("single miss entry is present after length check");
+        if let Ok(bytes) = page_store.read(&entry.address) {
+            fill_page_read_values(&mut values, &entry, &bytes);
+            let _ = cache.put(entry.key, bytes);
+        }
+        return values;
+    }
 
     let miss_addresses = miss_entries
         .iter()
