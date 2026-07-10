@@ -58,6 +58,8 @@ pub enum FeatureFilterOp {
     NotEqual = 1,
     GreaterThan = 2,
     LessThan = 3,
+    GreaterOrEqual = 4,
+    LessOrEqual = 5,
 }
 
 #[derive(Clone, Copy, Debug)]

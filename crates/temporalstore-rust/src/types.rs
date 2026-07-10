@@ -122,7 +122,7 @@ fn bytes_value(value: serde_json::Value) -> Result<Vec<u8>, String> {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FeatureFilterOp {
     Equal,
@@ -131,6 +131,44 @@ pub enum FeatureFilterOp {
     GreaterOrEqual,
     LessThan,
     LessOrEqual,
+}
+
+impl<'de> Deserialize<'de> for FeatureFilterOp {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value {
+            serde_json::Value::Number(number) => match number.as_i64() {
+                Some(0) => Ok(Self::Equal),
+                Some(1) => Ok(Self::NotEqual),
+                Some(2) => Ok(Self::GreaterThan),
+                Some(3) => Ok(Self::LessThan),
+                Some(4) => Ok(Self::GreaterOrEqual),
+                Some(5) => Ok(Self::LessOrEqual),
+                _ => Err(serde::de::Error::custom("unknown FeatureFilterOp value")),
+            },
+            serde_json::Value::String(value) => match value.as_str() {
+                "equal" | "Equal" | "EQUAL" | "=" | "==" | "0" => Ok(Self::Equal),
+                "not_equal" | "NotEqual" | "NOT_EQUAL" | "!=" | "1" => Ok(Self::NotEqual),
+                "greater_than" | "GreaterThan" | "GREATER_THAN" | ">" | "2" => {
+                    Ok(Self::GreaterThan)
+                }
+                "less_than" | "LessThan" | "LESS_THAN" | "<" | "3" => Ok(Self::LessThan),
+                "greater_or_equal" | "GreaterOrEqual" | "GREATER_OR_EQUAL" | ">=" | "4" => {
+                    Ok(Self::GreaterOrEqual)
+                }
+                "less_or_equal" | "LessOrEqual" | "LESS_OR_EQUAL" | "<=" | "5" => {
+                    Ok(Self::LessOrEqual)
+                }
+                _ => Err(serde::de::Error::custom("unknown FeatureFilterOp value")),
+            },
+            _ => Err(serde::de::Error::custom(
+                "FeatureFilterOp must be a string or integer",
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

@@ -616,6 +616,8 @@ def _feature_filter_body(value: FeatureFilter) -> Dict[str, Any]:
         FeatureFilterOp.NOT_EQUAL: "not_equal",
         FeatureFilterOp.GREATER_THAN: "greater_than",
         FeatureFilterOp.LESS_THAN: "less_than",
+        FeatureFilterOp.GREATER_OR_EQUAL: "greater_or_equal",
+        FeatureFilterOp.LESS_OR_EQUAL: "less_or_equal",
     }
     return {"field": value.field, "op": names.get(value.op, "equal"), "value": int(value.value)}
 
