@@ -9,6 +9,16 @@ use super::state::{
 };
 use super::{read_page_bytes, read_page_bytes_batch};
 
+type SlotPageIdentityKey = (
+    u64,
+    u64,
+    u64,
+    Option<u64>,
+    Option<u64>,
+    Option<u32>,
+    Option<u64>,
+);
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct SlotRuntimeState {
     pub routing_slot: u32,
@@ -137,6 +147,32 @@ fn slot_layout_name(layout: SlotLayoutState) -> &'static str {
     }
 }
 
+fn slot_page_identity_key(address: &PageAddress) -> SlotPageIdentityKey {
+    (
+        address.page_segment_id,
+        address.offset,
+        address.length,
+        address.page_id,
+        address.object_id,
+        address.routing_slot,
+        address.generation,
+    )
+}
+
+fn select_earliest_page_address(
+    current: &mut Option<(SlotPageIdentityKey, PageAddress)>,
+    address: &PageAddress,
+) {
+    let identity = slot_page_identity_key(address);
+    if current
+        .as_ref()
+        .map(|(current_identity, _)| identity < *current_identity)
+        .unwrap_or(true)
+    {
+        *current = Some((identity, address.clone()));
+    }
+}
+
 pub(super) fn slot_index_page_address(
     shard: &ShardState,
     model_id: &str,
@@ -145,6 +181,7 @@ pub(super) fn slot_index_page_address(
 ) -> Option<PageAddress> {
     let lookup_key = object_page_lookup_key(model_id, object_key, component);
     if let Some(page_refs) = shard.slot_index.object_page_lookup.get(&lookup_key) {
+        let mut selected = None;
         for page_ref in page_refs {
             let Some(slot) = shard.slot_index.slot_map.get(&page_ref.routing_slot) else {
                 continue;
@@ -157,10 +194,10 @@ pub(super) fn slot_index_page_address(
                 && page.object_key == object_key
                 && page.component.as_deref() == component
             {
-                return Some(page.address.clone());
+                select_earliest_page_address(&mut selected, &page.address);
             }
         }
-        return None;
+        return selected.map(|(_, address)| address);
     }
 
     if !shard.slot_index.object_page_lookup.is_empty() {
@@ -172,7 +209,8 @@ pub(super) fn slot_index_page_address(
         .routing_slots_for_object_key(object_key)
         .filter(|slots| !slots.is_empty())
     {
-        return routing_slots
+        let mut selected = None;
+        for page in routing_slots
             .iter()
             .filter_map(|routing_slot| shard.slot_index.slot_map.get(routing_slot))
             .flat_map(|slot| slot.page_index.values())
@@ -182,11 +220,14 @@ pub(super) fn slot_index_page_address(
                     && page.object_key == object_key
                     && page.component.as_deref() == component
             })
-            .map(|page| page.address.clone())
-            .next();
+        {
+            select_earliest_page_address(&mut selected, &page.address);
+        }
+        return selected.map(|(_, address)| address);
     }
 
-    shard
+    let mut selected = None;
+    for page in shard
         .slot_index
         .slot_map
         .values()
@@ -197,8 +238,10 @@ pub(super) fn slot_index_page_address(
                 && page.object_key == object_key
                 && page.component.as_deref() == component
         })
-        .map(|page| page.address.clone())
-        .next()
+    {
+        select_earliest_page_address(&mut selected, &page.address);
+    }
+    selected.map(|(_, address)| address)
 }
 
 pub(super) fn slot_index_component_page_addresses(
@@ -221,7 +264,11 @@ pub(super) fn slot_index_component_page_addresses(
             }
         }
         if !refs.is_empty() {
-            refs.sort_by(|left, right| left.0.cmp(&right.0));
+            refs.sort_by(|left, right| {
+                left.0.cmp(&right.0).then_with(|| {
+                    slot_page_identity_key(&left.1).cmp(&slot_page_identity_key(&right.1))
+                })
+            });
             return refs;
         }
         return Vec::new();
@@ -269,7 +316,11 @@ pub(super) fn slot_index_component_page_addresses(
             }
         }
     };
-    refs.sort_by(|left, right| left.0.cmp(&right.0));
+    refs.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| slot_page_identity_key(&left.1).cmp(&slot_page_identity_key(&right.1)))
+    });
     refs
 }
 
