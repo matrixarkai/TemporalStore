@@ -909,6 +909,31 @@ impl LocalBlockStore {
         if addresses.is_empty() {
             return Vec::new();
         }
+        if addresses.windows(2).all(|window| window[0] == window[1]) {
+            let read_result = self.read_with_cache_policy(&addresses[0], no_cache_fill);
+            let mut results = (0..addresses.len())
+                .map(|_| {
+                    Err(BlockStoreError::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "coalesced block read result missing",
+                    )))
+                })
+                .collect::<Vec<_>>();
+            match read_result {
+                Ok(bytes) => fill_all_duplicate_read_success(&mut results, bytes),
+                Err(err) => {
+                    let err_text = err.to_string();
+                    results[0] = Err(err);
+                    for result in results.iter_mut().skip(1) {
+                        *result = Err(BlockStoreError::Io(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            err_text.clone(),
+                        )));
+                    }
+                }
+            }
+            return results;
+        }
         let mut seen = HashSet::with_capacity(addresses.len());
         if addresses.iter().all(|address| seen.insert(address)) {
             return self.read_batch_with_cache_policy_deduped(addresses, no_cache_fill);
@@ -2151,6 +2176,22 @@ fn fill_duplicate_read_success(
             break;
         } else {
             results[index] = Ok(bytes.clone());
+            remaining = remaining.saturating_sub(1);
+        }
+    }
+}
+
+fn fill_all_duplicate_read_success(
+    results: &mut [Result<Vec<u8>, BlockStoreError>],
+    bytes: Vec<u8>,
+) {
+    let mut remaining = results.len();
+    for result in results {
+        if remaining == 1 {
+            *result = Ok(bytes);
+            break;
+        } else {
+            *result = Ok(bytes.clone());
             remaining = remaining.saturating_sub(1);
         }
     }
