@@ -1931,7 +1931,8 @@ impl TemporalStoreClient {
         if record_count == 0 && options.count_key.is_empty() {
             return Err(ClientError::InvalidRequest("entries is empty".to_string()));
         }
-        let mut grouped: BTreeMap<String, Vec<(String, Vec<u8>)>> = BTreeMap::new();
+        let mut grouped: HashMap<String, Vec<(String, Vec<u8>)>> =
+            HashMap::with_capacity(record_count.max(1));
         for record in records {
             grouped
                 .entry(record.key)
