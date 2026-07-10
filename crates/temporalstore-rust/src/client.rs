@@ -1933,6 +1933,29 @@ impl TemporalStoreClient {
         self.matrixark_record_log_context_request_json("matrixark_scan_candidates", request)
     }
 
+    pub fn matrixark_scan_candidates_native_json(
+        &self,
+        request: MatrixArkRetrieveContextPackRequest,
+    ) -> Result<Value, ClientError> {
+        let namespace = request.namespace.clone();
+        let table_name = request.table.clone();
+        if namespace.trim().is_empty() {
+            return Err(ClientError::InvalidRequest(
+                "matrixark native scan candidates requires namespace".to_string(),
+            ));
+        }
+        if table_name.trim().is_empty() {
+            return Err(ClientError::InvalidRequest(
+                "matrixark native scan candidates requires table".to_string(),
+            ));
+        }
+        let table = self
+            .cached_table(namespace.clone(), table_name.clone())
+            .map(Ok)
+            .unwrap_or_else(|| self.open_table_from_meta(namespace, table_name))?;
+        table.matrixark_scan_candidates_native_json(request)
+    }
+
     pub fn matrixark_retrieve_context_pack_native_json(
         &self,
         request: MatrixArkRetrieveContextPackRequest,
@@ -3934,6 +3957,115 @@ impl TemporalStoreTable {
                 "pack_ms": pack_ms,
                 "audit_ms": 0,
                 "selected_ref_count": selected_refs.len(),
+            }
+        }))
+    }
+
+    pub fn matrixark_scan_candidates_native_json(
+        &self,
+        request: MatrixArkRetrieveContextPackRequest,
+    ) -> Result<Value, ClientError> {
+        let tenant_hash = request.tenant_hash;
+        if tenant_hash == 0 {
+            return Err(ClientError::InvalidRequest(
+                "matrixark native scan candidates requires tenant_hash".to_string(),
+            ));
+        }
+        let node_hash = if request.start_node_hash != 0 {
+            request.start_node_hash
+        } else {
+            request.node_hash
+        };
+        if node_hash == 0 {
+            return Err(ClientError::InvalidRequest(
+                "matrixark native scan candidates requires start_node_hash".to_string(),
+            ));
+        }
+        let as_of_ms = if request.as_of_ms != 0 {
+            request.as_of_ms
+        } else {
+            request.reference_time_ms
+        };
+        let cold_end_time_ms = if request.end_time_ms != 0 {
+            request.end_time_ms
+        } else {
+            request.reference_time_ms
+        };
+        let compression_limit = request.compression_limit.or_else(|| {
+            if request.max_selected_refs == 0 {
+                None
+            } else {
+                Some(request.max_selected_refs)
+            }
+        });
+        let (node_exists, node, overall_summary_exists, overall_summary, cold_window_summaries) =
+            self.context_query_node_context(
+                tenant_hash,
+                node_hash,
+                request.summary_level,
+                as_of_ms,
+                request.start_time_ms,
+                cold_end_time_ms,
+                compression_limit,
+            )?;
+
+        let mut records = Vec::new();
+        if let Some(node) = node {
+            records.push(serde_json::json!({
+                "record_type": "context_entity",
+                "tenant_hash": tenant_hash,
+                "node_hash": node_hash,
+                "node": node,
+            }));
+        }
+        if let Some(summary) = overall_summary {
+            if !summary.text.is_empty() {
+                records.push(serde_json::json!({
+                    "record_type": "context_summary",
+                    "tenant_hash": tenant_hash,
+                    "node_hash": summary.node_hash,
+                    "summary_level": summary.level,
+                    "event_time_ms": summary.valid_from_ms,
+                    "text": summary.text,
+                }));
+            }
+        }
+        for event in cold_window_summaries {
+            if request.max_selected_refs != 0 && records.len() >= request.max_selected_refs {
+                break;
+            }
+            records.push(serde_json::json!({
+                "record_type": "context_compression_event",
+                "tenant_hash": tenant_hash,
+                "node_hash": event.node_hash,
+                "event_time_ms": event.compressed_time_ms,
+                "compression_id_hash": event.compression_id_hash,
+                "summary": event.summary,
+            }));
+        }
+
+        let returned_records = records.len();
+        Ok(serde_json::json!({
+            "ok": true,
+            "native_candidate_prefilter": true,
+            "count": returned_records,
+            "records": records,
+            "scan_stats": {
+                "execution_mode": "rust_direct_native_candidate_prefilter",
+                "native_prefix_scan": true,
+                "native_secondary_index_prefilter": false,
+                "native_pack_assembly": false,
+                "pack_assembly_location": "caller_or_context_pack_api",
+                "scanned_records": returned_records,
+                "returned_records": returned_records,
+                "dropped_by_type": 0,
+                "dropped_by_scope": 0,
+                "native_scan_record_cache_hit": false,
+                "secondary_index_groups_supplied": request.secondary_index_groups.len(),
+                "secondary_index_matched_candidate_count": 0,
+                "secondary_index_dropped_candidate_count": 0,
+                "node_exists": node_exists,
+                "overall_summary_exists": overall_summary_exists,
             }
         }))
     }
