@@ -4653,8 +4653,9 @@ impl TemporalEngine {
         let Some(shard) = shards.get(&shard_id) else {
             return report;
         };
-        let mut selected_entries = Vec::new();
-        for entry in collect_live_page_entries(shard) {
+        let live_entries = collect_live_page_entries(shard);
+        let mut selected_entries = Vec::with_capacity(live_entries.len());
+        for entry in live_entries {
             let routing_slot = entry
                 .address
                 .routing_slot
@@ -4674,8 +4675,9 @@ impl TemporalEngine {
             );
             selected_entries.push((key, entry.address));
         }
-        let mut unique_entries = Vec::<(CacheKey, PageAddress, usize)>::new();
-        let mut key_indexes = HashMap::<CacheKey, usize>::new();
+        let mut unique_entries =
+            Vec::<(CacheKey, PageAddress, usize)>::with_capacity(selected_entries.len());
+        let mut key_indexes = HashMap::<CacheKey, usize>::with_capacity(selected_entries.len());
         for (key, address) in selected_entries {
             if let Some(index) = key_indexes.get(&key).copied() {
                 unique_entries[index].2 = unique_entries[index].2.saturating_add(1);
@@ -4692,7 +4694,7 @@ impl TemporalEngine {
             .cache
             .get_batch(&keys)
             .unwrap_or_else(|_| vec![None; keys.len()]);
-        let mut miss_entries = Vec::new();
+        let mut miss_entries = Vec::with_capacity(unique_entries.len());
         for ((key, address, logical_ref_count), cached_value) in
             unique_entries.into_iter().zip(cached)
         {
@@ -4710,7 +4712,7 @@ impl TemporalEngine {
             .map(|(_, address, _)| address.clone())
             .collect::<Vec<_>>();
         let miss_reads = self.page_store.read_batch(&miss_addresses);
-        let mut refills = Vec::new();
+        let mut refills = Vec::with_capacity(miss_entries.len());
         let mut refill_page_refs = 0usize;
         let mut refill_bytes = 0u64;
         for ((key, _, logical_ref_count), read_result) in miss_entries.into_iter().zip(miss_reads) {
@@ -5819,10 +5821,11 @@ impl TemporalEngine {
                     "shard is not loaded on this server",
                 ));
             };
+            let publish_count = publish_records.len();
             let mut published_object_keys = BTreeSet::new();
-            let mut published_entries = Vec::new();
-            let mut durable_cache_refills = Vec::new();
-            let mut published_memory_only_keys = HashSet::new();
+            let mut published_entries = Vec::with_capacity(publish_count);
+            let mut durable_cache_refills = Vec::with_capacity(publish_count);
+            let mut published_memory_only_keys = HashSet::with_capacity(publish_count);
             for ((target, original, bytes, _, _), published) in
                 publish_records.into_iter().zip(published_addresses)
             {
