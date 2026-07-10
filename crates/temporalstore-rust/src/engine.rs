@@ -4715,6 +4715,9 @@ impl TemporalEngine {
                 selected_entries.push((key, entry.address));
             }
         }
+        if selected_entries.is_empty() {
+            return report;
+        }
         let mut keys = Vec::<CacheKey>::with_capacity(selected_entries.len());
         let mut unique_entries = Vec::<(PageAddress, usize)>::with_capacity(selected_entries.len());
         let mut key_indexes = HashMap::<CacheKey, usize>::with_capacity(selected_entries.len());
@@ -4743,6 +4746,9 @@ impl TemporalEngine {
             } else {
                 miss_entries.push((key, address, logical_ref_count));
             }
+        }
+        if miss_entries.is_empty() {
+            return report;
         }
         let miss_addresses = miss_entries
             .iter()
