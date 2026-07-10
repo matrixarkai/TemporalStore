@@ -921,6 +921,7 @@ pub(super) fn load_context_compression_events(
     let trim_threshold = event_limit.saturating_mul(2).max(event_limit);
     let mut events = Vec::with_capacity(event_limit);
     let mut seen_nodes = HashSet::new();
+    let mut page_cache = HashMap::new();
     for node_hash in node_hashes
         .iter()
         .copied()
@@ -930,17 +931,23 @@ pub(super) fn load_context_compression_events(
         if let Some(series) = shard.context_compressions.get(&object_key) {
             let mut batch = Vec::with_capacity(64);
             let drain_batch =
-                |batch: &mut Vec<(u64, PageAddress)>, events: &mut Vec<ContextCompressionEvent>| {
-                    for event in read_context_values_cached::<ContextCompressionEvent>(
-                        cache,
-                        page_store,
-                        shard_id,
-                        std::mem::take(batch),
-                    )
-                    .into_iter()
-                    .filter(|event| {
-                        event.source_end_ms >= start_time_ms && event.source_start_ms <= end_time_ms
-                    }) {
+                |batch: &mut Vec<(u64, PageAddress)>,
+                 events: &mut Vec<ContextCompressionEvent>,
+                 page_cache: &mut HashMap<PageAddress, Option<Vec<FeaturePoint>>>| {
+                    for event in
+                        read_context_values_cached_with_page_cache::<ContextCompressionEvent>(
+                            cache,
+                            page_store,
+                            shard_id,
+                            std::mem::take(batch),
+                            page_cache,
+                        )
+                        .into_iter()
+                        .filter(|event| {
+                            event.source_end_ms >= start_time_ms
+                                && event.source_start_ms <= end_time_ms
+                        })
+                    {
                         events.push(event);
                         if events.len() > trim_threshold {
                             sort_truncate_context_compression_events(events, event_limit);
@@ -952,11 +959,11 @@ pub(super) fn load_context_compression_events(
             {
                 batch.push((*timeline_key, address.clone()));
                 if batch.len() >= 64 {
-                    drain_batch(&mut batch, &mut events);
+                    drain_batch(&mut batch, &mut events, &mut page_cache);
                 }
             }
             if !batch.is_empty() {
-                drain_batch(&mut batch, &mut events);
+                drain_batch(&mut batch, &mut events, &mut page_cache);
             }
         }
     }
