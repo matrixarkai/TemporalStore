@@ -13974,19 +13974,11 @@ fn collect_live_page_addresses(shard: &ShardState) -> Vec<PageAddress> {
 }
 
 fn unique_timestamped_kv_page_addresses(series: &BTreeMap<u64, PageAddress>) -> Vec<PageAddress> {
-    let mut addresses = series
-        .values()
-        .cloned()
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    addresses.sort_by(|left, right| {
-        left.page_segment_id
-            .cmp(&right.page_segment_id)
-            .then(left.offset.cmp(&right.offset))
-            .then(left.length.cmp(&right.length))
-    });
-    addresses
+    let mut addresses = BTreeMap::<PagePhysicalIdentityKey, PageAddress>::new();
+    for address in series.values() {
+        addresses.insert(page_physical_identity_key(address), address.clone());
+    }
+    addresses.into_values().collect()
 }
 
 fn unique_feature_page_addresses(series: &BTreeMap<u64, PageAddress>) -> Vec<PageAddress> {
@@ -14706,12 +14698,11 @@ fn compaction_layout_from_addresses(
     packed_pages: Option<usize>,
 ) -> ShardCompactionModelLayoutReport {
     let addresses = addresses.into_iter().collect::<Vec<_>>();
-    let unique_addresses = addresses
-        .iter()
-        .cloned()
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
+    let mut unique_addresses = BTreeMap::<PagePhysicalIdentityKey, PageAddress>::new();
+    for address in &addresses {
+        unique_addresses.insert(page_physical_identity_key(address), address.clone());
+    }
+    let unique_addresses = unique_addresses.into_values().collect::<Vec<_>>();
     let live_segment_ids = unique_addresses
         .iter()
         .map(|address| address.page_segment_id)
