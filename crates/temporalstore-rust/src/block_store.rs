@@ -136,6 +136,8 @@ pub struct BlockStoreOptions {
 
 pub type BlockAppendRecord = (Vec<u8>, Option<u64>, Option<u32>);
 
+const BATCH_APPEND_BUFFER_TARGET_BYTES: usize = 1024 * 1024;
+
 impl Default for BlockStoreOptions {
     fn default() -> Self {
         Self {
@@ -703,6 +705,7 @@ impl LocalBlockStore {
         let mut logical_bytes_written = 0u64;
         let mut compressed_records_written = 0u64;
         let mut compression_bytes_saved = 0u64;
+        let mut pending_segment_bytes = Vec::new();
 
         for (bytes, object_id, routing_slot) in records {
             let mut page_id = inner.next_page_id;
@@ -720,6 +723,7 @@ impl LocalBlockStore {
                 record.bytes.len() as u64,
                 segment_target_bytes,
             ) {
+                flush_active_append_buffer_inner(&mut inner, &mut pending_segment_bytes)?;
                 roll_segment_inner(&mut inner)?;
                 page_id = inner.next_page_id;
                 extent_id = extent_id_for_segment(inner.page_segment_id);
@@ -748,8 +752,9 @@ impl LocalBlockStore {
                 extent_id: Some(extent_id),
                 sha256: Some(record.sha256_hex.clone()),
             };
-            if let Some(current) = inner.active_append_file.as_mut() {
-                current.write_all(&record.bytes)?;
+            pending_segment_bytes.extend_from_slice(&record.bytes);
+            if pending_segment_bytes.len() >= BATCH_APPEND_BUFFER_TARGET_BYTES {
+                flush_active_append_buffer_inner(&mut inner, &mut pending_segment_bytes)?;
             }
             inner.next_page_id = inner.next_page_id.saturating_add(1);
             inner.write_offset += address.length;
@@ -772,13 +777,7 @@ impl LocalBlockStore {
             }
             addresses.push(address);
         }
-        let sync_on_append = inner.options.sync_on_append;
-        if let Some(current) = inner.active_append_file.as_mut() {
-            current.flush()?;
-            if sync_on_append {
-                current.sync_data()?;
-            }
-        }
+        flush_active_append_buffer_inner(&mut inner, &mut pending_segment_bytes)?;
         if inner.options.sync_on_append {
             persist_extent_manifest(&inner.root, &inner.extents)?;
         }
@@ -2035,6 +2034,29 @@ fn flush_active_append_file_inner(inner: &mut BlockStoreInner) -> Result<(), Blo
     if let Some(mut active_file) = inner.active_append_file.take() {
         active_file.flush()?;
         if inner.options.sync_on_append {
+            active_file.sync_data()?;
+        }
+    }
+    Ok(())
+}
+
+fn flush_active_append_buffer_inner(
+    inner: &mut BlockStoreInner,
+    pending_bytes: &mut Vec<u8>,
+) -> Result<(), BlockStoreError> {
+    if pending_bytes.is_empty() {
+        return Ok(());
+    }
+    if inner.active_append_file.is_none() {
+        let path = segment_path(&inner.root, inner.page_segment_id);
+        inner.active_append_file = Some(OpenOptions::new().create(true).append(true).open(path)?);
+    }
+    let sync_on_append = inner.options.sync_on_append;
+    if let Some(active_file) = inner.active_append_file.as_mut() {
+        active_file.write_all(pending_bytes)?;
+        pending_bytes.clear();
+        active_file.flush()?;
+        if sync_on_append {
             active_file.sync_data()?;
         }
     }
