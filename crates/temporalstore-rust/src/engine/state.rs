@@ -337,12 +337,13 @@ impl CoreIndex {
     pub(super) fn object_key_lookup_stats(
         &self,
         dirty_objects: &BTreeSet<String>,
-    ) -> Option<(usize, usize, usize)> {
+    ) -> Option<(usize, usize, usize, usize)> {
         if self.object_key_lookup.is_empty() {
             return None;
         }
         let mut live_objects = BTreeSet::new();
         let mut dirty_objects_seen = BTreeSet::new();
+        let mut dirty_routing_slots = BTreeSet::new();
         let mut live_page_ref_count = 0usize;
         for (object_key, page_refs) in &self.object_key_lookup {
             for page_ref in page_refs {
@@ -367,6 +368,7 @@ impl CoreIndex {
                 live_objects.insert(object_identity);
                 if page.dirty || dirty_objects.contains(&page.object_key) {
                     dirty_objects_seen.insert(object_identity);
+                    dirty_routing_slots.insert(page_ref.routing_slot);
                 }
             }
         }
@@ -374,6 +376,7 @@ impl CoreIndex {
             live_objects.len(),
             live_page_ref_count,
             dirty_objects_seen.len(),
+            dirty_routing_slots.len(),
         ))
     }
 
