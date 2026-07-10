@@ -1263,6 +1263,18 @@ pub fn types_command_response_to_sdk(response: types::CommandResponse) -> v1::Co
                 .collect(),
             ..Default::default()
         },
+        types::CommandResponse::IpsStats { stats } => v1::CommandResponse {
+            status: Some(types_status_to_sdk(types::Status::ok())),
+            count: stats.total,
+            values: vec![json_bytes(stats)],
+            ..Default::default()
+        },
+        types::CommandResponse::IpsSnapshotReport { report } => v1::CommandResponse {
+            status: Some(types_status_to_sdk(types::Status::ok())),
+            count: report.returned_count as u64,
+            values: vec![json_bytes(report)],
+            ..Default::default()
+        },
         types::CommandResponse::ContextNode { node, .. } => v1::CommandResponse {
             status: Some(types_status_to_sdk(types::Status::ok())),
             context_nodes: node.into_iter().map(types_context_node_to_sdk).collect(),
@@ -1409,13 +1421,6 @@ pub fn types_command_response_to_sdk(response: types::CommandResponse) -> v1::Co
                 ..Default::default()
             }
         }
-        other => v1::CommandResponse {
-            status: Some(types_status_to_sdk(types::Status::error(
-                "unsupported_sdk_response",
-                format!("SDK response conversion missing for {other:?}"),
-            ))),
-            ..Default::default()
-        },
     }
 }
 
