@@ -386,6 +386,13 @@ pub(super) fn read_feature_points_cached_batch(
     shard_id: ShardId,
     refs: &[(u64, BlockAddress)],
 ) -> Vec<FeaturePoint> {
+    if refs.is_empty() {
+        return Vec::new();
+    }
+    if refs.windows(2).all(|window| window[0].1 == window[1].1) {
+        return read_feature_points_from_single_page(cache, block_store, shard_id, refs);
+    }
+
     let mut unique_pages = Vec::<PackedPageReadRequest>::with_capacity(refs.len());
     let mut unique_page_by_address = HashMap::<BlockAddress, usize>::with_capacity(refs.len());
     for (result_index, (timestamp_ms, address)) in refs.iter().enumerate() {
@@ -438,6 +445,36 @@ pub(super) fn read_feature_points_cached_batch(
         }
     }
     ordered_points.into_iter().flatten().collect()
+}
+
+fn read_feature_points_from_single_page(
+    cache: &MultiLayerCache,
+    block_store: &LocalBlockStore,
+    shard_id: ShardId,
+    refs: &[(u64, BlockAddress)],
+) -> Vec<FeaturePoint> {
+    let Some((_, address)) = refs.first() else {
+        return Vec::new();
+    };
+    let Some(bytes) = read_page_bytes(cache, block_store, shard_id, address) else {
+        return Vec::new();
+    };
+    match decode_feature_page_strict(&bytes) {
+        PackedFeaturePageDecode::Packed(page_points) => refs
+            .iter()
+            .filter_map(|(timestamp_ms, _)| {
+                select_feature_point_from_page(&page_points, *timestamp_ms)
+            })
+            .collect(),
+        PackedFeaturePageDecode::Legacy => refs
+            .iter()
+            .map(|(timestamp_ms, _)| FeaturePoint {
+                timestamp_ms: *timestamp_ms,
+                value: bytes.clone(),
+            })
+            .collect(),
+        PackedFeaturePageDecode::Corrupt(_) => Vec::new(),
+    }
 }
 
 fn fill_ordered_points_from_packed_page(
