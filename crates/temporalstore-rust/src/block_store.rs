@@ -895,7 +895,8 @@ impl LocalBlockStore {
         if addresses.iter().all(|address| seen.insert(address)) {
             return self.read_batch_with_cache_policy_deduped(addresses, no_cache_fill);
         }
-        let mut duplicate_groups = HashMap::<BlockAddress, Vec<usize>>::new();
+        let mut duplicate_groups =
+            HashMap::<BlockAddress, Vec<usize>>::with_capacity(addresses.len());
         for (index, address) in addresses.iter().enumerate() {
             duplicate_groups
                 .entry(address.clone())
@@ -956,7 +957,7 @@ impl LocalBlockStore {
             len: u64,
         }
 
-        let mut files = HashMap::<u64, SegmentReadHandle>::new();
+        let mut files = HashMap::<u64, SegmentReadHandle>::with_capacity(addresses.len().min(64));
         let mut results = (0..addresses.len()).map(|_| None).collect::<Vec<_>>();
         let mut read_order = addresses.iter().enumerate().collect::<Vec<_>>();
         read_order.sort_by(|(_, left), (_, right)| {
