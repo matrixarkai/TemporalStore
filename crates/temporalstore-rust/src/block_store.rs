@@ -1100,6 +1100,9 @@ impl LocalBlockStore {
     ) -> Result<(), BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         fs::create_dir_all(&inner.root)?;
+        if page_segment_id >= inner.page_segment_id {
+            flush_active_append_file_inner(&mut inner)?;
+        }
         let path = segment_path(&inner.root, page_segment_id);
         let temp_path = path.with_extension(format!(
             "seg.tmp.{}",
@@ -1953,12 +1956,7 @@ fn roll_segment_inner(
 ) -> Result<BlockStoreRollReport, BlockStoreError> {
     fs::create_dir_all(&inner.root)?;
     let previous_page_segment_id = inner.page_segment_id;
-    if let Some(mut active_file) = inner.active_append_file.take() {
-        active_file.flush()?;
-        if inner.options.sync_on_append {
-            active_file.sync_data()?;
-        }
-    }
+    flush_active_append_file_inner(inner)?;
     let next_from_current = inner.page_segment_id.saturating_add(1);
     let next_from_disk = segment_ids_at(&inner.root)?
         .into_iter()
@@ -2000,6 +1998,16 @@ fn roll_segment_inner(
         previous_page_segment_id,
         new_page_segment_id: inner.page_segment_id,
     })
+}
+
+fn flush_active_append_file_inner(inner: &mut BlockStoreInner) -> Result<(), BlockStoreError> {
+    if let Some(mut active_file) = inner.active_append_file.take() {
+        active_file.flush()?;
+        if inner.options.sync_on_append {
+            active_file.sync_data()?;
+        }
+    }
+    Ok(())
 }
 
 fn extent_lifecycle_states(summary: &BlockStoreExtentSummary) -> Vec<String> {
