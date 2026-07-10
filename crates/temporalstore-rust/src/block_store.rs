@@ -910,29 +910,21 @@ impl LocalBlockStore {
             return Vec::new();
         }
         if addresses.windows(2).all(|window| window[0] == window[1]) {
-            let read_result = self.read_with_cache_policy(&addresses[0], no_cache_fill);
-            let mut results = (0..addresses.len())
-                .map(|_| {
-                    Err(BlockStoreError::Io(std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        "coalesced block read result missing",
-                    )))
-                })
-                .collect::<Vec<_>>();
-            match read_result {
-                Ok(bytes) => fill_all_duplicate_read_success(&mut results, bytes),
+            return match self.read_with_cache_policy(&addresses[0], no_cache_fill) {
+                Ok(bytes) => duplicate_read_success_results(addresses.len(), bytes),
                 Err(err) => {
                     let err_text = err.to_string();
-                    results[0] = Err(err);
-                    for result in results.iter_mut().skip(1) {
-                        *result = Err(BlockStoreError::Io(std::io::Error::new(
+                    let mut results = Vec::with_capacity(addresses.len());
+                    results.push(Err(err));
+                    results.extend((1..addresses.len()).map(|_| {
+                        Err(BlockStoreError::Io(std::io::Error::new(
                             std::io::ErrorKind::Other,
                             err_text.clone(),
-                        )));
-                    }
+                        )))
+                    }));
+                    results
                 }
-            }
-            return results;
+            };
         }
         let mut seen = HashSet::with_capacity(addresses.len());
         if addresses.iter().all(|address| seen.insert(address)) {
@@ -2181,20 +2173,22 @@ fn fill_duplicate_read_success(
     }
 }
 
-fn fill_all_duplicate_read_success(
-    results: &mut [Result<Vec<u8>, BlockStoreError>],
+fn duplicate_read_success_results(
+    len: usize,
     bytes: Vec<u8>,
-) {
-    let mut remaining = results.len();
-    for result in results {
+) -> Vec<Result<Vec<u8>, BlockStoreError>> {
+    let mut results = Vec::with_capacity(len);
+    let mut remaining = len;
+    while remaining > 0 {
         if remaining == 1 {
-            *result = Ok(bytes);
+            results.push(Ok(bytes));
             break;
         } else {
-            *result = Ok(bytes.clone());
+            results.push(Ok(bytes.clone()));
             remaining = remaining.saturating_sub(1);
         }
     }
+    results
 }
 
 fn should_roll_before_append(
