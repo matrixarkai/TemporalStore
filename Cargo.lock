@@ -1122,7 +1122,7 @@ dependencies = [
 [[package]]
 name = "rustmtcache"
 version = "0.1.0"
-source = "git+https://github.com/bjmeetsfo/rustmtcache.git?rev=0a8d963a6245b283d239f02c406d658b5c76bad3#0a8d963a6245b283d239f02c406d658b5c76bad3"
+source = "git+https://github.com/bjmeetsfo/rustmtcache.git?rev=ed94b50fee110b14653b26e563259860c5d14f71#ed94b50fee110b14653b26e563259860c5d14f71"
 dependencies = [
  "rocksdb",
  "serde",
