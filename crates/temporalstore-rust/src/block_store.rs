@@ -856,7 +856,10 @@ impl LocalBlockStore {
         addresses: &[BlockAddress],
         no_cache_fill: bool,
     ) -> Vec<Result<Vec<u8>, BlockStoreError>> {
-        if addresses.len() < 2 {
+        if addresses.len() == 1 {
+            return vec![self.read_with_cache_policy(&addresses[0], no_cache_fill)];
+        }
+        if addresses.is_empty() {
             return self.read_batch_with_cache_policy_deduped(addresses, no_cache_fill);
         }
         let mut seen = HashSet::with_capacity(addresses.len());
