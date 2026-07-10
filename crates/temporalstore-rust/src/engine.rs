@@ -14710,8 +14710,8 @@ fn compact_page_addresses<'a>(
     rewrite_stats: &mut CompactionRewriteStats,
 ) -> Result<(), Status> {
     let address_refs = addresses.into_iter().collect::<Vec<_>>();
-    let mut compactable_addresses = Vec::new();
-    let mut seen = HashSet::new();
+    let mut compactable_addresses = Vec::with_capacity(address_refs.len());
+    let mut seen = HashSet::with_capacity(address_refs.len());
     for address_ref in &address_refs {
         let address: &PageAddress = address_ref;
         if page_address_is_memory_only(address) {
@@ -14756,9 +14756,9 @@ fn compact_page_addresses<'a>(
     let new_addresses = page_store
         .append_batch_with_page_metadata(append_records)
         .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
-    let mut rewritten = HashMap::<PageAddress, PageAddress>::new();
-    let mut rewritten_old_addresses = Vec::new();
-    let mut hot_refills = Vec::new();
+    let mut rewritten = HashMap::<PageAddress, PageAddress>::with_capacity(rewrite_inputs.len());
+    let mut rewritten_old_addresses = Vec::with_capacity(rewrite_inputs.len());
+    let mut hot_refills = Vec::with_capacity(rewrite_inputs.len());
     for ((old_address, cold_page, bytes), new_address) in
         rewrite_inputs.into_iter().zip(new_addresses)
     {
@@ -14839,9 +14839,9 @@ fn compact_feature_page_addresses(
     let new_addresses = page_store
         .append_batch_with_page_metadata(append_records)
         .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
-    let mut rewritten = HashMap::<PageAddress, PageAddress>::new();
-    let mut rewritten_old_addresses = Vec::new();
-    let mut hot_refills = Vec::new();
+    let mut rewritten = HashMap::<PageAddress, PageAddress>::with_capacity(rewrite_inputs.len());
+    let mut rewritten_old_addresses = Vec::with_capacity(rewrite_inputs.len());
+    let mut hot_refills = Vec::with_capacity(rewrite_inputs.len());
     for ((old_address, cold_page, bytes), new_address) in
         rewrite_inputs.into_iter().zip(new_addresses)
     {
@@ -14923,21 +14923,18 @@ fn append_timestamped_single_pages_batch(
         return Some(Vec::new());
     }
     if !async_storage {
-        let append_records = writes
-            .iter()
-            .map(|write| {
-                let object_id =
-                    stable_page_object_id(shard_id, write.kind, &write.object_key, None);
-                (
-                    encode_feature_page(&[FeaturePoint {
-                        timestamp_ms: write.timestamp_ms,
-                        value: write.value.clone(),
-                    }]),
-                    Some(object_id),
-                    Some(write.routing_slot),
-                )
-            })
-            .collect::<Vec<_>>();
+        let mut append_records = Vec::with_capacity(writes.len());
+        for write in writes {
+            let object_id = stable_page_object_id(shard_id, write.kind, &write.object_key, None);
+            append_records.push((
+                encode_feature_page(&[FeaturePoint {
+                    timestamp_ms: write.timestamp_ms,
+                    value: write.value.clone(),
+                }]),
+                Some(object_id),
+                Some(write.routing_slot),
+            ));
+        }
         return page_store
             .append_batch_with_page_metadata(append_records)
             .ok();
@@ -14945,40 +14942,37 @@ fn append_timestamped_single_pages_batch(
 
     let start_offset = HOT_PAGE_OFFSET.fetch_add(writes.len() as u64, Ordering::Relaxed);
     let mut page_cache_entries = Vec::with_capacity(writes.len());
-    let addresses = writes
-        .iter()
-        .enumerate()
-        .map(|(index, write)| {
-            let object_id = stable_page_object_id(shard_id, write.kind, &write.object_key, None);
-            let packed = encode_feature_page(&[FeaturePoint {
-                timestamp_ms: write.timestamp_ms,
-                value: write.value.clone(),
-            }]);
-            let address = PageAddress {
-                page_segment_id: HOT_PAGE_SEGMENT_ID,
-                offset: start_offset.saturating_add(index as u64),
-                length: packed.len() as u64,
-                page_id: None,
-                object_id: Some(object_id),
-                routing_slot: Some(write.routing_slot),
-                generation: Some(object_id),
-                extent_id: None,
-                sha256: None,
-            };
-            page_cache_entries.push((
-                CacheKey::page_with_slot_generation(
-                    shard_id,
-                    address.page_segment_id,
-                    address.offset,
-                    address.length,
-                    address.routing_slot,
-                    address.generation,
-                ),
-                packed,
-            ));
-            address
-        })
-        .collect::<Vec<_>>();
+    let mut addresses = Vec::with_capacity(writes.len());
+    for (index, write) in writes.iter().enumerate() {
+        let object_id = stable_page_object_id(shard_id, write.kind, &write.object_key, None);
+        let packed = encode_feature_page(&[FeaturePoint {
+            timestamp_ms: write.timestamp_ms,
+            value: write.value.clone(),
+        }]);
+        let address = PageAddress {
+            page_segment_id: HOT_PAGE_SEGMENT_ID,
+            offset: start_offset.saturating_add(index as u64),
+            length: packed.len() as u64,
+            page_id: None,
+            object_id: Some(object_id),
+            routing_slot: Some(write.routing_slot),
+            generation: Some(object_id),
+            extent_id: None,
+            sha256: None,
+        };
+        page_cache_entries.push((
+            CacheKey::page_with_slot_generation(
+                shard_id,
+                address.page_segment_id,
+                address.offset,
+                address.length,
+                address.routing_slot,
+                address.generation,
+            ),
+            packed,
+        ));
+        addresses.push(address);
+    }
     for (cache_key, value) in page_cache_entries {
         cache.put_memory_only(cache_key, value);
     }
