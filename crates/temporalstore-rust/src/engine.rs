@@ -13257,6 +13257,10 @@ fn insert_timestamped_secondary_views(
     target: &mut HashMap<String, BTreeMap<u64, PageAddress>>,
     entries: Vec<(String, PageAddress)>,
 ) {
+    if entries.is_empty() {
+        return;
+    }
+
     let addresses = entries
         .iter()
         .map(|(_, address)| address.clone())
@@ -13281,6 +13285,10 @@ fn insert_risk_secondary_views(
     target: &mut HashMap<String, BTreeMap<u64, i64>>,
     entries: Vec<(String, PageAddress)>,
 ) {
+    if entries.is_empty() {
+        return;
+    }
+
     let addresses = entries
         .iter()
         .map(|(_, address)| address.clone())
