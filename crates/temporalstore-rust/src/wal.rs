@@ -317,7 +317,7 @@ impl LocalWriteAheadLogStore {
                 inner.stats.last_flushed_sequence = last.sequence;
             }
         }
-        let persistent_bytes = path.metadata()?.len();
+        let persistent_bytes = file.metadata()?.len();
         if let Some(last) = records.last() {
             inner.stats.last_sequence = last.sequence;
             inner.last_sequence_by_shard.insert(shard_id, last.sequence);
@@ -346,14 +346,15 @@ impl LocalWriteAheadLogStore {
         };
         if record.sequence <= last_sequence {
             let path = write_ahead_log_path(&inner.root, record.shard_id);
+            let persistent_bytes = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
             return Ok(WriteAheadLogAppendReport {
                 shard_id: record.shard_id,
                 requested_sequence: record.sequence,
                 current_sequence: last_sequence,
                 appended: false,
-                offset: path.metadata().map(|metadata| metadata.len()).unwrap_or(0),
+                offset: persistent_bytes,
                 size: 0,
-                persistent_bytes: path.metadata().map(|metadata| metadata.len()).unwrap_or(0),
+                persistent_bytes,
             });
         }
         let report = append_record_locked(&mut inner, &record, true)?;
@@ -617,10 +618,10 @@ fn append_record_locked(
     sync: bool,
 ) -> Result<WriteAheadLogAppendReport, WriteAheadLogError> {
     let path = write_ahead_log_path(&inner.root, record.shard_id);
-    let offset = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+    let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+    let offset = file.metadata()?.len();
     let mut bytes = serde_json::to_vec(record)?;
     bytes.push(b'\n');
-    let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
     file.write_all(&bytes)?;
     if sync {
         file.flush()?;
@@ -630,7 +631,7 @@ fn append_record_locked(
         inner.stats.syncs += 1;
         inner.stats.last_flushed_sequence = record.sequence;
     }
-    let persistent_bytes = path.metadata()?.len();
+    let persistent_bytes = file.metadata()?.len();
     inner.stats.writes += 1;
     inner.stats.bytes_written += bytes.len() as u64;
     inner.stats.persistent_bytes = persistent_bytes;
