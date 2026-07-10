@@ -91,10 +91,34 @@ pub struct MatrixArkRetrieveContextPackRequest {
     pub namespace: String,
     #[serde(default)]
     pub table: String,
+    #[serde(default)]
     pub storage_prefix: String,
+    #[serde(default)]
     pub query: String,
     #[serde(default)]
     pub max_selected_refs: usize,
+    #[serde(default)]
+    pub tenant_hash: u64,
+    #[serde(default)]
+    pub start_node_hash: u64,
+    #[serde(default)]
+    pub node_hash: u64,
+    #[serde(default)]
+    pub scope_hash: u64,
+    #[serde(default)]
+    pub start_time_ms: u64,
+    #[serde(default)]
+    pub end_time_ms: u64,
+    #[serde(default)]
+    pub reference_time_ms: u64,
+    #[serde(default)]
+    pub as_of_ms: u64,
+    #[serde(default)]
+    pub max_context_tokens: u32,
+    #[serde(default)]
+    pub summary_level: Option<u32>,
+    #[serde(default)]
+    pub compression_limit: Option<usize>,
     #[serde(default)]
     pub record: Value,
     #[serde(default)]
@@ -1907,6 +1931,29 @@ impl TemporalStoreClient {
         request: MatrixArkRetrieveContextPackRequest,
     ) -> Result<String, ClientError> {
         self.matrixark_record_log_context_request_json("matrixark_scan_candidates", request)
+    }
+
+    pub fn matrixark_retrieve_context_pack_native_json(
+        &self,
+        request: MatrixArkRetrieveContextPackRequest,
+    ) -> Result<Value, ClientError> {
+        let namespace = request.namespace.clone();
+        let table_name = request.table.clone();
+        if namespace.trim().is_empty() {
+            return Err(ClientError::InvalidRequest(
+                "matrixark native context pack requires namespace".to_string(),
+            ));
+        }
+        if table_name.trim().is_empty() {
+            return Err(ClientError::InvalidRequest(
+                "matrixark native context pack requires table".to_string(),
+            ));
+        }
+        let table = self
+            .cached_table(namespace.clone(), table_name.clone())
+            .map(Ok)
+            .unwrap_or_else(|| self.open_table_from_meta(namespace, table_name))?;
+        table.matrixark_retrieve_context_pack_native_json(request)
     }
 
     fn matrixark_record_log_context_request_json(
@@ -3741,6 +3788,143 @@ impl TemporalStoreTable {
         }
     }
 
+    pub fn matrixark_retrieve_context_pack_native_json(
+        &self,
+        request: MatrixArkRetrieveContextPackRequest,
+    ) -> Result<Value, ClientError> {
+        let tenant_hash = request.tenant_hash;
+        if tenant_hash == 0 {
+            return Err(ClientError::InvalidRequest(
+                "matrixark native context pack requires tenant_hash".to_string(),
+            ));
+        }
+        let node_hash = if request.start_node_hash != 0 {
+            request.start_node_hash
+        } else {
+            request.node_hash
+        };
+        if node_hash == 0 {
+            return Err(ClientError::InvalidRequest(
+                "matrixark native context pack requires start_node_hash".to_string(),
+            ));
+        }
+        let as_of_ms = if request.as_of_ms != 0 {
+            request.as_of_ms
+        } else {
+            request.reference_time_ms
+        };
+        let cold_end_time_ms = if request.end_time_ms != 0 {
+            request.end_time_ms
+        } else {
+            request.reference_time_ms
+        };
+        let compression_limit = request.compression_limit.or_else(|| {
+            if request.max_selected_refs == 0 {
+                None
+            } else {
+                Some(request.max_selected_refs)
+            }
+        });
+        let query_started_ms = now_unix_ms();
+        let (node_exists, node, overall_summary_exists, overall_summary, cold_window_summaries) =
+            self.context_query_node_context(
+                tenant_hash,
+                node_hash,
+                request.summary_level,
+                as_of_ms,
+                request.start_time_ms,
+                cold_end_time_ms,
+                compression_limit,
+            )?;
+
+        let mut selected_refs = Vec::new();
+        if let Some(summary) = overall_summary.as_ref() {
+            if !summary.text.is_empty() {
+                selected_refs.push(serde_json::json!({
+                    "ref_type": "summary",
+                    "ref_hash": stable_key_hash(&format!(
+                        "summary:{}:{}:{}",
+                        tenant_hash, summary.node_hash, summary.level
+                    )),
+                    "node_hash": summary.node_hash,
+                    "event_time_ms": summary.valid_from_ms,
+                    "score": 1.0,
+                    "token_estimate": estimate_context_tokens(&summary.text),
+                    "text": summary.text,
+                }));
+            }
+        }
+        for event in &cold_window_summaries {
+            if request.max_selected_refs != 0 && selected_refs.len() >= request.max_selected_refs {
+                break;
+            }
+            if event.summary.is_empty() {
+                continue;
+            }
+            selected_refs.push(serde_json::json!({
+                "ref_type": "compression_event",
+                "ref_hash": event.compression_id_hash,
+                "node_hash": event.node_hash,
+                "event_time_ms": event.compressed_time_ms,
+                "score": 1.0,
+                "token_estimate": estimate_context_tokens(&event.summary),
+                "text": event.summary,
+            }));
+        }
+        let remote_context_refs = selected_refs
+            .iter()
+            .map(|reference| {
+                serde_json::json!({
+                    "type": reference.get("ref_type").cloned().unwrap_or(Value::Null),
+                    "ref_hash": reference.get("ref_hash").cloned().unwrap_or(Value::Null),
+                    "node_hash": reference.get("node_hash").cloned().unwrap_or(Value::Null),
+                    "score": reference.get("score").cloned().unwrap_or(Value::Null),
+                    "tokens": reference.get("token_estimate").cloned().unwrap_or(Value::Null),
+                    "content": reference.get("text").cloned().unwrap_or(Value::Null),
+                })
+            })
+            .collect::<Vec<_>>();
+        let used_context_tokens = selected_refs
+            .iter()
+            .filter_map(|reference| reference.get("token_estimate")?.as_u64())
+            .sum::<u64>();
+        let pack_ms = now_unix_ms().saturating_sub(query_started_ms);
+
+        Ok(serde_json::json!({
+            "native_context_pack": true,
+            "context_pack_assembly": "native_rust_direct",
+            "context_pack_id": format!(
+                "rust-direct-{}-{}",
+                query_started_ms,
+                stable_key_hash(&format!("{}:{}:{}", tenant_hash, node_hash, request.query))
+            ),
+            "tenant_hash": tenant_hash,
+            "start_node_hash": node_hash,
+            "scope_hash": request.scope_hash,
+            "query": request.query,
+            "node_exists": node_exists,
+            "node": node,
+            "overall_summary_exists": overall_summary_exists,
+            "overall_summary": overall_summary,
+            "cold_window_summaries": cold_window_summaries,
+            "selected_refs": selected_refs,
+            "remote_context_refs": remote_context_refs,
+            "used_context_tokens": used_context_tokens,
+            "used_remote_context_tokens": used_context_tokens,
+            "remote_context_budget_tokens": request.max_context_tokens,
+            "retrieval_metrics": {
+                "query_plan_ms": 0,
+                "node_traversal_ms": 0,
+                "index_prefilter_ms": 0,
+                "candidate_fetch_ms": 0,
+                "score_ms": 0,
+                "pack_ms": pack_ms,
+                "audit_ms": 0,
+                "selected_ref_count": selected_refs.len(),
+            }
+        }))
+    }
+
     pub fn risk_increment(
         &self,
         key: impl Into<String>,
@@ -4496,6 +4680,11 @@ fn now_unix_ms() -> u64 {
         .unwrap_or_default()
         .as_millis()
         .min(u128::from(u64::MAX)) as u64
+}
+
+fn estimate_context_tokens(text: &str) -> u64 {
+    let chars = text.chars().count() as u64;
+    chars.saturating_add(3) / 4
 }
 
 #[cfg(test)]

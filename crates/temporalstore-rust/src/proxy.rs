@@ -19,8 +19,9 @@ use policy::{proxy_policy_rejection, proxy_serving_mode_from_meta, proxy_serving
 use response::execute_error;
 
 use crate::client::{
-    ClientStats, ClientTopologyCacheReport, ClientTopologyRefreshReport, ReplicaReadPolicy,
-    RequestOptions, TableOptions, TemporalStoreClient,
+    ClientStats, ClientTopologyCacheReport, ClientTopologyRefreshReport,
+    MatrixArkRetrieveContextPackRequest, ReplicaReadPolicy, RequestOptions, TableOptions,
+    TemporalStoreClient,
 };
 use crate::http::{get_json_with_options, post_json_with_options, HttpRequest, HttpRequestOptions};
 use crate::meta::GetShardResponse;
@@ -2486,6 +2487,22 @@ impl ProxyService {
                         },
                     )
                 })
+            }
+            ("POST", "/ProxyService/MatrixArkRetrieveContextPack")
+            | ("POST", "/matrixark/retrieve_context_pack") => {
+                match parse_json::<MatrixArkRetrieveContextPackRequest>(&request.body) {
+                    Ok(req) => match self
+                        .client()
+                        .matrixark_retrieve_context_pack_native_json(req)
+                    {
+                        Ok(pack) => json_response(200, &pack),
+                        Err(err) => json_response(
+                            400,
+                            &Status::error("context_pack_error", err.to_string()),
+                        ),
+                    },
+                    Err(err) => self.bad_execute_request(err),
+                }
             }
             ("POST", "/ProxyService/HGet") => {
                 match parse_json::<ProxyHashCommandRequest>(&request.body) {
