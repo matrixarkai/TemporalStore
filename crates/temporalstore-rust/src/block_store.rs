@@ -665,11 +665,9 @@ impl LocalBlockStore {
             record.logical_len as u64,
             page_id,
         );
-        persist_extent_manifest_with_policy(
-            &inner.root,
-            &inner.extents,
-            inner.options.sync_on_append,
-        )?;
+        if inner.options.sync_on_append {
+            persist_extent_manifest(&inner.root, &inner.extents)?;
+        }
         inner.stats.writes += 1;
         inner.stats.bytes_written += address.length;
         inner.stats.logical_bytes_written += record.logical_len as u64;
@@ -778,11 +776,9 @@ impl LocalBlockStore {
                 current.sync_data()?;
             }
         }
-        persist_extent_manifest_with_policy(
-            &inner.root,
-            &inner.extents,
-            inner.options.sync_on_append,
-        )?;
+        if inner.options.sync_on_append {
+            persist_extent_manifest(&inner.root, &inner.extents)?;
+        }
         inner.stats.writes = inner.stats.writes.saturating_add(writes);
         inner.stats.bytes_written = inner.stats.bytes_written.saturating_add(bytes_written);
         inner.stats.logical_bytes_written = inner
