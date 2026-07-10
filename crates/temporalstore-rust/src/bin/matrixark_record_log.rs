@@ -812,6 +812,42 @@ fn clear_matrixark_scan_cache() {
     }
 }
 
+fn matrixark_scan_cache_key_prefix(cache_key: &str) -> Option<String> {
+    let value = serde_json::from_str::<Value>(cache_key).ok()?;
+    value
+        .get("count_key")
+        .and_then(Value::as_str)
+        .and_then(storage_prefix_from_key)
+        .or_else(|| {
+            value
+                .get("record_hash_key")
+                .and_then(Value::as_str)
+                .and_then(storage_prefix_from_key)
+        })
+}
+
+fn invalidate_matrixark_scan_cache_for_prefixes(prefixes: &HashSet<String>) {
+    if prefixes.is_empty() {
+        clear_matrixark_scan_cache();
+        return;
+    }
+    if let Ok(mut cache) = matrixark_scan_cache().lock() {
+        cache.retain(|cache_key, _| {
+            matrixark_scan_cache_key_prefix(cache_key)
+                .map(|prefix| !prefixes.contains(&prefix))
+                .unwrap_or(false)
+        });
+    }
+}
+
+fn invalidate_matrixark_scan_cache_for_keys<'a>(keys: impl IntoIterator<Item = &'a String>) {
+    let prefixes = keys
+        .into_iter()
+        .filter_map(|key| storage_prefix_from_key(key))
+        .collect::<HashSet<_>>();
+    invalidate_matrixark_scan_cache_for_prefixes(&prefixes);
+}
+
 fn is_record_count_key(key: &str) -> bool {
     key.ends_with(":record_count")
 }
@@ -889,10 +925,10 @@ fn invalidate_retrieve_candidate_cache_for_keys<'a>(keys: impl IntoIterator<Item
         .into_iter()
         .filter_map(|key| storage_prefix_from_key(key))
         .collect::<HashSet<_>>();
-    invalidate_retrieve_candidate_cache_for_prefixes(prefixes);
+    invalidate_retrieve_candidate_cache_for_prefixes(&prefixes);
 }
 
-fn invalidate_retrieve_candidate_cache_for_prefixes(prefixes: HashSet<String>) {
+fn invalidate_retrieve_candidate_cache_for_prefixes(prefixes: &HashSet<String>) {
     for prefix in prefixes {
         invalidate_retrieve_candidate_cache(&prefix);
     }
@@ -2506,13 +2542,15 @@ fn execute_record_log_request(
         },
         "matrixark_publish_visibility" => {
             let visibility_key_count = request.visibility_keys.len();
+            let visibility_keys = request.visibility_keys.clone();
             let index_bytes = engine
-                .publish_shard_index_snapshot_for_keys(
-                    DEFAULT_SHARD_ID,
-                    request.visibility_keys.clone(),
-                )
+                .publish_shard_index_snapshot_for_keys(DEFAULT_SHARD_ID, visibility_keys.clone())
                 .map_err(|status| format!("{}: {}", status.code, status.message))?;
-            clear_matrixark_scan_cache();
+            if visibility_key_count == 0 {
+                clear_matrixark_scan_cache();
+            } else {
+                invalidate_matrixark_scan_cache_for_keys(visibility_keys.iter());
+            }
             let mut output = empty_output(root);
             output.status = "published".to_string();
             output.count = Some(index_bytes);
@@ -3193,9 +3231,9 @@ fn execute_empty_batch_runtime(
     for key in cache_invalidates {
         invalidate_hgetall_snapshot(&key);
     }
-    invalidate_retrieve_candidate_cache_for_prefixes(retrieve_cache_prefixes);
+    invalidate_retrieve_candidate_cache_for_prefixes(&retrieve_cache_prefixes);
     if invalidate_matrixark_scan_cache {
-        clear_matrixark_scan_cache();
+        invalidate_matrixark_scan_cache_for_prefixes(&retrieve_cache_prefixes);
     }
     Ok(())
 }
@@ -3867,6 +3905,44 @@ mod tests {
         assert_eq!(op_metrics["batch_hset"]["latency_ms_max"], json!(20.0));
         assert_eq!(op_metrics["batch_hget"]["commands_total"], json!(1));
         assert_eq!(op_metrics["batch_hget"]["latency_ms_avg"], json!(7.0));
+    }
+
+    #[test]
+    fn matrixark_scan_cache_invalidation_is_prefix_scoped() {
+        let mut first = request("matrixark_scan_candidates");
+        first.count_key = Some("matrixark:mcp:first:record_count".to_string());
+        first.record_hash_key = Some("matrixark:mcp:first:records".to_string());
+        let first_key = matrixark_scan_cache_key(&first, 3);
+
+        let mut second = request("matrixark_scan_candidates");
+        second.count_key = Some("matrixark:mcp:second:record_count".to_string());
+        second.record_hash_key = Some("matrixark:mcp:second:records".to_string());
+        let second_key = matrixark_scan_cache_key(&second, 7);
+
+        clear_matrixark_scan_cache();
+        {
+            let mut cache = matrixark_scan_cache().lock().expect("scan cache");
+            cache.insert(first_key.clone(), json!({"prefix": "first"}));
+            cache.insert(second_key.clone(), json!({"prefix": "second"}));
+            cache.insert("legacy-unscoped-key".to_string(), json!({"legacy": true}));
+        }
+
+        let prefixes = HashSet::from(["matrixark:mcp:first".to_string()]);
+        invalidate_matrixark_scan_cache_for_prefixes(&prefixes);
+
+        let cache = matrixark_scan_cache().lock().expect("scan cache");
+        assert!(
+            !cache.contains_key(&first_key),
+            "the touched prefix must be invalidated"
+        );
+        assert!(
+            cache.contains_key(&second_key),
+            "unrelated prefixes should keep their warm candidate scan"
+        );
+        assert!(
+            !cache.contains_key("legacy-unscoped-key"),
+            "unscoped cache keys are removed conservatively"
+        );
     }
 
     // shared-corpus: codex_mcp_temporalstore_rust_record_log_backend
