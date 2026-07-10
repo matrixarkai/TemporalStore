@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::control::{PartitionInfoStats, ShardCanonicalStorageStats};
 use crate::partition_id::{validate_partition_set_count, PartitionId, MAX_TABLE_ID};
@@ -380,7 +380,7 @@ pub struct NamespaceMetaInfo {
     pub state: MetaEntityState,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct AddTableRequest {
     pub namespace: String,
     pub table_name: String,
@@ -394,6 +394,50 @@ pub struct AddTableRequest {
     pub partition_version: u32,
     #[serde(default)]
     pub serving_options: TableServingOptions,
+}
+
+impl<'de> Deserialize<'de> for AddTableRequest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct RawAddTableRequest {
+            #[serde(default, alias = "namespace_name")]
+            namespace: String,
+            #[serde(default, alias = "name")]
+            table_name: String,
+            #[serde(default)]
+            first_shard_id: Option<ShardId>,
+            #[serde(default, alias = "partition_set_num")]
+            shard_count: Option<u64>,
+            #[serde(default = "default_replica_count")]
+            replica_count: u64,
+            #[serde(default)]
+            use_cpp_partition_ids: Option<bool>,
+            #[serde(default)]
+            partition_version: u32,
+            #[serde(default)]
+            serving_options: TableServingOptions,
+            #[serde(default)]
+            partition_units: Vec<serde_json::Value>,
+        }
+
+        let raw = RawAddTableRequest::deserialize(deserializer)?;
+        let cpp_shape = raw.use_cpp_partition_ids.unwrap_or(false)
+            || !raw.partition_units.is_empty()
+            || raw.first_shard_id.is_none();
+        Ok(Self {
+            namespace: raw.namespace,
+            table_name: raw.table_name,
+            first_shard_id: raw.first_shard_id.unwrap_or_default(),
+            shard_count: raw.shard_count.unwrap_or(0),
+            replica_count: raw.replica_count,
+            use_cpp_partition_ids: raw.use_cpp_partition_ids.unwrap_or(cpp_shape),
+            partition_version: raw.partition_version,
+            serving_options: raw.serving_options,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
