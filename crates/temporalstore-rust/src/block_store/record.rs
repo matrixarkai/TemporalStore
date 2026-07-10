@@ -58,6 +58,7 @@ pub(super) struct EncodedPageRecord {
     pub(super) logical_len: usize,
     pub(super) stored_len: usize,
     pub(super) compression: PageRecordCompression,
+    pub(super) sha256_hex: String,
 }
 
 #[derive(Debug)]
@@ -110,6 +111,7 @@ pub(super) fn encode_page_record(
         logical_len: payload.len(),
         stored_len,
         compression,
+        sha256_hex: hex::encode(digest),
     })
 }
 

@@ -638,7 +638,7 @@ impl LocalBlockStore {
             routing_slot,
             generation: Some(page_id),
             extent_id: Some(extent_id),
-            sha256: Some(sha256_hex(bytes)),
+            sha256: Some(record.sha256_hex.clone()),
         };
         file.write_all(&record.bytes)?;
         file.flush()?;
@@ -729,7 +729,7 @@ impl LocalBlockStore {
                 routing_slot,
                 generation: Some(page_id),
                 extent_id: Some(extent_id),
-                sha256: Some(sha256_hex(&bytes)),
+                sha256: Some(record.sha256_hex.clone()),
             };
             if let Some(current) = file.as_mut() {
                 current.write_all(&record.bytes)?;
