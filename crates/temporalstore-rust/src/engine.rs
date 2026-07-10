@@ -5389,10 +5389,15 @@ impl TemporalEngine {
                 } else {
                     (|| {
                         let mut file = File::open(self.index_path(request.shard_id))?;
+                        let file_len = file.metadata()?.len();
+                        if request.offset >= file_len {
+                            return Ok(Vec::new());
+                        }
+                        let read_size = request.size.min(file_len.saturating_sub(request.offset));
                         file.seek(SeekFrom::Start(request.offset))?;
-                        let mut bytes = Vec::with_capacity(request.size as usize);
+                        let mut bytes = Vec::with_capacity(read_size as usize);
                         Read::by_ref(&mut file)
-                            .take(request.size)
+                            .take(read_size)
                             .read_to_end(&mut bytes)?;
                         Ok::<_, std::io::Error>(bytes)
                     })()
