@@ -986,8 +986,21 @@ impl LocalBlockStore {
                 let file = files
                     .get_mut(&page_segment_id)
                     .expect("segment file is opened before read");
+                let file_len = file.metadata()?.len();
+                if group_offset >= file_len || group_end > file_len {
+                    return Err(BlockStoreError::Io(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "coalesced block read range exceeds segment length",
+                    )));
+                }
                 file.seek(SeekFrom::Start(group_offset))?;
-                let group_len = group_end.saturating_sub(group_offset) as usize;
+                let group_len =
+                    usize::try_from(group_end.saturating_sub(group_offset)).map_err(|_| {
+                        BlockStoreError::Io(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "coalesced block read range is too large",
+                        ))
+                    })?;
                 let mut encoded = vec![0; group_len];
                 file.read_exact(&mut encoded)?;
                 Ok::<_, BlockStoreError>(encoded)
