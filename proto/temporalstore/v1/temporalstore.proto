@@ -302,6 +302,9 @@ message Command {
     IpsQueryWithOptions ips_query_with_options = 78;
     IpsStat ips_stat = 79;
     IpsFilter ips_filter = 80;
+    IpsLoad ips_load = 81;
+    IpsSnapshot ips_snapshot = 82;
+    IpsSnapshotReportRequest ips_snapshot_report = 83;
   }
 }
 
@@ -582,6 +585,25 @@ message IpsFilter {
   uint32 limit = 4;
   optional uint32 action_type = 5;
   optional uint64 table_id = 6;
+}
+
+message IpsLoad {
+  string key = 1;
+  repeated FeaturePoint points = 2;
+}
+
+message IpsSnapshot {
+  string key = 1;
+  uint64 start_ms = 2;
+  uint64 end_ms = 3;
+  uint32 limit = 4;
+}
+
+message IpsSnapshotReportRequest {
+  string key = 1;
+  uint64 start_ms = 2;
+  uint64 end_ms = 3;
+  uint32 limit = 4;
 }
 
 enum RiskFamily {
