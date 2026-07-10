@@ -660,6 +660,65 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             max_candidate_nodes: nonzero_limit(command.max_candidate_nodes),
             leaf_only: command.leaf_only,
         },
+        v1::command::Kind::ContextUpsertSummary(command) => {
+            let summary = command
+                .summary
+                .ok_or_else(|| TonicStatus::invalid_argument("context summary missing"))?;
+            types::Command::ContextUpsertSummary {
+                tenant_hash: stable_hash(&command.key),
+                summary: sdk_context_summary_to_types(summary),
+            }
+        }
+        v1::command::Kind::ContextQuerySummaries(command) => {
+            types::Command::ContextQuerySummaries {
+                tenant_hash: stable_hash(&command.key),
+                node_hash: command.node_hash,
+                level: command.level,
+                as_of_ms: command.as_of_ms,
+                limit: nonzero_limit(command.limit),
+            }
+        }
+        v1::command::Kind::ContextWriteCompressionEvent(command) => {
+            let event = command.event.ok_or_else(|| {
+                TonicStatus::invalid_argument("context compression event missing")
+            })?;
+            types::Command::ContextWriteCompressionEvent {
+                tenant_hash: stable_hash(&command.key),
+                event: sdk_context_compression_event_to_types(event),
+            }
+        }
+        v1::command::Kind::ContextQueryCompressionEvents(command) => {
+            types::Command::ContextQueryCompressionEvents {
+                tenant_hash: stable_hash(&command.key),
+                node_hashes: command.node_hashes,
+                start_time_ms: command.start_time_ms,
+                end_time_ms: command.end_time_ms,
+                limit: nonzero_limit(command.limit),
+            }
+        }
+        v1::command::Kind::ContextCompressEvents(command) => {
+            types::Command::ContextCompressEvents {
+                tenant_hash: stable_hash(&command.key),
+                node_hash: command.node_hash,
+                source_start_ms: command.source_start_ms,
+                source_end_ms: command.source_end_ms,
+                compressed_time_ms: command.compressed_time_ms,
+                max_source_events: nonzero_limit(command.max_source_events),
+                min_confidence: command.min_confidence,
+                min_importance: command.min_importance,
+            }
+        }
+        v1::command::Kind::ContextQueryNodeContext(command) => {
+            types::Command::ContextQueryNodeContext {
+                tenant_hash: stable_hash(&command.key),
+                node_hash: command.node_hash,
+                summary_level: nonzero_u32(command.summary_level),
+                as_of_ms: command.as_of_ms,
+                cold_start_time_ms: command.cold_start_time_ms,
+                cold_end_time_ms: command.cold_end_time_ms,
+                compression_limit: nonzero_limit(command.compression_limit),
+            }
+        }
         v1::command::Kind::ContextWriteEvent(command) => {
             let event = command
                 .event
@@ -840,6 +899,28 @@ fn sdk_context_embedding_to_types(embedding: v1::ContextEmbedding) -> types::Con
         model_hash: embedding.model_hash,
         vector: embedding.vector,
         updated_at_ms: embedding.updated_at_ms,
+    }
+}
+
+fn sdk_context_summary_to_types(summary: v1::ContextSummary) -> types::ContextSummary {
+    types::ContextSummary {
+        node_hash: summary.node_hash,
+        level: summary.level,
+        text: summary.text,
+        valid_from_ms: summary.valid_from_ms,
+    }
+}
+
+fn sdk_context_compression_event_to_types(
+    event: v1::ContextCompressionEvent,
+) -> types::ContextCompressionEvent {
+    types::ContextCompressionEvent {
+        compression_id_hash: event.compression_id_hash,
+        node_hash: event.node_hash,
+        source_start_ms: event.source_start_ms,
+        source_end_ms: event.source_end_ms,
+        compressed_time_ms: event.compressed_time_ms,
+        summary: event.summary,
     }
 }
 
