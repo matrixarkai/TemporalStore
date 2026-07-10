@@ -267,6 +267,22 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
+  /ProxyService/RiskCPCSet:
+    post:
+      summary: Set CPC risk values through the C++ proxy-compatible alias.
+      requestBody:
+        $ref: '#/components/requestBodies/RiskCPCSet'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /ProxyService/RiskCPCQuery:
+    post:
+      summary: Query CPC risk counts through the C++ proxy-compatible alias.
+      requestBody:
+        $ref: '#/components/requestBodies/RiskCPCQuery'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
   /ProxyService/RiskFolSet:
     post:
       summary: Set first-or-last risk value.
@@ -450,6 +466,18 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/RiskHsetRequest'
+    RiskCPCSet:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RiskCPCSetRequest'
+    RiskCPCQuery:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RiskCPCQueryRequest'
     RiskFolSet:
       required: true
       content:
@@ -810,6 +838,69 @@ components:
               type: integer
               format: int64
             amount:
+              type: integer
+              format: int64
+    RiskWindow:
+      type: object
+      required: [start_offset, end_offset, unit]
+      properties:
+        start_offset:
+          type: integer
+          format: int64
+        end_offset:
+          type: integer
+          format: int64
+        unit:
+          type: string
+          enum: [second, minute, hour, day]
+    RiskCPCSetRequest:
+      allOf:
+        - $ref: '#/components/schemas/KeyRequest'
+        - type: object
+          required: [values]
+          properties:
+            values:
+              type: array
+              items:
+                type: string
+            timestamp_ms:
+              type: integer
+              format: int64
+            occur_time:
+              type: integer
+              format: int64
+            ttl_ms:
+              type: integer
+              format: int64
+            ttl:
+              type: integer
+              format: int64
+            precision_ms:
+              type: integer
+              format: int64
+            dont_upgrade_cpc:
+              type: boolean
+    RiskCPCQueryRequest:
+      allOf:
+        - $ref: '#/components/schemas/KeyRequest'
+        - type: object
+          properties:
+            start_ms:
+              type: integer
+              format: int64
+            end_ms:
+              type: integer
+              format: int64
+            aggregator:
+              type: string
+              default: sum
+            windows:
+              type: array
+              items:
+                $ref: '#/components/schemas/RiskWindow'
+            with_detail:
+              type: boolean
+            precision_ms:
               type: integer
               format: int64
     RiskFolSetRequest:
