@@ -66,11 +66,14 @@ pub(super) fn encode_feature_page(points: &[FeaturePoint]) -> Vec<u8> {
         version: 1,
         points: points.to_vec(),
     };
-    let mut bytes = FEATURE_PAGE_MAGIC.to_vec();
     if let Ok(mut payload) = serde_json::to_vec(&page) {
+        let mut bytes = Vec::with_capacity(FEATURE_PAGE_MAGIC.len() + payload.len());
+        bytes.extend_from_slice(FEATURE_PAGE_MAGIC);
         bytes.append(&mut payload);
+        bytes
+    } else {
+        FEATURE_PAGE_MAGIC.to_vec()
     }
-    bytes
 }
 
 fn empty_feature_page_encoded_len() -> usize {
@@ -100,7 +103,8 @@ pub(super) fn append_timestamped_kv_pages(
     async_storage: bool,
 ) -> Result<Vec<(u64, BlockAddress)>, BlockStoreError> {
     let object_id = stable_page_object_id(shard_id, kind, key, None);
-    let mut refs = Vec::new();
+    let point_count = points.len();
+    let mut refs = Vec::with_capacity(point_count);
     let chunks = chunk_timestamped_kv_points(points);
     if !async_storage {
         let mut writes = Vec::with_capacity(chunks.len());
@@ -169,8 +173,11 @@ pub(super) fn append_timestamped_kv_pages(
 }
 
 pub(super) fn chunk_timestamped_kv_points(points: Vec<FeaturePoint>) -> Vec<Vec<FeaturePoint>> {
-    let mut chunks = Vec::new();
-    let mut current = Vec::new();
+    let point_count = points.len();
+    let current_capacity = point_count.min(128);
+    let mut chunks =
+        Vec::with_capacity(point_count.saturating_sub(1) / current_capacity.max(1) + 1);
+    let mut current = Vec::with_capacity(current_capacity);
     let empty_page_len = empty_feature_page_encoded_len();
     let mut current_encoded_len = empty_page_len;
     let page_target_bytes = context_page_target_bytes();
@@ -182,7 +189,7 @@ pub(super) fn chunk_timestamped_kv_points(points: Vec<FeaturePoint>) -> Vec<Vec<
             .saturating_add(if current.is_empty() { 0 } else { 1 });
         if next_encoded_len > page_target_bytes && !current.is_empty() {
             chunks.push(current);
-            current = Vec::new();
+            current = Vec::with_capacity(current_capacity);
             current_encoded_len = empty_page_len;
         }
         current_encoded_len = current_encoded_len
