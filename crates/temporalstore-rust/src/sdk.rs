@@ -492,6 +492,33 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             start_ms: command.start_ms,
             end_ms: command.end_ms,
         },
+        v1::command::Kind::IpsBatchQueryLast(command) => types::Command::IpsBatchQueryLast {
+            keys: command.keys,
+            count: command.limit.max(1) as usize,
+        },
+        v1::command::Kind::IpsQueryWithOptions(command) => {
+            types::Command::IpsQueryRangeWithOptions {
+                key: command.key,
+                start_ms: command.start_ms,
+                end_ms: command.end_ms,
+                count: nonzero_limit(command.limit),
+                action_type: command.action_type,
+                table_id: command.table_id,
+            }
+        }
+        v1::command::Kind::IpsStat(command) => types::Command::IpsStat {
+            key: command.key,
+            start_ms: command.start_ms,
+            end_ms: command.end_ms,
+        },
+        v1::command::Kind::IpsFilter(command) => types::Command::IpsFilter {
+            key: command.key,
+            start_ms: command.start_ms,
+            end_ms: command.end_ms,
+            count: nonzero_limit(command.limit),
+            action_type: command.action_type,
+            table_id: command.table_id,
+        },
         v1::command::Kind::RiskIncrement(command) => types::Command::RiskIncrement {
             key: command.key,
             timestamp_ms: command.timestamp_ms,

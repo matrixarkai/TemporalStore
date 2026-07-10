@@ -298,6 +298,10 @@ message Command {
     HashIncrBy hash_incr_by = 74;
     FeatureAppendWithPolicy feature_append_with_policy = 75;
     FeatureQueryFiltered feature_query_filtered = 76;
+    IpsBatchQueryLast ips_batch_query_last = 77;
+    IpsQueryWithOptions ips_query_with_options = 78;
+    IpsStat ips_stat = 79;
+    IpsFilter ips_filter = 80;
   }
 }
 
@@ -549,6 +553,35 @@ message IpsCount {
   string key = 1;
   uint64 start_ms = 2;
   uint64 end_ms = 3;
+}
+
+message IpsBatchQueryLast {
+  repeated string keys = 1;
+  uint32 limit = 2;
+}
+
+message IpsQueryWithOptions {
+  string key = 1;
+  uint64 start_ms = 2;
+  uint64 end_ms = 3;
+  uint32 limit = 4;
+  optional uint32 action_type = 5;
+  optional uint64 table_id = 6;
+}
+
+message IpsStat {
+  string key = 1;
+  uint64 start_ms = 2;
+  uint64 end_ms = 3;
+}
+
+message IpsFilter {
+  string key = 1;
+  uint64 start_ms = 2;
+  uint64 end_ms = 3;
+  uint32 limit = 4;
+  optional uint32 action_type = 5;
+  optional uint64 table_id = 6;
 }
 
 enum RiskFamily {
