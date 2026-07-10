@@ -37,7 +37,7 @@ use self::slot_store::{
     read_slot_index_component_values, read_slot_index_value, slot_index_component_page_addresses,
 };
 use self::state::*;
-use crate::block_store::BlockAppendRecord;
+use crate::block_store::BlockAppendRecordRef;
 use crate::control::{
     CanonicalLogAckPolicy, CheckedBatchExecuteRequest, CheckedBatchExecuteResponse,
     CheckedExecuteRequest, CheckedExecuteResponse, Config, GetConfigResponse, GetInfoResponse,
@@ -5849,11 +5849,11 @@ impl TemporalEngine {
             let append_records = publish_records
                 .iter()
                 .map(|(_, _, bytes, object_id, routing_slot)| {
-                    (bytes.clone(), *object_id, *routing_slot)
+                    (bytes.as_slice(), *object_id, *routing_slot)
                 })
-                .collect::<Vec<BlockAppendRecord>>();
+                .collect::<Vec<BlockAppendRecordRef<'_>>>();
             self.page_store
-                .append_batch_with_page_metadata(append_records)
+                .append_batch_with_page_metadata_refs(&append_records)
                 .map_err(|err| Status::error("publish_visibility_failed", err.to_string()))?
         };
         let (start_routing_slot, end_routing_slot) = self
@@ -14953,14 +14953,14 @@ fn compact_page_addresses<'a>(
             .iter()
             .map(|(old_address, _, bytes)| {
                 (
-                    bytes.clone(),
+                    bytes.as_slice(),
                     old_address.object_id,
                     old_address.routing_slot,
                 )
             })
-            .collect::<Vec<BlockAppendRecord>>();
+            .collect::<Vec<BlockAppendRecordRef<'_>>>();
         page_store
-            .append_batch_with_page_metadata(append_records)
+            .append_batch_with_page_metadata_refs(&append_records)
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?
     };
     let mut rewritten = HashMap::<PageAddress, PageAddress>::with_capacity(rewrite_inputs.len());
@@ -15043,14 +15043,14 @@ fn compact_feature_page_addresses(
             .iter()
             .map(|(old_address, _, bytes)| {
                 (
-                    bytes.clone(),
+                    bytes.as_slice(),
                     old_address.object_id,
                     old_address.routing_slot,
                 )
             })
-            .collect::<Vec<BlockAppendRecord>>();
+            .collect::<Vec<BlockAppendRecordRef<'_>>>();
         page_store
-            .append_batch_with_page_metadata(append_records)
+            .append_batch_with_page_metadata_refs(&append_records)
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?
     };
     let mut rewritten = HashMap::<PageAddress, PageAddress>::with_capacity(rewrite_inputs.len());
