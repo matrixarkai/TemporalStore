@@ -10565,6 +10565,7 @@ fn mark_slot_index_object_deleted(
     ensure_slot_index_lookup_maps(shard);
     let lookup_enabled = !shard.slot_index.object_component_lookup.is_empty();
     let target_slots = slot_index_target_slots_for_object_key(shard, key);
+    removed_addresses.reserve(slot_page_ref_capacity_for_slots(shard, &target_slots));
     if lookup_enabled {
         shard
             .slot_index
@@ -10682,6 +10683,7 @@ fn mark_slot_index_page_deleted(
             })
             .unwrap_or_default()
     };
+    removed_addresses.reserve(slot_page_ref_capacity_for_slots(shard, &target_slots));
     if lookup_enabled {
         shard
             .slot_index
@@ -10719,6 +10721,14 @@ fn mark_slot_index_page_deleted(
         }
     }
     if lookup_enabled && !removed {
+        removed_addresses.reserve(
+            shard
+                .slot_index
+                .slot_map
+                .values()
+                .map(|slot| slot.page_index.len())
+                .sum(),
+        );
         for slot in shard.slot_index.slot_map.values_mut() {
             let mut slot_removed = false;
             let mut deleted_object_ids = BTreeSet::new();
@@ -10753,6 +10763,14 @@ fn mark_slot_index_page_deleted(
     }
     invalidate_page_addresses(cache, shard_id, removed_addresses);
     removed
+}
+
+fn slot_page_ref_capacity_for_slots(shard: &ShardState, routing_slots: &BTreeSet<u32>) -> usize {
+    routing_slots
+        .iter()
+        .filter_map(|routing_slot| shard.slot_index.slot_map.get(routing_slot))
+        .map(|slot| slot.page_index.len())
+        .sum()
 }
 
 fn associated_record_keys(key: &str) -> Vec<String> {
