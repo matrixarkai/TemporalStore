@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import queue
 import hashlib
+import copy
 from collections import OrderedDict, defaultdict, deque
 
 try:
@@ -3900,6 +3901,13 @@ class MatrixArkRustProxyClient:
         self._scan_hash_cache_max_entries = max(
             1, int(os.environ.get("MATRIXARK_RUST_PROXY_SCAN_HASH_CACHE_MAX_ENTRIES", "1024"))
         )
+        self._context_pack_response_cache_enabled = (
+            os.environ.get("MATRIXARK_RUST_PROXY_CONTEXT_PACK_CLIENT_CACHE", "1").strip().lower()
+            not in {"0", "false", "no"}
+        )
+        self._context_pack_response_cache_max_entries = max(
+            1, int(os.environ.get("MATRIXARK_RUST_PROXY_CONTEXT_PACK_CLIENT_CACHE_MAX_ENTRIES", "256"))
+        )
         if self._shared_process_mode:
             # The local Rust TemporalEngine is embedded in the proxy process. A
             # multi-process write lane pool can hide writes from reads until
@@ -3994,6 +4002,12 @@ class MatrixArkRustProxyClient:
         self._scan_hash_cache_misses_total = 0
         self._scan_hash_cache_updates_total = 0
         self._scan_hash_cache_invalidations_total = 0
+        self._context_pack_response_cache_lock = threading.Lock()
+        self._context_pack_response_cache: OrderedDict[str, Json] = OrderedDict()
+        self._context_pack_response_cache_hits_total = 0
+        self._context_pack_response_cache_misses_total = 0
+        self._context_pack_response_cache_updates_total = 0
+        self._context_pack_response_cache_invalidations_total = 0
         self._started_at = time.time()
         self._proc: subprocess.Popen[str] | None = None
 
@@ -4537,6 +4551,16 @@ class MatrixArkRustProxyClient:
                     "invalidations_total": self._scan_hash_cache_invalidations_total,
                     "scope": "hash_key_with_write_invalidation",
                 },
+                "context_pack_response_cache": {
+                    "enabled": self._context_pack_response_cache_enabled,
+                    "max_entries": self._context_pack_response_cache_max_entries,
+                    "entries": len(self._context_pack_response_cache),
+                    "hits_total": self._context_pack_response_cache_hits_total,
+                    "misses_total": self._context_pack_response_cache_misses_total,
+                    "updates_total": self._context_pack_response_cache_updates_total,
+                    "invalidations_total": self._context_pack_response_cache_invalidations_total,
+                    "scope": "native_context_pack_request_envelope_with_write_invalidation",
+                },
                 "last_latency_ms": round(self._last_latency_ms, 3),
                 "latency_ms_sum": round(sum(samples), 3),
                 "latency_ms_count": len(samples),
@@ -4640,9 +4664,86 @@ class MatrixArkRustProxyClient:
             with self._metrics_lock:
                 self._scan_hash_cache_invalidations_total += removed
 
+    def _context_pack_response_cache_key(
+        self,
+        *,
+        count_key: str,
+        record_hash_key: str,
+        shard_size: int,
+        request: Json,
+    ) -> str:
+        ranking = request.get("ranking") if isinstance(request, dict) else {}
+        payload = {
+            "count_key": count_key,
+            "record_hash_key": record_hash_key,
+            "shard_size": int(shard_size),
+            "scope": request.get("scope", {}) if isinstance(request, dict) else {},
+            "secondary_index_groups": request.get("secondary_index_groups", []) if isinstance(request, dict) else [],
+            "query": request.get("query", "") if isinstance(request, dict) else "",
+            "max_selected_refs": ranking.get("max_selected_refs") if isinstance(ranking, dict) else None,
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()
+        return hashlib.blake2b(encoded, digest_size=16).hexdigest()
+
+    def _mark_context_pack_response_cache_hit(self, response: Json) -> Json:
+        cached = copy.deepcopy(response)
+        cached["cache_hit"] = True
+        cached["context_pack_response_cache_hit"] = True
+        metrics = cached.get("retrieval_metrics")
+        if isinstance(metrics, dict):
+            metrics["cache_hit"] = True
+            metrics["candidate_cache_hit"] = True
+            metrics["context_pack_response_cache_hit"] = True
+        pack = cached.get("context_pack")
+        if isinstance(pack, dict):
+            pack_metrics = pack.get("retrieval_metrics")
+            if isinstance(pack_metrics, dict):
+                pack_metrics["cache_hit"] = True
+                pack_metrics["candidate_cache_hit"] = True
+                pack_metrics["context_pack_response_cache_hit"] = True
+        return cached
+
+    def _context_pack_response_cache_get(self, cache_key: str) -> Json | None:
+        if not self._context_pack_response_cache_enabled:
+            return None
+        with self._context_pack_response_cache_lock:
+            cached = self._context_pack_response_cache.get(cache_key)
+            if cached is not None:
+                self._context_pack_response_cache.move_to_end(cache_key)
+        with self._metrics_lock:
+            if cached is None:
+                self._context_pack_response_cache_misses_total += 1
+            else:
+                self._context_pack_response_cache_hits_total += 1
+        if cached is None:
+            return None
+        return self._mark_context_pack_response_cache_hit(cached)
+
+    def _context_pack_response_cache_put(self, cache_key: str, response: Json) -> None:
+        if not self._context_pack_response_cache_enabled:
+            return
+        with self._context_pack_response_cache_lock:
+            self._context_pack_response_cache[cache_key] = copy.deepcopy(response)
+            self._context_pack_response_cache.move_to_end(cache_key)
+            while len(self._context_pack_response_cache) > self._context_pack_response_cache_max_entries:
+                self._context_pack_response_cache.popitem(last=False)
+        with self._metrics_lock:
+            self._context_pack_response_cache_updates_total += 1
+
+    def _context_pack_response_cache_clear(self) -> None:
+        if not self._context_pack_response_cache_enabled:
+            return
+        with self._context_pack_response_cache_lock:
+            removed = len(self._context_pack_response_cache)
+            self._context_pack_response_cache.clear()
+        if removed:
+            with self._metrics_lock:
+                self._context_pack_response_cache_invalidations_total += removed
+
     def put_string(self, key: str, value: str) -> None:
         self._call("put_string", key=key, value=value)
         self._string_cache_put(key, value)
+        self._context_pack_response_cache_clear()
 
     def get_string(self, key: str) -> str:
         cached = self._string_cache_get(key)
@@ -4655,6 +4756,7 @@ class MatrixArkRustProxyClient:
     def hset(self, key: str, field: str, value: str) -> None:
         self._call("hset", key=key, field=field, value=value)
         self._scan_hash_cache_invalidate_keys([key])
+        self._context_pack_response_cache_clear()
 
     def hget(self, key: str, field: str) -> str:
         return self._call("hget", key=key, field=field)
@@ -4676,6 +4778,7 @@ class MatrixArkRustProxyClient:
             return
         self._call_json("batch_hset", entries_compact=compact_entries)
         self._scan_hash_cache_invalidate_keys(entry[0] for entry in compact_entries)
+        self._context_pack_response_cache_clear()
 
     def _coalesced_batch_hset(self, compact_entries: list[list[str]]) -> None:
         event = threading.Event()
@@ -4729,6 +4832,7 @@ class MatrixArkRustProxyClient:
                     error = exc
                 if error is None:
                     self._scan_hash_cache_invalidate_keys(entry[0] for entry in merged)
+                    self._context_pack_response_cache_clear()
                 with self._metrics_lock:
                     self._batch_hset_coalesced_batches_total += 1
                     self._batch_hset_coalesced_calls_total += len(pending)
@@ -4791,6 +4895,7 @@ class MatrixArkRustProxyClient:
             append_options=append_options,
         )
         self._scan_hash_cache_invalidate_keys(entry[0] for entry in compact_entries)
+        self._context_pack_response_cache_clear()
         if count_key:
             self._string_cache_put(count_key, count_value or "")
 
@@ -4896,6 +5001,7 @@ class MatrixArkRustProxyClient:
                         self._string_cache_put(count_key, count_value)
                     if error is None:
                         self._scan_hash_cache_invalidate_keys(entry[0] for entry in merged)
+                        self._context_pack_response_cache_clear()
                     with self._metrics_lock:
                         self._append_coalesced_batches_total += 1
                         self._append_coalesced_calls_total += len(items)
@@ -4945,6 +5051,15 @@ class MatrixArkRustProxyClient:
         shard_size: int,
         request: Json,
     ) -> Json:
+        cache_key = self._context_pack_response_cache_key(
+            count_key=count_key,
+            record_hash_key=record_hash_key,
+            shard_size=shard_size,
+            request=request,
+        )
+        cached = self._context_pack_response_cache_get(cache_key)
+        if cached is not None:
+            return cached
         response = self._call_json(
             "matrixark_retrieve_context_pack",
             count_key=count_key,
@@ -4966,12 +5081,14 @@ class MatrixArkRustProxyClient:
             record=request,
             top_level_response=True,
         )
+        result = response
         value = response.get("value")
         if isinstance(value, str) and value:
             decoded = json.loads(value)
             if isinstance(decoded, dict):
-                return decoded
-        return response
+                result = decoded
+        self._context_pack_response_cache_put(cache_key, result)
+        return result
 
     def batch_hget(self, entries: list[Json]) -> list[Json]:
         if not entries:
