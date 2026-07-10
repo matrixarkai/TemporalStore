@@ -282,6 +282,12 @@ message Command {
     ContextUpsertEmbedding context_upsert_embedding = 58;
     ContextQueryEmbeddings context_query_embeddings = 59;
     ContextTraverseTree context_traverse_tree = 60;
+    ContextUpsertSummary context_upsert_summary = 61;
+    ContextQuerySummaries context_query_summaries = 62;
+    ContextWriteCompressionEvent context_write_compression_event = 63;
+    ContextQueryCompressionEvents context_query_compression_events = 64;
+    ContextCompressEvents context_compress_events = 65;
+    ContextQueryNodeContext context_query_node_context = 66;
   }
 }
 
@@ -764,6 +770,69 @@ message ContextTraverseTree {
   uint32 max_children_scored_per_parent = 6;
   uint32 max_candidate_nodes = 7;
   bool leaf_only = 8;
+}
+
+message ContextSummary {
+  uint64 node_hash = 1;
+  uint32 level = 2;
+  string text = 3;
+  uint64 valid_from_ms = 4;
+}
+
+message ContextUpsertSummary {
+  string key = 1;
+  ContextSummary summary = 2;
+}
+
+message ContextQuerySummaries {
+  string key = 1;
+  uint64 node_hash = 2;
+  uint32 level = 3;
+  uint64 as_of_ms = 4;
+  uint32 limit = 5;
+}
+
+message ContextCompressionEvent {
+  uint64 compression_id_hash = 1;
+  uint64 node_hash = 2;
+  uint64 source_start_ms = 3;
+  uint64 source_end_ms = 4;
+  uint64 compressed_time_ms = 5;
+  string summary = 6;
+}
+
+message ContextWriteCompressionEvent {
+  string key = 1;
+  ContextCompressionEvent event = 2;
+}
+
+message ContextQueryCompressionEvents {
+  string key = 1;
+  repeated uint64 node_hashes = 2;
+  uint64 start_time_ms = 3;
+  uint64 end_time_ms = 4;
+  uint32 limit = 5;
+}
+
+message ContextCompressEvents {
+  string key = 1;
+  uint64 node_hash = 2;
+  uint64 source_start_ms = 3;
+  uint64 source_end_ms = 4;
+  uint64 compressed_time_ms = 5;
+  uint32 max_source_events = 6;
+  float min_confidence = 7;
+  float min_importance = 8;
+}
+
+message ContextQueryNodeContext {
+  string key = 1;
+  uint64 node_hash = 2;
+  uint32 summary_level = 3;
+  uint64 as_of_ms = 4;
+  uint64 cold_start_time_ms = 5;
+  uint64 cold_end_time_ms = 6;
+  uint32 compression_limit = 7;
 }
 
 message CommonExpire {
