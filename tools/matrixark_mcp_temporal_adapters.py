@@ -4688,18 +4688,24 @@ class MatrixArkRustProxyClient:
         return hashlib.blake2b(encoded, digest_size=16).hexdigest()
 
     def _mark_context_pack_response_cache_hit(self, response: Json) -> Json:
-        cached = copy.deepcopy(response)
+        cached = dict(response)
         cached["cache_hit"] = True
         cached["context_pack_response_cache_hit"] = True
         metrics = cached.get("retrieval_metrics")
         if isinstance(metrics, dict):
+            metrics = dict(metrics)
+            cached["retrieval_metrics"] = metrics
             metrics["cache_hit"] = True
             metrics["candidate_cache_hit"] = True
             metrics["context_pack_response_cache_hit"] = True
         pack = cached.get("context_pack")
         if isinstance(pack, dict):
+            pack = dict(pack)
+            cached["context_pack"] = pack
             pack_metrics = pack.get("retrieval_metrics")
             if isinstance(pack_metrics, dict):
+                pack_metrics = dict(pack_metrics)
+                pack["retrieval_metrics"] = pack_metrics
                 pack_metrics["cache_hit"] = True
                 pack_metrics["candidate_cache_hit"] = True
                 pack_metrics["context_pack_response_cache_hit"] = True

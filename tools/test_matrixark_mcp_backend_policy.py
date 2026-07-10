@@ -92,6 +92,28 @@ class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
 
         self.assertEqual(client._context_record_counts, {"context_event": 1})
 
+    def test_context_pack_response_cache_hit_marks_without_mutating_source(self) -> None:
+        client = mcp.MatrixArkRustCliClient.__new__(mcp.MatrixArkRustCliClient)
+        cached = {
+            "ok": True,
+            "cache_hit": False,
+            "retrieval_metrics": {"cache_hit": False},
+            "context_pack": {
+                "selected_refs": [{"ref_hash": "r1"}],
+                "retrieval_metrics": {"cache_hit": False},
+            },
+        }
+
+        hit = client._mark_context_pack_response_cache_hit(cached)
+
+        self.assertTrue(hit["cache_hit"])
+        self.assertTrue(hit["retrieval_metrics"]["context_pack_response_cache_hit"])
+        self.assertTrue(hit["context_pack"]["retrieval_metrics"]["context_pack_response_cache_hit"])
+        self.assertIs(hit["context_pack"]["selected_refs"], cached["context_pack"]["selected_refs"])
+        self.assertFalse(cached["cache_hit"])
+        self.assertFalse(cached["retrieval_metrics"]["cache_hit"])
+        self.assertFalse(cached["context_pack"]["retrieval_metrics"]["cache_hit"])
+
     def test_rust_proxy_breakdown_includes_dedicated_retrieve_client_metrics(self) -> None:
         breakdown = rust_proxy_breakdown_from_backend_metrics(
             {
