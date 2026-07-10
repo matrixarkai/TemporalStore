@@ -293,6 +293,9 @@ message Command {
     IpsRemove ips_remove = 69;
     IpsDelete ips_delete = 70;
     IpsCount ips_count = 71;
+    CommonDelete common_delete = 72;
+    StringSetConditional string_set_conditional = 73;
+    HashIncrBy hash_incr_by = 74;
   }
 }
 
@@ -313,11 +316,30 @@ message StringSet {
   uint64 ttl_ms = 3;
 }
 
+enum StringSetCondition {
+  STRING_SET_CONDITION_UNSPECIFIED = 0;
+  STRING_SET_CONDITION_ALWAYS = 1;
+  STRING_SET_CONDITION_IF_EXISTS = 2;
+  STRING_SET_CONDITION_IF_NOT_EXISTS = 3;
+}
+
+message StringSetConditional {
+  string key = 1;
+  bytes value = 2;
+  optional uint64 ttl_ms = 3;
+  StringSetCondition condition = 4;
+  bool return_old = 5;
+}
+
 message StringGet {
   string key = 1;
 }
 
 message StringDelete {
+  string key = 1;
+}
+
+message CommonDelete {
   string key = 1;
 }
 
@@ -335,6 +357,12 @@ message HashGet {
 message HashDelete {
   string key = 1;
   string field = 2;
+}
+
+message HashIncrBy {
+  string key = 1;
+  string field = 2;
+  int64 increment = 3;
 }
 
 message HashGetAll {

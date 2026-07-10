@@ -314,9 +314,19 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                 }
             }
         }
+        v1::command::Kind::StringSetConditional(command) => types::Command::StringSetConditional {
+            key: command.key,
+            value: command.value,
+            ttl_ms: command.ttl_ms,
+            condition: sdk_string_set_condition_to_types(command.condition)?,
+            return_old: command.return_old,
+        },
         v1::command::Kind::StringGet(command) => types::Command::StringGet { key: command.key },
         v1::command::Kind::StringDelete(command) => {
             types::Command::StringDelete { key: command.key }
+        }
+        v1::command::Kind::CommonDelete(command) => {
+            types::Command::CommonDelete { key: command.key }
         }
         v1::command::Kind::HashSet(command) => types::Command::HashSet {
             key: command.key,
@@ -330,6 +340,11 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
         v1::command::Kind::HashDelete(command) => types::Command::HashDelete {
             key: command.key,
             field: command.field,
+        },
+        v1::command::Kind::HashIncrBy(command) => types::Command::HashIncrBy {
+            key: command.key,
+            field: command.field,
+            increment: command.increment,
         },
         v1::command::Kind::HashGetAll(command) => types::Command::HashGetAll { key: command.key },
         v1::command::Kind::HashLen(command) => types::Command::HashLen { key: command.key },
@@ -799,6 +814,18 @@ fn nonzero_limit(limit: u32) -> Option<usize> {
 
 fn nonzero_u32(value: u32) -> Option<u32> {
     (value > 0).then_some(value)
+}
+
+fn sdk_string_set_condition_to_types(
+    condition: i32,
+) -> Result<types::StringSetCondition, TonicStatus> {
+    match v1::StringSetCondition::try_from(condition) {
+        Ok(v1::StringSetCondition::IfExists) => Ok(types::StringSetCondition::IfExists),
+        Ok(v1::StringSetCondition::IfNotExists) => Ok(types::StringSetCondition::IfNotExists),
+        Ok(v1::StringSetCondition::Always) | Ok(v1::StringSetCondition::Unspecified) | Err(_) => {
+            Ok(types::StringSetCondition::Always)
+        }
+    }
 }
 
 fn sdk_risk_family_to_types(family: i32) -> Result<types::RiskFamily, TonicStatus> {
