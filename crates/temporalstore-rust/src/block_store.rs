@@ -991,7 +991,9 @@ impl LocalBlockStore {
                     continue;
                 }
                 if next_address.offset <= group_end {
-                    break;
+                    group_end = group_end.max(next_end);
+                    cursor += 1;
+                    continue;
                 }
                 let gap = next_address.offset.saturating_sub(group_end);
                 let coalesced_len = next_end.saturating_sub(group_offset);
