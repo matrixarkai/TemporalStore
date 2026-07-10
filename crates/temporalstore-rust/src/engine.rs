@@ -14943,19 +14943,26 @@ fn compact_page_addresses<'a>(
         })?;
         rewrite_inputs.push((old_address, cold_page, bytes));
     }
-    let append_records = rewrite_inputs
-        .iter()
-        .map(|(old_address, _, bytes)| {
-            (
-                bytes.clone(),
-                old_address.object_id,
-                old_address.routing_slot,
-            )
-        })
-        .collect::<Vec<BlockAppendRecord>>();
-    let new_addresses = page_store
-        .append_batch_with_page_metadata(append_records)
-        .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
+    let new_addresses = if rewrite_inputs.len() == 1 {
+        let (old_address, _, bytes) = &rewrite_inputs[0];
+        vec![page_store
+            .append_with_page_metadata(bytes, old_address.object_id, old_address.routing_slot)
+            .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?]
+    } else {
+        let append_records = rewrite_inputs
+            .iter()
+            .map(|(old_address, _, bytes)| {
+                (
+                    bytes.clone(),
+                    old_address.object_id,
+                    old_address.routing_slot,
+                )
+            })
+            .collect::<Vec<BlockAppendRecord>>();
+        page_store
+            .append_batch_with_page_metadata(append_records)
+            .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?
+    };
     let mut rewritten = HashMap::<PageAddress, PageAddress>::with_capacity(rewrite_inputs.len());
     let mut rewritten_old_addresses = Vec::with_capacity(rewrite_inputs.len());
     let mut hot_refills = Vec::with_capacity(rewrite_inputs.len());
@@ -15026,19 +15033,26 @@ fn compact_feature_page_addresses(
         })?;
         rewrite_inputs.push((old_address, cold_page, bytes));
     }
-    let append_records = rewrite_inputs
-        .iter()
-        .map(|(old_address, _, bytes)| {
-            (
-                bytes.clone(),
-                old_address.object_id,
-                old_address.routing_slot,
-            )
-        })
-        .collect::<Vec<BlockAppendRecord>>();
-    let new_addresses = page_store
-        .append_batch_with_page_metadata(append_records)
-        .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
+    let new_addresses = if rewrite_inputs.len() == 1 {
+        let (old_address, _, bytes) = &rewrite_inputs[0];
+        vec![page_store
+            .append_with_page_metadata(bytes, old_address.object_id, old_address.routing_slot)
+            .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?]
+    } else {
+        let append_records = rewrite_inputs
+            .iter()
+            .map(|(old_address, _, bytes)| {
+                (
+                    bytes.clone(),
+                    old_address.object_id,
+                    old_address.routing_slot,
+                )
+            })
+            .collect::<Vec<BlockAppendRecord>>();
+        page_store
+            .append_batch_with_page_metadata(append_records)
+            .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?
+    };
     let mut rewritten = HashMap::<PageAddress, PageAddress>::with_capacity(rewrite_inputs.len());
     let mut rewritten_old_addresses = Vec::with_capacity(rewrite_inputs.len());
     let mut hot_refills = Vec::with_capacity(rewrite_inputs.len());
