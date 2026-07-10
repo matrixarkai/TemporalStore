@@ -15204,7 +15204,7 @@ pub(super) fn read_page_bytes_batch(
     addresses: &[Option<PageAddress>],
 ) -> Vec<Option<Vec<u8>>> {
     let mut values = vec![None; addresses.len()];
-    let mut lookup = Vec::new();
+    let mut lookup = Vec::with_capacity(addresses.len());
     for (index, address) in addresses.iter().enumerate() {
         let Some(address) = address else {
             continue;
@@ -15221,8 +15221,8 @@ pub(super) fn read_page_bytes_batch(
         return values;
     }
 
-    let mut unique_keys = Vec::new();
-    let mut lookup_indexes_by_key = HashMap::<CacheKey, Vec<usize>>::new();
+    let mut unique_keys = Vec::with_capacity(lookup.len());
+    let mut lookup_indexes_by_key = HashMap::<CacheKey, Vec<usize>>::with_capacity(lookup.len());
     for (lookup_index, (_, _, key)) in lookup.iter().enumerate() {
         if !lookup_indexes_by_key.contains_key(key) {
             unique_keys.push(key.clone());
@@ -15235,7 +15235,8 @@ pub(super) fn read_page_bytes_batch(
     let cached = cache
         .get_batch(&unique_keys)
         .unwrap_or_else(|_| vec![None; unique_keys.len()]);
-    let mut misses = HashMap::<CacheKey, (PageAddress, Vec<usize>)>::new();
+    let mut misses =
+        HashMap::<CacheKey, (PageAddress, Vec<usize>)>::with_capacity(unique_keys.len());
     for (key, cached_value) in unique_keys.into_iter().zip(cached.into_iter()) {
         let lookup_indexes = lookup_indexes_by_key.remove(&key).unwrap_or_default();
         if let Some(bytes) = cached_value {
@@ -15276,7 +15277,7 @@ pub(super) fn read_page_bytes_batch(
         .map(|(_, (address, _))| address.clone())
         .collect::<Vec<_>>();
     let miss_reads = page_store.read_batch(&miss_addresses);
-    let mut refills = Vec::new();
+    let mut refills = Vec::with_capacity(miss_entries.len());
     for ((key, (_, indexes)), read_result) in miss_entries.into_iter().zip(miss_reads) {
         let Ok(bytes) = read_result else {
             continue;
