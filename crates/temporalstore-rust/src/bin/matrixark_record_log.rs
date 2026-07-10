@@ -2973,6 +2973,7 @@ fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
 
 fn matrixark_proxy_block_store_options() -> BlockStoreOptions {
     let defaults = BlockStoreOptions::default();
+    let throughput_append_default = false;
     BlockStoreOptions {
         compression_enabled: env_bool_any(
             &[
@@ -3002,7 +3003,7 @@ fn matrixark_proxy_block_store_options() -> BlockStoreOptions {
                 "TS_BLOCK_STORE_SYNC_ON_APPEND",
                 "TS_PAGE_STORE_SYNC_ON_APPEND",
             ],
-            defaults.sync_on_append,
+            throughput_append_default,
         ),
     }
 }
@@ -3911,9 +3912,13 @@ mod tests {
         env::remove_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_ENABLED");
         env::remove_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_MIN_BYTES");
         env::remove_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_LEVEL");
+        env::remove_var("MATRIXARK_RUST_PROXY_BLOCK_STORE_SYNC_ON_APPEND");
         env::remove_var("TS_PAGE_STORE_COMPRESSION_ENABLED");
         env::remove_var("TS_PAGE_STORE_COMPRESSION_MIN_BYTES");
         env::remove_var("TS_PAGE_STORE_COMPRESSION_LEVEL");
+        env::remove_var("TEMPORALSTORE_BLOCK_STORE_SYNC_ON_APPEND");
+        env::remove_var("TS_BLOCK_STORE_SYNC_ON_APPEND");
+        env::remove_var("TS_PAGE_STORE_SYNC_ON_APPEND");
 
         let options = matrixark_proxy_block_store_options();
         assert!(options.compression_enabled);
@@ -3922,21 +3927,28 @@ mod tests {
             options.compression_level,
             BlockStoreOptions::default().compression_level
         );
+        assert!(!options.sync_on_append);
 
         env::set_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_ENABLED", "false");
         env::set_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_MIN_BYTES", "8192");
         env::set_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_LEVEL", "3");
+        env::set_var("MATRIXARK_RUST_PROXY_BLOCK_STORE_SYNC_ON_APPEND", "true");
         let overridden = matrixark_proxy_block_store_options();
         assert!(!overridden.compression_enabled);
         assert_eq!(overridden.compression_min_bytes, 8192);
         assert_eq!(overridden.compression_level, 3);
+        assert!(overridden.sync_on_append);
 
         env::remove_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_ENABLED");
         env::remove_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_MIN_BYTES");
         env::remove_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_LEVEL");
+        env::remove_var("MATRIXARK_RUST_PROXY_BLOCK_STORE_SYNC_ON_APPEND");
         env::remove_var("TS_PAGE_STORE_COMPRESSION_ENABLED");
         env::remove_var("TS_PAGE_STORE_COMPRESSION_MIN_BYTES");
         env::remove_var("TS_PAGE_STORE_COMPRESSION_LEVEL");
+        env::remove_var("TEMPORALSTORE_BLOCK_STORE_SYNC_ON_APPEND");
+        env::remove_var("TS_BLOCK_STORE_SYNC_ON_APPEND");
+        env::remove_var("TS_PAGE_STORE_SYNC_ON_APPEND");
     }
 
     // shared-corpus: codex_mcp_temporalstore_rust_record_log_backend
