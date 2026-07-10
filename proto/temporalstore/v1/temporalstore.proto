@@ -270,6 +270,10 @@ message Command {
     ContextNodesGet context_nodes_get = 46;
     ContextWriteIndexRef context_write_index_ref = 47;
     ContextQueryIndex context_query_index = 48;
+    ContextWritePackAudit context_write_pack_audit = 49;
+    ContextQueryPackAudit context_query_pack_audit = 50;
+    ContextMarkSummaryDirty context_mark_summary_dirty = 51;
+    ContextQuerySummaryDirty context_query_summary_dirty = 52;
   }
 }
 
@@ -625,6 +629,56 @@ message ContextQueryIndex {
   uint64 start_time_ms = 5;
   uint64 end_time_ms = 6;
   uint32 limit = 7;
+}
+
+message ContextAuditRef {
+  uint64 node_hash = 1;
+  uint64 event_time_ms = 2;
+  string reason = 3;
+}
+
+message ContextPackAudit {
+  string query_id = 1;
+  uint64 session_hash = 2;
+  uint64 request_time_ms = 3;
+  uint64 query_hash = 4;
+  uint32 max_prompt_tokens = 5;
+  uint32 selected_tokens = 6;
+  repeated ContextAuditRef selected_refs = 7;
+  repeated ContextAuditRef blocked_refs = 8;
+}
+
+message ContextWritePackAudit {
+  string key = 1;
+  ContextPackAudit audit = 2;
+}
+
+message ContextQueryPackAudit {
+  string key = 1;
+  uint64 session_hash = 2;
+  uint64 start_time_ms = 3;
+  uint64 end_time_ms = 4;
+  uint32 limit = 5;
+}
+
+message ContextSummaryDirtyMarker {
+  uint64 node_hash = 1;
+  uint64 event_time_ms = 2;
+  uint32 reason = 3;
+  uint32 propagate_depth = 4;
+}
+
+message ContextMarkSummaryDirty {
+  string key = 1;
+  ContextSummaryDirtyMarker marker = 2;
+}
+
+message ContextQuerySummaryDirty {
+  string key = 1;
+  string node_id = 2;
+  uint64 start_time_ms = 3;
+  uint64 end_time_ms = 4;
+  uint32 limit = 5;
 }
 
 message CommonExpire {
