@@ -2,7 +2,7 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 mod commands;
 mod config;
@@ -417,6 +417,7 @@ pub struct ProxyConfigUpdateReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyOpenTableRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     #[serde(default)]
@@ -433,6 +434,7 @@ pub struct ProxyOpenTableResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxyTableExecuteRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub command: Command,
@@ -440,6 +442,7 @@ pub struct ProxyTableExecuteRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxyTableBatchExecuteRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub commands: Vec<Command>,
@@ -447,6 +450,7 @@ pub struct ProxyTableBatchExecuteRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxyKeyCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
@@ -454,26 +458,33 @@ pub struct ProxyKeyCommandRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxySetCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
+    #[serde(deserialize_with = "proxy_bytes_from_json")]
     pub value: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxySetExCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
+    #[serde(deserialize_with = "proxy_bytes_from_json")]
     pub value: Vec<u8>,
+    #[serde(alias = "ttl")]
     pub ttl_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxySetConditionalCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
+    #[serde(deserialize_with = "proxy_bytes_from_json")]
     pub value: Vec<u8>,
     #[serde(default)]
     pub ttl_ms: Option<u64>,
@@ -484,6 +495,7 @@ pub struct ProxySetConditionalCommandRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxyHashCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
@@ -492,15 +504,18 @@ pub struct ProxyHashCommandRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxyHashSetCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
     pub field: String,
+    #[serde(deserialize_with = "proxy_bytes_from_json")]
     pub value: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyHashIncrByCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
@@ -510,6 +525,7 @@ pub struct ProxyHashIncrByCommandRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxyHashMultiGetCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
@@ -518,33 +534,141 @@ pub struct ProxyHashMultiGetCommandRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxyHashMultiSetCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
+    #[serde(default, deserialize_with = "proxy_hash_entries_from_json")]
     pub entries: Vec<(String, Vec<u8>)>,
+    #[serde(default)]
+    pub fields: Vec<String>,
+    #[serde(default, deserialize_with = "proxy_vec_bytes_from_json")]
+    pub values: Vec<Vec<u8>>,
+}
+
+impl ProxyHashMultiSetCommandRequest {
+    fn entries(&self) -> Result<Vec<(String, Vec<u8>)>, Status> {
+        if !self.entries.is_empty() {
+            return Ok(self.entries.clone());
+        }
+        if self.fields.len() != self.values.len() {
+            return Err(Status::error(
+                "bad_request",
+                format!(
+                    "fields/values length mismatch: fields={}, values={}",
+                    self.fields.len(),
+                    self.values.len()
+                ),
+            ));
+        }
+        Ok(self
+            .fields
+            .iter()
+            .cloned()
+            .zip(self.values.iter().cloned())
+            .collect())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxySetMemberCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
+    #[serde(deserialize_with = "proxy_bytes_from_json")]
     pub member: Vec<u8>,
+}
+
+fn proxy_bytes_from_json<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    proxy_bytes_value(value).map_err(serde::de::Error::custom)
+}
+
+fn proxy_vec_bytes_from_json<'de, D>(deserializer: D) -> Result<Vec<Vec<u8>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let values = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    values
+        .into_iter()
+        .map(proxy_bytes_value)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(serde::de::Error::custom)
+}
+
+fn proxy_hash_entries_from_json<'de, D>(deserializer: D) -> Result<Vec<(String, Vec<u8>)>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let values = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    values
+        .into_iter()
+        .map(|value| match value {
+            serde_json::Value::Array(mut items) if items.len() == 2 => {
+                let raw_value = items.pop().unwrap();
+                let raw_field = items.pop().unwrap();
+                let field = raw_field
+                    .as_str()
+                    .ok_or_else(|| "hash entry field must be a string".to_string())?
+                    .to_string();
+                Ok((field, proxy_bytes_value(raw_value)?))
+            }
+            serde_json::Value::Object(mut object) => {
+                let field = object
+                    .remove("field")
+                    .and_then(|value| value.as_str().map(ToOwned::to_owned))
+                    .ok_or_else(|| "hash entry field must be present".to_string())?;
+                let value = object
+                    .remove("value")
+                    .ok_or_else(|| "hash entry value must be present".to_string())?;
+                Ok((field, proxy_bytes_value(value)?))
+            }
+            _ => Err("hash entry must be [field, value] or {field, value}".to_string()),
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(serde::de::Error::custom)
+}
+
+fn proxy_bytes_value(value: serde_json::Value) -> Result<Vec<u8>, String> {
+    match value {
+        serde_json::Value::Null => Ok(Vec::new()),
+        serde_json::Value::String(value) => Ok(value.into_bytes()),
+        serde_json::Value::Array(_) => serde_json::from_value(value).map_err(|err| err.to_string()),
+        serde_json::Value::Object(mut object) => {
+            if let Some(bytes) = object.remove("bytes") {
+                serde_json::from_value(bytes).map_err(|err| err.to_string())
+            } else if let Some(value) = object.remove("value") {
+                proxy_bytes_value(value)
+            } else {
+                serde_json::to_vec(&serde_json::Value::Object(object))
+                    .map_err(|err| err.to_string())
+            }
+        }
+        value => serde_json::to_vec(&value).map_err(|err| err.to_string()),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxyExpireCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
+    #[serde(alias = "ttl")]
     pub ttl_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxyFeatureAddCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
+    #[serde(alias = "point_list")]
     pub points: Vec<crate::types::FeaturePoint>,
     #[serde(default)]
     pub policy: Option<FeatureWritePolicy>,
@@ -552,10 +676,13 @@ pub struct ProxyFeatureAddCommandRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyFeatureQueryCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
+    #[serde(alias = "start_ts")]
     pub start_ms: u64,
+    #[serde(alias = "end_ts")]
     pub end_ms: u64,
     #[serde(default)]
     pub count: Option<usize>,
@@ -2844,9 +2971,18 @@ impl ProxyService {
             ("POST", "/ProxyService/HMSet") => {
                 match parse_json::<ProxyHashMultiSetCommandRequest>(&request.body) {
                     Ok(req) => {
+                        let entries = match req.entries() {
+                            Ok(entries) => entries,
+                            Err(status) => {
+                                return json_response(
+                                    400,
+                                    &execute_error(status.code, status.message),
+                                )
+                            }
+                        };
                         let command = Command::HashMultiSet {
                             key: req.key,
-                            entries: req.entries,
+                            entries,
                         };
                         json_response(
                             200,
@@ -5451,6 +5587,8 @@ mod tests {
                         ("a".to_string(), b"1".to_vec()),
                         ("b".to_string(), b"2".to_vec()),
                     ],
+                    fields: Vec::new(),
+                    values: Vec::new(),
                 })
                 .unwrap(),
             )
