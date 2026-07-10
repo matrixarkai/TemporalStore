@@ -789,27 +789,27 @@ fn hgetall_snapshot_cache_has_entries() -> bool {
         .unwrap_or(false)
 }
 
-fn record_count_cache() -> &'static Mutex<BTreeMap<String, String>> {
-    static RECORD_COUNT_CACHE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
-    RECORD_COUNT_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
+fn record_count_cache() -> &'static Mutex<HashMap<String, String>> {
+    static RECORD_COUNT_CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    RECORD_COUNT_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn retrieve_candidate_cache() -> &'static Mutex<BTreeMap<String, Arc<RetrieveCandidateSnapshot>>> {
+fn retrieve_candidate_cache() -> &'static Mutex<HashMap<String, Arc<RetrieveCandidateSnapshot>>> {
     static RETRIEVE_CANDIDATE_CACHE: OnceLock<
-        Mutex<BTreeMap<String, Arc<RetrieveCandidateSnapshot>>>,
+        Mutex<HashMap<String, Arc<RetrieveCandidateSnapshot>>>,
     > = OnceLock::new();
-    RETRIEVE_CANDIDATE_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
+    RETRIEVE_CANDIDATE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn retrieve_context_pack_response_cache() -> &'static Mutex<BTreeMap<String, Value>> {
-    static RETRIEVE_CONTEXT_PACK_RESPONSE_CACHE: OnceLock<Mutex<BTreeMap<String, Value>>> =
+fn retrieve_context_pack_response_cache() -> &'static Mutex<HashMap<String, Value>> {
+    static RETRIEVE_CONTEXT_PACK_RESPONSE_CACHE: OnceLock<Mutex<HashMap<String, Value>>> =
         OnceLock::new();
-    RETRIEVE_CONTEXT_PACK_RESPONSE_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
+    RETRIEVE_CONTEXT_PACK_RESPONSE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn matrixark_scan_cache() -> &'static Mutex<BTreeMap<String, Value>> {
-    static MATRIXARK_SCAN_CACHE: OnceLock<Mutex<BTreeMap<String, Value>>> = OnceLock::new();
-    MATRIXARK_SCAN_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
+fn matrixark_scan_cache() -> &'static Mutex<HashMap<String, Value>> {
+    static MATRIXARK_SCAN_CACHE: OnceLock<Mutex<HashMap<String, Value>>> = OnceLock::new();
+    MATRIXARK_SCAN_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn clear_matrixark_scan_cache() {

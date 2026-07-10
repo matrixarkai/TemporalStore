@@ -103,6 +103,26 @@ def _is_loopback_metaserver(metaserver: str) -> bool:
     return _metaserver_host(metaserver).strip().lower() in {"127.0.0.1", "localhost", "::1"}
 
 
+def default_retrieve_warmup_queries(server: Any, retrieve_workers: int, requested_warmup_queries: int) -> int:
+    if requested_warmup_queries >= 0:
+        return requested_warmup_queries
+    lane_counts = getattr(server, "_lane_worker_counts", {}) or {}
+    adapter = getattr(server, "adapter", None)
+    if not lane_counts and adapter is not None:
+        lane_counts = getattr(adapter, "_lane_worker_counts", {}) or {}
+    if not lane_counts and adapter is not None:
+        retrieve_client_factory = getattr(adapter, "_native_retrieve_client", None)
+        if callable(retrieve_client_factory):
+            try:
+                lane_counts = getattr(retrieve_client_factory(), "_lane_worker_counts", {}) or {}
+            except Exception:
+                lane_counts = {}
+    return max(
+        retrieve_workers,
+        int(lane_counts.get("pack") or lane_counts.get("retrieve") or 0),
+    )
+
+
 def default_canonical_release_out_dir() -> Path:
     return CANONICAL_UBUNTU_REPO / "output-ubuntu22" / "release"
 
@@ -2785,7 +2805,11 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
         retrieval_metric_rows: list[Json] = []
         partial_count = 0
         retrieve_warmup_latencies: list[float] = []
-        retrieve_warmup_queries = args.retrieve_workers if int(args.retrieve_warmup_queries) < 0 else int(args.retrieve_warmup_queries)
+        retrieve_warmup_queries = default_retrieve_warmup_queries(
+            server,
+            int(args.retrieve_workers),
+            int(args.retrieve_warmup_queries),
+        )
         for payload in retrieve_payloads[: max(0, retrieve_warmup_queries)]:
             latency, _result, _error = call_with_latency(server, "matrixark_retrieve", payload)
             retrieve_warmup_latencies.append(latency)
