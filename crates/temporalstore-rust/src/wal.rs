@@ -522,7 +522,12 @@ impl LocalWriteAheadLogStore {
         let file = File::open(&path)?;
         let reader = BufReader::new(file);
         let mut records_before = 0usize;
-        let mut retained = Vec::new();
+        let retained_capacity = bytes_before
+            .saturating_div(WRITE_AHEAD_LOG_SCAN_RECORD_ESTIMATE_BYTES)
+            .saturating_add(1)
+            .min(WRITE_AHEAD_LOG_SCAN_MAX_PREALLOC_RECORDS as u64)
+            as usize;
+        let mut retained = Vec::with_capacity(retained_capacity);
         for line in reader.lines() {
             let line = line?;
             if line.trim().is_empty() {
