@@ -903,6 +903,48 @@ impl LocalBlockStore {
                 .or_default()
                 .push(index);
         }
+        if duplicate_groups.len() == 1 {
+            let Some((address, indexes)) = duplicate_groups.into_iter().next() else {
+                return Vec::new();
+            };
+            let read_result = self.read_with_cache_policy(&address, no_cache_fill);
+            let mut results = (0..addresses.len())
+                .map(|_| {
+                    Err(BlockStoreError::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "coalesced block read result missing",
+                    )))
+                })
+                .collect::<Vec<_>>();
+            match read_result {
+                Ok(bytes) => {
+                    let mut remaining = indexes.len();
+                    for index in indexes {
+                        if remaining == 1 {
+                            results[index] = Ok(bytes);
+                            break;
+                        } else {
+                            results[index] = Ok(bytes.clone());
+                            remaining = remaining.saturating_sub(1);
+                        }
+                    }
+                }
+                Err(err) => {
+                    let err_text = err.to_string();
+                    let mut iter = indexes.into_iter();
+                    if let Some(first_index) = iter.next() {
+                        results[first_index] = Err(err);
+                    }
+                    for index in iter {
+                        results[index] = Err(BlockStoreError::Io(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            err_text.clone(),
+                        )));
+                    }
+                }
+            }
+            return results;
+        }
         if duplicate_groups.len() < addresses.len() {
             let unique_addresses = duplicate_groups.keys().cloned().collect::<Vec<_>>();
             let unique_results =
