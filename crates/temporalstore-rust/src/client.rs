@@ -2275,6 +2275,17 @@ impl TemporalStoreClient {
         self.risk_count_table(namespace, table_name, key, precision, window)
     }
 
+    pub fn risk_hquery(
+        &self,
+        key: impl Into<String>,
+        precision: ClientRiskPrecision,
+        window: ClientRiskWindow,
+        aggregator: impl Into<String>,
+    ) -> Result<i64, ClientError> {
+        let (namespace, table_name) = self.default_table_names()?;
+        self.risk_hquery_table(namespace, table_name, key, precision, window, aggregator)
+    }
+
     pub fn risk_cpc_set(
         &self,
         key: impl Into<String>,
@@ -2341,6 +2352,20 @@ impl TemporalStoreClient {
         let table = self.table_for_command(namespace.into(), table_name.into())?;
         let (start_ms, end_ms) = client_risk_window_bounds_ms(window, precision);
         table.risk_count(key, start_ms, end_ms)
+    }
+
+    pub fn risk_hquery_table(
+        &self,
+        namespace: impl Into<String>,
+        table_name: impl Into<String>,
+        key: impl Into<String>,
+        precision: ClientRiskPrecision,
+        window: ClientRiskWindow,
+        aggregator: impl Into<String>,
+    ) -> Result<i64, ClientError> {
+        let table = self.table_for_command(namespace.into(), table_name.into())?;
+        let (start_ms, end_ms) = client_risk_window_bounds_ms(window, precision);
+        table.risk_family_query(RiskFamily::H, key, start_ms, end_ms, aggregator)
     }
 
     pub fn risk_cpc_set_table(
@@ -4849,6 +4874,16 @@ impl TemporalStoreTable {
                 response,
             }),
         }
+    }
+
+    pub fn risk_hquery(
+        &self,
+        key: impl Into<String>,
+        start_ms: u64,
+        end_ms: u64,
+        aggregator: impl Into<String>,
+    ) -> Result<i64, ClientError> {
+        self.risk_family_query(RiskFamily::H, key, start_ms, end_ms, aggregator)
     }
 
     pub fn risk_cpc_set(

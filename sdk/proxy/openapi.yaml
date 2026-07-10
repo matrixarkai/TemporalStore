@@ -267,6 +267,14 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
+  /ProxyService/RiskHquery:
+    post:
+      summary: Query H-family risk values through the C++ proxy-compatible alias.
+      requestBody:
+        $ref: '#/components/requestBodies/RiskHquery'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
   /ProxyService/RiskCPCSet:
     post:
       summary: Set CPC risk values through the C++ proxy-compatible alias.
@@ -466,6 +474,12 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/RiskHsetRequest'
+    RiskHquery:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RiskHqueryRequest'
     RiskCPCSet:
       required: true
       content:
@@ -853,6 +867,29 @@ components:
         unit:
           type: string
           enum: [second, minute, hour, day]
+    RiskHqueryRequest:
+      allOf:
+        - $ref: '#/components/schemas/KeyRequest'
+        - type: object
+          properties:
+            start_ms:
+              type: integer
+              format: int64
+            end_ms:
+              type: integer
+              format: int64
+            windows:
+              type: array
+              items:
+                $ref: '#/components/schemas/RiskWindow'
+            htype:
+              type: string
+              enum: [count, min, max, change]
+            aggregator:
+              type: string
+            precision_ms:
+              type: integer
+              format: int64
     RiskCPCSetRequest:
       allOf:
         - $ref: '#/components/schemas/KeyRequest'

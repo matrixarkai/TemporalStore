@@ -1078,6 +1078,47 @@ pub struct ProxyRiskHsetCommandRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyRiskHqueryCommandRequest {
+    #[serde(alias = "namespace_name")]
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    #[serde(default)]
+    pub start_ms: Option<u64>,
+    #[serde(default)]
+    pub end_ms: Option<u64>,
+    #[serde(default)]
+    pub windows: Vec<ProxyRiskWindow>,
+    #[serde(default)]
+    pub htype: ProxyRiskHType,
+    #[serde(default)]
+    pub aggregator: Option<String>,
+    #[serde(default)]
+    pub precision_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProxyRiskHType {
+    #[default]
+    Count,
+    Min,
+    Max,
+    Change,
+}
+
+impl ProxyRiskHType {
+    fn aggregator(self) -> &'static str {
+        match self {
+            Self::Count => "sum",
+            Self::Min => "min",
+            Self::Max => "max",
+            Self::Change => "change",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyRiskFolSetCommandRequest {
     pub namespace: String,
     pub table_name: String,
@@ -2146,6 +2187,12 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
+            ("POST", "/ProxyService/RiskHquery") => {
+                match parse_json::<ProxyRiskHqueryCommandRequest>(&request.body) {
+                    Ok(req) => json_response(200, &self.risk_hquery(req)),
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
             ("POST", "/ProxyService/RiskCPCSet") => {
                 match parse_json::<ProxyRiskCpcSetCommandRequest>(&request.body) {
                     Ok(req) => {
@@ -2975,6 +3022,47 @@ impl ProxyService {
             namespace: request.namespace,
             table_name: request.table_name,
             command: command(request.key),
+        })
+    }
+
+    fn risk_hquery(&self, request: ProxyRiskHqueryCommandRequest) -> serde_json::Value {
+        let bounds = risk_hquery_bounds(&request);
+        let aggregator = request
+            .aggregator
+            .clone()
+            .unwrap_or_else(|| request.htype.aggregator().to_string());
+        let mut result_list = Vec::with_capacity(bounds.len());
+        let mut responses = Vec::with_capacity(bounds.len());
+        let mut status = Status::ok();
+        for (start_ms, end_ms) in bounds {
+            let response = self.table_execute(ProxyTableExecuteRequest {
+                namespace: request.namespace.clone(),
+                table_name: request.table_name.clone(),
+                command: Command::RiskFamilyQuery {
+                    family: RiskFamily::H,
+                    key: request.key.clone(),
+                    start_ms,
+                    end_ms,
+                    aggregator: aggregator.clone(),
+                },
+            });
+            if !response.status.ok && status.ok {
+                status = response.status.clone();
+            }
+            let result = match &response.response {
+                CommandResponse::Integer { value } => *value,
+                _ => 0,
+            };
+            result_list.push(serde_json::json!({
+                "has_result": response.status.ok,
+                "result": result,
+            }));
+            responses.push(response);
+        }
+        serde_json::json!({
+            "status": status,
+            "result_list": result_list,
+            "responses": responses,
         })
     }
 
@@ -3962,12 +4050,22 @@ fn risk_cpc_query_bounds(request: &ProxyRiskCpcQueryCommandRequest) -> Vec<(u64,
     if let (Some(start_ms), Some(end_ms)) = (request.start_ms, request.end_ms) {
         return vec![(start_ms, end_ms)];
     }
-    if request.windows.is_empty() {
+    risk_window_bounds(&request.windows)
+}
+
+fn risk_hquery_bounds(request: &ProxyRiskHqueryCommandRequest) -> Vec<(u64, u64)> {
+    if let (Some(start_ms), Some(end_ms)) = (request.start_ms, request.end_ms) {
+        return vec![(start_ms, end_ms)];
+    }
+    risk_window_bounds(&request.windows)
+}
+
+fn risk_window_bounds(windows: &[ProxyRiskWindow]) -> Vec<(u64, u64)> {
+    if windows.is_empty() {
         return vec![(0, u64::MAX)];
     }
     let now = now_ms() as i64;
-    request
-        .windows
+    windows
         .iter()
         .map(|window| {
             let unit_ms = window.unit.duration_ms();
