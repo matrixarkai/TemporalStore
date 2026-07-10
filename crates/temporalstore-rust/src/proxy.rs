@@ -1962,14 +1962,12 @@ impl ProxyService {
                                 filters: req.filters,
                             }
                         };
-                        json_response(
-                            200,
-                            &self.table_execute(ProxyTableExecuteRequest {
-                                namespace: req.namespace,
-                                table_name: req.table_name,
-                                command,
-                            }),
-                        )
+                        let response = self.table_execute(ProxyTableExecuteRequest {
+                            namespace: req.namespace,
+                            table_name: req.table_name,
+                            command,
+                        });
+                        json_response(200, &feature_points_response_json(response))
                     }
                     Err(err) => self.bad_execute_request(err),
                 }
@@ -2064,14 +2062,12 @@ impl ProxyService {
                             count: req.count,
                             filters: req.filters,
                         };
-                        json_response(
-                            200,
-                            &self.table_execute(ProxyTableExecuteRequest {
-                                namespace: req.namespace,
-                                table_name: req.table_name,
-                                command,
-                            }),
-                        )
+                        let response = self.table_execute(ProxyTableExecuteRequest {
+                            namespace: req.namespace,
+                            table_name: req.table_name,
+                            command,
+                        });
+                        json_response(200, &sequence_rows_response_json(response))
                     }
                     Err(err) => self.bad_execute_request(err),
                 }
@@ -4436,6 +4432,30 @@ fn hmget_response_json(response: ExecuteResponse) -> serde_json::Value {
     let mut value = execute_response_json(response);
     if let (Some(exists), Some(response)) = (exists, response_object_mut(&mut value)) {
         response.insert("exists".to_string(), serde_json::json!(exists));
+    }
+    value
+}
+
+fn feature_points_response_json(response: ExecuteResponse) -> serde_json::Value {
+    let point_list = match &response.response {
+        CommandResponse::FeaturePoints { points } => Some(points.clone()),
+        _ => None,
+    };
+    let mut value = execute_response_json(response);
+    if let (Some(point_list), Some(response)) = (point_list, response_object_mut(&mut value)) {
+        response.insert("point_list".to_string(), serde_json::json!(point_list));
+    }
+    value
+}
+
+fn sequence_rows_response_json(response: ExecuteResponse) -> serde_json::Value {
+    let row_list = match &response.response {
+        CommandResponse::SequenceRows { rows } => Some(rows.clone()),
+        _ => None,
+    };
+    let mut value = execute_response_json(response);
+    if let (Some(row_list), Some(response)) = (row_list, response_object_mut(&mut value)) {
+        response.insert("row_list".to_string(), serde_json::json!(row_list));
     }
     value
 }
