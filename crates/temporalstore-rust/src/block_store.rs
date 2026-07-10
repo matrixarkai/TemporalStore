@@ -917,18 +917,7 @@ impl LocalBlockStore {
                 })
                 .collect::<Vec<_>>();
             match read_result {
-                Ok(bytes) => {
-                    let mut remaining = indexes.len();
-                    for index in indexes {
-                        if remaining == 1 {
-                            results[index] = Ok(bytes);
-                            break;
-                        } else {
-                            results[index] = Ok(bytes.clone());
-                            remaining = remaining.saturating_sub(1);
-                        }
-                    }
-                }
+                Ok(bytes) => fill_duplicate_read_success(&mut results, indexes, bytes),
                 Err(err) => {
                     let err_text = err.to_string();
                     let mut iter = indexes.into_iter();
@@ -960,18 +949,7 @@ impl LocalBlockStore {
             for (address, read_result) in unique_addresses.into_iter().zip(unique_results) {
                 let indexes = duplicate_groups.remove(&address).unwrap_or_default();
                 match read_result {
-                    Ok(bytes) => {
-                        let mut remaining = indexes.len();
-                        for index in indexes {
-                            if remaining == 1 {
-                                results[index] = Ok(bytes);
-                                break;
-                            } else {
-                                results[index] = Ok(bytes.clone());
-                                remaining = remaining.saturating_sub(1);
-                            }
-                        }
-                    }
+                    Ok(bytes) => fill_duplicate_read_success(&mut results, indexes, bytes),
                     Err(err) => {
                         let err_text = err.to_string();
                         let mut iter = indexes.into_iter();
@@ -2140,6 +2118,23 @@ impl LocalBlockStore {
 
     pub fn stats(&self) -> BlockStoreStats {
         self.inner.lock().expect("block store lock poisoned").stats
+    }
+}
+
+fn fill_duplicate_read_success(
+    results: &mut [Result<Vec<u8>, BlockStoreError>],
+    indexes: Vec<usize>,
+    bytes: Vec<u8>,
+) {
+    let mut remaining = indexes.len();
+    for index in indexes {
+        if remaining == 1 {
+            results[index] = Ok(bytes);
+            break;
+        } else {
+            results[index] = Ok(bytes.clone());
+            remaining = remaining.saturating_sub(1);
+        }
     }
 }
 
