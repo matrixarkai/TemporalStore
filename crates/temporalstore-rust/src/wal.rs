@@ -186,6 +186,7 @@ pub const WRITE_AHEAD_LOG_FORMAT_VERSION: u32 = 1;
 const WRITE_AHEAD_LOG_BATCH_RECORD_ESTIMATE_BYTES: usize = 192;
 const WRITE_AHEAD_LOG_SCAN_RECORD_ESTIMATE_BYTES: u64 = 192;
 const WRITE_AHEAD_LOG_SCAN_MAX_PREALLOC_RECORDS: usize = 4096;
+const WRITE_AHEAD_LOG_SCAN_READER_BUFFER_MAX_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct LocalWriteAheadLogStore {
@@ -436,7 +437,11 @@ impl LocalWriteAheadLogStore {
         let path = write_ahead_log_path(&root, shard_id);
         let mut file = File::open(path)?;
         file.seek(SeekFrom::Start(start_offset))?;
-        let mut reader = BufReader::new(file);
+        let reader_capacity =
+            usize::try_from(max_bytes.min(WRITE_AHEAD_LOG_SCAN_READER_BUFFER_MAX_BYTES as u64))
+                .unwrap_or(WRITE_AHEAD_LOG_SCAN_READER_BUFFER_MAX_BYTES)
+                .max(1024);
+        let mut reader = BufReader::with_capacity(reader_capacity, file);
         let mut offset = start_offset;
         let mut total = 0;
         let scan_capacity = max_bytes
