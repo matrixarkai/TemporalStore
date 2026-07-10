@@ -623,9 +623,8 @@ fn append_record_locked(
     let path = write_ahead_log_path(&inner.root, record.shard_id);
     let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
     let offset = file.metadata()?.len();
-    let mut bytes = serde_json::to_vec(record)?;
-    bytes.push(b'\n');
-    file.write_all(&bytes)?;
+    serde_json::to_writer(&mut file, record)?;
+    file.write_all(b"\n")?;
     if sync {
         file.flush()?;
         file.sync_data()?;
@@ -635,8 +634,9 @@ fn append_record_locked(
         inner.stats.last_flushed_sequence = record.sequence;
     }
     let persistent_bytes = file.metadata()?.len();
+    let bytes_written = persistent_bytes.saturating_sub(offset);
     inner.stats.writes += 1;
-    inner.stats.bytes_written += bytes.len() as u64;
+    inner.stats.bytes_written += bytes_written;
     inner.stats.persistent_bytes = persistent_bytes;
     Ok(WriteAheadLogAppendReport {
         shard_id: record.shard_id,
@@ -644,7 +644,7 @@ fn append_record_locked(
         current_sequence: record.sequence,
         appended: true,
         offset,
-        size: bytes.len() as u64,
+        size: bytes_written,
         persistent_bytes,
     })
 }
