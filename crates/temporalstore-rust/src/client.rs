@@ -33,10 +33,10 @@ pub use routing::{
 
 use crate::types::{
     parse_cpp_feature_filters, BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse,
-    ContextChildRef, ContextEntity, ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit,
-    ContextSummaryDirtyMarker, ExecuteRequest, ExecuteResponse, FeatureFilter, FeaturePoint,
-    FeatureWritePolicy, IpsSnapshotReport, IpsStats, RiskFamily, RiskFolType, SequenceFeatureRow,
-    SequenceQuerySpec, ShardId, Status,
+    ContextChildRef, ContextEmbedding, ContextEntity, ContextEvent, ContextIndexRef, ContextNode,
+    ContextPackAudit, ContextSummaryDirtyMarker, ContextTraversedNode, ExecuteRequest,
+    ExecuteResponse, FeatureFilter, FeaturePoint, FeatureWritePolicy, IpsSnapshotReport, IpsStats,
+    RiskFamily, RiskFolType, SequenceFeatureRow, SequenceQuerySpec, ShardId, Status,
 };
 
 #[derive(Debug, Error)]
@@ -3424,6 +3424,80 @@ impl TemporalStoreTable {
             CommandResponse::ContextChildRefs { refs, .. } => Ok(refs),
             response => Err(ClientError::UnexpectedResponse {
                 operation: "context_query_children",
+                response,
+            }),
+        }
+    }
+
+    pub fn context_upsert_embedding(
+        &self,
+        tenant_hash: u64,
+        embedding: ContextEmbedding,
+    ) -> Result<String, ClientError> {
+        match self
+            .execute(Command::ContextUpsertEmbedding {
+                tenant_hash,
+                embedding,
+            })?
+            .response
+        {
+            CommandResponse::ContextObjectKey { object_key } => Ok(object_key),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "context_upsert_embedding",
+                response,
+            }),
+        }
+    }
+
+    pub fn context_query_embeddings(
+        &self,
+        tenant_hash: u64,
+        ref_hashes: Vec<u64>,
+        limit: Option<usize>,
+    ) -> Result<Vec<ContextEmbedding>, ClientError> {
+        match self
+            .execute(Command::ContextQueryEmbeddings {
+                tenant_hash,
+                ref_hashes,
+                limit,
+            })?
+            .response
+        {
+            CommandResponse::ContextEmbeddings { embeddings } => Ok(embeddings),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "context_query_embeddings",
+                response,
+            }),
+        }
+    }
+
+    pub fn context_traverse_tree(
+        &self,
+        tenant_hash: u64,
+        start_node_hash: u64,
+        query_vector: Vec<f32>,
+        max_depth: Option<u32>,
+        top_k_per_depth: Option<usize>,
+        max_children_scored_per_parent: Option<usize>,
+        max_candidate_nodes: Option<usize>,
+        leaf_only: bool,
+    ) -> Result<Vec<ContextTraversedNode>, ClientError> {
+        match self
+            .execute(Command::ContextTraverseTree {
+                tenant_hash,
+                start_node_hash,
+                query_vector,
+                max_depth,
+                top_k_per_depth,
+                max_children_scored_per_parent,
+                max_candidate_nodes,
+                leaf_only,
+            })?
+            .response
+        {
+            CommandResponse::ContextTraversedNodes { nodes } => Ok(nodes),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "context_traverse_tree",
                 response,
             }),
         }
