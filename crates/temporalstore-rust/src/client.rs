@@ -2090,6 +2090,15 @@ impl TemporalStoreClient {
         self.default_table()?.hmset(key, entries)
     }
 
+    pub fn hincrby(
+        &self,
+        key: impl Into<String>,
+        field: impl Into<String>,
+        increment: i64,
+    ) -> Result<i64, ClientError> {
+        self.default_table()?.hincrby(key, field, increment)
+    }
+
     pub fn hlen(&self, key: impl Into<String>) -> Result<i64, ClientError> {
         self.default_table()?.hlen(key)
     }
