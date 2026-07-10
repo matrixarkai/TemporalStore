@@ -837,7 +837,11 @@ pub struct ProxyRiskIncrementCommandRequest {
     pub timestamp_ms: u64,
     #[serde(alias = "value")]
     pub amount: i64,
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "precision",
+        deserialize_with = "proxy_optional_precision_ms_from_json"
+    )]
     pub precision_ms: Option<u64>,
     #[serde(default, alias = "ttl")]
     pub ttl_ms: Option<u64>,
@@ -880,7 +884,11 @@ pub struct ProxyRiskChangeAddCommandRequest {
     pub timestamp_ms: u64,
     #[serde(deserialize_with = "proxy_bytes_from_json")]
     pub value: Vec<u8>,
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "precision",
+        deserialize_with = "proxy_optional_precision_ms_from_json"
+    )]
     pub precision_ms: Option<u64>,
     #[serde(default, alias = "ttl")]
     pub ttl_ms: Option<u64>,
@@ -1284,7 +1292,7 @@ pub struct ProxyRiskHqueryCommandRequest {
     pub precision_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ProxyRiskHType {
     #[default]
@@ -1292,6 +1300,34 @@ pub enum ProxyRiskHType {
     Min,
     Max,
     Change,
+}
+
+impl<'de> Deserialize<'de> for ProxyRiskHType {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value {
+            serde_json::Value::Number(number) => match number.as_i64() {
+                Some(0) => Ok(Self::Count),
+                Some(1) => Ok(Self::Min),
+                Some(2) => Ok(Self::Max),
+                Some(3) => Ok(Self::Change),
+                _ => Err(serde::de::Error::custom("unknown RiskHType value")),
+            },
+            serde_json::Value::String(value) => match value.as_str() {
+                "COUNT" | "count" | "Count" | "0" => Ok(Self::Count),
+                "MIN" | "min" | "Min" | "1" => Ok(Self::Min),
+                "MAX" | "max" | "Max" | "2" => Ok(Self::Max),
+                "CHANGE" | "change" | "Change" | "3" => Ok(Self::Change),
+                _ => Err(serde::de::Error::custom("unknown RiskHType value")),
+            },
+            _ => Err(serde::de::Error::custom(
+                "RiskHType must be a string or integer",
+            )),
+        }
+    }
 }
 
 impl ProxyRiskHType {
@@ -1335,7 +1371,11 @@ pub struct ProxyRiskCpcSetCommandRequest {
     pub timestamp_ms: u64,
     #[serde(default, alias = "ttl")]
     pub ttl_ms: u64,
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "precision",
+        deserialize_with = "proxy_optional_precision_ms_from_json"
+    )]
     pub precision_ms: Option<u64>,
     #[serde(default)]
     pub dont_upgrade_cpc: bool,
@@ -1357,7 +1397,11 @@ pub struct ProxyRiskCpcQueryCommandRequest {
     pub windows: Vec<ProxyRiskWindow>,
     #[serde(default)]
     pub with_detail: bool,
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "precision",
+        deserialize_with = "proxy_optional_precision_ms_from_json"
+    )]
     pub precision_ms: Option<u64>,
 }
 
@@ -1395,7 +1439,7 @@ pub struct ProxyRiskWindow {
     pub unit: ProxyRiskWindowUnit,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ProxyRiskWindowUnit {
     Second,
@@ -1403,6 +1447,34 @@ pub enum ProxyRiskWindowUnit {
     #[default]
     Hour,
     Day,
+}
+
+impl<'de> Deserialize<'de> for ProxyRiskWindowUnit {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value {
+            serde_json::Value::Number(number) => match number.as_i64() {
+                Some(0) => Ok(Self::Second),
+                Some(1) => Ok(Self::Minute),
+                Some(2) => Ok(Self::Hour),
+                Some(3) => Ok(Self::Day),
+                _ => Err(serde::de::Error::custom("unknown RiskWindowUnit value")),
+            },
+            serde_json::Value::String(value) => match value.as_str() {
+                "Second" | "SECOND" | "second" | "0" => Ok(Self::Second),
+                "Minute" | "MINUTE" | "minute" | "1" => Ok(Self::Minute),
+                "Hour" | "HOUR" | "hour" | "2" => Ok(Self::Hour),
+                "Day" | "DAY" | "day" | "3" => Ok(Self::Day),
+                _ => Err(serde::de::Error::custom("unknown RiskWindowUnit value")),
+            },
+            _ => Err(serde::de::Error::custom(
+                "RiskWindowUnit must be a string or integer",
+            )),
+        }
+    }
 }
 
 impl ProxyRiskWindowUnit {
@@ -1418,6 +1490,61 @@ impl ProxyRiskWindowUnit {
 
 fn default_risk_cpc_aggregator() -> String {
     "sum".to_string()
+}
+
+fn proxy_optional_precision_ms_from_json<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    value
+        .map(proxy_precision_ms_value)
+        .transpose()
+        .map_err(serde::de::Error::custom)
+}
+
+fn proxy_precision_ms_value(value: serde_json::Value) -> Result<u64, String> {
+    match value {
+        serde_json::Value::Null => Ok(0),
+        serde_json::Value::Number(number) => number
+            .as_u64()
+            .map(cpp_risk_precision_to_ms)
+            .ok_or_else(|| "precision must be a non-negative integer".to_string()),
+        serde_json::Value::String(value) => {
+            if let Ok(number) = value.parse::<u64>() {
+                return Ok(cpp_risk_precision_to_ms(number));
+            }
+            match value.as_str() {
+                "DISABLE" | "disable" => Ok(0),
+                "OneSecond" | "one_second" => Ok(1_000),
+                "FiveSeconds" | "five_seconds" => Ok(5_000),
+                "TenSeconds" | "ten_seconds" => Ok(10_000),
+                "OneMinute" | "one_minute" => Ok(60_000),
+                "FiveMinutes" | "five_minutes" => Ok(5 * 60_000),
+                "TenMinutes" | "ten_minutes" => Ok(10 * 60_000),
+                "OneHour" | "one_hour" => Ok(60 * 60_000),
+                "OneDay" | "one_day" => Ok(24 * 60 * 60_000),
+                "OneMonth" | "one_month" => Ok(30 * 24 * 60 * 60_000),
+                _ => Err("unknown RiskPrecision value".to_string()),
+            }
+        }
+        _ => Err("precision must be a string or integer".to_string()),
+    }
+}
+
+fn cpp_risk_precision_to_ms(value: u64) -> u64 {
+    match value {
+        10 => 1_000,
+        14 => 5_000,
+        19 => 10_000,
+        30 => 60_000,
+        34 => 5 * 60_000,
+        39 => 10 * 60_000,
+        50 => 60 * 60_000,
+        60 => 24 * 60 * 60_000,
+        80 => 30 * 24 * 60 * 60_000,
+        value => value,
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
