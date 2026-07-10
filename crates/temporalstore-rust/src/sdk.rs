@@ -600,6 +600,40 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                 limit: nonzero_limit(command.limit),
             }
         }
+        v1::command::Kind::ContextUpsertEntity(command) => {
+            let entity = command
+                .entity
+                .ok_or_else(|| TonicStatus::invalid_argument("context entity missing"))?;
+            types::Command::ContextUpsertEntity {
+                tenant_hash: stable_hash(&command.key),
+                entity: sdk_context_entity_to_types(entity),
+            }
+        }
+        v1::command::Kind::ContextGetEntity(command) => types::Command::ContextGetEntity {
+            tenant_hash: stable_hash(&command.key),
+            node_hash: stable_hash(&command.node_id),
+            entity_hash: command.entity_hash,
+        },
+        v1::command::Kind::ContextQueryEntities(command) => types::Command::ContextQueryEntities {
+            tenant_hash: stable_hash(&command.key),
+            node_hash: stable_hash(&command.node_id),
+            entity_hashes: command.entity_hashes,
+            limit: nonzero_limit(command.limit),
+        },
+        v1::command::Kind::ContextUpsertChildRef(command) => {
+            let child_ref = command
+                .child_ref
+                .ok_or_else(|| TonicStatus::invalid_argument("context child_ref missing"))?;
+            types::Command::ContextUpsertChildRef {
+                tenant_hash: stable_hash(&command.key),
+                child_ref: sdk_context_child_ref_to_types(child_ref),
+            }
+        }
+        v1::command::Kind::ContextQueryChildren(command) => types::Command::ContextQueryChildren {
+            tenant_hash: stable_hash(&command.key),
+            parent_hash: command.parent_hash,
+            limit: nonzero_limit(command.limit),
+        },
         v1::command::Kind::ContextWriteEvent(command) => {
             let event = command
                 .event
@@ -744,6 +778,28 @@ fn sdk_context_summary_dirty_marker_to_types(
         event_time_ms: marker.event_time_ms,
         reason: marker.reason,
         propagate_depth: marker.propagate_depth,
+    }
+}
+
+fn sdk_context_entity_to_types(entity: v1::ContextEntity) -> types::ContextEntity {
+    types::ContextEntity {
+        entity_hash: entity.entity_hash,
+        node_hash: entity.node_hash,
+        entity_type: entity.entity_type,
+        name: entity.name,
+        value: entity.value,
+        updated_at_ms: entity.updated_at_ms,
+        valid_from_ms: entity.valid_from_ms,
+        confidence: entity.confidence,
+        source_event_hashes: entity.source_event_hashes,
+    }
+}
+
+fn sdk_context_child_ref_to_types(child_ref: v1::ContextChildRef) -> types::ContextChildRef {
+    types::ContextChildRef {
+        parent_hash: child_ref.parent_hash,
+        child_hash: child_ref.child_hash,
+        updated_at_ms: child_ref.updated_at_ms,
     }
 }
 

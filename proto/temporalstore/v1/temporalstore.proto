@@ -274,6 +274,11 @@ message Command {
     ContextQueryPackAudit context_query_pack_audit = 50;
     ContextMarkSummaryDirty context_mark_summary_dirty = 51;
     ContextQuerySummaryDirty context_query_summary_dirty = 52;
+    ContextUpsertEntity context_upsert_entity = 53;
+    ContextGetEntity context_get_entity = 54;
+    ContextQueryEntities context_query_entities = 55;
+    ContextUpsertChildRef context_upsert_child_ref = 56;
+    ContextQueryChildren context_query_children = 57;
   }
 }
 
@@ -679,6 +684,53 @@ message ContextQuerySummaryDirty {
   uint64 start_time_ms = 3;
   uint64 end_time_ms = 4;
   uint32 limit = 5;
+}
+
+message ContextEntity {
+  uint64 entity_hash = 1;
+  uint64 node_hash = 2;
+  uint32 entity_type = 3;
+  string name = 4;
+  string value = 5;
+  uint64 updated_at_ms = 6;
+  uint64 valid_from_ms = 7;
+  float confidence = 8;
+  repeated uint64 source_event_hashes = 9;
+}
+
+message ContextUpsertEntity {
+  string key = 1;
+  ContextEntity entity = 2;
+}
+
+message ContextGetEntity {
+  string key = 1;
+  string node_id = 2;
+  uint64 entity_hash = 3;
+}
+
+message ContextQueryEntities {
+  string key = 1;
+  string node_id = 2;
+  repeated uint64 entity_hashes = 3;
+  uint32 limit = 4;
+}
+
+message ContextChildRef {
+  uint64 parent_hash = 1;
+  uint64 child_hash = 2;
+  uint64 updated_at_ms = 3;
+}
+
+message ContextUpsertChildRef {
+  string key = 1;
+  ContextChildRef child_ref = 2;
+}
+
+message ContextQueryChildren {
+  string key = 1;
+  uint64 parent_hash = 2;
+  uint32 limit = 3;
 }
 
 message CommonExpire {
