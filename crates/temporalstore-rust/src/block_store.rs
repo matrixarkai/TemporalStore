@@ -715,7 +715,12 @@ impl LocalBlockStore {
         let mut logical_bytes_written = 0u64;
         let mut compressed_records_written = 0u64;
         let mut compression_bytes_saved = 0u64;
-        let mut pending_segment_bytes = Vec::with_capacity(BATCH_APPEND_BUFFER_TARGET_BYTES);
+        let pending_buffer_capacity = records
+            .iter()
+            .map(|(bytes, _, _)| bytes.len())
+            .sum::<usize>()
+            .min(BATCH_APPEND_BUFFER_TARGET_BYTES);
+        let mut pending_segment_bytes = Vec::with_capacity(pending_buffer_capacity);
 
         for (bytes, object_id, routing_slot) in records {
             let mut page_id = inner.next_page_id;
