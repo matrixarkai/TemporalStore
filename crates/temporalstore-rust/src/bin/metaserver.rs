@@ -1688,9 +1688,9 @@ struct FeAddClusterRequest {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct QueryListPartitionRequest {
-    #[serde(alias = "namespace_name")]
+    #[serde(default, alias = "namespace_name")]
     namespace: String,
-    #[serde(alias = "table_name", alias = "name")]
+    #[serde(default, alias = "table_name", alias = "name")]
     table: String,
     #[serde(default, alias = "partition_id")]
     shard_id: u64,
@@ -3077,6 +3077,18 @@ fn query_list_partition(
     req: QueryListPartitionRequest,
 ) -> QueryListPartitionResponse {
     let _ = req.read_stale;
+    if req.namespace.is_empty() || req.table.is_empty() {
+        if req.shard_id == 0 {
+            return QueryListPartitionResponse {
+                status: Status::error(
+                    "bad_request",
+                    "namespace_name/table_name or partition_id is required",
+                ),
+                info: Vec::new(),
+            };
+        }
+        return query_list_partition_by_id(meta, req.shard_id);
+    }
     let topology = backend_call!(
         meta,
         get_table_topology,
@@ -3107,6 +3119,48 @@ fn query_list_partition(
             set_info: topology.table,
             partition_info: partitions,
         }],
+    }
+}
+
+fn query_list_partition_by_id(meta: &MetaBackend, shard_id: u64) -> QueryListPartitionResponse {
+    let tables = backend_call!(meta, list_tables);
+    if !tables.status.ok {
+        return QueryListPartitionResponse {
+            status: tables.status,
+            info: Vec::new(),
+        };
+    }
+    for table in tables.tables {
+        let topology = backend_call!(
+            meta,
+            get_table_topology,
+            GetTableTopologyRequest {
+                namespace: table.namespace.clone(),
+                table_name: table.table_name.clone(),
+                old_topology_version: 0,
+            }
+        );
+        if !topology.status.ok {
+            continue;
+        }
+        let partitions = topology
+            .partitions
+            .into_iter()
+            .filter(|partition| partition.shard_id == shard_id)
+            .collect::<Vec<_>>();
+        if !partitions.is_empty() {
+            return QueryListPartitionResponse {
+                status: topology.status,
+                info: vec![QueryPartitionSetBlock {
+                    set_info: topology.table,
+                    partition_info: partitions,
+                }],
+            };
+        }
+    }
+    QueryListPartitionResponse {
+        status: Status::error("not_found", "partition not found"),
+        info: Vec::new(),
     }
 }
 
