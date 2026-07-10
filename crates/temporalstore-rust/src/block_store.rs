@@ -919,8 +919,15 @@ impl LocalBlockStore {
                 let indexes = duplicate_groups.remove(&address).unwrap_or_default();
                 match read_result {
                     Ok(bytes) => {
+                        let mut remaining = indexes.len();
                         for index in indexes {
-                            results[index] = Ok(bytes.clone());
+                            if remaining == 1 {
+                                results[index] = Ok(bytes);
+                                break;
+                            } else {
+                                results[index] = Ok(bytes.clone());
+                                remaining = remaining.saturating_sub(1);
+                            }
                         }
                     }
                     Err(err) => {
