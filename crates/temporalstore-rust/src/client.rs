@@ -34,10 +34,11 @@ pub use routing::{
 use crate::types::{
     parse_cpp_feature_filters, BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse,
     ContextChildRef, ContextCompressionEvent, ContextEmbedding, ContextEntity, ContextEvent,
-    ContextIndexRef, ContextNode, ContextPackAudit, ContextSummary, ContextSummaryDirtyMarker,
-    ContextTraversedNode, ExecuteRequest, ExecuteResponse, FeatureFilter, FeaturePoint,
-    FeatureWritePolicy, IpsSnapshotReport, IpsStats, RiskFamily, RiskFolType, SequenceFeatureRow,
-    SequenceQuerySpec, ShardId, Status,
+    ContextExtractedEventIndexes, ContextIndexLookup, ContextIndexRef, ContextNode,
+    ContextPackAudit, ContextSummary, ContextSummaryDirtyMarker, ContextTraversedNode,
+    ExecuteRequest, ExecuteResponse, FeatureFilter, FeaturePoint, FeatureWritePolicy,
+    IpsSnapshotReport, IpsStats, RiskFamily, RiskFolType, SequenceFeatureRow, SequenceQuerySpec,
+    ShardId, Status,
 };
 
 #[derive(Debug, Error)]
@@ -3175,6 +3176,38 @@ impl TemporalStoreTable {
         }
     }
 
+    pub fn context_write_extracted_event(
+        &self,
+        tenant_hash: u64,
+        node_hash: u64,
+        event: ContextEvent,
+        indexes: ContextExtractedEventIndexes,
+        first_write_only: bool,
+        cold_storage: bool,
+    ) -> Result<(String, Vec<String>, usize), ClientError> {
+        match self
+            .execute(Command::ContextWriteExtractedEvent {
+                tenant_hash,
+                node_hash,
+                event,
+                indexes,
+                first_write_only,
+                cold_storage,
+            })?
+            .response
+        {
+            CommandResponse::ContextExtractedEventWrite {
+                event_object_key,
+                index_object_keys,
+                written_index_count,
+            } => Ok((event_object_key, index_object_keys, written_index_count)),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "context_write_extracted_event",
+                response,
+            }),
+        }
+    }
+
     pub fn context_write_index_ref(
         &self,
         tenant_hash: u64,
@@ -3228,6 +3261,38 @@ impl TemporalStoreTable {
             CommandResponse::ContextIndexRefs { refs, .. } => Ok(refs),
             response => Err(ClientError::UnexpectedResponse {
                 operation: "context_query_index",
+                response,
+            }),
+        }
+    }
+
+    pub fn context_query_index_intersection(
+        &self,
+        tenant_hash: u64,
+        predicates: Vec<ContextIndexLookup>,
+        limit: Option<usize>,
+    ) -> Result<(Vec<ContextIndexRef>, usize, usize, usize), ClientError> {
+        match self
+            .execute(Command::ContextQueryIndexIntersection {
+                tenant_hash,
+                predicates,
+                limit,
+            })?
+            .response
+        {
+            CommandResponse::ContextIndexIntersection {
+                refs,
+                matched_index_count,
+                scanned_ref_count,
+                deduped_ref_count,
+            } => Ok((
+                refs,
+                matched_index_count,
+                scanned_ref_count,
+                deduped_ref_count,
+            )),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "context_query_index_intersection",
                 response,
             }),
         }
