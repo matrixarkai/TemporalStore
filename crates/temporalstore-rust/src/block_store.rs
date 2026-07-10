@@ -736,11 +736,6 @@ impl LocalBlockStore {
                     inner.options,
                 )?;
             }
-            if inner.active_append_file.is_none() {
-                let path = segment_path(&inner.root, inner.page_segment_id);
-                inner.active_append_file =
-                    Some(OpenOptions::new().create(true).append(true).open(path)?);
-            }
             let address = BlockAddress {
                 page_segment_id: inner.page_segment_id,
                 offset: inner.write_offset,
