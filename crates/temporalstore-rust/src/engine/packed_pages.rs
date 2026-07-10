@@ -276,21 +276,13 @@ pub(super) fn read_feature_point_cold_scan_cached(
     if let Some(points) = packed_page_cache.get(address) {
         return points
             .as_ref()
-            .and_then(|points| {
-                points
-                    .iter()
-                    .find(|point| point.timestamp_ms == timestamp_ms)
-            })
-            .cloned();
+            .and_then(|points| select_feature_point_from_page(points, timestamp_ms));
     }
 
     let bytes = read_page_bytes_cold(block_store, address)?;
     match decode_feature_page_strict(&bytes) {
         PackedFeaturePageDecode::Packed(points) => {
-            let selected = points
-                .iter()
-                .find(|point| point.timestamp_ms == timestamp_ms)
-                .cloned();
+            let selected = select_feature_point_from_page(&points, timestamp_ms);
             packed_page_cache.insert(address.clone(), Some(points));
             selected
         }
@@ -316,21 +308,13 @@ pub(super) fn read_feature_point_cache_fill_scan_cached(
     if let Some(points) = packed_page_cache.get(address) {
         return points
             .as_ref()
-            .and_then(|points| {
-                points
-                    .iter()
-                    .find(|point| point.timestamp_ms == timestamp_ms)
-            })
-            .cloned();
+            .and_then(|points| select_feature_point_from_page(points, timestamp_ms));
     }
 
     let bytes = read_page_bytes(cache, block_store, shard_id, address)?;
     match decode_feature_page_strict(&bytes) {
         PackedFeaturePageDecode::Packed(points) => {
-            let selected = points
-                .iter()
-                .find(|point| point.timestamp_ms == timestamp_ms)
-                .cloned();
+            let selected = select_feature_point_from_page(&points, timestamp_ms);
             packed_page_cache.insert(address.clone(), Some(points));
             selected
         }
@@ -412,11 +396,7 @@ fn fill_ordered_points_from_packed_page(
 ) {
     if timestamp_refs.len() == 1 {
         let (result_index, timestamp_ms) = timestamp_refs[0];
-        if let Some(point) = page_points
-            .iter()
-            .find(|point| point.timestamp_ms == timestamp_ms)
-            .cloned()
-        {
+        if let Some(point) = select_feature_point_from_page(page_points, timestamp_ms) {
             ordered_points[result_index] = Some(point);
         }
         return;
@@ -430,6 +410,19 @@ fn fill_ordered_points_from_packed_page(
         if let Some(point) = points_by_timestamp.get(&timestamp_ms) {
             ordered_points[result_index] = Some((*point).clone());
         }
+    }
+}
+
+fn select_feature_point_from_page(
+    page_points: &[FeaturePoint],
+    timestamp_ms: u64,
+) -> Option<FeaturePoint> {
+    match page_points.binary_search_by_key(&timestamp_ms, |point| point.timestamp_ms) {
+        Ok(index) => page_points.get(index).cloned(),
+        Err(_) => page_points
+            .iter()
+            .find(|point| point.timestamp_ms == timestamp_ms)
+            .cloned(),
     }
 }
 
