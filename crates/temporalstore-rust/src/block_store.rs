@@ -875,7 +875,7 @@ impl LocalBlockStore {
             return vec![self.read_with_cache_policy(&addresses[0], no_cache_fill)];
         }
         if addresses.is_empty() {
-            return self.read_batch_with_cache_policy_deduped(addresses, no_cache_fill);
+            return Vec::new();
         }
         let mut seen = HashSet::with_capacity(addresses.len());
         if addresses.iter().all(|address| seen.insert(address)) {
@@ -1113,8 +1113,8 @@ impl LocalBlockStore {
         Read::by_ref(&mut file).take(size).read_to_end(&mut bytes)?;
         let read = bytes.len() as u64;
         let mut inner = self.inner.lock().expect("block store lock poisoned");
-        inner.stats.reads += 1;
-        inner.stats.bytes_read += read;
+        inner.stats.reads = inner.stats.reads.saturating_add(1);
+        inner.stats.bytes_read = inner.stats.bytes_read.saturating_add(read);
         Ok(bytes)
     }
 
@@ -1152,10 +1152,16 @@ impl LocalBlockStore {
         let range = logical_range_from_segment(&segment, page_segment_id, offset, size)?;
         let bytes = range.bytes;
         let mut inner = self.inner.lock().expect("block store lock poisoned");
-        inner.stats.reads += 1;
-        inner.stats.bytes_read += physical_bytes_read;
-        inner.stats.logical_bytes_read += bytes.len() as u64;
-        inner.stats.compressed_records_read += range.compressed_records_read;
+        inner.stats.reads = inner.stats.reads.saturating_add(1);
+        inner.stats.bytes_read = inner.stats.bytes_read.saturating_add(physical_bytes_read);
+        inner.stats.logical_bytes_read = inner
+            .stats
+            .logical_bytes_read
+            .saturating_add(bytes.len() as u64);
+        inner.stats.compressed_records_read = inner
+            .stats
+            .compressed_records_read
+            .saturating_add(range.compressed_records_read);
         Ok(bytes)
     }
 
