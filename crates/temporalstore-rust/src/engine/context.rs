@@ -207,6 +207,19 @@ pub(super) fn read_context_values_cached_with_page_cache<T: ContextWire>(
     entries: Vec<(u64, PageAddress)>,
     packed_page_cache: &mut HashMap<PageAddress, Option<Vec<FeaturePoint>>>,
 ) -> Vec<T> {
+    if entries.is_empty() {
+        return Vec::new();
+    }
+    if entries.windows(2).all(|window| window[0].1 == window[1].1) {
+        return read_context_values_from_single_page(
+            cache,
+            page_store,
+            shard_id,
+            &entries,
+            packed_page_cache,
+        );
+    }
+
     let mut values: Vec<Option<T>> = Vec::with_capacity(entries.len());
     let mut miss_addresses = Vec::new();
     let mut miss_groups = HashMap::<PageAddress, Vec<(usize, u64)>>::new();
@@ -250,6 +263,59 @@ pub(super) fn read_context_values_cached_with_page_cache<T: ContextWire>(
         }
     }
     values.into_iter().flatten().collect()
+}
+
+fn read_context_values_from_single_page<T: ContextWire>(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    entries: &[(u64, PageAddress)],
+    packed_page_cache: &mut HashMap<PageAddress, Option<Vec<FeaturePoint>>>,
+) -> Vec<T> {
+    let Some((_, address)) = entries.first() else {
+        return Vec::new();
+    };
+    if let Some(points) = packed_page_cache.get(address) {
+        return points
+            .as_ref()
+            .map(|points| {
+                entries
+                    .iter()
+                    .filter_map(|(timeline_key, _)| {
+                        context_from_packed_page_point::<T>(points, *timeline_key)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
+
+    let bytes = read_page_bytes_batch(cache, page_store, shard_id, &[Some(address.clone())])
+        .into_iter()
+        .next()
+        .flatten();
+    let Some(bytes) = bytes else {
+        return Vec::new();
+    };
+    match decode_feature_page_strict(&bytes) {
+        PackedFeaturePageDecode::Packed(points) => {
+            let values = entries
+                .iter()
+                .filter_map(|(timeline_key, _)| {
+                    context_from_packed_page_point::<T>(&points, *timeline_key)
+                })
+                .collect();
+            packed_page_cache.insert(address.clone(), Some(points));
+            values
+        }
+        PackedFeaturePageDecode::Legacy => entries
+            .iter()
+            .filter_map(|_| context_from_bytes::<T>(&bytes))
+            .collect(),
+        PackedFeaturePageDecode::Corrupt(_) => {
+            packed_page_cache.insert(address.clone(), None);
+            Vec::new()
+        }
+    }
 }
 
 fn fill_context_values_from_packed_page<T: ContextWire>(
