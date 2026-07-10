@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::block_store::{BlockAddress, LocalBlockStore};
 use crate::types::{
@@ -240,17 +240,19 @@ pub(super) fn ips_snapshot_report_in_range(
         requested_count,
     );
     let stats = ips_stats_in_range(shard, &key, start_ms, end_ms);
-    let mut page_refs = HashSet::<BlockAddress>::new();
-    let mut unique_page_refs = Vec::<BlockAddress>::new();
+    let mut unique_page_refs = BTreeMap::<ProductPageIdentityKey, BlockAddress>::new();
     let mut page_segment_ids = BTreeSet::<u64>::new();
     if let Some(series) = shard.ips.get(&key) {
         for (_, address) in series.range(start_ms..=end_ms) {
-            if page_refs.insert(address.clone()) {
+            if unique_page_refs
+                .insert(product_page_identity_key(address), address.clone())
+                .is_none()
+            {
                 page_segment_ids.insert(address.page_segment_id);
-                unique_page_refs.push(address.clone());
             }
         }
     }
+    let unique_page_refs = unique_page_refs.into_values().collect::<Vec<_>>();
     let packed_timestamped_page_count = block_store
         .read_cold_batch(&unique_page_refs)
         .into_iter()
@@ -273,10 +275,32 @@ pub(super) fn ips_snapshot_report_in_range(
         last_timestamp_ms: stats.last_timestamp_ms,
         action_type_counts: stats.action_type_counts,
         table_id_counts: stats.table_id_counts,
-        unique_page_ref_count: page_refs.len(),
+        unique_page_ref_count: unique_page_refs.len(),
         packed_timestamped_page_count,
         page_segment_ids: page_segment_ids.into_iter().collect(),
     }
+}
+
+type ProductPageIdentityKey = (
+    u64,
+    u64,
+    u64,
+    Option<u64>,
+    Option<u64>,
+    Option<u32>,
+    Option<u64>,
+);
+
+fn product_page_identity_key(address: &BlockAddress) -> ProductPageIdentityKey {
+    (
+        address.page_segment_id,
+        address.offset,
+        address.length,
+        address.page_id,
+        address.object_id,
+        address.routing_slot,
+        address.generation,
+    )
 }
 
 pub(super) fn ips_stats_in_range(
