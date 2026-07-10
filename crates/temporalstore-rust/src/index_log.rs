@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, IoSlice, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -106,9 +106,7 @@ impl LocalIndexLogStore {
             .create(true)
             .append(true)
             .open(index_log_path(&inner.root, shard_id))?;
-        file.write_all(header.as_bytes())?;
-        file.write_all(index_bytes)?;
-        file.write_all(b"}\n")?;
+        write_all_three_vectored(&mut file, header.as_bytes(), index_bytes, b"}\n")?;
         file.flush()?;
         file.sync_data()?;
         inner.stats.writes += 1;
@@ -144,9 +142,7 @@ impl LocalIndexLogStore {
             .create(true)
             .append(true)
             .open(index_log_path(&inner.root, shard_id))?;
-        file.write_all(header.as_bytes())?;
-        file.write_all(index_bytes)?;
-        file.write_all(b"}\n")?;
+        write_all_three_vectored(&mut file, header.as_bytes(), index_bytes, b"}\n")?;
         file.flush()?;
         file.sync_data()?;
         inner.stats.writes += 1;
@@ -384,6 +380,47 @@ fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         if let Ok(dir) = File::open(parent) {
             dir.sync_all()?;
+        }
+    }
+    Ok(())
+}
+
+fn write_all_three_vectored<W: Write>(
+    writer: &mut W,
+    mut first: &[u8],
+    mut second: &[u8],
+    mut third: &[u8],
+) -> std::io::Result<()> {
+    while !(first.is_empty() && second.is_empty() && third.is_empty()) {
+        let slices = [
+            IoSlice::new(first),
+            IoSlice::new(second),
+            IoSlice::new(third),
+        ];
+        let written = writer.write_vectored(&slices)?;
+        if written == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "failed to write vectored index log record",
+            ));
+        }
+        let mut remaining = written;
+        if remaining < first.len() {
+            first = &first[remaining..];
+            continue;
+        }
+        remaining -= first.len();
+        first = &[];
+        if remaining < second.len() {
+            second = &second[remaining..];
+            continue;
+        }
+        remaining -= second.len();
+        second = &[];
+        if remaining < third.len() {
+            third = &third[remaining..];
+        } else {
+            third = &[];
         }
     }
     Ok(())
