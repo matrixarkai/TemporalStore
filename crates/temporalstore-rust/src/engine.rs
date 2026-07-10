@@ -13032,6 +13032,8 @@ fn rebuild_slot_first_index(
                 log_backed: entry.log_backed,
             },
         );
+    }
+    for slot in slot_index.slot_map.values_mut() {
         update_slot_layout(slot);
     }
     slot_index.rebuild_object_page_lookup();
