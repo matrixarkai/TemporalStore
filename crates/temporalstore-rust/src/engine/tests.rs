@@ -3424,6 +3424,70 @@ fn async_storage_string_write_stays_on_hot_memory_path() {
 }
 
 #[test]
+fn async_storage_publish_uses_index_log_and_serving_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("writer-cache"),
+        &page_dir,
+        &index_dir,
+    );
+    engine.load_shard(1);
+    assert!(
+        engine
+            .set_config(SetConfigRequest {
+                shard_id: 1,
+                config: Config {
+                    version: 2,
+                    async_storage: true,
+                    ..Config::default()
+                },
+            })
+            .ok
+    );
+
+    let write = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "published-hot".to_string(),
+            value: b"value".to_vec(),
+        },
+    });
+    assert!(write.status.ok);
+    assert_eq!(engine.block_store().stats().writes, 0);
+    assert_eq!(engine.index_log_store().stats(1).writes, 0);
+
+    let published = engine
+        .publish_shard_index_snapshot_for_keys(1, ["published-hot".to_string()])
+        .expect("publish async page visibility");
+    assert!(published > 0);
+    assert_eq!(engine.block_store().stats().writes, 1);
+    assert_eq!(engine.index_log_store().stats(1).writes, 1);
+
+    let reader = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("reader-cache"),
+        &page_dir,
+        &index_dir,
+    );
+    reader.load_shard(1);
+    let read = reader.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "published-hot".to_string(),
+        },
+    });
+    assert_eq!(
+        read.response,
+        CommandResponse::Bytes {
+            value: Some(b"value".to_vec())
+        }
+    );
+}
+
+#[test]
 fn async_storage_can_force_durable_canonical_log_ack() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(

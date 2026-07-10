@@ -5869,7 +5869,7 @@ impl TemporalEngine {
         self.index_log_store
             .append_index_bytes(shard_id, &index_bytes)
             .map_err(|err| Status::error("publish_visibility_failed", err.to_string()))?;
-        self.persist_index_bytes(shard_id, &index_bytes)
+        self.persist_serving_index_bytes(shard_id, &index_bytes)
             .map_err(|err| Status::error("publish_visibility_failed", err.to_string()))?;
         Ok(index_bytes.len())
     }
@@ -6598,7 +6598,16 @@ impl TemporalEngine {
 
     fn persist_index_bytes(&self, shard_id: ShardId, bytes: &[u8]) -> Result<(), std::io::Error> {
         fs::create_dir_all(&self.index_dir)?;
-        atomic_write_bytes(&self.index_path(shard_id), bytes)
+        atomic_write_bytes(&self.index_path(shard_id), bytes, true)
+    }
+
+    fn persist_serving_index_bytes(
+        &self,
+        shard_id: ShardId,
+        bytes: &[u8],
+    ) -> Result<(), std::io::Error> {
+        fs::create_dir_all(&self.index_dir)?;
+        atomic_write_bytes(&self.index_path(shard_id), bytes, false)
     }
 
     fn validate_load_version(&self, shard_id: ShardId, load_version: u64) -> Result<(), Status> {
@@ -6756,7 +6765,11 @@ fn serialize_index(shard: &ShardState) -> Vec<u8> {
     serde_json::to_vec(shard).expect("shard index should serialize")
 }
 
-fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
+fn atomic_write_bytes(
+    path: &Path,
+    bytes: &[u8],
+    sync_contents: bool,
+) -> Result<(), std::io::Error> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
     let file_name = path
@@ -6771,7 +6784,9 @@ fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
     let write_result = (|| {
         let mut file = File::create(&temp_path)?;
         file.write_all(bytes)?;
-        file.sync_all()?;
+        if sync_contents {
+            file.sync_all()?;
+        }
         drop(file);
         fs::rename(&temp_path, path)
     })();
