@@ -4715,28 +4715,25 @@ impl TemporalEngine {
                 selected_entries.push((key, entry.address));
             }
         }
-        let mut unique_entries =
-            Vec::<(CacheKey, PageAddress, usize)>::with_capacity(selected_entries.len());
+        let mut keys = Vec::<CacheKey>::with_capacity(selected_entries.len());
+        let mut unique_entries = Vec::<(PageAddress, usize)>::with_capacity(selected_entries.len());
         let mut key_indexes = HashMap::<CacheKey, usize>::with_capacity(selected_entries.len());
         for (key, address) in selected_entries {
             if let Some(index) = key_indexes.get(&key).copied() {
-                unique_entries[index].2 = unique_entries[index].2.saturating_add(1);
+                unique_entries[index].1 = unique_entries[index].1.saturating_add(1);
             } else {
                 key_indexes.insert(key.clone(), unique_entries.len());
-                unique_entries.push((key, address, 1));
+                keys.push(key);
+                unique_entries.push((address, 1));
             }
         }
-        let keys = unique_entries
-            .iter()
-            .map(|(key, _, _)| key.clone())
-            .collect::<Vec<_>>();
         let cached = self
             .cache
             .get_batch(&keys)
             .unwrap_or_else(|_| vec![None; keys.len()]);
         let mut miss_entries = Vec::with_capacity(unique_entries.len());
-        for ((key, address, logical_ref_count), cached_value) in
-            unique_entries.into_iter().zip(cached)
+        for (key, ((address, logical_ref_count), cached_value)) in
+            keys.into_iter().zip(unique_entries.into_iter().zip(cached))
         {
             if cached_value.is_some() {
                 report.already_cached_page_refs = report
