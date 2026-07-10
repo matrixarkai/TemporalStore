@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -8,7 +7,9 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::storage_config::{effective_block_segment_target_bytes, storage_zone_size_bytes};
+use crate::storage_config::{
+    block_store_sync_on_append, effective_block_segment_target_bytes, storage_zone_size_bytes,
+};
 
 mod paths;
 mod record;
@@ -147,13 +148,7 @@ impl Default for BlockStoreOptions {
 }
 
 fn default_block_store_sync_on_append() -> bool {
-    match env::var("TEMPORALSTORE_BLOCK_STORE_SYNC_ON_APPEND") {
-        Ok(value) => {
-            let normalized = value.trim().to_ascii_lowercase();
-            !matches!(normalized.as_str(), "0" | "false" | "off" | "no")
-        }
-        Err(_) => true,
-    }
+    block_store_sync_on_append()
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
