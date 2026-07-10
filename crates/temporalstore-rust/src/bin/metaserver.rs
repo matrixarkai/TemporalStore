@@ -2322,7 +2322,8 @@ fn raft_control_role(role: &serde_json::Value) -> RaftReplicaRole {
 }
 
 fn handle_query_service_route(meta: &MetaBackend, request: &HttpRequest) -> Option<(u16, Vec<u8>)> {
-    let response = match (request.method.as_str(), request.path.as_str()) {
+    let path = request_path(&request.path);
+    let response = match (request.method.as_str(), path) {
         ("GET", "/QueryService/QueryLeader") => json_response(200, &query_leader(meta, None)),
         ("POST", "/QueryService/QueryLeader") => {
             parse_or(&request.body, |req: QueryLeaderRequest| {
@@ -2332,6 +2333,7 @@ fn handle_query_service_route(meta: &MetaBackend, request: &HttpRequest) -> Opti
         ("GET", "/QueryService/QueryManageInfo") | ("POST", "/QueryService/QueryManageInfo") => {
             json_response(200, &backend_call!(meta, info))
         }
+        ("GET", "/query/listx") => json_response(200, &fe_query_action_from_query(meta, request)),
         ("POST", "/query/listx") => parse_or(&request.body, |req: FeQueryActionRequest| {
             fe_query_action(meta, req)
         }),
@@ -2348,7 +2350,7 @@ fn handle_query_service_route(meta: &MetaBackend, request: &HttpRequest) -> Opti
         ("GET", "/QueryService/ListServer")
         | ("POST", "/QueryService/ListServer")
         | ("GET", "/query/list_server")
-        | ("POST", "/query/list_server") => json_response(200, &backend_call!(meta, list_servers)),
+        | ("POST", "/query/list_server") => json_response(200, &query_list_servers(meta, request)),
         ("GET", "/QueryService/ListProxy") | ("POST", "/QueryService/ListProxy") => {
             json_response(200, &backend_call!(meta, list_proxies))
         }
@@ -2363,11 +2365,17 @@ fn handle_query_service_route(meta: &MetaBackend, request: &HttpRequest) -> Opti
         ("GET", "/QueryService/ListTable")
         | ("POST", "/QueryService/ListTable")
         | ("GET", "/query/list_table")
-        | ("POST", "/query/list_table") => json_response(200, &backend_call!(meta, list_tables)),
+        | ("POST", "/query/list_table") => json_response(200, &query_list_tables(meta, request)),
+        ("GET", "/QueryService/ListPartition") | ("GET", "/query/list_partition") => {
+            json_response(200, &query_list_partition_from_query(meta, request))
+        }
         ("POST", "/QueryService/ListPartition") | ("POST", "/query/list_partition") => {
             parse_or(&request.body, |req: QueryListPartitionRequest| {
                 query_list_partition(meta, req)
             })
+        }
+        ("GET", "/QueryService/ListServerPartition") | ("GET", "/query/list_server_partition") => {
+            json_response(200, &query_list_server_partition_from_query(meta, request))
         }
         ("POST", "/QueryService/ListServerPartition")
         | ("POST", "/query/list_server_partition") => {
@@ -2380,8 +2388,90 @@ fn handle_query_service_route(meta: &MetaBackend, request: &HttpRequest) -> Opti
     Some(response)
 }
 
+fn request_path(raw_path: &str) -> &str {
+    raw_path.split_once('?').map_or(raw_path, |(path, _)| path)
+}
+
+fn request_query_params(raw_path: &str) -> BTreeMap<String, String> {
+    raw_path
+        .split_once('?')
+        .map(|(_, query)| query)
+        .unwrap_or_default()
+        .split('&')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let (key, value) = part.split_once('=').unwrap_or((part, ""));
+            (
+                url_decode_form_component(key),
+                url_decode_form_component(value),
+            )
+        })
+        .collect()
+}
+
+fn url_decode_form_component(value: &str) -> String {
+    let mut out = Vec::with_capacity(value.len());
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => {
+                out.push(b' ');
+                index += 1;
+            }
+            b'%' if index + 2 < bytes.len() => {
+                let hi = from_hex(bytes[index + 1]);
+                let lo = from_hex(bytes[index + 2]);
+                if let (Some(hi), Some(lo)) = (hi, lo) {
+                    out.push((hi << 4) | lo);
+                    index += 3;
+                } else {
+                    out.push(bytes[index]);
+                    index += 1;
+                }
+            }
+            byte => {
+                out.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn from_hex(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn query_params_value(request: &HttpRequest) -> serde_json::Value {
+    let mut object = serde_json::Map::new();
+    for (key, value) in request_query_params(&request.path) {
+        object.insert(key, serde_json::Value::String(value));
+    }
+    serde_json::Value::Object(object)
+}
+
+fn fe_query_action_from_query(meta: &MetaBackend, request: &HttpRequest) -> serde_json::Value {
+    let mut params = query_params_value(request);
+    let action = params
+        .get("action")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if let serde_json::Value::Object(object) = &mut params {
+        object.remove("action");
+        object.remove("cluster");
+    }
+    fe_query_action(meta, FeQueryActionRequest { action, params })
+}
+
 fn fe_query_action(meta: &MetaBackend, req: FeQueryActionRequest) -> serde_json::Value {
-    let action = req.action;
+    let action = req.action.to_ascii_lowercase();
     let body = serde_json::to_vec(&req.params).unwrap_or_else(|_| b"{}".to_vec());
     let routed = match action.as_str() {
         "info" => HttpRequest {
@@ -2390,14 +2480,14 @@ fn fe_query_action(meta: &MetaBackend, req: FeQueryActionRequest) -> serde_json:
             body: Vec::new(),
         },
         "list_server" => HttpRequest {
-            method: "GET".to_string(),
+            method: "POST".to_string(),
             path: "/query/list_server".to_string(),
-            body: Vec::new(),
+            body,
         },
         "list_table" => HttpRequest {
-            method: "GET".to_string(),
+            method: "POST".to_string(),
             path: "/query/list_table".to_string(),
-            body: Vec::new(),
+            body,
         },
         "list_partition" => HttpRequest {
             method: "POST".to_string(),
@@ -2427,6 +2517,109 @@ fn fe_query_action(meta: &MetaBackend, req: FeQueryActionRequest) -> serde_json:
         None => serde_json::json!({
             "status": Status::error("not_found", format!("unknown query action {}", action)),
         }),
+    }
+}
+
+fn query_list_servers(meta: &MetaBackend, request: &HttpRequest) -> serde_json::Value {
+    let mut response = backend_call!(meta, list_servers);
+    let params = request_params(request);
+    if let Some(prefix) = params.get("prefix").filter(|prefix| !prefix.is_empty()) {
+        response
+            .servers
+            .retain(|server| server.server_addr.contains(prefix));
+    }
+    if let Some(tag) = params.get("tag").filter(|tag| !tag.is_empty()) {
+        response
+            .servers
+            .retain(|server| server.location.contains(tag));
+    }
+    serde_json::to_value(response).unwrap_or_else(|err| {
+        serde_json::json!({
+            "status": Status::error("query_response_error", err.to_string()),
+        })
+    })
+}
+
+fn query_list_tables(meta: &MetaBackend, request: &HttpRequest) -> serde_json::Value {
+    let mut response = backend_call!(meta, list_tables);
+    let params = request_params(request);
+    if let Some(namespace) = params
+        .get("namespace")
+        .or_else(|| params.get("namespace_name"))
+        .filter(|namespace| !namespace.is_empty())
+    {
+        response
+            .tables
+            .retain(|table| table.namespace == *namespace);
+    }
+    if let Some(table_name) = params
+        .get("table")
+        .or_else(|| params.get("table_name"))
+        .or_else(|| params.get("name"))
+        .filter(|table_name| !table_name.is_empty())
+    {
+        response
+            .tables
+            .retain(|table| table.table_name == *table_name);
+    }
+    serde_json::to_value(response).unwrap_or_else(|err| {
+        serde_json::json!({
+            "status": Status::error("query_response_error", err.to_string()),
+        })
+    })
+}
+
+fn request_params(request: &HttpRequest) -> BTreeMap<String, String> {
+    let query_params = request_query_params(&request.path);
+    if !query_params.is_empty() {
+        return query_params;
+    }
+    serde_json::from_slice::<serde_json::Value>(&request.body)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .map(|object| {
+            object
+                .into_iter()
+                .filter_map(|(key, value)| {
+                    let value = match value {
+                        serde_json::Value::String(value) => value,
+                        serde_json::Value::Number(value) => value.to_string(),
+                        serde_json::Value::Bool(value) => value.to_string(),
+                        _ => return None,
+                    };
+                    Some((key, value))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn query_list_partition_from_query(
+    meta: &MetaBackend,
+    request: &HttpRequest,
+) -> QueryListPartitionResponse {
+    let value = query_params_value(request);
+    match serde_json::from_value::<QueryListPartitionRequest>(value) {
+        Ok(req) => query_list_partition(meta, req),
+        Err(err) => QueryListPartitionResponse {
+            status: Status::error("bad_request", err.to_string()),
+            info: Vec::new(),
+        },
+    }
+}
+
+fn query_list_server_partition_from_query(
+    meta: &MetaBackend,
+    request: &HttpRequest,
+) -> QueryListServerPartitionResponse {
+    let value = query_params_value(request);
+    match serde_json::from_value::<QueryListServerPartitionRequest>(value) {
+        Ok(req) => query_list_server_partition(meta, req),
+        Err(err) => QueryListServerPartitionResponse {
+            status: Status::error("bad_request", err.to_string()),
+            server_info: None,
+            node_partitions: Vec::new(),
+        },
     }
 }
 
