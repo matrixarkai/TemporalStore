@@ -11943,7 +11943,7 @@ fn collect_slot_index_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry
 }
 
 fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
-    let mut entries = Vec::new();
+    let mut entries = Vec::with_capacity(model_live_page_entry_capacity(shard));
     entries.extend(
         shard
             .strings
@@ -12053,6 +12053,26 @@ fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
         );
     }
     entries
+}
+
+fn model_live_page_entry_capacity(shard: &ShardState) -> usize {
+    shard.strings.len()
+        + shard.hashes.values().map(HashMap::len).sum::<usize>()
+        + shard.sets.values().map(BTreeMap::len).sum::<usize>()
+        + shard.features.len()
+        + shard.sequences.len()
+        + shard.ips.len()
+        + shard.risk_pages.len()
+        + shard.context_nodes.len()
+        + shard.context_events.len()
+        + shard.context_indexes.len()
+        + shard.context_audits.len()
+        + shard.context_dirty.len()
+        + shard.context_entities.len()
+        + shard.context_children.len()
+        + shard.context_embeddings.len()
+        + shard.context_summaries.len()
+        + shard.context_compressions.len()
 }
 
 fn collect_model_live_page_entries_for_keys(
