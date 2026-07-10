@@ -535,6 +535,7 @@ struct BlockStoreInner {
     options: BlockStoreOptions,
     extents: BTreeMap<u64, BlockStoreExtentDescriptor>,
     extent_manifest_reconciled_on_open: bool,
+    active_append_file: Option<File>,
     stats: BlockStoreStats,
 }
 
@@ -583,6 +584,7 @@ impl LocalBlockStore {
                 options,
                 extents,
                 extent_manifest_reconciled_on_open,
+                active_append_file: None,
                 stats: BlockStoreStats::default(),
             })),
         }
@@ -636,8 +638,6 @@ impl LocalBlockStore {
                 inner.options,
             )?;
         }
-        let path = segment_path(&inner.root, inner.page_segment_id);
-        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
         let address = BlockAddress {
             page_segment_id: inner.page_segment_id,
             offset: inner.write_offset,
@@ -649,10 +649,18 @@ impl LocalBlockStore {
             extent_id: Some(extent_id),
             sha256: Some(record.sha256_hex.clone()),
         };
-        file.write_all(&record.bytes)?;
-        file.flush()?;
-        if inner.options.sync_on_append {
-            file.sync_data()?;
+        let sync_on_append = inner.options.sync_on_append;
+        if inner.active_append_file.is_none() {
+            let path = segment_path(&inner.root, inner.page_segment_id);
+            inner.active_append_file =
+                Some(OpenOptions::new().create(true).append(true).open(path)?);
+        }
+        if let Some(file) = inner.active_append_file.as_mut() {
+            file.write_all(&record.bytes)?;
+            file.flush()?;
+            if sync_on_append {
+                file.sync_data()?;
+            }
         }
         inner.next_page_id = inner.next_page_id.saturating_add(1);
         inner.write_offset += address.length;
@@ -1945,6 +1953,12 @@ fn roll_segment_inner(
 ) -> Result<BlockStoreRollReport, BlockStoreError> {
     fs::create_dir_all(&inner.root)?;
     let previous_page_segment_id = inner.page_segment_id;
+    if let Some(mut active_file) = inner.active_append_file.take() {
+        active_file.flush()?;
+        if inner.options.sync_on_append {
+            active_file.sync_data()?;
+        }
+    }
     let next_from_current = inner.page_segment_id.saturating_add(1);
     let next_from_disk = segment_ids_at(&inner.root)?
         .into_iter()
