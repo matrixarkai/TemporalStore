@@ -339,7 +339,9 @@ pub(super) fn read_slot_index_component_values(
         .iter()
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect::<Vec<_>>();
-    let _ = cache.put_batch(refills);
+    if !refills.is_empty() {
+        let _ = cache.put_batch(refills);
+    }
 
     values
         .into_iter()
