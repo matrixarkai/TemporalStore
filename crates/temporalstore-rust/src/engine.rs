@@ -12532,6 +12532,7 @@ fn sync_slot_index_object_pages(
     let mut touched_slots = BTreeSet::new();
     let mut layout_slots = BTreeSet::new();
     let mut removed_any = false;
+    let mut used_fallback_scan = false;
     let mut removed_addresses = Vec::new();
     ensure_slot_index_lookup_maps(shard);
     let lookup_enabled = !shard.slot_index.object_component_lookup.is_empty();
@@ -12585,6 +12586,7 @@ fn sync_slot_index_object_pages(
         }
     }
     if lookup_enabled && !removed_any {
+        used_fallback_scan = true;
         for slot in shard.slot_index.slot_map.values_mut() {
             let before = slot.page_index.len();
             slot.page_index.retain(|_, page| {
@@ -12631,6 +12633,17 @@ fn sync_slot_index_object_pages(
             deleted: false,
             log_backed,
         };
+        let page_ref_key = page_index_ref_key(&entry);
+        let page_index = PageIndex {
+            object_key: entry.object_key,
+            model_id: entry.kind,
+            component: entry.component,
+            object_id,
+            address: entry.address,
+            dirty: entry.dirty,
+            deleted: entry.deleted,
+            log_backed: entry.log_backed,
+        };
         let slot = shard
             .slot_index
             .slot_map
@@ -12651,20 +12664,12 @@ fn sync_slot_index_object_pages(
         slot.in_memory = true;
         slot.object_index.insert(object_id);
         slot.deleted_object_index.remove(&object_id);
-        slot.page_index.insert(
-            page_index_ref_key(&entry),
-            PageIndex {
-                object_key: entry.object_key,
-                model_id: entry.kind,
-                component: entry.component,
-                object_id,
-                address: entry.address,
-                dirty: entry.dirty,
-                deleted: entry.deleted,
-                log_backed: entry.log_backed,
-            },
-        );
+        slot.page_index
+            .insert(page_ref_key.clone(), page_index.clone());
         layout_slots.insert(routing_slot);
+        shard
+            .slot_index
+            .insert_object_page_lookup(routing_slot, page_ref_key, &page_index);
     }
     for routing_slot in layout_slots {
         if let Some(slot) = shard.slot_index.slot_map.get_mut(&routing_slot) {
@@ -12678,7 +12683,7 @@ fn sync_slot_index_object_pages(
             .slot_map
             .retain(|_, slot| !slot.page_index.is_empty() || !slot.object_index.is_empty());
     }
-    if removed_any || !lookup_enabled {
+    if !lookup_enabled || used_fallback_scan {
         shard.slot_index.rebuild_object_page_lookup();
     }
     invalidate_page_addresses_except(cache, shard_id, removed_addresses, live_address_keys);
