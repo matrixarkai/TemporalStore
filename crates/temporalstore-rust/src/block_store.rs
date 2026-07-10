@@ -944,8 +944,12 @@ impl LocalBlockStore {
             let inner = self.inner.lock().expect("block store lock poisoned");
             inner.root.clone()
         };
-        let mut files = BTreeMap::<u64, File>::new();
-        let mut file_lengths = BTreeMap::<u64, u64>::new();
+        struct SegmentReadHandle {
+            file: File,
+            len: u64,
+        }
+
+        let mut files = HashMap::<u64, SegmentReadHandle>::new();
         let mut results = (0..addresses.len()).map(|_| None).collect::<Vec<_>>();
         let mut read_order = addresses.iter().enumerate().collect::<Vec<_>>();
         read_order.sort_by(|(_, left), (_, right)| {
@@ -980,26 +984,22 @@ impl LocalBlockStore {
             }
 
             let group_bytes = (|| {
-                if !files.contains_key(&page_segment_id) {
-                    let path = segment_path(&root, page_segment_id);
-                    let file = File::open(path)?;
-                    file_lengths.insert(page_segment_id, file.metadata()?.len());
-                    files.insert(page_segment_id, file);
-                }
-                let file = files
-                    .get_mut(&page_segment_id)
-                    .expect("segment file is opened before read");
-                let file_len = file_lengths
-                    .get(&page_segment_id)
-                    .copied()
-                    .expect("segment length is recorded before read");
-                if group_offset >= file_len || group_end > file_len {
+                let handle = match files.entry(page_segment_id) {
+                    std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        let path = segment_path(&root, page_segment_id);
+                        let file = File::open(path)?;
+                        let len = file.metadata()?.len();
+                        entry.insert(SegmentReadHandle { file, len })
+                    }
+                };
+                if group_offset >= handle.len || group_end > handle.len {
                     return Err(BlockStoreError::Io(std::io::Error::new(
                         std::io::ErrorKind::UnexpectedEof,
                         "coalesced block read range exceeds segment length",
                     )));
                 }
-                file.seek(SeekFrom::Start(group_offset))?;
+                handle.file.seek(SeekFrom::Start(group_offset))?;
                 let group_len =
                     usize::try_from(group_end.saturating_sub(group_offset)).map_err(|_| {
                         BlockStoreError::Io(std::io::Error::new(
@@ -1008,7 +1008,7 @@ impl LocalBlockStore {
                         ))
                     })?;
                 let mut encoded = vec![0; group_len];
-                file.read_exact(&mut encoded)?;
+                handle.file.read_exact(&mut encoded)?;
                 Ok::<_, BlockStoreError>(encoded)
             })();
 
