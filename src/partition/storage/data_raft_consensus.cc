@@ -29,7 +29,7 @@ DEFINE_uint64(data_raft_executor_num, 2, "Byteraft executor threads for data-nod
 DEFINE_uint64(data_raft_flusher_num, 1, "Byteraft flusher threads for data-node Raft.");
 DEFINE_uint64(data_raft_applier_num, 2, "Byteraft applier threads for data-node Raft.");
 DEFINE_uint64(data_raft_snapshot_num, 1, "Byteraft snapshot threads for data-node Raft.");
-DEFINE_uint64(data_raft_heartbeat_cycle_ms, 100,
+DEFINE_uint64(data_raft_heartbeat_cycle_ms, 10,
               "Byteraft heartbeat/tick interval for data-node Raft.");
 DEFINE_uint64(data_raft_max_msgs_each_poll, 256,
               "Byteraft max messages per poll for data-node Raft.");

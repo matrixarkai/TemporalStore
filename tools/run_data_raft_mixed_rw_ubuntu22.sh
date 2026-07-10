@@ -20,6 +20,7 @@ SERVER_COUNT="${SERVER_COUNT:-3}"
 REPLICA_COUNT="${REPLICA_COUNT:-3}"
 DATA_RAFT_RAFT_PORT_DELTA="${DATA_RAFT_RAFT_PORT_DELTA:-1000}"
 DATA_RAFT_SNAPSHOT_PORT_DELTA="${DATA_RAFT_SNAPSHOT_PORT_DELTA:-2000}"
+DATA_RAFT_HEARTBEAT_CYCLE_MS="${DATA_RAFT_HEARTBEAT_CYCLE_MS:-10}"
 DATA_RAFT_BOUNDED_STALE_MAX_INDEX_LAG="${DATA_RAFT_BOUNDED_STALE_MAX_INDEX_LAG:-16}"
 DATA_RAFT_PROPOSE_TIMEOUT_MS="${DATA_RAFT_PROPOSE_TIMEOUT_MS:-5000}"
 SERVER_HEARTBEAT_INTERVAL_MS="${SERVER_HEARTBEAT_INTERVAL_MS:-500}"
@@ -170,7 +171,7 @@ rm -rf "${SMOKE_DIR}"
     SERVER_PORT="${SERVER_PORT}" \
     TABLE_ELECTION_POLICY=PROMOTE_SECONDARY \
     TABLE_PARTITION_UNIT_RELATION=ANTI_ENTROPY \
-    SERVER_EXTRA_FLAGS="--data_replication_mode=raft_consensus --data_raft_work_dir=${SMOKE_DIR}/data-raft --data_raft_raft_port_delta=${DATA_RAFT_RAFT_PORT_DELTA} --data_raft_snapshot_port_delta=${DATA_RAFT_SNAPSHOT_PORT_DELTA} --data_raft_enable_empty_snapshot_for_tests=false --data_raft_read_mode=bounded_stale --data_raft_bounded_stale_max_index_lag=${DATA_RAFT_BOUNDED_STALE_MAX_INDEX_LAG} --data_raft_propose_timeout_ms=${DATA_RAFT_PROPOSE_TIMEOUT_MS} --server_heartbeat_interval_ms=${SERVER_HEARTBEAT_INTERVAL_MS} --server_heartbeat_timeout_ms=${SERVER_HEARTBEAT_TIMEOUT_MS} --server_meta_tinker_interval_ms=${SERVER_META_TINKER_INTERVAL_MS} --storage_async=true --storage_enable_evict=false --storage_enable_expire=false --storage_enable_page_gc=false --storage_enable_page_compaction=false --storage_enable_index_gc=false --storage_enable_oplog_rolling=false" \
+    SERVER_EXTRA_FLAGS="--data_replication_mode=raft_consensus --data_raft_work_dir=${SMOKE_DIR}/data-raft --data_raft_raft_port_delta=${DATA_RAFT_RAFT_PORT_DELTA} --data_raft_snapshot_port_delta=${DATA_RAFT_SNAPSHOT_PORT_DELTA} --data_raft_heartbeat_cycle_ms=${DATA_RAFT_HEARTBEAT_CYCLE_MS} --data_raft_enable_empty_snapshot_for_tests=false --data_raft_read_mode=bounded_stale --data_raft_bounded_stale_max_index_lag=${DATA_RAFT_BOUNDED_STALE_MAX_INDEX_LAG} --data_raft_propose_timeout_ms=${DATA_RAFT_PROPOSE_TIMEOUT_MS} --server_heartbeat_interval_ms=${SERVER_HEARTBEAT_INTERVAL_MS} --server_heartbeat_timeout_ms=${SERVER_HEARTBEAT_TIMEOUT_MS} --server_meta_tinker_interval_ms=${SERVER_META_TINKER_INTERVAL_MS} --storage_async=true --storage_enable_evict=false --storage_enable_expire=false --storage_enable_page_gc=false --storage_enable_page_compaction=false --storage_enable_index_gc=false --storage_enable_oplog_rolling=false" \
     KEEP_RUNNING=1 \
     bash tools/smoke_ubuntu22.sh
 ) > "${RESULT_DIR}/bootstrap.log" 2>&1 &
@@ -206,6 +207,8 @@ echo "leader=${leader}" | tee -a "${RESULT_DIR}/summary.txt"
 echo "read_policy=secondary_preferred" | tee -a "${RESULT_DIR}/summary.txt"
 echo "write_policy=primary_leader" | tee -a "${RESULT_DIR}/summary.txt"
 echo "data_raft_bounded_stale_max_index_lag=${DATA_RAFT_BOUNDED_STALE_MAX_INDEX_LAG}" \
+  | tee -a "${RESULT_DIR}/summary.txt"
+echo "data_raft_heartbeat_cycle_ms=${DATA_RAFT_HEARTBEAT_CYCLE_MS}" \
   | tee -a "${RESULT_DIR}/summary.txt"
 echo "server_heartbeat_interval_ms=${SERVER_HEARTBEAT_INTERVAL_MS}" \
   | tee -a "${RESULT_DIR}/summary.txt"

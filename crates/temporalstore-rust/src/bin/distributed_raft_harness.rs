@@ -1298,7 +1298,7 @@ fn runtime_options(
             ..RaftRpcRuntimeOptions::default()
         },
         security: ProductionRaftSecurity::plaintext_for_local_chaos(options.auth_token.clone()),
-        heartbeat_interval_ms: 50,
+        heartbeat_interval_ms: 10,
         election_tick_ms: 10,
         max_catchup_entries_per_heartbeat: 256,
         allow_plaintext_for_local_chaos: true,
