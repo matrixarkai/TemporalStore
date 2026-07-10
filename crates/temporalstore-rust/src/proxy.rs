@@ -724,6 +724,317 @@ pub struct ProxyRiskFamilySetAndGetCommandRequest {
     pub aggregator: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyContextUpsertNodeCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub tenant_hash: u64,
+    pub node: crate::types::ContextNode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyContextGetNodeCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub tenant_hash: u64,
+    pub node_hash: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyContextGetNodesCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub tenant_hash: u64,
+    pub node_hashes: Vec<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyContextWriteEventCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub tenant_hash: u64,
+    pub node_hash: u64,
+    pub event: crate::types::ContextEvent,
+    #[serde(default)]
+    pub first_write_only: bool,
+    #[serde(default)]
+    pub cold_storage: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyContextWriteExtractedEventCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub tenant_hash: u64,
+    pub node_hash: u64,
+    pub event: crate::types::ContextEvent,
+    #[serde(default)]
+    pub indexes: crate::types::ContextExtractedEventIndexes,
+    #[serde(default)]
+    pub first_write_only: bool,
+    #[serde(default)]
+    pub cold_storage: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyContextQueryEventsCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub tenant_hash: u64,
+    pub node_hash: u64,
+    pub start_time_ms: u64,
+    pub end_time_ms: u64,
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub current_valid_only: bool,
+    #[serde(default)]
+    pub as_of_ms: u64,
+    #[serde(default)]
+    pub kinds: Vec<u32>,
+    #[serde(default)]
+    pub statuses: Vec<u32>,
+    #[serde(default)]
+    pub min_confidence: f32,
+    #[serde(default)]
+    pub min_importance: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyContextWriteIndexRefCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub tenant_hash: u64,
+    pub index_name: String,
+    pub index_value_hash: u64,
+    #[serde(default)]
+    pub scope_hash: u64,
+    pub event_time_ms: u64,
+    pub index_ref: crate::types::ContextIndexRef,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyContextQueryIndexCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub tenant_hash: u64,
+    pub index_name: String,
+    pub index_value_hash: u64,
+    #[serde(default)]
+    pub scope_hash: u64,
+    pub start_time_ms: u64,
+    pub end_time_ms: u64,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyContextQueryIndexIntersectionCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub tenant_hash: u64,
+    pub predicates: Vec<crate::types::ContextIndexLookup>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyContextWritePackAuditCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub tenant_hash: u64,
+    pub audit: crate::types::ContextPackAudit,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyContextQueryPackAuditCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub tenant_hash: u64,
+    pub session_hash: u64,
+    pub start_time_ms: u64,
+    pub end_time_ms: u64,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyContextMarkSummaryDirtyCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub tenant_hash: u64,
+    pub marker: crate::types::ContextSummaryDirtyMarker,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyContextQuerySummaryDirtyCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub tenant_hash: u64,
+    pub node_hash: u64,
+    pub start_time_ms: u64,
+    pub end_time_ms: u64,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyContextUpsertEntityCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub tenant_hash: u64,
+    pub entity: crate::types::ContextEntity,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyContextGetEntityCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub tenant_hash: u64,
+    pub node_hash: u64,
+    pub entity_hash: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyContextQueryEntitiesCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub tenant_hash: u64,
+    pub node_hash: u64,
+    pub entity_hashes: Vec<u64>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyContextUpsertChildRefCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub tenant_hash: u64,
+    pub child_ref: crate::types::ContextChildRef,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyContextQueryChildrenCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub tenant_hash: u64,
+    pub parent_hash: u64,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyContextUpsertEmbeddingCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub tenant_hash: u64,
+    pub embedding: crate::types::ContextEmbedding,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyContextQueryEmbeddingsCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub tenant_hash: u64,
+    pub ref_hashes: Vec<u64>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyContextTraverseTreeCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub tenant_hash: u64,
+    pub start_node_hash: u64,
+    pub query_vector: Vec<f32>,
+    #[serde(default)]
+    pub max_depth: Option<u32>,
+    #[serde(default)]
+    pub top_k_per_depth: Option<usize>,
+    #[serde(default)]
+    pub max_children_scored_per_parent: Option<usize>,
+    #[serde(default)]
+    pub max_candidate_nodes: Option<usize>,
+    #[serde(default)]
+    pub leaf_only: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyContextUpsertSummaryCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub tenant_hash: u64,
+    pub summary: crate::types::ContextSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyContextQuerySummariesCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub tenant_hash: u64,
+    pub node_hash: u64,
+    pub level: u32,
+    pub as_of_ms: u64,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyContextWriteCompressionEventCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub tenant_hash: u64,
+    pub event: crate::types::ContextCompressionEvent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyContextQueryCompressionEventsCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub tenant_hash: u64,
+    pub node_hashes: Vec<u64>,
+    pub start_time_ms: u64,
+    pub end_time_ms: u64,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyContextCompressEventsCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub tenant_hash: u64,
+    pub node_hash: u64,
+    pub source_start_ms: u64,
+    pub source_end_ms: u64,
+    pub compressed_time_ms: u64,
+    #[serde(default)]
+    pub max_source_events: Option<usize>,
+    #[serde(default)]
+    pub min_confidence: f32,
+    #[serde(default)]
+    pub min_importance: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyContextQueryNodeContextCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub tenant_hash: u64,
+    pub node_hash: u64,
+    #[serde(default)]
+    pub summary_level: Option<u32>,
+    pub as_of_ms: u64,
+    #[serde(default)]
+    pub cold_start_time_ms: u64,
+    #[serde(default)]
+    pub cold_end_time_ms: u64,
+    #[serde(default)]
+    pub compression_limit: Option<usize>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyRiskHsetCommandRequest {
     pub namespace: String,
@@ -820,6 +1131,21 @@ impl ProxyService {
 
     pub fn handle(&self, request: HttpRequest) -> (u16, Vec<u8>) {
         use crate::http::{json_response, parse_json};
+        macro_rules! proxy_command_route {
+            ($request_ty:ty, |$req:ident| $builder:block) => {
+                match parse_json::<$request_ty>(&request.body) {
+                    Ok(req) => {
+                        let $req: $request_ty = req;
+                        let (namespace, table_name, command) = $builder;
+                        json_response(
+                            200,
+                            &self.table_execute_command(namespace, table_name, command),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            };
+        }
         match (request.method.as_str(), request.path.as_str()) {
             ("GET", "/health") => json_response(200, &Status::ok()),
             ("GET", "/metrics") | ("GET", "/ProxyService/Metrics") => {
@@ -1702,6 +2028,392 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
+            ("POST", "/ProxyService/ContextNodeUpsert")
+            | ("POST", "/ProxyService/ContextUpsertNode") => {
+                proxy_command_route!(ProxyContextUpsertNodeCommandRequest, |req| {
+                    (
+                        req.namespace,
+                        req.table_name,
+                        Command::ContextUpsertNode {
+                            tenant_hash: req.tenant_hash,
+                            node: req.node,
+                        },
+                    )
+                })
+            }
+            ("POST", "/ProxyService/ContextNodeGet") | ("POST", "/ProxyService/ContextGetNode") => {
+                proxy_command_route!(ProxyContextGetNodeCommandRequest, |req| {
+                    (
+                        req.namespace,
+                        req.table_name,
+                        Command::ContextGetNode {
+                            tenant_hash: req.tenant_hash,
+                            node_hash: req.node_hash,
+                        },
+                    )
+                })
+            }
+            ("POST", "/ProxyService/ContextNodesGet")
+            | ("POST", "/ProxyService/ContextGetNodes") => {
+                proxy_command_route!(ProxyContextGetNodesCommandRequest, |req| {
+                    (
+                        req.namespace,
+                        req.table_name,
+                        Command::ContextGetNodes {
+                            tenant_hash: req.tenant_hash,
+                            node_hashes: req.node_hashes,
+                        },
+                    )
+                })
+            }
+            ("POST", "/ProxyService/ContextWriteEvent") => {
+                proxy_command_route!(ProxyContextWriteEventCommandRequest, |req| {
+                    (
+                        req.namespace,
+                        req.table_name,
+                        Command::ContextWriteEvent {
+                            tenant_hash: req.tenant_hash,
+                            node_hash: req.node_hash,
+                            event: req.event,
+                            first_write_only: req.first_write_only,
+                            cold_storage: req.cold_storage,
+                        },
+                    )
+                })
+            }
+            ("POST", "/ProxyService/ContextWriteExtractedEvent") => {
+                proxy_command_route!(ProxyContextWriteExtractedEventCommandRequest, |req| {
+                    (
+                        req.namespace,
+                        req.table_name,
+                        Command::ContextWriteExtractedEvent {
+                            tenant_hash: req.tenant_hash,
+                            node_hash: req.node_hash,
+                            event: req.event,
+                            indexes: req.indexes,
+                            first_write_only: req.first_write_only,
+                            cold_storage: req.cold_storage,
+                        },
+                    )
+                })
+            }
+            ("POST", "/ProxyService/ContextQueryEvents") => {
+                proxy_command_route!(ProxyContextQueryEventsCommandRequest, |req| {
+                    (
+                        req.namespace,
+                        req.table_name,
+                        Command::ContextQueryEvents {
+                            tenant_hash: req.tenant_hash,
+                            node_hash: req.node_hash,
+                            start_time_ms: req.start_time_ms,
+                            end_time_ms: req.end_time_ms,
+                            limit: req.limit,
+                            current_valid_only: req.current_valid_only,
+                            as_of_ms: req.as_of_ms,
+                            kinds: req.kinds,
+                            statuses: req.statuses,
+                            min_confidence: req.min_confidence,
+                            min_importance: req.min_importance,
+                        },
+                    )
+                })
+            }
+            ("POST", "/ProxyService/ContextWriteIndexRef") => {
+                proxy_command_route!(ProxyContextWriteIndexRefCommandRequest, |req| {
+                    (
+                        req.namespace,
+                        req.table_name,
+                        Command::ContextWriteIndexRef {
+                            tenant_hash: req.tenant_hash,
+                            index_name: req.index_name,
+                            index_value_hash: req.index_value_hash,
+                            scope_hash: req.scope_hash,
+                            event_time_ms: req.event_time_ms,
+                            index_ref: req.index_ref,
+                        },
+                    )
+                })
+            }
+            ("POST", "/ProxyService/ContextQueryIndex") => {
+                proxy_command_route!(ProxyContextQueryIndexCommandRequest, |req| {
+                    (
+                        req.namespace,
+                        req.table_name,
+                        Command::ContextQueryIndex {
+                            tenant_hash: req.tenant_hash,
+                            index_name: req.index_name,
+                            index_value_hash: req.index_value_hash,
+                            scope_hash: req.scope_hash,
+                            start_time_ms: req.start_time_ms,
+                            end_time_ms: req.end_time_ms,
+                            limit: req.limit,
+                        },
+                    )
+                })
+            }
+            ("POST", "/ProxyService/ContextQueryIndexIntersection") => {
+                proxy_command_route!(ProxyContextQueryIndexIntersectionCommandRequest, |req| {
+                    (
+                        req.namespace,
+                        req.table_name,
+                        Command::ContextQueryIndexIntersection {
+                            tenant_hash: req.tenant_hash,
+                            predicates: req.predicates,
+                            limit: req.limit,
+                        },
+                    )
+                })
+            }
+            ("POST", "/ProxyService/ContextWritePackAudit") => {
+                proxy_command_route!(ProxyContextWritePackAuditCommandRequest, |req| {
+                    (
+                        req.namespace,
+                        req.table_name,
+                        Command::ContextWritePackAudit {
+                            tenant_hash: req.tenant_hash,
+                            audit: req.audit,
+                        },
+                    )
+                })
+            }
+            ("POST", "/ProxyService/ContextQueryPackAudit") => {
+                proxy_command_route!(ProxyContextQueryPackAuditCommandRequest, |req| {
+                    (
+                        req.namespace,
+                        req.table_name,
+                        Command::ContextQueryPackAudit {
+                            tenant_hash: req.tenant_hash,
+                            session_hash: req.session_hash,
+                            start_time_ms: req.start_time_ms,
+                            end_time_ms: req.end_time_ms,
+                            limit: req.limit,
+                        },
+                    )
+                })
+            }
+            ("POST", "/ProxyService/ContextMarkSummaryDirty") => {
+                proxy_command_route!(ProxyContextMarkSummaryDirtyCommandRequest, |req| {
+                    (
+                        req.namespace,
+                        req.table_name,
+                        Command::ContextMarkSummaryDirty {
+                            tenant_hash: req.tenant_hash,
+                            marker: req.marker,
+                        },
+                    )
+                })
+            }
+            ("POST", "/ProxyService/ContextQuerySummaryDirty") => {
+                proxy_command_route!(ProxyContextQuerySummaryDirtyCommandRequest, |req| {
+                    (
+                        req.namespace,
+                        req.table_name,
+                        Command::ContextQuerySummaryDirty {
+                            tenant_hash: req.tenant_hash,
+                            node_hash: req.node_hash,
+                            start_time_ms: req.start_time_ms,
+                            end_time_ms: req.end_time_ms,
+                            limit: req.limit,
+                        },
+                    )
+                })
+            }
+            ("POST", "/ProxyService/ContextUpsertEntity") => {
+                proxy_command_route!(ProxyContextUpsertEntityCommandRequest, |req| {
+                    (
+                        req.namespace,
+                        req.table_name,
+                        Command::ContextUpsertEntity {
+                            tenant_hash: req.tenant_hash,
+                            entity: req.entity,
+                        },
+                    )
+                })
+            }
+            ("POST", "/ProxyService/ContextGetEntity") => {
+                proxy_command_route!(ProxyContextGetEntityCommandRequest, |req| {
+                    (
+                        req.namespace,
+                        req.table_name,
+                        Command::ContextGetEntity {
+                            tenant_hash: req.tenant_hash,
+                            node_hash: req.node_hash,
+                            entity_hash: req.entity_hash,
+                        },
+                    )
+                })
+            }
+            ("POST", "/ProxyService/ContextQueryEntities") => {
+                proxy_command_route!(ProxyContextQueryEntitiesCommandRequest, |req| {
+                    (
+                        req.namespace,
+                        req.table_name,
+                        Command::ContextQueryEntities {
+                            tenant_hash: req.tenant_hash,
+                            node_hash: req.node_hash,
+                            entity_hashes: req.entity_hashes,
+                            limit: req.limit,
+                        },
+                    )
+                })
+            }
+            ("POST", "/ProxyService/ContextUpsertChildRef") => {
+                proxy_command_route!(ProxyContextUpsertChildRefCommandRequest, |req| {
+                    (
+                        req.namespace,
+                        req.table_name,
+                        Command::ContextUpsertChildRef {
+                            tenant_hash: req.tenant_hash,
+                            child_ref: req.child_ref,
+                        },
+                    )
+                })
+            }
+            ("POST", "/ProxyService/ContextQueryChildren") => {
+                proxy_command_route!(ProxyContextQueryChildrenCommandRequest, |req| {
+                    (
+                        req.namespace,
+                        req.table_name,
+                        Command::ContextQueryChildren {
+                            tenant_hash: req.tenant_hash,
+                            parent_hash: req.parent_hash,
+                            limit: req.limit,
+                        },
+                    )
+                })
+            }
+            ("POST", "/ProxyService/ContextUpsertEmbedding") => {
+                proxy_command_route!(ProxyContextUpsertEmbeddingCommandRequest, |req| {
+                    (
+                        req.namespace,
+                        req.table_name,
+                        Command::ContextUpsertEmbedding {
+                            tenant_hash: req.tenant_hash,
+                            embedding: req.embedding,
+                        },
+                    )
+                })
+            }
+            ("POST", "/ProxyService/ContextQueryEmbeddings") => {
+                proxy_command_route!(ProxyContextQueryEmbeddingsCommandRequest, |req| {
+                    (
+                        req.namespace,
+                        req.table_name,
+                        Command::ContextQueryEmbeddings {
+                            tenant_hash: req.tenant_hash,
+                            ref_hashes: req.ref_hashes,
+                            limit: req.limit,
+                        },
+                    )
+                })
+            }
+            ("POST", "/ProxyService/ContextTraverseTree") => {
+                proxy_command_route!(ProxyContextTraverseTreeCommandRequest, |req| {
+                    (
+                        req.namespace,
+                        req.table_name,
+                        Command::ContextTraverseTree {
+                            tenant_hash: req.tenant_hash,
+                            start_node_hash: req.start_node_hash,
+                            query_vector: req.query_vector,
+                            max_depth: req.max_depth,
+                            top_k_per_depth: req.top_k_per_depth,
+                            max_children_scored_per_parent: req.max_children_scored_per_parent,
+                            max_candidate_nodes: req.max_candidate_nodes,
+                            leaf_only: req.leaf_only,
+                        },
+                    )
+                })
+            }
+            ("POST", "/ProxyService/ContextUpsertSummary") => {
+                proxy_command_route!(ProxyContextUpsertSummaryCommandRequest, |req| {
+                    (
+                        req.namespace,
+                        req.table_name,
+                        Command::ContextUpsertSummary {
+                            tenant_hash: req.tenant_hash,
+                            summary: req.summary,
+                        },
+                    )
+                })
+            }
+            ("POST", "/ProxyService/ContextQuerySummaries") => {
+                proxy_command_route!(ProxyContextQuerySummariesCommandRequest, |req| {
+                    (
+                        req.namespace,
+                        req.table_name,
+                        Command::ContextQuerySummaries {
+                            tenant_hash: req.tenant_hash,
+                            node_hash: req.node_hash,
+                            level: req.level,
+                            as_of_ms: req.as_of_ms,
+                            limit: req.limit,
+                        },
+                    )
+                })
+            }
+            ("POST", "/ProxyService/ContextWriteCompressionEvent") => {
+                proxy_command_route!(ProxyContextWriteCompressionEventCommandRequest, |req| {
+                    (
+                        req.namespace,
+                        req.table_name,
+                        Command::ContextWriteCompressionEvent {
+                            tenant_hash: req.tenant_hash,
+                            event: req.event,
+                        },
+                    )
+                })
+            }
+            ("POST", "/ProxyService/ContextQueryCompressionEvents") => {
+                proxy_command_route!(ProxyContextQueryCompressionEventsCommandRequest, |req| {
+                    (
+                        req.namespace,
+                        req.table_name,
+                        Command::ContextQueryCompressionEvents {
+                            tenant_hash: req.tenant_hash,
+                            node_hashes: req.node_hashes,
+                            start_time_ms: req.start_time_ms,
+                            end_time_ms: req.end_time_ms,
+                            limit: req.limit,
+                        },
+                    )
+                })
+            }
+            ("POST", "/ProxyService/ContextCompressEvents") => {
+                proxy_command_route!(ProxyContextCompressEventsCommandRequest, |req| {
+                    (
+                        req.namespace,
+                        req.table_name,
+                        Command::ContextCompressEvents {
+                            tenant_hash: req.tenant_hash,
+                            node_hash: req.node_hash,
+                            source_start_ms: req.source_start_ms,
+                            source_end_ms: req.source_end_ms,
+                            compressed_time_ms: req.compressed_time_ms,
+                            max_source_events: req.max_source_events,
+                            min_confidence: req.min_confidence,
+                            min_importance: req.min_importance,
+                        },
+                    )
+                })
+            }
+            ("POST", "/ProxyService/ContextQueryNodeContext") => {
+                proxy_command_route!(ProxyContextQueryNodeContextCommandRequest, |req| {
+                    (
+                        req.namespace,
+                        req.table_name,
+                        Command::ContextQueryNodeContext {
+                            tenant_hash: req.tenant_hash,
+                            node_hash: req.node_hash,
+                            summary_level: req.summary_level,
+                            as_of_ms: req.as_of_ms,
+                            cold_start_time_ms: req.cold_start_time_ms,
+                            cold_end_time_ms: req.cold_end_time_ms,
+                            compression_limit: req.compression_limit,
+                        },
+                    )
+                })
+            }
             ("POST", "/ProxyService/HGet") => {
                 match parse_json::<ProxyHashCommandRequest>(&request.body) {
                     Ok(req) => {
@@ -2009,6 +2721,19 @@ impl ProxyService {
             namespace: request.namespace,
             table_name: request.table_name,
             command: command(request.key),
+        })
+    }
+
+    fn table_execute_command(
+        &self,
+        namespace: String,
+        table_name: String,
+        command: Command,
+    ) -> ExecuteResponse {
+        self.table_execute(ProxyTableExecuteRequest {
+            namespace,
+            table_name,
+            command,
         })
     }
 
