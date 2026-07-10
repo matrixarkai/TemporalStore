@@ -15246,8 +15246,7 @@ pub(super) fn read_page_bytes_batch(
     addresses: &[Option<PageAddress>],
 ) -> Vec<Option<Vec<u8>>> {
     let mut values = vec![None; addresses.len()];
-    let mut unique_entries =
-        Vec::<(CacheKey, PageAddress, Vec<usize>)>::with_capacity(addresses.len());
+    let mut unique_entries = Vec::<BatchPageReadEntry>::with_capacity(addresses.len());
     let mut unique_index_by_key = HashMap::<CacheKey, usize>::with_capacity(addresses.len());
     for (index, address) in addresses.iter().enumerate() {
         let Some(address) = address else {
@@ -15255,61 +15254,82 @@ pub(super) fn read_page_bytes_batch(
         };
         let key = page_address_cache_key(shard_id, address);
         if let Some(entry_index) = unique_index_by_key.get(&key).copied() {
-            unique_entries[entry_index].2.push(index);
+            unique_entries[entry_index].push_index(index);
         } else {
             let entry_index = unique_entries.len();
             unique_index_by_key.insert(key.clone(), entry_index);
-            unique_entries.push((key, address.clone(), vec![index]));
+            unique_entries.push(BatchPageReadEntry {
+                key,
+                address: address.clone(),
+                first_index: index,
+                extra_indexes: Vec::new(),
+            });
         }
     }
     if unique_entries.is_empty() {
         return values;
     }
     if unique_entries.len() == 1 {
-        let (_, address, indexes) = &unique_entries[0];
-        let index = indexes[0];
-        values[index] = read_page_bytes(cache, page_store, shard_id, address);
+        let entry = &unique_entries[0];
+        values[entry.first_index] = read_page_bytes(cache, page_store, shard_id, &entry.address);
+        for index in &entry.extra_indexes {
+            values[*index] = values[entry.first_index].clone();
+        }
         return values;
     }
 
     let unique_keys = unique_entries
         .iter()
-        .map(|(key, _, _)| key.clone())
+        .map(|entry| entry.key.clone())
         .collect::<Vec<_>>();
     let cached = cache
         .get_batch(&unique_keys)
         .unwrap_or_else(|_| vec![None; unique_keys.len()]);
     let mut miss_entries = Vec::with_capacity(unique_entries.len());
-    for ((key, address, indexes), cached_value) in
-        unique_entries.into_iter().zip(cached.into_iter())
-    {
+    for (entry, cached_value) in unique_entries.into_iter().zip(cached.into_iter()) {
         if let Some(bytes) = cached_value {
-            for index in indexes {
-                values[index] = Some(bytes.clone());
-            }
+            fill_page_read_values(&mut values, &entry, &bytes);
             continue;
         }
-        miss_entries.push((key, address, indexes));
+        miss_entries.push(entry);
     }
     let miss_addresses = miss_entries
         .iter()
-        .map(|(_, address, _)| address.clone())
+        .map(|entry| entry.address.clone())
         .collect::<Vec<_>>();
     let miss_reads = page_store.read_batch(&miss_addresses);
     let mut refills = Vec::with_capacity(miss_entries.len());
-    for ((key, _, indexes), read_result) in miss_entries.into_iter().zip(miss_reads) {
+    for (entry, read_result) in miss_entries.into_iter().zip(miss_reads) {
         let Ok(bytes) = read_result else {
             continue;
         };
-        for index in indexes {
-            values[index] = Some(bytes.clone());
-        }
-        refills.push((key, bytes));
+        fill_page_read_values(&mut values, &entry, &bytes);
+        refills.push((entry.key, bytes));
     }
     if !refills.is_empty() {
         let _ = cache.put_batch(refills);
     }
     values
+}
+
+struct BatchPageReadEntry {
+    key: CacheKey,
+    address: PageAddress,
+    first_index: usize,
+    extra_indexes: Vec<usize>,
+}
+
+impl BatchPageReadEntry {
+    fn push_index(&mut self, index: usize) {
+        self.extra_indexes.push(index);
+    }
+}
+
+fn fill_page_read_values(values: &mut [Option<Vec<u8>>], entry: &BatchPageReadEntry, bytes: &[u8]) {
+    values[entry.first_index] = Some(bytes.to_vec());
+    for index in &entry.extra_indexes {
+        values[*index] = Some(bytes.to_vec());
+    }
 }
 
 fn read_page_bytes_cold(page_store: &LocalPageStore, address: &PageAddress) -> Option<Vec<u8>> {
