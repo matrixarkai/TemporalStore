@@ -250,6 +250,84 @@ impl Default for RequestOptions {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientRiskPrecision {
+    OneSecond,
+    FiveSeconds,
+    TenSeconds,
+    OneMinute,
+    FiveMinutes,
+    TenMinutes,
+    OneHour,
+    OneDay,
+    OneMonth,
+}
+
+impl ClientRiskPrecision {
+    pub fn precision_ms(self) -> u64 {
+        match self {
+            Self::OneSecond => 1_000,
+            Self::FiveSeconds => 5_000,
+            Self::TenSeconds => 10_000,
+            Self::OneMinute => 60_000,
+            Self::FiveMinutes => 5 * 60_000,
+            Self::TenMinutes => 10 * 60_000,
+            Self::OneHour => 60 * 60_000,
+            Self::OneDay => 24 * 60 * 60_000,
+            Self::OneMonth => 30 * 24 * 60 * 60_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientRiskWindowUnit {
+    Second,
+    Minute,
+    Hour,
+    Day,
+}
+
+impl ClientRiskWindowUnit {
+    pub fn duration_ms(self) -> i64 {
+        match self {
+            Self::Second => 1_000,
+            Self::Minute => 60_000,
+            Self::Hour => 60 * 60_000,
+            Self::Day => 24 * 60 * 60_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientRiskWindow {
+    #[serde(default = "default_client_risk_window_start")]
+    pub start: i64,
+    #[serde(default)]
+    pub end: i64,
+    #[serde(default = "default_client_risk_window_unit")]
+    pub unit: ClientRiskWindowUnit,
+}
+
+impl Default for ClientRiskWindow {
+    fn default() -> Self {
+        Self {
+            start: default_client_risk_window_start(),
+            end: 0,
+            unit: default_client_risk_window_unit(),
+        }
+    }
+}
+
+fn default_client_risk_window_start() -> i64 {
+    -1
+}
+
+fn default_client_risk_window_unit() -> ClientRiskWindowUnit {
+    ClientRiskWindowUnit::Hour
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TableOptions {
     pub table_id: u64,
@@ -1904,6 +1982,55 @@ impl TemporalStoreClient {
             return Err(ClientError::Status(response.status.message));
         }
         Ok(response)
+    }
+
+    pub fn risk_increment_table(
+        &self,
+        namespace: impl Into<String>,
+        table_name: impl Into<String>,
+        key: impl Into<String>,
+        amount: i64,
+        ttl_seconds: u64,
+        precision: ClientRiskPrecision,
+        occur_time_seconds: u64,
+    ) -> Result<(), ClientError> {
+        let table = self.table_for_command(namespace.into(), table_name.into())?;
+        let timestamp_ms = if occur_time_seconds == 0 {
+            now_unix_ms()
+        } else {
+            occur_time_seconds.saturating_mul(1_000)
+        };
+        table.risk_increment_with_options(
+            key,
+            timestamp_ms,
+            amount,
+            Some(precision.precision_ms()),
+            Some(ttl_seconds.saturating_mul(1_000)),
+        )
+    }
+
+    pub fn risk_count_table(
+        &self,
+        namespace: impl Into<String>,
+        table_name: impl Into<String>,
+        key: impl Into<String>,
+        precision: ClientRiskPrecision,
+        window: ClientRiskWindow,
+    ) -> Result<i64, ClientError> {
+        let table = self.table_for_command(namespace.into(), table_name.into())?;
+        let (start_ms, end_ms) = client_risk_window_bounds_ms(window, precision);
+        table.risk_count(key, start_ms, end_ms)
+    }
+
+    fn table_for_command(
+        &self,
+        namespace: String,
+        table_name: String,
+    ) -> Result<TemporalStoreTable, ClientError> {
+        if let Some(table) = self.cached_table(namespace.clone(), table_name.clone()) {
+            return Ok(table);
+        }
+        self.open_table_from_meta(namespace, table_name)
     }
 
     pub fn matrixark_batch_append_records(
@@ -4892,6 +5019,31 @@ fn now_unix_ms() -> u64 {
         .unwrap_or_default()
         .as_millis()
         .min(u128::from(u64::MAX)) as u64
+}
+
+fn client_risk_window_bounds_ms(
+    window: ClientRiskWindow,
+    precision: ClientRiskPrecision,
+) -> (u64, u64) {
+    let unit_ms = window.unit.duration_ms();
+    let precision_ms = i128::from(precision.precision_ms());
+    let now_ms = now_unix_ms() as i128;
+    let end_ms = if window.end <= 0 {
+        now_ms.saturating_add((window.end as i128).saturating_mul(unit_ms as i128))
+    } else {
+        (window.end as i128).saturating_mul(unit_ms as i128)
+    };
+    let start_ms = if window.start < 0 {
+        end_ms.saturating_add((window.start as i128).saturating_mul(unit_ms as i128))
+    } else {
+        (window.start as i128).saturating_mul(unit_ms as i128)
+    };
+    let start_ms = start_ms - start_ms.rem_euclid(precision_ms);
+    let end_ms = end_ms - end_ms.rem_euclid(precision_ms);
+    (
+        start_ms.max(0).min(i128::from(u64::MAX)) as u64,
+        end_ms.max(0).min(i128::from(u64::MAX)) as u64,
+    )
 }
 
 fn estimate_context_tokens(text: &str) -> u64 {
