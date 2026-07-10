@@ -2501,8 +2501,9 @@ impl TemporalStoreClient {
     fn matrixark_record_log_context_request_json(
         &self,
         op: &'static str,
-        request: MatrixArkRetrieveContextPackRequest,
+        mut request: MatrixArkRetrieveContextPackRequest,
     ) -> Result<String, ClientError> {
+        self.apply_matrixark_default_table(&mut request)?;
         let metaserver = if request.metaserver.trim().is_empty() {
             self.inner.options.proxy_addr.clone()
         } else {
