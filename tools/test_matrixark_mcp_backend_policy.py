@@ -17,6 +17,7 @@ try:
     from tools import matrixark_mcp_core as mcp_core
     from tools.run_matrixark_cpp_rust_scale_report import (
         comparison,
+        default_retrieve_warmup_queries,
         default_cpp_lib_path,
         effective_storage_tuning_from_env,
         fallback_flags_from_backend,
@@ -36,6 +37,7 @@ except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
     import matrixark_mcp_core as mcp_core
     from run_matrixark_cpp_rust_scale_report import (
         comparison,
+        default_retrieve_warmup_queries,
         default_cpp_lib_path,
         effective_storage_tuning_from_env,
         fallback_flags_from_backend,
@@ -65,6 +67,22 @@ _SHARED_CORRECTNESS_EVIDENCE = {
 
 
 class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
+    def test_scale_report_default_warmup_covers_rust_pack_lanes(self) -> None:
+        server = SimpleNamespace(_lane_worker_counts={"pack": 16, "retrieve": 16})
+        wrapped = SimpleNamespace(adapter=server)
+        lazy_wrapped = SimpleNamespace(
+            adapter=SimpleNamespace(
+                _native_retrieve_client=lambda: SimpleNamespace(
+                    _lane_worker_counts={"pack": 20, "retrieve": 20}
+                )
+            )
+        )
+
+        self.assertEqual(default_retrieve_warmup_queries(server, 12, -1), 16)
+        self.assertEqual(default_retrieve_warmup_queries(wrapped, 12, -1), 16)
+        self.assertEqual(default_retrieve_warmup_queries(lazy_wrapped, 12, -1), 20)
+        self.assertEqual(default_retrieve_warmup_queries(server, 12, 3), 3)
+
     def test_rust_proxy_context_record_counter_skips_non_context_json(self) -> None:
         client = mcp.MatrixArkRustCliClient.__new__(mcp.MatrixArkRustCliClient)
         client._context_record_counts = {}
