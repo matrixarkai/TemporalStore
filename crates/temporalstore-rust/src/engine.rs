@@ -10651,13 +10651,16 @@ fn mark_slot_index_page_deleted(
     let mut removed_addresses = Vec::new();
     ensure_slot_index_lookup_maps(shard);
     let lookup_enabled = !shard.slot_index.object_page_lookup.is_empty();
+    let object_key_target_slots = shard.slot_index.routing_slots_for_object_key(key);
     let target_slots = if !lookup_enabled {
-        shard
-            .slot_index
-            .slot_map
-            .keys()
-            .copied()
-            .collect::<BTreeSet<_>>()
+        object_key_target_slots.clone().unwrap_or_else(|| {
+            shard
+                .slot_index
+                .slot_map
+                .keys()
+                .copied()
+                .collect::<BTreeSet<_>>()
+        })
     } else {
         shard
             .slot_index
@@ -10709,15 +10712,19 @@ fn mark_slot_index_page_deleted(
         }
     }
     if lookup_enabled && !removed {
-        removed_addresses.reserve(
+        let fallback_slots = object_key_target_slots.unwrap_or_else(|| {
             shard
                 .slot_index
                 .slot_map
-                .values()
-                .map(|slot| slot.page_index.len())
-                .sum(),
-        );
-        for slot in shard.slot_index.slot_map.values_mut() {
+                .keys()
+                .copied()
+                .collect::<BTreeSet<_>>()
+        });
+        removed_addresses.reserve(slot_page_ref_capacity_for_slots(shard, &fallback_slots));
+        for routing_slot in fallback_slots {
+            let Some(slot) = shard.slot_index.slot_map.get_mut(&routing_slot) else {
+                continue;
+            };
             let mut slot_removed = false;
             let mut deleted_object_ids = BTreeSet::new();
             slot.page_index.retain(|_, page| {
