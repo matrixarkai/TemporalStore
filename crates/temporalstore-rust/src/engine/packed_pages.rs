@@ -186,7 +186,6 @@ pub(super) fn append_timestamped_kv_pages(
     }
 
     let start_offset = HOT_PAGE_OFFSET.fetch_add(chunks.len() as u64, Ordering::Relaxed);
-    let mut page_cache_entries = Vec::with_capacity(chunks.len());
     for (index, chunk) in chunks.into_iter().enumerate() {
         let timestamps = chunk
             .iter()
@@ -204,7 +203,7 @@ pub(super) fn append_timestamped_kv_pages(
             extent_id: None,
             sha256: None,
         };
-        page_cache_entries.push((
+        cache.put_memory_only(
             CacheKey::page_with_slot_generation(
                 shard_id,
                 address.page_segment_id,
@@ -214,15 +213,12 @@ pub(super) fn append_timestamped_kv_pages(
                 address.generation,
             ),
             packed,
-        ));
+        );
         refs.extend(
             timestamps
                 .into_iter()
                 .map(|timestamp_ms| (timestamp_ms, address.clone())),
         );
-    }
-    for (key, bytes) in page_cache_entries {
-        cache.put_memory_only(key, bytes);
     }
     Ok(refs)
 }

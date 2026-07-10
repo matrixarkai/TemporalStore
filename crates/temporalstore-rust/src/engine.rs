@@ -7656,7 +7656,6 @@ fn execute_on_shard(
                 }
             } else if async_storage && entries.len() >= hash_multiset_batch_memory_put_min() {
                 let object_id_prefix = stable_page_object_id_prefix(shard_id, "hash", &key);
-                let mut page_cache_entries = Vec::with_capacity(entries.len());
                 for (field, value) in entries {
                     let object_id =
                         stable_page_object_id_from_prefix(object_id_prefix, Some(&field));
@@ -7671,7 +7670,7 @@ fn execute_on_shard(
                         extent_id: None,
                         sha256: None,
                     };
-                    page_cache_entries.push((
+                    cache.put_memory_only(
                         CacheKey::page_with_slot_generation(
                             shard_id,
                             address.page_segment_id,
@@ -7681,7 +7680,7 @@ fn execute_on_shard(
                             address.generation,
                         ),
                         value,
-                    ));
+                    );
                     let field_existed = shard
                         .hashes
                         .get(&key)
@@ -7715,9 +7714,6 @@ fn execute_on_shard(
                     }
                     invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
                     applied.push((field, address));
-                }
-                for (cache_key, value) in page_cache_entries {
-                    cache.put_memory_only(cache_key, value);
                 }
             } else {
                 let object_id_prefix = stable_page_object_id_prefix(shard_id, "hash", &key);
@@ -15186,7 +15182,6 @@ fn append_timestamped_single_pages_batch(
     }
 
     let start_offset = HOT_PAGE_OFFSET.fetch_add(writes.len() as u64, Ordering::Relaxed);
-    let mut page_cache_entries = Vec::with_capacity(writes.len());
     let mut addresses = Vec::with_capacity(writes.len());
     for (index, write) in writes.iter().enumerate() {
         let object_id = stable_page_object_id(shard_id, write.kind, &write.object_key, None);
@@ -15202,7 +15197,7 @@ fn append_timestamped_single_pages_batch(
             extent_id: None,
             sha256: None,
         };
-        page_cache_entries.push((
+        cache.put_memory_only(
             CacheKey::page_with_slot_generation(
                 shard_id,
                 address.page_segment_id,
@@ -15212,11 +15207,8 @@ fn append_timestamped_single_pages_batch(
                 address.generation,
             ),
             packed,
-        ));
+        );
         addresses.push(address);
-    }
-    for (cache_key, value) in page_cache_entries {
-        cache.put_memory_only(cache_key, value);
     }
     Some(addresses)
 }
