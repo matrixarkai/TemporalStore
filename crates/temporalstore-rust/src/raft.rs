@@ -9877,6 +9877,56 @@ fn split_command_for_raft_limit(command: Command, limit: u64) -> Result<Vec<Comm
             }
             Ok(chunks)
         }
+        Command::SequenceAddWithPolicy { key, rows, policy } if rows.len() > 1 => {
+            let mut chunks = Vec::new();
+            let mut current = Vec::new();
+            for row in rows {
+                let mut candidate = current.clone();
+                candidate.push(row.clone());
+                let candidate_command = Command::SequenceAddWithPolicy {
+                    key: key.clone(),
+                    rows: candidate,
+                    policy,
+                };
+                let candidate_bytes = command_size_bytes(&candidate_command);
+                if candidate_bytes <= limit {
+                    current.push(row);
+                    continue;
+                }
+                if current.is_empty() {
+                    return Err(RaftError::LogEntryTooLarge {
+                        bytes: candidate_bytes,
+                        limit,
+                    });
+                }
+                chunks.push(Command::SequenceAddWithPolicy {
+                    key: key.clone(),
+                    rows: std::mem::take(&mut current),
+                    policy,
+                });
+                let single_command = Command::SequenceAddWithPolicy {
+                    key: key.clone(),
+                    rows: vec![row.clone()],
+                    policy,
+                };
+                let single_bytes = command_size_bytes(&single_command);
+                if single_bytes > limit {
+                    return Err(RaftError::LogEntryTooLarge {
+                        bytes: single_bytes,
+                        limit,
+                    });
+                }
+                current.push(row);
+            }
+            if !current.is_empty() {
+                chunks.push(Command::SequenceAddWithPolicy {
+                    key,
+                    rows: current,
+                    policy,
+                });
+            }
+            Ok(chunks)
+        }
         other => Err(RaftError::LogEntryTooLarge {
             bytes: command_size_bytes(&other),
             limit,

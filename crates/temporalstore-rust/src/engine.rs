@@ -8278,6 +8278,87 @@ fn execute_on_shard(
             }
             CommandResponse::Empty
         }
+        Command::SequenceAddWithPolicy { key, rows, policy } => {
+            let expired = remove_if_expired(cache, shard_id, shard, &key);
+            let series = shard.sequences.entry(key.clone()).or_default();
+            let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
+            let points = rows
+                .into_iter()
+                .filter_map(|row| {
+                    let exists = series.contains_key(&row.timestamp_ms);
+                    let should_write = match policy {
+                        FeatureWritePolicy::Upsert => true,
+                        FeatureWritePolicy::InsertIfAbsent => !exists,
+                        FeatureWritePolicy::ReplaceExisting => exists,
+                        FeatureWritePolicy::Block => false,
+                    };
+                    if !should_write {
+                        return None;
+                    }
+                    serde_json::to_vec(&row).ok().map(|value| FeaturePoint {
+                        timestamp_ms: row.timestamp_ms,
+                        value,
+                    })
+                })
+                .collect::<Vec<_>>();
+            let points = sorted_feature_points(points);
+            let replacing_existing_timestamp = points
+                .iter()
+                .any(|point| series.contains_key(&point.timestamp_ms));
+            let mut appended_addresses = Vec::new();
+            if let Ok(addresses) = append_timestamped_kv_pages(
+                cache,
+                page_store,
+                shard_id,
+                "sequence",
+                &key,
+                points,
+                routing_slot,
+                async_storage,
+            ) {
+                for (timestamp_ms, address) in addresses {
+                    appended_addresses.push(address.clone());
+                    series.insert(timestamp_ms, address);
+                    mutated = true;
+                }
+            }
+            let mut retention_trimmed = false;
+            while series.len() > feature_max_size {
+                if let Some(oldest) = series.keys().next().copied() {
+                    series.remove(&oldest);
+                    retention_trimmed = true;
+                } else {
+                    break;
+                }
+            }
+            if !appended_addresses.is_empty() && !replacing_existing_timestamp && !retention_trimmed
+            {
+                append_slot_index_object_pages(
+                    shard,
+                    shard_id,
+                    "sequence",
+                    &key,
+                    appended_addresses,
+                    mutated,
+                    start_routing_slot,
+                    end_routing_slot,
+                );
+            } else if expired || mutated || retention_trimmed {
+                let live_addresses = series.values().cloned().collect::<Vec<_>>();
+                sync_slot_index_object_pages(
+                    cache,
+                    shard,
+                    shard_id,
+                    "sequence",
+                    &key,
+                    live_addresses,
+                    mutated,
+                    start_routing_slot,
+                    end_routing_slot,
+                );
+            }
+            CommandResponse::Empty
+        }
         Command::SequenceQuery {
             key,
             start_ms,
@@ -15576,6 +15657,7 @@ fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::FeatureReplace { key, .. }
         | Command::FeatureDelete { key }
         | Command::SequenceAdd { key, .. }
+        | Command::SequenceAddWithPolicy { key, .. }
         | Command::IpsAdd { key, .. }
         | Command::IpsAddWithOptions { key, .. }
         | Command::IpsLoad { key, .. }
@@ -15802,6 +15884,7 @@ fn is_write_command(command: &Command) -> bool {
             | Command::FeatureReplace { .. }
             | Command::FeatureDelete { .. }
             | Command::SequenceAdd { .. }
+            | Command::SequenceAddWithPolicy { .. }
             | Command::IpsAdd { .. }
             | Command::IpsAddWithOptions { .. }
             | Command::IpsLoad { .. }

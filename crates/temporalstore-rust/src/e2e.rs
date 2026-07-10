@@ -424,6 +424,7 @@ fn is_write(command: &Command) -> bool {
             | Command::FeatureReplace { .. }
             | Command::FeatureDelete { .. }
             | Command::SequenceAdd { .. }
+            | Command::SequenceAddWithPolicy { .. }
             | Command::IpsAdd { .. }
             | Command::IpsAddWithOptions { .. }
             | Command::IpsLoad { .. }
