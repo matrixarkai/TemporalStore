@@ -15400,6 +15400,11 @@ fn object_manager_stats(
                         .sum::<usize>(),
                     shard.dirty_objects.len(),
                 )
+            } else if let Some(index_stats) = shard
+                .slot_index
+                .object_key_lookup_stats(&shard.dirty_objects)
+            {
+                index_stats
             } else {
                 let live_pages = shard
                     .slot_index
