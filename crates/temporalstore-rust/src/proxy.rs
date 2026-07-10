@@ -1319,6 +1319,7 @@ impl ProxyService {
                 }
             }
             ("POST", "/ProxyService/MatrixArkBatchAppendRecords")
+            | ("POST", "/matrixark/append_records")
             | ("POST", "/matrixark/batch_append_records") => {
                 match parse_json::<MatrixArkBatchAppendRequest>(&request.body) {
                     Ok(req) => match self.client().matrixark_batch_append_records_request(req) {
