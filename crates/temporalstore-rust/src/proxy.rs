@@ -1348,6 +1348,7 @@ pub struct ProxyRiskFolSetCommandRequest {
     pub namespace: String,
     pub table_name: String,
     pub key: String,
+    #[serde(default)]
     pub value: serde_json::Value,
     #[serde(default)]
     pub occur_time_ms: u64,
@@ -1357,6 +1358,7 @@ pub struct ProxyRiskFolSetCommandRequest {
     pub ttl_ms: u64,
     #[serde(default, alias = "ttl")]
     pub ttl_seconds: u64,
+    #[serde(default = "default_risk_fol_type")]
     pub fol_type: RiskFolType,
 }
 
@@ -1491,6 +1493,10 @@ impl ProxyRiskWindowUnit {
 
 fn default_risk_cpc_aggregator() -> String {
     "sum".to_string()
+}
+
+fn default_risk_fol_type() -> RiskFolType {
+    RiskFolType::First
 }
 
 fn proxy_optional_precision_ms_from_json<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
