@@ -801,6 +801,12 @@ fn retrieve_candidate_cache() -> &'static Mutex<BTreeMap<String, Arc<RetrieveCan
     RETRIEVE_CANDIDATE_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
+fn retrieve_context_pack_response_cache() -> &'static Mutex<BTreeMap<String, Value>> {
+    static RETRIEVE_CONTEXT_PACK_RESPONSE_CACHE: OnceLock<Mutex<BTreeMap<String, Value>>> =
+        OnceLock::new();
+    RETRIEVE_CONTEXT_PACK_RESPONSE_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
 fn matrixark_scan_cache() -> &'static Mutex<BTreeMap<String, Value>> {
     static MATRIXARK_SCAN_CACHE: OnceLock<Mutex<BTreeMap<String, Value>>> = OnceLock::new();
     MATRIXARK_SCAN_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
@@ -885,6 +891,23 @@ fn retrieve_candidate_cache_key(
     format!("{storage_prefix}:candidate_snapshot:{count}:{scope_key}:{secondary_key}")
 }
 
+fn retrieve_context_pack_response_cache_key(
+    storage_prefix: &str,
+    count: usize,
+    scope: Option<&Value>,
+    secondary_groups: &[Vec<String>],
+    query: &str,
+    max_selected_refs: usize,
+) -> String {
+    let scope_key = scope
+        .and_then(|value| serde_json::to_string(value).ok())
+        .unwrap_or_default();
+    let secondary_key = serde_json::to_string(secondary_groups).unwrap_or_default();
+    format!(
+        "{storage_prefix}:context_pack_response:{count}:{scope_key}:{secondary_key}:{max_selected_refs}:{query}"
+    )
+}
+
 fn storage_prefix_from_key(key: &str) -> Option<String> {
     if let Some(prefix) = key.strip_suffix(":record_count") {
         return Some(prefix.to_string());
@@ -918,6 +941,10 @@ fn invalidate_retrieve_candidate_cache(storage_prefix: &str) {
     if let Ok(mut cache) = retrieve_candidate_cache().lock() {
         cache.retain(|key, _| !key.starts_with(&prefix));
     }
+    let response_prefix = format!("{storage_prefix}:context_pack_response:");
+    if let Ok(mut cache) = retrieve_context_pack_response_cache().lock() {
+        cache.retain(|key, _| !key.starts_with(&response_prefix));
+    }
 }
 
 fn invalidate_retrieve_candidate_cache_for_keys<'a>(keys: impl IntoIterator<Item = &'a String>) {
@@ -932,6 +959,14 @@ fn invalidate_retrieve_candidate_cache_for_prefixes(prefixes: &HashSet<String>) 
     for prefix in prefixes {
         invalidate_retrieve_candidate_cache(&prefix);
     }
+}
+
+fn retrieve_context_pack_response_cache_max_entries() -> usize {
+    env::var("MATRIXARK_RUST_PROXY_CONTEXT_PACK_RESPONSE_CACHE_MAX_ENTRIES")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(512)
 }
 
 fn matrixark_scan_cache_key(command: &RecordLogRequest, count: u64) -> String {
@@ -3437,15 +3472,6 @@ fn retrieve_context_pack_output(
                 })
         })
         .unwrap_or_default();
-    let (snapshot, candidate_cache_hit) = load_retrieve_candidate_snapshot(
-        engine,
-        &storage_prefix,
-        &record_hash_key,
-        count,
-        scope,
-        &secondary_groups,
-    )?;
-
     let requested_max_selected_refs = request.max_selected_refs.max(
         request_record
             .pointer("/ranking/max_selected_refs")
@@ -3467,6 +3493,51 @@ fn retrieve_context_pack_output(
     } else {
         request.query.clone()
     };
+    let response_cache_key = retrieve_context_pack_response_cache_key(
+        &storage_prefix,
+        count,
+        scope,
+        &secondary_groups,
+        &query,
+        max_selected_refs,
+    );
+    if let Ok(cache) = retrieve_context_pack_response_cache().lock() {
+        if let Some(cached) = cache.get(&response_cache_key) {
+            let mut response = cached.clone();
+            if let Some(object) = response.as_object_mut() {
+                object.insert("cache_hit".to_string(), json!(true));
+                object.insert("context_pack_response_cache_hit".to_string(), json!(true));
+                if let Some(metrics) = object
+                    .get_mut("retrieval_metrics")
+                    .and_then(Value::as_object_mut)
+                {
+                    metrics.insert("cache_hit".to_string(), json!(true));
+                    metrics.insert("context_pack_response_cache_hit".to_string(), json!(true));
+                }
+                if let Some(pack) = object
+                    .get_mut("context_pack")
+                    .and_then(Value::as_object_mut)
+                {
+                    if let Some(metrics) = pack
+                        .get_mut("retrieval_metrics")
+                        .and_then(Value::as_object_mut)
+                    {
+                        metrics.insert("cache_hit".to_string(), json!(true));
+                        metrics.insert("context_pack_response_cache_hit".to_string(), json!(true));
+                    }
+                }
+            }
+            return context_pack_response_to_output(response, root, request.top_level_response);
+        }
+    }
+    let (snapshot, candidate_cache_hit) = load_retrieve_candidate_snapshot(
+        engine,
+        &storage_prefix,
+        &record_hash_key,
+        count,
+        scope,
+        &secondary_groups,
+    )?;
     let query_terms = query_terms(&query);
     let score_started = Instant::now();
     let mut candidates = Vec::with_capacity(snapshot.candidates.len());
@@ -3559,10 +3630,33 @@ fn retrieve_context_pack_output(
             .unwrap_or_else(|| json!({})),
         "context_pack": pack,
     });
+    if let Ok(mut cache) = retrieve_context_pack_response_cache().lock() {
+        cache.insert(response_cache_key, response.clone());
+        let max_entries = retrieve_context_pack_response_cache_max_entries();
+        while cache.len() > max_entries {
+            if let Some(first_key) = cache.keys().next().cloned() {
+                cache.remove(&first_key);
+            } else {
+                break;
+            }
+        }
+    }
+    context_pack_response_to_output(response, root, request.top_level_response)
+}
+
+fn context_pack_response_to_output(
+    response: Value,
+    root: PathBuf,
+    top_level_response: bool,
+) -> Result<RecordLogOutput, String> {
+    let selected_count = response
+        .get("count")
+        .and_then(Value::as_u64)
+        .unwrap_or_default() as usize;
     let mut output = empty_output(root);
     output.count = Some(selected_count);
     output.mode = "rust_proxy_native_context_pack".to_string();
-    if request.top_level_response {
+    if top_level_response {
         if let Some(object) = response.as_object() {
             for (key, value) in object {
                 if !matches!(key.as_str(), "ok" | "count") {
