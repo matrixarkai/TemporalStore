@@ -12530,6 +12530,7 @@ fn sync_slot_index_object_pages(
     end_routing_slot: u32,
 ) {
     let mut touched_slots = BTreeSet::new();
+    let mut layout_slots = BTreeSet::new();
     let mut removed_any = false;
     let mut removed_addresses = Vec::new();
     ensure_slot_index_lookup_maps(shard);
@@ -12663,7 +12664,12 @@ fn sync_slot_index_object_pages(
                 log_backed: entry.log_backed,
             },
         );
-        update_slot_layout(slot);
+        layout_slots.insert(routing_slot);
+    }
+    for routing_slot in layout_slots {
+        if let Some(slot) = shard.slot_index.slot_map.get_mut(&routing_slot) {
+            update_slot_layout(slot);
+        }
     }
 
     if removed_any || dirty {
@@ -12693,6 +12699,7 @@ fn append_slot_index_object_pages(
     }
     ensure_slot_index_lookup_maps(shard);
     let mut touched_slots = BTreeSet::new();
+    let mut layout_slots = BTreeSet::new();
     let mut unique_addresses = BTreeMap::<PagePhysicalIdentityKey, PageAddress>::new();
     for address in addresses {
         unique_addresses.insert(page_physical_identity_key(&address), address);
@@ -12747,11 +12754,16 @@ fn append_slot_index_object_pages(
             slot.deleted_object_index.remove(&object_id);
             slot.page_index
                 .insert(page_ref_key.clone(), page_index.clone());
-            update_slot_layout(slot);
+            layout_slots.insert(routing_slot);
         }
         shard
             .slot_index
             .insert_object_page_lookup(routing_slot, page_ref_key, &page_index);
+    }
+    for routing_slot in layout_slots {
+        if let Some(slot) = shard.slot_index.slot_map.get_mut(&routing_slot) {
+            update_slot_layout(slot);
+        }
     }
 }
 
