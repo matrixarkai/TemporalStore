@@ -45,6 +45,8 @@ struct RecordLogRequest {
     #[serde(default)]
     entries_compact: Vec<CompactHashEntry>,
     #[serde(default)]
+    entries_for_key: Vec<CompactFieldEntry>,
+    #[serde(default)]
     append_options: Value,
     #[serde(default)]
     count_key: Option<String>,
@@ -81,8 +83,20 @@ struct HashEntry {
 #[derive(Clone, Debug, Deserialize)]
 struct CompactHashEntry(String, String, String);
 
-fn single_hash_key(entries: &[HashEntry], compact_entries: &[CompactHashEntry]) -> Option<String> {
-    let mut key: Option<&str> = None;
+#[derive(Clone, Debug, Deserialize)]
+struct CompactFieldEntry(String, String);
+
+fn single_hash_key(
+    key_entries_key: Option<&str>,
+    entries: &[HashEntry],
+    compact_entries: &[CompactHashEntry],
+    entries_for_key: &[CompactFieldEntry],
+) -> Option<String> {
+    let mut key: Option<&str> = if entries_for_key.is_empty() {
+        None
+    } else {
+        key_entries_key
+    };
     for entry in entries {
         match key {
             Some(existing) if existing != entry.key => return None,
@@ -101,15 +115,25 @@ fn single_hash_key(entries: &[HashEntry], compact_entries: &[CompactHashEntry]) 
 }
 
 fn hash_multi_set_commands(
+    key_entries_key: String,
     entries: Vec<HashEntry>,
     compact_entries: Vec<CompactHashEntry>,
+    entries_for_key: Vec<CompactFieldEntry>,
 ) -> Vec<Command> {
-    let count = entries.len() + compact_entries.len();
+    let count = entries.len() + compact_entries.len() + entries_for_key.len();
     if count == 0 {
         return Vec::new();
     }
-    if let Some(key) = single_hash_key(&entries, &compact_entries) {
+    if let Some(key) = single_hash_key(
+        Some(key_entries_key.as_str()),
+        &entries,
+        &compact_entries,
+        &entries_for_key,
+    ) {
         let mut values = Vec::with_capacity(count);
+        for CompactFieldEntry(field, value) in entries_for_key {
+            values.push((field, value.into_bytes()));
+        }
         for entry in entries {
             values.push((entry.field, entry.value.into_bytes()));
         }
@@ -134,6 +158,12 @@ fn hash_multi_set_commands(
             .or_default()
             .push((field, value.into_bytes()));
     }
+    for CompactFieldEntry(field, value) in entries_for_key {
+        grouped
+            .entry(key_entries_key.clone())
+            .or_default()
+            .push((field, value.into_bytes()));
+    }
     grouped
         .into_iter()
         .map(|(key, entries)| Command::HashMultiSet { key, entries })
@@ -141,15 +171,25 @@ fn hash_multi_set_commands(
 }
 
 fn hash_multi_get_groups(
+    key_entries_key: String,
     entries: Vec<HashEntry>,
     compact_entries: Vec<CompactHashEntry>,
+    entries_for_key: Vec<CompactFieldEntry>,
 ) -> Vec<(String, Vec<String>)> {
-    let count = entries.len() + compact_entries.len();
+    let count = entries.len() + compact_entries.len() + entries_for_key.len();
     if count == 0 {
         return Vec::new();
     }
-    if let Some(key) = single_hash_key(&entries, &compact_entries) {
+    if let Some(key) = single_hash_key(
+        Some(key_entries_key.as_str()),
+        &entries,
+        &compact_entries,
+        &entries_for_key,
+    ) {
         let mut fields = Vec::with_capacity(count);
+        for CompactFieldEntry(field, _) in entries_for_key {
+            fields.push(field);
+        }
         for entry in entries {
             fields.push(entry.field);
         }
@@ -164,6 +204,12 @@ fn hash_multi_get_groups(
     }
     for CompactHashEntry(key, field, _) in compact_entries {
         grouped.entry(key).or_default().push(field);
+    }
+    for CompactFieldEntry(field, _) in entries_for_key {
+        grouped
+            .entry(key_entries_key.clone())
+            .or_default()
+            .push(field);
     }
     grouped.into_iter().collect::<Vec<_>>()
 }
@@ -2727,8 +2773,15 @@ fn execute_record_log_request(
             empty_output(root)
         }
         "batch_hset" => {
-            let count = request.entries.len() + request.entries_compact.len();
-            let commands = hash_multi_set_commands(request.entries, request.entries_compact);
+            let count = request.entries.len()
+                + request.entries_compact.len()
+                + request.entries_for_key.len();
+            let commands = hash_multi_set_commands(
+                request.key,
+                request.entries,
+                request.entries_compact,
+                request.entries_for_key,
+            );
             execute_empty_batch_runtime(&engine, commands, false)?;
             let mut output = empty_output(root);
             output.count = Some(count);
@@ -2736,7 +2789,12 @@ fn execute_record_log_request(
         }
         "matrixark_append_records" | "matrixark_batch_append_records" => {
             let mut count = request.entries.len() + request.entries_compact.len();
-            let mut commands = hash_multi_set_commands(request.entries, request.entries_compact);
+            let mut commands = hash_multi_set_commands(
+                String::new(),
+                request.entries,
+                request.entries_compact,
+                Vec::new(),
+            );
             commands.reserve(usize::from(!request.key.trim().is_empty()));
             if !request.key.trim().is_empty() {
                 commands.push(Command::StringSet {
@@ -2775,7 +2833,12 @@ fn execute_record_log_request(
             output
         }
         "batch_hget" => {
-            let grouped_entries = hash_multi_get_groups(request.entries, request.entries_compact);
+            let grouped_entries = hash_multi_get_groups(
+                request.key,
+                request.entries,
+                request.entries_compact,
+                request.entries_for_key,
+            );
             let mut records =
                 Vec::with_capacity(grouped_entries.iter().map(|(_, fields)| fields.len()).sum());
             let commands = grouped_entries
@@ -2899,8 +2962,14 @@ fn validate_request(request: &RecordLogRequest) -> Result<(), String> {
             require_non_empty("field", &request.field)
         }
         "batch_hset" | "batch_hget" => {
-            if request.entries.is_empty() && request.entries_compact.is_empty() {
+            if request.entries.is_empty()
+                && request.entries_compact.is_empty()
+                && request.entries_for_key.is_empty()
+            {
                 return Err("missing entries".to_string());
+            }
+            if !request.entries_for_key.is_empty() {
+                require_non_empty("key", &request.key)?;
             }
             for entry in &request.entries {
                 require_non_empty("key", &entry.key)?;
@@ -2910,9 +2979,17 @@ fn validate_request(request: &RecordLogRequest) -> Result<(), String> {
                 require_non_empty("key", key)?;
                 require_non_empty("field", field)?;
             }
+            for CompactFieldEntry(field, _) in &request.entries_for_key {
+                require_non_empty("field", field)?;
+            }
             Ok(())
         }
         "matrixark_append_records" | "matrixark_batch_append_records" => {
+            if !request.entries_for_key.is_empty() {
+                return Err(
+                    "entries_for_key is only supported for batch_hset and batch_hget".to_string(),
+                );
+            }
             if request.entries.is_empty()
                 && request.entries_compact.is_empty()
                 && request.key.trim().is_empty()
@@ -4011,6 +4088,7 @@ mod tests {
             max_selected_refs: 0,
             entries: Vec::new(),
             entries_compact: Vec::new(),
+            entries_for_key: Vec::new(),
             append_options: Value::Null,
             count_key: None,
             record_hash_key: None,
@@ -4170,6 +4248,7 @@ mod tests {
     #[test]
     fn hash_multi_set_commands_fast_path_for_single_hash_key() {
         let commands = hash_multi_set_commands(
+            String::new(),
             vec![HashEntry {
                 key: "raw".to_string(),
                 field: "a".to_string(),
@@ -4180,6 +4259,7 @@ mod tests {
                 "b".to_string(),
                 "2".to_string(),
             )],
+            Vec::new(),
         );
         assert_eq!(commands.len(), 1);
         match &commands[0] {
@@ -4195,6 +4275,7 @@ mod tests {
         }
 
         let commands = hash_multi_set_commands(
+            String::new(),
             vec![HashEntry {
                 key: "raw-a".to_string(),
                 field: "a".to_string(),
@@ -4205,6 +4286,7 @@ mod tests {
                 "b".to_string(),
                 "2".to_string(),
             )],
+            Vec::new(),
         );
         assert_eq!(commands.len(), 2);
     }
@@ -4212,6 +4294,7 @@ mod tests {
     #[test]
     fn hash_multi_get_groups_fast_path_for_single_hash_key() {
         let groups = hash_multi_get_groups(
+            String::new(),
             vec![HashEntry {
                 key: "raw".to_string(),
                 field: "a".to_string(),
@@ -4222,12 +4305,14 @@ mod tests {
                 "b".to_string(),
                 String::new(),
             )],
+            Vec::new(),
         );
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].0, "raw");
         assert_eq!(groups[0].1, vec!["a".to_string(), "b".to_string()]);
 
         let groups = hash_multi_get_groups(
+            String::new(),
             vec![HashEntry {
                 key: "raw-b".to_string(),
                 field: "b".to_string(),
@@ -4238,6 +4323,7 @@ mod tests {
                 "a".to_string(),
                 String::new(),
             )],
+            Vec::new(),
         );
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].0, "raw-a");
@@ -4724,6 +4810,60 @@ mod tests {
         assert_eq!(default_refs.len(), 2);
 
         env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
+    }
+
+    #[test]
+    fn hash_multi_set_groups_same_key_field_entries() {
+        let commands = hash_multi_set_commands(
+            "raw".to_string(),
+            Vec::new(),
+            Vec::new(),
+            vec![
+                CompactFieldEntry("0001".to_string(), "one".to_string()),
+                CompactFieldEntry("0002".to_string(), "two".to_string()),
+            ],
+        );
+        assert_eq!(commands.len(), 1);
+        match &commands[0] {
+            Command::HashMultiSet { key, entries } => {
+                assert_eq!(key, "raw");
+                assert_eq!(entries.len(), 2);
+                assert_eq!(entries[0].0, "0001");
+                assert_eq!(entries[0].1, b"one");
+                assert_eq!(entries[1].0, "0002");
+                assert_eq!(entries[1].1, b"two");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hash_multi_get_groups_same_key_field_entries() {
+        let groups = hash_multi_get_groups(
+            "raw".to_string(),
+            Vec::new(),
+            Vec::new(),
+            vec![
+                CompactFieldEntry("0001".to_string(), String::new()),
+                CompactFieldEntry("0002".to_string(), String::new()),
+            ],
+        );
+        assert_eq!(
+            groups,
+            vec![(
+                "raw".to_string(),
+                vec!["0001".to_string(), "0002".to_string()]
+            )]
+        );
+    }
+
+    #[test]
+    fn append_rejects_same_key_field_entries() {
+        let mut append = request("matrixark_batch_append_records");
+        append.key = "matrixark:test:raw:record_count".to_string();
+        append.entries_for_key = vec![CompactFieldEntry("0001".to_string(), "one".to_string())];
+        let error = validate_request(&append).expect_err("append should reject entries_for_key");
+        assert!(error.contains("entries_for_key is only supported"));
     }
 
     #[test]

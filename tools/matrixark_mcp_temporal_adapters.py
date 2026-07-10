@@ -4310,14 +4310,18 @@ class MatrixArkRustProxyClient:
                     self._count_context_record(kwargs.get("value"))
                 elif op in {"batch_hset", "matrixark_append_records", "matrixark_batch_append_records"}:
                     compact_entries = kwargs.get("entries_compact") or []
+                    entries_for_key = kwargs.get("entries_for_key") or []
                     entries = kwargs.get("entries") or []
-                    self._records_written_total += count or len(compact_entries) or len(entries)
+                    self._records_written_total += count or len(compact_entries) or len(entries_for_key) or len(entries)
                     for entry in entries:
                         if isinstance(entry, dict):
                             self._count_context_record(entry.get("value"))
                     for entry in compact_entries:
                         if isinstance(entry, (list, tuple)) and len(entry) >= 3:
                             self._count_context_record(entry[2])
+                    for entry in entries_for_key:
+                        if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                            self._count_context_record(entry[1])
                 elif op in {"get_string", "hget"}:
                     self._records_read_total += 1
                 elif op in {"batch_hget", "hgetall", "scan_hash"}:
@@ -4769,6 +4773,28 @@ class MatrixArkRustProxyClient:
     def hget(self, key: str, field: str) -> str:
         return self._call("hget", key=key, field=field)
 
+    @staticmethod
+    def _entries_for_single_key(compact_entries: list[list[str]]) -> tuple[str, list[list[str]]] | None:
+        if not compact_entries:
+            return None
+        first_key = compact_entries[0][0]
+        if not first_key:
+            return None
+        entries_for_key: list[list[str]] = []
+        for entry in compact_entries:
+            if len(entry) < 2 or entry[0] != first_key:
+                return None
+            value = entry[2] if len(entry) >= 3 else ""
+            entries_for_key.append([entry[1], value])
+        return first_key, entries_for_key
+
+    def _call_hash_batch_json(self, op: str, compact_entries: list[list[str]]) -> Json:
+        same_key = self._entries_for_single_key(compact_entries)
+        if same_key is not None:
+            key, entries_for_key = same_key
+            return self._call_json(op, key=key, entries_for_key=entries_for_key)
+        return self._call_json(op, entries_compact=compact_entries)
+
     def batch_hset(self, entries: list[Json]) -> None:
         if not entries:
             return
@@ -4784,7 +4810,7 @@ class MatrixArkRustProxyClient:
         ):
             self._coalesced_batch_hset(compact_entries)
             return
-        self._call_json("batch_hset", entries_compact=compact_entries)
+        self._call_hash_batch_json("batch_hset", compact_entries)
         self._scan_hash_cache_invalidate_keys(entry[0] for entry in compact_entries)
         self._context_pack_response_cache_clear()
 
@@ -4835,7 +4861,7 @@ class MatrixArkRustProxyClient:
                     merged.extend(item.get("entries_compact") or [])
                 error: BaseException | None = None
                 try:
-                    self._call_json("batch_hset", entries_compact=merged)
+                    self._call_hash_batch_json("batch_hset", merged)
                 except BaseException as exc:
                     error = exc
                 if error is None:
@@ -5112,7 +5138,7 @@ class MatrixArkRustProxyClient:
             and len(compact_entries) >= self._batch_hget_coalesce_min_records
         ):
             return self._coalesced_batch_hget(compact_entries)
-        response = self._call_json("batch_hget", entries_compact=compact_entries)
+        response = self._call_hash_batch_json("batch_hget", compact_entries)
         records = response.get("records", [])
         return records if isinstance(records, list) else []
 
@@ -5167,7 +5193,7 @@ class MatrixArkRustProxyClient:
                 error: BaseException | None = None
                 rows: list[Json] = []
                 try:
-                    response = self._call_json("batch_hget", entries_compact=merged)
+                    response = self._call_hash_batch_json("batch_hget", merged)
                     response_rows = response.get("records", [])
                     rows = response_rows if isinstance(response_rows, list) else []
                 except BaseException as exc:
