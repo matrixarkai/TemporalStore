@@ -3841,7 +3841,9 @@ class MatrixArkRustProxyClient:
         )
         self._write_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_WRITE_LANES", "4")))
         self._read_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_READ_LANES", "4")))
-        self._pack_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_PACK_LANES", "4")))
+        # Native ContextPack assembly is read-heavy and benefits from a wider
+        # warm process pool; writes/read metadata stay on the shared lane below.
+        self._pack_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_PACK_LANES", "16")))
         self._control_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_CONTROL_LANES", "1")))
         self._shared_process_mode = os.environ.get("MATRIXARK_RUST_PROXY_SHARED_PROCESS", "1").strip().lower() not in {"0", "false", "no"}
         self._dedicated_pack_lanes_enabled = (
