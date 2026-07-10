@@ -692,20 +692,27 @@ pub struct ProxyFeatureQueryCommandRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxyFeatureReplaceCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
+    #[serde(alias = "start_ts")]
     pub start_ms: u64,
+    #[serde(alias = "end_ts")]
     pub end_ms: u64,
+    #[serde(alias = "point_list")]
     pub points: Vec<crate::types::FeaturePoint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyFeatureAggQueryCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
+    #[serde(alias = "start_ts")]
     pub start_ms: u64,
+    #[serde(alias = "end_ts")]
     pub end_ms: u64,
     pub aggregator: String,
     #[serde(default)]
@@ -714,9 +721,11 @@ pub struct ProxyFeatureAggQueryCommandRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxySequenceAddCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
+    #[serde(alias = "row_list")]
     pub rows: Vec<crate::types::SequenceFeatureRow>,
     #[serde(default)]
     pub policy: Option<FeatureWritePolicy>,
@@ -724,10 +733,13 @@ pub struct ProxySequenceAddCommandRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxySequenceQueryCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
+    #[serde(alias = "start_ts")]
     pub start_ms: u64,
+    #[serde(alias = "end_ts")]
     pub end_ms: u64,
     pub count: usize,
     #[serde(default)]
@@ -736,6 +748,7 @@ pub struct ProxySequenceQueryCommandRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxySequenceBatchQueryCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub queries: Vec<SequenceQuerySpec>,
@@ -743,10 +756,13 @@ pub struct ProxySequenceBatchQueryCommandRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxyIpsAddCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
+    #[serde(alias = "ts", alias = "occur_time")]
     pub timestamp_ms: u64,
+    #[serde(deserialize_with = "proxy_bytes_from_json")]
     pub instance: Vec<u8>,
     #[serde(default)]
     pub action_type: Option<u32>,
@@ -758,6 +774,7 @@ pub struct ProxyIpsAddCommandRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyIpsQueryLastCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
@@ -766,10 +783,13 @@ pub struct ProxyIpsQueryLastCommandRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyIpsRangeCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
+    #[serde(alias = "start_ts")]
     pub start_ms: u64,
+    #[serde(alias = "end_ts")]
     pub end_ms: u64,
     #[serde(default)]
     pub count: Option<usize>,
@@ -781,6 +801,7 @@ pub struct ProxyIpsRangeCommandRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyIpsBatchQueryLastCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub keys: Vec<String>,
@@ -789,6 +810,7 @@ pub struct ProxyIpsBatchQueryLastCommandRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxyIpsLoadCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
@@ -797,40 +819,51 @@ pub struct ProxyIpsLoadCommandRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyIpsRemoveCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
+    #[serde(alias = "ts", alias = "occur_time")]
     pub timestamp_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyRiskIncrementCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
+    #[serde(alias = "ts", alias = "occur_time")]
     pub timestamp_ms: u64,
+    #[serde(alias = "value")]
     pub amount: i64,
     #[serde(default)]
     pub precision_ms: Option<u64>,
-    #[serde(default)]
+    #[serde(default, alias = "ttl")]
     pub ttl_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyRiskCountCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
+    #[serde(alias = "start_ts")]
     pub start_ms: u64,
+    #[serde(alias = "end_ts")]
     pub end_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyRiskQueryCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
+    #[serde(alias = "start_ts")]
     pub start_ms: u64,
+    #[serde(alias = "end_ts")]
     pub end_ms: u64,
     pub aggregator: String,
     #[serde(default)]
@@ -839,47 +872,61 @@ pub struct ProxyRiskQueryCommandRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyRiskChangeAddCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub key: String,
+    #[serde(alias = "ts", alias = "occur_time")]
     pub timestamp_ms: u64,
+    #[serde(deserialize_with = "proxy_bytes_from_json")]
     pub value: Vec<u8>,
     #[serde(default)]
     pub precision_ms: Option<u64>,
-    #[serde(default)]
+    #[serde(default, alias = "ttl")]
     pub ttl_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyRiskFamilySetCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub family: RiskFamily,
     pub key: String,
+    #[serde(alias = "ts", alias = "occur_time")]
     pub timestamp_ms: u64,
+    #[serde(alias = "value")]
     pub amount: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyRiskFamilyQueryCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub family: RiskFamily,
     pub key: String,
+    #[serde(alias = "start_ts")]
     pub start_ms: u64,
+    #[serde(alias = "end_ts")]
     pub end_ms: u64,
     pub aggregator: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyRiskFamilySetAndGetCommandRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
     pub family: RiskFamily,
     pub key: String,
+    #[serde(alias = "ts", alias = "occur_time")]
     pub timestamp_ms: u64,
+    #[serde(alias = "value")]
     pub amount: i64,
+    #[serde(alias = "start_ts")]
     pub start_ms: u64,
+    #[serde(alias = "end_ts")]
     pub end_ms: u64,
     pub aggregator: String,
 }
