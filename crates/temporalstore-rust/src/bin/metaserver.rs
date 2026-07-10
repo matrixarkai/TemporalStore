@@ -2347,10 +2347,12 @@ fn handle_query_service_route(meta: &MetaBackend, request: &HttpRequest) -> Opti
         | ("POST", "/QueryService/QueryClusterStatus") => {
             json_response(200, &backend_call!(meta, preflight_report))
         }
-        ("GET", "/QueryService/ListServer")
-        | ("POST", "/QueryService/ListServer")
-        | ("GET", "/query/list_server")
-        | ("POST", "/query/list_server") => json_response(200, &query_list_servers(meta, request)),
+        ("GET", "/QueryService/ListServer") | ("POST", "/QueryService/ListServer") => {
+            json_response(200, &query_list_servers(meta, request))
+        }
+        ("GET", "/query/list_server") | ("POST", "/query/list_server") => {
+            json_response(200, &fe_query_list_servers(meta, request))
+        }
         ("GET", "/QueryService/ListProxy") | ("POST", "/QueryService/ListProxy") => {
             json_response(200, &backend_call!(meta, list_proxies))
         }
@@ -2362,25 +2364,43 @@ fn handle_query_service_route(meta: &MetaBackend, request: &HttpRequest) -> Opti
         ("GET", "/QueryService/ListNamespace") | ("POST", "/QueryService/ListNamespace") => {
             json_response(200, &backend_call!(meta, list_namespaces))
         }
-        ("GET", "/QueryService/ListTable")
-        | ("POST", "/QueryService/ListTable")
-        | ("GET", "/query/list_table")
-        | ("POST", "/query/list_table") => json_response(200, &query_list_tables(meta, request)),
-        ("GET", "/QueryService/ListPartition") | ("GET", "/query/list_partition") => {
+        ("GET", "/QueryService/ListTable") | ("POST", "/QueryService/ListTable") => {
+            json_response(200, &query_list_tables(meta, request))
+        }
+        ("GET", "/query/list_table") | ("POST", "/query/list_table") => {
+            json_response(200, &fe_query_list_tables(meta, request))
+        }
+        ("GET", "/QueryService/ListPartition") => {
             json_response(200, &query_list_partition_from_query(meta, request))
         }
-        ("POST", "/QueryService/ListPartition") | ("POST", "/query/list_partition") => {
+        ("GET", "/query/list_partition") => {
+            json_response(200, &fe_query_list_partition_from_query(meta, request))
+        }
+        ("POST", "/QueryService/ListPartition") => {
             parse_or(&request.body, |req: QueryListPartitionRequest| {
                 query_list_partition(meta, req)
             })
         }
-        ("GET", "/QueryService/ListServerPartition") | ("GET", "/query/list_server_partition") => {
+        ("POST", "/query/list_partition") => {
+            parse_or(&request.body, |req: QueryListPartitionRequest| {
+                fe_query_list_partition(query_list_partition(meta, req))
+            })
+        }
+        ("GET", "/QueryService/ListServerPartition") => {
             json_response(200, &query_list_server_partition_from_query(meta, request))
         }
-        ("POST", "/QueryService/ListServerPartition")
-        | ("POST", "/query/list_server_partition") => {
+        ("GET", "/query/list_server_partition") => json_response(
+            200,
+            &fe_query_list_server_partition_from_query(meta, request),
+        ),
+        ("POST", "/QueryService/ListServerPartition") => {
             parse_or(&request.body, |req: QueryListServerPartitionRequest| {
                 query_list_server_partition(meta, req)
+            })
+        }
+        ("POST", "/query/list_server_partition") => {
+            parse_or(&request.body, |req: QueryListServerPartitionRequest| {
+                fe_query_list_server_partition(query_list_server_partition(meta, req))
             })
         }
         _ => return None,
@@ -2566,6 +2586,71 @@ fn query_list_tables(meta: &MetaBackend, request: &HttpRequest) -> serde_json::V
         serde_json::json!({
             "status": Status::error("query_response_error", err.to_string()),
         })
+    })
+}
+
+fn fe_query_list_servers(meta: &MetaBackend, request: &HttpRequest) -> serde_json::Value {
+    let response = query_list_servers(meta, request);
+    fe_query_items(response, "servers")
+}
+
+fn fe_query_list_tables(meta: &MetaBackend, request: &HttpRequest) -> serde_json::Value {
+    let response = query_list_tables(meta, request);
+    fe_query_items(response, "tables")
+}
+
+fn fe_query_list_partition_from_query(
+    meta: &MetaBackend,
+    request: &HttpRequest,
+) -> serde_json::Value {
+    let response = query_list_partition_from_query(meta, request);
+    fe_query_list_partition(response)
+}
+
+fn fe_query_list_partition(response: QueryListPartitionResponse) -> serde_json::Value {
+    fe_query_items(
+        serde_json::to_value(response).unwrap_or_else(|err| {
+            serde_json::json!({
+                "status": Status::error("query_response_error", err.to_string()),
+            })
+        }),
+        "info",
+    )
+}
+
+fn fe_query_list_server_partition_from_query(
+    meta: &MetaBackend,
+    request: &HttpRequest,
+) -> serde_json::Value {
+    let response = query_list_server_partition_from_query(meta, request);
+    fe_query_list_server_partition(response)
+}
+
+fn fe_query_list_server_partition(response: QueryListServerPartitionResponse) -> serde_json::Value {
+    fe_query_items(
+        serde_json::to_value(response).unwrap_or_else(|err| {
+            serde_json::json!({
+                "status": Status::error("query_response_error", err.to_string()),
+            })
+        }),
+        "node_partitions",
+    )
+}
+
+fn fe_query_items(mut response: serde_json::Value, field: &str) -> serde_json::Value {
+    let status = response
+        .get("status")
+        .cloned()
+        .unwrap_or_else(|| serde_json::to_value(Status::ok()).unwrap_or(serde_json::Value::Null));
+    let items = response
+        .as_object_mut()
+        .and_then(|object| object.remove(field))
+        .unwrap_or_else(|| serde_json::json!([]));
+    serde_json::json!({
+        "status": status,
+        "data": {
+            "items": items
+        }
     })
 }
 
