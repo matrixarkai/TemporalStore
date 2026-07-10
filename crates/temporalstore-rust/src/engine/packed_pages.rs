@@ -11,6 +11,7 @@ use super::{read_page_bytes, read_page_bytes_batch, read_page_bytes_cold, stable
 use crate::storage_config::{cold_scan_no_cache_fill, context_page_target_bytes};
 
 const COLD_SCAN_PACKED_PAGE_CACHE_LIMIT: usize = 128;
+const PACKED_PAGE_HASH_LOOKUP_MIN_REFS: usize = 16;
 
 pub(super) struct ColdScanPackedPageCache {
     pages: HashMap<BlockAddress, Option<Vec<FeaturePoint>>>,
@@ -398,6 +399,17 @@ fn fill_ordered_points_from_packed_page(
         let (result_index, timestamp_ms) = timestamp_refs[0];
         if let Some(point) = select_feature_point_from_page(page_points, timestamp_ms) {
             ordered_points[result_index] = Some(point);
+        }
+        return;
+    }
+
+    if timestamp_refs.len() < PACKED_PAGE_HASH_LOOKUP_MIN_REFS
+        || page_points.len() < PACKED_PAGE_HASH_LOOKUP_MIN_REFS
+    {
+        for (result_index, timestamp_ms) in timestamp_refs {
+            if let Some(point) = select_feature_point_from_page(page_points, timestamp_ms) {
+                ordered_points[result_index] = Some(point);
+            }
         }
         return;
     }
