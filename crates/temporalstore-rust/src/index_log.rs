@@ -97,8 +97,13 @@ impl LocalIndexLogStore {
             sequence: next_sequence,
             index: serde_json::from_slice(index_bytes)?,
         };
-        let mut bytes = serde_json::to_vec(&record)?;
-        bytes.push(b'\n');
+        let mut bytes = Vec::with_capacity(index_bytes.len().saturating_add(96));
+        write!(
+            &mut bytes,
+            "{{\"shard_id\":{shard_id},\"sequence\":{next_sequence},\"index\":"
+        )?;
+        bytes.extend_from_slice(index_bytes);
+        bytes.extend_from_slice(b"}\n");
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
