@@ -7,8 +7,9 @@ use crate::page_store::{
 };
 use crate::storage_config::{
     StorageTuningConfig, TS_BLOCK_INDEX_CACHE_BYTES, TS_BLOCK_SEGMENT_TARGET_BYTES,
-    TS_COLD_SCAN_NO_CACHE_FILL, TS_COMPACTION_WATERMARK_BYTES, TS_CONTEXT_PAGE_TARGET_BYTES,
-    TS_PAGE_INDEX_CACHE_BYTES, TS_STORAGE_ZONE_SIZE, TS_STREAM_MAX_BLOB_SIZE,
+    TS_BLOCK_STORE_SYNC_ON_APPEND, TS_COLD_SCAN_NO_CACHE_FILL, TS_COMPACTION_WATERMARK_BYTES,
+    TS_CONTEXT_PAGE_TARGET_BYTES, TS_PAGE_INDEX_CACHE_BYTES, TS_STORAGE_ZONE_SIZE,
+    TS_STREAM_MAX_BLOB_SIZE,
 };
 use crate::types::{ShardId, Status};
 use rustmtcache::{CacheEntryInfo, CacheStats};
@@ -2128,6 +2129,10 @@ pub fn effective_storage_tuning_from_env() -> BTreeMap<String, StorageContractVa
     values.insert(
         TS_BLOCK_INDEX_CACHE_BYTES.to_string(),
         contract_u64(tuning.block_index_cache_bytes),
+    );
+    values.insert(
+        TS_BLOCK_STORE_SYNC_ON_APPEND.to_string(),
+        contract_bool(tuning.block_store_sync_on_append),
     );
     values.insert(
         "effective_block_segment_target_bytes".to_string(),
