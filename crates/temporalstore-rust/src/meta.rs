@@ -370,6 +370,7 @@ pub struct UpdateManageInfoRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AddNamespaceRequest {
+    #[serde(alias = "name", alias = "namespace_name")]
     pub namespace: String,
 }
 
@@ -442,7 +443,9 @@ impl<'de> Deserialize<'de> for AddTableRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DeleteTableRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
+    #[serde(alias = "name")]
     pub table_name: String,
 }
 
@@ -456,9 +459,11 @@ pub struct PartitionStateChangeRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UpdateTableRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
+    #[serde(alias = "name")]
     pub table_name: String,
-    #[serde(default)]
+    #[serde(default, alias = "partition_set_num")]
     pub shard_count: Option<u64>,
     #[serde(default)]
     pub replica_count: Option<u64>,
@@ -539,7 +544,9 @@ pub struct TableServingOptionsPatch {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GetTableTopologyRequest {
+    #[serde(alias = "namespace_name")]
     pub namespace: String,
+    #[serde(alias = "name")]
     pub table_name: String,
     #[serde(default)]
     pub old_topology_version: u64,
