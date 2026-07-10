@@ -662,8 +662,8 @@ impl LocalBlockStore {
         }
         if let Some(file) = inner.active_append_file.as_mut() {
             file.write_all(&record.bytes)?;
-            file.flush()?;
             if sync_on_append {
+                file.flush()?;
                 file.sync_data()?;
             }
         }
@@ -2197,8 +2197,8 @@ fn roll_segment_inner(
 
 fn flush_active_append_file_inner(inner: &mut BlockStoreInner) -> Result<(), BlockStoreError> {
     if let Some(mut active_file) = inner.active_append_file.take() {
-        active_file.flush()?;
         if inner.options.sync_on_append {
+            active_file.flush()?;
             active_file.sync_data()?;
         }
     }
@@ -2221,8 +2221,8 @@ fn flush_active_append_buffer_inner(
     if let Some(active_file) = inner.active_append_file.as_mut() {
         active_file.write_all(pending_bytes)?;
         pending_bytes.clear();
-        active_file.flush()?;
         if sync_if_configured && sync_on_append {
+            active_file.flush()?;
             active_file.sync_data()?;
         }
     }
