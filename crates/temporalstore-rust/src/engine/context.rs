@@ -755,9 +755,13 @@ pub(super) fn context_child_ref_exists(
     let Some(series) = shard.context_children.get(object_key) else {
         return false;
     };
+    let child_timeline_slot = child_hash % CONTEXT_TIMELINE_FANOUT;
     let mut page_cache = HashMap::new();
     let mut batch = Vec::with_capacity(64);
     for (timeline_key, address) in series.iter().rev() {
+        if timeline_key % CONTEXT_TIMELINE_FANOUT != child_timeline_slot {
+            continue;
+        }
         batch.push((*timeline_key, address.clone()));
         if batch.len() >= 64 {
             if read_context_values_cached_with_page_cache::<ContextChildRef>(
