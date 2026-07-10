@@ -3542,19 +3542,8 @@ fn retrieve_context_pack_output(
     )?;
     let query_terms = query_terms(&query);
     let score_started = Instant::now();
-    let mut candidates = Vec::with_capacity(snapshot.candidates.len());
-    for (ordinal, candidate) in snapshot.candidates.iter().enumerate() {
-        let score = score_lowered_text(&candidate.lower_text, &query_terms);
-        candidates.push((score, ordinal));
-    }
+    let candidates = top_scored_candidates(&snapshot.candidates, &query_terms, max_selected_refs);
     let score_ms = score_started.elapsed().as_secs_f64() * 1000.0;
-    let keep = max_selected_refs.min(candidates.len());
-    if keep > 0 && candidates.len() > keep {
-        candidates
-            .select_nth_unstable_by(keep, |left, right| compare_scored_candidate(*left, *right));
-        candidates.truncate(keep);
-    }
-    candidates.sort_by(|left, right| compare_scored_candidate(*left, *right));
     let selected_refs: Vec<Value> = candidates
         .into_iter()
         .filter_map(|(_, ordinal)| snapshot.candidates.get(ordinal))
@@ -3587,6 +3576,7 @@ fn retrieve_context_pack_output(
             "selected_refs": selected_count,
             "dropped_refs": 0,
             "scanned_records": snapshot.scanned_records,
+            "candidate_score_strategy": "bounded_top_k",
             "index_postings_read": snapshot.index_postings_read,
             "placement_partitions_touched": snapshot.placement_partitions_touched,
             "candidate_cache_hit": candidate_cache_hit,
@@ -3807,6 +3797,29 @@ fn compare_scored_candidate(left: (f64, usize), right: (f64, usize)) -> std::cmp
         .then_with(|| left.1.cmp(&right.1))
 }
 
+fn top_scored_candidates(
+    candidates: &[CachedRetrieveCandidate],
+    query_terms: &[String],
+    keep: usize,
+) -> Vec<(f64, usize)> {
+    if keep == 0 || candidates.is_empty() {
+        return Vec::new();
+    }
+    let mut top = Vec::with_capacity(keep.min(candidates.len()));
+    for (ordinal, candidate) in candidates.iter().enumerate() {
+        top.push((
+            score_lowered_text(&candidate.lower_text, query_terms),
+            ordinal,
+        ));
+        if top.len() > keep {
+            top.sort_by(|left, right| compare_scored_candidate(*left, *right));
+            top.pop();
+        }
+    }
+    top.sort_by(|left, right| compare_scored_candidate(*left, *right));
+    top
+}
+
 fn record_log_root(request: &RecordLogRequest) -> PathBuf {
     if let Ok(root) = env::var("MATRIXARK_TEMPORALSTORE_RUST_ROOT") {
         return PathBuf::from(root);
@@ -3963,6 +3976,34 @@ mod tests {
             visibility_keys: Vec::new(),
             top_level_response: false,
         }
+    }
+
+    #[test]
+    fn bounded_top_k_scoring_preserves_score_and_ordinal_order() {
+        let candidates = vec![
+            CachedRetrieveCandidate {
+                selected_ref: json!({"ref_hash": 1}),
+                lower_text: "alpha".to_string(),
+            },
+            CachedRetrieveCandidate {
+                selected_ref: json!({"ref_hash": 2}),
+                lower_text: "beta alpha".to_string(),
+            },
+            CachedRetrieveCandidate {
+                selected_ref: json!({"ref_hash": 3}),
+                lower_text: "beta".to_string(),
+            },
+            CachedRetrieveCandidate {
+                selected_ref: json!({"ref_hash": 4}),
+                lower_text: "gamma".to_string(),
+            },
+        ];
+        let terms = vec!["alpha".to_string(), "beta".to_string()];
+        let selected = top_scored_candidates(&candidates, &terms, 2);
+        assert_eq!(selected, vec![(1.0, 1), (0.5, 0)]);
+
+        let empty_query = top_scored_candidates(&candidates, &[], 3);
+        assert_eq!(empty_query, vec![(0.0, 0), (0.0, 1), (0.0, 2)]);
     }
 
     #[test]
@@ -4527,6 +4568,11 @@ mod tests {
             pack.pointer("/retrieval_metrics/candidate_cache_hit")
                 .and_then(Value::as_bool),
             Some(false)
+        );
+        assert_eq!(
+            pack.pointer("/retrieval_metrics/candidate_score_strategy")
+                .and_then(Value::as_str),
+            Some("bounded_top_k")
         );
 
         let cached_output = execute_record_log_request(&engine, retrieve.clone(), root.clone())
