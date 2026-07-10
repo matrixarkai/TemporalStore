@@ -2001,14 +2001,19 @@ impl TemporalStoreClient {
     }
 
     pub fn default_table(&self) -> Result<TemporalStoreTable, ClientError> {
+        let (namespace, table_name) = self.default_table_names()?;
+        self.table_for_command(namespace, table_name)
+    }
+
+    fn default_table_names(&self) -> Result<(String, String), ClientError> {
         let namespace = self.inner.options.namespace_name.clone();
         let table_name = self.inner.options.table_name.clone();
-        if namespace.is_empty() || table_name.is_empty() {
+        if namespace.trim().is_empty() || table_name.trim().is_empty() {
             return Err(ClientError::InvalidRequest(
                 "default namespace_name and table_name are required".to_string(),
             ));
         }
-        self.table_for_command(namespace, table_name)
+        Ok((namespace, table_name))
     }
 
     pub fn put_string(
@@ -2262,6 +2267,31 @@ impl TemporalStoreClient {
         )
     }
 
+    pub fn matrixark_batch_append_default_table(
+        &self,
+        records: Vec<MatrixArkRecordAppend>,
+        options: MatrixArkBatchAppendOptions,
+    ) -> Result<usize, ClientError> {
+        let (namespace, table_name) = self.default_table_names()?;
+        self.matrixark_batch_append_records_with_options(namespace, table_name, records, options)
+    }
+
+    pub fn matrixark_batch_append_default_request(
+        &self,
+        mut request: MatrixArkBatchAppendRequest,
+    ) -> Result<usize, ClientError> {
+        if request.namespace.trim().is_empty() || request.table_name.trim().is_empty() {
+            let (namespace, table_name) = self.default_table_names()?;
+            if request.namespace.trim().is_empty() {
+                request.namespace = namespace;
+            }
+            if request.table_name.trim().is_empty() {
+                request.table_name = table_name;
+            }
+        }
+        self.matrixark_batch_append_records_request(request)
+    }
+
     pub fn matrixark_batch_append_records_with_options(
         &self,
         namespace: impl Into<String>,
@@ -2344,8 +2374,9 @@ impl TemporalStoreClient {
 
     pub fn matrixark_scan_candidates_native_json(
         &self,
-        request: MatrixArkRetrieveContextPackRequest,
+        mut request: MatrixArkRetrieveContextPackRequest,
     ) -> Result<Value, ClientError> {
+        self.apply_matrixark_default_table(&mut request)?;
         let namespace = request.namespace.clone();
         let table_name = request.table.clone();
         if namespace.trim().is_empty() {
@@ -2367,8 +2398,9 @@ impl TemporalStoreClient {
 
     pub fn matrixark_retrieve_context_pack_native_json(
         &self,
-        request: MatrixArkRetrieveContextPackRequest,
+        mut request: MatrixArkRetrieveContextPackRequest,
     ) -> Result<Value, ClientError> {
+        self.apply_matrixark_default_table(&mut request)?;
         let namespace = request.namespace.clone();
         let table_name = request.table.clone();
         if namespace.trim().is_empty() {
@@ -2386,6 +2418,22 @@ impl TemporalStoreClient {
             .map(Ok)
             .unwrap_or_else(|| self.open_table_from_meta(namespace, table_name))?;
         table.matrixark_retrieve_context_pack_native_json(request)
+    }
+
+    fn apply_matrixark_default_table(
+        &self,
+        request: &mut MatrixArkRetrieveContextPackRequest,
+    ) -> Result<(), ClientError> {
+        if request.namespace.trim().is_empty() || request.table.trim().is_empty() {
+            let (namespace, table_name) = self.default_table_names()?;
+            if request.namespace.trim().is_empty() {
+                request.namespace = namespace;
+            }
+            if request.table.trim().is_empty() {
+                request.table = table_name;
+            }
+        }
+        Ok(())
     }
 
     fn matrixark_record_log_context_request_json(
