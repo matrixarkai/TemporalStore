@@ -1,7 +1,8 @@
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use temporalstore_rust::http::{
     get_json_with_options, json_response, parse_json, post_json_with_options, serve, HttpRequest,
@@ -1122,12 +1123,17 @@ macro_rules! backend_call {
     };
 }
 
+static FE_CLUSTER_REGISTRY: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
+
 fn handle(
     meta: &MetaBackend,
     scheduler: &MetaTaskScheduler,
     request: HttpRequest,
 ) -> (u16, Vec<u8>) {
     if let Some(response) = handle_master_service_route(meta, &request) {
+        return response;
+    }
+    if let Some(response) = handle_fe_cluster_route(&request) {
         return response;
     }
     if let Some(response) = handle_fe_manage_route(meta, &request) {
@@ -1634,6 +1640,12 @@ struct FeManageRequest {
     data: serde_json::Value,
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct FeAddClusterRequest {
+    cluster: String,
+    uri: String,
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct QueryListPartitionRequest {
     #[serde(alias = "namespace_name")]
@@ -2110,6 +2122,33 @@ fn handle_manage_service_route(
     Some(response)
 }
 
+fn handle_fe_cluster_route(request: &HttpRequest) -> Option<(u16, Vec<u8>)> {
+    match (request.method.as_str(), request.path.as_str()) {
+        ("POST", "/HttpApiService/AddCluster") | ("POST", "/add_cluster") => {
+            Some(parse_or(&request.body, |req: FeAddClusterRequest| {
+                fe_add_cluster(req)
+            }))
+        }
+        _ => None,
+    }
+}
+
+fn fe_add_cluster(req: FeAddClusterRequest) -> serde_json::Value {
+    if req.cluster.trim().is_empty() || req.uri.trim().is_empty() {
+        return serde_json::json!({
+            "status": Status::error("failed_precondition", "invalid param"),
+        });
+    }
+    let registry = FE_CLUSTER_REGISTRY.get_or_init(|| Mutex::new(BTreeMap::new()));
+    registry
+        .lock()
+        .expect("FE cluster registry lock poisoned")
+        .insert(req.cluster, req.uri);
+    serde_json::json!({
+        "status": Status::ok(),
+    })
+}
+
 fn handle_fe_manage_route(meta: &MetaBackend, request: &HttpRequest) -> Option<(u16, Vec<u8>)> {
     match (request.method.as_str(), request.path.as_str()) {
         ("POST", "/manage") | ("POST", "/manage/request") => {
@@ -2392,13 +2431,30 @@ fn fe_query_action(meta: &MetaBackend, req: FeQueryActionRequest) -> serde_json:
 }
 
 fn fe_list_cluster() -> serde_json::Value {
+    let mut options = FE_CLUSTER_REGISTRY
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .expect("FE cluster registry lock poisoned")
+        .iter()
+        .map(|(cluster, uri)| {
+            serde_json::json!({
+                "value": cluster,
+                "label": cluster,
+                "cluster": cluster,
+                "uri": uri,
+            })
+        })
+        .collect::<Vec<_>>();
+    if options.is_empty() {
+        options.push(serde_json::json!({
+            "value": "default",
+            "label": "default"
+        }));
+    }
     serde_json::json!({
         "status": Status::ok(),
         "data": {
-            "options": [{
-                "value": "default",
-                "label": "default"
-            }]
+            "options": options
         }
     })
 }
