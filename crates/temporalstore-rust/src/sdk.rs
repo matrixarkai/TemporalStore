@@ -445,6 +445,16 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             key: command.key,
             count: command.limit.max(1) as usize,
         },
+        v1::command::Kind::IpsRemove(command) => types::Command::IpsRemove {
+            key: command.key,
+            timestamp_ms: command.timestamp_ms,
+        },
+        v1::command::Kind::IpsDelete(command) => types::Command::IpsDelete { key: command.key },
+        v1::command::Kind::IpsCount(command) => types::Command::IpsCount {
+            key: command.key,
+            start_ms: command.start_ms,
+            end_ms: command.end_ms,
+        },
         v1::command::Kind::RiskIncrement(command) => types::Command::RiskIncrement {
             key: command.key,
             timestamp_ms: command.timestamp_ms,
