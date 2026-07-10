@@ -564,6 +564,42 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             end_time_ms: command.end_time_ms,
             limit: nonzero_limit(command.limit),
         },
+        v1::command::Kind::ContextWritePackAudit(command) => {
+            let audit = command
+                .audit
+                .ok_or_else(|| TonicStatus::invalid_argument("context pack audit missing"))?;
+            types::Command::ContextWritePackAudit {
+                tenant_hash: stable_hash(&command.key),
+                audit: sdk_context_pack_audit_to_types(audit),
+            }
+        }
+        v1::command::Kind::ContextQueryPackAudit(command) => {
+            types::Command::ContextQueryPackAudit {
+                tenant_hash: stable_hash(&command.key),
+                session_hash: command.session_hash,
+                start_time_ms: command.start_time_ms,
+                end_time_ms: command.end_time_ms,
+                limit: nonzero_limit(command.limit),
+            }
+        }
+        v1::command::Kind::ContextMarkSummaryDirty(command) => {
+            let marker = command.marker.ok_or_else(|| {
+                TonicStatus::invalid_argument("context summary dirty marker missing")
+            })?;
+            types::Command::ContextMarkSummaryDirty {
+                tenant_hash: stable_hash(&command.key),
+                marker: sdk_context_summary_dirty_marker_to_types(marker),
+            }
+        }
+        v1::command::Kind::ContextQuerySummaryDirty(command) => {
+            types::Command::ContextQuerySummaryDirty {
+                tenant_hash: stable_hash(&command.key),
+                node_hash: stable_hash(&command.node_id),
+                start_time_ms: command.start_time_ms,
+                end_time_ms: command.end_time_ms,
+                limit: nonzero_limit(command.limit),
+            }
+        }
         v1::command::Kind::ContextWriteEvent(command) => {
             let event = command
                 .event
@@ -668,6 +704,46 @@ fn sdk_context_index_ref_to_types(index_ref: v1::ContextIndexRef) -> types::Cont
         primary_node_hash: index_ref.primary_node_hash,
         primary_event_time_ms: index_ref.primary_event_time_ms,
         event_id_hash: index_ref.event_id_hash,
+    }
+}
+
+fn sdk_context_audit_ref_to_types(audit_ref: v1::ContextAuditRef) -> types::ContextAuditRef {
+    types::ContextAuditRef {
+        node_hash: audit_ref.node_hash,
+        event_time_ms: audit_ref.event_time_ms,
+        reason: audit_ref.reason,
+    }
+}
+
+fn sdk_context_pack_audit_to_types(audit: v1::ContextPackAudit) -> types::ContextPackAudit {
+    types::ContextPackAudit {
+        query_id: audit.query_id,
+        session_hash: audit.session_hash,
+        request_time_ms: audit.request_time_ms,
+        query_hash: audit.query_hash,
+        max_prompt_tokens: audit.max_prompt_tokens,
+        selected_tokens: audit.selected_tokens,
+        selected_refs: audit
+            .selected_refs
+            .into_iter()
+            .map(sdk_context_audit_ref_to_types)
+            .collect(),
+        blocked_refs: audit
+            .blocked_refs
+            .into_iter()
+            .map(sdk_context_audit_ref_to_types)
+            .collect(),
+    }
+}
+
+fn sdk_context_summary_dirty_marker_to_types(
+    marker: v1::ContextSummaryDirtyMarker,
+) -> types::ContextSummaryDirtyMarker {
+    types::ContextSummaryDirtyMarker {
+        node_hash: marker.node_hash,
+        event_time_ms: marker.event_time_ms,
+        reason: marker.reason,
+        propagate_depth: marker.propagate_depth,
     }
 }
 
