@@ -5161,11 +5161,11 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         self._summary_client_lock = threading.RLock()
         self._dedicated_proxy_clients_enabled = os.environ.get(
             "MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS",
-            "0",
+            "1",
         ).strip().lower() in {"1", "true", "yes"}
         self._dedicated_pack_lanes_enabled = os.environ.get(
             "MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES",
-            "0",
+            "1",
         ).strip().lower() in {"1", "true", "yes"}
         self._publish_visibility_after_flush = (
             self._dedicated_proxy_clients_enabled or self._dedicated_pack_lanes_enabled
