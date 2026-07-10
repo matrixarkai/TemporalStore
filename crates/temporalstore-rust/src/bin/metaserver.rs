@@ -1664,6 +1664,13 @@ struct QueryLeaderRequest {
     cluster_name: String,
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct FeQueryActionRequest {
+    action: String,
+    #[serde(flatten)]
+    params: serde_json::Value,
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct QueryLeaderEndpoint {
     ip4: String,
@@ -2286,6 +2293,9 @@ fn handle_query_service_route(meta: &MetaBackend, request: &HttpRequest) -> Opti
         ("GET", "/QueryService/QueryManageInfo") | ("POST", "/QueryService/QueryManageInfo") => {
             json_response(200, &backend_call!(meta, info))
         }
+        ("POST", "/query/listx") => parse_or(&request.body, |req: FeQueryActionRequest| {
+            fe_query_action(meta, req)
+        }),
         ("GET", "/query/info") | ("POST", "/query/info") => {
             json_response(200, &backend_call!(meta, info))
         }
@@ -2326,6 +2336,64 @@ fn handle_query_service_route(meta: &MetaBackend, request: &HttpRequest) -> Opti
         _ => return None,
     };
     Some(response)
+}
+
+fn fe_query_action(meta: &MetaBackend, req: FeQueryActionRequest) -> serde_json::Value {
+    let action = req.action;
+    let body = serde_json::to_vec(&req.params).unwrap_or_else(|_| b"{}".to_vec());
+    let routed = match action.as_str() {
+        "info" => HttpRequest {
+            method: "GET".to_string(),
+            path: "/query/info".to_string(),
+            body: Vec::new(),
+        },
+        "list_server" => HttpRequest {
+            method: "GET".to_string(),
+            path: "/query/list_server".to_string(),
+            body: Vec::new(),
+        },
+        "list_table" => HttpRequest {
+            method: "GET".to_string(),
+            path: "/query/list_table".to_string(),
+            body: Vec::new(),
+        },
+        "list_partition" => HttpRequest {
+            method: "POST".to_string(),
+            path: "/query/list_partition".to_string(),
+            body,
+        },
+        "list_server_partition" => HttpRequest {
+            method: "POST".to_string(),
+            path: "/query/list_server_partition".to_string(),
+            body,
+        },
+        "list_cluster" => {
+            return serde_json::json!({
+                "status": Status::ok(),
+                "data": {
+                    "options": [{
+                        "value": "default",
+                        "label": "default"
+                    }]
+                }
+            });
+        }
+        _ => {
+            return serde_json::json!({
+                "status": Status::error("not_found", format!("unknown query action {}", action)),
+            });
+        }
+    };
+    match handle_query_service_route(meta, &routed) {
+        Some((_, body)) => serde_json::from_slice(&body).unwrap_or_else(|err| {
+            serde_json::json!({
+                "status": Status::error("query_response_error", err.to_string()),
+            })
+        }),
+        None => serde_json::json!({
+            "status": Status::error("not_found", format!("unknown query action {}", action)),
+        }),
+    }
 }
 
 fn query_leader(meta: &MetaBackend, req: Option<QueryLeaderRequest>) -> QueryLeaderResponse {
