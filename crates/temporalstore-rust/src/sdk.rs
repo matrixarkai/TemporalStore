@@ -634,6 +634,32 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             parent_hash: command.parent_hash,
             limit: nonzero_limit(command.limit),
         },
+        v1::command::Kind::ContextUpsertEmbedding(command) => {
+            let embedding = command
+                .embedding
+                .ok_or_else(|| TonicStatus::invalid_argument("context embedding missing"))?;
+            types::Command::ContextUpsertEmbedding {
+                tenant_hash: stable_hash(&command.key),
+                embedding: sdk_context_embedding_to_types(embedding),
+            }
+        }
+        v1::command::Kind::ContextQueryEmbeddings(command) => {
+            types::Command::ContextQueryEmbeddings {
+                tenant_hash: stable_hash(&command.key),
+                ref_hashes: command.ref_hashes,
+                limit: nonzero_limit(command.limit),
+            }
+        }
+        v1::command::Kind::ContextTraverseTree(command) => types::Command::ContextTraverseTree {
+            tenant_hash: stable_hash(&command.key),
+            start_node_hash: command.start_node_hash,
+            query_vector: command.query_vector,
+            max_depth: nonzero_u32(command.max_depth),
+            top_k_per_depth: nonzero_limit(command.top_k_per_depth),
+            max_children_scored_per_parent: nonzero_limit(command.max_children_scored_per_parent),
+            max_candidate_nodes: nonzero_limit(command.max_candidate_nodes),
+            leaf_only: command.leaf_only,
+        },
         v1::command::Kind::ContextWriteEvent(command) => {
             let event = command
                 .event
@@ -672,6 +698,10 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
 
 fn nonzero_limit(limit: u32) -> Option<usize> {
     (limit > 0).then_some(limit as usize)
+}
+
+fn nonzero_u32(value: u32) -> Option<u32> {
+    (value > 0).then_some(value)
 }
 
 fn sdk_risk_family_to_types(family: i32) -> Result<types::RiskFamily, TonicStatus> {
@@ -800,6 +830,16 @@ fn sdk_context_child_ref_to_types(child_ref: v1::ContextChildRef) -> types::Cont
         parent_hash: child_ref.parent_hash,
         child_hash: child_ref.child_hash,
         updated_at_ms: child_ref.updated_at_ms,
+    }
+}
+
+fn sdk_context_embedding_to_types(embedding: v1::ContextEmbedding) -> types::ContextEmbedding {
+    types::ContextEmbedding {
+        ref_hash: embedding.ref_hash,
+        level: embedding.level,
+        model_hash: embedding.model_hash,
+        vector: embedding.vector,
+        updated_at_ms: embedding.updated_at_ms,
     }
 }
 
