@@ -81,6 +81,32 @@ pub struct MatrixArkRecordAppend {
     pub key: String,
     pub field: String,
     pub value: Vec<u8>,
+    #[serde(default)]
+    pub route_json: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MatrixArkBatchAppendOptions {
+    #[serde(default)]
+    pub count_key: String,
+    #[serde(default)]
+    pub count_value: String,
+    #[serde(default)]
+    pub append_options_json: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MatrixArkBatchAppendRequest {
+    pub namespace: String,
+    pub table_name: String,
+    #[serde(default)]
+    pub records: Vec<MatrixArkRecordAppend>,
+    #[serde(default)]
+    pub count_key: String,
+    #[serde(default)]
+    pub count_value: String,
+    #[serde(default)]
+    pub append_options_json: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1886,7 +1912,25 @@ impl TemporalStoreClient {
         table_name: impl Into<String>,
         records: Vec<MatrixArkRecordAppend>,
     ) -> Result<usize, ClientError> {
+        self.matrixark_batch_append_records_with_options(
+            namespace,
+            table_name,
+            records,
+            MatrixArkBatchAppendOptions::default(),
+        )
+    }
+
+    pub fn matrixark_batch_append_records_with_options(
+        &self,
+        namespace: impl Into<String>,
+        table_name: impl Into<String>,
+        records: Vec<MatrixArkRecordAppend>,
+        options: MatrixArkBatchAppendOptions,
+    ) -> Result<usize, ClientError> {
         let record_count = records.len();
+        if record_count == 0 && options.count_key.is_empty() {
+            return Err(ClientError::InvalidRequest("entries is empty".to_string()));
+        }
         let mut grouped: BTreeMap<String, Vec<(String, Vec<u8>)>> = BTreeMap::new();
         for record in records {
             grouped
@@ -1894,10 +1938,16 @@ impl TemporalStoreClient {
                 .or_default()
                 .push((record.field, record.value));
         }
-        let commands = grouped
+        let mut commands = grouped
             .into_iter()
             .map(|(key, entries)| Command::HashMultiSet { key, entries })
             .collect::<Vec<_>>();
+        if !options.count_key.is_empty() {
+            commands.push(Command::StringSet {
+                key: options.count_key,
+                value: options.count_value.into_bytes(),
+            });
+        }
         let expected_responses = commands.len();
         let response = self.batch_execute_table(namespace, table_name, commands)?;
         if response.responses.len() != expected_responses {
@@ -1917,6 +1967,22 @@ impl TemporalStoreClient {
             }
         }
         Ok(record_count)
+    }
+
+    pub fn matrixark_batch_append_records_request(
+        &self,
+        request: MatrixArkBatchAppendRequest,
+    ) -> Result<usize, ClientError> {
+        self.matrixark_batch_append_records_with_options(
+            request.namespace,
+            request.table_name,
+            request.records,
+            MatrixArkBatchAppendOptions {
+                count_key: request.count_key,
+                count_value: request.count_value,
+                append_options_json: request.append_options_json,
+            },
+        )
     }
 
     pub fn matrixark_retrieve_context_pack_request_json(
