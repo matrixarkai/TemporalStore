@@ -1130,6 +1130,9 @@ fn handle(
     if let Some(response) = handle_master_service_route(meta, &request) {
         return response;
     }
+    if let Some(response) = handle_fe_manage_route(meta, &request) {
+        return response;
+    }
     if let Some(response) = handle_manage_service_route(meta, &request) {
         return response;
     }
@@ -1623,6 +1626,14 @@ struct MasterOpenTableResponse {
     open_version: u64,
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct FeManageRequest {
+    #[serde(default)]
+    cluster: String,
+    method: String,
+    data: serde_json::Value,
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct QueryListPartitionRequest {
     #[serde(alias = "namespace_name")]
@@ -2090,6 +2101,49 @@ fn handle_manage_service_route(
         _ => return None,
     };
     Some(response)
+}
+
+fn handle_fe_manage_route(meta: &MetaBackend, request: &HttpRequest) -> Option<(u16, Vec<u8>)> {
+    match (request.method.as_str(), request.path.as_str()) {
+        ("POST", "/manage") | ("POST", "/manage/request") => {
+            Some(parse_or(&request.body, |req: FeManageRequest| {
+                fe_manage(meta, req)
+            }))
+        }
+        _ => None,
+    }
+}
+
+fn fe_manage(meta: &MetaBackend, req: FeManageRequest) -> serde_json::Value {
+    let _ = req.cluster;
+    if req.method.trim().is_empty() {
+        return serde_json::json!({
+            "status": Status::error("bad_request", "missing method"),
+        });
+    }
+    let body = match serde_json::to_vec(&req.data) {
+        Ok(body) => body,
+        Err(err) => {
+            return serde_json::json!({
+                "status": Status::error("bad_request", err.to_string()),
+            });
+        }
+    };
+    let routed = HttpRequest {
+        method: "POST".to_string(),
+        path: format!("/ManageService/{}", req.method),
+        body,
+    };
+    match handle_manage_service_route(meta, &routed) {
+        Some((_, body)) => serde_json::from_slice(&body).unwrap_or_else(|err| {
+            serde_json::json!({
+                "status": Status::error("manage_response_error", err.to_string()),
+            })
+        }),
+        None => serde_json::json!({
+            "status": Status::error("not_found", format!("unknown manage method {}", req.method)),
+        }),
+    }
 }
 
 fn handle_raft_control_service_route(
