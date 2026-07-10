@@ -5839,16 +5839,23 @@ impl TemporalEngine {
         if publish_records.is_empty() {
             return Ok(0);
         }
-        let append_records = publish_records
-            .iter()
-            .map(|(_, _, bytes, object_id, routing_slot)| {
-                (bytes.clone(), *object_id, *routing_slot)
-            })
-            .collect::<Vec<BlockAppendRecord>>();
-        let published_addresses = self
-            .page_store
-            .append_batch_with_page_metadata(append_records)
-            .map_err(|err| Status::error("publish_visibility_failed", err.to_string()))?;
+        let published_addresses = if publish_records.len() == 1 {
+            let (_, _, bytes, object_id, routing_slot) = &publish_records[0];
+            vec![self
+                .page_store
+                .append_with_page_metadata(bytes, *object_id, *routing_slot)
+                .map_err(|err| Status::error("publish_visibility_failed", err.to_string()))?]
+        } else {
+            let append_records = publish_records
+                .iter()
+                .map(|(_, _, bytes, object_id, routing_slot)| {
+                    (bytes.clone(), *object_id, *routing_slot)
+                })
+                .collect::<Vec<BlockAppendRecord>>();
+            self.page_store
+                .append_batch_with_page_metadata(append_records)
+                .map_err(|err| Status::error("publish_visibility_failed", err.to_string()))?
+        };
         let (start_routing_slot, end_routing_slot) = self
             .infos
             .read()
