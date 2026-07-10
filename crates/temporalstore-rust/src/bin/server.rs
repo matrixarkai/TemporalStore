@@ -1114,6 +1114,13 @@ fn block_store_options_from_env() -> BlockStoreOptions {
             "TS_PAGE_STORE_COMPRESSION_LEVEL",
             defaults.compression_level,
         ),
+        sync_on_append: env_bool(
+            "TEMPORALSTORE_BLOCK_STORE_SYNC_ON_APPEND",
+            env_bool(
+                "TS_BLOCK_STORE_SYNC_ON_APPEND",
+                env_bool("TS_PAGE_STORE_SYNC_ON_APPEND", defaults.sync_on_append),
+            ),
+        ),
     }
 }
 
