@@ -2037,6 +2037,10 @@ impl TemporalStoreClient {
         self.default_table()?.get(key)
     }
 
+    pub fn exists(&self, key: impl Into<String>) -> Result<bool, ClientError> {
+        self.default_table()?.exists(key)
+    }
+
     pub fn delete_object(&self, key: impl Into<String>) -> Result<(), ClientError> {
         self.default_table()?.del(key)
     }
@@ -2070,6 +2074,26 @@ impl TemporalStoreClient {
         self.default_table()?.hgetall(key)
     }
 
+    pub fn hmget(
+        &self,
+        key: impl Into<String>,
+        fields: Vec<String>,
+    ) -> Result<Vec<Option<Vec<u8>>>, ClientError> {
+        self.default_table()?.hmget(key, fields)
+    }
+
+    pub fn hmset(
+        &self,
+        key: impl Into<String>,
+        entries: Vec<(String, Vec<u8>)>,
+    ) -> Result<(), ClientError> {
+        self.default_table()?.hmset(key, entries)
+    }
+
+    pub fn hlen(&self, key: impl Into<String>) -> Result<i64, ClientError> {
+        self.default_table()?.hlen(key)
+    }
+
     pub fn hdel(
         &self,
         key: impl Into<String>,
@@ -2088,6 +2112,14 @@ impl TemporalStoreClient {
 
     pub fn smembers(&self, key: impl Into<String>) -> Result<Vec<Vec<u8>>, ClientError> {
         self.default_table()?.smembers(key)
+    }
+
+    pub fn srem(
+        &self,
+        key: impl Into<String>,
+        member: impl Into<Vec<u8>>,
+    ) -> Result<(), ClientError> {
+        self.default_table()?.srem(key, member)
     }
 
     pub fn add_feature_points(
