@@ -60,6 +60,10 @@ pub enum ClientError {
 pub struct ClientOptions {
     pub proxy_addr: String,
     pub meta_addr: Option<String>,
+    #[serde(default)]
+    pub namespace_name: String,
+    #[serde(default)]
+    pub table_name: String,
     pub default_shard_id: ShardId,
     pub connect_timeout_ms: u64,
     pub io_timeout_ms: u64,
@@ -198,6 +202,16 @@ impl ClientOptions {
         }
     }
 
+    pub fn with_default_table(
+        mut self,
+        namespace_name: impl Into<String>,
+        table_name: impl Into<String>,
+    ) -> Self {
+        self.namespace_name = namespace_name.into();
+        self.table_name = table_name.into();
+        self
+    }
+
     fn http_options(&self) -> HttpRequestOptions {
         HttpRequestOptions {
             connect_timeout_ms: self.connect_timeout_ms,
@@ -221,6 +235,8 @@ impl Default for ClientOptions {
         Self {
             proxy_addr: "127.0.0.1:17000".to_string(),
             meta_addr: None,
+            namespace_name: String::new(),
+            table_name: String::new(),
             default_shard_id: 1,
             connect_timeout_ms: 200,
             io_timeout_ms: 200,
@@ -1982,6 +1998,91 @@ impl TemporalStoreClient {
             return Err(ClientError::Status(response.status.message));
         }
         Ok(response)
+    }
+
+    pub fn default_table(&self) -> Result<TemporalStoreTable, ClientError> {
+        let namespace = self.inner.options.namespace_name.clone();
+        let table_name = self.inner.options.table_name.clone();
+        if namespace.is_empty() || table_name.is_empty() {
+            return Err(ClientError::InvalidRequest(
+                "default namespace_name and table_name are required".to_string(),
+            ));
+        }
+        self.table_for_command(namespace, table_name)
+    }
+
+    pub fn put_string(
+        &self,
+        key: impl Into<String>,
+        value: impl Into<Vec<u8>>,
+    ) -> Result<(), ClientError> {
+        self.default_table()?.set(key, value)
+    }
+
+    pub fn put_string_with_ttl(
+        &self,
+        key: impl Into<String>,
+        value: impl Into<Vec<u8>>,
+        ttl_ms: u64,
+    ) -> Result<(), ClientError> {
+        self.default_table()?.setex(key, value, ttl_ms)
+    }
+
+    pub fn get_string(&self, key: impl Into<String>) -> Result<Option<Vec<u8>>, ClientError> {
+        self.default_table()?.get(key)
+    }
+
+    pub fn delete_object(&self, key: impl Into<String>) -> Result<(), ClientError> {
+        self.default_table()?.del(key)
+    }
+
+    pub fn expire(&self, key: impl Into<String>, ttl_ms: u64) -> Result<(), ClientError> {
+        self.default_table()?.expire(key, ttl_ms)
+    }
+
+    pub fn ttl(&self, key: impl Into<String>) -> Result<i64, ClientError> {
+        self.default_table()?.ttl(key)
+    }
+
+    pub fn hset(
+        &self,
+        key: impl Into<String>,
+        field: impl Into<String>,
+        value: impl Into<Vec<u8>>,
+    ) -> Result<(), ClientError> {
+        self.default_table()?.hset(key, field, value)
+    }
+
+    pub fn hget(
+        &self,
+        key: impl Into<String>,
+        field: impl Into<String>,
+    ) -> Result<Option<Vec<u8>>, ClientError> {
+        self.default_table()?.hget(key, field)
+    }
+
+    pub fn hgetall(&self, key: impl Into<String>) -> Result<Vec<(String, Vec<u8>)>, ClientError> {
+        self.default_table()?.hgetall(key)
+    }
+
+    pub fn hdel(
+        &self,
+        key: impl Into<String>,
+        field: impl Into<String>,
+    ) -> Result<(), ClientError> {
+        self.default_table()?.hdel(key, field)
+    }
+
+    pub fn sadd(
+        &self,
+        key: impl Into<String>,
+        member: impl Into<Vec<u8>>,
+    ) -> Result<(), ClientError> {
+        self.default_table()?.sadd(key, member)
+    }
+
+    pub fn smembers(&self, key: impl Into<String>) -> Result<Vec<Vec<u8>>, ClientError> {
+        self.default_table()?.smembers(key)
     }
 
     pub fn risk_increment_table(
