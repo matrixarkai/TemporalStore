@@ -9,6 +9,9 @@ use thiserror::Error;
 
 use crate::types::ShardId;
 
+const INDEX_LOG_SCAN_RECORD_ESTIMATE_BYTES: u64 = 192;
+const INDEX_LOG_SCAN_MAX_PREALLOC_RECORDS: usize = 4096;
+
 #[derive(Debug, Error)]
 pub enum IndexLogError {
     #[error("io error: {0}")]
@@ -215,7 +218,11 @@ impl LocalIndexLogStore {
         let mut reader = BufReader::new(file);
         let mut offset = start_offset;
         let mut total = 0;
-        let mut records = Vec::new();
+        let scan_capacity = max_bytes
+            .saturating_div(INDEX_LOG_SCAN_RECORD_ESTIMATE_BYTES)
+            .saturating_add(1)
+            .min(INDEX_LOG_SCAN_MAX_PREALLOC_RECORDS as u64) as usize;
+        let mut records = Vec::with_capacity(scan_capacity);
         loop {
             let mut line = Vec::new();
             let read = reader.read_until(b'\n', &mut line)?;
