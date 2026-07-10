@@ -7950,7 +7950,7 @@ fn execute_on_shard(
                     end_routing_slot,
                 );
             } else if expired || mutated || retention_trimmed {
-                let live_addresses = series.values().cloned().collect::<Vec<_>>();
+                let live_addresses = live_page_addresses_from_timestamp_series(series);
                 sync_slot_index_object_pages(
                     cache,
                     shard,
@@ -8034,7 +8034,7 @@ fn execute_on_shard(
                     end_routing_slot,
                 );
             } else if expired || mutated || retention_trimmed {
-                let live_addresses = series.values().cloned().collect::<Vec<_>>();
+                let live_addresses = live_page_addresses_from_timestamp_series(series);
                 sync_slot_index_object_pages(
                     cache,
                     shard,
@@ -8156,7 +8156,7 @@ fn execute_on_shard(
                     break;
                 }
             }
-            let live_addresses = series.values().cloned().collect::<Vec<_>>();
+            let live_addresses = live_page_addresses_from_timestamp_series(series);
             sync_slot_index_object_pages(
                 cache,
                 shard,
@@ -8267,7 +8267,7 @@ fn execute_on_shard(
                     end_routing_slot,
                 );
             } else if expired || mutated || retention_trimmed {
-                let live_addresses = series.values().cloned().collect::<Vec<_>>();
+                let live_addresses = live_page_addresses_from_timestamp_series(series);
                 sync_slot_index_object_pages(
                     cache,
                     shard,
@@ -8348,7 +8348,7 @@ fn execute_on_shard(
                     end_routing_slot,
                 );
             } else if expired || mutated || retention_trimmed {
-                let live_addresses = series.values().cloned().collect::<Vec<_>>();
+                let live_addresses = live_page_addresses_from_timestamp_series(series);
                 sync_slot_index_object_pages(
                     cache,
                     shard,
@@ -10771,6 +10771,14 @@ fn slot_page_ref_capacity_for_slots(shard: &ShardState, routing_slots: &BTreeSet
         .filter_map(|routing_slot| shard.slot_index.slot_map.get(routing_slot))
         .map(|slot| slot.page_index.len())
         .sum()
+}
+
+fn live_page_addresses_from_timestamp_series(
+    series: &BTreeMap<u64, PageAddress>,
+) -> Vec<PageAddress> {
+    let mut addresses = Vec::with_capacity(series.len());
+    addresses.extend(series.values().cloned());
+    addresses
 }
 
 fn associated_record_keys(key: &str) -> Vec<String> {
