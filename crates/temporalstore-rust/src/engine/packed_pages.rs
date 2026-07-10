@@ -385,15 +385,11 @@ pub(super) fn read_feature_points_cached_batch(
         };
         match decode_feature_page_strict(&bytes) {
             PackedFeaturePageDecode::Packed(page_points) => {
-                for (result_index, timestamp_ms) in request.timestamp_refs {
-                    if let Some(point) = page_points
-                        .iter()
-                        .find(|point| point.timestamp_ms == timestamp_ms)
-                        .cloned()
-                    {
-                        ordered_points[result_index] = Some(point);
-                    }
-                }
+                fill_ordered_points_from_packed_page(
+                    &mut ordered_points,
+                    request.timestamp_refs,
+                    &page_points,
+                );
             }
             PackedFeaturePageDecode::Legacy => {
                 for (result_index, timestamp_ms) in request.timestamp_refs {
@@ -407,6 +403,34 @@ pub(super) fn read_feature_points_cached_batch(
         }
     }
     ordered_points.into_iter().flatten().collect()
+}
+
+fn fill_ordered_points_from_packed_page(
+    ordered_points: &mut [Option<FeaturePoint>],
+    timestamp_refs: Vec<(usize, u64)>,
+    page_points: &[FeaturePoint],
+) {
+    if timestamp_refs.len() == 1 {
+        let (result_index, timestamp_ms) = timestamp_refs[0];
+        if let Some(point) = page_points
+            .iter()
+            .find(|point| point.timestamp_ms == timestamp_ms)
+            .cloned()
+        {
+            ordered_points[result_index] = Some(point);
+        }
+        return;
+    }
+
+    let points_by_timestamp = page_points
+        .iter()
+        .map(|point| (point.timestamp_ms, point))
+        .collect::<HashMap<_, _>>();
+    for (result_index, timestamp_ms) in timestamp_refs {
+        if let Some(point) = points_by_timestamp.get(&timestamp_ms) {
+            ordered_points[result_index] = Some((*point).clone());
+        }
+    }
 }
 
 struct PackedPageReadRequest {
