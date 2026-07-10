@@ -366,7 +366,26 @@ impl CoreIndex {
             });
         }
 
-        if !self.object_page_lookup.is_empty() {
+        if let Some(page_refs) = self.object_key_lookup.get(object_key) {
+            return page_refs.iter().any(|page_ref| {
+                if page_ref.model_id != model_id || page_ref.component.as_deref() != component {
+                    return false;
+                }
+                self.slot_map
+                    .get(&page_ref.routing_slot)
+                    .and_then(|slot| slot.page_index.get(&page_ref.page_ref_key))
+                    .map(|page| {
+                        !page.deleted
+                            && page.model_id == model_id
+                            && page.object_key == object_key
+                            && page.component.as_deref() == component
+                            && same_page_address(&page.address, address)
+                    })
+                    .unwrap_or(false)
+            });
+        }
+
+        if !self.object_page_lookup.is_empty() || !self.object_key_lookup.is_empty() {
             return false;
         }
 
