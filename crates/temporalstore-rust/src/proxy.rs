@@ -30,7 +30,8 @@ use crate::meta::{
 };
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, ExecuteRequest, ExecuteResponse,
-    FeatureFilter, FeaturePoint, FeatureWritePolicy, RiskFamily, RiskFolType, ShardId, Status,
+    FeatureFilter, FeaturePoint, FeatureWritePolicy, RiskFamily, RiskFolType, SequenceQuerySpec,
+    ShardId, Status, StringSetCondition,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -468,6 +469,19 @@ pub struct ProxySetExCommandRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxySetConditionalCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub value: Vec<u8>,
+    #[serde(default)]
+    pub ttl_ms: Option<u64>,
+    pub condition: StringSetCondition,
+    #[serde(default)]
+    pub return_old: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxyHashCommandRequest {
     pub namespace: String,
     pub table_name: String,
@@ -482,6 +496,15 @@ pub struct ProxyHashSetCommandRequest {
     pub key: String,
     pub field: String,
     pub value: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyHashIncrByCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub field: String,
+    pub increment: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -579,6 +602,13 @@ pub struct ProxySequenceQueryCommandRequest {
     pub count: usize,
     #[serde(default)]
     pub filters: Vec<FeatureFilter>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxySequenceBatchQueryCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub queries: Vec<SequenceQuerySpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1333,7 +1363,29 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/Delete") => {
+            ("POST", "/ProxyService/StringSetConditional") => {
+                match parse_json::<ProxySetConditionalCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::StringSetConditional {
+                            key: req.key,
+                            value: req.value,
+                            ttl_ms: req.ttl_ms,
+                            condition: req.condition,
+                            return_old: req.return_old,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/Delete") | ("POST", "/ProxyService/CommonDelete") => {
                 match parse_json::<ProxyKeyCommandRequest>(&request.body) {
                     Ok(req) => json_response(
                         200,
@@ -1379,7 +1431,8 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/FeatureAdd") => {
+            ("POST", "/ProxyService/FeatureAdd")
+            | ("POST", "/ProxyService/FeatureAppendWithPolicy") => {
                 match parse_json::<ProxyFeatureAddCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = if let Some(policy) = req.policy {
@@ -1406,7 +1459,8 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/FeatureQuery") => {
+            ("POST", "/ProxyService/FeatureQuery")
+            | ("POST", "/ProxyService/FeatureQueryFiltered") => {
                 match parse_json::<ProxyFeatureQueryCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = if req.filters.is_empty() {
@@ -1530,7 +1584,25 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/IpsAdd") => {
+            ("POST", "/ProxyService/SequenceBatchQuery") => {
+                match parse_json::<ProxySequenceBatchQueryCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::SequenceBatchQuery {
+                            queries: req.queries,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/IpsAdd") | ("POST", "/ProxyService/IpsAddWithOptions") => {
                 match parse_json::<ProxyIpsAddCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = Command::IpsAddWithOptions {
@@ -1572,7 +1644,7 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/IpsQuery") => {
+            ("POST", "/ProxyService/IpsQuery") | ("POST", "/ProxyService/IpsQueryWithOptions") => {
                 match parse_json::<ProxyIpsRangeCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = Command::IpsQueryRangeWithOptions {
@@ -1766,7 +1838,8 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/RiskIncrement") => {
+            ("POST", "/ProxyService/RiskIncrement")
+            | ("POST", "/ProxyService/RiskIncrementWithOptions") => {
                 match parse_json::<ProxyRiskIncrementCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = if req.precision_ms.is_some() || req.ttl_ms.is_some() {
@@ -2440,6 +2513,26 @@ impl ProxyService {
                             key: req.key,
                             field: req.field,
                             value: req.value,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/HIncrBy") | ("POST", "/ProxyService/HashIncrBy") => {
+                match parse_json::<ProxyHashIncrByCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::HashIncrBy {
+                            key: req.key,
+                            field: req.field,
+                            increment: req.increment,
                         };
                         json_response(
                             200,
