@@ -146,15 +146,19 @@ impl CoreIndex {
         self.object_page_lookup.clear();
         self.object_component_lookup.clear();
         self.object_key_lookup.clear();
-        let refs = self
+        let page_ref_count = self
             .slot_map
-            .iter()
-            .flat_map(|(routing_slot, slot)| {
-                slot.page_index.iter().map(move |(page_ref_key, page)| {
+            .values()
+            .map(|slot| slot.page_index.len())
+            .sum();
+        let mut refs = Vec::with_capacity(page_ref_count);
+        for (routing_slot, slot) in &self.slot_map {
+            refs.extend(
+                slot.page_index.iter().map(|(page_ref_key, page)| {
                     (*routing_slot, page_ref_key.clone(), page.clone())
-                })
-            })
-            .collect::<Vec<_>>();
+                }),
+            );
+        }
         for (routing_slot, page_ref_key, page) in refs {
             self.insert_object_page_lookup(routing_slot, page_ref_key, &page);
         }
