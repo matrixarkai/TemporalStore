@@ -24,6 +24,7 @@ SERVER_COUNT="${SERVER_COUNT:-3}"
 REPLICA_COUNT="${REPLICA_COUNT:-3}"
 DATA_RAFT_RAFT_PORT_DELTA="${DATA_RAFT_RAFT_PORT_DELTA:-1000}"
 DATA_RAFT_SNAPSHOT_PORT_DELTA="${DATA_RAFT_SNAPSHOT_PORT_DELTA:-2000}"
+DATA_RAFT_HEARTBEAT_CYCLE_MS="${DATA_RAFT_HEARTBEAT_CYCLE_MS:-10}"
 MATRIXARK_RAFT_STORAGE_ASYNC="${MATRIXARK_RAFT_STORAGE_ASYNC:-true}"
 LOCOMO_DATA_PATH="${LOCOMO_DATA_PATH:-/root/matrixark_benchmarks/data/locomo10.json}"
 LONGMEMEVAL_DATA_PATH="${LONGMEMEVAL_DATA_PATH:-/root/matrixark_benchmarks/data/longmemeval_s_cleaned_official_hf.json}"
@@ -82,7 +83,7 @@ rm -rf "${SMOKE_DIR}"
     SERVER_PORT="${SERVER_PORT}" \
     TABLE_ELECTION_POLICY=PROMOTE_SECONDARY \
     TABLE_PARTITION_UNIT_RELATION=ANTI_ENTROPY \
-    SERVER_EXTRA_FLAGS="--data_replication_mode=raft_consensus --data_raft_work_dir=${SMOKE_DIR}/data-raft --data_raft_raft_port_delta=${DATA_RAFT_RAFT_PORT_DELTA} --data_raft_snapshot_port_delta=${DATA_RAFT_SNAPSHOT_PORT_DELTA} --data_raft_enable_empty_snapshot_for_tests=false --data_raft_read_mode=bounded_stale --data_raft_bounded_stale_max_index_lag=16 --data_raft_propose_timeout_ms=5000 --server_heartbeat_interval_ms=500 --server_heartbeat_timeout_ms=1000 --server_meta_tinker_interval_ms=500 --storage_async=${MATRIXARK_RAFT_STORAGE_ASYNC} --storage_enable_evict=false --storage_enable_expire=false --storage_enable_page_gc=false --storage_enable_page_compaction=false --storage_enable_index_gc=false --storage_enable_oplog_rolling=false" \
+    SERVER_EXTRA_FLAGS="--data_replication_mode=raft_consensus --data_raft_work_dir=${SMOKE_DIR}/data-raft --data_raft_raft_port_delta=${DATA_RAFT_RAFT_PORT_DELTA} --data_raft_snapshot_port_delta=${DATA_RAFT_SNAPSHOT_PORT_DELTA} --data_raft_heartbeat_cycle_ms=${DATA_RAFT_HEARTBEAT_CYCLE_MS} --data_raft_enable_empty_snapshot_for_tests=false --data_raft_read_mode=bounded_stale --data_raft_bounded_stale_max_index_lag=16 --data_raft_propose_timeout_ms=5000 --server_heartbeat_interval_ms=500 --server_heartbeat_timeout_ms=1000 --server_meta_tinker_interval_ms=500 --storage_async=${MATRIXARK_RAFT_STORAGE_ASYNC} --storage_enable_evict=false --storage_enable_expire=false --storage_enable_page_gc=false --storage_enable_page_compaction=false --storage_enable_index_gc=false --storage_enable_oplog_rolling=false" \
     KEEP_RUNNING=1 \
     bash tools/smoke_ubuntu22.sh
 ) > "${RESULT_DIR}/bootstrap.log" 2>&1 &

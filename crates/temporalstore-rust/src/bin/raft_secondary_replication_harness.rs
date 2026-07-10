@@ -1647,7 +1647,7 @@ fn parse_options() -> HarnessOptions {
     let mut root = std::env::temp_dir().join(format!("temporalstore-secondary-raft-{}", now_ms()));
     let mut shard_id = 1u64;
     let mut auth_token = "local-raft-token".to_string();
-    let mut heartbeat_ms = 50u64;
+    let mut heartbeat_ms = 10u64;
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         let Some(raw) = args.next() else {
