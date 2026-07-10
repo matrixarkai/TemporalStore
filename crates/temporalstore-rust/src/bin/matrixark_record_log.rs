@@ -2641,7 +2641,8 @@ fn execute_record_log_request(
         }
         "batch_hset" => {
             let count = request.entries.len() + request.entries_compact.len();
-            let mut grouped: BTreeMap<String, Vec<(String, Vec<u8>)>> = BTreeMap::new();
+            let mut grouped: HashMap<String, Vec<(String, Vec<u8>)>> =
+                HashMap::with_capacity(count.max(1));
             for entry in request.entries {
                 grouped
                     .entry(entry.key)
@@ -2665,7 +2666,8 @@ fn execute_record_log_request(
         }
         "matrixark_append_records" | "matrixark_batch_append_records" => {
             let mut count = request.entries.len() + request.entries_compact.len();
-            let mut grouped: BTreeMap<String, Vec<(String, Vec<u8>)>> = BTreeMap::new();
+            let mut grouped: HashMap<String, Vec<(String, Vec<u8>)>> =
+                HashMap::with_capacity(count.max(1));
             for entry in request.entries {
                 grouped
                     .entry(entry.key)
