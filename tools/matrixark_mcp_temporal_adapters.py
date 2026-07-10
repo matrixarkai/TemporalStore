@@ -1801,7 +1801,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             self._observe_backend_command(elapsed_ms, records_written=len(records))
 
     def _note_pending_visibility_keys(self, keys: Iterable[str]) -> None:
-        if not getattr(self, "_publish_visibility_after_flush", False):
+        if not (
+            getattr(self, "_publish_visibility_after_flush", False)
+            or getattr(self, "_track_pending_visibility_keys", False)
+        ):
             return
         pending = getattr(self, "_pending_visibility_keys", None)
         if pending is None:
@@ -1816,6 +1819,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         if not getattr(self, "_publish_visibility_after_flush", False):
             return False
         return bool(getattr(self, "_dedicated_proxy_clients_enabled", False))
+
+    def _has_pending_visibility_keys(self) -> bool:
+        pending = getattr(self, "_pending_visibility_keys", None)
+        return bool(pending)
 
     def _consume_pending_visibility_keys(self) -> list[str]:
         pending = getattr(self, "_pending_visibility_keys", None)
@@ -5159,6 +5166,9 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         self._summary_client: Any | None = None
         self._retrieve_client_lock = threading.RLock()
         self._summary_client_lock = threading.RLock()
+        self._visibility_publish_lock = threading.RLock()
+        self._visibility_publish_thread: threading.Thread | None = None
+        self._visibility_publish_error: Exception | None = None
         self._dedicated_proxy_clients_enabled = os.environ.get(
             "MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS",
             "1",
@@ -5167,9 +5177,17 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
             "MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES",
             "1",
         ).strip().lower() in {"1", "true", "yes"}
-        self._publish_visibility_after_flush = (
+        self._publish_visibility_after_flush = os.environ.get(
+            "MATRIXARK_RUST_PROXY_PUBLISH_VISIBILITY_ON_FLUSH",
+            "0",
+        ).strip().lower() in {"1", "true", "yes"}
+        self._track_pending_visibility_keys = (
             self._dedicated_proxy_clients_enabled or self._dedicated_pack_lanes_enabled
         )
+        self._async_visibility_publish_after_flush = os.environ.get(
+            "MATRIXARK_RUST_PROXY_ASYNC_VISIBILITY_PUBLISH_AFTER_FLUSH",
+            "1",
+        ).strip().lower() in {"1", "true", "yes"}
         self._rust_proxy_path = proxy_path
         self._rust_request_timeout_ms = request_timeout_ms
         self._rust_io_timeout_ms = io_timeout_ms
@@ -5221,7 +5239,12 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
     def _native_summary_client(self) -> Any:
         """Return a dedicated summary/audit lane when the backend transport needs one."""
 
-        if getattr(self, "_rust_direct_cdylib_enabled", False) or not getattr(self, "_dedicated_proxy_clients_enabled", False):
+        if (
+            getattr(self, "_rust_direct_cdylib_enabled", False)
+            or not getattr(self, "_dedicated_proxy_clients_enabled", False)
+            or self._has_pending_visibility_keys()
+            or self._visibility_publish_active()
+        ):
             return self._client
         with self._summary_client_lock:
             if self._summary_client is None:
@@ -5271,7 +5294,12 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         blocking behind writes or audit flushes.
         """
 
-        if getattr(self, "_rust_direct_cdylib_enabled", False) or not getattr(self, "_dedicated_proxy_clients_enabled", False):
+        if (
+            getattr(self, "_rust_direct_cdylib_enabled", False)
+            or not getattr(self, "_dedicated_proxy_clients_enabled", False)
+            or self._has_pending_visibility_keys()
+            or self._visibility_publish_active()
+        ):
             return self._client
         with self._retrieve_client_lock:
             if self._retrieve_client is None:
@@ -5288,14 +5316,66 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
 
     def flush_direct_writes(self, timeout_s: float | None = None) -> None:
         super().flush_direct_writes(timeout_s=timeout_s)
-        if not getattr(self, "_publish_visibility_after_flush", False):
+        if not (
+            getattr(self, "_publish_visibility_after_flush", False)
+            or (
+                getattr(self, "_async_visibility_publish_after_flush", False)
+                and getattr(self, "_track_pending_visibility_keys", False)
+            )
+        ):
             return
         visibility_keys = self._consume_pending_visibility_keys()
         if not visibility_keys:
             return
+        if not getattr(self, "_publish_visibility_after_flush", False):
+            self._start_async_visibility_publish(visibility_keys)
+            return
+        self._publish_visibility_keys(visibility_keys)
+
+    def _publish_visibility_keys(self, visibility_keys: list[str]) -> None:
         publisher = getattr(self._client, "matrixark_publish_visibility", None)
         if callable(publisher):
             publisher(visibility_keys=visibility_keys)
+
+    def _visibility_publish_active(self) -> bool:
+        with self._visibility_publish_lock:
+            thread = self._visibility_publish_thread
+            return bool(thread is not None and thread.is_alive())
+
+    def _start_async_visibility_publish(self, visibility_keys: list[str]) -> None:
+        with self._visibility_publish_lock:
+            thread = self._visibility_publish_thread
+            if thread is not None and thread.is_alive():
+                self._note_pending_visibility_keys(visibility_keys)
+                return
+            self._visibility_publish_error = None
+
+            def publish() -> None:
+                try:
+                    self._publish_visibility_keys(visibility_keys)
+                except Exception as exc:  # pragma: no cover - surfaced by read drain.
+                    with self._visibility_publish_lock:
+                        self._visibility_publish_error = exc
+
+            thread = threading.Thread(target=publish, name="matrixark-rust-visibility-publisher", daemon=True)
+            self._visibility_publish_thread = thread
+            thread.start()
+
+    def _drain_visibility_publish_for_read(self) -> None:
+        while True:
+            with self._visibility_publish_lock:
+                thread = self._visibility_publish_thread
+            if thread is not None:
+                thread.join()
+            with self._visibility_publish_lock:
+                error = self._visibility_publish_error
+                if error is not None:
+                    self._visibility_publish_error = None
+                    raise MatrixArkError(f"rust visibility publish failed before native read: {error}") from error
+            visibility_keys = self._consume_pending_visibility_keys()
+            if not visibility_keys:
+                return
+            self._publish_visibility_keys(visibility_keys)
 
     def supports_native_candidate_prefilter(self) -> bool:
         return True
@@ -5304,6 +5384,7 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         return True
 
     def native_context_pack(self, request: Json) -> Json | None:
+        self._drain_visibility_publish_for_read()
         retriever = self._native_retrieve_client().matrixark_retrieve_context_pack
         try:
             response = retriever(
@@ -5353,6 +5434,7 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         selected_node_hashes: set[int] | None,
     ) -> Json | None:
         try:
+            self._drain_visibility_publish_for_read()
             response = self._native_retrieve_client().matrixark_scan_candidates(
                 count_key=self._count_key,
                 record_hash_key=self._record_hash_key,
