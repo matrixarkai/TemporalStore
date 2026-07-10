@@ -129,6 +129,16 @@ impl Default for RiskWindow {
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "proxy", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "proxy", serde(rename_all = "snake_case"))]
+pub enum RiskHType {
+    Count,
+    Min,
+    Max,
+    Change,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "proxy", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "proxy", serde(rename_all = "snake_case"))]
 pub enum RiskFolType {
     First,
     Last,
@@ -1842,6 +1852,40 @@ impl ProxyClient {
             .map(|_| ())
     }
 
+    pub fn risk_hset_with_options(
+        &self,
+        key: &str,
+        value: &str,
+        ttl_seconds: u64,
+        htype: RiskHType,
+        occur_time_seconds: u64,
+        precision: RiskPrecision,
+    ) -> Result<()> {
+        let body = self.proxy_service_body(
+            key,
+            &[
+                ("value", serde_json::json!(value)),
+                ("ttl", serde_json::json!(ttl_seconds)),
+                (
+                    "ttl_ms",
+                    serde_json::json!(ttl_seconds.saturating_mul(1000)),
+                ),
+                ("htype", serde_json::to_value(htype).map_err(json_error)?),
+                ("occur_time", serde_json::json!(occur_time_seconds)),
+                (
+                    "timestamp_ms",
+                    serde_json::json!(proxy_timestamp_ms(occur_time_seconds)),
+                ),
+                (
+                    "precision_ms",
+                    serde_json::json!(risk_precision_ms(precision)),
+                ),
+            ],
+        );
+        self.proxy_service_execute("/ProxyService/RiskHset", body)
+            .map(|_| ())
+    }
+
     pub fn risk_hquery(
         &self,
         key: &str,
@@ -2796,6 +2840,15 @@ mod tests {
         let _: fn(&ProxyClient, &str, &str) -> super::Result<()> = ProxyClient::set;
         let _: fn(&ProxyClient, &str) -> super::Result<Option<String>> = ProxyClient::get;
         let _: fn(&ProxyClient, &str, u64, i64) -> super::Result<()> = ProxyClient::risk_hset;
+        let _: fn(
+            &ProxyClient,
+            &str,
+            &str,
+            u64,
+            super::RiskHType,
+            u64,
+            super::RiskPrecision,
+        ) -> super::Result<()> = ProxyClient::risk_hset_with_options;
         let _: fn(
             &ProxyClient,
             &str,

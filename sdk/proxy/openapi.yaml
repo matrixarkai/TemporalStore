@@ -846,12 +846,31 @@ components:
       allOf:
         - $ref: '#/components/schemas/KeyRequest'
         - type: object
-          required: [timestamp_ms, amount]
           properties:
             timestamp_ms:
               type: integer
               format: int64
             amount:
+              type: integer
+              format: int64
+            value:
+              oneOf:
+                - type: string
+                - type: integer
+                  format: int64
+            ttl:
+              type: integer
+              format: int64
+            ttl_ms:
+              type: integer
+              format: int64
+            htype:
+              type: string
+              enum: [count, min, max, change]
+            occur_time:
+              type: integer
+              format: int64
+            precision_ms:
               type: integer
               format: int64
     RiskWindow:
