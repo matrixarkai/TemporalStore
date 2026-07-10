@@ -301,10 +301,11 @@ impl LocalWriteAheadLogStore {
                 metadata: Some(WriteAheadLogRecordMetadata::single_command(&command)),
                 command,
             };
-            let mut bytes = serde_json::to_vec(&record)?;
-            bytes.push(b'\n');
-            bytes_written = bytes_written.saturating_add(bytes.len() as u64);
-            batch_bytes.extend_from_slice(&bytes);
+            let before_len = batch_bytes.len();
+            serde_json::to_writer(&mut batch_bytes, &record)?;
+            batch_bytes.push(b'\n');
+            bytes_written =
+                bytes_written.saturating_add(batch_bytes.len().saturating_sub(before_len) as u64);
             records.push(record);
         }
         file.write_all(&batch_bytes)?;
