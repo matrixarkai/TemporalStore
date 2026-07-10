@@ -117,10 +117,8 @@ def default_retrieve_warmup_queries(server: Any, retrieve_workers: int, requeste
                 lane_counts = getattr(retrieve_client_factory(), "_lane_worker_counts", {}) or {}
             except Exception:
                 lane_counts = {}
-    return max(
-        retrieve_workers,
-        int(lane_counts.get("pack") or lane_counts.get("retrieve") or 0),
-    )
+    lane_count = int(lane_counts.get("pack") or lane_counts.get("retrieve") or 0)
+    return max(retrieve_workers, lane_count * 4)
 
 
 def default_canonical_release_out_dir() -> Path:
