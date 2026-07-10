@@ -1107,10 +1107,19 @@ impl LocalBlockStore {
             .root
             .clone();
         let path = segment_path(&root, page_segment_id);
+        let file_len = path.metadata()?.len();
+        if offset >= file_len {
+            let mut inner = self.inner.lock().expect("block store lock poisoned");
+            inner.stats.reads = inner.stats.reads.saturating_add(1);
+            return Ok(Vec::new());
+        }
+        let read_size = size.min(file_len.saturating_sub(offset));
         let mut file = File::open(path)?;
         file.seek(SeekFrom::Start(offset))?;
-        let mut bytes = Vec::with_capacity(size as usize);
-        Read::by_ref(&mut file).take(size).read_to_end(&mut bytes)?;
+        let mut bytes = Vec::with_capacity(read_size as usize);
+        Read::by_ref(&mut file)
+            .take(read_size)
+            .read_to_end(&mut bytes)?;
         let read = bytes.len() as u64;
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         inner.stats.reads = inner.stats.reads.saturating_add(1);
