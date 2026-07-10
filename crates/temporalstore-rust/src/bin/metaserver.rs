@@ -1654,10 +1654,14 @@ struct MasterUpdateTableRequest {
 #[allow(dead_code)]
 #[derive(Debug, serde::Deserialize)]
 struct MasterTableRequest {
-    #[serde(alias = "namespace_name")]
+    #[serde(default, alias = "namespace_name")]
     namespace: String,
-    #[serde(alias = "name")]
+    #[serde(default, alias = "name")]
     table_name: String,
+    #[serde(default)]
+    table_id: u64,
+    #[serde(default)]
+    force: bool,
     #[serde(default)]
     open_version: u64,
 }
@@ -2066,11 +2070,43 @@ fn master_update_table_request(req: MasterUpdateTableRequest) -> UpdateTableRequ
     }
 }
 
-fn master_delete_table_request(req: MasterTableRequest) -> DeleteTableRequest {
-    DeleteTableRequest {
-        namespace: req.namespace,
-        table_name: req.table_name,
+fn master_delete_table_request(
+    meta: &MetaBackend,
+    req: MasterTableRequest,
+) -> Result<DeleteTableRequest, Status> {
+    let _ = req.force;
+    let _ = req.open_version;
+    if !req.namespace.is_empty() || !req.table_name.is_empty() {
+        if req.namespace.is_empty() || req.table_name.is_empty() {
+            return Err(Status::error(
+                "bad_request",
+                "namespace_name and name are both required when either is provided",
+            ));
+        }
+        return Ok(DeleteTableRequest {
+            namespace: req.namespace,
+            table_name: req.table_name,
+        });
     }
+    if req.table_id == 0 {
+        return Err(Status::error(
+            "bad_request",
+            "table_id or namespace_name/name is required",
+        ));
+    }
+    let tables = backend_call!(meta, list_tables);
+    if !tables.status.ok {
+        return Err(tables.status);
+    }
+    tables
+        .tables
+        .into_iter()
+        .find(|table| table.table_id == req.table_id)
+        .map(|table| DeleteTableRequest {
+            namespace: table.namespace,
+            table_name: table.table_name,
+        })
+        .ok_or_else(|| Status::error("table_not_found", "table id not found"))
 }
 
 fn handle_manage_service_route(
@@ -2217,16 +2253,20 @@ fn handle_manage_service_route(
                 backend_call!(meta, update_table, master_update_table_request(req))
             })
         }
-        ("POST", "/ManageService/FreezeTable") => {
-            parse_or(&request.body, |req: MasterTableRequest| {
-                backend_call!(meta, freeze_table, master_delete_table_request(req))
-            })
-        }
-        ("POST", "/ManageService/DropTable") => {
-            parse_or(&request.body, |req: MasterTableRequest| {
-                backend_call!(meta, delete_table, master_delete_table_request(req))
-            })
-        }
+        ("POST", "/ManageService/FreezeTable") => parse_or(
+            &request.body,
+            |req: MasterTableRequest| match master_delete_table_request(meta, req) {
+                Ok(request) => backend_call!(meta, freeze_table, request),
+                Err(status) => AckResponse { status },
+            },
+        ),
+        ("POST", "/ManageService/DropTable") => parse_or(
+            &request.body,
+            |req: MasterTableRequest| match master_delete_table_request(meta, req) {
+                Ok(request) => backend_call!(meta, delete_table, request),
+                Err(status) => AckResponse { status },
+            },
+        ),
         ("POST", "/ManageService/FreezePartition") => {
             parse_or(&request.body, |req: PartitionStateChangeRequest| {
                 backend_call!(meta, freeze_partition, req)
