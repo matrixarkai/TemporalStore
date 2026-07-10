@@ -2085,6 +2085,61 @@ impl TemporalStoreClient {
         self.default_table()?.smembers(key)
     }
 
+    pub fn add_feature_points(
+        &self,
+        key: impl Into<String>,
+        points: Vec<FeaturePoint>,
+        policy: FeatureWritePolicy,
+    ) -> Result<bool, ClientError> {
+        self.default_table()?
+            .feature_append_with_policy(key, points, policy)
+    }
+
+    pub fn query_feature_points(
+        &self,
+        key: impl Into<String>,
+        start_ms: u64,
+        end_ms: u64,
+        count: Option<usize>,
+    ) -> Result<Vec<FeaturePoint>, ClientError> {
+        self.default_table()?
+            .feature_query(key, start_ms, end_ms, count)
+    }
+
+    pub fn query_feature_points_filtered(
+        &self,
+        key: impl Into<String>,
+        start_ms: u64,
+        end_ms: u64,
+        count: Option<usize>,
+        filters: Vec<FeatureFilter>,
+    ) -> Result<Vec<FeaturePoint>, ClientError> {
+        self.default_table()?
+            .feature_query_filtered(key, start_ms, end_ms, count, filters)
+    }
+
+    pub fn add_sequence_feature_rows(
+        &self,
+        key: impl Into<String>,
+        rows: Vec<SequenceFeatureRow>,
+        policy: FeatureWritePolicy,
+    ) -> Result<(), ClientError> {
+        self.default_table()?
+            .sequence_add_with_policy(key, rows, policy)
+    }
+
+    pub fn query_sequence_feature_rows(
+        &self,
+        key: impl Into<String>,
+        start_ms: u64,
+        end_ms: u64,
+        count: usize,
+        filters: Vec<FeatureFilter>,
+    ) -> Result<Vec<SequenceFeatureRow>, ClientError> {
+        self.default_table()?
+            .sequence_query(key, start_ms, end_ms, count, filters)
+    }
+
     pub fn risk_increment_table(
         &self,
         namespace: impl Into<String>,
