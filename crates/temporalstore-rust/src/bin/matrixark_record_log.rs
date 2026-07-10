@@ -81,6 +81,65 @@ struct HashEntry {
 #[derive(Clone, Debug, Deserialize)]
 struct CompactHashEntry(String, String, String);
 
+fn single_hash_key(entries: &[HashEntry], compact_entries: &[CompactHashEntry]) -> Option<String> {
+    let mut key: Option<&str> = None;
+    for entry in entries {
+        match key {
+            Some(existing) if existing != entry.key => return None,
+            Some(_) => {}
+            None => key = Some(&entry.key),
+        }
+    }
+    for CompactHashEntry(candidate, _, _) in compact_entries {
+        match key {
+            Some(existing) if existing != candidate => return None,
+            Some(_) => {}
+            None => key = Some(candidate),
+        }
+    }
+    key.map(str::to_string)
+}
+
+fn hash_multi_set_commands(
+    entries: Vec<HashEntry>,
+    compact_entries: Vec<CompactHashEntry>,
+) -> Vec<Command> {
+    let count = entries.len() + compact_entries.len();
+    if count == 0 {
+        return Vec::new();
+    }
+    if let Some(key) = single_hash_key(&entries, &compact_entries) {
+        let mut values = Vec::with_capacity(count);
+        for entry in entries {
+            values.push((entry.field, entry.value.into_bytes()));
+        }
+        for CompactHashEntry(_, field, value) in compact_entries {
+            values.push((field, value.into_bytes()));
+        }
+        return vec![Command::HashMultiSet {
+            key,
+            entries: values,
+        }];
+    }
+    let mut grouped: HashMap<String, Vec<(String, Vec<u8>)>> = HashMap::with_capacity(count);
+    for entry in entries {
+        grouped
+            .entry(entry.key)
+            .or_default()
+            .push((entry.field, entry.value.into_bytes()));
+    }
+    for CompactHashEntry(key, field, value) in compact_entries {
+        grouped
+            .entry(key)
+            .or_default()
+            .push((field, value.into_bytes()));
+    }
+    grouped
+        .into_iter()
+        .map(|(key, entries)| Command::HashMultiSet { key, entries })
+        .collect::<Vec<_>>()
+}
+
 #[derive(Debug, Serialize)]
 struct HashReadRecord {
     key: String,
@@ -2641,24 +2700,7 @@ fn execute_record_log_request(
         }
         "batch_hset" => {
             let count = request.entries.len() + request.entries_compact.len();
-            let mut grouped: HashMap<String, Vec<(String, Vec<u8>)>> =
-                HashMap::with_capacity(count.max(1));
-            for entry in request.entries {
-                grouped
-                    .entry(entry.key)
-                    .or_default()
-                    .push((entry.field, entry.value.into_bytes()));
-            }
-            for CompactHashEntry(key, field, value) in request.entries_compact {
-                grouped
-                    .entry(key)
-                    .or_default()
-                    .push((field, value.into_bytes()));
-            }
-            let commands = grouped
-                .into_iter()
-                .map(|(key, entries)| Command::HashMultiSet { key, entries })
-                .collect::<Vec<_>>();
+            let commands = hash_multi_set_commands(request.entries, request.entries_compact);
             execute_empty_batch_runtime(&engine, commands, false)?;
             let mut output = empty_output(root);
             output.count = Some(count);
@@ -2666,25 +2708,8 @@ fn execute_record_log_request(
         }
         "matrixark_append_records" | "matrixark_batch_append_records" => {
             let mut count = request.entries.len() + request.entries_compact.len();
-            let mut grouped: HashMap<String, Vec<(String, Vec<u8>)>> =
-                HashMap::with_capacity(count.max(1));
-            for entry in request.entries {
-                grouped
-                    .entry(entry.key)
-                    .or_default()
-                    .push((entry.field, entry.value.into_bytes()));
-            }
-            for CompactHashEntry(key, field, value) in request.entries_compact {
-                grouped
-                    .entry(key)
-                    .or_default()
-                    .push((field, value.into_bytes()));
-            }
-            let mut commands =
-                Vec::with_capacity(grouped.len() + usize::from(!request.key.trim().is_empty()));
-            for (key, entries) in grouped {
-                commands.push(Command::HashMultiSet { key, entries });
-            }
+            let mut commands = hash_multi_set_commands(request.entries, request.entries_compact);
+            commands.reserve(usize::from(!request.key.trim().is_empty()));
             if !request.key.trim().is_empty() {
                 commands.push(Command::StringSet {
                     key: request.key,
@@ -4119,6 +4144,48 @@ mod tests {
             "{}".to_string(),
         )];
         assert_eq!(prefixed_root, record_log_root(&compact_only));
+    }
+
+    #[test]
+    fn hash_multi_set_commands_fast_path_for_single_hash_key() {
+        let commands = hash_multi_set_commands(
+            vec![HashEntry {
+                key: "raw".to_string(),
+                field: "a".to_string(),
+                value: "1".to_string(),
+            }],
+            vec![CompactHashEntry(
+                "raw".to_string(),
+                "b".to_string(),
+                "2".to_string(),
+            )],
+        );
+        assert_eq!(commands.len(), 1);
+        match &commands[0] {
+            Command::HashMultiSet { key, entries } => {
+                assert_eq!(key, "raw");
+                assert_eq!(entries.len(), 2);
+                assert_eq!(entries[0].0, "a");
+                assert_eq!(entries[0].1, b"1");
+                assert_eq!(entries[1].0, "b");
+                assert_eq!(entries[1].1, b"2");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        let commands = hash_multi_set_commands(
+            vec![HashEntry {
+                key: "raw-a".to_string(),
+                field: "a".to_string(),
+                value: "1".to_string(),
+            }],
+            vec![CompactHashEntry(
+                "raw-b".to_string(),
+                "b".to_string(),
+                "2".to_string(),
+            )],
+        );
+        assert_eq!(commands.len(), 2);
     }
 
     #[test]
