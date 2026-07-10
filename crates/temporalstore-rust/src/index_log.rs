@@ -177,9 +177,15 @@ impl LocalIndexLogStore {
         }
         let read_size = size.min(file_len.saturating_sub(offset));
         file.seek(SeekFrom::Start(offset))?;
-        let mut bytes = vec![0; read_size as usize];
-        let read = file.read(&mut bytes)?;
-        bytes.truncate(read);
+        let read_size_usize = usize::try_from(read_size).map_err(|_| {
+            IndexLogError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "index log range read size is too large",
+            ))
+        })?;
+        let mut bytes = vec![0; read_size_usize];
+        file.read_exact(&mut bytes)?;
+        let read = bytes.len();
         let mut inner = self.inner.lock().expect("index log lock poisoned");
         inner.stats.reads = inner.stats.reads.saturating_add(1);
         inner.stats.bytes_read = inner.stats.bytes_read.saturating_add(read as u64);
