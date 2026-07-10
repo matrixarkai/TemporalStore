@@ -823,14 +823,14 @@ impl LocalBlockStore {
             inner.root.clone()
         };
         let path = segment_path(&root, address.page_segment_id);
-        let file_len = path.metadata()?.len();
+        let mut file = File::open(path)?;
+        let file_len = file.metadata()?.len();
         if address.offset >= file_len || address.length > file_len.saturating_sub(address.offset) {
             return Err(BlockStoreError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 "block address range exceeds segment length",
             )));
         }
-        let mut file = File::open(path)?;
         file.seek(SeekFrom::Start(address.offset))?;
         let mut encoded = vec![0; address.length as usize];
         file.read_exact(&mut encoded)?;
@@ -1133,14 +1133,14 @@ impl LocalBlockStore {
             .root
             .clone();
         let path = segment_path(&root, page_segment_id);
-        let file_len = path.metadata()?.len();
+        let mut file = File::open(path)?;
+        let file_len = file.metadata()?.len();
         if offset >= file_len {
             let mut inner = self.inner.lock().expect("block store lock poisoned");
             inner.stats.reads = inner.stats.reads.saturating_add(1);
             return Ok(Vec::new());
         }
         let read_size = size.min(file_len.saturating_sub(offset));
-        let mut file = File::open(path)?;
         file.seek(SeekFrom::Start(offset))?;
         let mut bytes = Vec::with_capacity(read_size as usize);
         Read::by_ref(&mut file)
@@ -1174,11 +1174,11 @@ impl LocalBlockStore {
             )
         };
         let path = segment_path(&root, page_segment_id);
-        let physical_len = path.metadata()?.len();
+        let mut file = File::open(path)?;
+        let physical_len = file.metadata()?.len();
         let physical_limit = readable_prefix_physical_bytes
             .unwrap_or(physical_len)
             .min(physical_len);
-        let mut file = File::open(path)?;
         let mut segment = Vec::with_capacity(physical_limit as usize);
         Read::by_ref(&mut file)
             .take(physical_limit)
