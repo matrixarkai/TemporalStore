@@ -311,7 +311,7 @@ paths:
     post:
       summary: Query risk manager entries.
       requestBody:
-        $ref: '#/components/requestBodies/Key'
+        $ref: '#/components/requestBodies/RiskManager'
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
@@ -498,6 +498,12 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/RiskFolSetRequest'
+    RiskManager:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RiskManagerRequest'
     MatrixArkAppendRecords:
       required: true
       content:
@@ -984,6 +990,34 @@ components:
             fol_type:
               type: string
               enum: [first, last]
+    RiskManagerKvPair:
+      type: object
+      required: [key, value]
+      properties:
+        key:
+          type: string
+        value:
+          type: string
+    RiskManagerRequest:
+      allOf:
+        - $ref: '#/components/schemas/KeyRequest'
+        - type: object
+          properties:
+            op_type:
+              oneOf:
+                - type: string
+                - type: integer
+                  format: int32
+            field_list:
+              type: array
+              items:
+                $ref: '#/components/schemas/RiskManagerKvPair'
+            start_offset:
+              type: string
+            end_offset:
+              type: string
+            is_cpc:
+              type: boolean
     MatrixArkHashEntry:
       type: object
       required: [key, field, value]
