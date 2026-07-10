@@ -140,6 +140,34 @@ fn hash_multi_set_commands(
         .collect::<Vec<_>>()
 }
 
+fn hash_multi_get_groups(
+    entries: Vec<HashEntry>,
+    compact_entries: Vec<CompactHashEntry>,
+) -> Vec<(String, Vec<String>)> {
+    let count = entries.len() + compact_entries.len();
+    if count == 0 {
+        return Vec::new();
+    }
+    if let Some(key) = single_hash_key(&entries, &compact_entries) {
+        let mut fields = Vec::with_capacity(count);
+        for entry in entries {
+            fields.push(entry.field);
+        }
+        for CompactHashEntry(_, field, _) in compact_entries {
+            fields.push(field);
+        }
+        return vec![(key, fields)];
+    }
+    let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for entry in entries {
+        grouped.entry(entry.key).or_default().push(entry.field);
+    }
+    for CompactHashEntry(key, field, _) in compact_entries {
+        grouped.entry(key).or_default().push(field);
+    }
+    grouped.into_iter().collect::<Vec<_>>()
+}
+
 #[derive(Debug, Serialize)]
 struct HashReadRecord {
     key: String,
@@ -2747,16 +2775,9 @@ fn execute_record_log_request(
             output
         }
         "batch_hget" => {
-            let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
-            for entry in request.entries {
-                grouped.entry(entry.key).or_default().push(entry.field);
-            }
-            for CompactHashEntry(key, field, _) in request.entries_compact {
-                grouped.entry(key).or_default().push(field);
-            }
+            let grouped_entries = hash_multi_get_groups(request.entries, request.entries_compact);
             let mut records =
-                Vec::with_capacity(grouped.values().map(|fields| fields.len()).sum::<usize>());
-            let grouped_entries = grouped.into_iter().collect::<Vec<_>>();
+                Vec::with_capacity(grouped_entries.iter().map(|(_, fields)| fields.len()).sum());
             let commands = grouped_entries
                 .iter()
                 .map(|(key, fields)| Command::HashMultiGet {
@@ -4186,6 +4207,41 @@ mod tests {
             )],
         );
         assert_eq!(commands.len(), 2);
+    }
+
+    #[test]
+    fn hash_multi_get_groups_fast_path_for_single_hash_key() {
+        let groups = hash_multi_get_groups(
+            vec![HashEntry {
+                key: "raw".to_string(),
+                field: "a".to_string(),
+                value: String::new(),
+            }],
+            vec![CompactHashEntry(
+                "raw".to_string(),
+                "b".to_string(),
+                String::new(),
+            )],
+        );
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].0, "raw");
+        assert_eq!(groups[0].1, vec!["a".to_string(), "b".to_string()]);
+
+        let groups = hash_multi_get_groups(
+            vec![HashEntry {
+                key: "raw-b".to_string(),
+                field: "b".to_string(),
+                value: String::new(),
+            }],
+            vec![CompactHashEntry(
+                "raw-a".to_string(),
+                "a".to_string(),
+                String::new(),
+            )],
+        );
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].0, "raw-a");
+        assert_eq!(groups[1].0, "raw-b");
     }
 
     #[test]
