@@ -371,15 +371,24 @@ impl LocalWriteAheadLogStore {
         offset: u64,
         size: u64,
     ) -> Result<Vec<u8>, WriteAheadLogError> {
-        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
-        let path = write_ahead_log_path(&inner.root, shard_id);
+        if size == 0 {
+            let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+            inner.stats.reads = inner.stats.reads.saturating_add(1);
+            return Ok(Vec::new());
+        }
+        let root = {
+            let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+            inner.root.clone()
+        };
+        let path = write_ahead_log_path(&root, shard_id);
         let mut file = File::open(path)?;
         file.seek(SeekFrom::Start(offset))?;
         let mut bytes = vec![0; size as usize];
         let read = file.read(&mut bytes)?;
         bytes.truncate(read);
-        inner.stats.reads += 1;
-        inner.stats.bytes_read += read as u64;
+        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        inner.stats.reads = inner.stats.reads.saturating_add(1);
+        inner.stats.bytes_read = inner.stats.bytes_read.saturating_add(read as u64);
         Ok(bytes)
     }
 
@@ -390,9 +399,17 @@ impl LocalWriteAheadLogStore {
         end_offset: u64,
         max_bytes: u64,
     ) -> Result<Vec<(u64, Vec<u8>)>, WriteAheadLogError> {
-        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
-        let _ = last_wal_sequence_at(&inner.root, shard_id)?;
-        let path = write_ahead_log_path(&inner.root, shard_id);
+        if max_bytes == 0 || start_offset >= end_offset {
+            let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+            inner.stats.scans = inner.stats.scans.saturating_add(1);
+            return Ok(Vec::new());
+        }
+        let root = {
+            let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+            inner.root.clone()
+        };
+        let _ = last_wal_sequence_at(&root, shard_id)?;
+        let path = write_ahead_log_path(&root, shard_id);
         let mut file = File::open(path)?;
         file.seek(SeekFrom::Start(start_offset))?;
         let mut reader = BufReader::new(file);
@@ -413,8 +430,9 @@ impl LocalWriteAheadLogStore {
             offset = next_offset;
             total += read as u64;
         }
-        inner.stats.scans += 1;
-        inner.stats.bytes_read += total;
+        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        inner.stats.scans = inner.stats.scans.saturating_add(1);
+        inner.stats.bytes_read = inner.stats.bytes_read.saturating_add(total);
         Ok(records)
     }
 
