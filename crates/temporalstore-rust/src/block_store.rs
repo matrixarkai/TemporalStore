@@ -693,10 +693,20 @@ impl LocalBlockStore {
         &self,
         records: Vec<BlockAppendRecord>,
     ) -> Result<Vec<BlockAddress>, BlockStoreError> {
-        let mut inner = self.inner.lock().expect("block store lock poisoned");
         if records.is_empty() {
             return Ok(Vec::new());
         }
+        if records.len() == 1 {
+            let (bytes, object_id, routing_slot) = records
+                .into_iter()
+                .next()
+                .expect("one-record batch has exactly one record");
+            return self
+                .append_with_page_metadata(&bytes, object_id, routing_slot)
+                .map(|address| vec![address]);
+        }
+
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
         fs::create_dir_all(&inner.root)?;
         let segment_target_bytes = effective_block_segment_target_bytes();
         let mut addresses = Vec::with_capacity(records.len());
