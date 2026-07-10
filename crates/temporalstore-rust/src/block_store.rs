@@ -814,48 +814,15 @@ impl LocalBlockStore {
         address: &BlockAddress,
         no_cache_fill: bool,
     ) -> Result<Vec<u8>, BlockStoreError> {
-        let root = {
-            let inner = self.inner.lock().expect("block store lock poisoned");
-            inner.root.clone()
-        };
-        let path = segment_path(&root, address.page_segment_id);
-        let mut file = File::open(path)?;
-        file.seek(SeekFrom::Start(address.offset))?;
-        let mut bytes = vec![0; address.length as usize];
-        file.read_exact(&mut bytes)?;
-        let decoded = decode_page_record(&bytes, address)?;
-        let bytes = decoded.payload;
-        if let Some(expected) = &address.sha256 {
-            let actual = sha256_hex(&bytes);
-            if &actual != expected {
-                return Err(BlockStoreError::ChecksumMismatch {
-                    page_segment_id: address.page_segment_id,
-                    offset: address.offset,
-                    length: address.length,
-                    expected: expected.clone(),
-                    actual,
-                });
-            }
-        }
-        {
-            let mut inner = self.inner.lock().expect("block store lock poisoned");
-            inner.stats.reads = inner.stats.reads.saturating_add(1);
-            inner.stats.bytes_read = inner.stats.bytes_read.saturating_add(address.length);
-            if no_cache_fill {
-                inner.stats.cold_reads = inner.stats.cold_reads.saturating_add(1);
-                inner.stats.cold_bytes_read =
-                    inner.stats.cold_bytes_read.saturating_add(address.length);
-            }
-            inner.stats.logical_bytes_read = inner
-                .stats
-                .logical_bytes_read
-                .saturating_add(decoded.logical_len as u64);
-            if decoded.compression == PageRecordCompression::Zstd {
-                inner.stats.compressed_records_read =
-                    inner.stats.compressed_records_read.saturating_add(1);
-            }
-        }
-        Ok(bytes)
+        self.read_batch_with_cache_policy(std::slice::from_ref(address), no_cache_fill)
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| {
+                Err(BlockStoreError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "single block read result missing",
+                )))
+            })
     }
 
     pub fn read(&self, address: &BlockAddress) -> Result<Vec<u8>, BlockStoreError> {
