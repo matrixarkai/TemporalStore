@@ -4653,27 +4653,67 @@ impl TemporalEngine {
         let Some(shard) = shards.get(&shard_id) else {
             return report;
         };
-        let live_entries = collect_live_page_entries(shard);
-        let mut selected_entries = Vec::with_capacity(live_entries.len());
-        for entry in live_entries {
-            let routing_slot = entry
-                .address
-                .routing_slot
-                .unwrap_or_else(|| self.routing_slot_for_key(shard_id, &entry.object_key));
-            if !selected_slots.is_empty() && !selected_slots.contains(&routing_slot) {
-                report.skipped_page_refs = report.skipped_page_refs.saturating_add(1);
-                continue;
+        let mut selected_entries = if !shard.slot_index.slot_map.is_empty() {
+            let capacity = if selected_slots.is_empty() {
+                shard
+                    .slot_index
+                    .slot_map
+                    .values()
+                    .map(|slot| slot.page_index.len())
+                    .sum()
+            } else {
+                selected_slots
+                    .iter()
+                    .filter_map(|routing_slot| shard.slot_index.slot_map.get(routing_slot))
+                    .map(|slot| slot.page_index.len())
+                    .sum()
+            };
+            Vec::with_capacity(capacity)
+        } else {
+            Vec::with_capacity(model_live_page_entry_capacity(shard))
+        };
+        if !shard.slot_index.slot_map.is_empty() {
+            for (routing_slot, slot) in &shard.slot_index.slot_map {
+                if !selected_slots.is_empty() && !selected_slots.contains(routing_slot) {
+                    report.skipped_page_refs = report
+                        .skipped_page_refs
+                        .saturating_add(slot.page_index.len());
+                    continue;
+                }
+                for page in slot.page_index.values() {
+                    report.considered_page_refs = report.considered_page_refs.saturating_add(1);
+                    let key = CacheKey::page_with_slot_generation(
+                        shard_id,
+                        page.address.page_segment_id,
+                        page.address.offset,
+                        page.address.length,
+                        page.address.routing_slot,
+                        page.address.generation,
+                    );
+                    selected_entries.push((key, page.address.clone()));
+                }
             }
-            report.considered_page_refs = report.considered_page_refs.saturating_add(1);
-            let key = CacheKey::page_with_slot_generation(
-                shard_id,
-                entry.address.page_segment_id,
-                entry.address.offset,
-                entry.address.length,
-                entry.address.routing_slot,
-                entry.address.generation,
-            );
-            selected_entries.push((key, entry.address));
+        } else {
+            for entry in collect_model_live_page_entries(shard) {
+                let routing_slot = entry
+                    .address
+                    .routing_slot
+                    .unwrap_or_else(|| self.routing_slot_for_key(shard_id, &entry.object_key));
+                if !selected_slots.is_empty() && !selected_slots.contains(&routing_slot) {
+                    report.skipped_page_refs = report.skipped_page_refs.saturating_add(1);
+                    continue;
+                }
+                report.considered_page_refs = report.considered_page_refs.saturating_add(1);
+                let key = CacheKey::page_with_slot_generation(
+                    shard_id,
+                    entry.address.page_segment_id,
+                    entry.address.offset,
+                    entry.address.length,
+                    entry.address.routing_slot,
+                    entry.address.generation,
+                );
+                selected_entries.push((key, entry.address));
+            }
         }
         let mut unique_entries =
             Vec::<(CacheKey, PageAddress, usize)>::with_capacity(selected_entries.len());
