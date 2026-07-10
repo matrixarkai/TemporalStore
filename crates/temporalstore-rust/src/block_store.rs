@@ -2152,16 +2152,19 @@ fn roll_segment_inner(
     fs::create_dir_all(&inner.root)?;
     let previous_page_segment_id = inner.page_segment_id;
     flush_active_append_file_inner(inner)?;
-    let next_from_current = inner.page_segment_id.saturating_add(1);
-    let next_from_disk = segment_ids_at(&inner.root)?
-        .into_iter()
-        .max()
-        .map(|id| id.saturating_add(1))
-        .unwrap_or_default();
-    inner.page_segment_id = next_from_current.max(next_from_disk);
+    let mut next_page_segment_id = inner.page_segment_id.saturating_add(1);
+    let (path, file) = loop {
+        let path = segment_path(&inner.root, next_page_segment_id);
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => break (path, file),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                next_page_segment_id = next_page_segment_id.saturating_add(1);
+            }
+            Err(err) => return Err(BlockStoreError::Io(err)),
+        }
+    };
+    inner.page_segment_id = next_page_segment_id;
     inner.write_offset = 0;
-    let path = segment_path(&inner.root, inner.page_segment_id);
-    let file = File::create(&path)?;
     if inner.options.sync_on_append {
         file.sync_all()?;
         sync_parent_dir(&path)?;
