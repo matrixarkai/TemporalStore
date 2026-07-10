@@ -636,6 +636,14 @@ pub struct ProxyIpsLoadCommandRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyIpsRemoveCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub timestamp_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyRiskIncrementCommandRequest {
     pub namespace: String,
     pub table_name: String,
@@ -1312,6 +1320,54 @@ impl ProxyService {
                         let command = Command::IpsLoad {
                             key: req.key,
                             points: req.points,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/IpsRemove") => {
+                match parse_json::<ProxyIpsRemoveCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::IpsRemove {
+                            key: req.key,
+                            timestamp_ms: req.timestamp_ms,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/IpsDelete") => {
+                match parse_json::<ProxyKeyCommandRequest>(&request.body) {
+                    Ok(req) => json_response(
+                        200,
+                        &self.table_command(req, |key| Command::IpsDelete { key }),
+                    ),
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/IpsCount") => {
+                match parse_json::<ProxyIpsRangeCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::IpsCount {
+                            key: req.key,
+                            start_ms: req.start_ms,
+                            end_ms: req.end_ms,
                         };
                         json_response(
                             200,
