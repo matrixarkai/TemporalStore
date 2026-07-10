@@ -157,6 +157,11 @@ impl LocalIndexLogStore {
         offset: u64,
         size: u64,
     ) -> Result<Vec<u8>, IndexLogError> {
+        if size == 0 {
+            let mut inner = self.inner.lock().expect("index log lock poisoned");
+            inner.stats.reads = inner.stats.reads.saturating_add(1);
+            return Ok(Vec::new());
+        }
         let root = {
             let inner = self.inner.lock().expect("index log lock poisoned");
             inner.root.clone()
@@ -180,6 +185,11 @@ impl LocalIndexLogStore {
         end_offset: u64,
         max_bytes: u64,
     ) -> Result<Vec<(u64, Vec<u8>)>, IndexLogError> {
+        if max_bytes == 0 || start_offset >= end_offset {
+            let mut inner = self.inner.lock().expect("index log lock poisoned");
+            inner.stats.scans = inner.stats.scans.saturating_add(1);
+            return Ok(Vec::new());
+        }
         let root = {
             let inner = self.inner.lock().expect("index log lock poisoned");
             inner.root.clone()
