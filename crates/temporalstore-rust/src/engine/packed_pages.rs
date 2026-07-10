@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::Ordering;
 
+use serde::Serialize;
+
 use crate::block_store::{BlockAddress, BlockStoreError, LocalBlockStore};
 use crate::types::{FeaturePoint, ShardId};
 use rustmtcache::{CacheKey, MultiLayerCache};
@@ -66,6 +68,36 @@ pub(super) fn encode_feature_page(points: &[FeaturePoint]) -> Vec<u8> {
     let page = PackedFeaturePage {
         version: 1,
         points: points.to_vec(),
+    };
+    if let Ok(mut payload) = serde_json::to_vec(&page) {
+        let mut bytes = Vec::with_capacity(FEATURE_PAGE_MAGIC.len() + payload.len());
+        bytes.extend_from_slice(FEATURE_PAGE_MAGIC);
+        bytes.append(&mut payload);
+        bytes
+    } else {
+        FEATURE_PAGE_MAGIC.to_vec()
+    }
+}
+
+#[derive(Serialize)]
+struct BorrowedPackedFeaturePage<'a> {
+    version: u8,
+    points: [BorrowedFeaturePoint<'a>; 1],
+}
+
+#[derive(Serialize)]
+struct BorrowedFeaturePoint<'a> {
+    timestamp_ms: u64,
+    value: &'a [u8],
+}
+
+pub(super) fn encode_single_feature_page(timestamp_ms: u64, value: &[u8]) -> Vec<u8> {
+    let page = BorrowedPackedFeaturePage {
+        version: 1,
+        points: [BorrowedFeaturePoint {
+            timestamp_ms,
+            value,
+        }],
     };
     if let Ok(mut payload) = serde_json::to_vec(&page) {
         let mut bytes = Vec::with_capacity(FEATURE_PAGE_MAGIC.len() + payload.len());

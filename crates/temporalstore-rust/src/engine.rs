@@ -15139,10 +15139,7 @@ fn append_timestamped_single_pages_batch(
     if writes.len() == 1 {
         let write = &writes[0];
         let object_id = stable_page_object_id(shard_id, write.kind, &write.object_key, None);
-        let packed = encode_feature_page(&[FeaturePoint {
-            timestamp_ms: write.timestamp_ms,
-            value: write.value.clone(),
-        }]);
+        let packed = encode_single_feature_page(write.timestamp_ms, &write.value);
         if !async_storage {
             return page_store
                 .append_with_page_metadata(&packed, Some(object_id), Some(write.routing_slot))
@@ -15178,10 +15175,7 @@ fn append_timestamped_single_pages_batch(
         for write in writes {
             let object_id = stable_page_object_id(shard_id, write.kind, &write.object_key, None);
             append_records.push((
-                encode_feature_page(&[FeaturePoint {
-                    timestamp_ms: write.timestamp_ms,
-                    value: write.value.clone(),
-                }]),
+                encode_single_feature_page(write.timestamp_ms, &write.value),
                 Some(object_id),
                 Some(write.routing_slot),
             ));
@@ -15196,10 +15190,7 @@ fn append_timestamped_single_pages_batch(
     let mut addresses = Vec::with_capacity(writes.len());
     for (index, write) in writes.iter().enumerate() {
         let object_id = stable_page_object_id(shard_id, write.kind, &write.object_key, None);
-        let packed = encode_feature_page(&[FeaturePoint {
-            timestamp_ms: write.timestamp_ms,
-            value: write.value.clone(),
-        }]);
+        let packed = encode_single_feature_page(write.timestamp_ms, &write.value);
         let address = PageAddress {
             page_segment_id: HOT_PAGE_SEGMENT_ID,
             offset: start_offset.saturating_add(index as u64),
