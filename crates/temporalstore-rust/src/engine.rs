@@ -13263,21 +13263,15 @@ fn insert_timestamped_secondary_views(
         .collect::<Vec<_>>();
     let reads = page_store.read_cold_batch(&addresses);
     for ((object_key, address), read_result) in entries.into_iter().zip(reads) {
-        let timestamps = read_result
-            .ok()
-            .and_then(|bytes| match decode_feature_page_strict(&bytes) {
-                PackedFeaturePageDecode::Packed(points) => Some(
-                    points
-                        .into_iter()
-                        .map(|point| point.timestamp_ms)
-                        .collect::<Vec<_>>(),
-                ),
-                PackedFeaturePageDecode::Legacy | PackedFeaturePageDecode::Corrupt(_) => None,
-            })
-            .unwrap_or_default();
+        let Ok(bytes) = read_result else {
+            continue;
+        };
+        let PackedFeaturePageDecode::Packed(points) = decode_feature_page_strict(&bytes) else {
+            continue;
+        };
         let series = target.entry(object_key).or_default();
-        for timestamp_ms in timestamps {
-            series.insert(timestamp_ms, address.clone());
+        for point in points {
+            series.insert(point.timestamp_ms, address.clone());
         }
     }
 }
