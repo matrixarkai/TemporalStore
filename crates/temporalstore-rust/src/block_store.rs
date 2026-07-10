@@ -137,6 +137,7 @@ pub struct BlockStoreOptions {
 pub type BlockAppendRecord = (Vec<u8>, Option<u64>, Option<u32>);
 
 const BATCH_APPEND_BUFFER_TARGET_BYTES: usize = 1024 * 1024;
+const BATCH_APPEND_RECORD_ENVELOPE_ESTIMATE_BYTES: usize = 192;
 
 impl Default for BlockStoreOptions {
     fn default() -> Self {
@@ -717,7 +718,11 @@ impl LocalBlockStore {
         let mut compression_bytes_saved = 0u64;
         let pending_buffer_capacity = records
             .iter()
-            .map(|(bytes, _, _)| bytes.len())
+            .map(|(bytes, _, _)| {
+                bytes
+                    .len()
+                    .saturating_add(BATCH_APPEND_RECORD_ENVELOPE_ESTIMATE_BYTES)
+            })
             .sum::<usize>()
             .min(BATCH_APPEND_BUFFER_TARGET_BYTES);
         let mut pending_segment_bytes = Vec::with_capacity(pending_buffer_capacity);
