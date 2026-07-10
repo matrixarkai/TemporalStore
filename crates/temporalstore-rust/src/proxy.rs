@@ -2515,6 +2515,19 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
+            ("POST", "/ProxyService/MatrixArkScanCandidates")
+            | ("POST", "/matrixark/scan_candidates") => {
+                match parse_json::<MatrixArkRetrieveContextPackRequest>(&request.body) {
+                    Ok(req) => match self.client().matrixark_scan_candidates_native_json(req) {
+                        Ok(candidates) => json_response(200, &candidates),
+                        Err(err) => json_response(
+                            400,
+                            &Status::error("scan_candidates_error", err.to_string()),
+                        ),
+                    },
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
             ("POST", "/ProxyService/HGet") => {
                 match parse_json::<ProxyHashCommandRequest>(&request.body) {
                     Ok(req) => {
