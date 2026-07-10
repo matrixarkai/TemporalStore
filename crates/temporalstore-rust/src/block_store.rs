@@ -1035,6 +1035,12 @@ impl LocalBlockStore {
 
             match group_bytes {
                 Ok(encoded_group) => {
+                    let physical_bytes_read = encoded_group.len() as u64;
+                    stats_bytes_read = stats_bytes_read.saturating_add(physical_bytes_read);
+                    if no_cache_fill {
+                        stats_cold_bytes_read =
+                            stats_cold_bytes_read.saturating_add(physical_bytes_read);
+                    }
                     for (result_index, address) in &read_order[group_start..cursor] {
                         let result = (|| {
                             let start = address.offset.saturating_sub(group_offset) as usize;
@@ -1060,11 +1066,8 @@ impl LocalBlockStore {
                                 }
                             }
                             stats_reads = stats_reads.saturating_add(1);
-                            stats_bytes_read = stats_bytes_read.saturating_add(address.length);
                             if no_cache_fill {
                                 stats_cold_reads = stats_cold_reads.saturating_add(1);
-                                stats_cold_bytes_read =
-                                    stats_cold_bytes_read.saturating_add(address.length);
                             }
                             stats_logical_bytes_read =
                                 stats_logical_bytes_read.saturating_add(decoded.logical_len as u64);
@@ -1092,7 +1095,7 @@ impl LocalBlockStore {
                 }
             }
         }
-        if stats_reads > 0 {
+        if stats_reads > 0 || stats_bytes_read > 0 {
             let mut inner = self.inner.lock().expect("block store lock poisoned");
             inner.stats.reads = inner.stats.reads.saturating_add(stats_reads);
             inner.stats.bytes_read = inner.stats.bytes_read.saturating_add(stats_bytes_read);
