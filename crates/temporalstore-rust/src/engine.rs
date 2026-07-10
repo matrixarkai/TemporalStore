@@ -12892,8 +12892,14 @@ fn clear_published_object_dirty_state(shard: &mut ShardState, object_key: &str) 
     if object_still_has_hot_page(shard, object_key) {
         return;
     }
+    let lookup_slots = shard.slot_index.routing_slots_for_object_key(object_key);
+    let target_slots =
+        lookup_slots.unwrap_or_else(|| shard.slot_index.slot_map.keys().copied().collect());
     shard.dirty_objects.remove(object_key);
-    for slot in shard.slot_index.slot_map.values_mut() {
+    for routing_slot in target_slots {
+        let Some(slot) = shard.slot_index.slot_map.get_mut(&routing_slot) else {
+            continue;
+        };
         let mut touched = false;
         for page in slot.page_index.values_mut() {
             if page.object_key == object_key {
