@@ -564,6 +564,34 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             end_time_ms: command.end_time_ms,
             limit: nonzero_limit(command.limit),
         },
+        v1::command::Kind::ContextWriteExtractedEvent(command) => {
+            let event = command
+                .event
+                .ok_or_else(|| TonicStatus::invalid_argument("context event missing"))?;
+            types::Command::ContextWriteExtractedEvent {
+                tenant_hash: stable_hash(&command.key),
+                node_hash: stable_hash(&command.node_id),
+                event: sdk_context_event_to_types(event),
+                indexes: command
+                    .indexes
+                    .map(sdk_context_extracted_event_indexes_to_types)
+                    .transpose()?
+                    .unwrap_or_default(),
+                first_write_only: command.first_write_only,
+                cold_storage: command.cold_storage,
+            }
+        }
+        v1::command::Kind::ContextQueryIndexIntersection(command) => {
+            types::Command::ContextQueryIndexIntersection {
+                tenant_hash: stable_hash(&command.key),
+                predicates: command
+                    .predicates
+                    .into_iter()
+                    .map(sdk_context_index_lookup_to_types)
+                    .collect(),
+                limit: nonzero_limit(command.limit),
+            }
+        }
         v1::command::Kind::ContextWritePackAudit(command) => {
             let audit = command
                 .audit
@@ -827,6 +855,48 @@ fn sdk_context_index_ref_to_types(index_ref: v1::ContextIndexRef) -> types::Cont
         primary_node_hash: index_ref.primary_node_hash,
         primary_event_time_ms: index_ref.primary_event_time_ms,
         event_id_hash: index_ref.event_id_hash,
+    }
+}
+
+fn sdk_context_index_lookup_to_types(lookup: v1::ContextIndexLookup) -> types::ContextIndexLookup {
+    types::ContextIndexLookup {
+        index_name: lookup.index_name,
+        index_value_hash: lookup.index_value_hash,
+        scope_hash: lookup.scope_hash,
+        start_time_ms: lookup.start_time_ms,
+        end_time_ms: lookup.end_time_ms,
+    }
+}
+
+fn sdk_context_extracted_event_indexes_to_types(
+    indexes: v1::ContextExtractedEventIndexes,
+) -> Result<types::ContextExtractedEventIndexes, TonicStatus> {
+    Ok(types::ContextExtractedEventIndexes {
+        scope_hash: indexes.scope_hash,
+        entity_hashes: indexes.entity_hashes,
+        status_hash: indexes.status_hash,
+        source_hash: indexes.source_hash,
+        event_time_bucket_ms: indexes.event_time_bucket_ms,
+        disabled_indexes: indexes
+            .disabled_indexes
+            .into_iter()
+            .map(sdk_internal_context_index_to_types)
+            .collect::<Result<Vec<_>, _>>()?,
+    })
+}
+
+fn sdk_internal_context_index_to_types(
+    index: u32,
+) -> Result<types::InternalContextIndex, TonicStatus> {
+    match index {
+        1 => Ok(types::InternalContextIndex::EventKind),
+        2 => Ok(types::InternalContextIndex::Entity),
+        3 => Ok(types::InternalContextIndex::Status),
+        4 => Ok(types::InternalContextIndex::Source),
+        5 => Ok(types::InternalContextIndex::EventTimeBucket),
+        _ => Err(TonicStatus::invalid_argument(
+            "context disabled index missing or invalid",
+        )),
     }
 }
 

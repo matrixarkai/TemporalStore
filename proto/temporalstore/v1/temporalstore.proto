@@ -288,6 +288,8 @@ message Command {
     ContextQueryCompressionEvents context_query_compression_events = 64;
     ContextCompressEvents context_compress_events = 65;
     ContextQueryNodeContext context_query_node_context = 66;
+    ContextWriteExtractedEvent context_write_extracted_event = 67;
+    ContextQueryIndexIntersection context_query_index_intersection = 68;
   }
 }
 
@@ -643,6 +645,38 @@ message ContextQueryIndex {
   uint64 start_time_ms = 5;
   uint64 end_time_ms = 6;
   uint32 limit = 7;
+}
+
+message ContextExtractedEventIndexes {
+  uint64 scope_hash = 1;
+  repeated uint64 entity_hashes = 2;
+  uint64 status_hash = 3;
+  uint64 source_hash = 4;
+  uint64 event_time_bucket_ms = 5;
+  repeated uint32 disabled_indexes = 6;
+}
+
+message ContextWriteExtractedEvent {
+  string key = 1;
+  string node_id = 2;
+  ContextEvent event = 3;
+  ContextExtractedEventIndexes indexes = 4;
+  bool first_write_only = 5;
+  bool cold_storage = 6;
+}
+
+message ContextIndexLookup {
+  string index_name = 1;
+  uint64 index_value_hash = 2;
+  uint64 scope_hash = 3;
+  uint64 start_time_ms = 4;
+  uint64 end_time_ms = 5;
+}
+
+message ContextQueryIndexIntersection {
+  string key = 1;
+  repeated ContextIndexLookup predicates = 2;
+  uint32 limit = 3;
 }
 
 message ContextAuditRef {
