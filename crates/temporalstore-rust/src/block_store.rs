@@ -2186,7 +2186,7 @@ fn flush_active_append_buffer_inner(
 }
 
 fn extent_lifecycle_states(summary: &BlockStoreExtentSummary) -> Vec<String> {
-    let mut states = Vec::new();
+    let mut states = Vec::with_capacity(4);
     if summary.active_extents > 0 {
         states.push("active".to_string());
     }
@@ -2281,7 +2281,9 @@ fn extent_zone_usage(
             (left, None) => left,
         };
     }
-    zones.into_values().map(|acc| acc.usage).collect()
+    let mut usage = Vec::with_capacity(zones.len());
+    usage.extend(zones.into_values().map(|acc| acc.usage));
+    usage
 }
 
 impl Default for LocalBlockStore {
