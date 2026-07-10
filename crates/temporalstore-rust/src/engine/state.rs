@@ -380,17 +380,11 @@ impl CoreIndex {
         ))
     }
 
-    pub(super) fn live_page_refs_for_object_key(
+    pub(super) fn page_refs_for_object_key(
         &self,
         object_key: &str,
-    ) -> Option<Vec<ObjectKeyPageLookupRef>> {
-        self.object_key_lookup.get(object_key).map(|page_refs| {
-            page_refs
-                .iter()
-                .filter(|page_ref| self.object_key_ref_is_live(object_key, page_ref))
-                .cloned()
-                .collect()
-        })
+    ) -> Option<&BTreeSet<ObjectKeyPageLookupRef>> {
+        self.object_key_lookup.get(object_key)
     }
 
     fn object_key_ref_is_live(&self, object_key: &str, page_ref: &ObjectKeyPageLookupRef) -> bool {

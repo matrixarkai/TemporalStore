@@ -204,7 +204,7 @@ pub(super) fn slot_index_page_address(
         return None;
     }
 
-    if let Some(page_refs) = shard.slot_index.live_page_refs_for_object_key(object_key) {
+    if let Some(page_refs) = shard.slot_index.page_refs_for_object_key(object_key) {
         let mut selected = None;
         for page_ref in page_refs {
             if page_ref.model_id != model_id || page_ref.component.as_deref() != component {
@@ -300,7 +300,7 @@ pub(super) fn slot_index_component_page_addresses(
         return Vec::new();
     }
 
-    if let Some(page_refs) = shard.slot_index.live_page_refs_for_object_key(object_key) {
+    if let Some(page_refs) = shard.slot_index.page_refs_for_object_key(object_key) {
         let mut refs = Vec::with_capacity(page_refs.len());
         for page_ref in page_refs {
             if page_ref.model_id != model_id {
