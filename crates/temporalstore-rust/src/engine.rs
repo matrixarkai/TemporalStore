@@ -8069,11 +8069,12 @@ fn execute_on_shard(
                         // range queries rehydrate each timestamp through the packed page
                         // reader, so a large single timestamped value remains readable
                         // when it occupies its own page.
-                        let refs = series
-                            .range(start_ms..=end_ms)
-                            .take(count.unwrap_or(5000))
-                            .map(|(timestamp_ms, address)| (*timestamp_ms, address.clone()))
-                            .collect::<Vec<_>>();
+                        let refs = timestamp_page_refs_in_range(
+                            series,
+                            start_ms,
+                            end_ms,
+                            count.unwrap_or(5000),
+                        );
                         read_feature_points_cached_batch(cache, page_store, shard_id, &refs)
                     })
                     .unwrap_or_default();
@@ -8092,11 +8093,7 @@ fn execute_on_shard(
                 .features
                 .get(&key)
                 .map(|series| {
-                    let refs = series
-                        .range(start_ms..=end_ms)
-                        .take(limit)
-                        .map(|(timestamp_ms, address)| (*timestamp_ms, address.clone()))
-                        .collect::<Vec<_>>();
+                    let refs = timestamp_page_refs_in_range(series, start_ms, end_ms, limit);
                     read_feature_points_cached_batch(cache, page_store, shard_id, &refs)
                         .into_iter()
                         .filter(|point| {
@@ -8196,11 +8193,12 @@ fn execute_on_shard(
                 .features
                 .get(&key)
                 .map(|series| {
-                    let refs = series
-                        .range(start_ms..=end_ms)
-                        .take(count.unwrap_or(5000))
-                        .map(|(timestamp_ms, address)| (*timestamp_ms, address.clone()))
-                        .collect::<Vec<_>>();
+                    let refs = timestamp_page_refs_in_range(
+                        series,
+                        start_ms,
+                        end_ms,
+                        count.unwrap_or(5000),
+                    );
                     read_feature_points_cached_batch(cache, page_store, shard_id, &refs)
                         .into_iter()
                         .map(|point| point.value)
@@ -8670,12 +8668,7 @@ fn execute_on_shard(
                 .ips
                 .get(&key)
                 .map(|series| {
-                    let refs = series
-                        .iter()
-                        .rev()
-                        .take(count)
-                        .map(|(timestamp_ms, address)| (*timestamp_ms, address.clone()))
-                        .collect::<Vec<_>>();
+                    let refs = timestamp_page_refs_last(series, count);
                     read_feature_points_cached_batch(cache, page_store, shard_id, &refs)
                 })
                 .unwrap_or_default();
@@ -8712,12 +8705,7 @@ fn execute_on_shard(
                         .ips
                         .get(&key)
                         .map(|series| {
-                            let refs = series
-                                .iter()
-                                .rev()
-                                .take(count)
-                                .map(|(timestamp_ms, address)| (*timestamp_ms, address.clone()))
-                                .collect::<Vec<_>>();
+                            let refs = timestamp_page_refs_last(series, count);
                             read_feature_points_cached_batch(cache, page_store, shard_id, &refs)
                         })
                         .unwrap_or_default();
@@ -10779,6 +10767,37 @@ fn live_page_addresses_from_timestamp_series(
     let mut addresses = Vec::with_capacity(series.len());
     addresses.extend(series.values().cloned());
     addresses
+}
+
+fn timestamp_page_refs_in_range(
+    series: &BTreeMap<u64, PageAddress>,
+    start_ms: u64,
+    end_ms: u64,
+    limit: usize,
+) -> Vec<(u64, PageAddress)> {
+    let mut refs = Vec::with_capacity(limit.min(series.len()));
+    refs.extend(
+        series
+            .range(start_ms..=end_ms)
+            .take(limit)
+            .map(|(timestamp_ms, address)| (*timestamp_ms, address.clone())),
+    );
+    refs
+}
+
+fn timestamp_page_refs_last(
+    series: &BTreeMap<u64, PageAddress>,
+    limit: usize,
+) -> Vec<(u64, PageAddress)> {
+    let mut refs = Vec::with_capacity(limit.min(series.len()));
+    refs.extend(
+        series
+            .iter()
+            .rev()
+            .take(limit)
+            .map(|(timestamp_ms, address)| (*timestamp_ms, address.clone())),
+    );
+    refs
 }
 
 fn associated_record_keys(key: &str) -> Vec<String> {
