@@ -102,6 +102,13 @@ struct RetrieveCandidateSnapshot {
     index_postings_read: usize,
 }
 
+#[derive(Clone, Debug, Default)]
+struct BackendOpStats {
+    commands_total: u64,
+    latency_ms_total: u128,
+    latency_ms_max: u128,
+}
+
 #[derive(Debug, Serialize)]
 struct RecordLogResponse {
     ok: bool,
@@ -310,6 +317,7 @@ fn serve() -> i32 {
     let mut latency_sum_ms: u128 = 0;
     let mut latency_max_ms: u128 = 0;
     let mut latency_buckets = [0_u64; LATENCY_BUCKETS_MS.len()];
+    let mut op_stats = BTreeMap::<String, BackendOpStats>::new();
     for line in stdin.lock().lines() {
         let line = match line {
             Ok(value) => value,
@@ -373,6 +381,24 @@ fn serve() -> i32 {
                 };
                 Ok(("metrics_prometheus".to_string(), output))
             }
+            Ok(request) if request.op == "matrixark_backend_metrics" => {
+                let output = RecordLogOutput {
+                    mode: matrixark_rust_service_mode().to_string(),
+                    cached_clients: Some(cached_engine_count()),
+                    extra: render_backend_metrics(
+                        started_at_ms,
+                        command_count,
+                        failed_count,
+                        records_written,
+                        records_read,
+                        latency_sum_ms,
+                        latency_max_ms,
+                        &op_stats,
+                    ),
+                    ..empty_output(PathBuf::new())
+                };
+                Ok(("matrixark_backend_metrics".to_string(), output))
+            }
             Ok(request) => run_request(request),
             Err(error) => Err((
                 "unknown".to_string(),
@@ -393,6 +419,15 @@ fn serve() -> i32 {
         }
         if !response.ok {
             failed_count += 1;
+        }
+        if !matches!(
+            response.op.as_str(),
+            "metrics_prometheus" | "matrixark_backend_metrics" | "health" | "readiness" | "preflight"
+        ) {
+            let stats = op_stats.entry(response.op.clone()).or_default();
+            stats.commands_total = stats.commands_total.saturating_add(1);
+            stats.latency_ms_total = stats.latency_ms_total.saturating_add(observed_elapsed_ms);
+            stats.latency_ms_max = stats.latency_ms_max.max(observed_elapsed_ms);
         }
         records_written += match response.op.as_str() {
             "put_string" | "hset" => 1,
@@ -645,6 +680,49 @@ fn render_prometheus_metrics(
         latency_max_ms, latency_max_ms
     ));
     output
+}
+
+fn render_backend_metrics(
+    started_at_ms: u128,
+    command_count: u64,
+    failed_count: u64,
+    records_written: u64,
+    records_read: u64,
+    latency_sum_ms: u128,
+    latency_max_ms: u128,
+    op_stats: &BTreeMap<String, BackendOpStats>,
+) -> BTreeMap<String, Value> {
+    let uptime_seconds = ((unix_ms().saturating_sub(started_at_ms)) as f64 / 1000.0).max(0.001);
+    let mut op_metrics = serde_json::Map::new();
+    for (op, stats) in op_stats {
+        let commands = stats.commands_total.max(1);
+        op_metrics.insert(
+            op.clone(),
+            json!({
+                "commands_total": stats.commands_total,
+                "latency_ms_total": stats.latency_ms_total as f64,
+                "latency_ms_avg": stats.latency_ms_total as f64 / commands as f64,
+                "latency_ms_max": stats.latency_ms_max as f64,
+            }),
+        );
+    }
+
+    let mut metrics = BTreeMap::new();
+    metrics.insert("backend".to_string(), json!("rust"));
+    metrics.insert("storage_mode".to_string(), json!(matrixark_rust_storage_mode()));
+    metrics.insert("service_mode".to_string(), json!(matrixark_rust_service_mode()));
+    metrics.insert("commands_total".to_string(), json!(command_count));
+    metrics.insert("errors_total".to_string(), json!(failed_count));
+    metrics.insert("qps".to_string(), json!(command_count as f64 / uptime_seconds));
+    metrics.insert("rust_engine_ms_total".to_string(), json!(latency_sum_ms as f64));
+    metrics.insert("rust_engine_ms_max".to_string(), json!(latency_max_ms as f64));
+    metrics.insert("serialization_ms_total".to_string(), json!(0.0));
+    metrics.insert("proxy_queue_wait_ms_total".to_string(), json!(0.0));
+    metrics.insert("records_written_total".to_string(), json!(records_written));
+    metrics.insert("records_read_total".to_string(), json!(records_read));
+    metrics.insert("cached_clients".to_string(), json!(cached_engine_count()));
+    metrics.insert("op_metrics".to_string(), Value::Object(op_metrics));
+    metrics
 }
 
 fn bucket_quantile(
@@ -2658,6 +2736,7 @@ fn validate_request(request: &RecordLogRequest) -> Result<(), String> {
         | "readiness"
         | "preflight"
         | "metrics_prometheus"
+        | "matrixark_backend_metrics"
         | "shutdown"
         | "matrixark_publish_visibility" => Ok(()),
         "put_string" | "get_string" | "delete" | "del" | "hgetall" | "scan_hash" => {
@@ -3718,6 +3797,44 @@ mod tests {
             visibility_keys: Vec::new(),
             top_level_response: false,
         }
+    }
+
+    #[test]
+    fn matrixark_backend_metrics_reports_op_breakdown() {
+        let mut op_stats = BTreeMap::new();
+        op_stats.insert(
+            "batch_hset".to_string(),
+            BackendOpStats {
+                commands_total: 2,
+                latency_ms_total: 30,
+                latency_ms_max: 20,
+            },
+        );
+        op_stats.insert(
+            "batch_hget".to_string(),
+            BackendOpStats {
+                commands_total: 1,
+                latency_ms_total: 7,
+                latency_ms_max: 7,
+            },
+        );
+
+        let metrics = render_backend_metrics(0, 3, 1, 12, 5, 37, 20, &op_stats);
+        assert_eq!(metrics["backend"], json!("rust"));
+        assert_eq!(metrics["commands_total"], json!(3));
+        assert_eq!(metrics["errors_total"], json!(1));
+        assert_eq!(metrics["records_written_total"], json!(12));
+        assert_eq!(metrics["records_read_total"], json!(5));
+        assert_eq!(metrics["rust_engine_ms_total"], json!(37.0));
+        assert_eq!(metrics["rust_engine_ms_max"], json!(20.0));
+
+        let op_metrics = metrics["op_metrics"].as_object().expect("op metrics");
+        assert_eq!(op_metrics["batch_hset"]["commands_total"], json!(2));
+        assert_eq!(op_metrics["batch_hset"]["latency_ms_total"], json!(30.0));
+        assert_eq!(op_metrics["batch_hset"]["latency_ms_avg"], json!(15.0));
+        assert_eq!(op_metrics["batch_hset"]["latency_ms_max"], json!(20.0));
+        assert_eq!(op_metrics["batch_hget"]["commands_total"], json!(1));
+        assert_eq!(op_metrics["batch_hget"]["latency_ms_avg"], json!(7.0));
     }
 
     // shared-corpus: codex_mcp_temporalstore_rust_record_log_backend
