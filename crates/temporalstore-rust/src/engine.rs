@@ -6088,8 +6088,9 @@ impl TemporalEngine {
             return Err(Status::error("shard_not_loaded", "shard is not loaded"));
         };
         let now = now_ms();
-        let mut hot_keys = Vec::new();
-        let mut cold_keys = Vec::new();
+        let expiry_key_count = shard.expires_at_ms.len();
+        let mut hot_keys = Vec::with_capacity(expiry_key_count);
+        let mut cold_keys = Vec::with_capacity(expiry_key_count);
         for (key, expires_at) in &shard.expires_at_ms {
             if record_exists_exact(shard, key) {
                 hot_keys.push((key.clone(), *expires_at));
@@ -10468,9 +10469,14 @@ fn select_expiry_cursor_window(
         .unwrap_or_default();
     let mut remaining = keys.into_iter().skip(start);
     if limit == 0 {
-        return (remaining.collect(), None);
+        let remaining_len = remaining.size_hint().0;
+        let mut selected = Vec::with_capacity(remaining_len);
+        selected.extend(remaining);
+        return (selected, None);
     }
-    let selected = remaining.by_ref().take(limit).collect::<Vec<_>>();
+    let remaining_len = remaining.size_hint().0;
+    let mut selected = Vec::with_capacity(limit.min(remaining_len));
+    selected.extend(remaining.by_ref().take(limit));
     let next_cursor = remaining
         .next()
         .and_then(|_| selected.last().map(|(key, _)| key.clone()));
