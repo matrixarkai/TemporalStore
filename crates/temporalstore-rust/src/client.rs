@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -84,8 +84,13 @@ pub struct ClientOptions {
 pub struct MatrixArkRecordAppend {
     pub key: String,
     pub field: String,
+    #[serde(default, deserialize_with = "deserialize_bytes_from_json")]
     pub value: Vec<u8>,
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "storage_route",
+        deserialize_with = "deserialize_string_or_json"
+    )]
     pub route_json: String,
 }
 
@@ -102,15 +107,67 @@ pub struct MatrixArkBatchAppendOptions {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MatrixArkBatchAppendRequest {
     pub namespace: String,
+    #[serde(default, alias = "table")]
     pub table_name: String,
-    #[serde(default)]
+    #[serde(default, alias = "entries")]
     pub records: Vec<MatrixArkRecordAppend>,
     #[serde(default)]
     pub count_key: String,
     #[serde(default)]
     pub count_value: String,
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "append_options",
+        alias = "options",
+        deserialize_with = "deserialize_string_or_json"
+    )]
     pub append_options_json: String,
+}
+
+fn deserialize_string_or_json<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    match value {
+        Value::Null => Ok(String::new()),
+        Value::String(value) => Ok(value),
+        value => serde_json::to_string(&value).map_err(serde::de::Error::custom),
+    }
+}
+
+fn deserialize_bytes_from_json<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    match value {
+        Value::Null => Ok(Vec::new()),
+        Value::String(value) => Ok(value.into_bytes()),
+        Value::Array(_) => serde_json::from_value(value).map_err(serde::de::Error::custom),
+        Value::Object(mut object) => {
+            if let Some(bytes) = object.remove("bytes") {
+                serde_json::from_value(bytes).map_err(serde::de::Error::custom)
+            } else if let Some(value) = object.remove("value") {
+                deserialize_bytes_value(value)
+            } else {
+                serde_json::to_vec(&Value::Object(object)).map_err(serde::de::Error::custom)
+            }
+        }
+        value => serde_json::to_vec(&value).map_err(serde::de::Error::custom),
+    }
+}
+
+fn deserialize_bytes_value<E>(value: Value) -> Result<Vec<u8>, E>
+where
+    E: serde::de::Error,
+{
+    match value {
+        Value::Null => Ok(Vec::new()),
+        Value::String(value) => Ok(value.into_bytes()),
+        Value::Array(_) => serde_json::from_value(value).map_err(E::custom),
+        value => serde_json::to_vec(&value).map_err(E::custom),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
