@@ -287,15 +287,15 @@ pub(super) fn read_slot_index_component_values(
         return Vec::new();
     }
 
-    let addresses = refs
-        .iter()
-        .map(|(_, address)| Some(address.clone()))
-        .collect::<Vec<_>>();
+    let mut addresses = Vec::with_capacity(refs.len());
+    addresses.extend(refs.iter().map(|(_, address)| Some(address.clone())));
     let values = read_page_bytes_batch(cache, page_store, shard_id, &addresses);
 
-    values
-        .into_iter()
-        .zip(refs)
-        .filter_map(|(value, (component, _))| value.map(|value| (component, value)))
-        .collect()
+    let mut entries = Vec::with_capacity(refs.len());
+    for (value, (component, _)) in values.into_iter().zip(refs) {
+        if let Some(value) = value {
+            entries.push((component, value));
+        }
+    }
+    entries
 }

@@ -351,31 +351,36 @@ pub(super) fn read_feature_points_cached_batch(
     shard_id: ShardId,
     refs: &[(u64, BlockAddress)],
 ) -> Vec<FeaturePoint> {
-    let addresses = refs
-        .iter()
-        .map(|(_, address)| Some(address.clone()))
-        .collect::<Vec<_>>();
+    let mut addresses = Vec::with_capacity(refs.len());
+    addresses.extend(refs.iter().map(|(_, address)| Some(address.clone())));
     let page_bytes = read_page_bytes_batch(cache, block_store, shard_id, &addresses);
-    let mut decoded_pages = HashMap::<BlockAddress, PackedFeaturePageDecode>::new();
+    let mut decoded_pages =
+        HashMap::<BlockAddress, PackedFeaturePageDecode>::with_capacity(refs.len());
+    let mut points = Vec::with_capacity(refs.len());
 
-    refs.iter()
-        .zip(page_bytes)
-        .filter_map(|((timestamp_ms, address), bytes)| {
-            let bytes = bytes?;
-            let decoded = decoded_pages
-                .entry(address.clone())
-                .or_insert_with(|| decode_feature_page_strict(&bytes));
-            match decoded {
-                PackedFeaturePageDecode::Packed(points) => points
+    for ((timestamp_ms, address), bytes) in refs.iter().zip(page_bytes) {
+        let Some(bytes) = bytes else {
+            continue;
+        };
+        let decoded = decoded_pages
+            .entry(address.clone())
+            .or_insert_with(|| decode_feature_page_strict(&bytes));
+        match decoded {
+            PackedFeaturePageDecode::Packed(page_points) => {
+                if let Some(point) = page_points
                     .iter()
                     .find(|point| point.timestamp_ms == *timestamp_ms)
-                    .cloned(),
-                PackedFeaturePageDecode::Legacy => Some(FeaturePoint {
-                    timestamp_ms: *timestamp_ms,
-                    value: bytes,
-                }),
-                PackedFeaturePageDecode::Corrupt(_) => None,
+                    .cloned()
+                {
+                    points.push(point);
+                }
             }
-        })
-        .collect()
+            PackedFeaturePageDecode::Legacy => points.push(FeaturePoint {
+                timestamp_ms: *timestamp_ms,
+                value: bytes,
+            }),
+            PackedFeaturePageDecode::Corrupt(_) => {}
+        }
+    }
+    points
 }
