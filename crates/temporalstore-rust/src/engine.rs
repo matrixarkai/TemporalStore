@@ -15288,7 +15288,7 @@ pub(super) fn read_page_bytes_batch(
     let mut miss_entries = Vec::with_capacity(unique_entries.len());
     for (entry, cached_value) in unique_entries.into_iter().zip(cached.into_iter()) {
         if let Some(bytes) = cached_value {
-            fill_page_read_values(&mut values, &entry, &bytes);
+            fill_page_read_values_owned(&mut values, &entry, bytes);
             continue;
         }
         miss_entries.push(entry);
@@ -15330,6 +15330,17 @@ fn fill_page_read_values(values: &mut [Option<Vec<u8>>], entry: &BatchPageReadEn
     for index in &entry.extra_indexes {
         values[*index] = Some(bytes.to_vec());
     }
+}
+
+fn fill_page_read_values_owned(
+    values: &mut [Option<Vec<u8>>],
+    entry: &BatchPageReadEntry,
+    bytes: Vec<u8>,
+) {
+    for index in &entry.extra_indexes {
+        values[*index] = Some(bytes.clone());
+    }
+    values[entry.first_index] = Some(bytes);
 }
 
 fn read_page_bytes_cold(page_store: &LocalPageStore, address: &PageAddress) -> Option<Vec<u8>> {
