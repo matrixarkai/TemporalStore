@@ -229,7 +229,7 @@ impl LocalIndexLogStore {
             .min(INDEX_LOG_SCAN_MAX_PREALLOC_RECORDS as u64) as usize;
         let mut records = Vec::with_capacity(scan_capacity);
         loop {
-            let mut line = Vec::new();
+            let mut line = Vec::with_capacity(INDEX_LOG_SCAN_RECORD_ESTIMATE_BYTES as usize);
             let read = reader.read_until(b'\n', &mut line)?;
             if read == 0 {
                 break;
