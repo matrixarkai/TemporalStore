@@ -2232,13 +2232,17 @@ fn handle_query_service_route(meta: &MetaBackend, request: &HttpRequest) -> Opti
         ("GET", "/QueryService/QueryManageInfo") | ("POST", "/QueryService/QueryManageInfo") => {
             json_response(200, &backend_call!(meta, info))
         }
+        ("GET", "/query/info") | ("POST", "/query/info") => {
+            json_response(200, &backend_call!(meta, info))
+        }
         ("GET", "/QueryService/QueryClusterStatus")
         | ("POST", "/QueryService/QueryClusterStatus") => {
             json_response(200, &backend_call!(meta, preflight_report))
         }
-        ("GET", "/QueryService/ListServer") | ("POST", "/QueryService/ListServer") => {
-            json_response(200, &backend_call!(meta, list_servers))
-        }
+        ("GET", "/QueryService/ListServer")
+        | ("POST", "/QueryService/ListServer")
+        | ("GET", "/query/list_server")
+        | ("POST", "/query/list_server") => json_response(200, &backend_call!(meta, list_servers)),
         ("GET", "/QueryService/ListProxy") | ("POST", "/QueryService/ListProxy") => {
             json_response(200, &backend_call!(meta, list_proxies))
         }
@@ -2250,15 +2254,17 @@ fn handle_query_service_route(meta: &MetaBackend, request: &HttpRequest) -> Opti
         ("GET", "/QueryService/ListNamespace") | ("POST", "/QueryService/ListNamespace") => {
             json_response(200, &backend_call!(meta, list_namespaces))
         }
-        ("GET", "/QueryService/ListTable") | ("POST", "/QueryService/ListTable") => {
-            json_response(200, &backend_call!(meta, list_tables))
-        }
-        ("POST", "/QueryService/ListPartition") => {
+        ("GET", "/QueryService/ListTable")
+        | ("POST", "/QueryService/ListTable")
+        | ("GET", "/query/list_table")
+        | ("POST", "/query/list_table") => json_response(200, &backend_call!(meta, list_tables)),
+        ("POST", "/QueryService/ListPartition") | ("POST", "/query/list_partition") => {
             parse_or(&request.body, |req: QueryListPartitionRequest| {
                 query_list_partition(meta, req)
             })
         }
-        ("POST", "/QueryService/ListServerPartition") => {
+        ("POST", "/QueryService/ListServerPartition")
+        | ("POST", "/query/list_server_partition") => {
             parse_or(&request.body, |req: QueryListServerPartitionRequest| {
                 query_list_server_partition(meta, req)
             })
