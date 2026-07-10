@@ -11905,7 +11905,27 @@ fn promote_model_maps_to_slot_index_authority(
 }
 
 fn collect_slot_index_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
-    let mut entries = Vec::new();
+    let page_ref_count = if !shard.slot_index.object_component_lookup.is_empty() {
+        shard
+            .slot_index
+            .object_component_lookup
+            .values()
+            .map(BTreeSet::len)
+            .sum()
+    } else if let Some((_, live_page_ref_count, _, _)) = shard
+        .slot_index
+        .object_key_lookup_stats(&shard.dirty_objects)
+    {
+        live_page_ref_count
+    } else {
+        shard
+            .slot_index
+            .slot_map
+            .values()
+            .map(|slot| slot.page_index.len())
+            .sum()
+    };
+    let mut entries = Vec::with_capacity(page_ref_count);
     for slot in shard.slot_index.slot_map.values() {
         for page in slot.page_index.values() {
             entries.push(LivePageEntry {
