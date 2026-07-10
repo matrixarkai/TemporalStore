@@ -2427,11 +2427,27 @@ impl TemporalStoreClient {
         self.matrixark_record_log_context_request_json("matrixark_retrieve_context_pack", request)
     }
 
+    pub fn matrixark_retrieve_context_pack_request_json_str(
+        &self,
+        request_json: &str,
+    ) -> Result<String, ClientError> {
+        let request = parse_matrixark_context_request_json(request_json)?;
+        self.matrixark_retrieve_context_pack_request_json(request)
+    }
+
     pub fn matrixark_scan_candidates_request_json(
         &self,
         request: MatrixArkRetrieveContextPackRequest,
     ) -> Result<String, ClientError> {
         self.matrixark_record_log_context_request_json("matrixark_scan_candidates", request)
+    }
+
+    pub fn matrixark_scan_candidates_request_json_str(
+        &self,
+        request_json: &str,
+    ) -> Result<String, ClientError> {
+        let request = parse_matrixark_context_request_json(request_json)?;
+        self.matrixark_scan_candidates_request_json(request)
     }
 
     pub fn matrixark_scan_candidates_native_json(
@@ -2458,6 +2474,14 @@ impl TemporalStoreClient {
         table.matrixark_scan_candidates_native_json(request)
     }
 
+    pub fn matrixark_scan_candidates_native_json_str(
+        &self,
+        request_json: &str,
+    ) -> Result<Value, ClientError> {
+        let request = parse_matrixark_context_request_json(request_json)?;
+        self.matrixark_scan_candidates_native_json(request)
+    }
+
     pub fn matrixark_retrieve_context_pack_native_json(
         &self,
         mut request: MatrixArkRetrieveContextPackRequest,
@@ -2480,6 +2504,14 @@ impl TemporalStoreClient {
             .map(Ok)
             .unwrap_or_else(|| self.open_table_from_meta(namespace, table_name))?;
         table.matrixark_retrieve_context_pack_native_json(request)
+    }
+
+    pub fn matrixark_retrieve_context_pack_native_json_str(
+        &self,
+        request_json: &str,
+    ) -> Result<Value, ClientError> {
+        let request = parse_matrixark_context_request_json(request_json)?;
+        self.matrixark_retrieve_context_pack_native_json(request)
     }
 
     fn apply_matrixark_default_table(
@@ -5260,6 +5292,18 @@ impl TemporalStorePipeline {
 
 fn table_combine_name(namespace: &str, table_name: &str) -> String {
     format!("{namespace}/{table_name}")
+}
+
+fn parse_matrixark_context_request_json(
+    request_json: &str,
+) -> Result<MatrixArkRetrieveContextPackRequest, ClientError> {
+    if request_json.trim().is_empty() {
+        return Err(ClientError::InvalidRequest(
+            "request_json must be a JSON object".to_string(),
+        ));
+    }
+    serde_json::from_str(request_json)
+        .map_err(|err| ClientError::InvalidRequest(format!("invalid request_json: {err}")))
 }
 
 fn client_partition_id_for_offset(options: &TableOptions, offset: u64) -> ShardId {
