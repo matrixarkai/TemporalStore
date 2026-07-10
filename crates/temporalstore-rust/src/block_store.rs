@@ -1017,12 +1017,12 @@ impl LocalBlockStore {
         let path = segment_path(&root, page_segment_id);
         let mut file = File::open(path)?;
         file.seek(SeekFrom::Start(offset))?;
-        let mut bytes = vec![0; size as usize];
-        let read = file.read(&mut bytes)?;
-        bytes.truncate(read);
+        let mut bytes = Vec::with_capacity(size as usize);
+        Read::by_ref(&mut file).take(size).read_to_end(&mut bytes)?;
+        let read = bytes.len() as u64;
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         inner.stats.reads += 1;
-        inner.stats.bytes_read += read as u64;
+        inner.stats.bytes_read += read;
         Ok(bytes)
     }
 
