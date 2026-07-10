@@ -33,10 +33,11 @@ pub use routing::{
 
 use crate::types::{
     parse_cpp_feature_filters, BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse,
-    ContextChildRef, ContextEmbedding, ContextEntity, ContextEvent, ContextIndexRef, ContextNode,
-    ContextPackAudit, ContextSummaryDirtyMarker, ContextTraversedNode, ExecuteRequest,
-    ExecuteResponse, FeatureFilter, FeaturePoint, FeatureWritePolicy, IpsSnapshotReport, IpsStats,
-    RiskFamily, RiskFolType, SequenceFeatureRow, SequenceQuerySpec, ShardId, Status,
+    ContextChildRef, ContextCompressionEvent, ContextEmbedding, ContextEntity, ContextEvent,
+    ContextIndexRef, ContextNode, ContextPackAudit, ContextSummary, ContextSummaryDirtyMarker,
+    ContextTraversedNode, ExecuteRequest, ExecuteResponse, FeatureFilter, FeaturePoint,
+    FeatureWritePolicy, IpsSnapshotReport, IpsStats, RiskFamily, RiskFolType, SequenceFeatureRow,
+    SequenceQuerySpec, ShardId, Status,
 };
 
 #[derive(Debug, Error)]
@@ -3498,6 +3499,178 @@ impl TemporalStoreTable {
             CommandResponse::ContextTraversedNodes { nodes } => Ok(nodes),
             response => Err(ClientError::UnexpectedResponse {
                 operation: "context_traverse_tree",
+                response,
+            }),
+        }
+    }
+
+    pub fn context_upsert_summary(
+        &self,
+        tenant_hash: u64,
+        summary: ContextSummary,
+    ) -> Result<String, ClientError> {
+        match self
+            .execute(Command::ContextUpsertSummary {
+                tenant_hash,
+                summary,
+            })?
+            .response
+        {
+            CommandResponse::ContextObjectKey { object_key } => Ok(object_key),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "context_upsert_summary",
+                response,
+            }),
+        }
+    }
+
+    pub fn context_query_summaries(
+        &self,
+        tenant_hash: u64,
+        node_hash: u64,
+        level: u32,
+        as_of_ms: u64,
+        limit: Option<usize>,
+    ) -> Result<Vec<ContextSummary>, ClientError> {
+        match self
+            .execute(Command::ContextQuerySummaries {
+                tenant_hash,
+                node_hash,
+                level,
+                as_of_ms,
+                limit,
+            })?
+            .response
+        {
+            CommandResponse::ContextSummaries { summaries, .. } => Ok(summaries),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "context_query_summaries",
+                response,
+            }),
+        }
+    }
+
+    pub fn context_write_compression_event(
+        &self,
+        tenant_hash: u64,
+        event: ContextCompressionEvent,
+    ) -> Result<String, ClientError> {
+        match self
+            .execute(Command::ContextWriteCompressionEvent { tenant_hash, event })?
+            .response
+        {
+            CommandResponse::ContextObjectKey { object_key } => Ok(object_key),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "context_write_compression_event",
+                response,
+            }),
+        }
+    }
+
+    pub fn context_query_compression_events(
+        &self,
+        tenant_hash: u64,
+        node_hashes: Vec<u64>,
+        start_time_ms: u64,
+        end_time_ms: u64,
+        limit: Option<usize>,
+    ) -> Result<Vec<ContextCompressionEvent>, ClientError> {
+        match self
+            .execute(Command::ContextQueryCompressionEvents {
+                tenant_hash,
+                node_hashes,
+                start_time_ms,
+                end_time_ms,
+                limit,
+            })?
+            .response
+        {
+            CommandResponse::ContextCompressionEvents { events, .. } => Ok(events),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "context_query_compression_events",
+                response,
+            }),
+        }
+    }
+
+    pub fn context_compress_events(
+        &self,
+        tenant_hash: u64,
+        node_hash: u64,
+        source_start_ms: u64,
+        source_end_ms: u64,
+        compressed_time_ms: u64,
+        max_source_events: Option<usize>,
+        min_confidence: f32,
+        min_importance: f32,
+    ) -> Result<Vec<ContextCompressionEvent>, ClientError> {
+        match self
+            .execute(Command::ContextCompressEvents {
+                tenant_hash,
+                node_hash,
+                source_start_ms,
+                source_end_ms,
+                compressed_time_ms,
+                max_source_events,
+                min_confidence,
+                min_importance,
+            })?
+            .response
+        {
+            CommandResponse::ContextCompressionEvents { events, .. } => Ok(events),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "context_compress_events",
+                response,
+            }),
+        }
+    }
+
+    pub fn context_query_node_context(
+        &self,
+        tenant_hash: u64,
+        node_hash: u64,
+        summary_level: Option<u32>,
+        as_of_ms: u64,
+        cold_start_time_ms: u64,
+        cold_end_time_ms: u64,
+        compression_limit: Option<usize>,
+    ) -> Result<
+        (
+            bool,
+            Option<ContextNode>,
+            bool,
+            Option<ContextSummary>,
+            Vec<ContextCompressionEvent>,
+        ),
+        ClientError,
+    > {
+        match self
+            .execute(Command::ContextQueryNodeContext {
+                tenant_hash,
+                node_hash,
+                summary_level,
+                as_of_ms,
+                cold_start_time_ms,
+                cold_end_time_ms,
+                compression_limit,
+            })?
+            .response
+        {
+            CommandResponse::ContextNodeContext {
+                node_exists,
+                node,
+                overall_summary_exists,
+                overall_summary,
+                cold_window_summaries,
+            } => Ok((
+                node_exists,
+                node,
+                overall_summary_exists,
+                overall_summary,
+                cold_window_summaries,
+            )),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "context_query_node_context",
                 response,
             }),
         }
