@@ -1452,7 +1452,7 @@ impl LocalBlockStore {
     ) -> Result<BlockStoreGcPolicyPlan, BlockStoreError> {
         let candidates =
             self.gc_utility_candidates(retain_from_page_segment_id, live_page_segment_ids)?;
-        let mut selected_page_segment_ids = Vec::new();
+        let mut selected_page_segment_ids = Vec::with_capacity(candidates.len());
         let mut selected_physical_bytes = 0_u64;
         let candidate_physical_bytes = candidates.iter().map(|candidate| candidate.bytes).sum();
         let candidate_total_bytes = candidates
@@ -1570,7 +1570,7 @@ impl LocalBlockStore {
                     .saturating_add(bytes);
             }
         }
-        let mut candidates = Vec::new();
+        let mut candidates = Vec::with_capacity(segment_ids.len());
         let now = now_unix_ms();
         for page_segment_id in segment_ids {
             let below_retention_floor = page_segment_id < retain_from_page_segment_id;
@@ -1659,17 +1659,18 @@ impl LocalBlockStore {
         }
         let current_page_segment_id = inner.page_segment_id;
         let live_page_segment_ids = live_page_segment_ids.into_iter().collect::<BTreeSet<_>>();
-        let mut removed = Vec::new();
-        let mut retained = Vec::new();
-        let mut delayed_destroy_ids = Vec::new();
-        let mut retained_live = Vec::new();
-        let mut retained_current = Vec::new();
+        let segment_ids = segment_ids_at(&inner.root)?;
+        let mut removed = Vec::with_capacity(segment_ids.len());
+        let mut retained = Vec::with_capacity(segment_ids.len());
+        let mut delayed_destroy_ids = Vec::with_capacity(segment_ids.len());
+        let mut retained_live = Vec::with_capacity(live_page_segment_ids.len());
+        let mut retained_current = Vec::with_capacity(1);
         let mut removed_physical_bytes = 0;
         let mut retained_physical_bytes = 0;
         let mut delayed_destroy_physical_bytes = 0;
         let mut retained_live_physical_bytes = 0;
         let mut retained_current_physical_bytes = 0;
-        for page_segment_id in segment_ids_at(&inner.root)? {
+        for page_segment_id in segment_ids {
             let segment_physical_bytes = segment_path(&inner.root, page_segment_id)
                 .metadata()
                 .map(|metadata| metadata.len())
