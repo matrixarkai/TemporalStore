@@ -91,6 +91,14 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
+  /ProxyService/HIncrBy:
+    post:
+      summary: Increment a hash field.
+      requestBody:
+        $ref: '#/components/requestBodies/HashIncrBy'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
   /ProxyService/HGetAll:
     post:
       summary: Get all hash fields.
@@ -340,6 +348,12 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/HashMultiSetRequest'
+    HashIncrBy:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/HashIncrByRequest'
     SetAdd:
       required: true
       content:
@@ -531,6 +545,17 @@ components:
               type: array
               items:
                 $ref: '#/components/schemas/HashEntry'
+    HashIncrByRequest:
+      allOf:
+        - $ref: '#/components/schemas/KeyRequest'
+        - type: object
+          required: [field, increment]
+          properties:
+            field:
+              type: string
+            increment:
+              type: integer
+              format: int64
     SetAddRequest:
       allOf:
         - $ref: '#/components/schemas/KeyRequest'
