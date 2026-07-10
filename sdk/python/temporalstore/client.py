@@ -20,6 +20,8 @@ class FeatureFilterOp(IntEnum):
     NOT_EQUAL = 1
     GREATER_THAN = 2
     LESS_THAN = 3
+    GREATER_OR_EQUAL = 4
+    LESS_OR_EQUAL = 5
 
 
 class RiskPrecision(IntEnum):
