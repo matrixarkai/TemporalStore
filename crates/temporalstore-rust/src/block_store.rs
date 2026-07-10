@@ -1168,10 +1168,14 @@ impl LocalBlockStore {
         }
         let read_size = size.min(file_len.saturating_sub(offset));
         file.seek(SeekFrom::Start(offset))?;
-        let mut bytes = Vec::with_capacity(read_size as usize);
-        Read::by_ref(&mut file)
-            .take(read_size)
-            .read_to_end(&mut bytes)?;
+        let read_size_usize = usize::try_from(read_size).map_err(|_| {
+            BlockStoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "block range read size is too large",
+            ))
+        })?;
+        let mut bytes = vec![0; read_size_usize];
+        file.read_exact(&mut bytes)?;
         let read = bytes.len() as u64;
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         inner.stats.reads = inner.stats.reads.saturating_add(1);
@@ -1205,10 +1209,14 @@ impl LocalBlockStore {
         let physical_limit = readable_prefix_physical_bytes
             .unwrap_or(physical_len)
             .min(physical_len);
-        let mut segment = Vec::with_capacity(physical_limit as usize);
-        Read::by_ref(&mut file)
-            .take(physical_limit)
-            .read_to_end(&mut segment)?;
+        let physical_limit_usize = usize::try_from(physical_limit).map_err(|_| {
+            BlockStoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "logical block range read size is too large",
+            ))
+        })?;
+        let mut segment = vec![0; physical_limit_usize];
+        file.read_exact(&mut segment)?;
         let physical_bytes_read = segment.len() as u64;
         let range = logical_range_from_segment(&segment, page_segment_id, offset, size)?;
         let bytes = range.bytes;
