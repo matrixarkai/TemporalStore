@@ -519,6 +519,26 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             action_type: command.action_type,
             table_id: command.table_id,
         },
+        v1::command::Kind::IpsLoad(command) => types::Command::IpsLoad {
+            key: command.key,
+            points: command
+                .points
+                .into_iter()
+                .map(sdk_feature_point_to_types)
+                .collect(),
+        },
+        v1::command::Kind::IpsSnapshot(command) => types::Command::IpsSnapshot {
+            key: command.key,
+            start_ms: command.start_ms,
+            end_ms: command.end_ms,
+            count: nonzero_limit(command.limit),
+        },
+        v1::command::Kind::IpsSnapshotReport(command) => types::Command::IpsSnapshotReport {
+            key: command.key,
+            start_ms: command.start_ms,
+            end_ms: command.end_ms,
+            count: nonzero_limit(command.limit),
+        },
         v1::command::Kind::RiskIncrement(command) => types::Command::RiskIncrement {
             key: command.key,
             timestamp_ms: command.timestamp_ms,
