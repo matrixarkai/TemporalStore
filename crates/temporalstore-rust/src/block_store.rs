@@ -1321,13 +1321,11 @@ impl LocalBlockStore {
     }
 
     pub fn segment_ids(&self) -> Result<Vec<u64>, BlockStoreError> {
-        let root = self
-            .inner
-            .lock()
-            .expect("block store lock poisoned")
-            .root
-            .clone();
-        let mut ids = Vec::new();
+        let (root, expected_segments) = {
+            let inner = self.inner.lock().expect("block store lock poisoned");
+            (inner.root.clone(), inner.extents.len())
+        };
+        let mut ids = Vec::with_capacity(expected_segments);
         if !root.exists() {
             return Ok(ids);
         }
@@ -1542,7 +1540,7 @@ impl LocalBlockStore {
         let inner = self.inner.lock().expect("block store lock poisoned");
         let current_page_segment_id = inner.page_segment_id;
         let live_page_segment_ids = live_page_segment_ids.into_iter().collect::<BTreeSet<_>>();
-        let segment_ids = segment_ids_at(&inner.root)?;
+        let segment_ids = segment_ids_at_with_capacity(&inner.root, inner.extents.len())?;
         let mut zone_total_bytes = BTreeMap::<u64, u64>::new();
         let mut zone_used_bytes = BTreeMap::<u64, u64>::new();
         for page_segment_id in &segment_ids {
@@ -1660,7 +1658,7 @@ impl LocalBlockStore {
         }
         let current_page_segment_id = inner.page_segment_id;
         let live_page_segment_ids = live_page_segment_ids.into_iter().collect::<BTreeSet<_>>();
-        let segment_ids = segment_ids_at(&inner.root)?;
+        let segment_ids = segment_ids_at_with_capacity(&inner.root, inner.extents.len())?;
         let mut removed = Vec::with_capacity(segment_ids.len());
         let mut retained = Vec::with_capacity(segment_ids.len());
         let mut delayed_destroy_ids = Vec::with_capacity(segment_ids.len());
@@ -2972,7 +2970,14 @@ fn compact_extract_extent_offset(address: u64) -> u32 {
 }
 
 fn segment_ids_at(root: &Path) -> Result<Vec<u64>, BlockStoreError> {
-    let mut ids = Vec::new();
+    segment_ids_at_with_capacity(root, 0)
+}
+
+fn segment_ids_at_with_capacity(
+    root: &Path,
+    expected_segments: usize,
+) -> Result<Vec<u64>, BlockStoreError> {
+    let mut ids = Vec::with_capacity(expected_segments);
     if !root.exists() {
         return Ok(ids);
     }
