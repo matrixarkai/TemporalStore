@@ -912,46 +912,98 @@ impl LocalBlockStore {
         let mut stats_cold_bytes_read = 0_u64;
         let mut stats_logical_bytes_read = 0_u64;
         let mut stats_compressed_records_read = 0_u64;
-        for (result_index, address) in read_order {
-            let result = (|| {
-                if !files.contains_key(&address.page_segment_id) {
-                    let path = segment_path(&root, address.page_segment_id);
-                    files.insert(address.page_segment_id, File::open(path)?);
+        let mut cursor = 0;
+        while cursor < read_order.len() {
+            let group_start = cursor;
+            let (_, first_address) = read_order[group_start];
+            let page_segment_id = first_address.page_segment_id;
+            let group_offset = first_address.offset;
+            let mut group_end = first_address.offset.saturating_add(first_address.length);
+            cursor += 1;
+            while cursor < read_order.len() {
+                let (_, next_address) = read_order[cursor];
+                if next_address.page_segment_id != page_segment_id
+                    || next_address.offset != group_end
+                {
+                    break;
+                }
+                group_end = group_end.saturating_add(next_address.length);
+                cursor += 1;
+            }
+
+            let group_bytes = (|| {
+                if !files.contains_key(&page_segment_id) {
+                    let path = segment_path(&root, page_segment_id);
+                    files.insert(page_segment_id, File::open(path)?);
                 }
                 let file = files
-                    .get_mut(&address.page_segment_id)
+                    .get_mut(&page_segment_id)
                     .expect("segment file is opened before read");
-                file.seek(SeekFrom::Start(address.offset))?;
-                let mut encoded = vec![0; address.length as usize];
+                file.seek(SeekFrom::Start(group_offset))?;
+                let group_len = group_end.saturating_sub(group_offset) as usize;
+                let mut encoded = vec![0; group_len];
                 file.read_exact(&mut encoded)?;
-                let decoded = decode_page_record(&encoded, address)?;
-                let bytes = decoded.payload;
-                if let Some(expected) = &address.sha256 {
-                    let actual = sha256_hex(&bytes);
-                    if &actual != expected {
-                        return Err(BlockStoreError::ChecksumMismatch {
-                            page_segment_id: address.page_segment_id,
-                            offset: address.offset,
-                            length: address.length,
-                            expected: expected.clone(),
-                            actual,
+                Ok::<_, BlockStoreError>(encoded)
+            })();
+
+            match group_bytes {
+                Ok(encoded_group) => {
+                    for (result_index, address) in &read_order[group_start..cursor] {
+                        let result = (|| {
+                            let start = address.offset.saturating_sub(group_offset) as usize;
+                            let end = start.saturating_add(address.length as usize);
+                            let encoded = encoded_group.get(start..end).ok_or_else(|| {
+                                BlockStoreError::Io(std::io::Error::new(
+                                    std::io::ErrorKind::UnexpectedEof,
+                                    "coalesced block read slice out of range",
+                                ))
+                            })?;
+                            let decoded = decode_page_record(encoded, address)?;
+                            let bytes = decoded.payload;
+                            if let Some(expected) = &address.sha256 {
+                                let actual = sha256_hex(&bytes);
+                                if &actual != expected {
+                                    return Err(BlockStoreError::ChecksumMismatch {
+                                        page_segment_id: address.page_segment_id,
+                                        offset: address.offset,
+                                        length: address.length,
+                                        expected: expected.clone(),
+                                        actual,
+                                    });
+                                }
+                            }
+                            stats_reads = stats_reads.saturating_add(1);
+                            stats_bytes_read = stats_bytes_read.saturating_add(address.length);
+                            if no_cache_fill {
+                                stats_cold_reads = stats_cold_reads.saturating_add(1);
+                                stats_cold_bytes_read =
+                                    stats_cold_bytes_read.saturating_add(address.length);
+                            }
+                            stats_logical_bytes_read =
+                                stats_logical_bytes_read.saturating_add(decoded.logical_len as u64);
+                            if decoded.compression == PageRecordCompression::Zstd {
+                                stats_compressed_records_read =
+                                    stats_compressed_records_read.saturating_add(1);
+                            }
+                            Ok(bytes)
+                        })();
+                        results[*result_index] = Some(result);
+                    }
+                }
+                Err(err) => {
+                    let err_text = err.to_string();
+                    let mut first = Some(err);
+                    for (result_index, _) in &read_order[group_start..cursor] {
+                        results[*result_index] = Some(match first.take() {
+                            Some(err) => Err(err),
+                            None => Err(BlockStoreError::Io(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                err_text.clone(),
+                            ))),
                         });
                     }
                 }
-                stats_reads = stats_reads.saturating_add(1);
-                stats_bytes_read = stats_bytes_read.saturating_add(address.length);
-                if no_cache_fill {
-                    stats_cold_reads = stats_cold_reads.saturating_add(1);
-                    stats_cold_bytes_read = stats_cold_bytes_read.saturating_add(address.length);
-                }
-                stats_logical_bytes_read =
-                    stats_logical_bytes_read.saturating_add(decoded.logical_len as u64);
-                if decoded.compression == PageRecordCompression::Zstd {
-                    stats_compressed_records_read = stats_compressed_records_read.saturating_add(1);
-                }
-                Ok(bytes)
-            })();
-            results[result_index] = Some(result);
+            }
         }
         if stats_reads > 0 {
             let mut inner = self.inner.lock().expect("block store lock poisoned");
