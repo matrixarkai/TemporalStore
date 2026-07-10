@@ -235,7 +235,7 @@ pub(super) fn logical_range_from_segment(
     let requested_end = requested_start.saturating_add(size as usize);
     let mut physical_offset = 0usize;
     let mut logical_offset = 0usize;
-    let mut out = Vec::with_capacity(size as usize);
+    let mut out = Vec::with_capacity((size as usize).min(segment.len()));
     let mut compressed_records_read = 0_u64;
 
     while physical_offset < segment.len() && out.len() < size as usize {
