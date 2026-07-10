@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import queue
+import hashlib
 from collections import OrderedDict, defaultdict, deque
 
 try:
@@ -4079,9 +4080,34 @@ class MatrixArkRustProxyClient:
             return "read"
         return "control"
 
-    def _choose_lane(self, op: str) -> tuple[str, Json]:
+    def _pack_lane_sticky_index(self, lanes: list[Json], kwargs: Json) -> int | None:
+        if not lanes or len(lanes) <= 1:
+            return None
+        request = kwargs.get("record")
+        query = request.get("query") if isinstance(request, dict) else ""
+        ranking = request.get("ranking") if isinstance(request, dict) else {}
+        sticky_payload = {
+            "count_key": kwargs.get("count_key"),
+            "record_hash_key": kwargs.get("record_hash_key"),
+            "scope": kwargs.get("scope"),
+            "secondary_index_groups": kwargs.get("secondary_index_groups"),
+            "query": query,
+            "max_selected_refs": ranking.get("max_selected_refs") if isinstance(ranking, dict) else None,
+        }
+        try:
+            encoded = json.dumps(sticky_payload, sort_keys=True, separators=(",", ":")).encode()
+        except Exception:
+            return None
+        digest = hashlib.blake2b(encoded, digest_size=8).digest()
+        return int.from_bytes(digest, "big") % len(lanes)
+
+    def _choose_lane(self, op: str, kwargs: Json | None = None) -> tuple[str, Json]:
         group = self._lane_group_for_op(op)
         lanes = self._lanes.get(group) or self._lanes["control"]
+        if op == "matrixark_retrieve_context_pack" and kwargs is not None:
+            sticky_index = self._pack_lane_sticky_index(lanes, kwargs)
+            if sticky_index is not None:
+                return group, lanes[sticky_index]
         with self._lane_select_lock:
             index = self._lane_cursors.get(group, 0) % len(lanes)
             self._lane_cursors[group] = index + 1
@@ -4125,7 +4151,7 @@ class MatrixArkRustProxyClient:
         }
         payload = json.dumps(command, separators=(",", ":")) + "\n"
         started = time.perf_counter()
-        group, lane = self._choose_lane(op)
+        group, lane = self._choose_lane(op, kwargs)
         semaphore: threading.BoundedSemaphore = lane["semaphore"]
         wait_started = time.perf_counter()
         acquired = semaphore.acquire(timeout=self._backpressure_timeout_s)
