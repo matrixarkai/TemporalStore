@@ -334,6 +334,49 @@ impl CoreIndex {
         })
     }
 
+    pub(super) fn object_key_lookup_stats(
+        &self,
+        dirty_objects: &BTreeSet<String>,
+    ) -> Option<(usize, usize, usize)> {
+        if self.object_key_lookup.is_empty() {
+            return None;
+        }
+        let mut live_objects = BTreeSet::new();
+        let mut dirty_objects_seen = BTreeSet::new();
+        let mut live_page_ref_count = 0usize;
+        for (object_key, page_refs) in &self.object_key_lookup {
+            for page_ref in page_refs {
+                let Some(page) = self
+                    .slot_map
+                    .get(&page_ref.routing_slot)
+                    .and_then(|slot| slot.page_index.get(&page_ref.page_ref_key))
+                else {
+                    continue;
+                };
+                if page.deleted || page.object_key != *object_key {
+                    continue;
+                }
+                let object_identity = (
+                    page.model_id.as_str(),
+                    page.object_key.as_str(),
+                    (page.model_id == "hash")
+                        .then(|| page.component.as_deref())
+                        .flatten(),
+                );
+                live_page_ref_count = live_page_ref_count.saturating_add(1);
+                live_objects.insert(object_identity);
+                if page.dirty || dirty_objects.contains(&page.object_key) {
+                    dirty_objects_seen.insert(object_identity);
+                }
+            }
+        }
+        Some((
+            live_objects.len(),
+            live_page_ref_count,
+            dirty_objects_seen.len(),
+        ))
+    }
+
     pub(super) fn live_page_refs_for_object_key(
         &self,
         object_key: &str,
