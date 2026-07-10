@@ -15302,6 +15302,10 @@ pub(super) fn read_page_bytes_batch(
         }
         miss_entries.push(entry);
     }
+    if miss_entries.is_empty() {
+        return values;
+    }
+
     let miss_addresses = miss_entries
         .iter()
         .map(|entry| entry.address.clone())
