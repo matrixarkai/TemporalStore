@@ -135,6 +135,7 @@ pub struct BlockStoreOptions {
 }
 
 pub type BlockAppendRecord = (Vec<u8>, Option<u64>, Option<u32>);
+pub type BlockAppendRecordRef<'a> = (&'a [u8], Option<u64>, Option<u32>);
 
 const BATCH_APPEND_BUFFER_TARGET_BYTES: usize = 1024 * 1024;
 const BATCH_APPEND_RECORD_ENVELOPE_ESTIMATE_BYTES: usize = 192;
@@ -707,7 +708,26 @@ impl LocalBlockStore {
                 .append_with_page_metadata(&bytes, object_id, routing_slot)
                 .map(|address| vec![address]);
         }
+        let record_refs = records
+            .iter()
+            .map(|(bytes, object_id, routing_slot)| (bytes.as_slice(), *object_id, *routing_slot))
+            .collect::<Vec<BlockAppendRecordRef<'_>>>();
+        self.append_batch_with_page_metadata_refs(&record_refs)
+    }
 
+    pub fn append_batch_with_page_metadata_refs(
+        &self,
+        records: &[BlockAppendRecordRef<'_>],
+    ) -> Result<Vec<BlockAddress>, BlockStoreError> {
+        if records.is_empty() {
+            return Ok(Vec::new());
+        }
+        if records.len() == 1 {
+            let (bytes, object_id, routing_slot) = records[0];
+            return self
+                .append_with_page_metadata(bytes, object_id, routing_slot)
+                .map(|address| vec![address]);
+        }
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         let segment_target_bytes = effective_block_segment_target_bytes();
         let mut addresses = Vec::with_capacity(records.len());
@@ -727,11 +747,11 @@ impl LocalBlockStore {
             .min(BATCH_APPEND_BUFFER_TARGET_BYTES);
         let mut pending_segment_bytes = Vec::with_capacity(pending_buffer_capacity);
 
-        for (bytes, object_id, routing_slot) in records {
+        for &(bytes, object_id, routing_slot) in records {
             let mut page_id = inner.next_page_id;
             let mut extent_id = extent_id_for_segment(inner.page_segment_id);
             let mut record = encode_page_record(
-                &bytes,
+                bytes,
                 page_id,
                 object_id,
                 routing_slot,
@@ -748,7 +768,7 @@ impl LocalBlockStore {
                 page_id = inner.next_page_id;
                 extent_id = extent_id_for_segment(inner.page_segment_id);
                 record = encode_page_record(
-                    &bytes,
+                    bytes,
                     page_id,
                     object_id,
                     routing_slot,
