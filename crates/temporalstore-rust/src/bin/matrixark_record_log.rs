@@ -3512,6 +3512,7 @@ fn retrieve_context_pack_output(
                     .and_then(Value::as_object_mut)
                 {
                     metrics.insert("cache_hit".to_string(), json!(true));
+                    metrics.insert("candidate_cache_hit".to_string(), json!(true));
                     metrics.insert("context_pack_response_cache_hit".to_string(), json!(true));
                 }
                 if let Some(pack) = object
@@ -3523,6 +3524,7 @@ fn retrieve_context_pack_output(
                         .and_then(Value::as_object_mut)
                     {
                         metrics.insert("cache_hit".to_string(), json!(true));
+                        metrics.insert("candidate_cache_hit".to_string(), json!(true));
                         metrics.insert("context_pack_response_cache_hit".to_string(), json!(true));
                     }
                 }
