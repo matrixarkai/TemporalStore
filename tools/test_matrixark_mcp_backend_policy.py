@@ -350,6 +350,75 @@ class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
         self.assertEqual(snapshot["batch_hget_coalescing"]["calls_total"], 4)
         self.assertEqual(snapshot["batch_hget_coalescing"]["records_total"], 8)
 
+    def test_rust_bridge_coalesced_batch_hget_falls_back_for_reordered_rows(self) -> None:
+        old_env = {
+            key: os.environ.get(key)
+            for key in (
+                "MATRIXARK_RUST_PROXY_SHARED_PROCESS",
+                "MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE",
+                "MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_MAX_BATCHES",
+                "MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_MIN_RECORDS",
+                "MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_WAIT_MS",
+            )
+        }
+        os.environ["MATRIXARK_RUST_PROXY_SHARED_PROCESS"] = "1"
+        os.environ["MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE"] = "1"
+        os.environ["MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_MAX_BATCHES"] = "8"
+        os.environ["MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_MIN_RECORDS"] = "1"
+        os.environ["MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_WAIT_MS"] = "25"
+        try:
+            client = mcp.MatrixArkRustCliClient(
+                cli_path="matrixark_rust_proxy",
+                metaserver="127.0.0.1:18000",
+                namespace="ns",
+                table="table",
+                request_timeout_ms=10000,
+                io_timeout_ms=10000,
+            )
+
+            def fake_call_json(op: str, **kwargs):
+                self.assertEqual(op, "batch_hget")
+                entries = list(kwargs["entries_compact"])
+                records = [
+                    {"key": key, "field": field, "value": f"{key}:{field}"}
+                    for key, field, _ in entries
+                ]
+                return {"ok": True, "records": list(reversed(records))}
+
+            client._call_json = fake_call_json  # type: ignore[method-assign]
+            barrier = threading.Barrier(2)
+            results: dict[int, list[dict]] = {}
+
+            def read_two(index: int) -> None:
+                barrier.wait(timeout=5)
+                results[index] = client.batch_hget(
+                    [
+                        {"key": "raw", "field": f"{index:08d}a"},
+                        {"key": "raw", "field": f"{index:08d}b"},
+                    ]
+                )
+
+            threads = [threading.Thread(target=read_two, args=(index,)) for index in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=5)
+                self.assertFalse(thread.is_alive())
+        finally:
+            try:
+                client.close()  # type: ignore[name-defined]
+            except Exception:
+                pass
+            for key, value in old_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        for index in range(2):
+            self.assertEqual([row["field"] for row in results[index]], [f"{index:08d}a", f"{index:08d}b"])
+            self.assertEqual([row["value"] for row in results[index]], [f"raw:{index:08d}a", f"raw:{index:08d}b"])
+
     def test_rust_bridge_coalesces_concurrent_matrixark_appends_in_shared_process(self) -> None:
         old_env = {
             key: os.environ.get(key)

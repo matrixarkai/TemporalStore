@@ -4635,7 +4635,7 @@ class MatrixArkRustProxyClient:
                 value = None
             else:
                 self._scan_hash_cache.move_to_end(key)
-                value = json.loads(json.dumps(cached))
+                value = copy.deepcopy(cached)
         with self._metrics_lock:
             if value is None:
                 self._scan_hash_cache_misses_total += 1
@@ -4647,7 +4647,7 @@ class MatrixArkRustProxyClient:
         if not self._scan_hash_cache_enabled:
             return
         with self._scan_hash_cache_lock:
-            self._scan_hash_cache[key] = json.loads(json.dumps(response))
+            self._scan_hash_cache[key] = copy.deepcopy(response)
             self._scan_hash_cache.move_to_end(key)
             while len(self._scan_hash_cache) > self._scan_hash_cache_max_entries:
                 self._scan_hash_cache.popitem(last=False)
@@ -5173,20 +5173,29 @@ class MatrixArkRustProxyClient:
                 except BaseException as exc:
                     error = exc
                 if error is None:
-                    records_by_entry: dict[tuple[str, str], deque[Json]] = defaultdict(deque)
-                    for row in rows:
-                        if not isinstance(row, dict):
-                            continue
-                        records_by_entry[(str(row.get("key") or ""), str(row.get("field") or ""))].append(row)
-                    for item in pending:
-                        item_records: list[Json] = []
-                        for key, field, _ in item.get("entries_compact") or []:
-                            bucket = records_by_entry.get((key, field))
-                            if bucket:
-                                item_records.append(bucket.popleft())
-                            else:
-                                item_records.append({"key": key, "field": field, "value": ""})
-                        item["records"] = item_records
+                    if len(rows) == len(merged):
+                        cursor = 0
+                        ordered = True
+                        for item in pending:
+                            item_records: list[Json] = []
+                            for key, field, _ in item.get("entries_compact") or []:
+                                row = rows[cursor] if cursor < len(rows) else {}
+                                cursor += 1
+                                if (
+                                    not isinstance(row, dict)
+                                    or str(row.get("key") or "") != key
+                                    or str(row.get("field") or "") != field
+                                ):
+                                    ordered = False
+                                    break
+                                item_records.append(row)
+                            if not ordered:
+                                break
+                            item["records"] = item_records
+                        if not ordered:
+                            self._assign_coalesced_batch_hget_by_key(pending, rows)
+                    else:
+                        self._assign_coalesced_batch_hget_by_key(pending, rows)
                 with self._metrics_lock:
                     self._batch_hget_coalesced_batches_total += 1
                     self._batch_hget_coalesced_calls_total += len(pending)
@@ -5212,6 +5221,23 @@ class MatrixArkRustProxyClient:
                 item["error"] = exc
                 item["event"].set()
             raise
+
+    @staticmethod
+    def _assign_coalesced_batch_hget_by_key(pending: list[Json], rows: list[Json]) -> None:
+        records_by_entry: dict[tuple[str, str], deque[Json]] = defaultdict(deque)
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            records_by_entry[(str(row.get("key") or ""), str(row.get("field") or ""))].append(row)
+        for item in pending:
+            item_records: list[Json] = []
+            for key, field, _ in item.get("entries_compact") or []:
+                bucket = records_by_entry.get((key, field))
+                if bucket:
+                    item_records.append(bucket.popleft())
+                else:
+                    item_records.append({"key": key, "field": field, "value": ""})
+            item["records"] = item_records
 
     def scan_hash(self, key: str) -> Json:
         cached = self._scan_hash_cache_get(key)
