@@ -723,7 +723,7 @@ impl LocalBlockStore {
                 record.bytes.len() as u64,
                 segment_target_bytes,
             ) {
-                flush_active_append_buffer_inner(&mut inner, &mut pending_segment_bytes)?;
+                flush_active_append_buffer_inner(&mut inner, &mut pending_segment_bytes, false)?;
                 roll_segment_inner(&mut inner)?;
                 page_id = inner.next_page_id;
                 extent_id = extent_id_for_segment(inner.page_segment_id);
@@ -754,7 +754,7 @@ impl LocalBlockStore {
             };
             pending_segment_bytes.extend_from_slice(&record.bytes);
             if pending_segment_bytes.len() >= BATCH_APPEND_BUFFER_TARGET_BYTES {
-                flush_active_append_buffer_inner(&mut inner, &mut pending_segment_bytes)?;
+                flush_active_append_buffer_inner(&mut inner, &mut pending_segment_bytes, false)?;
             }
             inner.next_page_id = inner.next_page_id.saturating_add(1);
             inner.write_offset += address.length;
@@ -777,7 +777,7 @@ impl LocalBlockStore {
             }
             addresses.push(address);
         }
-        flush_active_append_buffer_inner(&mut inner, &mut pending_segment_bytes)?;
+        flush_active_append_buffer_inner(&mut inner, &mut pending_segment_bytes, true)?;
         if inner.options.sync_on_append {
             persist_extent_manifest(&inner.root, &inner.extents)?;
         }
@@ -2043,6 +2043,7 @@ fn flush_active_append_file_inner(inner: &mut BlockStoreInner) -> Result<(), Blo
 fn flush_active_append_buffer_inner(
     inner: &mut BlockStoreInner,
     pending_bytes: &mut Vec<u8>,
+    sync_if_configured: bool,
 ) -> Result<(), BlockStoreError> {
     if pending_bytes.is_empty() {
         return Ok(());
@@ -2056,7 +2057,7 @@ fn flush_active_append_buffer_inner(
         active_file.write_all(pending_bytes)?;
         pending_bytes.clear();
         active_file.flush()?;
-        if sync_on_append {
+        if sync_if_configured && sync_on_append {
             active_file.sync_data()?;
         }
     }
