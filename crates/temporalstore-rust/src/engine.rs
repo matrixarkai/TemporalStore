@@ -12079,7 +12079,7 @@ fn collect_model_live_page_entries_for_keys(
     shard: &ShardState,
     keys: &BTreeSet<String>,
 ) -> Vec<LivePageEntry> {
-    let mut entries = Vec::new();
+    let mut entries = Vec::with_capacity(model_live_page_entry_capacity_for_keys(shard, keys));
     for key in keys {
         if let Some(address) = shard.strings.get(key) {
             entries.push(live_page_entry(
@@ -12205,6 +12205,30 @@ fn collect_model_live_page_entries_for_keys(
         }
     }
     entries
+}
+
+fn model_live_page_entry_capacity_for_keys(shard: &ShardState, keys: &BTreeSet<String>) -> usize {
+    keys.iter()
+        .map(|key| {
+            usize::from(shard.strings.contains_key(key))
+                + shard.hashes.get(key).map(HashMap::len).unwrap_or_default()
+                + shard.sets.get(key).map(BTreeMap::len).unwrap_or_default()
+                + usize::from(shard.features.contains_key(key))
+                + usize::from(shard.sequences.contains_key(key))
+                + usize::from(shard.ips.contains_key(key))
+                + usize::from(shard.risk_pages.contains_key(key))
+                + usize::from(shard.context_nodes.contains_key(key))
+                + usize::from(shard.context_events.contains_key(key))
+                + usize::from(shard.context_indexes.contains_key(key))
+                + usize::from(shard.context_audits.contains_key(key))
+                + usize::from(shard.context_dirty.contains_key(key))
+                + usize::from(shard.context_entities.contains_key(key))
+                + usize::from(shard.context_children.contains_key(key))
+                + usize::from(shard.context_embeddings.contains_key(key))
+                + usize::from(shard.context_summaries.contains_key(key))
+                + usize::from(shard.context_compressions.contains_key(key))
+        })
+        .sum()
 }
 
 fn page_index_ref_key(entry: &LivePageEntry) -> String {
