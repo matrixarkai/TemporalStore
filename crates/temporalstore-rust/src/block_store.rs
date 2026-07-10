@@ -931,14 +931,21 @@ impl LocalBlockStore {
             inner.root.clone()
         };
         let mut files = BTreeMap::<u64, File>::new();
-        let mut results = Vec::with_capacity(addresses.len());
+        let mut results = (0..addresses.len()).map(|_| None).collect::<Vec<_>>();
+        let mut read_order = addresses.iter().enumerate().collect::<Vec<_>>();
+        read_order.sort_by(|(_, left), (_, right)| {
+            left.page_segment_id
+                .cmp(&right.page_segment_id)
+                .then_with(|| left.offset.cmp(&right.offset))
+                .then_with(|| left.length.cmp(&right.length))
+        });
         let mut stats_reads = 0_u64;
         let mut stats_bytes_read = 0_u64;
         let mut stats_cold_reads = 0_u64;
         let mut stats_cold_bytes_read = 0_u64;
         let mut stats_logical_bytes_read = 0_u64;
         let mut stats_compressed_records_read = 0_u64;
-        for address in addresses {
+        for (result_index, address) in read_order {
             let result = (|| {
                 if !files.contains_key(&address.page_segment_id) {
                     let path = segment_path(&root, address.page_segment_id);
@@ -977,7 +984,7 @@ impl LocalBlockStore {
                 }
                 Ok(bytes)
             })();
-            results.push(result);
+            results[result_index] = Some(result);
         }
         if stats_reads > 0 {
             let mut inner = self.inner.lock().expect("block store lock poisoned");
@@ -998,6 +1005,16 @@ impl LocalBlockStore {
                 .saturating_add(stats_compressed_records_read);
         }
         results
+            .into_iter()
+            .map(|result| {
+                result.unwrap_or_else(|| {
+                    Err(BlockStoreError::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "ordered block read result missing",
+                    )))
+                })
+            })
+            .collect()
     }
 
     pub fn read_batch(&self, addresses: &[BlockAddress]) -> Vec<Result<Vec<u8>, BlockStoreError>> {
