@@ -1,15 +1,13 @@
-use std::collections::HashMap;
-
 use serde::{Deserialize, Serialize};
 
 use crate::page_store::{LocalPageStore, PageAddress};
 use crate::types::ShardId;
-use rustmtcache::{CacheKey, MultiLayerCache};
+use rustmtcache::MultiLayerCache;
 
-use super::read_page_bytes;
 use super::state::{
     object_component_lookup_key, object_page_lookup_key, ShardState, SlotLayoutState,
 };
+use super::{read_page_bytes, read_page_bytes_batch};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct SlotRuntimeState {
@@ -289,83 +287,15 @@ pub(super) fn read_slot_index_component_values(
         return Vec::new();
     }
 
-    let keys = refs
+    let addresses = refs
         .iter()
-        .map(|(_, address)| page_cache_key(shard_id, address))
+        .map(|(_, address)| Some(address.clone()))
         .collect::<Vec<_>>();
-    let mut unique_keys = Vec::new();
-    let mut key_indexes = HashMap::<CacheKey, Vec<usize>>::new();
-    for (index, key) in keys.iter().enumerate() {
-        if !key_indexes.contains_key(key) {
-            unique_keys.push(key.clone());
-        }
-        key_indexes.entry(key.clone()).or_default().push(index);
-    }
-    let cached = cache
-        .get_batch(&unique_keys)
-        .unwrap_or_else(|_| vec![None; unique_keys.len()]);
-
-    let mut values = vec![None; refs.len()];
-    let mut missed_pages = HashMap::<CacheKey, PageAddress>::new();
-    for (key, cached_value) in unique_keys.into_iter().zip(cached.into_iter()) {
-        let indexes = key_indexes.remove(&key).unwrap_or_default();
-        match cached_value {
-            Some(value) => {
-                for index in indexes {
-                    values[index] = Some((refs[index].0.clone(), value.clone()));
-                }
-            }
-            None => {
-                if let Some((_, address)) = indexes.first().and_then(|index| refs.get(*index)) {
-                    missed_pages.entry(key).or_insert_with(|| address.clone());
-                }
-            }
-        }
-    }
-
-    let missed_entries = missed_pages.into_iter().collect::<Vec<_>>();
-    let missed_addresses = missed_entries
-        .iter()
-        .map(|(_, address)| address.clone())
-        .collect::<Vec<_>>();
-    let missed_reads = page_store.read_batch(&missed_addresses);
-    let mut missed_values = HashMap::<CacheKey, Vec<u8>>::new();
-    for ((key, _), read_result) in missed_entries.into_iter().zip(missed_reads) {
-        if let Ok(value) = read_result {
-            missed_values.insert(key, value);
-        }
-    }
-    let refills = missed_values
-        .iter()
-        .map(|(key, value)| (key.clone(), value.clone()))
-        .collect::<Vec<_>>();
-    if !refills.is_empty() {
-        let _ = cache.put_batch(refills);
-    }
+    let values = read_page_bytes_batch(cache, page_store, shard_id, &addresses);
 
     values
         .into_iter()
-        .enumerate()
-        .filter_map(|(index, value)| {
-            value.or_else(|| {
-                keys.get(index).and_then(|key| {
-                    missed_values
-                        .get(key)
-                        .cloned()
-                        .map(|value| (refs[index].0.clone(), value))
-                })
-            })
-        })
+        .zip(refs)
+        .filter_map(|(value, (component, _))| value.map(|value| (component, value)))
         .collect()
-}
-
-fn page_cache_key(shard_id: ShardId, address: &PageAddress) -> CacheKey {
-    CacheKey::page_with_slot_generation(
-        shard_id,
-        address.page_segment_id,
-        address.offset,
-        address.length,
-        address.routing_slot,
-        address.generation,
-    )
 }
