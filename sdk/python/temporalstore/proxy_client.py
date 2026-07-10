@@ -85,6 +85,10 @@ class ProxyClient:
             body["count_key"] = count_key
         if count_value is not None:
             body["count_value"] = count_value
+        if append_options is not None:
+            body["append_options_json"] = json.dumps(
+                append_options, sort_keys=True, separators=(",", ":")
+            )
         self._post("/matrixark/append_records", body)
 
     def matrixark_append_records(
