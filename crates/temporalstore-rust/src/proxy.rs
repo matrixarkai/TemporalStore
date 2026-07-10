@@ -30,7 +30,7 @@ use crate::meta::{
 };
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, ExecuteRequest, ExecuteResponse,
-    FeatureFilter, FeatureWritePolicy, RiskFolType, ShardId, Status,
+    FeatureFilter, FeaturePoint, FeatureWritePolicy, RiskFolType, ShardId, Status,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -605,6 +605,37 @@ pub struct ProxyIpsQueryLastCommandRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyIpsRangeCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    #[serde(default)]
+    pub count: Option<usize>,
+    #[serde(default)]
+    pub action_type: Option<u32>,
+    #[serde(default)]
+    pub table_id: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyIpsBatchQueryLastCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub keys: Vec<String>,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyIpsLoadCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub points: Vec<FeaturePoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyRiskIncrementCommandRequest {
     pub namespace: String,
     pub table_name: String,
@@ -1135,6 +1166,152 @@ impl ProxyService {
                         let command = Command::IpsQueryLast {
                             key: req.key,
                             count: req.count,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/IpsQuery") => {
+                match parse_json::<ProxyIpsRangeCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::IpsQueryRangeWithOptions {
+                            key: req.key,
+                            start_ms: req.start_ms,
+                            end_ms: req.end_ms,
+                            count: req.count,
+                            action_type: req.action_type,
+                            table_id: req.table_id,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/IpsBatchQueryLast") => {
+                match parse_json::<ProxyIpsBatchQueryLastCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::IpsBatchQueryLast {
+                            keys: req.keys,
+                            count: req.count,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/IpsStat") => {
+                match parse_json::<ProxyIpsRangeCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::IpsStat {
+                            key: req.key,
+                            start_ms: req.start_ms,
+                            end_ms: req.end_ms,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/IpsFilter") => {
+                match parse_json::<ProxyIpsRangeCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::IpsFilter {
+                            key: req.key,
+                            start_ms: req.start_ms,
+                            end_ms: req.end_ms,
+                            count: req.count,
+                            action_type: req.action_type,
+                            table_id: req.table_id,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/IpsSnapshot") => {
+                match parse_json::<ProxyIpsRangeCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::IpsSnapshot {
+                            key: req.key,
+                            start_ms: req.start_ms,
+                            end_ms: req.end_ms,
+                            count: req.count,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/IpsSnapshotReport") => {
+                match parse_json::<ProxyIpsRangeCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::IpsSnapshotReport {
+                            key: req.key,
+                            start_ms: req.start_ms,
+                            end_ms: req.end_ms,
+                            count: req.count,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/IpsLoad") => {
+                match parse_json::<ProxyIpsLoadCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::IpsLoad {
+                            key: req.key,
+                            points: req.points,
                         };
                         json_response(
                             200,
