@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::env;
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, OnceLock, RwLock};
@@ -5383,17 +5383,22 @@ impl TemporalEngine {
                 .page_store
                 .read_logical_range(request.page_segment_id, request.offset, request.size)
                 .map_err(|err| err.to_string()),
-            StreamKind::Index => fs::read(self.index_path(request.shard_id))
-                .map_err(|err| err.to_string())
-                .map(|bytes| {
-                    let start = request.offset as usize;
-                    let end = start.saturating_add(request.size as usize).min(bytes.len());
-                    if start >= bytes.len() {
-                        Vec::new()
-                    } else {
-                        bytes[start..end].to_vec()
-                    }
-                }),
+            StreamKind::Index => {
+                if request.size == 0 {
+                    Ok(Vec::new())
+                } else {
+                    (|| {
+                        let mut file = File::open(self.index_path(request.shard_id))?;
+                        file.seek(SeekFrom::Start(request.offset))?;
+                        let mut bytes = Vec::with_capacity(request.size as usize);
+                        Read::by_ref(&mut file)
+                            .take(request.size)
+                            .read_to_end(&mut bytes)?;
+                        Ok::<_, std::io::Error>(bytes)
+                    })()
+                    .map_err(|err| err.to_string())
+                }
+            }
             StreamKind::Wal => self
                 .wal_store
                 .read_range(request.shard_id, request.offset, request.size)
