@@ -64,11 +64,24 @@ pub(super) fn sorted_feature_points(mut points: Vec<FeaturePoint>) -> Vec<Featur
     by_timestamp.into_values().collect()
 }
 
+#[cfg(test)]
 pub(super) fn encode_feature_page(points: &[FeaturePoint]) -> Vec<u8> {
     let page = PackedFeaturePage {
         version: 1,
         points: points.to_vec(),
     };
+    if let Ok(mut payload) = serde_json::to_vec(&page) {
+        let mut bytes = Vec::with_capacity(FEATURE_PAGE_MAGIC.len() + payload.len());
+        bytes.extend_from_slice(FEATURE_PAGE_MAGIC);
+        bytes.append(&mut payload);
+        bytes
+    } else {
+        FEATURE_PAGE_MAGIC.to_vec()
+    }
+}
+
+pub(super) fn encode_feature_page_owned(points: Vec<FeaturePoint>) -> Vec<u8> {
+    let page = PackedFeaturePage { version: 1, points };
     if let Ok(mut payload) = serde_json::to_vec(&page) {
         let mut bytes = Vec::with_capacity(FEATURE_PAGE_MAGIC.len() + payload.len());
         bytes.extend_from_slice(FEATURE_PAGE_MAGIC);
@@ -141,27 +154,32 @@ pub(super) fn append_timestamped_kv_pages(
     let chunks = chunk_timestamped_kv_points(points);
     if !async_storage {
         let mut writes = Vec::with_capacity(chunks.len());
-        let mut chunk_points = Vec::with_capacity(chunks.len());
+        let mut chunk_timestamps = Vec::with_capacity(chunks.len());
         for chunk in chunks {
+            chunk_timestamps.push(
+                chunk
+                    .iter()
+                    .map(|point| point.timestamp_ms)
+                    .collect::<Vec<_>>(),
+            );
             writes.push((
-                encode_feature_page(&chunk),
+                encode_feature_page_owned(chunk),
                 Some(object_id),
                 Some(routing_slot),
             ));
-            chunk_points.push(chunk);
         }
         let addresses = block_store.append_batch_with_page_metadata(writes)?;
-        if addresses.len() != chunk_points.len() {
+        if addresses.len() != chunk_timestamps.len() {
             return Err(BlockStoreError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 "batch page append returned fewer addresses than chunks",
             )));
         }
-        for (chunk, address) in chunk_points.into_iter().zip(addresses) {
+        for (timestamps, address) in chunk_timestamps.into_iter().zip(addresses) {
             refs.extend(
-                chunk
+                timestamps
                     .into_iter()
-                    .map(|point| (point.timestamp_ms, address.clone())),
+                    .map(|timestamp_ms| (timestamp_ms, address.clone())),
             );
         }
         return Ok(refs);
@@ -170,7 +188,11 @@ pub(super) fn append_timestamped_kv_pages(
     let start_offset = HOT_PAGE_OFFSET.fetch_add(chunks.len() as u64, Ordering::Relaxed);
     let mut page_cache_entries = Vec::with_capacity(chunks.len());
     for (index, chunk) in chunks.into_iter().enumerate() {
-        let packed = encode_feature_page(&chunk);
+        let timestamps = chunk
+            .iter()
+            .map(|point| point.timestamp_ms)
+            .collect::<Vec<_>>();
+        let packed = encode_feature_page_owned(chunk);
         let address = BlockAddress {
             page_segment_id: HOT_PAGE_SEGMENT_ID,
             offset: start_offset.saturating_add(index as u64),
@@ -194,9 +216,9 @@ pub(super) fn append_timestamped_kv_pages(
             packed,
         ));
         refs.extend(
-            chunk
+            timestamps
                 .into_iter()
-                .map(|point| (point.timestamp_ms, address.clone())),
+                .map(|timestamp_ms| (timestamp_ms, address.clone())),
         );
     }
     for (key, bytes) in page_cache_entries {
