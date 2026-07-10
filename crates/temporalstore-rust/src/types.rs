@@ -153,7 +153,7 @@ pub enum FeatureWritePolicy {
     Block,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct FeatureFilter {
     pub field: String,
     pub op: FeatureFilterOp,
@@ -198,6 +198,36 @@ impl FeatureFilter {
     }
 }
 
+impl<'de> Deserialize<'de> for FeatureFilter {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct StructuredFeatureFilter {
+            field: String,
+            op: FeatureFilterOp,
+            value: u64,
+        }
+
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match value {
+            serde_json::Value::String(filter) => {
+                Self::parse_cpp_filter(&filter).map_err(serde::de::Error::custom)
+            }
+            value => {
+                let filter: StructuredFeatureFilter =
+                    serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+                Ok(Self {
+                    field: filter.field,
+                    op: filter.op,
+                    value: filter.value,
+                })
+            }
+        }
+    }
+}
+
 pub fn parse_cpp_feature_filters<'a>(
     filters: impl IntoIterator<Item = &'a str>,
 ) -> Result<Vec<FeatureFilter>, String> {
@@ -222,8 +252,11 @@ pub fn parse_cpp_feature_filters<'a>(
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SequenceQuerySpec {
     pub key: String,
+    #[serde(alias = "start_ts")]
     pub start_ms: u64,
+    #[serde(alias = "end_ts")]
     pub end_ms: u64,
+    #[serde(alias = "limit")]
     pub count: usize,
     #[serde(default)]
     pub filters: Vec<FeatureFilter>,
