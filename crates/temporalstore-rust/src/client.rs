@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -833,23 +833,6 @@ pub struct ClientRetryDecision {
     pub would_retry: bool,
 }
 
-impl ClientStats {
-    fn record_backend_error(&mut self, became_continuous: bool) {
-        self.backend_errors += 1;
-        self.backend_error_streak += 1;
-        if became_continuous {
-            self.continuous_backend_failures += 1;
-        }
-    }
-
-    fn record_backend_success(&mut self) {
-        if self.backend_error_streak > 0 {
-            self.backend_successes_after_error += 1;
-        }
-        self.backend_error_streak = 0;
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct TemporalStoreClient {
     inner: Arc<ClientInner>,
@@ -862,7 +845,61 @@ struct ClientInner {
     backend_failures: Mutex<HashMap<String, BackendFailureState>>,
     tables: Mutex<HashMap<String, TableOptions>>,
     meta_sync_tables: Mutex<HashMap<String, ClientMetaSyncTableState>>,
-    stats: Mutex<ClientStats>,
+    stats: ClientStatsState,
+}
+
+#[derive(Debug, Default)]
+struct ClientStatsState {
+    open_table_calls: AtomicU64,
+    close_table_calls: AtomicU64,
+    execute_requests: AtomicU64,
+    batch_execute_requests: AtomicU64,
+    route_cache_hits: AtomicU64,
+    route_cache_misses: AtomicU64,
+    route_refreshes: AtomicU64,
+    backend_errors: AtomicU64,
+    backend_error_streak: AtomicU64,
+    continuous_backend_failures: AtomicU64,
+    backend_successes_after_error: AtomicU64,
+    meta_sync_total: AtomicU64,
+    meta_sync_errors: AtomicU64,
+}
+
+impl ClientStatsState {
+    fn snapshot(&self) -> ClientStats {
+        ClientStats {
+            open_table_calls: self.open_table_calls.load(Ordering::Relaxed),
+            close_table_calls: self.close_table_calls.load(Ordering::Relaxed),
+            execute_requests: self.execute_requests.load(Ordering::Relaxed),
+            batch_execute_requests: self.batch_execute_requests.load(Ordering::Relaxed),
+            route_cache_hits: self.route_cache_hits.load(Ordering::Relaxed),
+            route_cache_misses: self.route_cache_misses.load(Ordering::Relaxed),
+            route_refreshes: self.route_refreshes.load(Ordering::Relaxed),
+            backend_errors: self.backend_errors.load(Ordering::Relaxed),
+            backend_error_streak: self.backend_error_streak.load(Ordering::Relaxed),
+            continuous_backend_failures: self.continuous_backend_failures.load(Ordering::Relaxed),
+            backend_successes_after_error: self
+                .backend_successes_after_error
+                .load(Ordering::Relaxed),
+            meta_sync_total: self.meta_sync_total.load(Ordering::Relaxed),
+            meta_sync_errors: self.meta_sync_errors.load(Ordering::Relaxed),
+        }
+    }
+
+    fn record_backend_error(&self, became_continuous: bool) {
+        self.backend_errors.fetch_add(1, Ordering::Relaxed);
+        self.backend_error_streak.fetch_add(1, Ordering::Relaxed);
+        if became_continuous {
+            self.continuous_backend_failures.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn record_backend_success(&self) {
+        if self.backend_error_streak.swap(0, Ordering::Relaxed) > 0 {
+            self.backend_successes_after_error
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -935,7 +972,7 @@ impl TemporalStoreClient {
                 backend_failures: Mutex::default(),
                 tables: Mutex::default(),
                 meta_sync_tables: Mutex::default(),
-                stats: Mutex::default(),
+                stats: ClientStatsState::default(),
             }),
         }
     }
@@ -957,9 +994,8 @@ impl TemporalStoreClient {
         self.ensure_meta_sync_table_state(&namespace, &table_name);
         self.inner
             .stats
-            .lock()
-            .expect("client stats lock poisoned")
-            .open_table_calls += 1;
+            .open_table_calls
+            .fetch_add(1, Ordering::Relaxed);
         TemporalStoreTable {
             client: self.clone(),
             namespace,
@@ -1143,9 +1179,8 @@ impl TemporalStoreClient {
         self.ensure_meta_sync_table_state(&namespace, &table_name);
         self.inner
             .stats
-            .lock()
-            .expect("client stats lock poisoned")
-            .meta_sync_total += 1;
+            .meta_sync_total
+            .fetch_add(1, Ordering::Relaxed);
         let meta_addr = self
             .inner
             .options
@@ -1166,19 +1201,17 @@ impl TemporalStoreClient {
             Err(err) => {
                 self.inner
                     .stats
-                    .lock()
-                    .expect("client stats lock poisoned")
-                    .meta_sync_errors += 1;
+                    .meta_sync_errors
+                    .fetch_add(1, Ordering::Relaxed);
                 self.record_meta_sync_error(&namespace, &table_name, &err.to_string());
                 return Err(err.into());
             }
         };
         if !topology.status.ok {
-            self.inner
-                .stats
-                .lock()
-                .expect("client stats lock poisoned")
-                .meta_sync_errors += 1;
+                self.inner
+                    .stats
+                    .meta_sync_errors
+                    .fetch_add(1, Ordering::Relaxed);
             self.record_meta_sync_error(&namespace, &table_name, &topology.status.message);
             return Err(ClientError::Status(topology.status.message));
         }
@@ -1356,9 +1389,8 @@ impl TemporalStoreClient {
         if !topology.status.ok {
             self.inner
                 .stats
-                .lock()
-                .expect("client stats lock poisoned")
-                .meta_sync_errors += 1;
+                .meta_sync_errors
+                .fetch_add(1, Ordering::Relaxed);
             return Err(ClientError::Status(topology.status.message));
         }
 
@@ -1618,9 +1650,8 @@ impl TemporalStoreClient {
             .is_some();
         self.inner
             .stats
-            .lock()
-            .expect("client stats lock poisoned")
-            .close_table_calls += 1;
+            .close_table_calls
+            .fetch_add(1, Ordering::Relaxed);
         if removed {
             self.inner
                 .routes
@@ -1639,7 +1670,7 @@ impl TemporalStoreClient {
     }
 
     pub fn stats(&self) -> ClientStats {
-        *self.inner.stats.lock().expect("client stats lock poisoned")
+        self.inner.stats.snapshot()
     }
 
     pub fn preflight_report(&self) -> ClientPreflightReport {
@@ -2751,11 +2782,7 @@ impl TemporalStoreClient {
                         &server_addr,
                         self.inner.options.topo_error_retry_interval_ms,
                     );
-                    self.inner
-                        .stats
-                        .lock()
-                        .expect("client stats lock poisoned")
-                        .record_backend_error(became_continuous);
+                    self.inner.stats.record_backend_error(became_continuous);
                     let refreshed = self.resolve_route(request.shard_id, true, None)?;
                     Ok(post_json_with_options(
                         &refreshed,
@@ -2843,11 +2870,7 @@ impl TemporalStoreClient {
                         continuous_failed_time_ms
                             .unwrap_or(self.inner.options.topo_error_retry_interval_ms),
                     );
-                    self.inner
-                        .stats
-                        .lock()
-                        .expect("client stats lock poisoned")
-                        .record_backend_error(became_continuous);
+                    self.inner.stats.record_backend_error(became_continuous);
                     let refreshed = self.resolve_route_with_policy(
                         request.shard_id,
                         true,
@@ -2858,11 +2881,7 @@ impl TemporalStoreClient {
                     let response =
                         post_json_with_options(&refreshed, "/execute", &request, http_options)?;
                     self.record_backend_success(&refreshed);
-                    self.inner
-                        .stats
-                        .lock()
-                        .expect("client stats lock poisoned")
-                        .record_backend_success();
+                    self.inner.stats.record_backend_success();
                     Ok(response)
                 });
         }
@@ -2892,11 +2911,7 @@ impl TemporalStoreClient {
                         continuous_failed_time_ms
                             .unwrap_or(self.inner.options.topo_error_retry_interval_ms),
                     );
-                    self.inner
-                        .stats
-                        .lock()
-                        .expect("client stats lock poisoned")
-                        .record_backend_error(became_continuous);
+                    self.inner.stats.record_backend_error(became_continuous);
                     let refreshed =
                         self.resolve_route(request.shard_id, true, continuous_failed_time_ms)?;
                     let response = post_json_with_options(
@@ -2906,11 +2921,7 @@ impl TemporalStoreClient {
                         http_options,
                     )?;
                     self.record_backend_success(&refreshed);
-                    self.inner
-                        .stats
-                        .lock()
-                        .expect("client stats lock poisoned")
-                        .record_backend_success();
+                    self.inner.stats.record_backend_success();
                     Ok(response)
                 });
         }
@@ -2961,27 +2972,18 @@ impl TemporalStoreClient {
                         continuous_failed_time_ms
                             .unwrap_or(self.inner.options.topo_error_retry_interval_ms),
                     ) {
-                        self.inner
-                            .stats
-                            .lock()
-                            .expect("client stats lock poisoned")
-                            .continuous_backend_failures += 1;
+                        self.inner.stats.continuous_backend_failures.fetch_add(
+                            1,
+                            Ordering::Relaxed,
+                        );
                     } else {
-                        self.inner
-                            .stats
-                            .lock()
-                            .expect("client stats lock poisoned")
-                            .route_cache_hits += 1;
+                        self.inner.stats.route_cache_hits.fetch_add(1, Ordering::Relaxed);
                         return Ok(server_addr);
                     }
                 }
             }
         }
-        self.inner
-            .stats
-            .lock()
-            .expect("client stats lock poisoned")
-            .route_cache_misses += 1;
+        self.inner.stats.route_cache_misses.fetch_add(1, Ordering::Relaxed);
 
         let meta_addr = self
             .inner
@@ -3009,11 +3011,7 @@ impl TemporalStoreClient {
                 shard_id,
                 CachedRoute::for_shard(shard_id, server_addr.clone(), "shard_lookup"),
             );
-        self.inner
-            .stats
-            .lock()
-            .expect("client stats lock poisoned")
-            .route_refreshes += 1;
+        self.inner.stats.route_refreshes.fetch_add(1, Ordering::Relaxed);
         Ok(server_addr)
     }
 
@@ -5074,9 +5072,8 @@ impl TemporalStoreTable {
         self.client
             .inner
             .stats
-            .lock()
-            .expect("client stats lock poisoned")
-            .execute_requests += 1;
+            .execute_requests
+            .fetch_add(1, Ordering::Relaxed);
         let write = is_write(&command);
         if write {
             self.refresh_table_topology_before_write_if_due()?;
@@ -5183,9 +5180,8 @@ impl TemporalStoreTable {
         self.client
             .inner
             .stats
-            .lock()
-            .expect("client stats lock poisoned")
-            .batch_execute_requests += 1;
+            .batch_execute_requests
+            .fetch_add(1, Ordering::Relaxed);
         let write = commands.iter().any(is_write);
         if write {
             self.refresh_table_topology_before_write_if_due()?;

@@ -129,6 +129,41 @@ pub struct ProxyStats {
     pub auto_register_total: u64,
 }
 
+#[derive(Debug, Default)]
+struct ProxyStatsState {
+    execute_requests: AtomicU64,
+    batch_execute_requests: AtomicU64,
+    route_cache_hits: AtomicU64,
+    route_cache_misses: AtomicU64,
+    route_refreshes: AtomicU64,
+    backend_errors: AtomicU64,
+    continuous_backend_failures: AtomicU64,
+    metaserver_errors: AtomicU64,
+    bad_requests: AtomicU64,
+    admission_rejections: AtomicU64,
+    heartbeat_total: AtomicU64,
+    auto_register_total: AtomicU64,
+}
+
+impl ProxyStatsState {
+    fn snapshot(&self) -> ProxyStats {
+        ProxyStats {
+            execute_requests: self.execute_requests.load(Ordering::Relaxed),
+            batch_execute_requests: self.batch_execute_requests.load(Ordering::Relaxed),
+            route_cache_hits: self.route_cache_hits.load(Ordering::Relaxed),
+            route_cache_misses: self.route_cache_misses.load(Ordering::Relaxed),
+            route_refreshes: self.route_refreshes.load(Ordering::Relaxed),
+            backend_errors: self.backend_errors.load(Ordering::Relaxed),
+            continuous_backend_failures: self.continuous_backend_failures.load(Ordering::Relaxed),
+            metaserver_errors: self.metaserver_errors.load(Ordering::Relaxed),
+            bad_requests: self.bad_requests.load(Ordering::Relaxed),
+            admission_rejections: self.admission_rejections.load(Ordering::Relaxed),
+            heartbeat_total: self.heartbeat_total.load(Ordering::Relaxed),
+            auto_register_total: self.auto_register_total.load(Ordering::Relaxed),
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyServiceDiscoveryStats {
     pub heartbeat_success_total: u64,
@@ -1647,7 +1682,7 @@ struct ProxyInner {
     client: RwLock<TemporalStoreClient>,
     last_client_stats: RwLock<ClientStats>,
     route_invalidation_due_ms: AtomicU64,
-    stats: RwLock<ProxyStats>,
+    stats: ProxyStatsState,
     service_discovery: RwLock<ProxyServiceDiscoveryState>,
     boot_time_ms: u64,
 }
@@ -1660,7 +1695,7 @@ impl ProxyService {
                 options: RwLock::new(options),
                 last_client_stats: RwLock::default(),
                 route_invalidation_due_ms: AtomicU64::new(0),
-                stats: RwLock::default(),
+                stats: ProxyStatsState::default(),
                 service_discovery: RwLock::default(),
                 boot_time_ms: now_ms(),
             }),
@@ -3327,9 +3362,8 @@ impl ProxyService {
     pub fn execute(&self, request: ExecuteRequest) -> ExecuteResponse {
         self.inner
             .stats
-            .write()
-            .expect("proxy stats lock poisoned")
-            .execute_requests += 1;
+            .execute_requests
+            .fetch_add(1, Ordering::Relaxed);
         if let Some(status) =
             self.check_admission_for_commands(std::slice::from_ref(&request.command))
         {
@@ -3347,9 +3381,8 @@ impl ProxyService {
     pub fn batch_execute(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
         self.inner
             .stats
-            .write()
-            .expect("proxy stats lock poisoned")
-            .batch_execute_requests += 1;
+            .batch_execute_requests
+            .fetch_add(1, Ordering::Relaxed);
         if let Some(status) = self.check_admission_for_commands(&request.commands) {
             return BatchExecuteResponse {
                 status,
@@ -3413,9 +3446,8 @@ impl ProxyService {
     pub fn table_execute(&self, request: ProxyTableExecuteRequest) -> ExecuteResponse {
         self.inner
             .stats
-            .write()
-            .expect("proxy stats lock poisoned")
-            .execute_requests += 1;
+            .execute_requests
+            .fetch_add(1, Ordering::Relaxed);
         if let Some(status) =
             self.check_admission_for_commands(std::slice::from_ref(&request.command))
         {
@@ -3436,9 +3468,8 @@ impl ProxyService {
     ) -> BatchExecuteResponse {
         self.inner
             .stats
-            .write()
-            .expect("proxy stats lock poisoned")
-            .batch_execute_requests += 1;
+            .batch_execute_requests
+            .fetch_add(1, Ordering::Relaxed);
         if let Some(status) = self.check_admission_for_commands(&request.commands) {
             return BatchExecuteResponse {
                 status,
@@ -3629,7 +3660,7 @@ impl ProxyService {
             status: Status::ok(),
             meta_addr: options.meta_addr,
             route_cache_size: self.client().route_cache_size(),
-            stats: *self.inner.stats.read().expect("proxy stats lock poisoned"),
+            stats: self.inner.stats.snapshot(),
             boot_time_ms: self.inner.boot_time_ms,
         }
     }
@@ -3642,14 +3673,14 @@ impl ProxyService {
             meta_addr: options.meta_addr.clone(),
             config_version: proxy_config_version(&options),
             route_cache_size: self.client().route_cache_size(),
-            stats: *self.inner.stats.read().expect("proxy stats lock poisoned"),
+            stats: self.inner.stats.snapshot(),
         }
     }
 
     pub fn preflight_report(&self) -> ProxyPreflightReport {
         self.sync_client_stats();
         let options = self.options();
-        let stats = *self.inner.stats.read().expect("proxy stats lock poisoned");
+        let stats = self.inner.stats.snapshot();
         let client_stats = self.client().stats();
         let route_cache_size = self.client().route_cache_size();
         let mut topology_cache = self.client().topology_cache_report();
@@ -3741,7 +3772,7 @@ impl ProxyService {
 
     pub fn policy_report(&self) -> ProxyPolicyReport {
         let options = self.options();
-        let stats = *self.inner.stats.read().expect("proxy stats lock poisoned");
+        let stats = self.inner.stats.snapshot();
         ProxyPolicyReport {
             serving_mode: options.serving_mode,
             drop_percent: options.drop_percent.min(100),
@@ -3959,7 +3990,7 @@ impl ProxyService {
     pub fn prometheus_metrics(&self) -> String {
         self.sync_client_stats();
         let options = self.options();
-        let stats = *self.inner.stats.read().expect("proxy stats lock poisoned");
+        let stats = self.inner.stats.snapshot();
         let client = self.client().stats();
         let mut out = String::new();
         out.push_str("# HELP temporalstore_proxy_requests_total Proxy request counters by kind.\n");
@@ -4172,11 +4203,10 @@ impl ProxyService {
                 report: Some(report),
             },
             Err(err) => {
-                self.inner
-                    .stats
-                    .write()
-                    .expect("proxy stats lock poisoned")
-                    .metaserver_errors += 1;
+                    self.inner
+                        .stats
+                        .metaserver_errors
+                        .fetch_add(1, Ordering::Relaxed);
                 ProxyTopologyRefreshResponse {
                     status: Status::error("refresh_failed", err.to_string()),
                     report: None,
@@ -4205,9 +4235,8 @@ impl ProxyService {
         let options = self.options();
         self.inner
             .stats
-            .write()
-            .expect("proxy stats lock poisoned")
-            .heartbeat_total += 1;
+            .heartbeat_total
+            .fetch_add(1, Ordering::Relaxed);
         let request = ProxyHeartbeatRequest {
             proxy_addr: options.proxy_addr.clone(),
             namespace: options.namespace.clone(),
@@ -4284,9 +4313,8 @@ impl ProxyService {
     fn auto_register_proxy(&self, options: &ProxyOptions) -> AckResponse {
         self.inner
             .stats
-            .write()
-            .expect("proxy stats lock poisoned")
-            .auto_register_total += 1;
+            .auto_register_total
+            .fetch_add(1, Ordering::Relaxed);
         let response = post_json_with_options::<_, AckResponse>(
             &options.meta_addr,
             "/proxies/register",
@@ -4389,11 +4417,10 @@ impl ProxyService {
         )
         .map_err(|err| {
             if count_error {
-                self.inner
-                    .stats
-                    .write()
-                    .expect("proxy stats lock poisoned")
-                    .metaserver_errors += 1;
+                    self.inner
+                        .stats
+                        .metaserver_errors
+                        .fetch_add(1, Ordering::Relaxed);
             }
             Status::error("metaserver_error", err.to_string())
         })
@@ -4421,18 +4448,52 @@ impl ProxyService {
             .last_client_stats
             .write()
             .expect("proxy client stats lock poisoned");
-        let mut stats = self.inner.stats.write().expect("proxy stats lock poisoned");
-        stats.route_cache_hits += current
+        let route_cache_hits_delta = if current.route_cache_hits >= last.route_cache_hits {
+            current.route_cache_hits - last.route_cache_hits
+        } else {
+            current.route_cache_hits
+        };
+        let route_cache_misses_delta = if current.route_cache_misses >= last.route_cache_misses {
+            current.route_cache_misses - last.route_cache_misses
+        } else {
+            current.route_cache_misses
+        };
+        let route_refreshes_delta = if current.route_refreshes >= last.route_refreshes {
+            current.route_refreshes - last.route_refreshes
+        } else {
+            current.route_refreshes
+        };
+        let backend_errors_delta = if current.backend_errors >= last.backend_errors {
+            current.backend_errors - last.backend_errors
+        } else {
+            current.backend_errors
+        };
+        let continuous_backend_failures_delta =
+            if current.continuous_backend_failures >= last.continuous_backend_failures {
+                current.continuous_backend_failures - last.continuous_backend_failures
+            } else {
+                current.continuous_backend_failures
+            };
+        self.inner
+            .stats
             .route_cache_hits
-            .saturating_sub(last.route_cache_hits);
-        stats.route_cache_misses += current
+            .fetch_add(route_cache_hits_delta, Ordering::Relaxed);
+        self.inner
+            .stats
             .route_cache_misses
-            .saturating_sub(last.route_cache_misses);
-        stats.route_refreshes += current.route_refreshes.saturating_sub(last.route_refreshes);
-        stats.backend_errors += current.backend_errors.saturating_sub(last.backend_errors);
-        stats.continuous_backend_failures += current
+            .fetch_add(route_cache_misses_delta, Ordering::Relaxed);
+        self.inner
+            .stats
+            .route_refreshes
+            .fetch_add(route_refreshes_delta, Ordering::Relaxed);
+        self.inner
+            .stats
+            .backend_errors
+            .fetch_add(backend_errors_delta, Ordering::Relaxed);
+        self.inner
+            .stats
             .continuous_backend_failures
-            .saturating_sub(last.continuous_backend_failures);
+            .fetch_add(continuous_backend_failures_delta, Ordering::Relaxed);
         *last = current;
     }
 
@@ -4454,9 +4515,8 @@ impl ProxyService {
         if status.is_some() {
             self.inner
                 .stats
-                .write()
-                .expect("proxy stats lock poisoned")
-                .admission_rejections += 1;
+                .admission_rejections
+                .fetch_add(1, Ordering::Relaxed);
         }
         status
     }
@@ -4498,9 +4558,8 @@ impl ProxyService {
     fn inc_bad_request(&self) {
         self.inner
             .stats
-            .write()
-            .expect("proxy stats lock poisoned")
-            .bad_requests += 1;
+            .bad_requests
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     fn bad_execute_request(&self, err: impl std::fmt::Display) -> (u16, Vec<u8>) {
