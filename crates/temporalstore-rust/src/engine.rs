@@ -303,33 +303,7 @@ impl TemporalEngine {
         request: ExecuteRequest,
         async_storage_override: Option<bool>,
     ) -> ExecuteResponse {
-        if async_storage_override.is_some() {
-            if let Some(response) = self.execute_read_only_fast_path(&request) {
-                return response;
-            }
-        }
-        let mut shards = self.shards.write().expect("engine lock poisoned");
-        let Some(shard) = shards.get_mut(&request.shard_id) else {
-            return ExecuteResponse {
-                status: Status::error("shard_not_loaded", "shard is not loaded on this server"),
-                response: CommandResponse::Empty,
-            };
-        };
-        let command = request.command;
-        if self
-            .infos
-            .read()
-            .expect("info lock poisoned")
-            .get(&request.shard_id)
-            .map(|info| info.readonly)
-            .unwrap_or(false)
-            && is_write_command(&command)
-        {
-            return ExecuteResponse {
-                status: Status::error("readonly_shard", "readonly shard rejects write command"),
-                response: CommandResponse::Empty,
-            };
-        }
+        let command_is_write = is_write_command(&request.command);
         let mut config = self
             .configs
             .read()
@@ -346,6 +320,44 @@ impl TemporalEngine {
             .expect("info lock poisoned")
             .get(&request.shard_id)
             .cloned();
+        let mut admission_checked = false;
+        if !command_is_write {
+            if !self
+                .shards
+                .read()
+                .expect("engine lock poisoned")
+                .contains_key(&request.shard_id)
+            {
+                return ExecuteResponse {
+                    status: Status::error("shard_not_loaded", "shard is not loaded on this server"),
+                    response: CommandResponse::Empty,
+                };
+            }
+            if let Err(status) = self.check_admission(request.shard_id, false, &config, &info) {
+                return ExecuteResponse {
+                    status,
+                    response: CommandResponse::Empty,
+                };
+            }
+            admission_checked = true;
+            if let Some(response) = self.execute_read_only_fast_path(&request) {
+                return response;
+            }
+        }
+        let mut shards = self.shards.write().expect("engine lock poisoned");
+        let Some(shard) = shards.get_mut(&request.shard_id) else {
+            return ExecuteResponse {
+                status: Status::error("shard_not_loaded", "shard is not loaded on this server"),
+                response: CommandResponse::Empty,
+            };
+        };
+        let command = request.command;
+        if info.as_ref().map(|info| info.readonly).unwrap_or(false) && command_is_write {
+            return ExecuteResponse {
+                status: Status::error("readonly_shard", "readonly shard rejects write command"),
+                response: CommandResponse::Empty,
+            };
+        }
         let start_routing_slot = info
             .as_ref()
             .map(|info| info.start_routing_slot)
@@ -362,14 +374,17 @@ impl TemporalEngine {
         ) {
             reconcile_secondary_views_from_slot_index(&self.page_store, shard);
         }
-        let write_command = is_write_command(&command);
-        if let Err(status) = self.check_admission(request.shard_id, write_command, &config, &info) {
-            return ExecuteResponse {
-                status,
-                response: CommandResponse::Empty,
-            };
+        if !admission_checked {
+            if let Err(status) =
+                self.check_admission(request.shard_id, command_is_write, &config, &info)
+            {
+                return ExecuteResponse {
+                    status,
+                    response: CommandResponse::Empty,
+                };
+            }
         }
-        if write_command
+        if command_is_write
             && config
                 .maxmemory_bytes
                 .map(|limit| self.page_store.stats().bytes_written >= limit)
@@ -458,7 +473,7 @@ impl TemporalEngine {
                 );
             }
             refresh_slot_runtime_flags(shard);
-            if write_command {
+            if command_is_write {
                 let sync_canonical_log = !config.async_storage
                     || config.canonical_log_ack_policy == CanonicalLogAckPolicy::Durable;
                 if let Err(error) = self.wal_store.append_with_sync(
