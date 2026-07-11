@@ -32,7 +32,7 @@ use crate::meta::{
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
     ExecuteResponse, FeatureFilter, FeaturePoint, FeatureWritePolicy, RiskFamily, RiskFolType,
-    SequenceQuerySpec, ShardId, Status, StringSetCondition,
+    SequenceFeatureRow, SequenceQuerySpec, ShardId, Status, StringSetCondition,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -708,6 +708,8 @@ pub struct ProxyFeatureQueryCommandRequest {
     pub count: Option<usize>,
     #[serde(default)]
     pub filters: Vec<FeatureFilter>,
+    #[serde(default)]
+    pub fields: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1988,12 +1990,16 @@ impl ProxyService {
                                 filters: req.filters,
                             }
                         };
+                        let fields = feature_query_fields(&req.fields);
                         let response = self.table_execute(ProxyTableExecuteRequest {
                             namespace: req.namespace,
                             table_name: req.table_name,
                             command,
                         });
-                        json_response(200, &feature_points_response_json(response))
+                        json_response(
+                            200,
+                            &feature_points_response_json_with_fields(response, &fields),
+                        )
                     }
                     Err(err) => self.bad_execute_request(err),
                 }
@@ -4470,9 +4476,12 @@ fn hmget_response_json(response: ExecuteResponse) -> serde_json::Value {
     value
 }
 
-fn feature_points_response_json(response: ExecuteResponse) -> serde_json::Value {
+fn feature_points_response_json_with_fields(
+    response: ExecuteResponse,
+    fields: &[String],
+) -> serde_json::Value {
     let point_list = match &response.response {
-        CommandResponse::FeaturePoints { points } => Some(points.clone()),
+        CommandResponse::FeaturePoints { points } => Some(project_feature_points(points, fields)),
         _ => None,
     };
     let mut value = execute_response_json(response);
@@ -4480,6 +4489,59 @@ fn feature_points_response_json(response: ExecuteResponse) -> serde_json::Value 
         response.insert("point_list".to_string(), serde_json::json!(point_list));
     }
     value
+}
+
+fn feature_query_fields(fields: &str) -> Vec<String> {
+    fields
+        .split(|ch: char| ch == ',' || ch == ';' || ch.is_ascii_whitespace())
+        .map(str::trim)
+        .filter(|field| matches!(*field, "gid" | "action_type" | "duration" | "author_id"))
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn project_feature_points(points: &[FeaturePoint], fields: &[String]) -> Vec<FeaturePoint> {
+    if fields.is_empty() {
+        return points.to_vec();
+    }
+    points
+        .iter()
+        .map(|point| {
+            SequenceFeatureRow::decode_cpp_feature_value(point.timestamp_ms, &point.value)
+                .map(|row| FeaturePoint {
+                    timestamp_ms: point.timestamp_ms,
+                    value: encode_projected_cpp_feature_value(&row, fields),
+                })
+                .unwrap_or_else(|| point.clone())
+        })
+        .collect()
+}
+
+fn encode_projected_cpp_feature_value(row: &SequenceFeatureRow, fields: &[String]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for field in fields {
+        match field.as_str() {
+            "gid" => encode_proxy_varint_field(&mut out, 1, row.gid),
+            "action_type" => encode_proxy_varint_field(&mut out, 2, row.action_type as u64),
+            "duration" => encode_proxy_varint_field(&mut out, 3, row.duration as u64),
+            "author_id" => encode_proxy_varint_field(&mut out, 4, row.author_id),
+            _ => {}
+        }
+    }
+    out
+}
+
+fn encode_proxy_varint_field(out: &mut Vec<u8>, field_number: u64, value: u64) {
+    encode_proxy_varint(out, field_number << 3);
+    encode_proxy_varint(out, value);
+}
+
+fn encode_proxy_varint(out: &mut Vec<u8>, mut value: u64) {
+    while value >= 0x80 {
+        out.push((value as u8 & 0x7f) | 0x80);
+        value >>= 7;
+    }
+    out.push(value as u8);
 }
 
 fn sequence_rows_response_json(response: ExecuteResponse) -> serde_json::Value {
