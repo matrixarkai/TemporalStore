@@ -898,7 +898,7 @@ where
         max_entries: usize,
     ) -> Result<SharedStoreFlushReport, SharedStoreReplicationError> {
         let limit = max_entries.max(1);
-        let mut drained = Vec::new();
+        let mut drained = std::collections::VecDeque::new();
         {
             let mut pending = self
                 .pending
@@ -908,27 +908,40 @@ where
                 let Some(entry) = pending.pop_front() else {
                     break;
                 };
-                drained.push(entry);
+                drained.push_back(entry);
             }
         }
 
         let mut last_oplog_index = 0;
-        for (index, entry) in drained.iter().cloned().enumerate() {
+        let mut flushed = 0usize;
+        while let Some(entry) = drained.pop_front() {
             last_oplog_index = entry.oplog_index;
             if let Err(err) = self.replicator.publish_oplog_entry(entry).await {
+                let mut to_requeue = Vec::with_capacity(drained.len() + 1);
                 let mut pending = self
                     .pending
                     .lock()
                     .expect("shared-store async queue lock poisoned");
-                for entry in drained[index..].iter().rev().cloned() {
+                to_requeue.push(entry);
+                while let Some(entry) = drained.pop_front() {
+                    to_requeue.push(entry);
+                }
+                while let Some(entry) = to_requeue.pop() {
                     pending.push_front(entry);
                 }
                 return Err(err);
             }
+            flushed += 1;
         }
-        let remaining = self.queued_len();
+        let remaining = {
+            let pending = self
+                .pending
+                .lock()
+                .expect("shared-store async queue lock poisoned");
+            pending.len()
+        };
         Ok(SharedStoreFlushReport {
-            flushed: drained.len(),
+            flushed,
             remaining,
             last_oplog_index,
         })
