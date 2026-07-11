@@ -487,6 +487,30 @@ pub(super) fn read_feature_points_from_pages_in_range(
     points
 }
 
+pub(super) fn read_feature_points_from_pages_last(
+    cache: &MultiLayerCache,
+    block_store: &LocalBlockStore,
+    shard_id: ShardId,
+    addresses: &[BlockAddress],
+    limit: usize,
+) -> Vec<FeaturePoint> {
+    if addresses.is_empty() || limit == 0 {
+        return Vec::new();
+    }
+    let mut points = read_feature_points_from_pages_in_range(
+        cache,
+        block_store,
+        shard_id,
+        addresses,
+        0,
+        u64::MAX,
+        usize::MAX,
+    );
+    points.sort_by(|a, b| b.timestamp_ms.cmp(&a.timestamp_ms));
+    points.truncate(limit);
+    points
+}
+
 fn read_feature_points_from_single_page(
     cache: &MultiLayerCache,
     block_store: &LocalBlockStore,
