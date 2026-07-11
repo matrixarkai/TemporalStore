@@ -15453,6 +15453,12 @@ pub(super) fn read_page_bytes_batch(
             None => vec![None; addresses.len()],
         };
     }
+    if let Some(address) = single_non_empty_page_address(addresses) {
+        return duplicate_sparse_page_read_values(
+            addresses,
+            read_page_bytes(cache, page_store, shard_id, address),
+        );
+    }
 
     let mut values = vec![None; addresses.len()];
     let mut unique_entries = Vec::<BatchPageReadEntry>::with_capacity(addresses.len());
@@ -15535,6 +15541,18 @@ pub(super) fn read_page_bytes_batch(
     values
 }
 
+fn single_non_empty_page_address(addresses: &[Option<PageAddress>]) -> Option<&PageAddress> {
+    let mut single_address = None;
+    for address in addresses.iter().flatten() {
+        match single_address {
+            Some(existing) if existing != address => return None,
+            Some(_) => {}
+            None => single_address = Some(address),
+        }
+    }
+    single_address
+}
+
 struct BatchPageReadEntry {
     key: CacheKey,
     address: PageAddress,
@@ -15579,6 +15597,33 @@ fn duplicate_page_read_values(len: usize, bytes: Option<Vec<u8>>) -> Vec<Option<
         } else {
             values.push(Some(bytes.clone()));
             remaining = remaining.saturating_sub(1);
+        }
+    }
+    values
+}
+
+fn duplicate_sparse_page_read_values(
+    addresses: &[Option<PageAddress>],
+    bytes: Option<Vec<u8>>,
+) -> Vec<Option<Vec<u8>>> {
+    let Some(bytes) = bytes else {
+        return vec![None; addresses.len()];
+    };
+    let last_value_index = addresses
+        .iter()
+        .rposition(|address| address.is_some())
+        .unwrap_or_default();
+    let mut bytes = Some(bytes);
+    let mut values = Vec::with_capacity(addresses.len());
+    for (index, address) in addresses.iter().enumerate() {
+        if address.is_some() {
+            if index == last_value_index {
+                values.push(bytes.take());
+                continue;
+            }
+            values.push(bytes.as_ref().cloned());
+        } else {
+            values.push(None);
         }
     }
     values
