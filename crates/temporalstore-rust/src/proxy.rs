@@ -1826,7 +1826,7 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/Get") => {
+            ("POST", "/ProxyService/Get") | ("POST", "/Get") => {
                 match parse_json::<ProxyKeyCommandRequest>(&request.body) {
                     Ok(req) => json_response(
                         200,
@@ -1835,7 +1835,7 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/Set") => {
+            ("POST", "/ProxyService/Set") | ("POST", "/Set") => {
                 match parse_json::<ProxySetCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = Command::StringSet {
@@ -1943,6 +1943,7 @@ impl ProxyService {
                 }
             }
             ("POST", "/ProxyService/FeatureAdd")
+            | ("POST", "/FeatureAdd")
             | ("POST", "/ProxyService/FeatureAppendWithPolicy") => {
                 match parse_json::<ProxyFeatureAddCommandRequest>(&request.body) {
                     Ok(req) => {
@@ -1971,6 +1972,7 @@ impl ProxyService {
                 }
             }
             ("POST", "/ProxyService/FeatureQuery")
+            | ("POST", "/FeatureQuery")
             | ("POST", "/ProxyService/FeatureQueryFiltered") => {
                 match parse_json::<ProxyFeatureQueryCommandRequest>(&request.body) {
                     Ok(req) => {
@@ -2544,7 +2546,7 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/RiskHset") => {
+            ("POST", "/ProxyService/RiskHset") | ("POST", "/RiskHset") => {
                 match parse_json::<ProxyRiskHsetCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = Command::RiskSet {
@@ -2567,13 +2569,13 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/RiskHquery") => {
+            ("POST", "/ProxyService/RiskHquery") | ("POST", "/RiskHquery") => {
                 match parse_json::<ProxyRiskHqueryCommandRequest>(&request.body) {
                     Ok(req) => json_response(200, &self.risk_hquery(req)),
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/RiskCPCSet") => {
+            ("POST", "/ProxyService/RiskCPCSet") | ("POST", "/RiskCPCSet") => {
                 match parse_json::<ProxyRiskCpcSetCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = Command::RiskSet {
@@ -2596,13 +2598,13 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/RiskCPCQuery") => {
+            ("POST", "/ProxyService/RiskCPCQuery") | ("POST", "/RiskCPCQuery") => {
                 match parse_json::<ProxyRiskCpcQueryCommandRequest>(&request.body) {
                     Ok(req) => json_response(200, &self.risk_cpc_query(req)),
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/RiskFolSet") => {
+            ("POST", "/ProxyService/RiskFolSet") | ("POST", "/RiskFolSet") => {
                 match parse_json::<ProxyRiskFolSetCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = Command::RiskFolSet {
@@ -2627,7 +2629,7 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/RiskFolQuery") => {
+            ("POST", "/ProxyService/RiskFolQuery") | ("POST", "/RiskFolQuery") => {
                 match parse_json::<ProxyKeyCommandRequest>(&request.body) {
                     Ok(req) => {
                         let response = self.table_command(req, |key| Command::RiskFolQuery { key });
@@ -2636,7 +2638,7 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/RiskManager") => {
+            ("POST", "/ProxyService/RiskManager") | ("POST", "/RiskManager") => {
                 match parse_json::<ProxyRiskManagerCommandRequest>(&request.body) {
                     Ok(req) => {
                         let response = self.table_execute(ProxyTableExecuteRequest {
@@ -3173,7 +3175,7 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/HMGet") => {
+            ("POST", "/ProxyService/HMGet") | ("POST", "/HMGet") => {
                 match parse_json::<ProxyHashMultiGetCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = Command::HashMultiGet {
@@ -3190,7 +3192,7 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/HMSet") => {
+            ("POST", "/ProxyService/HMSet") | ("POST", "/HMSet") => {
                 match parse_json::<ProxyHashMultiSetCommandRequest>(&request.body) {
                     Ok(req) => {
                         let entries = match req.entries() {
@@ -3218,7 +3220,7 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/HGetAll") => {
+            ("POST", "/ProxyService/HGetAll") | ("POST", "/HGetAll") => {
                 match parse_json::<ProxyKeyCommandRequest>(&request.body) {
                     Ok(req) => {
                         let response = self.table_command(req, |key| Command::HashGetAll { key });
@@ -3227,7 +3229,7 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/HLen") => {
+            ("POST", "/ProxyService/HLen") | ("POST", "/HLen") => {
                 match parse_json::<ProxyKeyCommandRequest>(&request.body) {
                     Ok(req) => {
                         let response = self.table_command(req, |key| Command::HashLen { key });
