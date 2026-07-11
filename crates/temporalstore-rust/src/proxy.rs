@@ -464,6 +464,8 @@ pub struct ProxySetCommandRequest {
     pub key: String,
     #[serde(deserialize_with = "proxy_bytes_from_json")]
     pub value: Vec<u8>,
+    #[serde(default, alias = "ttl")]
+    pub ttl_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1838,9 +1840,17 @@ impl ProxyService {
             ("POST", "/ProxyService/Set") | ("POST", "/Set") => {
                 match parse_json::<ProxySetCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let command = Command::StringSet {
-                            key: req.key,
-                            value: req.value,
+                        let command = if let Some(ttl_ms) = req.ttl_ms {
+                            Command::StringSetEx {
+                                key: req.key,
+                                value: req.value,
+                                ttl_ms,
+                            }
+                        } else {
+                            Command::StringSet {
+                                key: req.key,
+                                value: req.value,
+                            }
                         };
                         json_response(
                             200,
