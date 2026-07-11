@@ -4006,10 +4006,14 @@ class MatrixArkRustProxyClient:
         self._scan_hash_cache_invalidations_total = 0
         self._context_pack_response_cache_lock = threading.Lock()
         self._context_pack_response_cache: OrderedDict[str, Json] = OrderedDict()
+        self._context_pack_response_inflight: dict[str, Json] = {}
         self._context_pack_response_cache_hits_total = 0
         self._context_pack_response_cache_misses_total = 0
         self._context_pack_response_cache_updates_total = 0
         self._context_pack_response_cache_invalidations_total = 0
+        self._context_pack_response_singleflight_waits_total = 0
+        self._context_pack_response_singleflight_wait_ms_total = 0.0
+        self._context_pack_response_singleflight_wait_ms_max = 0.0
         self._started_at = time.time()
         self._proc: subprocess.Popen[str] | None = None
 
@@ -4565,6 +4569,9 @@ class MatrixArkRustProxyClient:
                     "misses_total": self._context_pack_response_cache_misses_total,
                     "updates_total": self._context_pack_response_cache_updates_total,
                     "invalidations_total": self._context_pack_response_cache_invalidations_total,
+                    "singleflight_waits_total": self._context_pack_response_singleflight_waits_total,
+                    "singleflight_wait_ms_total": round(self._context_pack_response_singleflight_wait_ms_total, 3),
+                    "singleflight_wait_ms_max": round(self._context_pack_response_singleflight_wait_ms_max, 3),
                     "scope": "native_context_pack_request_envelope_with_write_invalidation",
                 },
                 "last_latency_ms": round(self._last_latency_ms, 3),
@@ -4751,6 +4758,58 @@ class MatrixArkRustProxyClient:
         if removed:
             with self._metrics_lock:
                 self._context_pack_response_cache_invalidations_total += removed
+
+    def _context_pack_response_singleflight_enter(self, cache_key: str) -> tuple[Json, bool]:
+        if not self._context_pack_response_cache_enabled:
+            return {"event": threading.Event(), "error": None}, True
+        with self._context_pack_response_cache_lock:
+            inflight = self._context_pack_response_inflight.get(cache_key)
+            if inflight is not None:
+                return inflight, False
+            inflight = {"event": threading.Event(), "error": None}
+            self._context_pack_response_inflight[cache_key] = inflight
+            return inflight, True
+
+    def _context_pack_response_singleflight_finish(
+        self,
+        cache_key: str,
+        inflight: Json,
+        error: BaseException | None,
+    ) -> None:
+        if not self._context_pack_response_cache_enabled:
+            return
+        with self._context_pack_response_cache_lock:
+            current = self._context_pack_response_inflight.get(cache_key)
+            if current is inflight:
+                self._context_pack_response_inflight.pop(cache_key, None)
+            inflight["error"] = error
+            event = inflight.get("event")
+            if isinstance(event, threading.Event):
+                event.set()
+
+    def _context_pack_response_singleflight_wait(self, cache_key: str, inflight: Json) -> Json:
+        event = inflight.get("event")
+        if not isinstance(event, threading.Event):
+            raise MatrixArkError("invalid ContextPack singleflight state")
+        started = time.perf_counter()
+        timeout_s = max(self._backpressure_timeout_s, self.request_timeout_ms / 1000.0 + 2.0)
+        if not event.wait(timeout=timeout_s):
+            raise MatrixArkError(f"Rust TemporalStore ContextPack singleflight timed out after {timeout_s:.1f}s")
+        wait_ms = (time.perf_counter() - started) * 1000.0
+        with self._metrics_lock:
+            self._context_pack_response_singleflight_waits_total += 1
+            self._context_pack_response_singleflight_wait_ms_total += wait_ms
+            self._context_pack_response_singleflight_wait_ms_max = max(
+                self._context_pack_response_singleflight_wait_ms_max,
+                wait_ms,
+            )
+        error = inflight.get("error")
+        if error:
+            raise error
+        cached = self._context_pack_response_cache_get(cache_key)
+        if cached is not None:
+            return cached
+        raise MatrixArkError("ContextPack singleflight completed without cached response")
 
     def put_string(self, key: str, value: str) -> None:
         self._call("put_string", key=key, value=value)
@@ -5094,35 +5153,45 @@ class MatrixArkRustProxyClient:
         cached = self._context_pack_response_cache_get(cache_key)
         if cached is not None:
             return cached
-        response = self._call_json(
-            "matrixark_retrieve_context_pack",
-            count_key=count_key,
-            record_hash_key=record_hash_key,
-            shard_size=shard_size,
-            record_types=[
-                "context_compression_event",
-                "context_entity",
-                "context_event",
-                "context_index",
-                "context_segment",
-                "context_summary",
-                "resource_chunk",
-                "skill_section",
-            ],
-            return_index_records=False,
-            scope=request.get("scope", {}),
-            secondary_index_groups=request.get("secondary_index_groups", []),
-            record=request,
-            top_level_response=True,
-        )
-        result = response
-        value = response.get("value")
-        if isinstance(value, str) and value:
-            decoded = json.loads(value)
-            if isinstance(decoded, dict):
-                result = decoded
-        self._context_pack_response_cache_put(cache_key, result)
-        return result
+        inflight, leader = self._context_pack_response_singleflight_enter(cache_key)
+        if not leader:
+            return self._context_pack_response_singleflight_wait(cache_key, inflight)
+        error: BaseException | None = None
+        try:
+            response = self._call_json(
+                "matrixark_retrieve_context_pack",
+                count_key=count_key,
+                record_hash_key=record_hash_key,
+                shard_size=shard_size,
+                record_types=[
+                    "context_compression_event",
+                    "context_entity",
+                    "context_event",
+                    "context_index",
+                    "context_segment",
+                    "context_summary",
+                    "resource_chunk",
+                    "skill_section",
+                ],
+                return_index_records=False,
+                scope=request.get("scope", {}),
+                secondary_index_groups=request.get("secondary_index_groups", []),
+                record=request,
+                top_level_response=True,
+            )
+            result = response
+            value = response.get("value")
+            if isinstance(value, str) and value:
+                decoded = json.loads(value)
+                if isinstance(decoded, dict):
+                    result = decoded
+            self._context_pack_response_cache_put(cache_key, result)
+            return result
+        except BaseException as exc:
+            error = exc
+            raise
+        finally:
+            self._context_pack_response_singleflight_finish(cache_key, inflight, error)
 
     def batch_hget(self, entries: list[Json]) -> list[Json]:
         if not entries:
