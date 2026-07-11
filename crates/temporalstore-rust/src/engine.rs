@@ -16505,17 +16505,23 @@ pub(super) fn read_page_bytes_batch(
         return values;
     }
 
-    let miss_addresses = miss_entries
-        .iter()
-        .map(|entry| entry.address.clone())
-        .collect::<Vec<_>>();
+    let mut miss_addresses = Vec::with_capacity(miss_entries.len());
+    let mut miss_fill_entries = Vec::with_capacity(miss_entries.len());
+    for entry in miss_entries {
+        miss_addresses.push(entry.address);
+        miss_fill_entries.push(BatchPageReadFillEntry {
+            key: entry.key,
+            first_index: entry.first_index,
+            extra_indexes: entry.extra_indexes,
+        });
+    }
     let miss_reads = page_store.read_batch(&miss_addresses);
-    let mut refills = Vec::with_capacity(miss_entries.len());
-    for (entry, read_result) in miss_entries.into_iter().zip(miss_reads) {
+    let mut refills = Vec::with_capacity(miss_fill_entries.len());
+    for (entry, read_result) in miss_fill_entries.into_iter().zip(miss_reads) {
         let Ok(bytes) = read_result else {
             continue;
         };
-        fill_page_read_values(&mut values, &entry, &bytes);
+        fill_page_read_values_from_fill_entry(&mut values, &entry, &bytes);
         refills.push((entry.key, bytes));
     }
     if !refills.is_empty() {
@@ -16616,17 +16622,23 @@ pub(super) fn read_page_bytes_batch_owned(
         return values;
     }
 
-    let miss_addresses = miss_entries
-        .iter()
-        .map(|entry| entry.address.clone())
-        .collect::<Vec<_>>();
+    let mut miss_addresses = Vec::with_capacity(miss_entries.len());
+    let mut miss_fill_entries = Vec::with_capacity(miss_entries.len());
+    for entry in miss_entries {
+        miss_addresses.push(entry.address);
+        miss_fill_entries.push(BatchPageReadFillEntry {
+            key: entry.key,
+            first_index: entry.first_index,
+            extra_indexes: entry.extra_indexes,
+        });
+    }
     let miss_reads = page_store.read_batch(&miss_addresses);
-    let mut refills = Vec::with_capacity(miss_entries.len());
-    for (entry, read_result) in miss_entries.into_iter().zip(miss_reads) {
+    let mut refills = Vec::with_capacity(miss_fill_entries.len());
+    for (entry, read_result) in miss_fill_entries.into_iter().zip(miss_reads) {
         let Ok(bytes) = read_result else {
             continue;
         };
-        fill_page_read_values(&mut values, &entry, &bytes);
+        fill_page_read_values_from_fill_entry(&mut values, &entry, &bytes);
         refills.push((entry.key, bytes));
     }
     if !refills.is_empty() {
@@ -16854,7 +16866,24 @@ impl BatchPageReadEntry {
     }
 }
 
+struct BatchPageReadFillEntry {
+    key: CacheKey,
+    first_index: usize,
+    extra_indexes: Vec<usize>,
+}
+
 fn fill_page_read_values(values: &mut [Option<Vec<u8>>], entry: &BatchPageReadEntry, bytes: &[u8]) {
+    values[entry.first_index] = Some(bytes.to_vec());
+    for index in &entry.extra_indexes {
+        values[*index] = Some(bytes.to_vec());
+    }
+}
+
+fn fill_page_read_values_from_fill_entry(
+    values: &mut [Option<Vec<u8>>],
+    entry: &BatchPageReadFillEntry,
+    bytes: &[u8],
+) {
     values[entry.first_index] = Some(bytes.to_vec());
     for index in &entry.extra_indexes {
         values[*index] = Some(bytes.to_vec());
