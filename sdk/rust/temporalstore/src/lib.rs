@@ -1723,6 +1723,7 @@ impl ProxyClient {
         let body = self.proxy_service_body(
             key,
             &[
+                ("format", serde_json::json!("protobuf")),
                 ("points", serde_json::to_value(points).map_err(json_error)?),
                 ("policy", serde_json::to_value(policy).map_err(json_error)?),
             ],
@@ -1755,6 +1756,7 @@ impl ProxyClient {
                 ("start_ms", serde_json::json!(start_ms)),
                 ("end_ms", serde_json::json!(end_ms)),
                 ("count", serde_json::json!(count)),
+                ("format", serde_json::json!("protobuf")),
                 (
                     "filters",
                     serde_json::to_value(filters).map_err(json_error)?,
