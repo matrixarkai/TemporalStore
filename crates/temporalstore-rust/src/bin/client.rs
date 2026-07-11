@@ -251,12 +251,16 @@ fn main() {
             key: args[2].clone(),
             timestamp_ms: args[3].parse().expect("timestamp must be u64"),
             amount: args[4].parse().expect("amount must be i64"),
+            precision_ms: None,
+            ttl_ms: None,
         },
         "cpcset" if args.len() == 5 => Command::RiskSet {
             family: RiskFamily::Cpc,
             key: args[2].clone(),
             timestamp_ms: args[3].parse().expect("timestamp must be u64"),
             amount: args[4].parse().expect("amount must be i64"),
+            precision_ms: None,
+            ttl_ms: None,
         },
         "folset" if args.len() == 7 => Command::RiskFolSet {
             key: args[2].clone(),
