@@ -7,9 +7,12 @@ use crate::types::{
 };
 use rustmtcache::MultiLayerCache;
 
-use super::packed_pages::{decode_feature_page_strict, read_feature_points_cached_batch};
+use super::packed_pages::{
+    decode_feature_page_strict, read_feature_points_cached_batch,
+    read_feature_points_from_pages_in_range,
+};
 use super::state::PackedFeaturePageDecode;
-use super::{parse_i64, ShardState};
+use super::{parse_i64, slot_index_object_page_addresses, ShardState};
 
 fn decode_sequence_row_value(bytes: &[u8]) -> Option<SequenceFeatureRow> {
     serde_json::from_slice(bytes).ok()
@@ -44,7 +47,7 @@ pub(super) fn sequence_rows_in_range(
     count: usize,
     filters: &[FeatureFilter],
 ) -> Vec<SequenceFeatureRow> {
-    shard
+    let points = shard
         .sequences
         .get(key)
         .map(|series| {
@@ -54,16 +57,28 @@ pub(super) fn sequence_rows_in_range(
                 .map(|(timestamp_ms, address)| (*timestamp_ms, address.clone()))
                 .collect::<Vec<_>>();
             read_feature_points_cached_batch(cache, block_store, shard_id, &refs)
-                .into_iter()
-                .filter_map(|point| decode_sequence_row_value(&point.value))
-                .filter(|row| {
-                    filters
-                        .iter()
-                        .all(|filter| sequence_filter_matches(row, filter))
-                })
-                .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_else(|| {
+            let addresses = slot_index_object_page_addresses(shard, "sequence", key);
+            read_feature_points_from_pages_in_range(
+                cache,
+                block_store,
+                shard_id,
+                &addresses,
+                start_ms,
+                end_ms,
+                count,
+            )
+        });
+    points
+        .into_iter()
+        .filter_map(|point| decode_sequence_row_value(&point.value))
+        .filter(|row| {
+            filters
+                .iter()
+                .all(|filter| sequence_filter_matches(row, filter))
+        })
+        .collect()
 }
 
 pub(super) fn aggregate_feature_values(values: &[Vec<u8>], aggregator: &str) -> i64 {
@@ -153,7 +168,18 @@ pub(super) fn ips_points_in_range(
                 .collect::<Vec<_>>();
             read_feature_points_cached_batch(cache, block_store, shard_id, &refs)
         })
-        .unwrap_or_default()
+        .unwrap_or_else(|| {
+            let addresses = slot_index_object_page_addresses(shard, "ips", key);
+            read_feature_points_from_pages_in_range(
+                cache,
+                block_store,
+                shard_id,
+                &addresses,
+                start_ms,
+                end_ms,
+                count.unwrap_or(usize::MAX),
+            )
+        })
 }
 
 pub(super) fn ips_points_in_range_with_options(
