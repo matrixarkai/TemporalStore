@@ -629,7 +629,7 @@ pub struct GetTableTopologyRequest {
     pub namespace: String,
     #[serde(alias = "name")]
     pub table_name: String,
-    #[serde(default)]
+    #[serde(default, alias = "old_topo_version")]
     pub old_topology_version: u64,
 }
 
@@ -683,7 +683,7 @@ pub struct TableTopologyResponse {
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TopologyVersionRequest {
-    #[serde(default)]
+    #[serde(default, alias = "old_topo_version")]
     pub old_topology_version: u64,
 }
 
