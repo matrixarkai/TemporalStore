@@ -5701,6 +5701,9 @@ impl TemporalEngine {
     }
 
     pub fn batch_execute(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
+        if let Some(response) = self.batch_execute_read_only_fast_path(&request) {
+            return response;
+        }
         let command_count = request.commands.len();
         let mut responses = Vec::with_capacity(command_count);
         if command_count == 0 {
@@ -5892,6 +5895,73 @@ impl TemporalEngine {
             status: Status::ok(),
             responses,
         }
+    }
+
+    fn batch_execute_read_only_fast_path(
+        &self,
+        request: &BatchExecuteRequest,
+    ) -> Option<BatchExecuteResponse> {
+        if request.commands.is_empty() {
+            return None;
+        }
+        if !request
+            .commands
+            .iter()
+            .all(|command| matches!(command, Command::HashMultiGet { .. }))
+        {
+            return None;
+        }
+        let shards = self.shards.read().expect("engine lock poisoned");
+        let Some(shard) = shards.get(&request.shard_id) else {
+            return Some(BatchExecuteResponse {
+                status: Status::ok(),
+                responses: request
+                    .commands
+                    .iter()
+                    .map(|_| ExecuteResponse {
+                        status: Status::error(
+                            "shard_not_loaded",
+                            "shard is not loaded on this server",
+                        ),
+                        response: CommandResponse::Empty,
+                    })
+                    .collect(),
+            });
+        };
+        let mut responses = Vec::with_capacity(request.commands.len());
+        for command in &request.commands {
+            let Command::HashMultiGet { key, fields } = command else {
+                return None;
+            };
+            if shard
+                .expires_at_ms
+                .get(key)
+                .map(|expires_at| *expires_at <= now_ms())
+                .unwrap_or(false)
+            {
+                return None;
+            }
+            let hash_fields = shard.hashes.get(key);
+            let addresses = fields
+                .iter()
+                .map(|field| hash_fields.and_then(|entries| entries.get(field)).cloned())
+                .collect::<Vec<_>>();
+            responses.push(ExecuteResponse {
+                status: Status::ok(),
+                response: CommandResponse::Values {
+                    values: read_page_bytes_batch(
+                        &self.cache,
+                        &self.page_store,
+                        request.shard_id,
+                        &addresses,
+                    ),
+                },
+            });
+        }
+        Some(BatchExecuteResponse {
+            status: Status::ok(),
+            responses,
+        })
     }
 
     pub fn batch_execute_replicated(
