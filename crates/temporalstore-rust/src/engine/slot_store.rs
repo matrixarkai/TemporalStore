@@ -7,7 +7,7 @@ use rustmtcache::MultiLayerCache;
 use super::state::{
     object_component_lookup_key, object_page_lookup_key, ShardState, SlotLayoutState,
 };
-use super::{read_page_bytes, read_page_bytes_batch};
+use super::{read_page_bytes, read_page_bytes_batch_owned};
 
 type SlotPageIdentityKey = (
     u64,
@@ -424,12 +424,16 @@ pub(super) fn read_slot_index_component_values(
             .unwrap_or_default();
     }
 
+    let mut components = Vec::with_capacity(refs.len());
     let mut addresses = Vec::with_capacity(refs.len());
-    addresses.extend(refs.iter().map(|(_, address)| Some(address.clone())));
-    let values = read_page_bytes_batch(cache, page_store, shard_id, &addresses);
+    for (component, address) in refs {
+        components.push(component);
+        addresses.push(Some(address));
+    }
+    let values = read_page_bytes_batch_owned(cache, page_store, shard_id, addresses);
 
-    let mut entries = Vec::with_capacity(refs.len());
-    for (value, (component, _)) in values.into_iter().zip(refs) {
+    let mut entries = Vec::with_capacity(components.len());
+    for (value, component) in values.into_iter().zip(components) {
         if let Some(value) = value {
             entries.push((component, value));
         }
@@ -457,12 +461,16 @@ pub(super) fn read_component_page_address_values(
             .unwrap_or_default();
     }
 
+    let mut components = Vec::with_capacity(refs.len());
     let mut addresses = Vec::with_capacity(refs.len());
-    addresses.extend(refs.iter().map(|(_, address)| Some(address.clone())));
-    let values = read_page_bytes_batch(cache, page_store, shard_id, &addresses);
+    for (component, address) in refs {
+        components.push(component);
+        addresses.push(Some(address));
+    }
+    let values = read_page_bytes_batch_owned(cache, page_store, shard_id, addresses);
 
-    let mut entries = Vec::with_capacity(refs.len());
-    for (value, (component, _)) in values.into_iter().zip(refs) {
+    let mut entries = Vec::with_capacity(components.len());
+    for (value, component) in values.into_iter().zip(components) {
         if let Some(value) = value {
             entries.push((component, value));
         }
