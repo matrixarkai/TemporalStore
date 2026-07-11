@@ -11,6 +11,7 @@ the raw body as the stored value.
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -18,7 +19,12 @@ Json = dict[str, Any]
 SUPPORTED_BACKENDS = {"temporalstore", "matrixkv", "s3", "objectstore"}
 KV_INLINE_BACKENDS = {"temporalstore", "matrixkv"}
 DEFAULT_MAX_INLINE_BYTES = 1 * 1024 * 1024
-DEFAULT_OBJECT_STORE_PREFIX = "objectstore://matrixark/raw-agent-messages"
+DEFAULT_OBJECT_STORE_PREFIX = "matrixobjectstore://matrixark/raw-agent-messages"
+RAW_MESSAGE_DEFAULT_WRITE_POLICY = "ColdStoreOnly"
+RAW_MESSAGE_DEFAULT_CACHE_POLICY = "NoCachePromotion"
+RAW_MESSAGE_DEFAULT_PROMOTION_POLICY = "NoPromotion"
+RAW_MESSAGE_TEMPORALSTORE_METADATA_TABLE = "context_raw_agent_messages"
+RAW_MESSAGE_MATRIXKV_METADATA_TABLE = "context_raw_agent_messages"
 
 
 def normalize_raw_backend(value: Any) -> str:
@@ -27,7 +33,7 @@ def normalize_raw_backend(value: Any) -> str:
         return "temporalstore"
     if backend in {"matrix_kv", "kv"}:
         return "matrixkv"
-    if backend in {"object_store", "object", "blob", "blobstore", "blob_store"}:
+    if backend in {"object_store", "object", "blob", "blobstore", "blob_store", "matrixobjectstore", "matrix_object_store"}:
         return "objectstore"
     if backend in {"aws_s3", "s3_object", "s3_objectstore"}:
         return "s3"
@@ -157,6 +163,10 @@ def raw_message_value_bytes(message: Json) -> bytes:
     return raw_message_value(message).encode("utf-8")
 
 
+def raw_message_payload_sha256(message: Json) -> str:
+    return hashlib.sha256(raw_message_value_bytes(message)).hexdigest()
+
+
 def raw_message_payload_size_bytes(message: Json) -> int:
     return len(raw_message_value_bytes(message))
 
@@ -185,17 +195,61 @@ def raw_message_object_ref_value(marker: Json) -> str:
     return json.dumps({
         "schema": marker["schema"],
         "backend": marker["backend"],
+        "metadata_backend": marker["metadata_backend"],
         "object_key": marker["object_key"],
         "payload_size_bytes": marker["payload_size_bytes"],
         "timestamp_key_ms": marker["timestamp_key_ms"],
         "event_key_hash": marker["event_key_hash"],
         "timeline_key": marker["timeline_key"],
         "value_encoding": marker["value_encoding"],
+        "payload_sha256": marker["payload_sha256"],
+        "object_store_name": marker["object_store_name"],
     }, sort_keys=True, separators=(",", ":"))
 
 
 def raw_message_timeline_key(timestamp_key_ms: int, event_key_hash: int) -> str:
     return f"{int(timestamp_key_ms):020d}:{int(event_key_hash):020d}"
+
+
+def raw_message_metadata_backend(target: RawMessageStorageTarget) -> str:
+    """Return the backend that owns raw-message metadata rows.
+
+    TemporalStore-backed pipelines keep S3/object-store metadata in
+    TemporalStore so backfills can discover raw objects without scanning blob
+    storage. MatrixKV mode stores equivalent metadata in MatrixKV through the
+    same general API.
+    """
+    return "matrixkv" if target.backend == "matrixkv" else "temporalstore"
+
+
+def raw_message_metadata_target(
+    target: RawMessageStorageTarget,
+    *,
+    event_time_ms: int,
+    event_id_hash: int,
+    tenant_hash: int = 0,
+    node_hash: int = 0,
+) -> RawMessageStorageTarget:
+    metadata_backend = raw_message_metadata_backend(target)
+    timeline_key = raw_message_timeline_key(event_time_ms, event_id_hash)
+    if metadata_backend == "matrixkv":
+        base = target.resolve(
+            tenant_hash=tenant_hash,
+            node_hash=node_hash,
+            event_time_ms=event_time_ms,
+            event_id_hash=event_id_hash,
+        )
+        return RawMessageStorageTarget.matrixkv(
+            base.namespace,
+            base.table or RAW_MESSAGE_MATRIXKV_METADATA_TABLE,
+            base.key or f"raw-agent-message:{timeline_key}",
+        )
+    return RawMessageStorageTarget(
+        backend="temporalstore",
+        namespace=target.namespace,
+        table=target.table or RAW_MESSAGE_TEMPORALSTORE_METADATA_TABLE,
+        key=target.key or f"raw-agent-message:{timeline_key}",
+    )
 
 
 def raw_message_marker(
@@ -215,19 +269,33 @@ def raw_message_marker(
     if spill and selected.backend in KV_INLINE_BACKENDS:
         selected = RawMessageStorageTarget.objectstore()
     resolved = selected.resolve(event_time_ms=resolved_time, event_id_hash=event_key_hash)
+    metadata_target = raw_message_metadata_target(
+        target,
+        event_time_ms=resolved_time,
+        event_id_hash=event_key_hash,
+    )
     return {
         "schema": "matrixark.context.raw_agent_message_ref.v1",
         "raw_schema": "matrixark.context.raw_agent_message.v1",
+        "object_store_name": "MatrixObjectStore",
         "backend": resolved.backend,
+        "payload_backend": resolved.backend,
+        "metadata_backend": metadata_target.backend,
+        "metadata_object_key": metadata_target.object_key(),
         "object_key": resolved.object_key(),
         "timestamp_key_ms": resolved_time,
         "event_key_hash": event_key_hash,
         "timeline_key": raw_message_timeline_key(resolved_time, event_key_hash),
         "value_encoding": "object_ref_json" if spill else "raw_body_utf8",
         "payload_size_bytes": payload_size,
+        "payload_sha256": raw_message_payload_sha256(message),
         "max_inline_bytes": inline_limit,
         "inline_payload": not spill,
         "spilled_to_object_store": spill,
+        "cold_storage": True,
+        "write_policy": RAW_MESSAGE_DEFAULT_WRITE_POLICY,
+        "cache_policy": RAW_MESSAGE_DEFAULT_CACHE_POLICY,
+        "promotion_policy": RAW_MESSAGE_DEFAULT_PROMOTION_POLICY,
     }
 
 
@@ -248,6 +316,11 @@ def contract_report(
         event_time_ms=timestamp_key_ms,
         max_inline_bytes=max_inline_bytes,
     )
+    metadata_target = raw_message_metadata_target(
+        selected,
+        event_time_ms=timestamp_key_ms,
+        event_id_hash=event_key_hash,
+    )
     if marker["backend"] in {"s3", "objectstore"}:
         target_dict = {
             "backend": marker["backend"],
@@ -266,14 +339,25 @@ def contract_report(
         "default_backend": "temporalstore",
         "kv_inline_backends": sorted(KV_INLINE_BACKENDS),
         "target": target_dict,
+        "metadata_target": metadata_target.as_dict(),
+        "metadata_backend": marker["metadata_backend"],
+        "metadata_object_key": marker["metadata_object_key"],
+        "metadata_persisted_in_temporalstore": marker["metadata_backend"] == "temporalstore",
+        "payload_backend": marker["payload_backend"],
         "timestamp_key_ms": timestamp_key_ms,
         "event_key_hash": event_key_hash,
         "timeline_key": raw_message_timeline_key(timestamp_key_ms, event_key_hash),
         "payload_size_bytes": marker["payload_size_bytes"],
+        "payload_sha256": marker["payload_sha256"],
         "max_inline_bytes": marker["max_inline_bytes"],
         "inline_payload": marker["inline_payload"],
         "spilled_to_object_store": marker["spilled_to_object_store"],
+        "cold_storage": marker["cold_storage"],
+        "write_policy": marker["write_policy"],
+        "cache_policy": marker["cache_policy"],
+        "promotion_policy": marker["promotion_policy"],
         "object_ref": marker if marker["spilled_to_object_store"] else {},
+        "object_store_name": marker["object_store_name"],
         "stored_value": stored_value,
         "stored_value_mode": marker["value_encoding"],
         "uses_timestamp_and_event_key": True,

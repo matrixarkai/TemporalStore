@@ -6,7 +6,9 @@ pub mod snapshot_store;
 pub mod types;
 
 pub use metrics::SnapshotMetrics;
-pub use object_store::{FileObjectStore, ObjectStore, ObjectStoreError};
+pub use object_store::{
+    FileObjectStore, MatrixObjectStore, ObjectMetadata, ObjectStore, ObjectStoreError,
+};
 pub use snapshot_store::{S3SnapshotStore, SnapshotStore, SnapshotStoreError};
 pub use types::{
     ChecksumEntry, CompressionFormat, LocalSnapshot, PageSegmentManifest, SnapshotManifest,
