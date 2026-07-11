@@ -2275,6 +2275,75 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
     def supports_native_context_pack(self) -> bool:
         return callable(getattr(getattr(self, "_client", None), "matrixark_retrieve_context_pack", None))
 
+    def _ensure_direct_context_pack_response_cache(self) -> None:
+        if hasattr(self, "_direct_context_pack_response_cache"):
+            return
+        self._direct_context_pack_response_cache_enabled = (
+            os.environ.get("MATRIXARK_DIRECT_CONTEXT_PACK_RESPONSE_CACHE", "1").strip().lower()
+            not in {"0", "false", "no"}
+        )
+        self._direct_context_pack_response_cache_max_entries = max(
+            1, int(os.environ.get("MATRIXARK_DIRECT_CONTEXT_PACK_RESPONSE_CACHE_MAX_ENTRIES", "256"))
+        )
+        self._direct_context_pack_response_cache_lock = threading.Lock()
+        self._direct_context_pack_response_cache: OrderedDict[str, Json] = OrderedDict()
+        self._direct_context_pack_response_cache_hits_total = 0
+        self._direct_context_pack_response_cache_misses_total = 0
+        self._direct_context_pack_response_cache_updates_total = 0
+
+    def _direct_context_pack_response_cache_key(
+        self,
+        *,
+        count_key: str,
+        record_hash_key: str,
+        shard_size: int,
+        request: Json,
+    ) -> str:
+        ranking = request.get("ranking") if isinstance(request, dict) else {}
+        payload = {
+            "count_key": count_key,
+            "record_hash_key": record_hash_key,
+            "shard_size": int(shard_size),
+            "scope": request.get("scope", {}) if isinstance(request, dict) else {},
+            "secondary_index_groups": request.get("secondary_index_groups", []) if isinstance(request, dict) else [],
+            "query": request.get("query", "") if isinstance(request, dict) else "",
+            "max_selected_refs": ranking.get("max_selected_refs") if isinstance(ranking, dict) else None,
+            "max_context_tokens": request.get("max_context_tokens") if isinstance(request, dict) else None,
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()
+        return hashlib.blake2b(encoded, digest_size=16).hexdigest()
+
+    def _direct_context_pack_response_cache_get(self, cache_key: str) -> Json | None:
+        self._ensure_direct_context_pack_response_cache()
+        if not self._direct_context_pack_response_cache_enabled:
+            return None
+        with self._direct_context_pack_response_cache_lock:
+            cached = self._direct_context_pack_response_cache.get(cache_key)
+            if cached is not None:
+                self._direct_context_pack_response_cache.move_to_end(cache_key)
+                self._direct_context_pack_response_cache_hits_total += 1
+                result = copy.deepcopy(cached)
+            else:
+                self._direct_context_pack_response_cache_misses_total += 1
+                result = None
+        if result is not None:
+            metrics = result.get("retrieval_metrics")
+            if isinstance(metrics, dict):
+                metrics["context_pack_response_cache_hit"] = True
+                metrics["cache_hit"] = True
+        return result
+
+    def _direct_context_pack_response_cache_put(self, cache_key: str, response: Json) -> None:
+        self._ensure_direct_context_pack_response_cache()
+        if not self._direct_context_pack_response_cache_enabled:
+            return
+        with self._direct_context_pack_response_cache_lock:
+            self._direct_context_pack_response_cache[cache_key] = copy.deepcopy(response)
+            self._direct_context_pack_response_cache.move_to_end(cache_key)
+            while len(self._direct_context_pack_response_cache) > self._direct_context_pack_response_cache_max_entries:
+                self._direct_context_pack_response_cache.popitem(last=False)
+            self._direct_context_pack_response_cache_updates_total += 1
+
     def native_context_pack(self, request: Json) -> Json | None:
         retriever = getattr(getattr(self, "_client", None), "matrixark_retrieve_context_pack", None)
         if not callable(retriever):
@@ -2926,28 +2995,47 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "health_readiness_metrics": True,
             },
         }
+        if not hasattr(self, "_shard_size"):
+            self._shard_size = DIRECT_RECORD_LOG_SHARD_SIZE
+        cache_key = self._direct_context_pack_response_cache_key(
+            count_key=self._count_key,
+            record_hash_key=self._record_hash_key,
+            shard_size=self._shard_size,
+            request=request,
+        )
+        cached = self._direct_context_pack_response_cache_get(cache_key)
+        if cached is not None:
+            return cached
         started_perf = time.perf_counter()
         try:
             response = self.native_context_pack(request)
             if response is None:
                 if not native_retrieve_fallback_allowed(args):
-                    return self._native_context_pack_fallback_blocker(args, reason="native_context_pack_unavailable")
+                    result = self._native_context_pack_fallback_blocker(args, reason="native_context_pack_unavailable")
+                    self._direct_context_pack_response_cache_put(cache_key, result)
+                    return result
                 return None
         except Exception as exc:
             _mcp_debug_log(f"matrixark native context pack failed: {exc}")
             if not native_retrieve_fallback_allowed(args):
-                return self._native_context_pack_fallback_blocker(args, reason=f"native_context_pack_error:{exc}")
+                result = self._native_context_pack_fallback_blocker(args, reason=f"native_context_pack_error:{exc}")
+                self._direct_context_pack_response_cache_put(cache_key, result)
+                return result
             return None
         try:
             pack = json.loads(response) if isinstance(response, str) else response
         except Exception as exc:
             _mcp_debug_log(f"matrixark native context pack returned invalid JSON: {exc}")
             if not native_retrieve_fallback_allowed(args):
-                return self._native_context_pack_fallback_blocker(args, reason=f"native_context_pack_invalid_json:{exc}")
+                result = self._native_context_pack_fallback_blocker(args, reason=f"native_context_pack_invalid_json:{exc}")
+                self._direct_context_pack_response_cache_put(cache_key, result)
+                return result
             return None
         if not isinstance(pack, dict):
             if not native_retrieve_fallback_allowed(args):
-                return self._native_context_pack_fallback_blocker(args, reason="native_context_pack_not_object")
+                result = self._native_context_pack_fallback_blocker(args, reason="native_context_pack_not_object")
+                self._direct_context_pack_response_cache_put(cache_key, result)
+                return result
             return None
         native_envelope = dict(pack)
         if isinstance(pack.get("context_pack"), dict):
@@ -3001,7 +3089,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 return blocker
             return None
         pack.setdefault("context_pack_id", str(stable_hash(f"native:{query}:{canonical_scope_key(scope)}:{now_ms()}")))
-        pack.setdefault("context_pack_assembly", "native_cpp_direct")
+        pack["context_pack_assembly"] = "native_cpp_direct"
         pack.setdefault("native_context_pack", True)
         pack.setdefault("query_embedding_model", embedding_model_name())
         pack.setdefault("embedding_execution_mode", embedding_execution_mode_name())
@@ -3155,9 +3243,13 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         elif not isinstance(dropped_refs, dict):
             pack["dropped_refs"] = {"refs": [], "native_summary": True}
         if bool(args.get("debug_context_pack")) or bool(args.get("include_retrieval_debug")):
+            self._direct_context_pack_response_cache_put(cache_key, pack)
             return pack
         if isinstance(selected_refs, list) and selected_refs:
-            return compact_context_pack_for_serving(pack)
+            result = compact_context_pack_for_serving(pack)
+            self._direct_context_pack_response_cache_put(cache_key, result)
+            return result
+        self._direct_context_pack_response_cache_put(cache_key, pack)
         return pack
 
     def retrieve(self, args: Json) -> Json:
