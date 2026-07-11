@@ -14004,6 +14004,42 @@ fn clear_published_object_dirty_state(shard: &mut ShardState, object_key: &str) 
     if object_still_has_hot_page(shard, object_key) {
         return;
     }
+    if !shard.slot_index.object_key_lookup.is_empty() {
+        shard.dirty_objects.remove(object_key);
+        let page_refs = shard
+            .slot_index
+            .page_refs_for_object_key(object_key)
+            .map(|refs| {
+                refs.iter()
+                    .map(|page_ref| (page_ref.routing_slot, page_ref.page_ref_key.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let mut touched_slots = BTreeSet::new();
+        for (routing_slot, page_ref_key) in page_refs {
+            let Some(slot) = shard.slot_index.slot_map.get_mut(&routing_slot) else {
+                continue;
+            };
+            let Some(page) = slot.page_index.get_mut(&page_ref_key) else {
+                continue;
+            };
+            if page.object_key == object_key {
+                page.dirty = false;
+                touched_slots.insert(routing_slot);
+            }
+        }
+        for routing_slot in touched_slots {
+            let Some(slot) = shard.slot_index.slot_map.get_mut(&routing_slot) else {
+                continue;
+            };
+            slot.dirty = slot
+                .page_index
+                .values()
+                .any(|page| page.dirty || shard.dirty_objects.contains(&page.object_key));
+            update_slot_layout(slot);
+        }
+        return;
+    }
     let lookup_slots = shard.slot_index.routing_slots_for_object_key(object_key);
     let target_slots =
         lookup_slots.unwrap_or_else(|| shard.slot_index.slot_map.keys().copied().collect());
