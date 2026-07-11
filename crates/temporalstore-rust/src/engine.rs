@@ -523,6 +523,9 @@ impl TemporalEngine {
                 | Command::IpsQueryRange { .. }
                 | Command::IpsCount { .. }
                 | Command::IpsQueryRangeWithOptions { .. }
+                | Command::IpsSnapshot { .. }
+                | Command::IpsSnapshotReport { .. }
+                | Command::IpsStat { .. }
                 | Command::IpsFilter { .. }
         );
         if !read_command {
@@ -966,6 +969,86 @@ impl TemporalEngine {
                             *action_type,
                             *table_id,
                         ),
+                    },
+                })
+            }
+            Command::IpsSnapshot {
+                key,
+                start_ms,
+                end_ms,
+                count,
+            } => {
+                if shard
+                    .expires_at_ms
+                    .get(key)
+                    .map(|expires_at| *expires_at <= now_ms())
+                    .unwrap_or(false)
+                {
+                    return None;
+                }
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::FeaturePoints {
+                        points: ips_points_in_range(
+                            &self.cache,
+                            &self.page_store,
+                            request.shard_id,
+                            shard,
+                            key,
+                            *start_ms,
+                            *end_ms,
+                            *count,
+                        ),
+                    },
+                })
+            }
+            Command::IpsSnapshotReport {
+                key,
+                start_ms,
+                end_ms,
+                count,
+            } => {
+                if shard
+                    .expires_at_ms
+                    .get(key)
+                    .map(|expires_at| *expires_at <= now_ms())
+                    .unwrap_or(false)
+                {
+                    return None;
+                }
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::IpsSnapshotReport {
+                        report: ips_snapshot_report_in_range(
+                            &self.cache,
+                            &self.page_store,
+                            request.shard_id,
+                            shard,
+                            key.clone(),
+                            *start_ms,
+                            *end_ms,
+                            *count,
+                        ),
+                    },
+                })
+            }
+            Command::IpsStat {
+                key,
+                start_ms,
+                end_ms,
+            } => {
+                if shard
+                    .expires_at_ms
+                    .get(key)
+                    .map(|expires_at| *expires_at <= now_ms())
+                    .unwrap_or(false)
+                {
+                    return None;
+                }
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::IpsStats {
+                        stats: ips_stats_in_range(shard, key, *start_ms, *end_ms),
                     },
                 })
             }
