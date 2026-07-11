@@ -545,6 +545,41 @@ struct BlockStoreInner {
     stats: BlockStoreStats,
 }
 
+#[derive(Debug, Clone)]
+struct PendingExtentAppend {
+    page_segment_id: u64,
+    physical_bytes: u64,
+    logical_bytes_written: u64,
+    first_page_id: u64,
+    last_page_id: u64,
+}
+
+impl PendingExtentAppend {
+    fn new(
+        page_segment_id: u64,
+        physical_bytes: u64,
+        logical_bytes_written: u64,
+        page_id: u64,
+    ) -> Self {
+        Self {
+            page_segment_id,
+            physical_bytes,
+            logical_bytes_written,
+            first_page_id: page_id,
+            last_page_id: page_id,
+        }
+    }
+
+    fn add(&mut self, physical_bytes: u64, logical_bytes_written: u64, page_id: u64) {
+        self.physical_bytes = physical_bytes;
+        self.logical_bytes_written = self
+            .logical_bytes_written
+            .saturating_add(logical_bytes_written);
+        self.first_page_id = self.first_page_id.min(page_id);
+        self.last_page_id = self.last_page_id.max(page_id);
+    }
+}
+
 impl LocalBlockStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self::with_options(root, BlockStoreOptions::default())
@@ -746,6 +781,7 @@ impl LocalBlockStore {
             .sum::<usize>()
             .min(BATCH_APPEND_BUFFER_TARGET_BYTES);
         let mut pending_segment_bytes = Vec::with_capacity(pending_buffer_capacity);
+        let mut pending_extent_append: Option<PendingExtentAppend> = None;
 
         for &(bytes, object_id, routing_slot) in records {
             let mut page_id = inner.next_page_id;
@@ -764,6 +800,7 @@ impl LocalBlockStore {
                 segment_target_bytes,
             ) {
                 flush_active_append_buffer_inner(&mut inner, &mut pending_segment_bytes, false)?;
+                apply_pending_extent_append(&mut inner.extents, &mut pending_extent_append);
                 roll_segment_inner(&mut inner)?;
                 page_id = inner.next_page_id;
                 extent_id = extent_id_for_segment(inner.page_segment_id);
@@ -795,12 +832,15 @@ impl LocalBlockStore {
             inner.write_offset += address.length;
             let page_segment_id = inner.page_segment_id;
             let write_offset = inner.write_offset;
-            upsert_extent_after_append(
+            record_pending_extent_append(
                 &mut inner.extents,
-                page_segment_id,
-                write_offset,
-                record.logical_len as u64,
-                page_id,
+                &mut pending_extent_append,
+                PendingExtentAppend::new(
+                    page_segment_id,
+                    write_offset,
+                    record.logical_len as u64,
+                    page_id,
+                ),
             );
             writes = writes.saturating_add(1);
             bytes_written = bytes_written.saturating_add(address.length);
@@ -813,6 +853,7 @@ impl LocalBlockStore {
             addresses.push(address);
         }
         flush_active_append_buffer_inner(&mut inner, &mut pending_segment_bytes, true)?;
+        apply_pending_extent_append(&mut inner.extents, &mut pending_extent_append);
         if inner.options.sync_on_append {
             persist_extent_manifest(&inner.root, &inner.extents)?;
         }
@@ -2911,6 +2952,24 @@ fn upsert_extent_after_append(
     logical_bytes_written: u64,
     page_id: u64,
 ) {
+    upsert_extent_after_batch_append(
+        extents,
+        page_segment_id,
+        physical_bytes,
+        logical_bytes_written,
+        page_id,
+        page_id,
+    );
+}
+
+fn upsert_extent_after_batch_append(
+    extents: &mut BTreeMap<u64, BlockStoreExtentDescriptor>,
+    page_segment_id: u64,
+    physical_bytes: u64,
+    logical_bytes_written: u64,
+    first_page_id: u64,
+    last_page_id: u64,
+) {
     let extent = extents
         .entry(page_segment_id)
         .or_insert(BlockStoreExtentDescriptor {
@@ -2921,8 +2980,8 @@ fn upsert_extent_after_append(
             logical_bytes: 0,
             created_unix_ms: Some(now_unix_ms()),
             updated_unix_ms: Some(now_unix_ms()),
-            first_page_id: Some(page_id),
-            last_page_id: Some(page_id),
+            first_page_id: Some(first_page_id),
+            last_page_id: Some(last_page_id),
             readable_prefix_physical_bytes: 0,
             has_corruption: false,
             first_error_offset: None,
@@ -2943,13 +3002,52 @@ fn upsert_extent_after_append(
     extent.first_page_id = Some(
         extent
             .first_page_id
-            .map_or(page_id, |first| first.min(page_id)),
+            .map_or(first_page_id, |first| first.min(first_page_id)),
     );
     extent.last_page_id = Some(
         extent
             .last_page_id
-            .map_or(page_id, |last| last.max(page_id)),
+            .map_or(last_page_id, |last| last.max(last_page_id)),
     );
+}
+
+fn apply_pending_extent_append(
+    extents: &mut BTreeMap<u64, BlockStoreExtentDescriptor>,
+    pending: &mut Option<PendingExtentAppend>,
+) {
+    let Some(update) = pending.take() else {
+        return;
+    };
+    upsert_extent_after_batch_append(
+        extents,
+        update.page_segment_id,
+        update.physical_bytes,
+        update.logical_bytes_written,
+        update.first_page_id,
+        update.last_page_id,
+    );
+}
+
+fn record_pending_extent_append(
+    extents: &mut BTreeMap<u64, BlockStoreExtentDescriptor>,
+    pending: &mut Option<PendingExtentAppend>,
+    update: PendingExtentAppend,
+) {
+    if pending
+        .as_ref()
+        .is_some_and(|pending| pending.page_segment_id != update.page_segment_id)
+    {
+        apply_pending_extent_append(extents, pending);
+    }
+    if let Some(pending) = pending.as_mut() {
+        pending.add(
+            update.physical_bytes,
+            update.logical_bytes_written,
+            update.last_page_id,
+        );
+    } else {
+        *pending = Some(update);
+    }
 }
 
 fn set_extent_state(
