@@ -4471,17 +4471,23 @@ fn response_object_mut(
 }
 
 fn hmget_response_json(response: ExecuteResponse) -> serde_json::Value {
-    let exists = match &response.response {
-        CommandResponse::Values { values } => Some(
-            values
+    let aliases = match &response.response {
+        CommandResponse::Values { values } => {
+            let response_values = values
+                .iter()
+                .map(|value| value.clone().unwrap_or_default())
+                .collect::<Vec<_>>();
+            let exists = values
                 .iter()
                 .map(|value| value.is_some())
-                .collect::<Vec<bool>>(),
-        ),
+                .collect::<Vec<bool>>();
+            Some((response_values, exists))
+        }
         _ => None,
     };
     let mut value = execute_response_json(response);
-    if let (Some(exists), Some(response)) = (exists, response_object_mut(&mut value)) {
+    if let (Some((values, exists)), Some(response)) = (aliases, response_object_mut(&mut value)) {
+        response.insert("values".to_string(), serde_json::json!(values));
         response.insert("exists".to_string(), serde_json::json!(exists));
     }
     value
@@ -5911,21 +5917,33 @@ mod tests {
             .status
             .ok
         );
+        let hmget_body = serde_json::to_vec(&ProxyHashMultiGetCommandRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            key: "cpp-proxy-hm".to_string(),
+            fields: vec!["a".to_string(), "missing".to_string()],
+        })
+        .unwrap();
         assert_eq!(
-            command_alias(
-                "/ProxyService/HMGet",
-                serde_json::to_vec(&ProxyHashMultiGetCommandRequest {
-                    namespace: "ns".to_string(),
-                    table_name: "tbl".to_string(),
-                    key: "cpp-proxy-hm".to_string(),
-                    fields: vec!["a".to_string(), "missing".to_string()],
-                })
-                .unwrap(),
-            )
-            .response,
+            command_alias("/ProxyService/HMGet", hmget_body.clone()).response,
             CommandResponse::Values {
                 values: vec![Some(b"1".to_vec()), None]
             }
+        );
+        let (code, hmget_alias_body) = proxy.handle(HttpRequest {
+            method: "POST".to_string(),
+            path: "/ProxyService/HMGet".to_string(),
+            body: hmget_body,
+        });
+        assert_eq!(code, 200, "HMGet alias response should return HTTP 200");
+        let hmget_aliases = parse_json::<serde_json::Value>(&hmget_alias_body).unwrap();
+        assert_eq!(
+            hmget_aliases["response"]["values"],
+            serde_json::json!([[49], []])
+        );
+        assert_eq!(
+            hmget_aliases["response"]["exists"],
+            serde_json::json!([true, false])
         );
         assert_eq!(
             command_alias(
