@@ -690,6 +690,8 @@ pub struct ProxyFeatureAddCommandRequest {
     pub namespace: String,
     pub table_name: String,
     pub key: String,
+    #[serde(default)]
+    pub format: Option<String>,
     #[serde(alias = "point_list")]
     pub points: Vec<crate::types::FeaturePoint>,
     #[serde(default)]
@@ -709,6 +711,8 @@ pub struct ProxyFeatureQueryCommandRequest {
     #[serde(default)]
     pub count: Option<usize>,
     #[serde(default)]
+    pub format: Option<String>,
+    #[serde(default)]
     pub filters: Vec<FeatureFilter>,
     #[serde(default)]
     pub fields: String,
@@ -724,6 +728,8 @@ pub struct ProxyFeatureReplaceCommandRequest {
     pub start_ms: u64,
     #[serde(alias = "end_ts")]
     pub end_ms: u64,
+    #[serde(default)]
+    pub format: Option<String>,
     #[serde(alias = "point_list")]
     pub points: Vec<crate::types::FeaturePoint>,
 }
@@ -4526,7 +4532,9 @@ fn feature_points_response_json_with_fields(
     fields: &[String],
 ) -> serde_json::Value {
     let point_list = match &response.response {
-        CommandResponse::FeaturePoints { points } => Some(project_feature_points(points, fields)),
+        CommandResponse::FeaturePoints { points } => {
+            Some(feature_point_list_json(&project_feature_points(points, fields)))
+        }
         _ => None,
     };
     let mut value = execute_response_json(response);
@@ -4534,6 +4542,20 @@ fn feature_points_response_json_with_fields(
         response.insert("point_list".to_string(), serde_json::json!(point_list));
     }
     value
+}
+
+fn feature_point_list_json(points: &[FeaturePoint]) -> Vec<serde_json::Value> {
+    points
+        .iter()
+        .map(|point| {
+            serde_json::json!({
+                "ts": point.timestamp_ms,
+                "timestamp": point.timestamp_ms,
+                "timestamp_ms": point.timestamp_ms,
+                "value": point.value,
+            })
+        })
+        .collect()
 }
 
 fn feature_query_fields(fields: &str) -> Vec<String> {
@@ -6118,6 +6140,7 @@ mod tests {
                     namespace: "ns".to_string(),
                     table_name: "tbl".to_string(),
                     key: "cpp-proxy-feature".to_string(),
+                    format: None,
                     points: vec![crate::types::FeaturePoint {
                         timestamp_ms: 10,
                         value: b"7".to_vec(),
