@@ -1870,7 +1870,7 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/SetEx") => {
+            ("POST", "/ProxyService/SetEx") | ("POST", "/SetEx") => {
                 match parse_json::<ProxySetExCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = Command::StringSetEx {
@@ -1890,7 +1890,8 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/StringSetConditional") => {
+            ("POST", "/ProxyService/StringSetConditional")
+            | ("POST", "/StringSetConditional") => {
                 match parse_json::<ProxySetConditionalCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = Command::StringSetConditional {
@@ -1912,7 +1913,10 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/Delete") | ("POST", "/ProxyService/CommonDelete") => {
+            ("POST", "/ProxyService/Delete")
+            | ("POST", "/ProxyService/CommonDelete")
+            | ("POST", "/Delete")
+            | ("POST", "/CommonDelete") => {
                 match parse_json::<ProxyKeyCommandRequest>(&request.body) {
                     Ok(req) => json_response(
                         200,
@@ -1921,7 +1925,7 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/Expire") => {
+            ("POST", "/ProxyService/Expire") | ("POST", "/Expire") => {
                 match parse_json::<ProxyExpireCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = Command::CommonExpire {
@@ -1940,7 +1944,7 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/Ttl") => {
+            ("POST", "/ProxyService/Ttl") | ("POST", "/Ttl") => {
                 match parse_json::<ProxyKeyCommandRequest>(&request.body) {
                     Ok(req) => json_response(
                         200,
@@ -1949,7 +1953,7 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/Exists") => {
+            ("POST", "/ProxyService/Exists") | ("POST", "/Exists") => {
                 match parse_json::<ProxyKeyCommandRequest>(&request.body) {
                     Ok(req) => json_response(
                         200,
@@ -3116,7 +3120,7 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/HGet") => {
+            ("POST", "/ProxyService/HGet") | ("POST", "/HGet") => {
                 match parse_json::<ProxyHashCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = Command::HashGet {
@@ -3135,7 +3139,7 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/HSet") => {
+            ("POST", "/ProxyService/HSet") | ("POST", "/HSet") => {
                 match parse_json::<ProxyHashSetCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = Command::HashSet {
@@ -3155,7 +3159,10 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/HIncrBy") | ("POST", "/ProxyService/HashIncrBy") => {
+            ("POST", "/ProxyService/HIncrBy")
+            | ("POST", "/ProxyService/HashIncrBy")
+            | ("POST", "/HIncrBy")
+            | ("POST", "/HashIncrBy") => {
                 match parse_json::<ProxyHashIncrByCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = Command::HashIncrBy {
@@ -3175,7 +3182,7 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/HDel") => {
+            ("POST", "/ProxyService/HDel") | ("POST", "/HDel") => {
                 match parse_json::<ProxyHashCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = Command::HashDelete {
