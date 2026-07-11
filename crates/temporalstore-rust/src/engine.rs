@@ -7594,6 +7594,25 @@ fn execute_on_shard(
                     mutated,
                 };
             }
+            if fields.len() == 1 {
+                let value = fields.first().and_then(|field| {
+                    read_slot_index_value(
+                        cache,
+                        page_store,
+                        shard_id,
+                        shard,
+                        "hash",
+                        &key,
+                        Some(field.as_str()),
+                    )
+                });
+                return ExecuteOutcome {
+                    response: CommandResponse::Values {
+                        values: vec![value],
+                    },
+                    mutated,
+                };
+            }
             let hash_fields = shard.hashes.get(&key);
             let addresses = fields
                 .iter()
