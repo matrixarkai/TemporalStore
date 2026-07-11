@@ -492,7 +492,10 @@ impl TemporalEngine {
     fn execute_read_only_fast_path(&self, request: &ExecuteRequest) -> Option<ExecuteResponse> {
         let read_command = matches!(
             request.command,
-            Command::StringGet { .. } | Command::HashGet { .. } | Command::HashGetAll { .. }
+            Command::StringGet { .. }
+                | Command::HashGet { .. }
+                | Command::HashMultiGet { .. }
+                | Command::HashGetAll { .. }
         );
         if !read_command {
             return None;
@@ -586,6 +589,29 @@ impl TemporalEngine {
                             CommandResponse::Bytes { value }
                         },
                     ),
+                })
+            }
+            Command::HashMultiGet { key, fields } => {
+                if shard
+                    .expires_at_ms
+                    .get(key)
+                    .map(|expires_at| *expires_at <= now_ms())
+                    .unwrap_or(false)
+                {
+                    return None;
+                }
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::Values {
+                        values: read_hash_multi_values(
+                            &self.cache,
+                            &self.page_store,
+                            request.shard_id,
+                            shard,
+                            key,
+                            fields,
+                        ),
+                    },
                 })
             }
             Command::HashGetAll { key } => {
@@ -6010,19 +6036,16 @@ impl TemporalEngine {
             {
                 return None;
             }
-            let hash_fields = shard.hashes.get(key);
-            let addresses = fields
-                .iter()
-                .map(|field| hash_fields.and_then(|entries| entries.get(field)).cloned())
-                .collect::<Vec<_>>();
             responses.push(ExecuteResponse {
                 status: Status::ok(),
                 response: CommandResponse::Values {
-                    values: read_page_bytes_batch(
+                    values: read_hash_multi_values(
                         &self.cache,
                         &self.page_store,
                         request.shard_id,
-                        &addresses,
+                        shard,
+                        key,
+                        fields,
                     ),
                 },
             });
@@ -7929,40 +7952,7 @@ fn execute_on_shard(
                     mutated,
                 };
             }
-            if fields.len() == 1 {
-                let value = fields.first().and_then(|field| {
-                    shard.hashes.get(&key).map_or_else(
-                        || {
-                            read_slot_index_value(
-                                cache,
-                                page_store,
-                                shard_id,
-                                shard,
-                                "hash",
-                                &key,
-                                Some(field.as_str()),
-                            )
-                        },
-                        |entries| {
-                            entries.get(field).and_then(|address| {
-                                read_page_bytes(cache, page_store, shard_id, address)
-                            })
-                        },
-                    )
-                });
-                return ExecuteOutcome {
-                    response: CommandResponse::Values {
-                        values: vec![value],
-                    },
-                    mutated,
-                };
-            }
-            let hash_fields = shard.hashes.get(&key);
-            let addresses = fields
-                .iter()
-                .map(|field| hash_fields.and_then(|entries| entries.get(field)).cloned())
-                .collect::<Vec<_>>();
-            let values = read_page_bytes_batch(cache, page_store, shard_id, &addresses);
+            let values = read_hash_multi_values(cache, page_store, shard_id, shard, &key, &fields);
             CommandResponse::Values { values }
         }
         Command::HashMultiSet { key, entries } => {
@@ -16025,6 +16015,40 @@ pub(super) fn read_page_bytes_batch(
         let _ = cache.put_batch(refills);
     }
     values
+}
+
+fn read_hash_multi_values(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    key: &str,
+    fields: &[String],
+) -> Vec<Option<Vec<u8>>> {
+    if fields.is_empty() {
+        return Vec::new();
+    }
+    if let Some(hash_fields) = shard.hashes.get(key) {
+        let addresses = fields
+            .iter()
+            .map(|field| hash_fields.get(field).cloned())
+            .collect::<Vec<_>>();
+        return read_page_bytes_batch(cache, page_store, shard_id, &addresses);
+    }
+    fields
+        .iter()
+        .map(|field| {
+            read_slot_index_value(
+                cache,
+                page_store,
+                shard_id,
+                shard,
+                "hash",
+                key,
+                Some(field.as_str()),
+            )
+        })
+        .collect()
 }
 
 fn single_non_empty_page_address(addresses: &[Option<PageAddress>]) -> Option<&PageAddress> {
