@@ -3510,19 +3510,6 @@ impl ProxyService {
             .aggregator
             .clone()
             .unwrap_or_else(|| request.htype.aggregator().to_string());
-        let table = match self
-            .table_for_request_ref(&request.namespace, &request.table_name)
-        {
-            Ok(table) => table,
-            Err(err) => {
-                let status = Status::error("server_error", err.to_string());
-                return serde_json::json!({
-                    "status": status,
-                    "result_list": Vec::<serde_json::Value>::new(),
-                    "responses": Vec::<ExecuteResponse>::new(),
-                });
-            }
-        };
         let mut commands = Vec::with_capacity(bounds.len());
         for (start_ms, end_ms) in bounds {
             commands.push(Command::RiskFamilyQuery {
@@ -3533,52 +3520,18 @@ impl ProxyService {
                 aggregator: aggregator.clone(),
             });
         }
-        if let Some(status) = self.check_admission_for_commands(&commands) {
-            let response_status = Status::error(status.code, status.message);
-            let empty_response = ExecuteResponse {
-                status: response_status.clone(),
-                response: CommandResponse::Empty,
-            };
-            let responses = vec![empty_response; commands.len()];
-            return serde_json::json!({
-                "status": response_status,
-                "result_list": vec![serde_json::json!({
-                    "has_result": false,
-                    "result": 0,
-                }); commands.len()],
-                "responses": responses,
-            });
-        }
         let expected_len = commands.len();
-        let batch_response = table.batch_execute(commands).unwrap_or_else(|err| BatchExecuteResponse {
-            status: Status::error("server_error", err.to_string()),
-            responses: Vec::new(),
-        });
-        let mut status = Status::ok();
-        let mut responses = if batch_response.status.ok() {
-            let mut list = batch_response.responses;
-            if list.len() < expected_len {
-                let missing = expected_len - list.len();
-                list.extend(
-                    std::iter::repeat(ExecuteResponse {
-                        status: Status::error("bad_response", "batch response length mismatch"),
-                        response: CommandResponse::Empty,
-                    })
-                    .take(missing),
-                );
-            } else if list.len() > expected_len {
-                list.truncate(expected_len);
+        let (mut status, responses) = match self
+            .execute_risk_query_batch(&request.namespace, &request.table_name, commands)
+        {
+            Ok(result) => result,
+            Err(status) => {
+                return serde_json::json!({
+                    "status": status,
+                    "result_list": Vec::<serde_json::Value>::new(),
+                    "responses": Vec::<ExecuteResponse>::new(),
+                });
             }
-            if list.len() != expected_len {
-                status = Status::error("bad_response", "batch response length mismatch");
-            }
-            list
-        } else {
-            status = batch_response.status.clone();
-            vec![ExecuteResponse {
-                status,
-                response: CommandResponse::Empty,
-            }; expected_len]
         };
         let mut result_list = Vec::with_capacity(expected_len);
         for response in responses.iter() {
@@ -3603,20 +3556,6 @@ impl ProxyService {
 
     fn risk_cpc_query(&self, request: ProxyRiskCpcQueryCommandRequest) -> serde_json::Value {
         let bounds = risk_cpc_query_bounds(&request);
-        let table = match self
-            .table_for_request_ref(&request.namespace, &request.table_name)
-        {
-            Ok(table) => table,
-            Err(err) => {
-                let status = Status::error("server_error", err.to_string());
-                return serde_json::json!({
-                    "status": status,
-                    "count_list": Vec::<i64>::new(),
-                    "detail_lists": Vec::<serde_json::Value>::new(),
-                    "responses": Vec::<ExecuteResponse>::new(),
-                });
-            }
-        };
         let mut commands = Vec::with_capacity(bounds.len());
         for (start_ms, end_ms) in bounds {
             commands.push(Command::RiskFamilyQuery {
@@ -3627,50 +3566,19 @@ impl ProxyService {
                 aggregator: request.aggregator.clone(),
             });
         }
-        if let Some(status) = self.check_admission_for_commands(&commands) {
-            let response_status = Status::error(status.code, status.message);
-            let empty_response = ExecuteResponse {
-                status: response_status.clone(),
-                response: CommandResponse::Empty,
-            };
-            let responses = vec![empty_response; commands.len()];
-            return serde_json::json!({
-                "status": response_status,
-                "count_list": Vec::<i64>::new(),
-                "detail_lists": Vec::<serde_json::Value>::new(),
-                "responses": responses,
-            });
-        }
         let expected_len = commands.len();
-        let batch_response = table.batch_execute(commands).unwrap_or_else(|err| BatchExecuteResponse {
-            status: Status::error("server_error", err.to_string()),
-            responses: Vec::new(),
-        });
-        let mut status = Status::ok();
-        let mut responses = if batch_response.status.ok() {
-            let mut list = batch_response.responses;
-            if list.len() < expected_len {
-                let missing = expected_len - list.len();
-                list.extend(
-                    std::iter::repeat(ExecuteResponse {
-                        status: Status::error("bad_response", "batch response length mismatch"),
-                        response: CommandResponse::Empty,
-                    })
-                    .take(missing),
-                );
-            } else if list.len() > expected_len {
-                list.truncate(expected_len);
+        let (mut status, responses) = match self
+            .execute_risk_query_batch(&request.namespace, &request.table_name, commands)
+        {
+            Ok(result) => result,
+            Err(status) => {
+                return serde_json::json!({
+                    "status": status,
+                    "count_list": Vec::<i64>::new(),
+                    "detail_lists": Vec::<serde_json::Value>::new(),
+                    "responses": Vec::<ExecuteResponse>::new(),
+                });
             }
-            if list.len() != expected_len {
-                status = Status::error("bad_response", "batch response length mismatch");
-            }
-            list
-        } else {
-            status = batch_response.status.clone();
-            vec![ExecuteResponse {
-                status,
-                response: CommandResponse::Empty,
-            }; expected_len]
         };
         let mut count_list = Vec::with_capacity(expected_len);
         let mut detail_lists = Vec::with_capacity(expected_len);
@@ -3696,6 +3604,60 @@ impl ProxyService {
             "detail_lists": detail_lists,
             "responses": responses,
         })
+    }
+
+    fn execute_risk_query_batch(
+        &self,
+        namespace: &str,
+        table_name: &str,
+        commands: Vec<Command>,
+    ) -> Result<(Status, Vec<ExecuteResponse>), Status> {
+        let expected_len = commands.len();
+        if let Some(status) = self.check_admission_for_commands(&commands) {
+            let response_status = Status::error(status.code, status.message);
+            let response = ExecuteResponse {
+                status: response_status.clone(),
+                response: CommandResponse::Empty,
+            };
+            return Ok((response_status, vec![response; expected_len]));
+        }
+        let table = self
+            .table_for_request_ref(namespace, table_name)
+            .map_err(|err| Status::error("server_error", err.to_string()))?;
+        let batch_response = table.batch_execute(commands).unwrap_or_else(|err| BatchExecuteResponse {
+            status: Status::error("server_error", err.to_string()),
+            responses: Vec::new(),
+        });
+        let mut status = Status::ok();
+        let responses = if batch_response.status.ok() {
+            let mut list = batch_response.responses;
+            if list.len() < expected_len {
+                let missing = expected_len - list.len();
+                list.extend(
+                    std::iter::repeat(ExecuteResponse {
+                        status: Status::error("bad_response", "batch response length mismatch"),
+                        response: CommandResponse::Empty,
+                    })
+                    .take(missing),
+                );
+            } else if list.len() > expected_len {
+                list.truncate(expected_len);
+            }
+            if list.len() != expected_len {
+                status = Status::error("bad_response", "batch response length mismatch");
+            }
+            list
+        } else {
+            status = batch_response.status.clone();
+            vec![
+                ExecuteResponse {
+                    status,
+                    response: CommandResponse::Empty,
+                };
+                expected_len
+            ]
+        };
+        Ok((status, responses))
     }
 
     fn table_execute_command(
