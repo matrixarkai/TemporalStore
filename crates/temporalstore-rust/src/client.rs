@@ -5274,47 +5274,81 @@ impl TemporalStoreTable {
     ) -> Result<BatchExecuteResponse, ClientError> {
         use std::sync::mpsc;
 
-        let mut groups: BTreeMap<ShardId, Vec<(usize, Command)>> = BTreeMap::new();
-        let total = commands.len();
-        for (index, command) in commands.into_iter().enumerate() {
-            groups
-                .entry(self.shard_id_for_command(&command))
-                .or_default()
-                .push((index, command));
+        struct ShardGroup {
+            indexes: Vec<usize>,
+            commands: Vec<Command>,
         }
-        if groups.len() <= 1 {
-            let mut single_group = groups.into_iter();
-            if let Some((shard_id, group)) = single_group.next() {
-                let commands: Vec<Command> = group.into_iter().map(|(_, command)| command).collect();
+
+        let mut groups: HashMap<ShardId, ShardGroup> = HashMap::new();
+        let total_commands = commands.len();
+        for (index, command) in commands.into_iter().enumerate() {
+            let shard_id = self.shard_id_for_command(&command);
+            let group = groups.entry(shard_id).or_default();
+            group.indexes.push(index);
+            group.commands.push(command);
+        }
+
+        let mut responses: Vec<Option<ExecuteResponse>> = vec![None; total_commands];
+        let table_options = self.table_options();
+        let mut append_responses = |indexes: Vec<usize>, mut response: BatchExecuteResponse| -> Option<Status> {
+            if !response.status.ok {
+                return Some(response.status);
+            }
+            if response.responses.len() != indexes.len() {
+                return Some(Status::error(
+                    "bad_response",
+                    "batch response length mismatch",
+                ));
+            }
+            for (index, response) in indexes.into_iter().zip(response.responses.into_iter()) {
+                responses[index] = Some(response);
+            }
+            None
+        };
+
+        const MAX_SEQUENTIAL_BATCH_SHARD_GROUPS: usize = 2;
+        if groups.len() <= MAX_SEQUENTIAL_BATCH_SHARD_GROUPS {
+            for (shard_id, group) in groups {
                 let response = self.batch_execute_single_shard_with_retry(
                     &BatchExecuteRequest {
                         shard_id,
-                        commands,
+                        commands: group.commands,
                     },
-                    self.table_options(),
+                    table_options.clone(),
                 )?;
-                return Ok(response);
+                if let Some(status) = append_responses(group.indexes, response) {
+                    return Ok(BatchExecuteResponse {
+                        status,
+                        responses: Vec::new(),
+                    });
+                }
             }
             return Ok(BatchExecuteResponse {
                 status: Status::ok(),
-                responses: Vec::new(),
+                responses: responses
+                    .into_iter()
+                    .map(|response| {
+                        response.unwrap_or_else(|| ExecuteResponse {
+                            status: Status::error("missing_response", "batch response missing"),
+                            response: CommandResponse::Empty,
+                        })
+                    })
+                    .collect(),
             });
         }
 
-        let mut responses: Vec<Option<ExecuteResponse>> = vec![None; total];
         let (tx, rx) = mpsc::channel();
-        let table_options = self.table_options();
         thread::scope(|scope| {
             for (shard_id, group) in groups {
-                let indexes: Vec<usize> = group.iter().map(|(index, _)| *index).collect();
-                let commands: Vec<Command> = group.into_iter().map(|(_, command)| command).collect();
+                let indexes = group.indexes;
+                let shard_commands = group.commands;
                 let tx = tx.clone();
                 let table_options = table_options.clone();
                 scope.spawn(move || {
                     let result = self.batch_execute_single_shard_with_retry(
                         &BatchExecuteRequest {
                             shard_id,
-                            commands,
+                            commands: shard_commands,
                         },
                         table_options,
                     );
@@ -5325,20 +5359,11 @@ impl TemporalStoreTable {
         drop(tx);
         for (indexes, result) in rx {
             let response = result?;
-            if !response.status.ok {
+            if let Some(status) = append_responses(indexes, response) {
                 return Ok(BatchExecuteResponse {
-                    status: response.status,
+                    status,
                     responses: Vec::new(),
                 });
-            }
-            if response.responses.len() != indexes.len() {
-                return Ok(BatchExecuteResponse {
-                    status: Status::error("bad_response", "batch response length mismatch"),
-                    responses: Vec::new(),
-                });
-            }
-            for (index, response) in indexes.into_iter().zip(response.responses.into_iter()) {
-                responses[index] = Some(response);
             }
         }
 
