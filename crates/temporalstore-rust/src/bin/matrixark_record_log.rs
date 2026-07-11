@@ -4140,19 +4140,35 @@ fn top_scored_candidates(
     if keep == 0 || candidates.is_empty() {
         return Vec::new();
     }
-    let mut scored = candidates
-        .iter()
-        .enumerate()
-        .map(|(ordinal, candidate)| {
-            (
-                score_lowered_text(&candidate.lower_text, query_terms),
-                ordinal,
-            )
-        })
-        .collect::<Vec<_>>();
-    scored.sort_by(|left, right| compare_scored_candidate(*left, *right));
-    scored.truncate(keep.min(scored.len()));
-    scored
+    let keep = keep.min(candidates.len());
+    let mut top = Vec::with_capacity(keep);
+    for (ordinal, candidate) in candidates.iter().enumerate() {
+        let scored = (
+            score_lowered_text(&candidate.lower_text, query_terms),
+            ordinal,
+        );
+        if top.len() < keep {
+            top.push(scored);
+            if top.len() == keep {
+                top.sort_by(|left, right| compare_scored_candidate(*left, *right));
+            }
+            continue;
+        }
+        if compare_scored_candidate(scored, *top.last().expect("top is full"))
+            != std::cmp::Ordering::Less
+        {
+            continue;
+        }
+        let insertion = top
+            .binary_search_by(|candidate| compare_scored_candidate(*candidate, scored))
+            .unwrap_or_else(|index| index);
+        top.insert(insertion, scored);
+        top.pop();
+    }
+    if top.len() < keep {
+        top.sort_by(|left, right| compare_scored_candidate(*left, *right));
+    }
+    top
 }
 
 fn record_log_root(request: &RecordLogRequest) -> PathBuf {
