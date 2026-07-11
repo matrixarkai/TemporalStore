@@ -1788,7 +1788,11 @@ impl DataNodeRuntime {
     pub fn execute(&self, request: ExecuteRequest) -> ExecuteResponse {
         let ExecuteRequest { shard_id, command } = request;
         let should_mark_dirty = is_write_command(&command);
-        let command_key = command_key(&command).map(str::to_string);
+        let command_key = if should_mark_dirty {
+            command_key(&command).map(str::to_string)
+        } else {
+            None
+        };
         if let Err(status) = validate_foreground_write_allowed_inner(
             &self.inner,
             shard_id,
@@ -1820,7 +1824,11 @@ impl DataNodeRuntime {
             command,
         } = request;
         let should_mark_dirty = is_write_command(&command);
-        let command_key = command_key(&command).map(str::to_string);
+        let command_key = if should_mark_dirty {
+            command_key(&command).map(str::to_string)
+        } else {
+            None
+        };
         if let Err(status) = validate_foreground_write_allowed_inner(
             &self.inner,
             shard_id,
