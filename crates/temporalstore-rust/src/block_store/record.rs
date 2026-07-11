@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::io::Cursor;
 
@@ -62,6 +63,15 @@ pub(super) struct EncodedPageRecord {
 }
 
 #[derive(Debug)]
+pub(super) struct EncodedPageRecordMeta {
+    pub(super) record_len: usize,
+    pub(super) logical_len: usize,
+    pub(super) stored_len: usize,
+    pub(super) compression: PageRecordCompression,
+    pub(super) sha256_hex: String,
+}
+
+#[derive(Debug)]
 pub(super) struct DecodedPageRecord {
     pub(super) payload: Vec<u8>,
     pub(super) logical_len: usize,
@@ -82,10 +92,37 @@ pub(super) fn encode_page_record(
     extent_id: u64,
     options: BlockStoreOptions,
 ) -> Result<EncodedPageRecord, BlockStoreError> {
+    let mut record = Vec::with_capacity(PAGE_RECORD_HEADER_LEN + payload.len());
+    let meta = encode_page_record_into(
+        payload,
+        page_id,
+        object_id,
+        routing_slot,
+        extent_id,
+        options,
+        &mut record,
+    )?;
+    Ok(EncodedPageRecord {
+        bytes: record,
+        logical_len: meta.logical_len,
+        stored_len: meta.stored_len,
+        compression: meta.compression,
+        sha256_hex: meta.sha256_hex,
+    })
+}
+
+pub(super) fn encode_page_record_into(
+    payload: &[u8],
+    page_id: u64,
+    object_id: Option<u64>,
+    routing_slot: Option<u32>,
+    extent_id: u64,
+    options: BlockStoreOptions,
+    record: &mut Vec<u8>,
+) -> Result<EncodedPageRecordMeta, BlockStoreError> {
     let digest = Sha256::digest(payload);
     let (stored_payload, compression) = encode_page_record_payload(payload, options)?;
     let stored_len = stored_payload.len();
-    let mut record = Vec::with_capacity(PAGE_RECORD_HEADER_LEN + stored_payload.len());
     record.extend_from_slice(PAGE_RECORD_MAGIC);
     record.push(PAGE_RECORD_VERSION);
     record.push(0);
@@ -106,8 +143,8 @@ pub(super) fn encode_page_record(
     record.extend_from_slice(&[0; 7]);
     record.extend_from_slice(&(stored_len as u64).to_le_bytes());
     record.extend_from_slice(&stored_payload);
-    Ok(EncodedPageRecord {
-        bytes: record,
+    Ok(EncodedPageRecordMeta {
+        record_len: PAGE_RECORD_HEADER_LEN + stored_len,
         logical_len: payload.len(),
         stored_len,
         compression,
@@ -118,18 +155,18 @@ pub(super) fn encode_page_record(
 fn encode_page_record_payload(
     payload: &[u8],
     options: BlockStoreOptions,
-) -> Result<(Vec<u8>, PageRecordCompression), BlockStoreError> {
+) -> Result<(Cow<'_, [u8]>, PageRecordCompression), BlockStoreError> {
     if !options.compression_enabled || payload.len() < options.compression_min_bytes {
-        return Ok((payload.to_vec(), PageRecordCompression::None));
+        return Ok((Cow::Borrowed(payload), PageRecordCompression::None));
     }
     let compressed = zstd::stream::encode_all(
         Cursor::new(payload),
         options.compression_level.clamp(-7, 22),
     )?;
     if compressed.len() < payload.len() {
-        Ok((compressed, PageRecordCompression::Zstd))
+        Ok((Cow::Owned(compressed), PageRecordCompression::Zstd))
     } else {
-        Ok((payload.to_vec(), PageRecordCompression::None))
+        Ok((Cow::Borrowed(payload), PageRecordCompression::None))
     }
 }
 

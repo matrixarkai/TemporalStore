@@ -22,13 +22,13 @@ use paths::{
 use record::{
     decode_page_record, default_page_record_compression_enabled,
     default_page_record_compression_level, default_page_record_compression_min_bytes,
-    encode_page_record, inspect_segment, logical_range_from_segment, sha256_hex, summarize_segment,
-    PageRecordCompression,
+    encode_page_record, encode_page_record_into, inspect_segment, logical_range_from_segment,
+    sha256_hex, summarize_segment, PageRecordCompression, PAGE_RECORD_HEADER_LEN,
 };
 #[cfg(test)]
 use record::{
-    PAGE_RECORD_COMPRESSION_NONE, PAGE_RECORD_COMPRESSION_ZSTD, PAGE_RECORD_HEADER_LEN,
-    PAGE_RECORD_MAGIC, PAGE_RECORD_VERSION,
+    PAGE_RECORD_COMPRESSION_NONE, PAGE_RECORD_COMPRESSION_ZSTD, PAGE_RECORD_MAGIC,
+    PAGE_RECORD_VERSION,
 };
 
 #[derive(Debug, Error)]
@@ -786,17 +786,10 @@ impl LocalBlockStore {
         for &(bytes, object_id, routing_slot) in records {
             let mut page_id = inner.next_page_id;
             let mut extent_id = extent_id_for_segment(inner.page_segment_id);
-            let mut record = encode_page_record(
-                bytes,
-                page_id,
-                object_id,
-                routing_slot,
-                extent_id,
-                inner.options,
-            )?;
+            let record_len_upper_bound = PAGE_RECORD_HEADER_LEN.saturating_add(bytes.len());
             if should_roll_before_append(
                 inner.write_offset,
-                record.bytes.len() as u64,
+                record_len_upper_bound as u64,
                 segment_target_bytes,
             ) {
                 flush_active_append_buffer_inner(&mut inner, &mut pending_segment_bytes, false)?;
@@ -804,19 +797,20 @@ impl LocalBlockStore {
                 roll_segment_inner(&mut inner)?;
                 page_id = inner.next_page_id;
                 extent_id = extent_id_for_segment(inner.page_segment_id);
-                record = encode_page_record(
-                    bytes,
-                    page_id,
-                    object_id,
-                    routing_slot,
-                    extent_id,
-                    inner.options,
-                )?;
             }
+            let record = encode_page_record_into(
+                bytes,
+                page_id,
+                object_id,
+                routing_slot,
+                extent_id,
+                inner.options,
+                &mut pending_segment_bytes,
+            )?;
             let address = BlockAddress {
                 page_segment_id: inner.page_segment_id,
                 offset: inner.write_offset,
-                length: record.bytes.len() as u64,
+                length: record.record_len as u64,
                 page_id: Some(page_id),
                 object_id,
                 routing_slot,
@@ -824,7 +818,6 @@ impl LocalBlockStore {
                 extent_id: Some(extent_id),
                 sha256: Some(record.sha256_hex.clone()),
             };
-            pending_segment_bytes.extend_from_slice(&record.bytes);
             if pending_segment_bytes.len() >= BATCH_APPEND_BUFFER_TARGET_BYTES {
                 flush_active_append_buffer_inner(&mut inner, &mut pending_segment_bytes, false)?;
             }
