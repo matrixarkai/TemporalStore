@@ -8624,22 +8624,25 @@ fn execute_on_shard(
                     mutated,
                 };
             }
-            let values = shard
+            let refs = shard
                 .features
                 .get(&key)
                 .map(|series| {
-                    let refs = timestamp_page_refs_in_range(
-                        series,
-                        start_ms,
-                        end_ms,
-                        count.unwrap_or(5000),
-                    );
-                    read_feature_points_cached_batch(cache, page_store, shard_id, &refs)
-                        .into_iter()
-                        .map(|point| point.value)
-                        .collect::<Vec<_>>()
+                    timestamp_page_refs_in_range(series, start_ms, end_ms, count.unwrap_or(5000))
                 })
                 .unwrap_or_default();
+            if is_feature_count_aggregator(&aggregator) {
+                return ExecuteOutcome {
+                    response: CommandResponse::Aggregate {
+                        value: refs.len() as i64,
+                    },
+                    mutated,
+                };
+            }
+            let values = read_feature_points_cached_batch(cache, page_store, shard_id, &refs)
+                .into_iter()
+                .map(|point| point.value)
+                .collect::<Vec<_>>();
             CommandResponse::Aggregate {
                 value: aggregate_feature_values(&values, &aggregator),
             }
@@ -11252,6 +11255,13 @@ fn timestamp_page_refs_last(
             .map(|(timestamp_ms, address)| (*timestamp_ms, address.clone())),
     );
     refs
+}
+
+fn is_feature_count_aggregator(aggregator: &str) -> bool {
+    let aggregator = aggregator.trim();
+    aggregator.is_empty()
+        || aggregator.eq_ignore_ascii_case("count")
+        || aggregator.eq_ignore_ascii_case("events")
 }
 
 fn associated_record_keys(key: &str) -> Vec<String> {
