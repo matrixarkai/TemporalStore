@@ -496,6 +496,8 @@ impl TemporalEngine {
                 | Command::HashGet { .. }
                 | Command::HashMultiGet { .. }
                 | Command::HashGetAll { .. }
+                | Command::HashLen { .. }
+                | Command::SetMembers { .. }
         );
         if !read_command {
             return None;
@@ -664,6 +666,48 @@ impl TemporalEngine {
                 Some(ExecuteResponse {
                     status: Status::ok(),
                     response: CommandResponse::HashEntries { entries },
+                })
+            }
+            Command::HashLen { key } => {
+                if shard
+                    .expires_at_ms
+                    .get(key)
+                    .map(|expires_at| *expires_at <= now_ms())
+                    .unwrap_or(false)
+                {
+                    return None;
+                }
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::Integer {
+                        value: read_hash_len(shard, key),
+                    },
+                })
+            }
+            Command::SetMembers { key } => {
+                if shard
+                    .expires_at_ms
+                    .get(key)
+                    .map(|expires_at| *expires_at <= now_ms())
+                    .unwrap_or(false)
+                {
+                    return None;
+                }
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: cached_response(
+                        &self.cache,
+                        CacheKey::set_members(request.shard_id, key),
+                        || CommandResponse::Members {
+                            members: read_set_members(
+                                &self.cache,
+                                &self.page_store,
+                                request.shard_id,
+                                shard,
+                                key,
+                            ),
+                        },
+                    ),
                 })
             }
             _ => None,
@@ -8294,10 +8338,7 @@ fn execute_on_shard(
                 };
             }
             CommandResponse::Integer {
-                value: shard.hashes.get(&key).map_or_else(
-                    || slot_index_component_page_addresses(shard, "hash", &key).len() as i64,
-                    |fields| fields.len() as i64,
-                ),
+                value: read_hash_len(shard, &key),
             }
         }
         Command::HashDelete { key, field } => {
@@ -8367,19 +8408,9 @@ fn execute_on_shard(
                 };
             }
             cached_response(cache, CacheKey::set_members(shard_id, &key), || {
-                let members = shard
-                    .sets
-                    .get(&key)
-                    .map(|members| members.keys().cloned().collect())
-                    .unwrap_or_else(|| {
-                        read_slot_index_component_values(
-                            cache, page_store, shard_id, shard, "set", &key,
-                        )
-                        .into_iter()
-                        .map(|(_, value)| value)
-                        .collect()
-                    });
-                CommandResponse::Members { members }
+                CommandResponse::Members {
+                    members: read_set_members(cache, page_store, shard_id, shard, &key),
+                }
             })
         }
         Command::SetRemove { key, member } => {
@@ -16049,6 +16080,32 @@ fn read_hash_multi_values(
             )
         })
         .collect()
+}
+
+fn read_hash_len(shard: &ShardState, key: &str) -> i64 {
+    shard.hashes.get(key).map_or_else(
+        || slot_index_component_page_addresses(shard, "hash", key).len() as i64,
+        |fields| fields.len() as i64,
+    )
+}
+
+fn read_set_members(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    key: &str,
+) -> Vec<Vec<u8>> {
+    shard
+        .sets
+        .get(key)
+        .map(|members| members.keys().cloned().collect())
+        .unwrap_or_else(|| {
+            read_slot_index_component_values(cache, page_store, shard_id, shard, "set", key)
+                .into_iter()
+                .map(|(_, value)| value)
+                .collect()
+        })
 }
 
 fn single_non_empty_page_address(addresses: &[Option<PageAddress>]) -> Option<&PageAddress> {
