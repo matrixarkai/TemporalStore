@@ -1870,11 +1870,18 @@ impl LocalBlockStore {
             let Some(id) = delayed_destroy_segment_id_from_name(&entry.file_name()) else {
                 continue;
             };
-            purged_physical_bytes += entry
-                .metadata()
-                .map(|metadata| metadata.len())
-                .unwrap_or_default();
-            fs::remove_file(entry.path())?;
+            let path = entry.path();
+            let physical_bytes = match entry.metadata() {
+                Ok(metadata) => metadata.len(),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => return Err(BlockStoreError::Io(err)),
+            };
+            match fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => return Err(BlockStoreError::Io(err)),
+            }
+            purged_physical_bytes += physical_bytes;
             purged.push(id);
         }
         purged.sort_unstable();
