@@ -8167,7 +8167,10 @@ fn execute_on_shard(
                 };
             }
             CommandResponse::Integer {
-                value: slot_index_component_page_addresses(shard, "hash", &key).len() as i64,
+                value: shard.hashes.get(&key).map_or_else(
+                    || slot_index_component_page_addresses(shard, "hash", &key).len() as i64,
+                    |fields| fields.len() as i64,
+                ),
             }
         }
         Command::HashDelete { key, field } => {
