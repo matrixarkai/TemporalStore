@@ -1394,8 +1394,10 @@ pub struct ProxyRiskCpcSetCommandRequest {
     pub key: String,
     #[serde(default)]
     pub values: Vec<String>,
-    #[serde(default, alias = "occur_time")]
+    #[serde(default)]
     pub timestamp_ms: u64,
+    #[serde(default, alias = "occur_time")]
+    pub occur_time_seconds: u64,
     #[serde(default, alias = "ttl")]
     pub ttl_ms: u64,
     #[serde(
@@ -2588,10 +2590,11 @@ impl ProxyService {
             ("POST", "/ProxyService/RiskCPCSet") | ("POST", "/RiskCPCSet") => {
                 match parse_json::<ProxyRiskCpcSetCommandRequest>(&request.body) {
                     Ok(req) => {
+                        let timestamp_ms = risk_cpc_set_timestamp_ms(&req);
                         let command = Command::RiskSet {
                             family: RiskFamily::Cpc,
                             key: req.key,
-                            timestamp_ms: risk_cpc_timestamp_ms(req.timestamp_ms),
+                            timestamp_ms,
                             amount: req.values.len() as i64,
                             precision_ms: req.precision_ms,
                             ttl_ms: risk_hset_ttl_ms(req.ttl_ms),
@@ -4652,6 +4655,13 @@ fn risk_fol_query_response_json(response: ExecuteResponse) -> serde_json::Value 
 }
 
 fn risk_hset_timestamp_ms(request: &ProxyRiskHsetCommandRequest) -> u64 {
+    if request.timestamp_ms != 0 {
+        return risk_cpc_timestamp_ms(request.timestamp_ms);
+    }
+    risk_cpc_timestamp_ms(request.occur_time_seconds)
+}
+
+fn risk_cpc_set_timestamp_ms(request: &ProxyRiskCpcSetCommandRequest) -> u64 {
     if request.timestamp_ms != 0 {
         return risk_cpc_timestamp_ms(request.timestamp_ms);
     }
