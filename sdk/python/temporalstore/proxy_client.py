@@ -224,6 +224,7 @@ class ProxyClient:
         policy: FeatureWritePolicy = FeatureWritePolicy.UPSERT,
     ) -> None:
         body = self._key_body(key)
+        body["format"] = "protobuf"
         body["points"] = [_feature_point_body(point) for point in points]
         body["policy"] = int(policy)
         self._post("/ProxyService/FeatureAdd", body)
@@ -595,6 +596,7 @@ class ProxyClient:
                 "start_ms": start_ts,
                 "end_ms": end_ts,
                 "count": count,
+                "format": "protobuf",
                 "filters": [_feature_filter_body(item) for item in filters],
             }
         )
