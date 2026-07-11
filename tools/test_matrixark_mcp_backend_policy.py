@@ -3931,6 +3931,66 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(adapter._direct_context_pack_response_cache_hits_total, 1)
         self.assertEqual(adapter._direct_context_pack_response_cache_misses_total, 1)
 
+    def test_direct_retrieve_omits_verbose_native_contract_on_hot_path(self) -> None:
+        class HotPathNativeContextPackClient:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def get_string(self, key: str) -> str:
+                if key.endswith(":record_count"):
+                    return "7"
+                return ""
+
+            def matrixark_retrieve_context_pack(self, **kwargs):
+                self.calls.append(kwargs)
+                return {
+                    "native_pack_assembly": True,
+                    "context_pack": {
+                        "context_pack_id": "hot-path-native-pack",
+                        "selected_refs": [{"ref_type": "event", "text": "native packed evidence"}],
+                    },
+                }
+
+        client = HotPathNativeContextPackClient()
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._client = client
+        adapter._storage_prefix = "matrixark:test:native-pack-hot-path"
+        adapter._record_hash_key = f"{adapter._storage_prefix}:records"
+        adapter._index_key = f"{adapter._storage_prefix}:record_index"
+        adapter._count_key = f"{adapter._storage_prefix}:record_count"
+        adapter._entry_count_cache = None
+
+        result = adapter.retrieve(
+            {
+                "query": "Who approved the GPU budget?",
+                "scope": {"tenant_hash": 11, "user_hash": 22, "session_hash": 33},
+                "max_context_tokens": 2048,
+                "ranking": {"max_selected_refs": 8},
+                "include_retrieval_metrics": True,
+            }
+        )
+
+        self.assertEqual(result["pack_id"], "hot-path-native-pack")
+        self.assertEqual(len(client.calls), 1)
+        request = client.calls[0]["request"]
+        self.assertEqual(request["storage_prefix"], "matrixark:test:native-pack-hot-path")
+        self.assertEqual(
+            request["normal_path_stages"],
+            [
+                "query_understanding",
+                "scope_filter",
+                "l0_l1_node_traversal",
+                "compact_secondary_index_prefilter",
+                "placement_key_candidate_fetch",
+                "native_score_rerank_pack",
+            ],
+        )
+        self.assertNotIn("required_native_apis", request)
+        self.assertNotIn("normalization_requirements", request)
+        self.assertNotIn("execution_plan_requirements", request)
+        self.assertNotIn("required_output", request)
+        self.assertEqual(result["retrieval_metrics"]["normal_path_stages"], request["normal_path_stages"])
+
     def test_direct_retrieve_derives_native_hash_scope_from_plain_ids(self) -> None:
         client = _NativeContextPackClient()
         adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
