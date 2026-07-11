@@ -9265,7 +9265,12 @@ fn execute_on_shard(
                     let refs = timestamp_page_refs_last(series, count);
                     read_feature_points_cached_batch(cache, page_store, shard_id, &refs)
                 })
-                .unwrap_or_default();
+                .unwrap_or_else(|| {
+                    let addresses = slot_index_object_page_addresses(shard, "ips", &key);
+                    read_feature_points_from_pages_last(
+                        cache, page_store, shard_id, &addresses, count,
+                    )
+                });
             CommandResponse::FeaturePoints { points }
         }
         Command::IpsQueryRange {
@@ -9302,7 +9307,12 @@ fn execute_on_shard(
                             let refs = timestamp_page_refs_last(series, count);
                             read_feature_points_cached_batch(cache, page_store, shard_id, &refs)
                         })
-                        .unwrap_or_default();
+                        .unwrap_or_else(|| {
+                            let addresses = slot_index_object_page_addresses(shard, "ips", &key);
+                            read_feature_points_from_pages_last(
+                                cache, page_store, shard_id, &addresses, count,
+                            )
+                        });
                     (key, points)
                 })
                 .collect();
