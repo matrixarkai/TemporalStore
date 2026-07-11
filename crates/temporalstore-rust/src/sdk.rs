@@ -582,6 +582,8 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             key: command.key,
             timestamp_ms: command.timestamp_ms,
             amount: command.amount,
+            precision_ms: None,
+            ttl_ms: None,
         },
         v1::command::Kind::RiskFamilyQuery(command) => types::Command::RiskFamilyQuery {
             family: sdk_risk_family_to_types(command.family)?,
@@ -598,6 +600,8 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             start_ms: command.start_ms,
             end_ms: command.end_ms,
             aggregator: command.aggregator,
+            precision_ms: None,
+            ttl_ms: None,
         },
         v1::command::Kind::RiskFolSet(command) => types::Command::RiskFolSet {
             key: command.key,

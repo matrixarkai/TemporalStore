@@ -352,6 +352,8 @@ pub fn cpp_api_golden_corpus_report() -> CppGoldenCorpusReport {
                 key: "risk-golden".to_string(),
                 timestamp_ms,
                 amount,
+                precision_ms: None,
+                ttl_ms: None,
             },
         });
     }
@@ -375,6 +377,8 @@ pub fn cpp_api_golden_corpus_report() -> CppGoldenCorpusReport {
             start_ms: 0,
             end_ms: 100,
             aggregator: "sum".to_string(),
+            precision_ms: None,
+            ttl_ms: None,
         },
     });
     record_golden_case(
