@@ -7631,6 +7631,61 @@ fn execute_on_shard(
         Command::HashMultiSet { key, entries } => {
             remove_if_expired(cache, shard_id, shard, &key);
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
+            if entries.len() == 1 {
+                let object_id_prefix = stable_page_object_id_prefix(shard_id, "hash", &key);
+                let (field, value) = entries
+                    .into_iter()
+                    .next()
+                    .expect("single hash multiset entry is present after length check");
+                let object_id = stable_page_object_id_from_prefix(object_id_prefix, Some(&field));
+                if let Ok(address) = append_value(
+                    cache,
+                    page_store,
+                    shard_id,
+                    &value,
+                    Some(object_id),
+                    Some(routing_slot),
+                    async_storage,
+                ) {
+                    let field_existed = shard
+                        .hashes
+                        .get(&key)
+                        .is_some_and(|fields| fields.contains_key(&field));
+                    if field_existed {
+                        upsert_slot_index_page(
+                            cache,
+                            shard,
+                            shard_id,
+                            "hash",
+                            &key,
+                            Some(field.clone()),
+                            address.clone(),
+                            true,
+                            start_routing_slot,
+                            end_routing_slot,
+                        );
+                    } else {
+                        insert_slot_index_page_without_replacement(
+                            shard,
+                            shard_id,
+                            "hash",
+                            &key,
+                            Some(field.clone()),
+                            address.clone(),
+                            true,
+                            start_routing_slot,
+                            end_routing_slot,
+                        );
+                    }
+                    invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
+                    shard.hashes.entry(key).or_default().insert(field, address);
+                    mutated = true;
+                }
+                return ExecuteOutcome {
+                    response: CommandResponse::Empty,
+                    mutated,
+                };
+            }
             let mut applied = Vec::with_capacity(entries.len());
             let mut batch_seen_fields = HashSet::<String>::new();
             if !async_storage && entries.len() >= hash_multiset_batch_memory_put_min() {
