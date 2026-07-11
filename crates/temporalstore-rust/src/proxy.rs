@@ -1681,6 +1681,7 @@ struct ProxyInner {
     options: RwLock<ProxyOptions>,
     client: RwLock<TemporalStoreClient>,
     last_client_stats: RwLock<ClientStats>,
+    client_stats_sync_due_ms: AtomicU64,
     route_invalidation_due_ms: AtomicU64,
     stats: ProxyStatsState,
     service_discovery: RwLock<ProxyServiceDiscoveryState>,
@@ -1694,6 +1695,7 @@ impl ProxyService {
                 client: RwLock::new(proxy_client_from_options(&options)),
                 options: RwLock::new(options),
                 last_client_stats: RwLock::default(),
+                client_stats_sync_due_ms: AtomicU64::new(0),
                 route_invalidation_due_ms: AtomicU64::new(0),
                 stats: ProxyStatsState::default(),
                 service_discovery: RwLock::default(),
@@ -3374,7 +3376,7 @@ impl ProxyService {
             .client()
             .execute_with_options(request, RequestOptions::default())
             .unwrap_or_else(|err| execute_error("server_error", err.to_string()));
-        self.sync_client_stats();
+        self.sync_client_stats_throttled();
         response
     }
 
@@ -3397,7 +3399,7 @@ impl ProxyService {
                 status: Status::error("server_error", err.to_string()),
                 responses: Vec::new(),
             });
-        self.sync_client_stats();
+        self.sync_client_stats_throttled();
         response
     }
 
@@ -3420,21 +3422,21 @@ impl ProxyService {
                         table.table_name().to_string(),
                         options.clone(),
                     );
-                    self.sync_client_stats();
+                    self.sync_client_stats_throttled();
                     return ProxyOpenTableResponse {
                         status: Status::ok(),
                         options: Some(table.options().into()),
                     };
                 }
                 let options = table.options();
-                self.sync_client_stats();
+                self.sync_client_stats_throttled();
                 ProxyOpenTableResponse {
                     status: Status::ok(),
                     options: Some(options.into()),
                 }
             }
             Err(err) => {
-                self.sync_client_stats();
+                self.sync_client_stats_throttled();
                 ProxyOpenTableResponse {
                     status: Status::error("metaserver_error", err.to_string()),
                     options: None,
@@ -3458,7 +3460,7 @@ impl ProxyService {
             .table_for_request(request.namespace, request.table_name)
             .and_then(|table| table.execute(request.command))
             .unwrap_or_else(|err| execute_error("server_error", err.to_string()));
-        self.sync_client_stats();
+        self.sync_client_stats_throttled();
         response
     }
 
@@ -3484,7 +3486,7 @@ impl ProxyService {
                 status: Status::error("server_error", err.to_string()),
                 responses: Vec::new(),
             });
-        self.sync_client_stats();
+        self.sync_client_stats_throttled();
         response
     }
 
@@ -3678,7 +3680,7 @@ impl ProxyService {
     }
 
     pub fn preflight_report(&self) -> ProxyPreflightReport {
-        self.sync_client_stats();
+        self.sync_client_stats_for_report();
         let options = self.options();
         let stats = self.inner.stats.snapshot();
         let client_stats = self.client().stats();
@@ -3988,7 +3990,7 @@ impl ProxyService {
     }
 
     pub fn prometheus_metrics(&self) -> String {
-        self.sync_client_stats();
+        self.sync_client_stats_for_report();
         let options = self.options();
         let stats = self.inner.stats.snapshot();
         let client = self.client().stats();
@@ -4441,7 +4443,34 @@ impl ProxyService {
             .clone()
     }
 
-    fn sync_client_stats(&self) {
+    fn sync_client_stats_throttled(&self) {
+        self.sync_client_stats_inner(25);
+    }
+
+    fn sync_client_stats_for_report(&self) {
+        self.sync_client_stats_inner(0);
+    }
+
+    fn sync_client_stats_inner(&self, min_interval_ms: u64) {
+        if min_interval_ms > 0 {
+            let now = now_ms();
+            let due = self
+                .inner
+                .client_stats_sync_due_ms
+                .load(Ordering::Acquire);
+            if now < due {
+                return;
+            }
+            let next_due = now.saturating_add(min_interval_ms);
+            if self
+                .inner
+                .client_stats_sync_due_ms
+                .compare_exchange(due, next_due, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                return;
+            }
+        }
         let current = self.client().stats();
         let mut last = self
             .inner
@@ -4552,7 +4581,7 @@ impl ProxyService {
             }
         }
         let _ = self.client().invalidate_routes_from_meta_topology();
-        self.sync_client_stats();
+        self.sync_client_stats_throttled();
     }
 
     fn inc_bad_request(&self) {
