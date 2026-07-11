@@ -7807,17 +7807,25 @@ fn execute_on_shard(
                 };
             }
             cached_response(cache, CacheKey::hash(shard_id, &key, &field), || {
-                CommandResponse::Bytes {
-                    value: read_slot_index_value(
-                        cache,
-                        page_store,
-                        shard_id,
-                        shard,
-                        "hash",
-                        &key,
-                        Some(field.as_str()),
-                    ),
-                }
+                let value = shard.hashes.get(&key).map_or_else(
+                    || {
+                        read_slot_index_value(
+                            cache,
+                            page_store,
+                            shard_id,
+                            shard,
+                            "hash",
+                            &key,
+                            Some(field.as_str()),
+                        )
+                    },
+                    |fields| {
+                        fields.get(&field).and_then(|address| {
+                            read_page_bytes(cache, page_store, shard_id, address)
+                        })
+                    },
+                );
+                CommandResponse::Bytes { value }
             })
         }
         Command::HashMultiGet { key, fields } => {
@@ -7833,14 +7841,23 @@ fn execute_on_shard(
             }
             if fields.len() == 1 {
                 let value = fields.first().and_then(|field| {
-                    read_slot_index_value(
-                        cache,
-                        page_store,
-                        shard_id,
-                        shard,
-                        "hash",
-                        &key,
-                        Some(field.as_str()),
+                    shard.hashes.get(&key).map_or_else(
+                        || {
+                            read_slot_index_value(
+                                cache,
+                                page_store,
+                                shard_id,
+                                shard,
+                                "hash",
+                                &key,
+                                Some(field.as_str()),
+                            )
+                        },
+                        |entries| {
+                            entries.get(field).and_then(|address| {
+                                read_page_bytes(cache, page_store, shard_id, address)
+                            })
+                        },
                     )
                 });
                 return ExecuteOutcome {
@@ -8093,17 +8110,29 @@ fn execute_on_shard(
             increment,
         } => {
             remove_if_expired(cache, shard_id, shard, &key);
-            let current = read_slot_index_value(
-                cache,
-                page_store,
-                shard_id,
-                shard,
-                "hash",
-                &key,
-                Some(field.as_str()),
-            )
-            .and_then(|bytes| parse_i64(&bytes))
-            .unwrap_or_default();
+            let current = shard
+                .hashes
+                .get(&key)
+                .map_or_else(
+                    || {
+                        read_slot_index_value(
+                            cache,
+                            page_store,
+                            shard_id,
+                            shard,
+                            "hash",
+                            &key,
+                            Some(field.as_str()),
+                        )
+                    },
+                    |fields| {
+                        fields.get(&field).and_then(|address| {
+                            read_page_bytes(cache, page_store, shard_id, address)
+                        })
+                    },
+                )
+                .and_then(|bytes| parse_i64(&bytes))
+                .unwrap_or_default();
             let value = current.saturating_add(increment);
             if let Ok(address) = append_value(
                 cache,
