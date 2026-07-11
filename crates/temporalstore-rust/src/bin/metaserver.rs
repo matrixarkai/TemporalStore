@@ -1575,7 +1575,7 @@ impl MasterTableOptionsRequest {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct MasterCreateTableRequest {
-    #[serde(alias = "namespace_name")]
+    #[serde(alias = "namespace_name", alias = "namespace_")]
     namespace: String,
     #[serde(alias = "name")]
     table_name: String,
@@ -1633,7 +1633,7 @@ struct FeLegacyLocation {
 
 #[derive(Debug, serde::Deserialize)]
 struct MasterUpdateTableRequest {
-    #[serde(alias = "namespace_name")]
+    #[serde(alias = "namespace_name", alias = "namespace_")]
     namespace: String,
     #[serde(alias = "name")]
     table_name: String,
@@ -1654,7 +1654,7 @@ struct MasterUpdateTableRequest {
 #[allow(dead_code)]
 #[derive(Debug, serde::Deserialize)]
 struct MasterTableRequest {
-    #[serde(default, alias = "namespace_name")]
+    #[serde(default, alias = "namespace_name", alias = "namespace_")]
     namespace: String,
     #[serde(default, alias = "name")]
     table_name: String,
@@ -1688,7 +1688,7 @@ struct FeAddClusterRequest {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct QueryListPartitionRequest {
-    #[serde(default, alias = "namespace_name")]
+    #[serde(default, alias = "namespace_name", alias = "namespace_")]
     namespace: String,
     #[serde(default, alias = "table_name", alias = "name")]
     table: String,
@@ -1819,6 +1819,7 @@ struct RaftControlListMembershipResponse {
 #[allow(dead_code)]
 #[derive(Debug, serde::Deserialize)]
 struct MasterGetTableTopoRequest {
+    #[serde(alias = "namespace_name", alias = "namespace_")]
     namespace: String,
     table_name: String,
     #[serde(default)]
