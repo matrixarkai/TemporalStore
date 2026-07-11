@@ -70,6 +70,8 @@ struct RecordLogRequest {
     visibility_keys: Vec<String>,
     #[serde(default)]
     top_level_response: bool,
+    #[serde(default)]
+    compact_read_response: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -2845,8 +2847,6 @@ fn execute_record_log_request(
                 request.entries_compact,
                 request.entries_for_key,
             );
-            let mut records =
-                Vec::with_capacity(grouped_entries.iter().map(|(_, fields)| fields.len()).sum());
             let commands = grouped_entries
                 .iter()
                 .map(|(key, fields)| Command::HashMultiGet {
@@ -2871,6 +2871,19 @@ fn execute_record_log_request(
                     response.responses.len()
                 ));
             }
+            let single_group_compact_response =
+                request.compact_read_response && grouped_entries.len() == 1;
+            let record_count = grouped_entries.iter().map(|(_, fields)| fields.len()).sum();
+            let mut records = if single_group_compact_response {
+                Vec::new()
+            } else {
+                Vec::with_capacity(record_count)
+            };
+            let mut entries = if single_group_compact_response {
+                BTreeMap::new()
+            } else {
+                BTreeMap::default()
+            };
             for ((key, fields), item) in grouped_entries.into_iter().zip(response.responses) {
                 if !item.status.ok {
                     return Err(format!("{}: {}", item.status.code, item.status.message));
@@ -2887,18 +2900,28 @@ fn execute_record_log_request(
                         })
                         .transpose()?
                         .unwrap_or_default();
-                    records.push(HashReadRecord {
-                        key: key.clone(),
-                        field,
-                        value,
-                    });
+                    if single_group_compact_response {
+                        entries.insert(field, value);
+                    } else {
+                        records.push(HashReadRecord {
+                            key: key.clone(),
+                            field,
+                            value,
+                        });
+                    }
                 }
             }
-            RecordLogOutput {
-                count: Some(records.len()),
-                records,
-                ..empty_output(root)
+            let mut output = empty_output(root);
+            output.count = Some(record_count);
+            output.records = records;
+            output.entries = entries;
+            if single_group_compact_response {
+                output.extra.insert(
+                    "compact_read_response".to_string(),
+                    json!("single_hash_entries"),
+                );
             }
+            output
         }
         "hget" => value_output(
             read_bytes(
@@ -4327,6 +4350,7 @@ mod tests {
             record: None,
             visibility_keys: Vec::new(),
             top_level_response: false,
+            compact_read_response: false,
         }
     }
 
@@ -4575,6 +4599,41 @@ mod tests {
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].0, "raw-a");
         assert_eq!(groups[1].0, "raw-b");
+    }
+
+    #[test]
+    fn batch_hget_can_return_compact_entries_for_single_hash_key() {
+        let _guard = env_guard();
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+
+        let mut write = request("batch_hset");
+        write.key = "raw".to_string();
+        write.entries_for_key = vec![
+            CompactFieldEntry("0001".to_string(), "one".to_string()),
+            CompactFieldEntry("0002".to_string(), "two".to_string()),
+        ];
+        let engine = open_engine(&write).expect("engine");
+        execute_record_log_request(&engine, write, PathBuf::new()).expect("write batch");
+
+        let mut read = request("batch_hget");
+        read.key = "raw".to_string();
+        read.entries_for_key = vec![
+            CompactFieldEntry("0001".to_string(), String::new()),
+            CompactFieldEntry("0002".to_string(), String::new()),
+        ];
+        read.compact_read_response = true;
+        let output =
+            execute_record_log_request(&engine, read, PathBuf::new()).expect("read batch");
+
+        assert_eq!(output.count, Some(2));
+        assert!(output.records.is_empty());
+        assert_eq!(output.entries.get("0001").map(String::as_str), Some("one"));
+        assert_eq!(output.entries.get("0002").map(String::as_str), Some("two"));
+        assert_eq!(
+            output.extra.get("compact_read_response"),
+            Some(&json!("single_hash_entries"))
+        );
     }
 
     #[test]

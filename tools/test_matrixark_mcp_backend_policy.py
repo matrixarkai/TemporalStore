@@ -307,6 +307,48 @@ class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
         self.assertEqual(kwargs["entries_for_key"], [["0001", "one"], ["0002", "two"]])
         self.assertNotIn("entries_compact", kwargs)
 
+    def test_rust_bridge_expands_same_key_compact_batch_hget_response(self) -> None:
+        client = mcp.MatrixArkRustCliClient(
+            cli_path="matrixark_rust_proxy",
+            metaserver="127.0.0.1:18000",
+            namespace="ns",
+            table="table",
+            request_timeout_ms=10000,
+            io_timeout_ms=10000,
+        )
+        calls: list[tuple[str, dict]] = []
+
+        def fake_call_json(op: str, **kwargs):
+            calls.append((op, kwargs))
+            return {
+                "ok": True,
+                "count": len(kwargs.get("entries_for_key") or []),
+                "compact_read_response": "single_hash_entries",
+                "entries": {"0001": "one", "0002": "two"},
+            }
+
+        try:
+            client._call_json = fake_call_json  # type: ignore[method-assign]
+            records = client.batch_hget(
+                [
+                    {"key": "raw", "field": "0001"},
+                    {"key": "raw", "field": "0002"},
+                ]
+            )
+        finally:
+            client.close()
+
+        self.assertEqual(records, [
+            {"key": "raw", "field": "0001", "value": "one"},
+            {"key": "raw", "field": "0002", "value": "two"},
+        ])
+        self.assertEqual(len(calls), 1)
+        op, kwargs = calls[0]
+        self.assertEqual(op, "batch_hget")
+        self.assertEqual(kwargs["key"], "raw")
+        self.assertEqual(kwargs["entries_for_key"], [["0001", ""], ["0002", ""]])
+        self.assertTrue(kwargs["compact_read_response"])
+
     def test_rust_bridge_coalesces_concurrent_batch_hget_in_shared_process(self) -> None:
         old_env = {
             key: os.environ.get(key)
