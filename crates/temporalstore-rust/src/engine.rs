@@ -6234,11 +6234,14 @@ impl TemporalEngine {
         if request.commands.is_empty() {
             return None;
         }
-        if !request
-            .commands
-            .iter()
-            .all(|command| matches!(command, Command::HashMultiGet { .. }))
-        {
+        if !request.commands.iter().all(|command| {
+            matches!(
+                command,
+                Command::HashMultiGet { .. }
+                    | Command::SequenceBatchQuery { .. }
+                    | Command::IpsBatchQueryLast { .. }
+            )
+        }) {
             return None;
         }
         let shards = self.shards.read().expect("engine lock poisoned");
@@ -6260,30 +6263,98 @@ impl TemporalEngine {
         };
         let mut responses = Vec::with_capacity(request.commands.len());
         for command in &request.commands {
-            let Command::HashMultiGet { key, fields } = command else {
-                return None;
-            };
-            if shard
-                .expires_at_ms
-                .get(key)
-                .map(|expires_at| *expires_at <= now_ms())
-                .unwrap_or(false)
-            {
-                return None;
-            }
-            responses.push(ExecuteResponse {
-                status: Status::ok(),
-                response: CommandResponse::Values {
-                    values: read_hash_multi_values(
-                        &self.cache,
-                        &self.page_store,
-                        request.shard_id,
-                        shard,
+            match command {
+                Command::HashMultiGet { key, fields } => {
+                    if shard
+                        .expires_at_ms
+                        .get(key)
+                        .map(|expires_at| *expires_at <= now_ms())
+                        .unwrap_or(false)
+                    {
+                        return None;
+                    }
+                    responses.push(ExecuteResponse {
+                        status: Status::ok(),
+                        response: CommandResponse::Values {
+                            values: read_hash_multi_values(
+                                &self.cache,
+                                &self.page_store,
+                                request.shard_id,
+                                shard,
+                                key,
+                                fields,
+                            ),
+                        },
+                    });
+                }
+                Command::SequenceBatchQuery { queries } => {
+                    let mut groups = Vec::with_capacity(queries.len());
+                    for SequenceQuerySpec {
                         key,
-                        fields,
-                    ),
-                },
-            });
+                        start_ms,
+                        end_ms,
+                        count,
+                        filters,
+                    } in queries
+                    {
+                        if shard
+                            .expires_at_ms
+                            .get(key)
+                            .map(|expires_at| *expires_at <= now_ms())
+                            .unwrap_or(false)
+                        {
+                            return None;
+                        }
+                        groups.push((
+                            key.clone(),
+                            sequence_rows_in_range(
+                                &self.cache,
+                                &self.page_store,
+                                request.shard_id,
+                                shard,
+                                key,
+                                *start_ms,
+                                *end_ms,
+                                *count,
+                                filters,
+                            ),
+                        ));
+                    }
+                    responses.push(ExecuteResponse {
+                        status: Status::ok(),
+                        response: CommandResponse::SequenceRowGroups { groups },
+                    });
+                }
+                Command::IpsBatchQueryLast { keys, count } => {
+                    let mut groups = Vec::with_capacity(keys.len());
+                    for key in keys {
+                        if shard
+                            .expires_at_ms
+                            .get(key)
+                            .map(|expires_at| *expires_at <= now_ms())
+                            .unwrap_or(false)
+                        {
+                            return None;
+                        }
+                        groups.push((
+                            key.clone(),
+                            read_ips_points_last(
+                                &self.cache,
+                                &self.page_store,
+                                request.shard_id,
+                                shard,
+                                key,
+                                *count,
+                            ),
+                        ));
+                    }
+                    responses.push(ExecuteResponse {
+                        status: Status::ok(),
+                        response: CommandResponse::FeaturePointGroups { groups },
+                    });
+                }
+                _ => return None,
+            }
         }
         Some(BatchExecuteResponse {
             status: Status::ok(),
