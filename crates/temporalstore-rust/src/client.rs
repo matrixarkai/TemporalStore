@@ -5334,15 +5334,49 @@ impl TemporalStoreTable {
         }
 
         let table_options = self.table_options();
+        let total_commands = commands.len();
+        if total_commands <= 1 {
+            let write = commands.iter().any(is_write);
+            return self.batch_execute_single_shard_with_retry(
+                &BatchExecuteRequest {
+                    shard_id: self.shard_id,
+                    commands,
+                },
+                table_options.clone(),
+                write,
+            );
+        }
+
+        let first_shard = self.shard_id_for_command(&commands[0]);
         let mut groups: HashMap<ShardId, ShardGroup> =
             HashMap::with_capacity(table_options.shard_count as usize);
-        let total_commands = commands.len();
+        let mut has_write = false;
+        let mut all_single_shard = true;
         for (index, command) in commands.into_iter().enumerate() {
             let shard_id = self.shard_id_for_command(&command);
+            if shard_id != first_shard {
+                all_single_shard = false;
+            }
             let group = groups.entry(shard_id).or_default();
             group.indexes.push(index);
             group.has_write = group.has_write || is_write(&command);
             group.commands.push(command);
+            if group.has_write {
+                has_write = true;
+            }
+        }
+        if all_single_shard {
+            return self.batch_execute_single_shard_with_retry(
+                &BatchExecuteRequest {
+                    shard_id: first_shard,
+                    commands: groups
+                        .remove(&first_shard)
+                        .map(|group| group.commands)
+                        .unwrap_or_default(),
+                },
+                table_options,
+                has_write,
+            );
         }
 
         let mut responses: Vec<Option<ExecuteResponse>> = vec![None; total_commands];
