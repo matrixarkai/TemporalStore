@@ -514,9 +514,11 @@ impl TemporalEngine {
                 | Command::HashLen { .. }
                 | Command::SetMembers { .. }
                 | Command::FeatureQuery { .. }
+                | Command::FeatureAggQuery { .. }
                 | Command::SequenceQuery { .. }
                 | Command::IpsQueryLast { .. }
                 | Command::IpsQueryRange { .. }
+                | Command::IpsCount { .. }
         );
         if !read_command {
             return None;
@@ -754,6 +756,38 @@ impl TemporalEngine {
                     },
                 ),
             }),
+            Command::FeatureAggQuery {
+                key,
+                start_ms,
+                end_ms,
+                aggregator,
+                count,
+            } => {
+                if shard
+                    .expires_at_ms
+                    .get(key)
+                    .map(|expires_at| *expires_at <= now_ms())
+                    .unwrap_or(false)
+                {
+                    return None;
+                }
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::Aggregate {
+                        value: read_feature_aggregate(
+                            &self.cache,
+                            &self.page_store,
+                            request.shard_id,
+                            shard,
+                            key,
+                            *start_ms,
+                            *end_ms,
+                            aggregator,
+                            *count,
+                        ),
+                    },
+                })
+            }
             Command::SequenceQuery {
                 key,
                 start_ms,
@@ -835,6 +869,34 @@ impl TemporalEngine {
                             *start_ms,
                             *end_ms,
                             *count,
+                        ),
+                    },
+                })
+            }
+            Command::IpsCount {
+                key,
+                start_ms,
+                end_ms,
+            } => {
+                if shard
+                    .expires_at_ms
+                    .get(key)
+                    .map(|expires_at| *expires_at <= now_ms())
+                    .unwrap_or(false)
+                {
+                    return None;
+                }
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::Integer {
+                        value: read_ips_count_in_range(
+                            &self.cache,
+                            &self.page_store,
+                            request.shard_id,
+                            shard,
+                            key,
+                            *start_ms,
+                            *end_ms,
                         ),
                     },
                 })
@@ -8863,56 +8925,18 @@ fn execute_on_shard(
                     mutated,
                 };
             }
-            let refs = shard
-                .features
-                .get(&key)
-                .map(|series| {
-                    timestamp_page_refs_in_range(series, start_ms, end_ms, count.unwrap_or(5000))
-                })
-                .unwrap_or_default();
-            if is_feature_count_aggregator(&aggregator) {
-                let value = if shard.features.contains_key(&key) {
-                    refs.len()
-                } else {
-                    let addresses = slot_index_object_page_addresses(shard, "feature", &key);
-                    read_feature_points_from_pages_in_range(
-                        cache,
-                        page_store,
-                        shard_id,
-                        &addresses,
-                        start_ms,
-                        end_ms,
-                        count.unwrap_or(5000),
-                    )
-                    .len()
-                };
-                return ExecuteOutcome {
-                    response: CommandResponse::Aggregate {
-                        value: value as i64,
-                    },
-                    mutated,
-                };
-            }
-            let points = if shard.features.contains_key(&key) {
-                read_feature_points_cached_batch(cache, page_store, shard_id, &refs)
-            } else {
-                let addresses = slot_index_object_page_addresses(shard, "feature", &key);
-                read_feature_points_from_pages_in_range(
+            CommandResponse::Aggregate {
+                value: read_feature_aggregate(
                     cache,
                     page_store,
                     shard_id,
-                    &addresses,
+                    shard,
+                    &key,
                     start_ms,
                     end_ms,
-                    count.unwrap_or(5000),
-                )
-            };
-            let values = points
-                .into_iter()
-                .map(|point| point.value)
-                .collect::<Vec<_>>();
-            CommandResponse::Aggregate {
-                value: aggregate_feature_values(&values, &aggregator),
+                    &aggregator,
+                    count,
+                ),
             }
         }
         Command::SequenceAdd { key, rows } => {
@@ -9467,11 +9491,8 @@ fn execute_on_shard(
                     mutated,
                 };
             }
-            let value = shard
-                .ips
-                .get(&key)
-                .map(|series| series.range(start_ms..=end_ms).count() as i64)
-                .unwrap_or_default();
+            let value =
+                read_ips_count_in_range(cache, page_store, shard_id, shard, &key, start_ms, end_ms);
             CommandResponse::Integer { value }
         }
         Command::IpsQueryRangeWithOptions {
@@ -16346,6 +16367,61 @@ fn read_feature_points_in_range(
             read_feature_points_from_pages_in_range(
                 cache, page_store, shard_id, &addresses, start_ms, end_ms, limit,
             )
+        })
+}
+
+fn read_feature_aggregate(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    key: &str,
+    start_ms: u64,
+    end_ms: u64,
+    aggregator: &str,
+    count: Option<usize>,
+) -> i64 {
+    let limit = count.unwrap_or(5000);
+    if is_feature_count_aggregator(aggregator) {
+        return read_feature_points_in_range(
+            cache, page_store, shard_id, shard, "feature", key, start_ms, end_ms, limit,
+        )
+        .len() as i64;
+    }
+    let values = read_feature_points_in_range(
+        cache, page_store, shard_id, shard, "feature", key, start_ms, end_ms, limit,
+    )
+    .into_iter()
+    .map(|point| point.value)
+    .collect::<Vec<_>>();
+    aggregate_feature_values(&values, aggregator)
+}
+
+fn read_ips_count_in_range(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    key: &str,
+    start_ms: u64,
+    end_ms: u64,
+) -> i64 {
+    shard
+        .ips
+        .get(key)
+        .map(|series| series.range(start_ms..=end_ms).count() as i64)
+        .unwrap_or_else(|| {
+            let addresses = slot_index_object_page_addresses(shard, "ips", key);
+            read_feature_points_from_pages_in_range(
+                cache,
+                page_store,
+                shard_id,
+                &addresses,
+                start_ms,
+                end_ms,
+                usize::MAX,
+            )
+            .len() as i64
         })
 }
 
