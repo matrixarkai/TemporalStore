@@ -8011,12 +8011,18 @@ fn execute_on_shard(
                 };
             }
             cached_response(cache, CacheKey::set_members(shard_id, &key), || {
-                let members = read_slot_index_component_values(
-                    cache, page_store, shard_id, shard, "set", &key,
-                )
-                .into_iter()
-                .map(|(_, value)| value)
-                .collect();
+                let members = shard
+                    .sets
+                    .get(&key)
+                    .map(|members| members.keys().cloned().collect())
+                    .unwrap_or_else(|| {
+                        read_slot_index_component_values(
+                            cache, page_store, shard_id, shard, "set", &key,
+                        )
+                        .into_iter()
+                        .map(|(_, value)| value)
+                        .collect()
+                    });
                 CommandResponse::Members { members }
             })
         }
