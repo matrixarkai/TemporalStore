@@ -4594,21 +4594,54 @@ impl TemporalStoreTable {
                 compression_limit,
             )?;
 
-        let mut selected_refs = Vec::new();
+        let selected_capacity = if request.max_selected_refs == 0 {
+            cold_window_summaries.len().saturating_add(usize::from(overall_summary.is_some())).saturating_add(1)
+        } else {
+            request.max_selected_refs.min(cold_window_summaries.len().saturating_add(1))
+        };
+        let mut selected_refs = Vec::with_capacity(selected_capacity);
+        let mut remote_context_refs = Vec::with_capacity(selected_refs.capacity());
+        let mut used_context_tokens = 0u64;
+        let mut push_selected_ref = |ref_type: &'static str,
+                                   ref_hash: serde_json::Value,
+                                   node_hash: u64,
+                                   event_time_ms: u64,
+                                   text: String| {
+            let token_estimate = estimate_context_tokens(&text);
+            used_context_tokens = used_context_tokens.saturating_add(token_estimate);
+            let text_for_remote = text.clone();
+            selected_refs.push(serde_json::json!({
+                "ref_type": ref_type,
+                "ref_hash": ref_hash,
+                "node_hash": node_hash,
+                "event_time_ms": event_time_ms,
+                "score": 1.0,
+                "token_estimate": token_estimate,
+                "text": text,
+            }));
+            remote_context_refs.push(serde_json::json!({
+                "type": ref_type,
+                "ref_hash": ref_hash.clone(),
+                "node_hash": node_hash,
+                "score": 1.0,
+                "tokens": token_estimate,
+                "content": text_for_remote,
+            }));
+        };
         if let Some(summary) = overall_summary.as_ref() {
             if !summary.text.is_empty() {
-                selected_refs.push(serde_json::json!({
-                    "ref_type": "summary",
-                    "ref_hash": stable_key_hash(&format!(
-                        "summary:{}:{}:{}",
-                        tenant_hash, summary.node_hash, summary.level
-                    )),
-                    "node_hash": summary.node_hash,
-                    "event_time_ms": summary.valid_from_ms,
-                    "score": 1.0,
-                    "token_estimate": estimate_context_tokens(&summary.text),
-                    "text": summary.text,
-                }));
+                let summary_hash = stable_key_hash(&format!(
+                    "summary:{}:{}:{}",
+                    tenant_hash, summary.node_hash, summary.level
+                ))
+                .into();
+                push_selected_ref(
+                    "summary",
+                    summary_hash,
+                    summary.node_hash,
+                    summary.valid_from_ms,
+                    summary.text.clone(),
+                );
             }
         }
         for event in &cold_window_summaries {
@@ -4618,33 +4651,14 @@ impl TemporalStoreTable {
             if event.summary.is_empty() {
                 continue;
             }
-            selected_refs.push(serde_json::json!({
-                "ref_type": "compression_event",
-                "ref_hash": event.compression_id_hash,
-                "node_hash": event.node_hash,
-                "event_time_ms": event.compressed_time_ms,
-                "score": 1.0,
-                "token_estimate": estimate_context_tokens(&event.summary),
-                "text": event.summary,
-            }));
+            push_selected_ref(
+                "compression_event",
+                event.compression_id_hash.clone().into(),
+                event.node_hash,
+                event.compressed_time_ms,
+                event.summary.clone(),
+            );
         }
-        let remote_context_refs = selected_refs
-            .iter()
-            .map(|reference| {
-                serde_json::json!({
-                    "type": reference.get("ref_type").cloned().unwrap_or(Value::Null),
-                    "ref_hash": reference.get("ref_hash").cloned().unwrap_or(Value::Null),
-                    "node_hash": reference.get("node_hash").cloned().unwrap_or(Value::Null),
-                    "score": reference.get("score").cloned().unwrap_or(Value::Null),
-                    "tokens": reference.get("token_estimate").cloned().unwrap_or(Value::Null),
-                    "content": reference.get("text").cloned().unwrap_or(Value::Null),
-                })
-            })
-            .collect::<Vec<_>>();
-        let used_context_tokens = selected_refs
-            .iter()
-            .filter_map(|reference| reference.get("token_estimate")?.as_u64())
-            .sum::<u64>();
         let pack_ms = now_unix_ms().saturating_sub(query_started_ms);
 
         Ok(serde_json::json!({
@@ -4730,7 +4744,12 @@ impl TemporalStoreTable {
                 compression_limit,
             )?;
 
-        let mut records = Vec::new();
+        let mut records = Vec::with_capacity(
+            cold_window_summaries
+                .len()
+                .saturating_add(if overall_summary.is_some() { 1 } else { 0 })
+                .saturating_add(1),
+        );
         if let Some(node) = node {
             records.push(serde_json::json!({
                 "record_type": "context_entity",
@@ -5344,7 +5363,8 @@ impl TemporalStoreTable {
         };
 
         const MAX_SEQUENTIAL_BATCH_SHARD_GROUPS: usize = 2;
-        if groups.len() <= MAX_SEQUENTIAL_BATCH_SHARD_GROUPS {
+        const MIN_THREADED_BATCH_COMMANDS: usize = 32;
+        if groups.len() <= MAX_SEQUENTIAL_BATCH_SHARD_GROUPS || total_commands <= MIN_THREADED_BATCH_COMMANDS {
             for (shard_id, group) in groups {
                 let response = self.batch_execute_single_shard_with_retry(
                     &BatchExecuteRequest {
