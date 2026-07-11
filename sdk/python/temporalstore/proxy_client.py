@@ -667,10 +667,20 @@ def _flatten_command_response(response: Any) -> Dict[str, Any]:
     if kind == "members":
         return {"members": [_string_value(item) for item in response.get("members", [])]}
     if kind == "values":
+        values = list(response.get("values", []))
+        exists = response.get("exists")
+        if isinstance(exists, list):
+            return {
+                "values": [
+                    _string_value(value) if index < len(exists) and bool(exists[index]) else None
+                    for index, value in enumerate(values)
+                ],
+                "exists": [bool(item) for item in exists],
+            }
         return {
             "values": [
                 None if item is None else _string_value(item)
-                for item in response.get("values", [])
+                for item in values
             ]
         }
     if kind == "hash_entries":

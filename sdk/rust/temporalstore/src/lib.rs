@@ -2084,17 +2084,28 @@ impl ProxyClient {
     pub fn hmget(&self, key: &str, fields: &[&str]) -> Result<Vec<Option<String>>> {
         let body = self.proxy_service_body(key, &[("fields", serde_json::json!(fields))]);
         let response = self.proxy_service_execute("/ProxyService/HMGet", body)?;
-        let values = response
+        let raw_values = response
             .get("values")
             .and_then(|value| value.as_array())
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or_default();
+        let exists = response
+            .get("exists")
+            .and_then(|value| value.as_array())
+            .cloned();
+        let values = raw_values
             .into_iter()
-            .map(|value| {
-                if value.is_null() {
-                    None
-                } else {
+            .enumerate()
+            .map(|(index, value)| {
+                let present = exists
+                    .as_ref()
+                    .and_then(|items| items.get(index))
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(!value.is_null());
+                if present {
                     Some(json_byte_array_to_string(value))
+                } else {
+                    None
                 }
             })
             .collect();
