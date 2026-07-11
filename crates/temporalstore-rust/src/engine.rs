@@ -507,7 +507,9 @@ impl TemporalEngine {
     fn execute_read_only_fast_path(&self, request: &ExecuteRequest) -> Option<ExecuteResponse> {
         let read_command = matches!(
             request.command,
-            Command::StringGet { .. }
+            Command::CommonTtl { .. }
+                | Command::CommonExists { .. }
+                | Command::StringGet { .. }
                 | Command::HashGet { .. }
                 | Command::HashMultiGet { .. }
                 | Command::HashGetAll { .. }
@@ -534,6 +536,23 @@ impl TemporalEngine {
             });
         };
         match &request.command {
+            Command::CommonTtl { key } => {
+                read_only_ttl_ms(shard, key).map(|value| ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::Integer { value },
+                })
+            }
+            Command::CommonExists { key } => {
+                if associated_record_expired(shard, key, now_ms()) {
+                    return None;
+                }
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::Integer {
+                        value: if record_exists(shard, key) { 1 } else { 0 },
+                    },
+                })
+            }
             Command::StringGet { key } => {
                 if shard
                     .expires_at_ms
@@ -11273,6 +11292,36 @@ fn ttl_ms(cache: &MultiLayerCache, shard_id: ShardId, shard: &mut ShardState, ke
         }
     });
     min_ttl.unwrap_or(-1)
+}
+
+fn associated_record_expired(shard: &ShardState, key: &str, now: u64) -> bool {
+    let mut expired = false;
+    visit_associated_record_keys(key, |record_key| {
+        expired |= shard
+            .expires_at_ms
+            .get(record_key)
+            .map(|expires_at| *expires_at <= now)
+            .unwrap_or(false);
+    });
+    expired
+}
+
+fn read_only_ttl_ms(shard: &ShardState, key: &str) -> Option<i64> {
+    let now = now_ms();
+    if associated_record_expired(shard, key, now) {
+        return None;
+    }
+    if !record_exists(shard, key) {
+        return Some(-2);
+    }
+    let mut min_ttl = None;
+    visit_associated_record_keys(key, |record_key| {
+        if let Some(expires_at) = shard.expires_at_ms.get(record_key).copied() {
+            let ttl = expires_at.saturating_sub(now) as i64;
+            min_ttl = Some(min_ttl.map_or(ttl, |current: i64| current.min(ttl)));
+        }
+    });
+    Some(min_ttl.unwrap_or(-1))
 }
 
 fn select_expiry_cursor_window(
