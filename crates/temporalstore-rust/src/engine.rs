@@ -7749,16 +7749,29 @@ fn execute_on_shard(
                 };
             }
             cached_response(cache, CacheKey::string(shard_id, &key), || {
-                CommandResponse::Bytes {
-                    value: read_slot_index_value(
-                        cache, page_store, shard_id, shard, "string", &key, None,
-                    ),
-                }
+                let value = shard.strings.get(&key).map_or_else(
+                    || {
+                        read_slot_index_value(
+                            cache, page_store, shard_id, shard, "string", &key, None,
+                        )
+                    },
+                    |address| read_page_bytes(cache, page_store, shard_id, address),
+                );
+                CommandResponse::Bytes { value }
             })
         }
         Command::StringDelete { key } => {
-            mutated |= mark_slot_index_object_deleted(cache, shard_id, shard, &key);
-            mutated |= shard.strings.remove(&key).is_some();
+            let removed_live = shard.strings.remove(&key).is_some();
+            let has_index_refs = if removed_live {
+                true
+            } else {
+                ensure_slot_index_lookup_maps(shard);
+                shard.slot_index.object_key_lookup.contains_key(&key)
+            };
+            if has_index_refs {
+                mutated |= mark_slot_index_object_deleted(cache, shard_id, shard, &key);
+            }
+            mutated |= removed_live;
             let _ = cache.invalidate(&CacheKey::string(shard_id, &key));
             CommandResponse::Empty
         }
