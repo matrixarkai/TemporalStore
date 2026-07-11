@@ -3625,6 +3625,9 @@ impl ProxyService {
         commands: Vec<Command>,
     ) -> Result<(Status, Vec<ExecuteResponse>), Status> {
         let expected_len = commands.len();
+        if expected_len == 0 {
+            return Ok((Status::ok(), Vec::new()));
+        }
         if let Some(status) = self.check_admission_for_commands(&commands) {
             let response_status = Status::error(status.code, status.message);
             let response = ExecuteResponse {
@@ -3661,13 +3664,11 @@ impl ProxyService {
             list
         } else {
             status = batch_response.status.clone();
-            vec![
-                ExecuteResponse {
-                    status,
-                    response: CommandResponse::Empty,
-                };
-                expected_len
-            ]
+            let response = ExecuteResponse {
+                status: status.clone(),
+                response: CommandResponse::Empty,
+            };
+            vec![response; expected_len]
         };
         Ok((status, responses))
     }
