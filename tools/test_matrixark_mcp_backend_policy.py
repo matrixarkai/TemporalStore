@@ -7,6 +7,7 @@ import os
 import tempfile
 import threading
 import unittest
+from collections import OrderedDict
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -4576,6 +4577,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
     def test_rust_proxy_context_pack_requests_top_level_response(self) -> None:
         client = mcp.MatrixArkRustProxyClient.__new__(mcp.MatrixArkRustProxyClient)
         calls = []
+        client._context_pack_response_cache_enabled = False
 
         def fake_call_json(op: str, **kwargs: object) -> dict[str, object]:
             calls.append((op, kwargs))
@@ -4592,6 +4594,65 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(pack["context_pack"]["context_pack_id"], "pack-top-level")
         self.assertEqual(calls[0][0], "matrixark_retrieve_context_pack")
         self.assertTrue(calls[0][1]["top_level_response"])
+
+    def test_rust_proxy_context_pack_singleflight_collapses_concurrent_cache_miss(self) -> None:
+        client = mcp.MatrixArkRustProxyClient.__new__(mcp.MatrixArkRustProxyClient)
+        client._context_pack_response_cache_enabled = True
+        client._context_pack_response_cache_max_entries = 16
+        client._context_pack_response_cache_lock = threading.Lock()
+        client._context_pack_response_cache = OrderedDict()
+        client._context_pack_response_inflight = {}
+        client._context_pack_response_cache_hits_total = 0
+        client._context_pack_response_cache_misses_total = 0
+        client._context_pack_response_cache_updates_total = 0
+        client._context_pack_response_cache_invalidations_total = 0
+        client._context_pack_response_singleflight_waits_total = 0
+        client._context_pack_response_singleflight_wait_ms_total = 0.0
+        client._context_pack_response_singleflight_wait_ms_max = 0.0
+        client._metrics_lock = threading.Lock()
+        client._backpressure_timeout_s = 5.0
+        client.request_timeout_ms = 5000
+        calls = []
+        call_started = threading.Event()
+        release_call = threading.Event()
+
+        def fake_call_json(op: str, **kwargs: object) -> dict[str, object]:
+            calls.append((op, kwargs))
+            call_started.set()
+            self.assertTrue(release_call.wait(timeout=2.0))
+            return {"context_pack": {"context_pack_id": "singleflight-pack"}}
+
+        client._call_json = fake_call_json
+
+        results: list[dict[str, object]] = []
+        errors: list[BaseException] = []
+
+        def worker() -> None:
+            try:
+                results.append(
+                    client.matrixark_retrieve_context_pack(
+                        count_key="matrixark:test:record_count",
+                        record_hash_key="matrixark:test:records",
+                        shard_size=128,
+                        request={"query": "gpu", "scope": {}},
+                    )
+                )
+            except BaseException as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        self.assertTrue(call_started.wait(timeout=2.0))
+        release_call.set()
+        for thread in threads:
+            thread.join(timeout=2.0)
+
+        self.assertFalse(errors)
+        self.assertEqual(len(results), 4)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(client._context_pack_response_singleflight_waits_total, 3)
+        self.assertTrue(all(result["context_pack"]["context_pack_id"] == "singleflight-pack" for result in results))
 
     def test_production_retrieve_fails_closed_without_native_context_pack(self) -> None:
         mcp.MATRIXARK_MCP_PROFILE = "production"
