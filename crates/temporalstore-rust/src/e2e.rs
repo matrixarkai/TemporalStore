@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::mem;
 use std::sync::{Arc, Mutex, RwLock};
 
 use serde::{Deserialize, Serialize};
@@ -147,11 +148,9 @@ impl AsyncStorageJournal {
 
     pub fn flush_all(&self) -> usize {
         let mut inner = self.inner.lock().expect("async storage lock poisoned");
-        let mut flushed = 0;
-        while let Some(request) = inner.queued.pop_front() {
-            inner.flushed.push(request);
-            flushed += 1;
-        }
+        let mut queued = mem::take(&mut inner.queued);
+        let flushed = queued.len();
+        inner.flushed.append(&mut queued);
         flushed
     }
 
