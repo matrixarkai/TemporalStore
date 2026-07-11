@@ -11,19 +11,22 @@ pub(super) fn proxy_policy_rejection(
     if matches!(options.serving_mode, ProxyServingMode::NotServing) {
         return Some(Status::error("proxy_not_serving", "proxy is not serving"));
     }
-    let has_write = commands.iter().any(proxy_command_is_write);
-    if has_write
-        && matches!(
-            options.serving_mode,
-            ProxyServingMode::Readonly | ProxyServingMode::WriteDisabled
-        )
+
+    let drop_percent = options.drop_percent.min(100);
+    if options.serving_mode == ProxyServingMode::Serving && drop_percent == 0 {
+        return None;
+    }
+
+    if matches!(
+        options.serving_mode,
+        ProxyServingMode::Readonly | ProxyServingMode::WriteDisabled
+    ) && commands.iter().any(proxy_command_is_write)
     {
         return Some(Status::error(
             "proxy_write_disabled",
             "proxy is not accepting writes",
         ));
     }
-    let drop_percent = options.drop_percent.min(100);
     if drop_percent > 0
         && commands
             .iter()
@@ -57,5 +60,78 @@ pub(super) fn proxy_serving_mode_label(mode: ProxyServingMode) -> &'static str {
         ProxyServingMode::WriteDisabled => "write_disabled",
         ProxyServingMode::Degraded => "degraded",
         ProxyServingMode::NotServing => "not_serving",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{proxy_policy_rejection, ProxyOptions, ProxyServingMode};
+    use crate::types::{Command, Status};
+
+    #[test]
+    fn policy_no_drop_serving_fast_path_skips_rejection() {
+        let options = ProxyOptions {
+            serving_mode: ProxyServingMode::Serving,
+            drop_percent: 0,
+            ..ProxyOptions::default()
+        };
+        let mut commands = vec![
+            Command::StringGet {
+                key: "k".to_string(),
+            },
+            Command::StringSet {
+                key: "k2".to_string(),
+                value: b"v2".to_vec(),
+            },
+            Command::StringDelete {
+                key: "k3".to_string(),
+            },
+        ];
+        assert_eq!(proxy_policy_rejection(&options, &commands), None);
+        commands.push(Command::RiskFamilyQuery {
+            family: crate::types::RiskFamily::H,
+            key: "risk".to_string(),
+            start_ms: 1,
+            end_ms: 2,
+            aggregator: "avg".to_string(),
+        });
+        assert_eq!(proxy_policy_rejection(&options, &commands), None);
+        assert!(matches!(
+            proxy_policy_rejection(
+                &ProxyOptions {
+                    serving_mode: ProxyServingMode::Readonly,
+                    ..ProxyOptions::default()
+                },
+                &[Command::StringGet {
+                    key: "read-only".to_string()
+                }]
+            ),
+            None
+        ));
+        assert_eq!(
+            proxy_policy_rejection(
+                &ProxyOptions {
+                    serving_mode: ProxyServingMode::Readonly,
+                    ..ProxyOptions::default()
+                },
+                &[Command::StringSet {
+                    key: "write-blocked".to_string(),
+                    value: b"1".to_vec()
+                }]
+            ),
+            Some(Status::error("proxy_write_disabled", "proxy is not accepting writes"))
+        );
+        assert_eq!(
+            proxy_policy_rejection(
+                &ProxyOptions {
+                    serving_mode: ProxyServingMode::NotServing,
+                    ..ProxyOptions::default()
+                },
+                &[Command::StringGet {
+                    key: "anything".to_string()
+                }]
+            ),
+            Some(Status::error("proxy_not_serving", "proxy is not serving"))
+        );
     }
 }
