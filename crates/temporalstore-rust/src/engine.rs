@@ -492,7 +492,7 @@ impl TemporalEngine {
     fn execute_read_only_fast_path(&self, request: &ExecuteRequest) -> Option<ExecuteResponse> {
         let read_command = matches!(
             request.command,
-            Command::StringGet { .. } | Command::HashGetAll { .. }
+            Command::StringGet { .. } | Command::HashGet { .. } | Command::HashGetAll { .. }
         );
         if !read_command {
             return None;
@@ -541,6 +541,49 @@ impl TemporalEngine {
                                     )
                                 },
                             ),
+                        },
+                    ),
+                })
+            }
+            Command::HashGet { key, field } => {
+                if shard
+                    .expires_at_ms
+                    .get(key)
+                    .map(|expires_at| *expires_at <= now_ms())
+                    .unwrap_or(false)
+                {
+                    return None;
+                }
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: cached_response(
+                        &self.cache,
+                        CacheKey::hash(request.shard_id, key, field),
+                        || {
+                            let value = shard.hashes.get(key).map_or_else(
+                                || {
+                                    read_slot_index_value(
+                                        &self.cache,
+                                        &self.page_store,
+                                        request.shard_id,
+                                        shard,
+                                        "hash",
+                                        key,
+                                        Some(field.as_str()),
+                                    )
+                                },
+                                |fields| {
+                                    fields.get(field).and_then(|address| {
+                                        read_page_bytes(
+                                            &self.cache,
+                                            &self.page_store,
+                                            request.shard_id,
+                                            address,
+                                        )
+                                    })
+                                },
+                            );
+                            CommandResponse::Bytes { value }
                         },
                     ),
                 })
