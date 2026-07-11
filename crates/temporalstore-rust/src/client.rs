@@ -5353,43 +5353,45 @@ impl TemporalStoreTable {
             );
         }
 
-        let first_shard = self.shard_id_for_command(&commands[0]);
-        let mut groups: HashMap<ShardId, ShardGroup> =
-            HashMap::with_capacity(std::cmp::min(table_options.shard_count as usize, total_commands));
+        let mut first_shard = None;
+        let mut groups: HashMap<ShardId, ShardGroup> = HashMap::with_capacity(std::cmp::min(
+            table_options.shard_count as usize,
+            total_commands,
+        ));
         let mut has_write = false;
         let mut all_single_shard = true;
-        for command in commands.iter() {
-            has_write = has_write || is_write(command);
-            if self.shard_id_for_command(command) != first_shard {
+        for (index, command) in commands.into_iter().enumerate() {
+            let is_write_command = is_write(&command);
+            let shard_id = self.shard_id_for_command(&command);
+            if first_shard.is_none() {
+                first_shard = Some(shard_id);
+            } else if all_single_shard && shard_id != first_shard.unwrap() {
                 all_single_shard = false;
-                break;
             }
+            let group = groups.entry(shard_id).or_default();
+            group.indexes.push(index);
+            group.has_write = group.has_write || is_write_command;
+            group.commands.push(command);
+            has_write = has_write || is_write_command;
         }
+        let first_shard = first_shard.unwrap_or(self.shard_id);
         if all_single_shard {
+            let group = groups.remove(&first_shard).unwrap();
             return self.batch_execute_single_shard_with_retry(
                 &BatchExecuteRequest {
                     shard_id: first_shard,
-                    commands,
+                    commands: group.commands,
                 },
                 &table_options,
                 has_write,
             );
-        }
-        for (index, command) in commands.into_iter().enumerate() {
-            let shard_id = self.shard_id_for_command(&command);
-            let group = groups.entry(shard_id).or_default();
-            group.indexes.push(index);
-            group.has_write = group.has_write || is_write(&command);
-            group.commands.push(command);
-            if group.has_write {
-                has_write = true;
-            }
         }
         let mut group_entries: Vec<(ShardId, Vec<usize>, Vec<Command>, bool)> =
             Vec::with_capacity(groups.len());
         for (shard_id, group) in groups {
             group_entries.push((shard_id, group.indexes, group.commands, group.has_write));
         }
+        group_entries.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
 
         let mut responses: Vec<Option<ExecuteResponse>> = vec![None; total_commands];
         let mut append_responses = |indexes: Vec<usize>, mut response: BatchExecuteResponse| -> Option<Status> {
@@ -5450,8 +5452,18 @@ impl TemporalStoreTable {
         let max_worker_threads = max_worker_threads.max(1);
         let mut worker_jobs: Vec<Vec<(ShardId, Vec<usize>, Vec<Command>, bool)>> =
             vec![Vec::new(); max_worker_threads];
-        for (index, job) in group_entries.into_iter().enumerate() {
-            worker_jobs[index % max_worker_threads].push(job);
+        let mut worker_load = vec![0usize; max_worker_threads];
+        for job in group_entries {
+            let mut chosen_worker = 0usize;
+            let mut best_load = worker_load[0];
+            for (worker, load) in worker_load.iter().enumerate().skip(1) {
+                if *load < best_load {
+                    best_load = *load;
+                    chosen_worker = worker;
+                }
+            }
+            worker_load[chosen_worker] += job.1.len();
+            worker_jobs[chosen_worker].push(job);
         }
         let (tx, rx) = mpsc::channel();
         thread::scope(|scope| {
