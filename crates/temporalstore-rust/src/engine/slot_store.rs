@@ -227,6 +227,10 @@ pub(super) fn slot_index_page_address(
         return selected.map(|(_, address)| address);
     }
 
+    if !shard.slot_index.object_key_lookup.is_empty() {
+        return None;
+    }
+
     if let Some(routing_slots) = shard
         .slot_index
         .routing_slots_for_object_key(object_key)
@@ -321,6 +325,10 @@ pub(super) fn slot_index_component_page_addresses(
             }
         }
         return sorted_slot_component_refs(refs);
+    }
+
+    if !shard.slot_index.object_key_lookup.is_empty() {
+        return Vec::new();
     }
 
     let mut refs = Vec::new();
