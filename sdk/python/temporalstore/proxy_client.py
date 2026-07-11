@@ -65,8 +65,14 @@ class ProxyClient:
         self._post("/ProxyService/HSet", body)
 
     def batch_hset(self, entries: Iterable[Dict[str, Any]]) -> None:
+        grouped: Dict[str, Dict[str, str]] = {}
         for entry in entries:
-            self.hset(str(entry["key"]), str(entry["field"]), str(entry.get("value", "")))
+            key = str(entry["key"])
+            field = str(entry["field"])
+            value = str(entry.get("value", ""))
+            grouped.setdefault(key, {})[field] = value
+        for key, values in grouped.items():
+            self.hmset(key, values)
 
     def matrixark_batch_append_records(
         self,
