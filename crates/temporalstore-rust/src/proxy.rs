@@ -1289,8 +1289,10 @@ pub struct ProxyRiskHsetCommandRequest {
     pub value: Option<serde_json::Value>,
     #[serde(default, alias = "occur_time")]
     pub occur_time_seconds: u64,
-    #[serde(default, alias = "ttl")]
+    #[serde(default)]
     pub ttl_ms: u64,
+    #[serde(default, alias = "ttl")]
+    pub ttl_seconds: u64,
     #[serde(default)]
     pub precision_ms: Option<u64>,
     #[serde(default)]
@@ -1398,8 +1400,10 @@ pub struct ProxyRiskCpcSetCommandRequest {
     pub timestamp_ms: u64,
     #[serde(default, alias = "occur_time")]
     pub occur_time_seconds: u64,
-    #[serde(default, alias = "ttl")]
+    #[serde(default)]
     pub ttl_ms: u64,
+    #[serde(default, alias = "ttl")]
+    pub ttl_seconds: u64,
     #[serde(
         default,
         alias = "precision",
@@ -2561,13 +2565,14 @@ impl ProxyService {
             ("POST", "/ProxyService/RiskHset") | ("POST", "/RiskHset") => {
                 match parse_json::<ProxyRiskHsetCommandRequest>(&request.body) {
                     Ok(req) => {
+                        let ttl_ms = risk_hset_request_ttl_ms(&req);
                         let command = Command::RiskSet {
                             family: crate::types::RiskFamily::H,
                             key: req.key.clone(),
                             timestamp_ms: risk_hset_timestamp_ms(&req),
                             amount: risk_hset_amount(&req),
                             precision_ms: req.precision_ms,
-                            ttl_ms: risk_hset_ttl_ms(req.ttl_ms),
+                            ttl_ms,
                         };
                         json_response(
                             200,
@@ -2591,13 +2596,14 @@ impl ProxyService {
                 match parse_json::<ProxyRiskCpcSetCommandRequest>(&request.body) {
                     Ok(req) => {
                         let timestamp_ms = risk_cpc_set_timestamp_ms(&req);
+                        let ttl_ms = risk_cpc_set_ttl_ms(&req);
                         let command = Command::RiskSet {
                             family: RiskFamily::Cpc,
                             key: req.key,
                             timestamp_ms,
                             amount: req.values.len() as i64,
                             precision_ms: req.precision_ms,
-                            ttl_ms: risk_hset_ttl_ms(req.ttl_ms),
+                            ttl_ms,
                         };
                         json_response(
                             200,
@@ -4672,6 +4678,20 @@ fn risk_hset_ttl_ms(ttl_seconds: u64) -> Option<u64> {
     (ttl_seconds > 0).then(|| ttl_seconds.saturating_mul(1_000))
 }
 
+fn risk_hset_request_ttl_ms(request: &ProxyRiskHsetCommandRequest) -> Option<u64> {
+    if request.ttl_ms != 0 {
+        return Some(request.ttl_ms);
+    }
+    risk_hset_ttl_ms(request.ttl_seconds)
+}
+
+fn risk_cpc_set_ttl_ms(request: &ProxyRiskCpcSetCommandRequest) -> Option<u64> {
+    if request.ttl_ms != 0 {
+        return Some(request.ttl_ms);
+    }
+    risk_hset_ttl_ms(request.ttl_seconds)
+}
+
 fn risk_hset_amount(request: &ProxyRiskHsetCommandRequest) -> i64 {
     if request.amount != 0 {
         return request.amount;
@@ -6113,6 +6133,7 @@ mod tests {
                     value: None,
                     occur_time_seconds: 0,
                     ttl_ms: 0,
+                    ttl_seconds: 0,
                     precision_ms: None,
                     htype: ProxyRiskHType::Count,
                 })
