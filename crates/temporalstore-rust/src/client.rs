@@ -5268,16 +5268,16 @@ impl TemporalStoreTable {
             shard_id: self.shard_id,
             commands,
         };
-        self.batch_execute_single_shard_with_retry(&request, table_options, write)
+        self.batch_execute_single_shard_with_retry(&request, &table_options, write)
     }
 
     fn batch_execute_single_shard_with_retry(
         &self,
         request: &BatchExecuteRequest,
-        table_options: TableOptions,
+        table_options: &TableOptions,
         write: bool,
     ) -> Result<BatchExecuteResponse, ClientError> {
-        let retry_budget_attempts = retry_attempts_for(&table_options, write);
+        let retry_budget_attempts = retry_attempts_for(table_options, write);
         let mut attempt = 0;
         let mut topology_refresh_used = false;
         let response = loop {
@@ -5348,7 +5348,7 @@ impl TemporalStoreTable {
                     shard_id: self.shard_id,
                     commands,
                 },
-                table_options.clone(),
+                &table_options,
                 write,
             );
         }
@@ -5371,7 +5371,7 @@ impl TemporalStoreTable {
                     shard_id: first_shard,
                     commands,
                 },
-                table_options,
+                &table_options,
                 has_write,
             );
         }
@@ -5419,7 +5419,7 @@ impl TemporalStoreTable {
                         shard_id,
                         commands,
                     },
-                    table_options.clone(),
+                    &table_options,
                     has_write,
                 )?;
                 if let Some(status) = append_responses(indexes, response) {
@@ -5453,7 +5453,7 @@ impl TemporalStoreTable {
             for _ in 0..max_worker_threads {
                 let shared_groups = std::sync::Arc::clone(&shared_groups);
                 let tx = tx.clone();
-                let table_options = table_options.clone();
+                let table_options = &table_options;
                 scope.spawn(move || {
                     loop {
                         let job = {
@@ -5469,7 +5469,7 @@ impl TemporalStoreTable {
                                         shard_id,
                                         commands,
                                     },
-                                    table_options.clone(),
+                                    table_options,
                                     has_write,
                                 );
                                 let _ = tx.send((indexes, result));
