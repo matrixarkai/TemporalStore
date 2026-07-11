@@ -461,6 +461,19 @@ class _Native:
             ctypes.POINTER(ctypes.c_void_p),
         ]
         lib.temporalstore_add_sequence_feature_rows.restype = ctypes.c_int
+        self.has_add_sequence_feature_rows_with_policy = hasattr(
+            lib, "temporalstore_add_sequence_feature_rows_with_policy"
+        )
+        if self.has_add_sequence_feature_rows_with_policy:
+            lib.temporalstore_add_sequence_feature_rows_with_policy.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_char_p,
+                ctypes.POINTER(_CSequenceFeatureRow),
+                ctypes.c_size_t,
+                ctypes.c_int,
+                ctypes.POINTER(ctypes.c_void_p),
+            ]
+            lib.temporalstore_add_sequence_feature_rows_with_policy.restype = ctypes.c_int
         lib.temporalstore_query_sequence_feature_rows.argtypes = [
             ctypes.c_void_p,
             ctypes.c_char_p,
@@ -970,6 +983,14 @@ class Client:
             self._native.lib.temporalstore_feature_point_array_free(ctypes.byref(out))
 
     def add_sequence_feature_rows(self, key: str, rows: Iterable[SequenceFeatureRow]) -> None:
+        self.add_sequence_feature_rows_with_policy(key, rows, FeatureWritePolicy.UPSERT)
+
+    def add_sequence_feature_rows_with_policy(
+        self,
+        key: str,
+        rows: Iterable[SequenceFeatureRow],
+        policy: FeatureWritePolicy = FeatureWritePolicy.UPSERT,
+    ) -> None:
         values = list(rows)
         array_type = _CSequenceFeatureRow * len(values)
         c_rows = array_type(
@@ -981,13 +1002,25 @@ class Client:
             ]
         )
         error = ctypes.c_void_p()
-        code = self._native.lib.temporalstore_add_sequence_feature_rows(
-            self._handle,
-            _encode(key),
-            _optional_pointer(c_rows, _CSequenceFeatureRow),
-            len(values),
-            ctypes.byref(error),
-        )
+        if self._native.has_add_sequence_feature_rows_with_policy:
+            code = self._native.lib.temporalstore_add_sequence_feature_rows_with_policy(
+                self._handle,
+                _encode(key),
+                _optional_pointer(c_rows, _CSequenceFeatureRow),
+                len(values),
+                int(policy),
+                ctypes.byref(error),
+            )
+        elif int(policy) == int(FeatureWritePolicy.UPSERT):
+            code = self._native.lib.temporalstore_add_sequence_feature_rows(
+                self._handle,
+                _encode(key),
+                _optional_pointer(c_rows, _CSequenceFeatureRow),
+                len(values),
+                ctypes.byref(error),
+            )
+        else:
+            raise TemporalStoreError(0, "native library does not expose sequence write policy")
         self._native.check(code, error)
 
     def query_sequence_feature_rows(

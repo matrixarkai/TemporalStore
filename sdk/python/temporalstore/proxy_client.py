@@ -278,8 +278,17 @@ class ProxyClient:
         return int(data.get("value", 0))
 
     def add_sequence_feature_rows(self, key: str, rows: Iterable[SequenceFeatureRow]) -> None:
+        self.add_sequence_feature_rows_with_policy(key, rows, FeatureWritePolicy.UPSERT)
+
+    def add_sequence_feature_rows_with_policy(
+        self,
+        key: str,
+        rows: Iterable[SequenceFeatureRow],
+        policy: FeatureWritePolicy = FeatureWritePolicy.UPSERT,
+    ) -> None:
         body = self._key_body(key)
         body["rows"] = [_sequence_row_body(row) for row in rows]
+        body["policy"] = int(policy)
         self._post("/ProxyService/SequenceAdd", body)
 
     def query_sequence_feature_rows(
