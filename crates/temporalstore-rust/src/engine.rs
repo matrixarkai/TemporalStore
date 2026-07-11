@@ -7679,16 +7679,25 @@ fn execute_on_shard(
         } => {
             remove_if_expired(cache, shard_id, shard, &key);
             let old_address = shard.strings.get(&key);
-            let old_value = if return_old {
+            let live_old_value = if return_old {
                 old_address
                     .and_then(|address| read_page_bytes(cache, page_store, shard_id, address))
             } else {
                 None
             };
-            let exists = if return_old {
-                old_value.is_some()
+            let needs_index_probe = old_address.is_none()
+                && (return_old || !matches!(condition, StringSetCondition::Always));
+            let indexed_old_value = if needs_index_probe {
+                read_slot_index_value(cache, page_store, shard_id, shard, "string", &key, None)
             } else {
-                old_address.is_some()
+                None
+            };
+            let exists =
+                old_address.is_some() || live_old_value.is_some() || indexed_old_value.is_some();
+            let old_value = if return_old {
+                live_old_value.or(indexed_old_value)
+            } else {
+                None
             };
             let should_set = match condition {
                 StringSetCondition::Always => true,
