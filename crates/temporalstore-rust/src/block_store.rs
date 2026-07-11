@@ -992,12 +992,18 @@ impl LocalBlockStore {
             return finalize_optional_read_results(results);
         }
         if duplicate_groups.len() < addresses.len() {
-            let unique_addresses = duplicate_groups.keys().cloned().collect::<Vec<_>>();
+            let unique_entries = duplicate_groups
+                .iter()
+                .map(|(address, indexes)| (address, indexes.clone()))
+                .collect::<Vec<_>>();
+            let unique_addresses = unique_entries
+                .iter()
+                .map(|(address, _)| *address)
+                .collect::<Vec<_>>();
             let unique_results =
-                self.read_batch_with_cache_policy_deduped(&unique_addresses, no_cache_fill);
+                self.read_batch_with_cache_policy_deduped_refs(&unique_addresses, no_cache_fill);
             let mut results = empty_optional_read_results(addresses.len());
-            for (address, read_result) in unique_addresses.into_iter().zip(unique_results) {
-                let indexes = duplicate_groups.remove(&address).unwrap_or_default();
+            for ((_, indexes), read_result) in unique_entries.into_iter().zip(unique_results) {
                 match read_result {
                     Ok(bytes) => fill_duplicate_read_success(&mut results, indexes, bytes),
                     Err(err) => {
@@ -1025,6 +1031,15 @@ impl LocalBlockStore {
         addresses: &[BlockAddress],
         no_cache_fill: bool,
     ) -> Vec<Result<Vec<u8>, BlockStoreError>> {
+        let address_refs = addresses.iter().collect::<Vec<_>>();
+        self.read_batch_with_cache_policy_deduped_refs(&address_refs, no_cache_fill)
+    }
+
+    fn read_batch_with_cache_policy_deduped_refs(
+        &self,
+        addresses: &[&BlockAddress],
+        no_cache_fill: bool,
+    ) -> Vec<Result<Vec<u8>, BlockStoreError>> {
         let root = {
             let inner = self.inner.lock().expect("block store lock poisoned");
             inner.root.clone()
@@ -1036,7 +1051,11 @@ impl LocalBlockStore {
 
         let mut files = HashMap::<u64, SegmentReadHandle>::with_capacity(addresses.len().min(64));
         let mut results = (0..addresses.len()).map(|_| None).collect::<Vec<_>>();
-        let mut read_order = addresses.iter().enumerate().collect::<Vec<_>>();
+        let mut read_order = addresses
+            .iter()
+            .enumerate()
+            .map(|(index, address)| (index, *address))
+            .collect::<Vec<_>>();
         read_order.sort_by(|(_, left), (_, right)| {
             left.page_segment_id
                 .cmp(&right.page_segment_id)
