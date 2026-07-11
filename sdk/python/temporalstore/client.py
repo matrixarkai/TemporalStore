@@ -24,6 +24,13 @@ class FeatureFilterOp(IntEnum):
     LESS_OR_EQUAL = 5
 
 
+class FeatureWritePolicy(IntEnum):
+    UPSERT = 0
+    BLOCK = 1
+    FIRST = 2
+    UPDATE = 3
+
+
 class RiskPrecision(IntEnum):
     ONE_SECOND = 0
     FIVE_SECONDS = 1
@@ -421,6 +428,19 @@ class _Native:
             ctypes.POINTER(ctypes.c_void_p),
         ]
         lib.temporalstore_add_feature_points.restype = ctypes.c_int
+        self.has_add_feature_points_with_policy = hasattr(
+            lib, "temporalstore_add_feature_points_with_policy"
+        )
+        if self.has_add_feature_points_with_policy:
+            lib.temporalstore_add_feature_points_with_policy.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_char_p,
+                ctypes.POINTER(_CFeaturePoint),
+                ctypes.c_size_t,
+                ctypes.c_int,
+                ctypes.POINTER(ctypes.c_void_p),
+            ]
+            lib.temporalstore_add_feature_points_with_policy.restype = ctypes.c_int
         lib.temporalstore_query_feature_points_with_filters.argtypes = [
             ctypes.c_void_p,
             ctypes.c_char_p,
@@ -879,6 +899,14 @@ class Client:
             self._native.lib.temporalstore_string_array_free(ctypes.byref(out))
 
     def add_feature_points(self, key: str, points: Iterable[FeaturePoint]) -> None:
+        self.add_feature_points_with_policy(key, points, FeatureWritePolicy.UPSERT)
+
+    def add_feature_points_with_policy(
+        self,
+        key: str,
+        points: Iterable[FeaturePoint],
+        policy: FeatureWritePolicy = FeatureWritePolicy.UPSERT,
+    ) -> None:
         values = list(points)
         value_strings = [_encode(point.value) for point in values]
         array_type = _CFeaturePoint * len(values)
@@ -886,13 +914,25 @@ class Client:
             *[_CFeaturePoint(point.timestamp, value_strings[i]) for i, point in enumerate(values)]
         )
         error = ctypes.c_void_p()
-        code = self._native.lib.temporalstore_add_feature_points(
-            self._handle,
-            _encode(key),
-            _optional_pointer(c_points, _CFeaturePoint),
-            len(values),
-            ctypes.byref(error),
-        )
+        if self._native.has_add_feature_points_with_policy:
+            code = self._native.lib.temporalstore_add_feature_points_with_policy(
+                self._handle,
+                _encode(key),
+                _optional_pointer(c_points, _CFeaturePoint),
+                len(values),
+                int(policy),
+                ctypes.byref(error),
+            )
+        elif int(policy) == int(FeatureWritePolicy.UPSERT):
+            code = self._native.lib.temporalstore_add_feature_points(
+                self._handle,
+                _encode(key),
+                _optional_pointer(c_points, _CFeaturePoint),
+                len(values),
+                ctypes.byref(error),
+            )
+        else:
+            raise TemporalStoreError(0, "native library does not expose feature write policy")
         self._native.check(code, error)
 
     def query_feature_points(
