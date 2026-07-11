@@ -1786,32 +1786,45 @@ impl DataNodeRuntime {
     }
 
     pub fn execute(&self, request: ExecuteRequest) -> ExecuteResponse {
+        let ExecuteRequest { shard_id, command } = request;
+        let should_mark_dirty = is_write_command(&command);
+        let command_key = command_key(&command).map(str::to_string);
         if let Err(status) = validate_foreground_write_allowed_inner(
             &self.inner,
-            request.shard_id,
-            std::slice::from_ref(&request.command),
+            shard_id,
+            std::slice::from_ref(&command),
         ) {
             return ExecuteResponse {
                 status,
                 response: CommandResponse::Empty,
             };
         }
-        let response = self.inner.engine.execute(request.clone());
-        if response.status.ok && is_write_command(&request.command) {
+        let response = self.inner.engine.execute(ExecuteRequest {
+            shard_id,
+            command,
+        });
+        if response.status.ok && should_mark_dirty {
             mark_dirty(
                 &self.inner.dirty,
-                request.shard_id,
-                command_key(&request.command),
+                shard_id,
+                command_key.as_deref(),
             );
         }
         response
     }
 
     pub fn execute_checked(&self, request: CheckedExecuteRequest) -> CheckedExecuteResponse {
+        let CheckedExecuteRequest {
+            shard_id,
+            load_version,
+            command,
+        } = request;
+        let should_mark_dirty = is_write_command(&command);
+        let command_key = command_key(&command).map(str::to_string);
         if let Err(status) = validate_foreground_write_allowed_inner(
             &self.inner,
-            request.shard_id,
-            std::slice::from_ref(&request.command),
+            shard_id,
+            std::slice::from_ref(&command),
         ) {
             return CheckedExecuteResponse {
                 status: status.clone(),
@@ -1821,35 +1834,51 @@ impl DataNodeRuntime {
                 },
             };
         }
-        let response = self.inner.engine.execute_checked(request.clone());
-        if response.status.ok && is_write_command(&request.command) {
+        let response = self.inner.engine.execute_checked(CheckedExecuteRequest {
+            shard_id,
+            load_version,
+            command,
+        });
+        if response.status.ok && should_mark_dirty {
             mark_dirty(
                 &self.inner.dirty,
-                request.shard_id,
-                command_key(&request.command),
+                shard_id,
+                command_key.as_deref(),
             );
         }
         response
     }
 
     pub fn batch_execute(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
+        let BatchExecuteRequest { shard_id, commands } = request;
+        let command_metadata = commands
+            .iter()
+            .map(|command| (is_write_command(command), command_key(command).map(str::to_string)))
+            .collect::<Vec<_>>();
         if let Err(status) = validate_foreground_write_allowed_inner(
             &self.inner,
-            request.shard_id,
-            &request.commands,
+            shard_id,
+            &commands,
         ) {
             return BatchExecuteResponse {
                 status,
                 responses: Vec::new(),
             };
         }
-        let response = self.inner.engine.batch_execute(request.clone());
-        mark_dirty_for_successful_commands(
-            &self.inner.dirty,
-            request.shard_id,
-            &request.commands,
-            &response.responses,
-        );
+        let response = self.inner.engine.batch_execute(BatchExecuteRequest {
+            shard_id,
+            commands,
+        });
+        for (is_write, key) in command_metadata
+            .iter()
+            .zip(response.responses.iter())
+            .filter(|((_, _), response)| response.status.ok)
+            .map(|((is_write, key), _)| (is_write, key.as_deref()))
+        {
+            if *is_write {
+                mark_dirty(&self.inner.dirty, shard_id, key);
+            }
+        }
         response
     }
 
@@ -1857,10 +1886,19 @@ impl DataNodeRuntime {
         &self,
         request: CheckedBatchExecuteRequest,
     ) -> CheckedBatchExecuteResponse {
+        let CheckedBatchExecuteRequest {
+            shard_id,
+            load_version,
+            commands,
+        } = request;
+        let command_metadata = commands
+            .iter()
+            .map(|command| (is_write_command(command), command_key(command).map(str::to_string)))
+            .collect::<Vec<_>>();
         if let Err(status) = validate_foreground_write_allowed_inner(
             &self.inner,
-            request.shard_id,
-            &request.commands,
+            shard_id,
+            &commands,
         ) {
             return CheckedBatchExecuteResponse {
                 status: status.clone(),
@@ -1870,14 +1908,22 @@ impl DataNodeRuntime {
                 },
             };
         }
-        let response = self.inner.engine.batch_execute_checked(request.clone());
+        let response = self.inner.engine.batch_execute_checked(CheckedBatchExecuteRequest {
+            shard_id,
+            load_version,
+            commands,
+        });
         if response.status.ok {
-            mark_dirty_for_successful_commands(
-                &self.inner.dirty,
-                request.shard_id,
-                &request.commands,
-                &response.response.responses,
-            );
+            for (is_write, key) in command_metadata
+                .iter()
+                .zip(response.response.responses.iter())
+                .filter(|((_, _), response)| response.status.ok)
+                .map(|((is_write, key), _)| (is_write, key.as_deref()))
+            {
+                if *is_write {
+                    mark_dirty(&self.inner.dirty, shard_id, key);
+                }
+            }
         }
         response
     }
