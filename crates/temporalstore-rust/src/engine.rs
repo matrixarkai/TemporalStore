@@ -8174,16 +8174,20 @@ fn execute_on_shard(
             }
         }
         Command::HashDelete { key, field } => {
-            mutated |= mark_slot_index_page_deleted(
-                cache,
-                shard_id,
-                shard,
-                "hash",
-                &key,
-                Some(field.as_str()),
-            );
-            if let Some(fields) = shard.hashes.get_mut(&key) {
-                mutated |= fields.remove(&field).is_some();
+            let should_delete_from_index = shard
+                .hashes
+                .get_mut(&key)
+                .map(|fields| fields.remove(&field).is_some())
+                .unwrap_or(true);
+            if should_delete_from_index {
+                mutated |= mark_slot_index_page_deleted(
+                    cache,
+                    shard_id,
+                    shard,
+                    "hash",
+                    &key,
+                    Some(field.as_str()),
+                );
             }
             invalidate_if_cached(cache, CacheKey::hash(shard_id, &key, &field));
             CommandResponse::Empty
@@ -8253,16 +8257,20 @@ fn execute_on_shard(
         }
         Command::SetRemove { key, member } => {
             let member_component = hex::encode(&member);
-            mutated |= mark_slot_index_page_deleted(
-                cache,
-                shard_id,
-                shard,
-                "set",
-                &key,
-                Some(&member_component),
-            );
-            if let Some(set) = shard.sets.get_mut(&key) {
-                mutated |= set.remove(&member).is_some();
+            let should_delete_from_index = shard
+                .sets
+                .get_mut(&key)
+                .map(|set| set.remove(&member).is_some())
+                .unwrap_or(true);
+            if should_delete_from_index {
+                mutated |= mark_slot_index_page_deleted(
+                    cache,
+                    shard_id,
+                    shard,
+                    "set",
+                    &key,
+                    Some(&member_component),
+                );
             }
             let _ = cache.invalidate_record(shard_id, "set", &key);
             CommandResponse::Empty
