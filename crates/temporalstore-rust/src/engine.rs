@@ -513,6 +513,10 @@ impl TemporalEngine {
                 | Command::HashGetAll { .. }
                 | Command::HashLen { .. }
                 | Command::SetMembers { .. }
+                | Command::FeatureQuery { .. }
+                | Command::SequenceQuery { .. }
+                | Command::IpsQueryLast { .. }
+                | Command::IpsQueryRange { .. }
         );
         if !read_command {
             return None;
@@ -723,6 +727,116 @@ impl TemporalEngine {
                             ),
                         },
                     ),
+                })
+            }
+            Command::FeatureQuery {
+                key,
+                start_ms,
+                end_ms,
+                count,
+            } => Some(ExecuteResponse {
+                status: Status::ok(),
+                response: cached_response(
+                    &self.cache,
+                    CacheKey::feature_query(request.shard_id, key, *start_ms, *end_ms, *count),
+                    || CommandResponse::FeaturePoints {
+                        points: read_feature_points_in_range(
+                            &self.cache,
+                            &self.page_store,
+                            request.shard_id,
+                            shard,
+                            "feature",
+                            key,
+                            *start_ms,
+                            *end_ms,
+                            count.unwrap_or(5000),
+                        ),
+                    },
+                ),
+            }),
+            Command::SequenceQuery {
+                key,
+                start_ms,
+                end_ms,
+                count,
+                filters,
+            } => {
+                if shard
+                    .expires_at_ms
+                    .get(key)
+                    .map(|expires_at| *expires_at <= now_ms())
+                    .unwrap_or(false)
+                {
+                    return None;
+                }
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::SequenceRows {
+                        rows: sequence_rows_in_range(
+                            &self.cache,
+                            &self.page_store,
+                            request.shard_id,
+                            shard,
+                            key,
+                            *start_ms,
+                            *end_ms,
+                            *count,
+                            filters,
+                        ),
+                    },
+                })
+            }
+            Command::IpsQueryLast { key, count } => {
+                if shard
+                    .expires_at_ms
+                    .get(key)
+                    .map(|expires_at| *expires_at <= now_ms())
+                    .unwrap_or(false)
+                {
+                    return None;
+                }
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::FeaturePoints {
+                        points: read_ips_points_last(
+                            &self.cache,
+                            &self.page_store,
+                            request.shard_id,
+                            shard,
+                            key,
+                            *count,
+                        ),
+                    },
+                })
+            }
+            Command::IpsQueryRange {
+                key,
+                start_ms,
+                end_ms,
+                count,
+            } => {
+                if shard
+                    .expires_at_ms
+                    .get(key)
+                    .map(|expires_at| *expires_at <= now_ms())
+                    .unwrap_or(false)
+                {
+                    return None;
+                }
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::FeaturePoints {
+                        points: ips_points_in_range(
+                            &self.cache,
+                            &self.page_store,
+                            request.shard_id,
+                            shard,
+                            key,
+                            *start_ms,
+                            *end_ms,
+                            *count,
+                        ),
+                    },
                 })
             }
             _ => None,
@@ -8609,34 +8723,17 @@ fn execute_on_shard(
             cache,
             CacheKey::feature_query(shard_id, &key, start_ms, end_ms, count),
             || {
-                let points = shard
-                    .features
-                    .get(&key)
-                    .map(|series| {
-                        // feature_append_keeps_oversized_single_timestamped_value_readable:
-                        // range queries rehydrate each timestamp through the packed page
-                        // reader, so a large single timestamped value remains readable
-                        // when it occupies its own page.
-                        let refs = timestamp_page_refs_in_range(
-                            series,
-                            start_ms,
-                            end_ms,
-                            count.unwrap_or(5000),
-                        );
-                        read_feature_points_cached_batch(cache, page_store, shard_id, &refs)
-                    })
-                    .unwrap_or_else(|| {
-                        let addresses = slot_index_object_page_addresses(shard, "feature", &key);
-                        read_feature_points_from_pages_in_range(
-                            cache,
-                            page_store,
-                            shard_id,
-                            &addresses,
-                            start_ms,
-                            end_ms,
-                            count.unwrap_or(5000),
-                        )
-                    });
+                let points = read_feature_points_in_range(
+                    cache,
+                    page_store,
+                    shard_id,
+                    shard,
+                    "feature",
+                    &key,
+                    start_ms,
+                    end_ms,
+                    count.unwrap_or(5000),
+                );
                 CommandResponse::FeaturePoints { points }
             },
         ),
@@ -9273,19 +9370,7 @@ fn execute_on_shard(
                     mutated,
                 };
             }
-            let points = shard
-                .ips
-                .get(&key)
-                .map(|series| {
-                    let refs = timestamp_page_refs_last(series, count);
-                    read_feature_points_cached_batch(cache, page_store, shard_id, &refs)
-                })
-                .unwrap_or_else(|| {
-                    let addresses = slot_index_object_page_addresses(shard, "ips", &key);
-                    read_feature_points_from_pages_last(
-                        cache, page_store, shard_id, &addresses, count,
-                    )
-                });
+            let points = read_ips_points_last(cache, page_store, shard_id, shard, &key, count);
             CommandResponse::FeaturePoints { points }
         }
         Command::IpsQueryRange {
@@ -9315,19 +9400,8 @@ fn execute_on_shard(
                         mutated = true;
                         return (key, Vec::new());
                     }
-                    let points = shard
-                        .ips
-                        .get(&key)
-                        .map(|series| {
-                            let refs = timestamp_page_refs_last(series, count);
-                            read_feature_points_cached_batch(cache, page_store, shard_id, &refs)
-                        })
-                        .unwrap_or_else(|| {
-                            let addresses = slot_index_object_page_addresses(shard, "ips", &key);
-                            read_feature_points_from_pages_last(
-                                cache, page_store, shard_id, &addresses, count,
-                            )
-                        });
+                    let points =
+                        read_ips_points_last(cache, page_store, shard_id, shard, &key, count);
                     (key, points)
                 })
                 .collect();
@@ -16242,6 +16316,57 @@ fn read_set_members(
                 .into_iter()
                 .map(|(_, value)| value)
                 .collect()
+        })
+}
+
+fn read_feature_points_in_range(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    model_id: &str,
+    key: &str,
+    start_ms: u64,
+    end_ms: u64,
+    limit: usize,
+) -> Vec<FeaturePoint> {
+    let series = match model_id {
+        "feature" => shard.features.get(key),
+        "sequence" => shard.sequences.get(key),
+        "ips" => shard.ips.get(key),
+        _ => None,
+    };
+    series
+        .map(|series| {
+            let refs = timestamp_page_refs_in_range(series, start_ms, end_ms, limit);
+            read_feature_points_cached_batch(cache, page_store, shard_id, &refs)
+        })
+        .unwrap_or_else(|| {
+            let addresses = slot_index_object_page_addresses(shard, model_id, key);
+            read_feature_points_from_pages_in_range(
+                cache, page_store, shard_id, &addresses, start_ms, end_ms, limit,
+            )
+        })
+}
+
+fn read_ips_points_last(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    key: &str,
+    count: usize,
+) -> Vec<FeaturePoint> {
+    shard
+        .ips
+        .get(key)
+        .map(|series| {
+            let refs = timestamp_page_refs_last(series, count);
+            read_feature_points_cached_batch(cache, page_store, shard_id, &refs)
+        })
+        .unwrap_or_else(|| {
+            let addresses = slot_index_object_page_addresses(shard, "ips", key);
+            read_feature_points_from_pages_last(cache, page_store, shard_id, &addresses, count)
         })
 }
 
