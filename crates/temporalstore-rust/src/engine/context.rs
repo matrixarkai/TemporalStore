@@ -15,7 +15,7 @@ use super::packed_pages::{
     decode_feature_page_strict, read_feature_point_cold_with_cache_policy, ColdScanPackedPageCache,
 };
 use super::state::PackedFeaturePageDecode;
-use super::{read_page_bytes_batch, stable_object_hash, ShardState};
+use super::{read_page_bytes, read_page_bytes_batch, stable_object_hash, ShardState};
 
 const CONTEXT_PAGE_HASH_LOOKUP_MIN_REFS: usize = 16;
 
@@ -289,10 +289,7 @@ fn read_context_values_from_single_page<T: ContextWire>(
             .unwrap_or_default();
     }
 
-    let bytes = read_page_bytes_batch(cache, page_store, shard_id, &[Some(address.clone())])
-        .into_iter()
-        .next()
-        .flatten();
+    let bytes = read_page_bytes(cache, page_store, shard_id, address);
     let Some(bytes) = bytes else {
         return Vec::new();
     };
