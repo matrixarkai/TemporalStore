@@ -410,31 +410,40 @@ impl TemporalEngine {
                 response: CommandResponse::Empty,
             };
         }
-        let command_for_post_write = if command_is_write && !config.async_storage {
-            Some(command.clone())
-        } else {
-            None
-        };
         let command_updates_directly = command_updates_slot_index_directly(&command);
-        let command_for_keys = if command_is_write || !command_updates_directly {
-            Some(command.clone())
+        let command_object_keys = if command_is_write || !command_updates_directly {
+            Some(command_object_keys(&command))
         } else {
             None
         };
-        let outcome = execute_on_shard(
-            &self.cache,
-            &self.page_store,
-            config.feature_max_size,
-            config.async_storage,
-            request.shard_id,
-            start_routing_slot,
-            end_routing_slot,
-            shard,
-            command,
-        );
+        let outcome = if command_is_write && !config.async_storage {
+            execute_on_shard(
+                &self.cache,
+                &self.page_store,
+                config.feature_max_size,
+                config.async_storage,
+                request.shard_id,
+                start_routing_slot,
+                end_routing_slot,
+                shard,
+                command.clone(),
+            )
+        } else {
+            execute_on_shard(
+                &self.cache,
+                &self.page_store,
+                config.feature_max_size,
+                config.async_storage,
+                request.shard_id,
+                start_routing_slot,
+                end_routing_slot,
+                shard,
+                command,
+            )
+        };
         if outcome.mutated {
-            let object_keys = if let Some(command) = command_for_keys.as_ref() {
-                command_object_keys(command)
+            let object_keys = if let Some(command_object_keys) = command_object_keys {
+                command_object_keys
             } else {
                 Vec::new()
             };
@@ -486,14 +495,13 @@ impl TemporalEngine {
                 );
             }
             refresh_slot_runtime_flags(shard);
-            if command_is_write {
+            if command_is_write && !config.async_storage {
                 let sync_canonical_log = !config.async_storage
                     || config.canonical_log_ack_policy == CanonicalLogAckPolicy::Durable;
-                if let Err(error) = self.wal_store.append_with_sync(
-                    request.shard_id,
-                    command.clone(),
-                    sync_canonical_log,
-                ) {
+                if let Err(error) =
+                    self.wal_store
+                        .append_with_sync(request.shard_id, command, sync_canonical_log)
+                {
                     return ExecuteResponse {
                         status: Status::error(
                             "canonical_log_append_failed",
@@ -6332,31 +6340,40 @@ impl TemporalEngine {
                 continue;
             }
             let command_updates_directly = command_updates_slot_index_directly(&command);
-            let command_for_keys = if write_command || !command_updates_directly {
-                Some(command.clone())
+            let command_object_keys = if write_command || !command_updates_directly {
+                Some(command_object_keys(&command))
             } else {
                 None
             };
-            let command_for_post_write = if write_command && !config.async_storage {
-                Some(command.clone())
+            let outcome = if write_command && !config.async_storage {
+                execute_on_shard(
+                    &self.cache,
+                    &self.page_store,
+                    config.feature_max_size,
+                    config.async_storage,
+                    request.shard_id,
+                    start_routing_slot,
+                    end_routing_slot,
+                    shard,
+                    command.clone(),
+                )
             } else {
-                None
+                execute_on_shard(
+                    &self.cache,
+                    &self.page_store,
+                    config.feature_max_size,
+                    config.async_storage,
+                    request.shard_id,
+                    start_routing_slot,
+                    end_routing_slot,
+                    shard,
+                    command,
+                )
             };
-            let outcome = execute_on_shard(
-                &self.cache,
-                &self.page_store,
-                config.feature_max_size,
-                config.async_storage,
-                request.shard_id,
-                start_routing_slot,
-                end_routing_slot,
-                shard,
-                command,
-            );
             if outcome.mutated {
                 mutated_any = true;
-                let object_keys = if let Some(command) = command_for_keys.as_ref() {
-                    command_object_keys(command)
+                let object_keys = if let Some(command_object_keys) = command_object_keys {
+                    command_object_keys
                 } else {
                     Vec::new()
                 };
@@ -6376,7 +6393,7 @@ impl TemporalEngine {
                 if !command_updates_directly || shard.slot_index.slot_map.is_empty() {
                     needs_slot_first_index_rebuild = true;
                 }
-                if let Some(command) = command_for_post_write {
+                if write_command && !config.async_storage {
                     sync_wal_commands.push(command);
                 }
             }
