@@ -5202,23 +5202,36 @@ impl TemporalStoreTable {
             .fetch_add(1, Ordering::Relaxed);
         let table_options = self.table_options();
         let mut write = false;
-        let mut dropped_command_key: Option<String> = None;
-        for command in commands.iter() {
-            if !write && is_write(command) {
-                write = true;
+
+        if table_options.drop_percent == 0 {
+            for command in &commands {
+                if !write && is_write(command) {
+                    write = true;
+                    break;
+                }
             }
-            if dropped_command_key.is_none() && command_is_dropped(command, table_options.drop_percent) {
-                dropped_command_key = Some(format!("{:?}", command_key(command)));
+            // Fast path: skip hash/key materialization when drop percent is disabled.
+        } else {
+            let mut dropped_command_key: Option<String> = None;
+            for command in commands.iter() {
+                if !write && is_write(command) {
+                    write = true;
+                }
+                if dropped_command_key.is_none()
+                    && command_is_dropped(command, table_options.drop_percent)
+                {
+                    dropped_command_key = Some(format!("{:?}", command_key(command)));
+                }
             }
-        }
-        if let Some(key) = dropped_command_key {
-            return Ok(BatchExecuteResponse {
-                status: Status::error(
-                    "traffic_dropped",
-                    format!("batch command for key {} dropped by table drop_percent", key),
-                ),
-                responses: Vec::new(),
-            });
+            if let Some(key) = dropped_command_key {
+                return Ok(BatchExecuteResponse {
+                    status: Status::error(
+                        "traffic_dropped",
+                        format!("batch command for key {} dropped by table drop_percent", key),
+                    ),
+                    responses: Vec::new(),
+                });
+            }
         }
         if write {
             self.refresh_table_topology_before_write_if_due()?;
@@ -5301,7 +5314,9 @@ impl TemporalStoreTable {
             has_write: bool,
         }
 
-        let mut groups: HashMap<ShardId, ShardGroup> = HashMap::new();
+        let table_options = self.table_options();
+        let mut groups: HashMap<ShardId, ShardGroup> =
+            HashMap::with_capacity(table_options.shard_count as usize);
         let total_commands = commands.len();
         for (index, command) in commands.into_iter().enumerate() {
             let shard_id = self.shard_id_for_command(&command);
@@ -5312,7 +5327,6 @@ impl TemporalStoreTable {
         }
 
         let mut responses: Vec<Option<ExecuteResponse>> = vec![None; total_commands];
-        let table_options = self.table_options();
         let mut append_responses = |indexes: Vec<usize>, mut response: BatchExecuteResponse| -> Option<Status> {
             if !response.status.ok {
                 return Some(response.status);
