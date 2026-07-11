@@ -7455,11 +7455,18 @@ fn execute_on_shard(
             return_old,
         } => {
             remove_if_expired(cache, shard_id, shard, &key);
-            let old_value = shard
-                .strings
-                .get(&key)
-                .and_then(|address| read_page_bytes(cache, page_store, shard_id, address));
-            let exists = old_value.is_some();
+            let old_address = shard.strings.get(&key);
+            let old_value = if return_old {
+                old_address
+                    .and_then(|address| read_page_bytes(cache, page_store, shard_id, address))
+            } else {
+                None
+            };
+            let exists = if return_old {
+                old_value.is_some()
+            } else {
+                old_address.is_some()
+            };
             let should_set = match condition {
                 StringSetCondition::Always => true,
                 StringSetCondition::IfExists => exists,
