@@ -1623,56 +1623,73 @@ impl LocalBlockStore {
         let current_page_segment_id = inner.page_segment_id;
         let live_page_segment_ids = live_page_segment_ids.into_iter().collect::<BTreeSet<_>>();
         let segment_ids = segment_ids_at_with_capacity(&inner.root, inner.extents.len())?;
+        struct GcSegmentSnapshot {
+            page_segment_id: u64,
+            bytes: u64,
+            zone_id: u64,
+            created_unix_ms: Option<u64>,
+            updated_unix_ms: Option<u64>,
+        }
+        let segment_snapshots = segment_ids
+            .iter()
+            .map(|page_segment_id| {
+                let bytes = segment_path(&inner.root, *page_segment_id)
+                    .metadata()
+                    .map(|metadata| metadata.len())
+                    .unwrap_or_default();
+                let extent = inner.extents.get(page_segment_id);
+                GcSegmentSnapshot {
+                    page_segment_id: *page_segment_id,
+                    bytes,
+                    zone_id: extent
+                        .map(|extent| extent.extent_id)
+                        .unwrap_or_else(|| extent_id_for_segment(*page_segment_id)),
+                    created_unix_ms: extent.and_then(|extent| extent.created_unix_ms),
+                    updated_unix_ms: extent.and_then(|extent| extent.updated_unix_ms),
+                }
+            })
+            .collect::<Vec<_>>();
         let mut zone_total_bytes = BTreeMap::<u64, u64>::new();
         let mut zone_used_bytes = BTreeMap::<u64, u64>::new();
-        for page_segment_id in &segment_ids {
-            let bytes = segment_path(&inner.root, *page_segment_id)
-                .metadata()
-                .map(|metadata| metadata.len())
-                .unwrap_or_default();
-            let zone_id = inner
-                .extents
-                .get(page_segment_id)
-                .map(|extent| extent.extent_id)
-                .unwrap_or_else(|| extent_id_for_segment(*page_segment_id));
-            *zone_total_bytes.entry(zone_id).or_default() = zone_total_bytes
-                .get(&zone_id)
+        for snapshot in &segment_snapshots {
+            *zone_total_bytes.entry(snapshot.zone_id).or_default() = zone_total_bytes
+                .get(&snapshot.zone_id)
                 .copied()
                 .unwrap_or_default()
-                .saturating_add(bytes);
-            let below_retention_floor = *page_segment_id < retain_from_page_segment_id;
-            let is_current = *page_segment_id == current_page_segment_id;
-            let is_live = live_page_segment_ids.contains(page_segment_id);
+                .saturating_add(snapshot.bytes);
+            let below_retention_floor = snapshot.page_segment_id < retain_from_page_segment_id;
+            let is_current = snapshot.page_segment_id == current_page_segment_id;
+            let is_live = live_page_segment_ids.contains(&snapshot.page_segment_id);
             if !below_retention_floor || is_current || is_live {
-                *zone_used_bytes.entry(zone_id).or_default() = zone_used_bytes
-                    .get(&zone_id)
+                *zone_used_bytes.entry(snapshot.zone_id).or_default() = zone_used_bytes
+                    .get(&snapshot.zone_id)
                     .copied()
                     .unwrap_or_default()
-                    .saturating_add(bytes);
+                    .saturating_add(snapshot.bytes);
             }
         }
-        let mut candidates = Vec::with_capacity(segment_ids.len());
+        let mut candidates = Vec::with_capacity(segment_snapshots.len());
         let now = now_unix_ms();
-        for page_segment_id in segment_ids {
+        for snapshot in segment_snapshots {
+            let page_segment_id = snapshot.page_segment_id;
             let below_retention_floor = page_segment_id < retain_from_page_segment_id;
             let is_current = page_segment_id == current_page_segment_id;
             let is_live = live_page_segment_ids.contains(&page_segment_id);
             if below_retention_floor && !is_current && !is_live {
-                let bytes = segment_path(&inner.root, page_segment_id)
-                    .metadata()
-                    .map(|metadata| metadata.len())
-                    .unwrap_or_default();
-                let extent = inner.extents.get(&page_segment_id);
-                let created_unix_ms = extent.and_then(|extent| extent.created_unix_ms);
-                let updated_unix_ms = extent.and_then(|extent| extent.updated_unix_ms);
+                let bytes = snapshot.bytes;
+                let created_unix_ms = snapshot.created_unix_ms;
+                let updated_unix_ms = snapshot.updated_unix_ms;
                 let age_ms = updated_unix_ms
                     .or(created_unix_ms)
                     .map(|timestamp| now.saturating_sub(timestamp));
-                let zone_id = extent
-                    .map(|extent| extent.extent_id)
-                    .unwrap_or_else(|| extent_id_for_segment(page_segment_id));
-                let total_bytes = zone_total_bytes.get(&zone_id).copied().unwrap_or(bytes);
-                let used_bytes = zone_used_bytes.get(&zone_id).copied().unwrap_or_default();
+                let total_bytes = zone_total_bytes
+                    .get(&snapshot.zone_id)
+                    .copied()
+                    .unwrap_or(bytes);
+                let used_bytes = zone_used_bytes
+                    .get(&snapshot.zone_id)
+                    .copied()
+                    .unwrap_or_default();
                 let stale_bytes = total_bytes.saturating_sub(used_bytes);
                 let utility_basis_points = if total_bytes == 0 {
                     0
