@@ -4140,19 +4140,19 @@ fn top_scored_candidates(
     if keep == 0 || candidates.is_empty() {
         return Vec::new();
     }
-    let mut top = Vec::with_capacity(keep.min(candidates.len()));
-    for (ordinal, candidate) in candidates.iter().enumerate() {
-        top.push((
-            score_lowered_text(&candidate.lower_text, query_terms),
-            ordinal,
-        ));
-        if top.len() > keep {
-            top.sort_by(|left, right| compare_scored_candidate(*left, *right));
-            top.pop();
-        }
-    }
-    top.sort_by(|left, right| compare_scored_candidate(*left, *right));
-    top
+    let mut scored = candidates
+        .iter()
+        .enumerate()
+        .map(|(ordinal, candidate)| {
+            (
+                score_lowered_text(&candidate.lower_text, query_terms),
+                ordinal,
+            )
+        })
+        .collect::<Vec<_>>();
+    scored.sort_by(|left, right| compare_scored_candidate(*left, *right));
+    scored.truncate(keep.min(scored.len()));
+    scored
 }
 
 fn record_log_root(request: &RecordLogRequest) -> PathBuf {
