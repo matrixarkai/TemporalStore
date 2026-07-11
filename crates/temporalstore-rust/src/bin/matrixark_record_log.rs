@@ -1066,6 +1066,12 @@ fn matrixark_compact_snapshot_retrieve_enabled() -> bool {
         .unwrap_or(true)
 }
 
+fn matrixark_engine_context_pack_fast_path_enabled() -> bool {
+    env::var("MATRIXARK_RUST_PROXY_ENGINE_CONTEXT_PACK_FAST_PATH")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
+}
+
 fn invalidate_retrieve_candidate_cache(storage_prefix: &str) {
     if storage_prefix.trim().is_empty() {
         return;
@@ -3441,6 +3447,203 @@ fn read_record_count(engine: &TemporalEngine, key: &str) -> Result<String, Strin
     Ok(value)
 }
 
+fn request_u64_field(record: &Value, keys: &[&str]) -> u64 {
+    keys.iter()
+        .find_map(|key| record.get(*key).and_then(Value::as_u64))
+        .unwrap_or_default()
+}
+
+fn request_optional_u32_field(record: &Value, key: &str) -> Option<u32> {
+    record
+        .get(key)
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+}
+
+fn request_optional_usize_field(record: &Value, key: &str) -> Option<usize> {
+    record
+        .get(key)
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+}
+
+fn estimate_context_tokens(text: &str) -> u64 {
+    ((text.len() as u64) / 4).max(1)
+}
+
+fn retrieve_context_pack_engine_native(
+    engine: &TemporalEngine,
+    request: &RecordLogRequest,
+    request_record: &Value,
+    root: PathBuf,
+) -> Result<Option<RecordLogOutput>, String> {
+    let tenant_hash = request_u64_field(request_record, &["tenant_hash"]);
+    let node_hash = request_u64_field(request_record, &["start_node_hash", "node_hash"]);
+    if tenant_hash == 0 || node_hash == 0 {
+        return Ok(None);
+    }
+    let query = if request.query.trim().is_empty() {
+        request_record
+            .get("query")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    } else {
+        request.query.clone()
+    };
+    let as_of_ms = request_u64_field(request_record, &["as_of_ms", "reference_time_ms"]);
+    let cold_end_time_ms = request_u64_field(request_record, &["end_time_ms", "reference_time_ms"]);
+    let compression_limit = request_optional_usize_field(request_record, "compression_limit").or_else(|| {
+        if request.max_selected_refs == 0 {
+            request_record
+                .pointer("/ranking/max_selected_refs")
+                .and_then(Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok())
+        } else {
+            Some(request.max_selected_refs)
+        }
+    });
+    let started = Instant::now();
+    let response = engine.execute(ExecuteRequest {
+        shard_id: DEFAULT_SHARD_ID,
+        command: Command::ContextQueryNodeContext {
+            tenant_hash,
+            node_hash,
+            summary_level: request_optional_u32_field(request_record, "summary_level"),
+            as_of_ms,
+            cold_start_time_ms: request_u64_field(request_record, &["start_time_ms"]),
+            cold_end_time_ms,
+            compression_limit,
+        },
+    });
+    if !response.status.ok {
+        return Err(format!(
+            "{}: {}",
+            response.status.code, response.status.message
+        ));
+    }
+    let CommandResponse::ContextNodeContext {
+        node_exists,
+        node,
+        overall_summary_exists,
+        overall_summary,
+        cold_window_summaries,
+    } = response.response
+    else {
+        return Err("unexpected response for native context pack".to_string());
+    };
+
+    let mut selected_refs = Vec::new();
+    if let Some(summary) = overall_summary.as_ref() {
+        if !summary.text.is_empty() {
+            selected_refs.push(json!({
+                "ref_type": "summary",
+                "ref_hash": stable_hash64(&format!(
+                    "summary:{}:{}:{}",
+                    tenant_hash, summary.node_hash, summary.level
+                )),
+                "node_hash": summary.node_hash,
+                "event_time_ms": summary.valid_from_ms,
+                "score": 1.0,
+                "token_estimate": estimate_context_tokens(&summary.text),
+                "text": summary.text,
+            }));
+        }
+    }
+    let max_selected_refs = compression_limit.unwrap_or(usize::MAX);
+    for event in &cold_window_summaries {
+        if selected_refs.len() >= max_selected_refs {
+            break;
+        }
+        if event.summary.is_empty() {
+            continue;
+        }
+        selected_refs.push(json!({
+            "ref_type": "compression_event",
+            "ref_hash": event.compression_id_hash,
+            "node_hash": event.node_hash,
+            "event_time_ms": event.compressed_time_ms,
+            "score": 1.0,
+            "token_estimate": estimate_context_tokens(&event.summary),
+            "text": event.summary,
+        }));
+    }
+    if selected_refs.is_empty() {
+        return Ok(None);
+    }
+    let remote_context_refs = selected_refs
+        .iter()
+        .map(|reference| {
+            json!({
+                "type": reference.get("ref_type").cloned().unwrap_or(Value::Null),
+                "ref_hash": reference.get("ref_hash").cloned().unwrap_or(Value::Null),
+                "node_hash": reference.get("node_hash").cloned().unwrap_or(Value::Null),
+                "score": reference.get("score").cloned().unwrap_or(Value::Null),
+                "tokens": reference.get("token_estimate").cloned().unwrap_or(Value::Null),
+                "content": reference.get("text").cloned().unwrap_or(Value::Null),
+            })
+        })
+        .collect::<Vec<_>>();
+    let used_context_tokens = selected_refs
+        .iter()
+        .filter_map(|reference| reference.get("token_estimate").and_then(Value::as_u64))
+        .sum::<u64>();
+    let pack_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let selected_count = selected_refs.len();
+    let context_pack = json!({
+        "native_context_pack": true,
+        "context_pack_assembly": "native_rust_engine",
+        "context_pack_id": format!("rust-engine-{}-{}", unix_ms(), stable_hash64(&query)),
+        "tenant_hash": tenant_hash,
+        "start_node_hash": node_hash,
+        "query": query,
+        "node_exists": node_exists,
+        "node": node,
+        "overall_summary_exists": overall_summary_exists,
+        "overall_summary": overall_summary,
+        "cold_window_summaries": cold_window_summaries,
+        "selected_refs": selected_refs,
+        "remote_context_refs": remote_context_refs,
+        "used_context_tokens": used_context_tokens,
+        "used_remote_context_tokens": used_context_tokens,
+        "remote_context_budget_tokens": request_record.get("max_context_tokens").cloned().unwrap_or(Value::Null),
+        "retrieval_metrics": {
+            "query_plan_ms": 0.0,
+            "node_traversal_ms": 0.0,
+            "index_prefilter_ms": 0.0,
+            "candidate_fetch_ms": pack_ms,
+            "score_ms": 0.0,
+            "pack_ms": pack_ms,
+            "audit_ms": 0.0,
+            "selected_refs": selected_count,
+            "selected_ref_count": selected_count,
+            "native_pack_assembly": true,
+            "python_pack_fallback": false,
+            "raw_candidate_tables_returned": false,
+            "broad_scan_used": false,
+            "broad_scan_blocked": false,
+            "source": "rust_proxy_engine_context_pack"
+        }
+    });
+    let response = json!({
+        "ok": true,
+        "count": selected_count,
+        "native_pack_assembly": true,
+        "raw_records_returned": false,
+        "python_hot_path_records": 0,
+        "scan_count": 0,
+        "cache_hit": false,
+        "selected_ref_count": selected_count,
+        "dropped_ref_count": 0,
+        "retrieval_metrics": context_pack
+            .get("retrieval_metrics")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+        "context_pack": context_pack,
+    });
+    context_pack_response_to_output(response, root, request.top_level_response).map(Some)
+}
+
 fn load_retrieve_candidate_snapshot(
     engine: &TemporalEngine,
     storage_prefix: &str,
@@ -3567,6 +3770,13 @@ fn retrieve_context_pack_output(
         .map(str::to_string)
         .unwrap_or_else(|| format!("{storage_prefix}:records"));
     let request_record = request.record.clone().unwrap_or_else(|| json!({}));
+    if matrixark_engine_context_pack_fast_path_enabled() {
+        if let Some(output) =
+            retrieve_context_pack_engine_native(engine, request, &request_record, root.clone())?
+        {
+            return Ok(output);
+        }
+    }
     let scope = request
         .scope
         .as_ref()
@@ -4130,6 +4340,27 @@ mod tests {
 
         let empty_query = top_scored_candidates(&candidates, &[], 3);
         assert_eq!(empty_query, vec![(0.0, 0), (0.0, 1), (0.0, 2)]);
+    }
+
+    #[test]
+    fn engine_native_context_request_helpers_parse_numeric_fields() {
+        let record = json!({
+            "tenant_hash": 42,
+            "start_node_hash": 1001,
+            "node_hash": 1002,
+            "summary_level": 3,
+            "compression_limit": 8,
+        });
+        assert_eq!(request_u64_field(&record, &["tenant_hash"]), 42);
+        assert_eq!(
+            request_u64_field(&record, &["missing_node_hash", "start_node_hash", "node_hash"]),
+            1001
+        );
+        assert_eq!(request_optional_u32_field(&record, "summary_level"), Some(3));
+        assert_eq!(
+            request_optional_usize_field(&record, "compression_limit"),
+            Some(8)
+        );
     }
 
     #[test]
