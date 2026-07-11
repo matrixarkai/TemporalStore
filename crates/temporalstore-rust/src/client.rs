@@ -2817,7 +2817,7 @@ impl TemporalStoreClient {
         force_primary: bool,
     ) -> Result<ExecuteResponse, ClientError> {
         self.execute_routed_with_http(
-            request,
+            &request,
             force_primary,
             self.inner.options.http_options(),
             None,
@@ -2826,7 +2826,7 @@ impl TemporalStoreClient {
 
     fn execute_routed_with_http(
         &self,
-        request: ExecuteRequest,
+        request: &ExecuteRequest,
         force_primary: bool,
         http_options: HttpRequestOptions,
         continuous_failed_time_ms: Option<u64>,
@@ -2843,7 +2843,7 @@ impl TemporalStoreClient {
 
     fn execute_routed_with_http_and_policy(
         &self,
-        request: ExecuteRequest,
+        request: &ExecuteRequest,
         force_primary: bool,
         http_options: HttpRequestOptions,
         continuous_failed_time_ms: Option<u64>,
@@ -5075,12 +5075,15 @@ impl TemporalStoreTable {
             .execute_requests
             .fetch_add(1, Ordering::Relaxed);
         let write = is_write(&command);
+        let request = ExecuteRequest {
+            shard_id: self.shard_id_for_command(&command),
+            command,
+        };
         if write {
             self.refresh_table_topology_before_write_if_due()?;
         }
-        let shard_id = self.shard_id_for_command(&command);
         let table_options = self.table_options();
-        if command_is_dropped(&command, table_options.drop_percent) {
+        if command_is_dropped(&request.command, table_options.drop_percent) {
             return Ok(ExecuteResponse {
                 status: Status::error("traffic_dropped", "request dropped by table drop_percent"),
                 response: CommandResponse::Empty,
@@ -5097,10 +5100,7 @@ impl TemporalStoreTable {
         let mut topology_refresh_used = false;
         let response = loop {
             let current_result = self.client.execute_routed_with_http_and_policy(
-                ExecuteRequest {
-                    shard_id,
-                    command: command.clone(),
-                },
+                &request,
                 current_force_primary,
                 self.http_options(),
                 Some(table_options.continuous_failed_time_ms),
@@ -5182,25 +5182,28 @@ impl TemporalStoreTable {
             .stats
             .batch_execute_requests
             .fetch_add(1, Ordering::Relaxed);
-        let write = commands.iter().any(is_write);
-        if write {
-            self.refresh_table_topology_before_write_if_due()?;
-        }
         let table_options = self.table_options();
-        if let Some(command) = commands
-            .iter()
-            .find(|command| command_is_dropped(command, table_options.drop_percent))
-        {
+        let mut write = false;
+        let mut dropped_command_key: Option<String> = None;
+        for command in commands.iter() {
+            if !write && is_write(command) {
+                write = true;
+            }
+            if dropped_command_key.is_none() && command_is_dropped(command, table_options.drop_percent) {
+                dropped_command_key = Some(format!("{:?}", command_key(command)));
+            }
+        }
+        if let Some(key) = dropped_command_key {
             return Ok(BatchExecuteResponse {
                 status: Status::error(
                     "traffic_dropped",
-                    format!(
-                        "batch command for key {:?} dropped by table drop_percent",
-                        command_key(command)
-                    ),
+                    format!("batch command for key {} dropped by table drop_percent", key),
                 ),
                 responses: Vec::new(),
             });
+        }
+        if write {
+            self.refresh_table_topology_before_write_if_due()?;
         }
         if self.options.shard_count > 1 {
             return self.batch_execute_grouped_by_shard(commands);
@@ -5209,15 +5212,15 @@ impl TemporalStoreTable {
             shard_id: self.shard_id,
             commands,
         };
-        self.batch_execute_single_shard_with_retry(&request, table_options)
+        self.batch_execute_single_shard_with_retry(&request, table_options, write)
     }
 
     fn batch_execute_single_shard_with_retry(
         &self,
         request: &BatchExecuteRequest,
         table_options: TableOptions,
+        write: bool,
     ) -> Result<BatchExecuteResponse, ClientError> {
-        let write = request.commands.iter().any(is_write);
         let retry_budget_attempts = retry_attempts_for(&table_options, write);
         let mut attempt = 0;
         let mut topology_refresh_used = false;
@@ -5277,6 +5280,7 @@ impl TemporalStoreTable {
         struct ShardGroup {
             indexes: Vec<usize>,
             commands: Vec<Command>,
+            has_write: bool,
         }
 
         let mut groups: HashMap<ShardId, ShardGroup> = HashMap::new();
@@ -5285,6 +5289,7 @@ impl TemporalStoreTable {
             let shard_id = self.shard_id_for_command(&command);
             let group = groups.entry(shard_id).or_default();
             group.indexes.push(index);
+            group.has_write = group.has_write || is_write(&command);
             group.commands.push(command);
         }
 
@@ -5315,6 +5320,7 @@ impl TemporalStoreTable {
                         commands: group.commands,
                     },
                     table_options.clone(),
+                    group.has_write,
                 )?;
                 if let Some(status) = append_responses(group.indexes, response) {
                     return Ok(BatchExecuteResponse {
@@ -5344,6 +5350,7 @@ impl TemporalStoreTable {
                 let shard_commands = group.commands;
                 let tx = tx.clone();
                 let table_options = table_options.clone();
+                let has_write = group.has_write;
                 scope.spawn(move || {
                     let result = self.batch_execute_single_shard_with_retry(
                         &BatchExecuteRequest {
@@ -5351,6 +5358,7 @@ impl TemporalStoreTable {
                             commands: shard_commands,
                         },
                         table_options,
+                        has_write,
                     );
                     let _ = tx.send((indexes, result));
                 });
