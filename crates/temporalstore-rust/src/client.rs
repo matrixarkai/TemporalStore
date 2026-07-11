@@ -5355,7 +5355,7 @@ impl TemporalStoreTable {
 
         let first_shard = self.shard_id_for_command(&commands[0]);
         let mut groups: HashMap<ShardId, ShardGroup> =
-            HashMap::with_capacity(table_options.shard_count as usize);
+            HashMap::with_capacity(std::cmp::min(table_options.shard_count as usize, total_commands));
         let mut has_write = false;
         let mut all_single_shard = true;
         for command in commands.iter() {
@@ -5385,6 +5385,11 @@ impl TemporalStoreTable {
                 has_write = true;
             }
         }
+        let mut group_entries: Vec<(ShardId, Vec<usize>, Vec<Command>, bool)> =
+            Vec::with_capacity(groups.len());
+        for (shard_id, group) in groups {
+            group_entries.push((shard_id, group.indexes, group.commands, group.has_write));
+        }
 
         let mut responses: Vec<Option<ExecuteResponse>> = vec![None; total_commands];
         let mut append_responses = |indexes: Vec<usize>, mut response: BatchExecuteResponse| -> Option<Status> {
@@ -5405,17 +5410,19 @@ impl TemporalStoreTable {
 
         const MAX_SEQUENTIAL_BATCH_SHARD_GROUPS: usize = 2;
         const MIN_THREADED_BATCH_COMMANDS: usize = 32;
-        if groups.len() <= MAX_SEQUENTIAL_BATCH_SHARD_GROUPS || total_commands <= MIN_THREADED_BATCH_COMMANDS {
-            for (shard_id, group) in groups {
+        if group_entries.len() <= MAX_SEQUENTIAL_BATCH_SHARD_GROUPS
+            || total_commands <= MIN_THREADED_BATCH_COMMANDS
+        {
+            for (shard_id, indexes, commands, has_write) in group_entries {
                 let response = self.batch_execute_single_shard_with_retry(
                     &BatchExecuteRequest {
                         shard_id,
-                        commands: group.commands,
+                        commands,
                     },
                     table_options.clone(),
-                    group.has_write,
+                    has_write,
                 )?;
-                if let Some(status) = append_responses(group.indexes, response) {
+                if let Some(status) = append_responses(indexes, response) {
                     return Ok(BatchExecuteResponse {
                         status,
                         responses: Vec::new(),
@@ -5436,24 +5443,40 @@ impl TemporalStoreTable {
             });
         }
 
+        let max_worker_threads = {
+            let max_threads = std::thread::available_parallelism().map_or(4, |value| value.get());
+            max_threads.max(1).min(group_entries.len()).min(64)
+        };
+        let shared_groups = std::sync::Arc::new(std::sync::Mutex::new(group_entries));
         let (tx, rx) = mpsc::channel();
         thread::scope(|scope| {
-            for (shard_id, group) in groups {
-                let indexes = group.indexes;
-                let shard_commands = group.commands;
+            for _ in 0..max_worker_threads {
+                let shared_groups = std::sync::Arc::clone(&shared_groups);
                 let tx = tx.clone();
                 let table_options = table_options.clone();
-                let has_write = group.has_write;
                 scope.spawn(move || {
-                    let result = self.batch_execute_single_shard_with_retry(
-                        &BatchExecuteRequest {
-                            shard_id,
-                            commands: shard_commands,
-                        },
-                        table_options,
-                        has_write,
-                    );
-                    let _ = tx.send((indexes, result));
+                    loop {
+                        let job = {
+                            let mut pending = shared_groups
+                                .lock()
+                                .expect("shared batch groups lock poisoned");
+                            pending.pop()
+                        };
+                        match job {
+                            Some((shard_id, indexes, commands, has_write)) => {
+                                let result = self.batch_execute_single_shard_with_retry(
+                                    &BatchExecuteRequest {
+                                        shard_id,
+                                        commands,
+                                    },
+                                    table_options.clone(),
+                                    has_write,
+                                );
+                                let _ = tx.send((indexes, result));
+                            }
+                            None => break,
+                        }
+                    }
                 });
             }
         });
