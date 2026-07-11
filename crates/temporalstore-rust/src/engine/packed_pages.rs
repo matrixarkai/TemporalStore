@@ -447,6 +447,46 @@ pub(super) fn read_feature_points_cached_batch(
     ordered_points.into_iter().flatten().collect()
 }
 
+pub(super) fn read_feature_points_from_pages_in_range(
+    cache: &MultiLayerCache,
+    block_store: &LocalBlockStore,
+    shard_id: ShardId,
+    addresses: &[BlockAddress],
+    start_ms: u64,
+    end_ms: u64,
+    limit: usize,
+) -> Vec<FeaturePoint> {
+    if addresses.is_empty() || limit == 0 {
+        return Vec::new();
+    }
+    let mut unique_addresses = Vec::with_capacity(addresses.len());
+    let mut seen = HashMap::<BlockAddress, ()>::with_capacity(addresses.len());
+    for address in addresses {
+        if seen.insert(address.clone(), ()).is_none() {
+            unique_addresses.push(Some(address.clone()));
+        }
+    }
+
+    let mut points = Vec::new();
+    for bytes in read_page_bytes_batch(cache, block_store, shard_id, &unique_addresses)
+        .into_iter()
+        .flatten()
+    {
+        let PackedFeaturePageDecode::Packed(page_points) = decode_feature_page_strict(&bytes)
+        else {
+            continue;
+        };
+        points.extend(
+            page_points
+                .into_iter()
+                .filter(|point| point.timestamp_ms >= start_ms && point.timestamp_ms <= end_ms),
+        );
+    }
+    points.sort_by_key(|point| point.timestamp_ms);
+    points.truncate(limit);
+    points
+}
+
 fn read_feature_points_from_single_page(
     cache: &MultiLayerCache,
     block_store: &LocalBlockStore,

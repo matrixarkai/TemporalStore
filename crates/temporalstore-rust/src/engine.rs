@@ -8610,7 +8610,18 @@ fn execute_on_shard(
                         );
                         read_feature_points_cached_batch(cache, page_store, shard_id, &refs)
                     })
-                    .unwrap_or_default();
+                    .unwrap_or_else(|| {
+                        let addresses = slot_index_object_page_addresses(shard, "feature", &key);
+                        read_feature_points_from_pages_in_range(
+                            cache,
+                            page_store,
+                            shard_id,
+                            &addresses,
+                            start_ms,
+                            end_ms,
+                            count.unwrap_or(5000),
+                        )
+                    });
                 CommandResponse::FeaturePoints { points }
             },
         ),
@@ -8642,7 +8653,25 @@ fn execute_on_shard(
                         })
                         .collect()
                 })
-                .unwrap_or_default();
+                .unwrap_or_else(|| {
+                    let addresses = slot_index_object_page_addresses(shard, "feature", &key);
+                    read_feature_points_from_pages_in_range(
+                        cache, page_store, shard_id, &addresses, start_ms, end_ms, limit,
+                    )
+                    .into_iter()
+                    .filter(|point| {
+                        let Some(row) = SequenceFeatureRow::decode_cpp_feature_value(
+                            point.timestamp_ms,
+                            &point.value,
+                        ) else {
+                            return false;
+                        };
+                        filters
+                            .iter()
+                            .all(|filter| sequence_filter_matches(&row, filter))
+                    })
+                    .collect()
+                });
             CommandResponse::FeaturePoints { points }
         }
         Command::FeatureReplace {
@@ -8730,14 +8759,43 @@ fn execute_on_shard(
                 })
                 .unwrap_or_default();
             if is_feature_count_aggregator(&aggregator) {
+                let value = if shard.features.contains_key(&key) {
+                    refs.len()
+                } else {
+                    let addresses = slot_index_object_page_addresses(shard, "feature", &key);
+                    read_feature_points_from_pages_in_range(
+                        cache,
+                        page_store,
+                        shard_id,
+                        &addresses,
+                        start_ms,
+                        end_ms,
+                        count.unwrap_or(5000),
+                    )
+                    .len()
+                };
                 return ExecuteOutcome {
                     response: CommandResponse::Aggregate {
-                        value: refs.len() as i64,
+                        value: value as i64,
                     },
                     mutated,
                 };
             }
-            let values = read_feature_points_cached_batch(cache, page_store, shard_id, &refs)
+            let points = if shard.features.contains_key(&key) {
+                read_feature_points_cached_batch(cache, page_store, shard_id, &refs)
+            } else {
+                let addresses = slot_index_object_page_addresses(shard, "feature", &key);
+                read_feature_points_from_pages_in_range(
+                    cache,
+                    page_store,
+                    shard_id,
+                    &addresses,
+                    start_ms,
+                    end_ms,
+                    count.unwrap_or(5000),
+                )
+            };
+            let values = points
                 .into_iter()
                 .map(|point| point.value)
                 .collect::<Vec<_>>();
@@ -11321,6 +11379,60 @@ fn live_page_addresses_from_timestamp_series(
 ) -> Vec<PageAddress> {
     let mut addresses = Vec::with_capacity(series.len());
     addresses.extend(series.values().cloned());
+    addresses
+}
+
+fn slot_index_object_page_addresses(
+    shard: &ShardState,
+    model_id: &str,
+    object_key: &str,
+) -> Vec<PageAddress> {
+    let mut addresses = Vec::new();
+    let lookup_key = object_page_lookup_key(model_id, object_key, None);
+    if let Some(page_refs) = shard.slot_index.object_page_lookup.get(&lookup_key) {
+        addresses.reserve(page_refs.len());
+        for page_ref in page_refs {
+            let Some(page) = shard
+                .slot_index
+                .slot_map
+                .get(&page_ref.routing_slot)
+                .and_then(|slot| slot.page_index.get(&page_ref.page_ref_key))
+            else {
+                continue;
+            };
+            if !page.deleted
+                && page.model_id == model_id
+                && page.object_key == object_key
+                && page.component.is_none()
+            {
+                addresses.push(page.address.clone());
+            }
+        }
+        return addresses;
+    }
+    if let Some(page_refs) = shard.slot_index.object_key_lookup.get(object_key) {
+        addresses.reserve(page_refs.len());
+        for page_ref in page_refs {
+            if page_ref.model_id != model_id || page_ref.component.is_some() {
+                continue;
+            }
+            let Some(page) = shard
+                .slot_index
+                .slot_map
+                .get(&page_ref.routing_slot)
+                .and_then(|slot| slot.page_index.get(&page_ref.page_ref_key))
+            else {
+                continue;
+            };
+            if !page.deleted
+                && page.model_id == model_id
+                && page.object_key == object_key
+                && page.component.is_none()
+            {
+                addresses.push(page.address.clone());
+            }
+        }
+    }
     addresses
 }
 
