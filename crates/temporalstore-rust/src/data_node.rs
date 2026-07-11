@@ -1851,10 +1851,12 @@ impl DataNodeRuntime {
 
     pub fn batch_execute(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
         let BatchExecuteRequest { shard_id, commands } = request;
-        let command_metadata = commands
-            .iter()
-            .map(|command| (is_write_command(command), command_key(command).map(str::to_string)))
-            .collect::<Vec<_>>();
+        let mut command_metadata = Vec::new();
+        for (idx, command) in commands.iter().enumerate() {
+            if is_write_command(command) {
+                command_metadata.push((idx, command_key(command).map(str::to_string)));
+            }
+        }
         if let Err(status) = validate_foreground_write_allowed_inner(
             &self.inner,
             shard_id,
@@ -1869,14 +1871,14 @@ impl DataNodeRuntime {
             shard_id,
             commands,
         });
-        for (is_write, key) in command_metadata
-            .iter()
-            .zip(response.responses.iter())
-            .filter(|((_, _), response)| response.status.ok)
-            .map(|((is_write, key), _)| (is_write, key.as_deref()))
-        {
-            if *is_write {
-                mark_dirty(&self.inner.dirty, shard_id, key);
+        for (idx, key) in command_metadata {
+            if response
+                .responses
+                .get(idx)
+                .map(|response| response.status.ok)
+                .unwrap_or(false)
+            {
+                mark_dirty(&self.inner.dirty, shard_id, key.as_deref());
             }
         }
         response
@@ -1891,10 +1893,12 @@ impl DataNodeRuntime {
             load_version,
             commands,
         } = request;
-        let command_metadata = commands
-            .iter()
-            .map(|command| (is_write_command(command), command_key(command).map(str::to_string)))
-            .collect::<Vec<_>>();
+        let mut command_metadata = Vec::new();
+        for (idx, command) in commands.iter().enumerate() {
+            if is_write_command(command) {
+                command_metadata.push((idx, command_key(command).map(str::to_string)));
+            }
+        }
         if let Err(status) = validate_foreground_write_allowed_inner(
             &self.inner,
             shard_id,
@@ -1914,14 +1918,15 @@ impl DataNodeRuntime {
             commands,
         });
         if response.status.ok {
-            for (is_write, key) in command_metadata
-                .iter()
-                .zip(response.response.responses.iter())
-                .filter(|((_, _), response)| response.status.ok)
-                .map(|((is_write, key), _)| (is_write, key.as_deref()))
-            {
-                if *is_write {
-                    mark_dirty(&self.inner.dirty, shard_id, key);
+            for (idx, key) in command_metadata {
+                if response
+                    .response
+                    .responses
+                    .get(idx)
+                    .map(|response| response.status.ok)
+                    .unwrap_or(false)
+                {
+                    mark_dirty(&self.inner.dirty, shard_id, key.as_deref());
                 }
             }
         }
