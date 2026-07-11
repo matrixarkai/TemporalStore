@@ -10948,6 +10948,13 @@ fn delete_record_exact(
     shard: &mut ShardState,
     key: &str,
 ) -> bool {
+    if !record_exists_exact(shard, key)
+        && !shard.expires_at_ms.contains_key(key)
+        && !shard.ips_meta.contains_key(key)
+        && !shard.ips_request_ids.contains_key(key)
+    {
+        return false;
+    }
     let mut removed = false;
     removed |= mark_slot_index_object_deleted(cache, shard_id, shard, key);
     removed |= shard.expires_at_ms.remove(key).is_some();
