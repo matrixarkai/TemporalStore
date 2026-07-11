@@ -3385,6 +3385,12 @@ impl ProxyService {
             .stats
             .batch_execute_requests
             .fetch_add(1, Ordering::Relaxed);
+        if request.commands.is_empty() {
+            return BatchExecuteResponse {
+                status: Status::ok(),
+                responses: Vec::new(),
+            };
+        }
         if let Some(status) = self.check_admission_for_commands(&request.commands) {
             return BatchExecuteResponse {
                 status,
@@ -3474,6 +3480,12 @@ impl ProxyService {
             .stats
             .batch_execute_requests
             .fetch_add(1, Ordering::Relaxed);
+        if request.commands.is_empty() {
+            return BatchExecuteResponse {
+                status: Status::ok(),
+                responses: Vec::new(),
+            };
+        }
         if let Some(status) = self.check_admission_for_commands(&request.commands) {
             return BatchExecuteResponse {
                 status,

@@ -5220,6 +5220,12 @@ impl TemporalStoreTable {
             .batch_execute_requests
             .fetch_add(1, Ordering::Relaxed);
         let table_options = self.table_options();
+        if commands.is_empty() {
+            return Ok(BatchExecuteResponse {
+                status: Status::ok(),
+                responses: Vec::new(),
+            });
+        }
         let mut write = false;
 
         if table_options.drop_percent == 0 {
@@ -5352,11 +5358,25 @@ impl TemporalStoreTable {
             HashMap::with_capacity(table_options.shard_count as usize);
         let mut has_write = false;
         let mut all_single_shard = true;
+        for command in commands.iter() {
+            has_write = has_write || is_write(command);
+            if self.shard_id_for_command(command) != first_shard {
+                all_single_shard = false;
+                break;
+            }
+        }
+        if all_single_shard {
+            return self.batch_execute_single_shard_with_retry(
+                &BatchExecuteRequest {
+                    shard_id: first_shard,
+                    commands,
+                },
+                table_options,
+                has_write,
+            );
+        }
         for (index, command) in commands.into_iter().enumerate() {
             let shard_id = self.shard_id_for_command(&command);
-            if shard_id != first_shard {
-                all_single_shard = false;
-            }
             let group = groups.entry(shard_id).or_default();
             group.indexes.push(index);
             group.has_write = group.has_write || is_write(&command);
@@ -5364,19 +5384,6 @@ impl TemporalStoreTable {
             if group.has_write {
                 has_write = true;
             }
-        }
-        if all_single_shard {
-            return self.batch_execute_single_shard_with_retry(
-                &BatchExecuteRequest {
-                    shard_id: first_shard,
-                    commands: groups
-                        .remove(&first_shard)
-                        .map(|group| group.commands)
-                        .unwrap_or_default(),
-                },
-                table_options,
-                has_write,
-            );
         }
 
         let mut responses: Vec<Option<ExecuteResponse>> = vec![None; total_commands];
