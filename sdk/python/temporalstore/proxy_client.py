@@ -11,6 +11,7 @@ from .client import (
     FeatureFilter,
     FeatureFilterOp,
     FeaturePoint,
+    FeatureWritePolicy,
     IpsFeatureStat,
     RiskPrecision,
     SequenceFeatureRow,
@@ -208,8 +209,17 @@ class ProxyClient:
         return int(data.get("value", 0)) != 0
 
     def add_feature_points(self, key: str, points: Iterable[FeaturePoint]) -> None:
+        self.add_feature_points_with_policy(key, points, FeatureWritePolicy.UPSERT)
+
+    def add_feature_points_with_policy(
+        self,
+        key: str,
+        points: Iterable[FeaturePoint],
+        policy: FeatureWritePolicy = FeatureWritePolicy.UPSERT,
+    ) -> None:
         body = self._key_body(key)
         body["points"] = [_feature_point_body(point) for point in points]
+        body["policy"] = int(policy)
         self._post("/ProxyService/FeatureAdd", body)
 
     def query_feature_points(
