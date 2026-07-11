@@ -54,15 +54,6 @@ struct PageRecordHeader {
 }
 
 #[derive(Debug)]
-pub(super) struct EncodedPageRecord {
-    pub(super) bytes: Vec<u8>,
-    pub(super) logical_len: usize,
-    pub(super) stored_len: usize,
-    pub(super) compression: PageRecordCompression,
-    pub(super) sha256_hex: String,
-}
-
-#[derive(Debug)]
 pub(super) struct EncodedPageRecordMeta {
     pub(super) record_len: usize,
     pub(super) logical_len: usize,
@@ -82,33 +73,6 @@ pub(super) struct DecodedPageRecord {
 pub(super) struct LogicalRangeRead {
     pub(super) bytes: Vec<u8>,
     pub(super) compressed_records_read: u64,
-}
-
-pub(super) fn encode_page_record(
-    payload: &[u8],
-    page_id: u64,
-    object_id: Option<u64>,
-    routing_slot: Option<u32>,
-    extent_id: u64,
-    options: BlockStoreOptions,
-) -> Result<EncodedPageRecord, BlockStoreError> {
-    let mut record = Vec::with_capacity(PAGE_RECORD_HEADER_LEN + payload.len());
-    let meta = encode_page_record_into(
-        payload,
-        page_id,
-        object_id,
-        routing_slot,
-        extent_id,
-        options,
-        &mut record,
-    )?;
-    Ok(EncodedPageRecord {
-        bytes: record,
-        logical_len: meta.logical_len,
-        stored_len: meta.stored_len,
-        compression: meta.compression,
-        sha256_hex: meta.sha256_hex,
-    })
 }
 
 pub(super) fn encode_page_record_into(
