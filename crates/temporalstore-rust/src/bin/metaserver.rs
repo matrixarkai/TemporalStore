@@ -1672,6 +1672,13 @@ struct MasterOpenTableResponse {
     open_version: u64,
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct MasterRegisterServerResponse {
+    status: Status,
+    #[serde(default)]
+    redirect_endpoint: String,
+}
+
 #[derive(Debug, serde::Deserialize)]
 struct FeManageRequest {
     #[serde(default)]
@@ -3572,7 +3579,7 @@ fn handle_master_service_route(
         ("POST", "/MasterService/RegisterServer") => {
             parse_or(&request.body, |req: MasterRegisterServerRequest| {
                 let server_addr = master_server_addr(&req);
-                backend_call!(
+                let response = backend_call!(
                     meta,
                     register_server,
                     RegisterServerRequest {
@@ -3581,7 +3588,11 @@ fn handle_master_service_route(
                         location: req.location,
                         binary_version: req.binary_version,
                     }
-                )
+                );
+                MasterRegisterServerResponse {
+                    status: response.status,
+                    redirect_endpoint: String::new(),
+                }
             })
         }
         ("GET", "/MasterService/GetInfo") => json_response(200, &backend_call!(meta, info)),
@@ -3590,14 +3601,18 @@ fn handle_master_service_route(
         }
         ("POST", "/MasterService/UnRegisterServer") => {
             parse_or(&request.body, |req: MasterRegisterServerRequest| {
-                backend_call!(
+                let response = backend_call!(
                     meta,
                     drop_server,
                     StateChangeRequest {
                         endpoint: master_server_addr(&req),
                         freeze_cooldown_ms: 0,
                     }
-                )
+                );
+                MasterRegisterServerResponse {
+                    status: response.status,
+                    redirect_endpoint: String::new(),
+                }
             })
         }
         _ => return None,
