@@ -559,6 +559,9 @@ components:
           properties:
             value:
               $ref: '#/components/schemas/ByteArray'
+            ttl_ms:
+              type: integer
+              format: int64
     StringPutWithTtlRequest:
       allOf:
         - $ref: '#/components/schemas/StringPutRequest'
