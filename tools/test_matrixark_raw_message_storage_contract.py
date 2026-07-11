@@ -10,6 +10,7 @@ from matrixark_raw_message_storage_contract import (
     contract_report,
     normalize_raw_backend,
     raw_message_marker,
+    raw_message_payload_sha256,
     raw_message_payload_size_bytes,
     raw_message_should_spill_to_object_store,
     raw_message_time_ms,
@@ -34,6 +35,12 @@ class RawMessageStorageContractTest(unittest.TestCase):
         self.assertEqual(report["event_key_hash"], 42)
         self.assertEqual(report["timeline_key"], raw_message_timeline_key(1781777200000, 42))
         self.assertTrue(report["uses_timestamp_and_event_key"])
+        self.assertTrue(report["cold_storage"])
+        self.assertEqual(report["write_policy"], "ColdStoreOnly")
+        self.assertEqual(report["cache_policy"], "NoCachePromotion")
+        self.assertEqual(report["promotion_policy"], "NoPromotion")
+        self.assertEqual(report["metadata_backend"], "temporalstore")
+        self.assertTrue(report["metadata_persisted_in_temporalstore"])
 
     def test_matrixkv_target_resolves_storage_object_key(self) -> None:
         target = RawMessageStorageTarget.matrixkv("user:deeproute", "raw_agent_messages", "codex/raw-1")
@@ -64,6 +71,8 @@ class RawMessageStorageContractTest(unittest.TestCase):
         self.assertEqual(marker["timeline_key"], raw_message_timeline_key(1781777200000, 42))
         self.assertEqual(marker["value_encoding"], "raw_body_utf8")
         self.assertEqual(marker["object_key"], "matrixkv:user:raw:k1")
+        self.assertEqual(marker["metadata_backend"], "matrixkv")
+        self.assertEqual(marker["metadata_object_key"], "matrixkv:user:raw:k1")
 
     def test_same_timestamp_uses_event_key_for_unique_timeline_key(self) -> None:
         timestamp = 1781777200000
@@ -83,7 +92,13 @@ class RawMessageStorageContractTest(unittest.TestCase):
         self.assertTrue(report["spilled_to_object_store"])
         self.assertEqual(report["stored_value_mode"], "object_ref_json")
         self.assertEqual(report["object_ref"]["backend"], "objectstore")
-        self.assertIn("objectstore://matrixark/raw-agent-messages/", report["object_ref"]["object_key"])
+        self.assertEqual(report["metadata_backend"], "temporalstore")
+        self.assertTrue(report["metadata_persisted_in_temporalstore"])
+        self.assertEqual(report["object_ref"]["metadata_backend"], "temporalstore")
+        self.assertEqual(report["object_store_name"], "MatrixObjectStore")
+        self.assertIn("matrixobjectstore://matrixark/raw-agent-messages/", report["object_ref"]["object_key"])
+        self.assertEqual(report["payload_sha256"], raw_message_payload_sha256(message))
+        self.assertEqual(report["object_ref"]["payload_sha256"], report["payload_sha256"])
         self.assertEqual(report["payload_size_bytes"], 128)
         self.assertEqual(report["max_inline_bytes"], 16)
 
@@ -99,9 +114,14 @@ class RawMessageStorageContractTest(unittest.TestCase):
         report = contract_report(message, target, event_id_hash=9)
         self.assertEqual(report["target"]["backend"], "s3")
         self.assertEqual(report["stored_value_mode"], "object_ref_json")
+        self.assertEqual(report["metadata_backend"], "temporalstore")
+        self.assertTrue(report["metadata_persisted_in_temporalstore"])
+        self.assertEqual(report["metadata_target"]["backend"], "temporalstore")
+        self.assertEqual(report["metadata_target"]["table"], "context_raw_agent_messages")
 
     def test_object_store_backend_aliases_are_supported(self) -> None:
         self.assertEqual(normalize_raw_backend("object_store"), "objectstore")
+        self.assertEqual(normalize_raw_backend("matrix_object_store"), "objectstore")
         self.assertEqual(normalize_raw_backend("aws_s3"), "s3")
 
     def test_backend_aliases_match_rust_api_names(self) -> None:
