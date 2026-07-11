@@ -1012,8 +1012,7 @@ impl TemporalStoreClient {
     ) -> Result<TemporalStoreTable, ClientError> {
         let namespace = namespace.into();
         let table_name = table_name.into();
-        let options = self.sync_table_topology(namespace.clone(), table_name.clone())?;
-        Ok(self.open_table(namespace, table_name, options))
+        self.open_table_from_meta_ref(&namespace, &table_name)
     }
 
     pub fn cached_table(
@@ -1023,20 +1022,39 @@ impl TemporalStoreClient {
     ) -> Option<TemporalStoreTable> {
         let namespace = namespace.into();
         let table_name = table_name.into();
+        self.cached_table_ref(&namespace, &table_name)
+    }
+
+    pub(crate) fn cached_table_ref(
+        &self,
+        namespace: &str,
+        table_name: &str,
+    ) -> Option<TemporalStoreTable> {
         let options = self
             .inner
             .tables
             .lock()
             .expect("client table cache lock poisoned")
-            .get(&table_combine_name(&namespace, &table_name))
+            .get(&table_combine_name(namespace, table_name))
             .cloned()?;
         Some(TemporalStoreTable {
             client: self.clone(),
-            namespace,
-            table_name,
+            namespace: namespace.to_string(),
+            table_name: table_name.to_string(),
             shard_id: self.inner.options.default_shard_id,
             options,
         })
+    }
+
+    pub(crate) fn open_table_from_meta_ref(
+        &self,
+        namespace: &str,
+        table_name: &str,
+    ) -> Result<TemporalStoreTable, ClientError> {
+        let namespace = namespace.to_string();
+        let table_name = table_name.to_string();
+        let options = self.sync_table_topology(namespace.clone(), table_name.clone())?;
+        Ok(self.open_table(namespace, table_name, options))
     }
 
     pub fn deployment_placement_policy(
@@ -2493,10 +2511,10 @@ impl TemporalStoreClient {
         namespace: String,
         table_name: String,
     ) -> Result<TemporalStoreTable, ClientError> {
-        if let Some(table) = self.cached_table(namespace.clone(), table_name.clone()) {
+        if let Some(table) = self.cached_table_ref(&namespace, &table_name) {
             return Ok(table);
         }
-        self.open_table_from_meta(namespace, table_name)
+        self.open_table_from_meta_ref(&namespace, &table_name)
     }
 
     pub fn matrixark_batch_append_records(
@@ -2651,10 +2669,10 @@ impl TemporalStoreClient {
                 "matrixark native scan candidates requires table".to_string(),
             ));
         }
-        let table = self
-            .cached_table(namespace.clone(), table_name.clone())
-            .map(Ok)
-            .unwrap_or_else(|| self.open_table_from_meta(namespace, table_name))?;
+        let table = match self.cached_table_ref(&namespace, &table_name) {
+            Some(table) => table,
+            None => self.open_table_from_meta_ref(&namespace, &table_name)?,
+        };
         table.matrixark_scan_candidates_native_json(request)
     }
 
@@ -2683,10 +2701,10 @@ impl TemporalStoreClient {
                 "matrixark native context pack requires table".to_string(),
             ));
         }
-        let table = self
-            .cached_table(namespace.clone(), table_name.clone())
-            .map(Ok)
-            .unwrap_or_else(|| self.open_table_from_meta(namespace, table_name))?;
+        let table = match self.cached_table_ref(&namespace, &table_name) {
+            Some(table) => table,
+            None => self.open_table_from_meta_ref(&namespace, &table_name)?,
+        };
         table.matrixark_retrieve_context_pack_native_json(request)
     }
 

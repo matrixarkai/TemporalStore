@@ -3450,16 +3450,18 @@ impl ProxyService {
             .stats
             .execute_requests
             .fetch_add(1, Ordering::Relaxed);
-        if let Some(status) =
-            self.check_admission_for_commands(std::slice::from_ref(&request.command))
-        {
+        let command = request.command;
+        if let Some(status) = self.check_admission_for_commands(std::slice::from_ref(&command)) {
             return execute_error(status.code, status.message);
         }
         self.invalidate_cached_routes_if_meta_changed();
-        let response = self
-            .table_for_request(request.namespace, request.table_name)
-            .and_then(|table| table.execute(request.command))
-            .unwrap_or_else(|err| execute_error("server_error", err.to_string()));
+        let response = match self.table_for_request_ref(&request.namespace, &request.table_name) {
+            Ok(table) => table.execute(command).unwrap_or_else(|err| execute_error(
+                "server_error",
+                err.to_string(),
+            )),
+            Err(err) => execute_error("server_error", err.to_string()),
+        };
         self.sync_client_stats_throttled();
         response
     }
@@ -3480,7 +3482,7 @@ impl ProxyService {
         }
         self.invalidate_cached_routes_if_meta_changed();
         let response = self
-            .table_for_request(request.namespace, request.table_name)
+            .table_for_request_ref(&request.namespace, &request.table_name)
             .and_then(|table| table.batch_execute(request.commands))
             .unwrap_or_else(|err| BatchExecuteResponse {
                 status: Status::error("server_error", err.to_string()),
@@ -3508,21 +3510,38 @@ impl ProxyService {
             .aggregator
             .clone()
             .unwrap_or_else(|| request.htype.aggregator().to_string());
+        let table = match self
+            .table_for_request_ref(&request.namespace, &request.table_name)
+        {
+            Ok(table) => table,
+            Err(err) => {
+        let status = Status::error("server_error", err.to_string());
+                return serde_json::json!({
+                    "status": status,
+                    "result_list": Vec::<serde_json::Value>::new(),
+                    "responses": Vec::<ExecuteResponse>::new(),
+                });
+            }
+        };
         let mut result_list = Vec::with_capacity(bounds.len());
         let mut responses = Vec::with_capacity(bounds.len());
         let mut status = Status::ok();
         for (start_ms, end_ms) in bounds {
-            let response = self.table_execute(ProxyTableExecuteRequest {
-                namespace: request.namespace.clone(),
-                table_name: request.table_name.clone(),
-                command: Command::RiskFamilyQuery {
-                    family: RiskFamily::H,
-                    key: request.key.clone(),
-                    start_ms,
-                    end_ms,
-                    aggregator: aggregator.clone(),
-                },
-            });
+            let command = Command::RiskFamilyQuery {
+                family: RiskFamily::H,
+                key: request.key.clone(),
+                start_ms,
+                end_ms,
+                aggregator: aggregator.clone(),
+            };
+            let response = if let Some(status) = self.check_admission_for_commands(std::slice::from_ref(&command)) {
+                execute_error(status.code, status.message)
+            } else {
+                table.execute(command).unwrap_or_else(|err| execute_error(
+                    "server_error",
+                    err.to_string(),
+                ))
+            };
             if !response.status.ok && status.ok {
                 status = response.status.clone();
             }
@@ -3545,21 +3564,39 @@ impl ProxyService {
 
     fn risk_cpc_query(&self, request: ProxyRiskCpcQueryCommandRequest) -> serde_json::Value {
         let bounds = risk_cpc_query_bounds(&request);
+        let table = match self
+            .table_for_request_ref(&request.namespace, &request.table_name)
+        {
+            Ok(table) => table,
+            Err(err) => {
+                let status = Status::error("server_error", err.to_string());
+                return serde_json::json!({
+                    "status": status,
+                    "count_list": Vec::<i64>::new(),
+                    "detail_lists": Vec::<serde_json::Value>::new(),
+                    "responses": Vec::<ExecuteResponse>::new(),
+                });
+            }
+        };
         let mut count_list = Vec::with_capacity(bounds.len());
         let mut responses = Vec::with_capacity(bounds.len());
         let mut status = Status::ok();
         for (start_ms, end_ms) in bounds {
-            let response = self.table_execute(ProxyTableExecuteRequest {
-                namespace: request.namespace.clone(),
-                table_name: request.table_name.clone(),
-                command: Command::RiskFamilyQuery {
-                    family: RiskFamily::Cpc,
-                    key: request.key.clone(),
-                    start_ms,
-                    end_ms,
-                    aggregator: request.aggregator.clone(),
-                },
-            });
+            let command = Command::RiskFamilyQuery {
+                family: RiskFamily::Cpc,
+                key: request.key.clone(),
+                start_ms,
+                end_ms,
+                aggregator: request.aggregator.clone(),
+            };
+            let response = if let Some(status) = self.check_admission_for_commands(std::slice::from_ref(&command)) {
+                execute_error(status.code, status.message)
+            } else {
+                table.execute(command).unwrap_or_else(|err| execute_error(
+                    "server_error",
+                    err.to_string(),
+                ))
+            };
             if !response.status.ok && status.ok {
                 status = response.status.clone();
             }
@@ -3604,11 +3641,19 @@ impl ProxyService {
         namespace: String,
         table_name: String,
     ) -> Result<crate::client::TemporalStoreTable, crate::client::ClientError> {
+        self.table_for_request_ref(&namespace, &table_name)
+    }
+
+    fn table_for_request_ref(
+        &self,
+        namespace: &str,
+        table_name: &str,
+    ) -> Result<crate::client::TemporalStoreTable, crate::client::ClientError> {
         let client = self.client();
         client
-            .cached_table(namespace.clone(), table_name.clone())
+            .cached_table_ref(namespace, table_name)
             .map(Ok)
-            .unwrap_or_else(|| client.open_table_from_meta(namespace, table_name))
+            .unwrap_or_else(|| client.open_table_from_meta_ref(namespace, table_name))
     }
 
     pub fn update_options(&self, options: ProxyOptions) {
