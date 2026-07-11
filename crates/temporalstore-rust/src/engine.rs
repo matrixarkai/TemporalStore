@@ -53,8 +53,8 @@ use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextEmbedding,
     ContextEntity, ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit,
     ContextSummaryDirtyMarker, EventReplicationMode, EventReplicationSelectionReport,
-    ExecuteRequest, ExecuteResponse, FeaturePoint, FeatureWritePolicy, InternalContextIndex,
-    IpsStats, ReplicatedBatchExecuteRequest, ReplicatedBatchExecuteResponse,
+    ExecuteRequest, ExecuteResponse, FeatureFilter, FeaturePoint, FeatureWritePolicy,
+    InternalContextIndex, IpsStats, ReplicatedBatchExecuteRequest, ReplicatedBatchExecuteResponse,
     ReplicatedExecuteRequest, RiskFamily, RiskFolType, SequenceFeatureRow, SequenceQuerySpec,
     ShardId, Status, StringSetCondition,
 };
@@ -514,11 +514,14 @@ impl TemporalEngine {
                 | Command::HashLen { .. }
                 | Command::SetMembers { .. }
                 | Command::FeatureQuery { .. }
+                | Command::FeatureQueryFiltered { .. }
                 | Command::FeatureAggQuery { .. }
                 | Command::SequenceQuery { .. }
                 | Command::IpsQueryLast { .. }
                 | Command::IpsQueryRange { .. }
                 | Command::IpsCount { .. }
+                | Command::IpsQueryRangeWithOptions { .. }
+                | Command::IpsFilter { .. }
         );
         if !read_command {
             return None;
@@ -756,6 +759,38 @@ impl TemporalEngine {
                     },
                 ),
             }),
+            Command::FeatureQueryFiltered {
+                key,
+                start_ms,
+                end_ms,
+                count,
+                filters,
+            } => {
+                if shard
+                    .expires_at_ms
+                    .get(key)
+                    .map(|expires_at| *expires_at <= now_ms())
+                    .unwrap_or(false)
+                {
+                    return None;
+                }
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::FeaturePoints {
+                        points: read_filtered_feature_points(
+                            &self.cache,
+                            &self.page_store,
+                            request.shard_id,
+                            shard,
+                            key,
+                            *start_ms,
+                            *end_ms,
+                            count.unwrap_or(5000).min(5000),
+                            filters,
+                        ),
+                    },
+                })
+            }
             Command::FeatureAggQuery {
                 key,
                 start_ms,
@@ -869,6 +904,48 @@ impl TemporalEngine {
                             *start_ms,
                             *end_ms,
                             *count,
+                        ),
+                    },
+                })
+            }
+            Command::IpsQueryRangeWithOptions {
+                key,
+                start_ms,
+                end_ms,
+                count,
+                action_type,
+                table_id,
+            }
+            | Command::IpsFilter {
+                key,
+                start_ms,
+                end_ms,
+                count,
+                action_type,
+                table_id,
+            } => {
+                if shard
+                    .expires_at_ms
+                    .get(key)
+                    .map(|expires_at| *expires_at <= now_ms())
+                    .unwrap_or(false)
+                {
+                    return None;
+                }
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::FeaturePoints {
+                        points: ips_points_in_range_with_options(
+                            &self.cache,
+                            &self.page_store,
+                            request.shard_id,
+                            shard,
+                            key,
+                            *start_ms,
+                            *end_ms,
+                            *count,
+                            *action_type,
+                            *table_id,
                         ),
                     },
                 })
@@ -8878,45 +8955,9 @@ fn execute_on_shard(
             filters,
         } => {
             let limit = count.unwrap_or(feature_max_size).min(feature_max_size);
-            let points = shard
-                .features
-                .get(&key)
-                .map(|series| {
-                    let refs = timestamp_page_refs_in_range(series, start_ms, end_ms, limit);
-                    read_feature_points_cached_batch(cache, page_store, shard_id, &refs)
-                        .into_iter()
-                        .filter(|point| {
-                            let Some(row) = SequenceFeatureRow::decode_cpp_feature_value(
-                                point.timestamp_ms,
-                                &point.value,
-                            ) else {
-                                return false;
-                            };
-                            filters
-                                .iter()
-                                .all(|filter| sequence_filter_matches(&row, filter))
-                        })
-                        .collect()
-                })
-                .unwrap_or_else(|| {
-                    let addresses = slot_index_object_page_addresses(shard, "feature", &key);
-                    read_feature_points_from_pages_in_range(
-                        cache, page_store, shard_id, &addresses, start_ms, end_ms, limit,
-                    )
-                    .into_iter()
-                    .filter(|point| {
-                        let Some(row) = SequenceFeatureRow::decode_cpp_feature_value(
-                            point.timestamp_ms,
-                            &point.value,
-                        ) else {
-                            return false;
-                        };
-                        filters
-                            .iter()
-                            .all(|filter| sequence_filter_matches(&row, filter))
-                    })
-                    .collect()
-                });
+            let points = read_filtered_feature_points(
+                cache, page_store, shard_id, shard, &key, start_ms, end_ms, limit, &filters,
+            );
             CommandResponse::FeaturePoints { points }
         }
         Command::FeatureReplace {
@@ -16439,6 +16480,34 @@ fn read_feature_points_in_range(
                 cache, page_store, shard_id, &addresses, start_ms, end_ms, limit,
             )
         })
+}
+
+fn read_filtered_feature_points(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    key: &str,
+    start_ms: u64,
+    end_ms: u64,
+    limit: usize,
+    filters: &[FeatureFilter],
+) -> Vec<FeaturePoint> {
+    read_feature_points_in_range(
+        cache, page_store, shard_id, shard, "feature", key, start_ms, end_ms, limit,
+    )
+    .into_iter()
+    .filter(|point| {
+        let Some(row) =
+            SequenceFeatureRow::decode_cpp_feature_value(point.timestamp_ms, &point.value)
+        else {
+            return false;
+        };
+        filters
+            .iter()
+            .all(|filter| sequence_filter_matches(&row, filter))
+    })
+    .collect()
 }
 
 fn read_feature_aggregate(
