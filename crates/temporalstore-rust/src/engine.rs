@@ -10988,6 +10988,9 @@ fn mark_slot_index_object_deleted(
     let mut removed = false;
     let mut removed_addresses = Vec::new();
     ensure_slot_index_lookup_maps(shard);
+    if !shard.slot_index.object_key_lookup.contains_key(key) {
+        return false;
+    }
     let lookup_enabled = !shard.slot_index.object_component_lookup.is_empty();
     let target_slots = slot_index_target_slots_for_object_key(shard, key);
     removed_addresses.reserve(slot_page_ref_capacity_for_slots(shard, &target_slots));
