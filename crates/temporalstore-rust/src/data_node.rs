@@ -1879,16 +1879,12 @@ impl DataNodeRuntime {
             shard_id,
             commands,
         });
-        for (idx, key) in command_metadata {
-            if response
-                .responses
-                .get(idx)
-                .map(|response| response.status.ok)
-                .unwrap_or(false)
-            {
-                mark_dirty(&self.inner.dirty, shard_id, key.as_deref());
-            }
-        }
+        mark_dirty_for_successful_commands_from_metadata(
+            &self.inner.dirty,
+            shard_id,
+            &command_metadata,
+            &response.responses,
+        );
         response
     }
 
@@ -1926,17 +1922,12 @@ impl DataNodeRuntime {
             commands,
         });
         if response.status.ok {
-            for (idx, key) in command_metadata {
-                if response
-                    .response
-                    .responses
-                    .get(idx)
-                    .map(|response| response.status.ok)
-                    .unwrap_or(false)
-                {
-                    mark_dirty(&self.inner.dirty, shard_id, key.as_deref());
-                }
-            }
+            mark_dirty_for_successful_commands_from_metadata(
+                &self.inner.dirty,
+                shard_id,
+                &command_metadata,
+                &response.response.responses,
+            );
         }
         response
     }
@@ -4395,6 +4386,19 @@ fn mark_dirty_for_successful_commands(
     for (command, response) in commands.iter().zip(responses.iter()) {
         if response.status.ok && is_write_command(command) {
             mark_dirty(dirty, shard_id, command_key(command));
+        }
+    }
+}
+
+fn mark_dirty_for_successful_commands_from_metadata(
+    dirty: &Mutex<DirtyTracker>,
+    shard_id: ShardId,
+    command_metadata: &[(usize, Option<String>)],
+    responses: &[ExecuteResponse],
+) {
+    for (idx, key) in command_metadata.iter() {
+        if responses.get(*idx).map_or(false, |response| response.status.ok) {
+            mark_dirty(dirty, shard_id, key.as_deref());
         }
     }
 }
