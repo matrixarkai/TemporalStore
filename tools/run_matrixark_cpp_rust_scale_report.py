@@ -128,6 +128,17 @@ def default_canonical_release_out_dir() -> Path:
 def ensure_local_topology(args: argparse.Namespace) -> Json:
     """Start local C++ topology for loopback scale runs when it is absent."""
 
+    requested_backends = set(getattr(args, "backends", []) or [])
+    worker_backend = str(getattr(args, "backend_worker", "") or "")
+    if worker_backend:
+        requested_backends = {worker_backend}
+    if "cpp" not in requested_backends and getattr(args, "skip_context_pipeline", False):
+        return {
+            "status": "skipped",
+            "reason": "cpp_backend_not_requested_for_raw_only_run",
+            "metaserver": args.metaserver,
+            "backends": sorted(requested_backends),
+        }
     if getattr(args, "no_auto_start_local_topology", False):
         return {"status": "skipped", "reason": "disabled_by_flag", "metaserver": args.metaserver}
     if not _is_loopback_metaserver(str(args.metaserver)):
@@ -2655,7 +2666,14 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
     }
     node_path = ["tenant:tenant_scale", "user:user_scale", f"session:scale-{run_id}", "conversation:scale"]
     try:
-        readiness = server.call_tool("matrixark_backend_ready", {"probe": True, "timeout_ms": args.readiness_timeout_ms})
+        if args.skip_context_pipeline and backend == "rust":
+            readiness = {
+                "status": "ready",
+                "skipped": True,
+                "reason": "rust_raw_storage_uses_local_cli_without_metaserver_topology",
+            }
+        else:
+            readiness = server.call_tool("matrixark_backend_ready", {"probe": True, "timeout_ms": args.readiness_timeout_ms})
         if readiness.get("status") != "ready":
             result = {
                 "backend": backend,
