@@ -3904,6 +3904,33 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             "native_context_pack",
         )
 
+    def test_direct_retrieve_reuses_native_context_pack_response_cache(self) -> None:
+        client = _NativeContextPackClient()
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._client = client
+        adapter._storage_prefix = "matrixark:test:native-pack-cache"
+        adapter._record_hash_key = f"{adapter._storage_prefix}:records"
+        adapter._index_key = f"{adapter._storage_prefix}:record_index"
+        adapter._count_key = f"{adapter._storage_prefix}:record_count"
+        adapter._entry_count_cache = None
+
+        request = {
+            "query": "Who approved the GPU budget?",
+            "scope": {"tenant_hash": 11, "user_hash": 22, "session_hash": 33},
+            "max_context_tokens": 2048,
+            "ranking": {"max_selected_refs": 8},
+            "include_retrieval_metrics": True,
+        }
+
+        first = adapter.retrieve(dict(request))
+        second = adapter.retrieve(dict(request))
+
+        self.assertEqual(len(client.calls), 1)
+        self.assertEqual(first["pack_id"], second["pack_id"])
+        self.assertTrue(second["retrieval_metrics"]["context_pack_response_cache_hit"])
+        self.assertEqual(adapter._direct_context_pack_response_cache_hits_total, 1)
+        self.assertEqual(adapter._direct_context_pack_response_cache_misses_total, 1)
+
     def test_direct_retrieve_derives_native_hash_scope_from_plain_ids(self) -> None:
         client = _NativeContextPackClient()
         adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
