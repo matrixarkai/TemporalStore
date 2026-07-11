@@ -977,44 +977,30 @@ impl LocalBlockStore {
                 return Vec::new();
             };
             let read_result = self.read_with_cache_policy(&address, no_cache_fill);
-            let mut results = (0..addresses.len())
-                .map(|_| {
-                    Err(BlockStoreError::Io(std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        "coalesced block read result missing",
-                    )))
-                })
-                .collect::<Vec<_>>();
+            let mut results = empty_optional_read_results(addresses.len());
             match read_result {
                 Ok(bytes) => fill_duplicate_read_success(&mut results, indexes, bytes),
                 Err(err) => {
                     let err_text = err.to_string();
                     let mut iter = indexes.into_iter();
                     if let Some(first_index) = iter.next() {
-                        results[first_index] = Err(err);
+                        results[first_index] = Some(Err(err));
                     }
                     for index in iter {
-                        results[index] = Err(BlockStoreError::Io(std::io::Error::new(
+                        results[index] = Some(Err(BlockStoreError::Io(std::io::Error::new(
                             std::io::ErrorKind::Other,
                             err_text.clone(),
-                        )));
+                        ))));
                     }
                 }
             }
-            return results;
+            return finalize_optional_read_results(results);
         }
         if duplicate_groups.len() < addresses.len() {
             let unique_addresses = duplicate_groups.keys().cloned().collect::<Vec<_>>();
             let unique_results =
                 self.read_batch_with_cache_policy_deduped(&unique_addresses, no_cache_fill);
-            let mut results = (0..addresses.len())
-                .map(|_| {
-                    Err(BlockStoreError::Io(std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        "coalesced block read result missing",
-                    )))
-                })
-                .collect::<Vec<_>>();
+            let mut results = empty_optional_read_results(addresses.len());
             for (address, read_result) in unique_addresses.into_iter().zip(unique_results) {
                 let indexes = duplicate_groups.remove(&address).unwrap_or_default();
                 match read_result {
@@ -1023,18 +1009,18 @@ impl LocalBlockStore {
                         let err_text = err.to_string();
                         let mut iter = indexes.into_iter();
                         if let Some(first_index) = iter.next() {
-                            results[first_index] = Err(err);
+                            results[first_index] = Some(Err(err));
                         }
                         for index in iter {
-                            results[index] = Err(BlockStoreError::Io(std::io::Error::new(
+                            results[index] = Some(Err(BlockStoreError::Io(std::io::Error::new(
                                 std::io::ErrorKind::Other,
                                 err_text.clone(),
-                            )));
+                            ))));
                         }
                     }
                 }
             }
-            return results;
+            return finalize_optional_read_results(results);
         }
         self.read_batch_with_cache_policy_deduped(addresses, no_cache_fill)
     }
@@ -2191,20 +2177,40 @@ impl LocalBlockStore {
 }
 
 fn fill_duplicate_read_success(
-    results: &mut [Result<Vec<u8>, BlockStoreError>],
+    results: &mut [Option<Result<Vec<u8>, BlockStoreError>>],
     indexes: Vec<usize>,
     bytes: Vec<u8>,
 ) {
     let mut remaining = indexes.len();
     for index in indexes {
         if remaining == 1 {
-            results[index] = Ok(bytes);
+            results[index] = Some(Ok(bytes));
             break;
         } else {
-            results[index] = Ok(bytes.clone());
+            results[index] = Some(Ok(bytes.clone()));
             remaining = remaining.saturating_sub(1);
         }
     }
+}
+
+fn empty_optional_read_results(len: usize) -> Vec<Option<Result<Vec<u8>, BlockStoreError>>> {
+    (0..len).map(|_| None).collect()
+}
+
+fn finalize_optional_read_results(
+    results: Vec<Option<Result<Vec<u8>, BlockStoreError>>>,
+) -> Vec<Result<Vec<u8>, BlockStoreError>> {
+    results
+        .into_iter()
+        .map(|result| {
+            result.unwrap_or_else(|| {
+                Err(BlockStoreError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "coalesced block read result missing",
+                )))
+            })
+        })
+        .collect()
 }
 
 fn duplicate_read_success_results(
