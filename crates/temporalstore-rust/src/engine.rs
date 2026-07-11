@@ -34,7 +34,8 @@ use self::packed_pages::*;
 use self::product_model::*;
 use self::reports::*;
 use self::slot_store::{
-    read_slot_index_component_values, read_slot_index_value, slot_index_component_page_addresses,
+    read_component_page_address_values, read_slot_index_component_values, read_slot_index_value,
+    slot_index_component_page_addresses,
 };
 use self::state::*;
 use crate::block_store::BlockAppendRecordRef;
@@ -8150,11 +8151,28 @@ fn execute_on_shard(
                     mutated,
                 };
             }
-            let entries =
-                read_slot_index_component_values(cache, page_store, shard_id, shard, "hash", &key)
+            let entries = shard
+                .hashes
+                .get(&key)
+                .map(|fields| {
+                    read_component_page_address_values(
+                        cache,
+                        page_store,
+                        shard_id,
+                        fields
+                            .iter()
+                            .map(|(field, address)| (field.clone(), address.clone()))
+                            .collect(),
+                    )
+                })
+                .unwrap_or_else(|| {
+                    read_slot_index_component_values(
+                        cache, page_store, shard_id, shard, "hash", &key,
+                    )
                     .into_iter()
                     .map(|(field, value)| (field.unwrap_or_default(), value))
-                    .collect();
+                    .collect()
+                });
             CommandResponse::HashEntries { entries }
         }
         Command::HashLen { key } => {
