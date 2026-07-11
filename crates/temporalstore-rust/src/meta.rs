@@ -341,7 +341,7 @@ pub struct SafeModeReport {
 pub struct RegisterProxyRequest {
     #[serde(alias = "endpoint", deserialize_with = "endpoint_string_from_json")]
     pub proxy_addr: String,
-    #[serde(default, alias = "namespace_name")]
+    #[serde(default, alias = "namespace_name", alias = "namespace_")]
     pub namespace: String,
     #[serde(default, deserialize_with = "location_string_from_json")]
     pub location: String,
@@ -355,7 +355,7 @@ pub struct RegisterProxyRequest {
 pub struct ProxyHeartbeatRequest {
     #[serde(alias = "endpoint", deserialize_with = "endpoint_string_from_json")]
     pub proxy_addr: String,
-    #[serde(default, alias = "namespace_name")]
+    #[serde(default, alias = "namespace_name", alias = "namespace_")]
     pub namespace: String,
     #[serde(default)]
     pub config_version: u64,
@@ -485,7 +485,7 @@ impl<'de> Deserialize<'de> for AddTableRequest {
     {
         #[derive(Deserialize)]
         struct RawAddTableRequest {
-            #[serde(default, alias = "namespace_name")]
+            #[serde(default, alias = "namespace_name", alias = "namespace_")]
             namespace: String,
             #[serde(default, alias = "name")]
             table_name: String,
@@ -524,7 +524,7 @@ impl<'de> Deserialize<'de> for AddTableRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DeleteTableRequest {
-    #[serde(alias = "namespace_name")]
+    #[serde(alias = "namespace_name", alias = "namespace_")]
     pub namespace: String,
     #[serde(alias = "name")]
     pub table_name: String,
@@ -540,7 +540,7 @@ pub struct PartitionStateChangeRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UpdateTableRequest {
-    #[serde(alias = "namespace_name")]
+    #[serde(alias = "namespace_name", alias = "namespace_")]
     pub namespace: String,
     #[serde(alias = "name")]
     pub table_name: String,
@@ -625,7 +625,7 @@ pub struct TableServingOptionsPatch {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GetTableTopologyRequest {
-    #[serde(alias = "namespace_name")]
+    #[serde(alias = "namespace_name", alias = "namespace_")]
     pub namespace: String,
     #[serde(alias = "name")]
     pub table_name: String,
