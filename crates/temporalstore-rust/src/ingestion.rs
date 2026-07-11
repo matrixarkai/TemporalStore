@@ -1,5 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
+use std::sync::mpsc;
+use std::thread;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -398,13 +400,124 @@ impl TemporalEngine {
         let validation = validate_ingestion_batch(&request.records);
         let mut state = load_ingestion_state(&self.ingestion_dir()).unwrap_or_default();
         apply_flink_checkpoint_updates(&mut state, &request.flink_checkpoints);
-        let mut results = Vec::with_capacity(request.records.len());
+        let total_records = request.records.len();
+        let mut results = Vec::with_capacity(total_records);
         let mut accepted_count = 0usize;
         let mut failed_count = 0usize;
         let mut durable_duplicate_count = 0usize;
         let mut dead_letters = Vec::new();
         let now = now_unix_ms();
 
+        if request.stop_on_error {
+            for (index, record) in request.records.into_iter().enumerate() {
+                let durable_duplicate = durable_kafka_duplicate(&state, &record.source);
+                let batch_duplicate = validation.duplicate_indexes.contains(&index);
+                if batch_duplicate || durable_duplicate {
+                    if durable_duplicate && !batch_duplicate {
+                        durable_duplicate_count = durable_duplicate_count.saturating_add(1);
+                    }
+                    failed_count += 1;
+                    state.stats.duplicate_total = state.stats.duplicate_total.saturating_add(1);
+                    let status = Status::error(
+                        "duplicate_ingestion_record",
+                        "duplicate Kafka topic/partition/offset in ingestion ledger",
+                    );
+                    dead_letters.push(IngestionDeadLetter {
+                        index,
+                        source: record.source.clone(),
+                        shard_id: record.shard_id,
+                        status: status.clone(),
+                    });
+                    results.push(IngestionRecordResult {
+                        index,
+                        source: record.source,
+                        shard_id: record.shard_id,
+                        status,
+                        response: CommandResponse::Empty,
+                    });
+                    break;
+                }
+
+                let batch = self.batch_execute(BatchExecuteRequest {
+                    shard_id: record.shard_id,
+                    commands: vec![record.command],
+                });
+                let response = batch
+                    .responses
+                    .into_iter()
+                    .next()
+                    .unwrap_or(ExecuteResponse {
+                        status: Status::error(
+                            "missing_ingestion_response",
+                            "engine returned no response",
+                        ),
+                        response: CommandResponse::Empty,
+                    });
+                if response.status.ok {
+                    accepted_count += 1;
+                    commit_kafka_offset(&mut state, &record.source, now);
+                } else {
+                    failed_count += 1;
+                    dead_letters.push(IngestionDeadLetter {
+                        index,
+                        source: record.source.clone(),
+                        shard_id: record.shard_id,
+                        status: response.status.clone(),
+                    });
+                }
+                results.push(IngestionRecordResult {
+                    index,
+                    source: record.source,
+                    shard_id: record.shard_id,
+                    status: response.status,
+                    response: response.response,
+                });
+                if !response.status.ok {
+                    break;
+                }
+            }
+
+            let status = if !validation.status.ok {
+                validation.status
+            } else if failed_count == 0 {
+                Status::ok()
+            } else {
+                Status::error(
+                    "partial_ingestion_failure",
+                    format!("{failed_count} ingestion records failed"),
+                )
+            };
+            state.stats.accepted_total = state
+                .stats
+                .accepted_total
+                .saturating_add(accepted_count as u64);
+            state.stats.failed_total = state.stats.failed_total.saturating_add(failed_count as u64);
+            state.stats.dead_letter_total = state
+                .stats
+                .dead_letter_total
+                .saturating_add(dead_letters.len() as u64);
+            state.dead_letters.extend(dead_letters.clone());
+            state.stats.max_kafka_lag = compute_max_kafka_lag(&state, &request.kafka_high_watermarks);
+            let state_persist_status = persist_ingestion_state(&self.ingestion_dir(), &state);
+            return IngestionBatchReport {
+                status,
+                accepted_count,
+                failed_count,
+                duplicate_count: validation
+                    .duplicate_indexes
+                    .len()
+                    .saturating_add(durable_duplicate_count),
+                dead_letters,
+                kafka_offsets: state.kafka_offsets.values().cloned().collect(),
+                flink_checkpoints: state.flink_checkpoints.values().cloned().collect(),
+                max_kafka_lag: state.stats.max_kafka_lag,
+                state_persist_status,
+                results,
+            };
+        }
+
+        let mut per_record = vec![None; total_records];
+        let mut grouped = HashMap::<ShardId, Vec<(usize, IngestionSource, Command)>>::new();
         for (index, record) in request.records.into_iter().enumerate() {
             let durable_duplicate = durable_kafka_duplicate(&state, &record.source);
             let batch_duplicate = validation.duplicate_indexes.contains(&index);
@@ -424,57 +537,117 @@ impl TemporalEngine {
                     shard_id: record.shard_id,
                     status: status.clone(),
                 });
+                per_record[index] = Some((index, record.source, record.shard_id, status, CommandResponse::Empty));
+                continue;
+            }
+            grouped
+                .entry(record.shard_id)
+                .or_default()
+                .push((index, record.source, record.command));
+        }
+
+        type BatchRecordOutcome = (usize, IngestionSource, ShardId, ExecuteResponse);
+        let (tx, rx) = mpsc::channel::<Vec<BatchRecordOutcome>>();
+        thread::scope(|scope| {
+            for (shard_id, records) in grouped {
+                if records.is_empty() {
+                    continue;
+                }
+                let tx = tx.clone();
+                let mut commands = Vec::with_capacity(records.len());
+                let mut request_metadata = Vec::with_capacity(records.len());
+                for (index, source, command) in records {
+                    request_metadata.push((index, source));
+                    commands.push(command);
+                }
+                scope.spawn(move || {
+                    let response = self.batch_execute(BatchExecuteRequest {
+                        shard_id,
+                        commands,
+                    });
+                    let batch_results = if response.responses.len() != request_metadata.len() {
+                        let status = Status::error(
+                            "bad_response",
+                            "batch_execute returned unexpected response count",
+                        );
+                        request_metadata
+                            .into_iter()
+                            .map(|(index, source)| {
+                                (
+                                    index,
+                                    source,
+                                    shard_id,
+                                    ExecuteResponse {
+                                        status: status.clone(),
+                                        response: CommandResponse::Empty,
+                                    },
+                                )
+                            })
+                            .collect()
+                    } else {
+                        request_metadata
+                            .into_iter()
+                            .zip(response.responses)
+                            .map(|((index, source), response)| {
+                                (index, source, shard_id, response)
+                            })
+                            .collect()
+                    };
+                    let _ = tx.send(batch_results);
+                });
+            }
+        });
+        drop(tx);
+
+        for batch_results in rx {
+            for (index, source, shard_id, response) in batch_results {
+                per_record[index] = Some((index, source, shard_id, response.status, response.response));
+            }
+        }
+
+        for index in 0..total_records {
+            let Some((index, source, shard_id, status, response)) = per_record[index].take() else {
+                let status = Status::error("bad_response", "missing ingestion execution result");
+                failed_count = failed_count.saturating_add(1);
+                dead_letters.push(IngestionDeadLetter {
+                    index,
+                    source: IngestionSource::Api {
+                        request_id: format!("index-{index}"),
+                    },
+                    shard_id: 0,
+                    status: status.clone(),
+                });
                 results.push(IngestionRecordResult {
                     index,
-                    source: record.source,
-                    shard_id: record.shard_id,
+                    source: IngestionSource::Api {
+                        request_id: format!("index-{index}"),
+                    },
+                    shard_id: 0,
                     status,
                     response: CommandResponse::Empty,
                 });
-                if request.stop_on_error {
-                    break;
-                }
                 continue;
-            }
-
-            let batch = self.batch_execute(BatchExecuteRequest {
-                shard_id: record.shard_id,
-                commands: vec![record.command],
-            });
-            let response = batch
-                .responses
-                .into_iter()
-                .next()
-                .unwrap_or(ExecuteResponse {
-                    status: Status::error(
-                        "missing_ingestion_response",
-                        "engine returned no response",
-                    ),
-                    response: CommandResponse::Empty,
-                });
-            if response.status.ok {
-                accepted_count += 1;
-                commit_kafka_offset(&mut state, &record.source, now);
+            };
+            let status_ok = status.ok;
+            if status_ok {
+                accepted_count = accepted_count.saturating_add(1);
+                commit_kafka_offset(&mut state, &source, now);
             } else {
-                failed_count += 1;
+                failed_count = failed_count.saturating_add(1);
                 dead_letters.push(IngestionDeadLetter {
                     index,
-                    source: record.source.clone(),
-                    shard_id: record.shard_id,
-                    status: response.status.clone(),
+                    source: source.clone(),
+                    shard_id,
+                    status: status.clone(),
                 });
             }
-            let failed = !response.status.ok;
             results.push(IngestionRecordResult {
                 index,
-                source: record.source,
-                shard_id: record.shard_id,
-                status: response.status,
-                response: response.response,
+                source,
+                shard_id,
+                status,
+                response,
             });
-            if failed && request.stop_on_error {
-                break;
-            }
         }
 
         let status = if !validation.status.ok {

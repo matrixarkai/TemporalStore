@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Duration;
@@ -1645,6 +1646,7 @@ struct ProxyInner {
     options: RwLock<ProxyOptions>,
     client: RwLock<TemporalStoreClient>,
     last_client_stats: RwLock<ClientStats>,
+    route_invalidation_due_ms: AtomicU64,
     stats: RwLock<ProxyStats>,
     service_discovery: RwLock<ProxyServiceDiscoveryState>,
     boot_time_ms: u64,
@@ -1657,6 +1659,7 @@ impl ProxyService {
                 client: RwLock::new(proxy_client_from_options(&options)),
                 options: RwLock::new(options),
                 last_client_stats: RwLock::default(),
+                route_invalidation_due_ms: AtomicU64::new(0),
                 stats: RwLock::default(),
                 service_discovery: RwLock::default(),
                 boot_time_ms: now_ms(),
@@ -4442,7 +4445,11 @@ impl ProxyService {
     }
 
     fn check_admission_for_commands(&self, commands: &[Command]) -> Option<Status> {
-        let options = self.options();
+        let options = self
+            .inner
+            .options
+            .read()
+            .expect("proxy options lock poisoned");
         let status = proxy_policy_rejection(&options, commands);
         if status.is_some() {
             self.inner
@@ -4457,6 +4464,32 @@ impl ProxyService {
     fn invalidate_cached_routes_if_meta_changed(&self) {
         if self.client().route_cache_size() == 0 {
             return;
+        }
+        let now = now_ms();
+        let options = self
+            .inner
+            .options
+            .read()
+            .expect("proxy options lock poisoned");
+        let refresh_interval_ms = options.route_cache_ttl_ms.max(50);
+        let mut due = self
+            .inner
+            .route_invalidation_due_ms
+            .load(Ordering::Relaxed);
+        loop {
+            if now < due {
+                return;
+            }
+            let next_due = now.saturating_add(refresh_interval_ms);
+            match self.inner.route_invalidation_due_ms.compare_exchange(
+                due,
+                next_due,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(current_due) => due = current_due,
+            }
         }
         let _ = self.client().invalidate_routes_from_meta_topology();
         self.sync_client_stats();

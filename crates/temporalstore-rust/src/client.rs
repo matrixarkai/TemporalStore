@@ -2878,7 +2878,7 @@ impl TemporalStoreClient {
 
     fn batch_execute_with_http(
         &self,
-        request: BatchExecuteRequest,
+        request: &BatchExecuteRequest,
         http_options: HttpRequestOptions,
         continuous_failed_time_ms: Option<u64>,
     ) -> Result<BatchExecuteResponse, ClientError> {
@@ -5213,12 +5213,12 @@ impl TemporalStoreTable {
             shard_id: self.shard_id,
             commands,
         };
-        self.batch_execute_single_shard_with_retry(request, table_options)
+        self.batch_execute_single_shard_with_retry(&request, table_options)
     }
 
     fn batch_execute_single_shard_with_retry(
         &self,
-        request: BatchExecuteRequest,
+        request: &BatchExecuteRequest,
         table_options: TableOptions,
     ) -> Result<BatchExecuteResponse, ClientError> {
         let write = request.commands.iter().any(is_write);
@@ -5227,7 +5227,7 @@ impl TemporalStoreTable {
         let mut topology_refresh_used = false;
         let response = loop {
             let current = self.client.batch_execute_with_http(
-                request.clone(),
+                request,
                 self.http_options(),
                 Some(table_options.continuous_failed_time_ms),
             )?;
@@ -5276,6 +5276,8 @@ impl TemporalStoreTable {
         &self,
         commands: Vec<Command>,
     ) -> Result<BatchExecuteResponse, ClientError> {
+        use std::sync::mpsc;
+
         let mut groups: BTreeMap<ShardId, Vec<(usize, Command)>> = BTreeMap::new();
         let total = commands.len();
         for (index, command) in commands.into_iter().enumerate() {
@@ -5284,15 +5286,49 @@ impl TemporalStoreTable {
                 .or_default()
                 .push((index, command));
         }
+        if groups.len() <= 1 {
+            let mut single_group = groups.into_iter();
+            if let Some((shard_id, group)) = single_group.next() {
+                let commands: Vec<Command> = group.into_iter().map(|(_, command)| command).collect();
+                let response = self.batch_execute_single_shard_with_retry(
+                    &BatchExecuteRequest {
+                        shard_id,
+                        commands,
+                    },
+                    self.table_options(),
+                )?;
+                return Ok(response);
+            }
+            return Ok(BatchExecuteResponse {
+                status: Status::ok(),
+                responses: Vec::new(),
+            });
+        }
 
         let mut responses: Vec<Option<ExecuteResponse>> = vec![None; total];
-        for (shard_id, group) in groups {
-            let indexes: Vec<usize> = group.iter().map(|(index, _)| *index).collect();
-            let commands: Vec<Command> = group.into_iter().map(|(_, command)| command).collect();
-            let response = self.batch_execute_single_shard_with_retry(
-                BatchExecuteRequest { shard_id, commands },
-                self.table_options(),
-            )?;
+        let (tx, rx) = mpsc::channel();
+        let table_options = self.table_options();
+        thread::scope(|scope| {
+            for (shard_id, group) in groups {
+                let indexes: Vec<usize> = group.iter().map(|(index, _)| *index).collect();
+                let commands: Vec<Command> = group.into_iter().map(|(_, command)| command).collect();
+                let tx = tx.clone();
+                let table_options = table_options.clone();
+                scope.spawn(move || {
+                    let result = self.batch_execute_single_shard_with_retry(
+                        &BatchExecuteRequest {
+                            shard_id,
+                            commands,
+                        },
+                        table_options,
+                    );
+                    let _ = tx.send((indexes, result));
+                });
+            }
+        });
+        drop(tx);
+        for (indexes, result) in rx {
+            let response = result?;
             if !response.status.ok {
                 return Ok(BatchExecuteResponse {
                     status: response.status,

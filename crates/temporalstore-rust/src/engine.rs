@@ -410,6 +410,17 @@ impl TemporalEngine {
                 response: CommandResponse::Empty,
             };
         }
+        let command_for_post_write = if command_is_write && !config.async_storage {
+            Some(command.clone())
+        } else {
+            None
+        };
+        let command_updates_directly = command_updates_slot_index_directly(&command);
+        let command_for_keys = if command_is_write || !command_updates_directly {
+            Some(command.clone())
+        } else {
+            None
+        };
         let outcome = execute_on_shard(
             &self.cache,
             &self.page_store,
@@ -419,10 +430,14 @@ impl TemporalEngine {
             start_routing_slot,
             end_routing_slot,
             shard,
-            command.clone(),
+            command,
         );
         if outcome.mutated {
-            let object_keys = command_object_keys(&command);
+            let object_keys = if let Some(command) = command_for_keys.as_ref() {
+                command_object_keys(command)
+            } else {
+                Vec::new()
+            };
             if object_keys.is_empty() {
                 rebuild_slot_page_ownership(
                     request.shard_id,
@@ -462,9 +477,7 @@ impl TemporalEngine {
                     }
                 }
             }
-            if !command_updates_slot_index_directly(&command)
-                || shard.slot_index.slot_map.is_empty()
-            {
+            if !command_updates_directly || shard.slot_index.slot_map.is_empty() {
                 rebuild_slot_first_index(
                     request.shard_id,
                     shard,
@@ -6318,7 +6331,17 @@ impl TemporalEngine {
                 });
                 continue;
             }
-            let command_for_post_write = command.clone();
+            let command_updates_directly = command_updates_slot_index_directly(&command);
+            let command_for_keys = if write_command || !command_updates_directly {
+                Some(command.clone())
+            } else {
+                None
+            };
+            let command_for_post_write = if write_command && !config.async_storage {
+                Some(command.clone())
+            } else {
+                None
+            };
             let outcome = execute_on_shard(
                 &self.cache,
                 &self.page_store,
@@ -6332,7 +6355,11 @@ impl TemporalEngine {
             );
             if outcome.mutated {
                 mutated_any = true;
-                let object_keys = command_object_keys(&command_for_post_write);
+                let object_keys = if let Some(command) = command_for_keys.as_ref() {
+                    command_object_keys(command)
+                } else {
+                    Vec::new()
+                };
                 if object_keys.is_empty() {
                     needs_slot_page_ownership_rebuild = true;
                 } else {
@@ -6346,13 +6373,11 @@ impl TemporalEngine {
                         );
                     }
                 }
-                if !command_updates_slot_index_directly(&command_for_post_write)
-                    || shard.slot_index.slot_map.is_empty()
-                {
+                if !command_updates_directly || shard.slot_index.slot_map.is_empty() {
                     needs_slot_first_index_rebuild = true;
                 }
-                if write_command {
-                    sync_wal_commands.push(command_for_post_write);
+                if let Some(command) = command_for_post_write {
+                    sync_wal_commands.push(command);
                 }
             }
             responses.push(ExecuteResponse {
