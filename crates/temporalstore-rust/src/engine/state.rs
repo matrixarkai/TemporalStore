@@ -154,14 +154,26 @@ impl CoreIndex {
             .sum();
         let mut refs = Vec::with_capacity(page_ref_count);
         for (routing_slot, slot) in &self.slot_map {
-            refs.extend(
-                slot.page_index.iter().map(|(page_ref_key, page)| {
-                    (*routing_slot, page_ref_key.clone(), page.clone())
-                }),
-            );
+            refs.extend(slot.page_index.iter().filter_map(|(page_ref_key, page)| {
+                (!page.deleted).then(|| {
+                    (
+                        *routing_slot,
+                        page_ref_key.clone(),
+                        page.model_id.clone(),
+                        page.object_key.clone(),
+                        page.component.clone(),
+                    )
+                })
+            }));
         }
-        for (routing_slot, page_ref_key, page) in refs {
-            self.insert_object_page_lookup(routing_slot, page_ref_key, &page);
+        for (routing_slot, page_ref_key, model_id, object_key, component) in refs {
+            self.insert_object_page_lookup_parts(
+                routing_slot,
+                page_ref_key,
+                &model_id,
+                &object_key,
+                component.as_deref(),
+            );
         }
     }
 
@@ -174,34 +186,44 @@ impl CoreIndex {
         if page.deleted {
             return;
         }
+        self.insert_object_page_lookup_parts(
+            routing_slot,
+            page_ref_key,
+            &page.model_id,
+            &page.object_key,
+            page.component.as_deref(),
+        );
+    }
+
+    fn insert_object_page_lookup_parts(
+        &mut self,
+        routing_slot: u32,
+        page_ref_key: String,
+        model_id: &str,
+        object_key: &str,
+        component: Option<&str>,
+    ) {
         self.object_page_lookup
-            .entry(object_page_lookup_key(
-                &page.model_id,
-                &page.object_key,
-                page.component.as_deref(),
-            ))
+            .entry(object_page_lookup_key(model_id, object_key, component))
             .or_default()
             .insert(PageLookupRef {
                 routing_slot,
                 page_ref_key: page_ref_key.clone(),
             });
         self.object_component_lookup
-            .entry(object_component_lookup_key(
-                &page.model_id,
-                &page.object_key,
-            ))
+            .entry(object_component_lookup_key(model_id, object_key))
             .or_default()
             .insert(ComponentPageLookupRef {
-                component: page.component.clone(),
+                component: component.map(str::to_string),
                 routing_slot,
                 page_ref_key: page_ref_key.clone(),
             });
         self.object_key_lookup
-            .entry(page.object_key.clone())
+            .entry(object_key.to_string())
             .or_default()
             .insert(ObjectKeyPageLookupRef {
-                model_id: page.model_id.clone(),
-                component: page.component.clone(),
+                model_id: model_id.to_string(),
+                component: component.map(str::to_string),
                 routing_slot,
                 page_ref_key: page_ref_key.clone(),
             });
