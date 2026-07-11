@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use crate::types::Command;
 
 use super::routing::key_is_dropped_by_percent;
@@ -139,27 +141,27 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
     }
 }
 
-pub(super) fn command_routing_key(command: &Command) -> Option<String> {
+pub(super) fn command_routing_key(command: &Command) -> Option<Cow<'_, str>> {
     command_key(command)
-        .map(str::to_string)
+        .map(Cow::Borrowed)
         .or_else(|| context_command_key(command))
 }
 
-pub(super) fn context_command_key(command: &Command) -> Option<String> {
+pub(super) fn context_command_key(command: &Command) -> Option<Cow<'_, str>> {
     match command {
         Command::ContextUpsertNode { tenant_hash, node } => {
-            Some(context_node_key(*tenant_hash, node.node_hash))
+            Some(Cow::Owned(context_node_key(*tenant_hash, node.node_hash)))
         }
         Command::ContextGetNode {
             tenant_hash,
             node_hash,
-        } => Some(context_node_key(*tenant_hash, *node_hash)),
+        } => Some(Cow::Owned(context_node_key(*tenant_hash, *node_hash))),
         Command::ContextGetNodes {
             tenant_hash,
             node_hashes,
         } => node_hashes
             .first()
-            .map(|node_hash| context_node_key(*tenant_hash, *node_hash)),
+            .map(|node_hash| Cow::Owned(context_node_key(*tenant_hash, *node_hash))),
         Command::ContextWriteEvent {
             tenant_hash,
             node_hash,
@@ -174,7 +176,7 @@ pub(super) fn context_command_key(command: &Command) -> Option<String> {
             tenant_hash,
             node_hash,
             ..
-        } => Some(context_event_key(*tenant_hash, *node_hash)),
+        } => Some(Cow::Owned(context_event_key(*tenant_hash, *node_hash))),
         Command::ContextWriteIndexRef {
             tenant_hash,
             index_name,
@@ -188,100 +190,113 @@ pub(super) fn context_command_key(command: &Command) -> Option<String> {
             index_value_hash,
             scope_hash,
             ..
-        } => Some(context_index_key(
+        } => Some(Cow::Owned(context_index_key(
             *tenant_hash,
             index_name,
             *index_value_hash,
             *scope_hash,
-        )),
+        ))),
         Command::ContextQueryIndexIntersection {
             tenant_hash,
             predicates,
             ..
         } => predicates.first().map(|predicate| {
-            context_index_key(
+            Cow::Owned(context_index_key(
                 *tenant_hash,
                 &predicate.index_name,
                 predicate.index_value_hash,
                 predicate.scope_hash,
-            )
+            ))
         }),
         Command::ContextWritePackAudit { tenant_hash, audit } => {
-            Some(context_audit_key(*tenant_hash, audit.session_hash))
+            Some(Cow::Owned(context_audit_key(*tenant_hash, audit.session_hash)))
         }
         Command::ContextQueryPackAudit {
             tenant_hash,
             session_hash,
             ..
-        } => Some(context_audit_key(*tenant_hash, *session_hash)),
+        } => Some(Cow::Owned(context_audit_key(*tenant_hash, *session_hash))),
         Command::ContextMarkSummaryDirty {
             tenant_hash,
             marker,
-        } => Some(context_dirty_key(*tenant_hash, marker.node_hash)),
+        } => Some(Cow::Owned(context_dirty_key(*tenant_hash, marker.node_hash))),
         Command::ContextQuerySummaryDirty {
             tenant_hash,
             node_hash,
             ..
-        } => Some(context_dirty_key(*tenant_hash, *node_hash)),
+        } => Some(Cow::Owned(context_dirty_key(*tenant_hash, *node_hash))),
         Command::ContextUpsertEntity {
             tenant_hash,
             entity,
-        } => Some(context_entity_key(
+        } => Some(Cow::Owned(context_entity_key(
             *tenant_hash,
             entity.node_hash,
             entity.entity_hash,
-        )),
+        ))),
         Command::ContextGetEntity {
             tenant_hash,
             node_hash,
             entity_hash,
-        } => Some(context_entity_key(*tenant_hash, *node_hash, *entity_hash)),
+        } => Some(Cow::Owned(context_entity_key(
+            *tenant_hash,
+            *node_hash,
+            *entity_hash,
+        ))),
         Command::ContextQueryEntities {
             tenant_hash,
             node_hash,
             ..
-        } => Some(context_entity_collection_key(*tenant_hash, *node_hash)),
+        } => Some(Cow::Owned(context_entity_collection_key(
+            *tenant_hash,
+            *node_hash,
+        ))),
         Command::ContextUpsertChildRef {
             tenant_hash,
             child_ref,
-        } => Some(context_child_key(*tenant_hash, child_ref.parent_hash)),
+        } => Some(Cow::Owned(context_child_key(
+            *tenant_hash,
+            child_ref.parent_hash,
+        ))),
         Command::ContextQueryChildren {
             tenant_hash,
             parent_hash,
             ..
-        } => Some(context_child_key(*tenant_hash, *parent_hash)),
+        } => Some(Cow::Owned(context_child_key(*tenant_hash, *parent_hash))),
         Command::ContextUpsertEmbedding {
             tenant_hash,
             embedding,
-        } => Some(context_embedding_key(*tenant_hash, embedding.ref_hash)),
+        } => Some(Cow::Owned(context_embedding_key(
+            *tenant_hash,
+            embedding.ref_hash,
+        ))),
         Command::ContextQueryEmbeddings {
             tenant_hash,
             ref_hashes,
             ..
         } => ref_hashes
             .first()
-            .map(|ref_hash| context_embedding_key(*tenant_hash, *ref_hash)),
+            .map(|ref_hash| Cow::Owned(context_embedding_key(*tenant_hash, *ref_hash))),
         Command::ContextTraverseTree {
             tenant_hash,
             start_node_hash,
             ..
-        } => Some(context_child_key(*tenant_hash, *start_node_hash)),
+        } => Some(Cow::Owned(context_child_key(*tenant_hash, *start_node_hash))),
         Command::ContextUpsertSummary {
             tenant_hash,
             summary,
-        } => Some(context_summary_key(
+        } => Some(Cow::Owned(context_summary_key(
             *tenant_hash,
             summary.node_hash,
             summary.level,
-        )),
+        ))),
         Command::ContextQuerySummaries {
             tenant_hash,
             node_hash,
             level,
             ..
-        } => Some(context_summary_key(*tenant_hash, *node_hash, *level)),
+        } => Some(Cow::Owned(context_summary_key(*tenant_hash, *node_hash, *level))),
         Command::ContextWriteCompressionEvent { tenant_hash, event } => {
-            Some(context_compression_key(*tenant_hash, event.node_hash))
+            Some(Cow::Owned(context_compression_key(*tenant_hash, event.node_hash)))
         }
         Command::ContextQueryCompressionEvents {
             tenant_hash,
@@ -289,7 +304,7 @@ pub(super) fn context_command_key(command: &Command) -> Option<String> {
             ..
         } => node_hashes
             .first()
-            .map(|node_hash| context_compression_key(*tenant_hash, *node_hash)),
+            .map(|node_hash| Cow::Owned(context_compression_key(*tenant_hash, *node_hash))),
         Command::ContextCompressEvents {
             tenant_hash,
             node_hash,
@@ -299,7 +314,7 @@ pub(super) fn context_command_key(command: &Command) -> Option<String> {
             tenant_hash,
             node_hash,
             ..
-        } => Some(context_compression_key(*tenant_hash, *node_hash)),
+        } => Some(Cow::Owned(context_compression_key(*tenant_hash, *node_hash))),
         _ => None,
     }
 }

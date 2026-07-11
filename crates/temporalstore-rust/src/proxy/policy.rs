@@ -31,7 +31,7 @@ pub(super) fn proxy_policy_rejection(
         && commands
             .iter()
             .filter_map(proxy_command_routing_key)
-            .any(|key| key_is_dropped_by_percent(&key, drop_percent))
+            .any(|key| key_is_dropped_by_percent(key.as_ref(), drop_percent))
     {
         return Some(Status::error(
             "proxy_traffic_dropped",

@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use crate::types::Command;
 
 pub(super) fn proxy_command_is_write(command: &Command) -> bool {
@@ -137,23 +139,23 @@ fn proxy_command_key(command: &Command) -> Option<&str> {
     }
 }
 
-pub(super) fn proxy_command_routing_key(command: &Command) -> Option<String> {
+pub(super) fn proxy_command_routing_key(command: &Command) -> Option<Cow<'_, str>> {
     proxy_command_key(command)
-        .map(str::to_string)
+        .map(Cow::Borrowed)
         .or_else(|| match command {
             Command::ContextUpsertNode { tenant_hash, node } => {
-                Some(format!("ctx:node:{tenant_hash}:{}", node.node_hash))
+                Some(Cow::Owned(format!("ctx:node:{tenant_hash}:{}", node.node_hash)))
             }
             Command::ContextGetNode {
                 tenant_hash,
                 node_hash,
-            } => Some(format!("ctx:node:{tenant_hash}:{node_hash}")),
+            } => Some(Cow::Owned(format!("ctx:node:{tenant_hash}:{node_hash}"))),
             Command::ContextGetNodes {
                 tenant_hash,
                 node_hashes,
             } => node_hashes
                 .first()
-                .map(|node_hash| format!("ctx:node:{tenant_hash}:{node_hash}")),
+                .map(|node_hash| Cow::Owned(format!("ctx:node:{tenant_hash}:{node_hash}"))),
             Command::ContextWriteEvent {
                 tenant_hash,
                 node_hash,
@@ -168,7 +170,7 @@ pub(super) fn proxy_command_routing_key(command: &Command) -> Option<String> {
                 tenant_hash,
                 node_hash,
                 ..
-            } => Some(format!("ctx:event:{tenant_hash}:{node_hash}")),
+            } => Some(Cow::Owned(format!("ctx:event:{tenant_hash}:{node_hash}"))),
             Command::ContextWriteIndexRef {
                 tenant_hash,
                 index_name,
@@ -182,98 +184,115 @@ pub(super) fn proxy_command_routing_key(command: &Command) -> Option<String> {
                 index_value_hash,
                 scope_hash,
                 ..
-            } => Some(format!(
+            } => Some(Cow::Owned(format!(
                 "ctxidx:{tenant_hash}:{index_name}:{index_value_hash}:{scope_hash}"
-            )),
+            ))),
             Command::ContextQueryIndexIntersection {
                 tenant_hash,
                 predicates,
                 ..
             } => predicates.first().map(|predicate| {
-                format!(
+                Cow::Owned(format!(
                     "ctxidx:{tenant_hash}:{}:{}:{}",
                     predicate.index_name, predicate.index_value_hash, predicate.scope_hash
-                )
+                ))
             }),
             Command::ContextWritePackAudit { tenant_hash, audit } => {
-                Some(format!("ctx:audit:{tenant_hash}:{}", audit.session_hash))
+                Some(Cow::Owned(format!(
+                    "ctx:audit:{tenant_hash}:{}",
+                    audit.session_hash
+                )))
             }
             Command::ContextQueryPackAudit {
                 tenant_hash,
                 session_hash,
                 ..
-            } => Some(format!("ctx:audit:{tenant_hash}:{session_hash}")),
+            } => Some(Cow::Owned(format!("ctx:audit:{tenant_hash}:{session_hash}"))),
             Command::ContextMarkSummaryDirty {
                 tenant_hash,
                 marker,
-            } => Some(format!("ctx:dirty:{tenant_hash}:{}", marker.node_hash)),
+            } => Some(Cow::Owned(format!(
+                "ctx:dirty:{tenant_hash}:{}",
+                marker.node_hash
+            ))),
             Command::ContextQuerySummaryDirty {
                 tenant_hash,
                 node_hash,
                 ..
-            } => Some(format!("ctx:dirty:{tenant_hash}:{node_hash}")),
+            } => Some(Cow::Owned(format!("ctx:dirty:{tenant_hash}:{node_hash}"))),
             Command::ContextUpsertEntity {
                 tenant_hash,
                 entity,
             } => Some(format!(
                 "ctx:entity:{tenant_hash}:{}:{}",
                 entity.node_hash, entity.entity_hash
-            )),
+            ))
+            .map(Cow::Owned),
             Command::ContextGetEntity {
                 tenant_hash,
                 node_hash,
                 entity_hash,
-            } => Some(format!(
+            } => Some(Cow::Owned(format!(
                 "ctx:entity:{tenant_hash}:{node_hash}:{entity_hash}"
-            )),
+            ))),
             Command::ContextQueryEntities {
                 tenant_hash,
                 node_hash,
                 ..
-            } => Some(format!("ctx:entity:{tenant_hash}:{node_hash}")),
+            } => Some(Cow::Owned(format!("ctx:entity:{tenant_hash}:{node_hash}"))),
             Command::ContextUpsertChildRef {
                 tenant_hash,
                 child_ref,
-            } => Some(format!("ctx:child:{tenant_hash}:{}", child_ref.parent_hash)),
+            } => Some(Cow::Owned(format!(
+                "ctx:child:{tenant_hash}:{}",
+                child_ref.parent_hash
+            ))),
             Command::ContextQueryChildren {
                 tenant_hash,
                 parent_hash,
                 ..
-            } => Some(format!("ctx:child:{tenant_hash}:{parent_hash}")),
+            } => Some(Cow::Owned(format!("ctx:child:{tenant_hash}:{parent_hash}"))),
             Command::ContextUpsertEmbedding {
                 tenant_hash,
                 embedding,
-            } => Some(format!(
+            } => Some(Cow::Owned(format!(
                 "ctx:embedding:{tenant_hash}:{}",
                 embedding.ref_hash
-            )),
+            ))),
             Command::ContextQueryEmbeddings {
                 tenant_hash,
                 ref_hashes,
                 ..
             } => ref_hashes
                 .first()
-                .map(|ref_hash| format!("ctx:embedding:{tenant_hash}:{ref_hash}")),
+                .map(|ref_hash| {
+                    Cow::Owned(format!("ctx:embedding:{tenant_hash}:{ref_hash}"))
+                }),
             Command::ContextTraverseTree {
                 tenant_hash,
                 start_node_hash,
                 ..
-            } => Some(format!("ctx:child:{tenant_hash}:{start_node_hash}")),
+            } => Some(Cow::Owned(format!(
+                "ctx:child:{tenant_hash}:{start_node_hash}"
+            ))),
             Command::ContextUpsertSummary {
                 tenant_hash,
                 summary,
             } => Some(format!(
                 "ctx:summary:{tenant_hash}:{}:{}",
                 summary.node_hash, summary.level
-            )),
+            ))
+            .map(Cow::Owned),
             Command::ContextQuerySummaries {
                 tenant_hash,
                 node_hash,
                 level,
                 ..
-            } => Some(format!("ctx:summary:{tenant_hash}:{node_hash}:{level}")),
+            } => Some(Cow::Owned(format!(
+                "ctx:summary:{tenant_hash}:{node_hash}:{level}"
+            ))),
             Command::ContextWriteCompressionEvent { tenant_hash, event } => {
-                Some(format!("ctx:compress:{tenant_hash}:{}", event.node_hash))
+                Some(Cow::Owned(format!("ctx:compress:{tenant_hash}:{}", event.node_hash)))
             }
             Command::ContextQueryCompressionEvents {
                 tenant_hash,
@@ -281,7 +300,7 @@ pub(super) fn proxy_command_routing_key(command: &Command) -> Option<String> {
                 ..
             } => node_hashes
                 .first()
-                .map(|node_hash| format!("ctx:compress:{tenant_hash}:{node_hash}")),
+                .map(|node_hash| Cow::Owned(format!("ctx:compress:{tenant_hash}:{node_hash}"))),
             Command::ContextCompressEvents {
                 tenant_hash,
                 node_hash,
@@ -291,7 +310,7 @@ pub(super) fn proxy_command_routing_key(command: &Command) -> Option<String> {
                 tenant_hash,
                 node_hash,
                 ..
-            } => Some(format!("ctx:compress:{tenant_hash}:{node_hash}")),
+            } => Some(Cow::Owned(format!("ctx:compress:{tenant_hash}:{node_hash}"))),
             _ => None,
         })
 }

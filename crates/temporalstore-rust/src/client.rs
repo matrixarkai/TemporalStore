@@ -5242,10 +5242,8 @@ impl TemporalStoreTable {
                 if !write && is_write(command) {
                     write = true;
                 }
-                if dropped_command_key.is_none()
-                    && command_is_dropped(command, table_options.drop_percent)
-                {
-                    dropped_command_key = Some(format!("{:?}", command_key(command)));
+                if dropped_command_key.is_none() && command_is_dropped(command, table_options.drop_percent) {
+                    dropped_command_key = command_routing_key(command).map(|key| key.into_owned());
                 }
             }
             if let Some(key) = dropped_command_key {
@@ -5351,6 +5349,28 @@ impl TemporalStoreTable {
                 &table_options,
                 write,
             );
+        }
+        if self.shard_count > 1 {
+            let first_shard = self.shard_id_for_command(&commands[0]);
+            let mut has_write = is_write(&commands[0]);
+            let mut all_single_shard = true;
+            for command in &commands[1..] {
+                has_write = has_write || is_write(command);
+                if self.shard_id_for_command(command) != first_shard {
+                    all_single_shard = false;
+                    break;
+                }
+            }
+            if all_single_shard {
+                return self.batch_execute_single_shard_with_retry(
+                    &BatchExecuteRequest {
+                        shard_id: first_shard,
+                        commands,
+                    },
+                    &table_options,
+                    has_write,
+                );
+            }
         }
 
         let mut first_shard = None;
