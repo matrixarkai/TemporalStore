@@ -738,11 +738,22 @@ impl LocalBlockStore {
                 .append_with_page_metadata(&bytes, object_id, routing_slot)
                 .map(|address| vec![address]);
         }
-        let record_refs = records
+        let pending_buffer_capacity = records
             .iter()
-            .map(|(bytes, object_id, routing_slot)| (bytes.as_slice(), *object_id, *routing_slot))
-            .collect::<Vec<BlockAppendRecordRef<'_>>>();
-        self.append_batch_with_page_metadata_refs(&record_refs)
+            .map(|(bytes, _, _)| {
+                bytes
+                    .len()
+                    .saturating_add(BATCH_APPEND_RECORD_ENVELOPE_ESTIMATE_BYTES)
+            })
+            .sum::<usize>()
+            .min(BATCH_APPEND_BUFFER_TARGET_BYTES);
+        self.append_batch_with_page_metadata_iter(
+            records.len(),
+            pending_buffer_capacity,
+            records.iter().map(|(bytes, object_id, routing_slot)| {
+                (bytes.as_slice(), *object_id, *routing_slot)
+            }),
+        )
     }
 
     pub fn append_batch_with_page_metadata_refs(
@@ -758,14 +769,6 @@ impl LocalBlockStore {
                 .append_with_page_metadata(bytes, object_id, routing_slot)
                 .map(|address| vec![address]);
         }
-        let mut inner = self.inner.lock().expect("block store lock poisoned");
-        let segment_target_bytes = effective_block_segment_target_bytes();
-        let mut addresses = Vec::with_capacity(records.len());
-        let mut writes = 0u64;
-        let mut bytes_written = 0u64;
-        let mut logical_bytes_written = 0u64;
-        let mut compressed_records_written = 0u64;
-        let mut compression_bytes_saved = 0u64;
         let pending_buffer_capacity = records
             .iter()
             .map(|(bytes, _, _)| {
@@ -775,10 +778,31 @@ impl LocalBlockStore {
             })
             .sum::<usize>()
             .min(BATCH_APPEND_BUFFER_TARGET_BYTES);
+        self.append_batch_with_page_metadata_iter(
+            records.len(),
+            pending_buffer_capacity,
+            records.iter().copied(),
+        )
+    }
+
+    fn append_batch_with_page_metadata_iter<'a>(
+        &self,
+        record_count: usize,
+        pending_buffer_capacity: usize,
+        records: impl IntoIterator<Item = BlockAppendRecordRef<'a>>,
+    ) -> Result<Vec<BlockAddress>, BlockStoreError> {
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
+        let segment_target_bytes = effective_block_segment_target_bytes();
+        let mut addresses = Vec::with_capacity(record_count);
+        let mut writes = 0u64;
+        let mut bytes_written = 0u64;
+        let mut logical_bytes_written = 0u64;
+        let mut compressed_records_written = 0u64;
+        let mut compression_bytes_saved = 0u64;
         let mut pending_segment_bytes = Vec::with_capacity(pending_buffer_capacity);
         let mut pending_extent_append: Option<PendingExtentAppend> = None;
 
-        for &(bytes, object_id, routing_slot) in records {
+        for (bytes, object_id, routing_slot) in records {
             let mut page_id = inner.next_page_id;
             let mut extent_id = extent_id_for_segment(inner.page_segment_id);
             let record_len_upper_bound = PAGE_RECORD_HEADER_LEN.saturating_add(bytes.len());
