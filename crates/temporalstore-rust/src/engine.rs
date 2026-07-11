@@ -85,6 +85,158 @@ struct TimestampedPageBatchWrite {
     routing_slot: u32,
 }
 
+fn risk_manager_entries(
+    shard: &ShardState,
+    key: &str,
+    op_type: Option<&str>,
+    field_list: &[(String, String)],
+    start_offset: &str,
+    end_offset: &str,
+    is_cpc: bool,
+) -> Vec<(String, Vec<u8>)> {
+    match risk_manager_op_code(op_type) {
+        Some(2) => risk_manager_query_entries(shard, key, field_list, is_cpc),
+        Some(5) => risk_manager_field_list_entries(shard, key, start_offset, end_offset, is_cpc),
+        Some(6) => risk_manager_field_count_entries(shard, key, is_cpc),
+        Some(7) => risk_manager_all_data_entries(shard, key, is_cpc),
+        _ => risk_manager_summary_entries(shard, key),
+    }
+}
+
+fn risk_manager_op_code(op_type: Option<&str>) -> Option<i64> {
+    let value = op_type?.trim();
+    value.parse::<i64>().ok().or_else(|| match value {
+        "QUERY" | "query" => Some(2),
+        "FIELD_LIST" | "field_list" => Some(5),
+        "FIELD_COUNT" | "field_count" => Some(6),
+        "ALL_DATA_VALUE" | "all_data_value" => Some(7),
+        _ => None,
+    })
+}
+
+fn risk_manager_series_key(key: &str, is_cpc: bool) -> String {
+    risk_family_key(
+        if is_cpc {
+            RiskFamily::Cpc
+        } else {
+            RiskFamily::H
+        },
+        key,
+    )
+}
+
+fn risk_manager_series<'a>(
+    shard: &'a ShardState,
+    key: &str,
+    is_cpc: bool,
+) -> Option<&'a BTreeMap<u64, i64>> {
+    shard.risk.get(&risk_manager_series_key(key, is_cpc))
+}
+
+fn risk_manager_query_entries(
+    shard: &ShardState,
+    key: &str,
+    field_list: &[(String, String)],
+    is_cpc: bool,
+) -> Vec<(String, Vec<u8>)> {
+    let Some(series) = risk_manager_series(shard, key, is_cpc) else {
+        return Vec::new();
+    };
+    field_list
+        .iter()
+        .filter_map(|(field, _)| {
+            field
+                .parse::<u64>()
+                .ok()
+                .and_then(|timestamp_ms| series.get(&timestamp_ms))
+                .map(|value| (field.clone(), value.to_string().into_bytes()))
+        })
+        .collect()
+}
+
+fn risk_manager_field_list_entries(
+    shard: &ShardState,
+    key: &str,
+    start_offset: &str,
+    end_offset: &str,
+    is_cpc: bool,
+) -> Vec<(String, Vec<u8>)> {
+    let Some(series) = risk_manager_series(shard, key, is_cpc) else {
+        return vec![("key_list".to_string(), Vec::new())];
+    };
+    let start = start_offset.parse::<u64>().unwrap_or(0);
+    let end = end_offset.parse::<u64>().unwrap_or(u64::MAX);
+    let value = series
+        .range(start..=end)
+        .map(|(timestamp_ms, _)| timestamp_ms.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    vec![("key_list".to_string(), value.into_bytes())]
+}
+
+fn risk_manager_field_count_entries(
+    shard: &ShardState,
+    key: &str,
+    is_cpc: bool,
+) -> Vec<(String, Vec<u8>)> {
+    let size = risk_manager_series(shard, key, is_cpc)
+        .map(BTreeMap::len)
+        .unwrap_or_default();
+    vec![("size".to_string(), size.to_string().into_bytes())]
+}
+
+fn risk_manager_all_data_entries(
+    shard: &ShardState,
+    key: &str,
+    is_cpc: bool,
+) -> Vec<(String, Vec<u8>)> {
+    risk_manager_series(shard, key, is_cpc)
+        .map(|series| {
+            series
+                .iter()
+                .map(|(timestamp_ms, value)| {
+                    (timestamp_ms.to_string(), value.to_string().into_bytes())
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn risk_manager_summary_entries(shard: &ShardState, key: &str) -> Vec<(String, Vec<u8>)> {
+    let mut entries = Vec::new();
+    for family in [RiskFamily::H, RiskFamily::Cpc, RiskFamily::Fol] {
+        let family_key = risk_family_key(family, key);
+        let values = shard
+            .risk
+            .get(&family_key)
+            .map(|series| series.values().copied().collect::<Vec<_>>())
+            .unwrap_or_default();
+        entries.push((
+            format!("{}_events", risk_family_name(family)),
+            values.len().to_string().into_bytes(),
+        ));
+        entries.push((
+            format!("{}_sum", risk_family_name(family)),
+            values.iter().sum::<i64>().to_string().into_bytes(),
+        ));
+    }
+    if let Some(fol) = shard.risk_fol.get(key) {
+        entries.push(("fol_value".to_string(), fol.value.clone()));
+        entries.push((
+            "fol_occur_time_ms".to_string(),
+            fol.occur_time_ms.to_string().into_bytes(),
+        ));
+        entries.push((
+            "fol_type".to_string(),
+            match fol.fol_type {
+                RiskFolType::First => b"first".to_vec(),
+                RiskFolType::Last => b"last".to_vec(),
+            },
+        ));
+    }
+    entries
+}
+
 fn risk_bucket_ms(timestamp_ms: u64, precision_ms: Option<u64>) -> u64 {
     precision_ms
         .filter(|precision_ms| *precision_ms > 0)
@@ -9377,7 +9529,14 @@ fn execute_on_shard(
                 value: shard.risk_fol.get(&key).map(|stored| stored.value.clone()),
             }
         }
-        Command::RiskManager { key } => {
+        Command::RiskManager {
+            key,
+            op_type,
+            field_list,
+            start_offset,
+            end_offset,
+            is_cpc,
+        } => {
             if remove_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
@@ -9387,38 +9546,17 @@ fn execute_on_shard(
                     mutated,
                 };
             }
-            let mut entries = Vec::new();
-            for family in [RiskFamily::H, RiskFamily::Cpc, RiskFamily::Fol] {
-                let family_key = risk_family_key(family, &key);
-                let values = shard
-                    .risk
-                    .get(&family_key)
-                    .map(|series| series.values().copied().collect::<Vec<_>>())
-                    .unwrap_or_default();
-                entries.push((
-                    format!("{}_events", risk_family_name(family)),
-                    values.len().to_string().into_bytes(),
-                ));
-                entries.push((
-                    format!("{}_sum", risk_family_name(family)),
-                    values.iter().sum::<i64>().to_string().into_bytes(),
-                ));
+            CommandResponse::HashEntries {
+                entries: risk_manager_entries(
+                    shard,
+                    &key,
+                    op_type.as_deref(),
+                    &field_list,
+                    &start_offset,
+                    &end_offset,
+                    is_cpc.unwrap_or(false),
+                ),
             }
-            if let Some(fol) = shard.risk_fol.get(&key) {
-                entries.push(("fol_value".to_string(), fol.value.clone()));
-                entries.push((
-                    "fol_occur_time_ms".to_string(),
-                    fol.occur_time_ms.to_string().into_bytes(),
-                ));
-                entries.push((
-                    "fol_type".to_string(),
-                    match fol.fol_type {
-                        RiskFolType::First => b"first".to_vec(),
-                        RiskFolType::Last => b"last".to_vec(),
-                    },
-                ));
-            }
-            CommandResponse::HashEntries { entries }
         }
         Command::RiskDebug {
             key,

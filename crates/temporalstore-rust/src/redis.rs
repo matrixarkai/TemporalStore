@@ -1864,6 +1864,11 @@ pub fn execute_redis_command_with_state(
         }
         "RISKMANAGER" if args.len() == 2 => hash_entries_response(execute(Command::RiskManager {
             key: string_arg(&args[1]),
+            op_type: None,
+            field_list: Vec::new(),
+            start_offset: String::new(),
+            end_offset: String::new(),
+            is_cpc: None,
         })),
         "RISKDEBUG" if args.len() == 4 => {
             let start_ms = match parse_u64(&args[2], "start_ms") {

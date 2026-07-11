@@ -449,6 +449,11 @@ pub fn cpp_api_golden_corpus_report() -> CppGoldenCorpusReport {
         shard_id: 1,
         command: Command::RiskManager {
             key: "risk-golden".to_string(),
+            op_type: None,
+            field_list: Vec::new(),
+            start_offset: String::new(),
+            end_offset: String::new(),
+            is_cpc: None,
         },
     });
     record_golden_case(

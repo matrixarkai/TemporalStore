@@ -613,7 +613,14 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
         v1::command::Kind::RiskFolQuery(command) => {
             types::Command::RiskFolQuery { key: command.key }
         }
-        v1::command::Kind::RiskManager(command) => types::Command::RiskManager { key: command.key },
+        v1::command::Kind::RiskManager(command) => types::Command::RiskManager {
+            key: command.key,
+            op_type: None,
+            field_list: Vec::new(),
+            start_offset: String::new(),
+            end_offset: String::new(),
+            is_cpc: None,
+        },
         v1::command::Kind::RiskDebug(command) => types::Command::RiskDebug {
             key: command.key,
             start_ms: command.start_ms,
