@@ -6,7 +6,7 @@ import json
 import os
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 
 class TemporalStoreError(RuntimeError):
@@ -855,6 +855,16 @@ class Client:
         finally:
             self._native.lib.temporalstore_free_string(value)
 
+    def hmset(self, key: str, entries: Dict[str, str]) -> None:
+        for field, value in entries.items():
+            self.hset(key, str(field), str(value))
+
+    def hmget(self, key: str, fields: Iterable[str]) -> List[Optional[str]]:
+        field_list = [str(field) for field in fields]
+        records = self.hgetall(key)
+        values = {str(record.get("field", "")): str(record.get("value", "")) for record in records}
+        return [values.get(field) for field in field_list]
+
     def hgetall(self, key: str) -> List[dict]:
         if not self._native.has_hgetall:
             raise NotImplementedError("native hgetall/scan_hash is not available in this TemporalStore library")
@@ -881,6 +891,9 @@ class Client:
     def scan_hash(self, key: str) -> dict:
         records = self.hgetall(key)
         return {"ok": True, "count": len(records), "records": records}
+
+    def hlen(self, key: str) -> int:
+        return len(self.hgetall(key))
 
     def hdel(self, key: str, field: str) -> None:
         error = ctypes.c_void_p()
