@@ -22,8 +22,8 @@ use paths::{
 use record::{
     decode_page_record, default_page_record_compression_enabled,
     default_page_record_compression_level, default_page_record_compression_min_bytes,
-    encode_page_record, encode_page_record_into, inspect_segment, logical_range_from_segment,
-    sha256_hex, summarize_segment, PageRecordCompression, PAGE_RECORD_HEADER_LEN,
+    encode_page_record_into, inspect_segment, logical_range_from_segment, sha256_hex,
+    summarize_segment, PageRecordCompression, PAGE_RECORD_HEADER_LEN,
 };
 #[cfg(test)]
 use record::{
@@ -653,35 +653,30 @@ impl LocalBlockStore {
         let segment_target_bytes = effective_block_segment_target_bytes();
         let mut page_id = inner.next_page_id;
         let mut extent_id = extent_id_for_segment(inner.page_segment_id);
-        let mut record = encode_page_record(
+        let record_len_upper_bound = PAGE_RECORD_HEADER_LEN.saturating_add(bytes.len());
+        if should_roll_before_append(
+            inner.write_offset,
+            record_len_upper_bound as u64,
+            segment_target_bytes,
+        ) {
+            roll_segment_inner(&mut inner)?;
+            page_id = inner.next_page_id;
+            extent_id = extent_id_for_segment(inner.page_segment_id);
+        }
+        let mut record_bytes = Vec::with_capacity(record_len_upper_bound);
+        let record = encode_page_record_into(
             bytes,
             page_id,
             object_id,
             routing_slot,
             extent_id,
             inner.options,
+            &mut record_bytes,
         )?;
-        if should_roll_before_append(
-            inner.write_offset,
-            record.bytes.len() as u64,
-            segment_target_bytes,
-        ) {
-            roll_segment_inner(&mut inner)?;
-            page_id = inner.next_page_id;
-            extent_id = extent_id_for_segment(inner.page_segment_id);
-            record = encode_page_record(
-                bytes,
-                page_id,
-                object_id,
-                routing_slot,
-                extent_id,
-                inner.options,
-            )?;
-        }
         let address = BlockAddress {
             page_segment_id: inner.page_segment_id,
             offset: inner.write_offset,
-            length: record.bytes.len() as u64,
+            length: record.record_len as u64,
             page_id: Some(page_id),
             object_id,
             routing_slot,
@@ -696,7 +691,7 @@ impl LocalBlockStore {
                 Some(OpenOptions::new().create(true).append(true).open(path)?);
         }
         if let Some(file) = inner.active_append_file.as_mut() {
-            file.write_all(&record.bytes)?;
+            file.write_all(&record_bytes)?;
             if sync_on_append {
                 file.flush()?;
                 file.sync_data()?;
