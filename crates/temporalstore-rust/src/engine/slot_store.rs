@@ -428,3 +428,36 @@ pub(super) fn read_slot_index_component_values(
     }
     entries
 }
+
+pub(super) fn read_component_page_address_values(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    mut refs: Vec<(String, PageAddress)>,
+) -> Vec<(String, Vec<u8>)> {
+    if refs.is_empty() {
+        return Vec::new();
+    }
+    refs.sort_by(|left, right| left.0.cmp(&right.0));
+    if refs.len() == 1 {
+        let (component, address) = refs
+            .into_iter()
+            .next()
+            .expect("single component ref is present");
+        return read_page_bytes(cache, page_store, shard_id, &address)
+            .map(|value| vec![(component, value)])
+            .unwrap_or_default();
+    }
+
+    let mut addresses = Vec::with_capacity(refs.len());
+    addresses.extend(refs.iter().map(|(_, address)| Some(address.clone())));
+    let values = read_page_bytes_batch(cache, page_store, shard_id, &addresses);
+
+    let mut entries = Vec::with_capacity(refs.len());
+    for (value, (component, _)) in values.into_iter().zip(refs) {
+        if let Some(value) = value {
+            entries.push((component, value));
+        }
+    }
+    entries
+}
