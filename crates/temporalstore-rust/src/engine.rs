@@ -85,6 +85,13 @@ struct TimestampedPageBatchWrite {
     routing_slot: u32,
 }
 
+fn risk_bucket_ms(timestamp_ms: u64, precision_ms: Option<u64>) -> u64 {
+    precision_ms
+        .filter(|precision_ms| *precision_ms > 0)
+        .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
+        .unwrap_or(timestamp_ms)
+}
+
 impl TemporalEngine {
     pub fn execute(&self, request: ExecuteRequest) -> ExecuteResponse {
         self.execute_with_storage_override(request, None)
@@ -9151,15 +9158,23 @@ fn execute_on_shard(
             key,
             timestamp_ms,
             amount,
+            precision_ms,
+            ttl_ms,
         } => {
-            remove_if_expired(cache, shard_id, shard, &key);
             let key = risk_family_key(family, &key);
+            remove_if_expired(cache, shard_id, shard, &key);
+            let bucket_ms = risk_bucket_ms(timestamp_ms, precision_ms);
             *shard
                 .risk
                 .entry(key.clone())
                 .or_default()
-                .entry(timestamp_ms)
+                .entry(bucket_ms)
                 .or_default() += amount;
+            if let Some(ttl_ms) = ttl_ms {
+                shard
+                    .expires_at_ms
+                    .insert(key.clone(), now_ms().saturating_add(ttl_ms));
+            }
             persist_risk_page(
                 cache,
                 page_store,
@@ -9181,11 +9196,19 @@ fn execute_on_shard(
             start_ms,
             end_ms,
             aggregator,
+            precision_ms,
+            ttl_ms,
         } => {
-            remove_if_expired(cache, shard_id, shard, &key);
             let key = risk_family_key(family, &key);
+            remove_if_expired(cache, shard_id, shard, &key);
+            let bucket_ms = risk_bucket_ms(timestamp_ms, precision_ms);
             let series = shard.risk.entry(key.clone()).or_default();
-            *series.entry(timestamp_ms).or_default() += amount;
+            *series.entry(bucket_ms).or_default() += amount;
+            if let Some(ttl_ms) = ttl_ms {
+                shard
+                    .expires_at_ms
+                    .insert(key.clone(), now_ms().saturating_add(ttl_ms));
+            }
             let values = series
                 .range(start_ms..=end_ms)
                 .map(|(_, value)| *value)
@@ -9212,6 +9235,7 @@ fn execute_on_shard(
             end_ms,
             aggregator,
         } => {
+            let key = risk_family_key(family, &key);
             if remove_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
@@ -9219,7 +9243,6 @@ fn execute_on_shard(
                     mutated,
                 };
             }
-            let key = risk_family_key(family, &key);
             if is_risk_change_aggregator(&aggregator) {
                 CommandResponse::Integer {
                     value: count_risk_changes(shard, &key, start_ms, end_ms),

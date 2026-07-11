@@ -2475,6 +2475,8 @@ impl ProxyService {
                             key: req.key,
                             timestamp_ms: req.timestamp_ms,
                             amount: req.amount,
+                            precision_ms: None,
+                            ttl_ms: None,
                         };
                         json_response(
                             200,
@@ -2521,6 +2523,8 @@ impl ProxyService {
                             start_ms: req.start_ms,
                             end_ms: req.end_ms,
                             aggregator: req.aggregator,
+                            precision_ms: None,
+                            ttl_ms: None,
                         };
                         json_response(
                             200,
@@ -2542,6 +2546,8 @@ impl ProxyService {
                             key: req.key.clone(),
                             timestamp_ms: risk_hset_timestamp_ms(&req),
                             amount: risk_hset_amount(&req),
+                            precision_ms: req.precision_ms,
+                            ttl_ms: risk_hset_ttl_ms(req.ttl_ms),
                         };
                         json_response(
                             200,
@@ -2569,6 +2575,8 @@ impl ProxyService {
                             key: req.key,
                             timestamp_ms: risk_cpc_timestamp_ms(req.timestamp_ms),
                             amount: req.values.len() as i64,
+                            precision_ms: req.precision_ms,
+                            ttl_ms: risk_hset_ttl_ms(req.ttl_ms),
                         };
                         json_response(
                             200,
@@ -4557,6 +4565,10 @@ fn risk_hset_timestamp_ms(request: &ProxyRiskHsetCommandRequest) -> u64 {
         return risk_cpc_timestamp_ms(request.timestamp_ms);
     }
     risk_cpc_timestamp_ms(request.occur_time_seconds)
+}
+
+fn risk_hset_ttl_ms(ttl_seconds: u64) -> Option<u64> {
+    (ttl_seconds > 0).then(|| ttl_seconds.saturating_mul(1_000))
 }
 
 fn risk_hset_amount(request: &ProxyRiskHsetCommandRequest) -> i64 {

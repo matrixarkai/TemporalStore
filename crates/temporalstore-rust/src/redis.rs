@@ -1787,6 +1787,8 @@ pub fn execute_redis_command_with_state(
                 key: string_arg(&args[1]),
                 timestamp_ms,
                 amount,
+                precision_ms: None,
+                ttl_ms: None,
             }))
         }
         "FOLSET" if args.len() == 6 => {
@@ -1856,6 +1858,8 @@ pub fn execute_redis_command_with_state(
                 start_ms,
                 end_ms,
                 aggregator: string_arg(&args[6]),
+                precision_ms: None,
+                ttl_ms: None,
             }))
         }
         "RISKMANAGER" if args.len() == 2 => hash_entries_response(execute(Command::RiskManager {

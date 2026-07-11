@@ -1550,6 +1550,10 @@ pub enum Command {
         key: String,
         timestamp_ms: u64,
         amount: i64,
+        #[serde(default)]
+        precision_ms: Option<u64>,
+        #[serde(default)]
+        ttl_ms: Option<u64>,
     },
     RiskSetAndGet {
         family: RiskFamily,
@@ -1559,6 +1563,10 @@ pub enum Command {
         start_ms: u64,
         end_ms: u64,
         aggregator: String,
+        #[serde(default)]
+        precision_ms: Option<u64>,
+        #[serde(default)]
+        ttl_ms: Option<u64>,
     },
     RiskFamilyQuery {
         family: RiskFamily,

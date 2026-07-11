@@ -4904,6 +4904,8 @@ impl TemporalStoreTable {
             key: key.into(),
             timestamp_ms,
             amount,
+            precision_ms: None,
+            ttl_ms: None,
         })
     }
 
@@ -4980,6 +4982,8 @@ impl TemporalStoreTable {
                 start_ms,
                 end_ms,
                 aggregator: aggregator.into(),
+                precision_ms: None,
+                ttl_ms: None,
             })?
             .response
         {
