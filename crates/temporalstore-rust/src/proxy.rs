@@ -2642,7 +2642,18 @@ impl ProxyService {
                         let response = self.table_execute(ProxyTableExecuteRequest {
                             namespace: req.namespace,
                             table_name: req.table_name,
-                            command: Command::RiskManager { key: req.key },
+                            command: Command::RiskManager {
+                                key: req.key,
+                                op_type: risk_manager_op_type(req.op_type.as_ref()),
+                                field_list: req
+                                    .field_list
+                                    .into_iter()
+                                    .map(|item| (item.key, item.value))
+                                    .collect(),
+                                start_offset: req.start_offset,
+                                end_offset: req.end_offset,
+                                is_cpc: req.is_cpc,
+                            },
                         });
                         json_response(200, &hash_entries_response_json(response, true))
                     }
@@ -4690,6 +4701,16 @@ fn risk_fol_ttl_ms(ttl_ms: u64, ttl_seconds: u64) -> u64 {
         ttl_ms
     } else {
         ttl_seconds.saturating_mul(1_000)
+    }
+}
+
+fn risk_manager_op_type(value: Option<&serde_json::Value>) -> Option<String> {
+    match value {
+        Some(serde_json::Value::Number(number)) => number.as_i64().map(|value| value.to_string()),
+        Some(serde_json::Value::String(value)) if !value.trim().is_empty() => {
+            Some(value.trim().to_string())
+        }
+        _ => None,
     }
 }
 

@@ -5030,7 +5030,14 @@ impl TemporalStoreTable {
         key: impl Into<String>,
     ) -> Result<Vec<(String, Vec<u8>)>, ClientError> {
         match self
-            .execute(Command::RiskManager { key: key.into() })?
+            .execute(Command::RiskManager {
+                key: key.into(),
+                op_type: None,
+                field_list: Vec::new(),
+                start_offset: String::new(),
+                end_offset: String::new(),
+                is_cpc: None,
+            })?
             .response
         {
             CommandResponse::HashEntries { entries } => Ok(entries),

@@ -1587,6 +1587,16 @@ pub enum Command {
     },
     RiskManager {
         key: String,
+        #[serde(default)]
+        op_type: Option<String>,
+        #[serde(default)]
+        field_list: Vec<(String, String)>,
+        #[serde(default)]
+        start_offset: String,
+        #[serde(default)]
+        end_offset: String,
+        #[serde(default)]
+        is_cpc: Option<bool>,
     },
     RiskDebug {
         key: String,

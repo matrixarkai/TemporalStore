@@ -274,6 +274,11 @@ fn main() {
         },
         "riskmanager" if args.len() == 3 => Command::RiskManager {
             key: args[2].clone(),
+            op_type: None,
+            field_list: Vec::new(),
+            start_offset: String::new(),
+            end_offset: String::new(),
+            is_cpc: None,
         },
         _ => {
             usage();
