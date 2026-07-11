@@ -520,14 +520,27 @@ impl TemporalEngine {
                         &self.cache,
                         CacheKey::string(request.shard_id, key),
                         || CommandResponse::Bytes {
-                            value: shard.strings.get(key).and_then(|address| {
-                                read_page_bytes(
-                                    &self.cache,
-                                    &self.page_store,
-                                    request.shard_id,
-                                    address,
-                                )
-                            }),
+                            value: shard.strings.get(key).map_or_else(
+                                || {
+                                    read_slot_index_value(
+                                        &self.cache,
+                                        &self.page_store,
+                                        request.shard_id,
+                                        shard,
+                                        "string",
+                                        key,
+                                        None,
+                                    )
+                                },
+                                |address| {
+                                    read_page_bytes(
+                                        &self.cache,
+                                        &self.page_store,
+                                        request.shard_id,
+                                        address,
+                                    )
+                                },
+                            ),
                         },
                     ),
                 })
@@ -566,7 +579,19 @@ impl TemporalEngine {
                         entries.sort_by(|a, b| a.0.cmp(&b.0));
                         entries
                     })
-                    .unwrap_or_default();
+                    .unwrap_or_else(|| {
+                        read_slot_index_component_values(
+                            &self.cache,
+                            &self.page_store,
+                            request.shard_id,
+                            shard,
+                            "hash",
+                            key,
+                        )
+                        .into_iter()
+                        .map(|(field, value)| (field.unwrap_or_default(), value))
+                        .collect()
+                    });
                 Some(ExecuteResponse {
                     status: Status::ok(),
                     response: CommandResponse::HashEntries { entries },
