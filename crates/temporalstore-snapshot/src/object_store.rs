@@ -914,18 +914,30 @@ impl ObjectStore for FileObjectStore {
         if let Some(parent) = destination.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        match tokio::fs::copy(&source, destination).await {
-            Ok(size_bytes) => Ok(ObjectMetadata {
-                key: key.to_string(),
-                uri: self.uri(key),
-                size_bytes,
-                checksum_sha256: sha256_file_hex(destination).await?,
-            }),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                Err(ObjectStoreError::NotFound(key.to_string()))
+        let tmp_path = temp_sibling_path(destination, "matrixobjectstore-download-tmp");
+        let result = async {
+            match tokio::fs::copy(&source, &tmp_path).await {
+                Ok(size_bytes) => {
+                    let checksum_sha256 = sha256_file_hex(&tmp_path).await?;
+                    tokio::fs::rename(&tmp_path, destination).await?;
+                    Ok(ObjectMetadata {
+                        key: key.to_string(),
+                        uri: self.uri(key),
+                        size_bytes,
+                        checksum_sha256,
+                    })
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    Err(ObjectStoreError::NotFound(key.to_string()))
+                }
+                Err(err) => Err(ObjectStoreError::Io(err)),
             }
-            Err(err) => Err(ObjectStoreError::Io(err)),
         }
+        .await;
+        if result.is_err() {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+        }
+        result
     }
 
     async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
@@ -1334,69 +1346,78 @@ impl ObjectStore for MatrixObjectStore {
         if let Some(parent) = destination.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        let mut file = tokio::fs::File::create(destination).await?;
-        file.set_len(manifest.size_bytes).await?;
-        let mut written_bytes = 0u64;
+        let tmp_path = temp_sibling_path(destination, "matrixobjectstore-download-tmp");
+        let result = async {
+            let mut file = tokio::fs::File::create(&tmp_path).await?;
+            file.set_len(manifest.size_bytes).await?;
+            let mut written_bytes = 0u64;
 
-        let mut join_set = JoinSet::new();
-        let mut next_to_submit = 0usize;
-        while next_to_submit < manifest.blocks.len() || !join_set.is_empty() {
-            while next_to_submit < manifest.blocks.len()
-                && join_set.len() < self.transfer_concurrency()
-            {
-                let block_ref = manifest.blocks[next_to_submit].clone();
-                let chunk_service = self.chunk_service.clone();
-                let block_service = self.block_service.clone();
-                let verify_block_metadata = self.verify_block_metadata_on_read();
-                join_set.spawn(async move {
-                    let block_ref = if verify_block_metadata {
-                        block_service.get_block_ref(&block_ref.block_id).await?
-                    } else {
-                        block_ref
-                    };
-                    let chunk = chunk_service.get_chunk(&block_ref.chunk_key).await?;
-                    let checksum = sha256_hex(&chunk);
-                    if checksum != block_ref.checksum_sha256 {
-                        return Err(ObjectStoreError::Io(std::io::Error::other(format!(
-                            "chunk checksum mismatch for {}",
-                            block_ref.chunk_key
-                        ))));
-                    }
-                    Ok::<_, ObjectStoreError>((block_ref.offset, chunk))
-                });
-                next_to_submit += 1;
+            let mut join_set = JoinSet::new();
+            let mut next_to_submit = 0usize;
+            while next_to_submit < manifest.blocks.len() || !join_set.is_empty() {
+                while next_to_submit < manifest.blocks.len()
+                    && join_set.len() < self.transfer_concurrency()
+                {
+                    let block_ref = manifest.blocks[next_to_submit].clone();
+                    let chunk_service = self.chunk_service.clone();
+                    let block_service = self.block_service.clone();
+                    let verify_block_metadata = self.verify_block_metadata_on_read();
+                    join_set.spawn(async move {
+                        let block_ref = if verify_block_metadata {
+                            block_service.get_block_ref(&block_ref.block_id).await?
+                        } else {
+                            block_ref
+                        };
+                        let chunk = chunk_service.get_chunk(&block_ref.chunk_key).await?;
+                        let checksum = sha256_hex(&chunk);
+                        if checksum != block_ref.checksum_sha256 {
+                            return Err(ObjectStoreError::Io(std::io::Error::other(format!(
+                                "chunk checksum mismatch for {}",
+                                block_ref.chunk_key
+                            ))));
+                        }
+                        Ok::<_, ObjectStoreError>((block_ref.offset, chunk))
+                    });
+                    next_to_submit += 1;
+                }
+
+                let (offset, chunk) = join_set
+                    .join_next()
+                    .await
+                    .expect("matrixobjectstore get_to_path task missing")
+                    .map_err(|err| ObjectStoreError::Io(std::io::Error::other(err)))??;
+                file.seek(SeekFrom::Start(offset)).await?;
+                file.write_all(&chunk).await?;
+                written_bytes += chunk.len() as u64;
             }
+            file.flush().await?;
+            drop(file);
 
-            let (offset, chunk) = join_set
-                .join_next()
-                .await
-                .expect("matrixobjectstore get_to_path task missing")
-                .map_err(|err| ObjectStoreError::Io(std::io::Error::other(err)))??;
-            file.seek(SeekFrom::Start(offset)).await?;
-            file.write_all(&chunk).await?;
-            written_bytes += chunk.len() as u64;
+            if written_bytes != manifest.size_bytes {
+                return Err(ObjectStoreError::Io(std::io::Error::other(format!(
+                    "object size mismatch for {key}: expected {}, wrote {}",
+                    manifest.size_bytes, written_bytes
+                ))));
+            }
+            let checksum_sha256 = sha256_file_hex(&tmp_path).await?;
+            if checksum_sha256 != manifest.checksum_sha256 {
+                return Err(ObjectStoreError::Io(std::io::Error::other(format!(
+                    "object checksum mismatch for {key}"
+                ))));
+            }
+            tokio::fs::rename(&tmp_path, destination).await?;
+            Ok(ObjectMetadata {
+                key: manifest.key,
+                uri: manifest.uri,
+                size_bytes: manifest.size_bytes,
+                checksum_sha256,
+            })
         }
-        file.flush().await?;
-        drop(file);
-
-        if written_bytes != manifest.size_bytes {
-            return Err(ObjectStoreError::Io(std::io::Error::other(format!(
-                "object size mismatch for {key}: expected {}, wrote {}",
-                manifest.size_bytes, written_bytes
-            ))));
+        .await;
+        if result.is_err() {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
         }
-        let checksum_sha256 = sha256_file_hex(destination).await?;
-        if checksum_sha256 != manifest.checksum_sha256 {
-            return Err(ObjectStoreError::Io(std::io::Error::other(format!(
-                "object checksum mismatch for {key}"
-            ))));
-        }
-        Ok(ObjectMetadata {
-            key: manifest.key,
-            uri: manifest.uri,
-            size_bytes: manifest.size_bytes,
-            checksum_sha256,
-        })
+        result
     }
 
     async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
@@ -1641,6 +1662,10 @@ async fn write_object_file(path: &Path, bytes: &Bytes) -> Result<(), ObjectStore
     file.write_all(bytes).await?;
     file.flush().await?;
     Ok(())
+}
+
+fn temp_sibling_path(path: &Path, label: &str) -> PathBuf {
+    path.with_extension(format!("{label}-{}", Uuid::new_v4().simple()))
 }
 
 async fn sha256_file_hex(path: &Path) -> Result<String, ObjectStoreError> {
@@ -1943,6 +1968,53 @@ mod tests {
 
         assert_eq!(get_metadata, put_metadata);
         assert_eq!(tokio::fs::read(destination).await.unwrap(), payload);
+    }
+
+    #[tokio::test]
+    async fn matrix_object_store_failed_download_preserves_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = MatrixObjectStoreConfig::local_compat(dir.path())
+            .with_chunk_target_bytes(5)
+            .with_transfer_concurrency(2);
+        let store = MatrixObjectStore::from_config(config);
+
+        store
+            .put_atomic(
+                "large/object",
+                Bytes::from_static(b"abcdefghijklmnopqrstuvwxyz"),
+            )
+            .await
+            .unwrap();
+        let manifest = store
+            .root_service
+            .get_manifest("large/object")
+            .await
+            .unwrap();
+        store
+            .chunk_service
+            .chunk_store
+            .put_atomic(
+                &manifest.blocks[0].chunk_key,
+                Bytes::from_static(b"corrupt-chunk"),
+            )
+            .await
+            .unwrap();
+
+        let destination = dir.path().join("restore/large-object.bin");
+        tokio::fs::create_dir_all(destination.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&destination, b"previous-good-restore")
+            .await
+            .unwrap();
+        assert!(store
+            .get_to_path("large/object", &destination)
+            .await
+            .is_err());
+        assert_eq!(
+            tokio::fs::read(&destination).await.unwrap(),
+            b"previous-good-restore"
+        );
     }
 
     #[tokio::test]
@@ -2309,6 +2381,28 @@ mod tests {
             Bytes::from_static(b"file-object-store-payload")
         );
         assert_eq!(store.head("objects/payload.bin").await.unwrap(), metadata);
+    }
+
+    #[tokio::test]
+    async fn file_object_store_failed_download_preserves_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FileObjectStore::new(dir.path());
+        let destination = dir.path().join("restore/payload.bin");
+        tokio::fs::create_dir_all(destination.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&destination, b"previous-good-restore")
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            store.get_to_path("missing/payload.bin", &destination).await,
+            Err(ObjectStoreError::NotFound(_))
+        ));
+        assert_eq!(
+            tokio::fs::read(&destination).await.unwrap(),
+            b"previous-good-restore"
+        );
     }
 
     #[tokio::test]
