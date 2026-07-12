@@ -1025,44 +1025,50 @@ impl MatrixObjectStore {
         Ok(object_size)
     }
 
-    fn chunk_writes(&self, bytes: &Bytes) -> Vec<MatrixObjectChunkWrite> {
-        let chunk_target_bytes = self.chunk_target_bytes();
-        if bytes.is_empty() {
-            return vec![MatrixObjectChunkWrite {
-                index: 0,
-                offset: 0,
-                bytes: Bytes::new(),
-            }];
-        }
-        let mut chunks = Vec::new();
-        let mut offset = 0;
-        while offset < bytes.len() {
-            let end = (offset + chunk_target_bytes).min(bytes.len());
-            chunks.push(MatrixObjectChunkWrite {
-                index: chunks.len(),
-                offset: offset as u64,
-                bytes: bytes.slice(offset..end),
-            });
-            offset = end;
-        }
-        chunks
-    }
-
     async fn write_chunks(
         &self,
         key: &str,
         bytes: Bytes,
     ) -> Result<Vec<MatrixObjectBlockRef>, ObjectStoreError> {
-        let chunks = self.chunk_writes(&bytes);
         let mut join_set = JoinSet::new();
-        let mut next_to_submit = 0;
-        let mut blocks = Vec::with_capacity(chunks.len());
+        let chunk_target_bytes = self.chunk_target_bytes();
+        let expected_chunks = if bytes.is_empty() {
+            1
+        } else {
+            bytes.len().div_ceil(chunk_target_bytes)
+        };
+        let mut blocks = Vec::with_capacity(expected_chunks);
         let object_key = key.trim_matches('/').to_string();
         let object_key_fingerprint = object_key_fingerprint(&object_key);
         let publish_block_metadata = self.publish_block_metadata_on_write();
-        while next_to_submit < chunks.len() || !join_set.is_empty() {
-            while next_to_submit < chunks.len() && join_set.len() < self.transfer_concurrency() {
-                let chunk = chunks[next_to_submit].clone();
+        let mut next_offset = 0usize;
+        let mut next_index = 0usize;
+        let mut submitted_empty = false;
+        while next_offset < bytes.len()
+            || (!submitted_empty && bytes.is_empty())
+            || !join_set.is_empty()
+        {
+            while join_set.len() < self.transfer_concurrency()
+                && (next_offset < bytes.len() || (!submitted_empty && bytes.is_empty()))
+            {
+                let chunk = if bytes.is_empty() {
+                    submitted_empty = true;
+                    MatrixObjectChunkWrite {
+                        index: 0,
+                        offset: 0,
+                        bytes: Bytes::new(),
+                    }
+                } else {
+                    let end = (next_offset + chunk_target_bytes).min(bytes.len());
+                    let chunk = MatrixObjectChunkWrite {
+                        index: next_index,
+                        offset: next_offset as u64,
+                        bytes: bytes.slice(next_offset..end),
+                    };
+                    next_index += 1;
+                    next_offset = end;
+                    chunk
+                };
                 self.spawn_chunk_write(
                     chunk,
                     &object_key,
@@ -1070,7 +1076,6 @@ impl MatrixObjectStore {
                     publish_block_metadata,
                     &mut join_set,
                 );
-                next_to_submit += 1;
             }
             let result = match join_set
                 .join_next()
