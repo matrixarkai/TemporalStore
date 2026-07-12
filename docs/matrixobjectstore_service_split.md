@@ -36,7 +36,7 @@ Append-only shared-store objects such as WAL/oplog entries and snapshot objects 
 
 Snapshot upload uses `ObjectStore::put_path_unique`, and snapshot download uses `ObjectStore::get_to_path`. MatrixObjectStore overrides both hooks to move chunked objects between files and the chunk service with bounded chunk memory, instead of assembling each large page segment as one in-memory byte buffer. Local/shared file backends also override `put_path_unique` with an atomic copy-to-temp plus rename path so file-backed snapshot upload avoids full-payload buffering too.
 
-Snapshot checksum generation and local restore verification stream files in fixed-size buffers. Remote snapshot verification uses `ObjectStore::head`, so MatrixObjectStore can validate size and checksum from manifests without downloading chunk payloads.
+Snapshot checksum generation and local restore verification stream files in fixed-size buffers. Remote snapshot verification uses `ObjectStore::head`, so MatrixObjectStore can validate size, checksum, and manifest block layout from manifests without downloading chunk payloads.
 
 File-backed `ObjectStore::head` also streams checksum calculation from disk and reads size from filesystem metadata, so metadata-only verification avoids full-payload buffering on local/shared-file stores.
 
