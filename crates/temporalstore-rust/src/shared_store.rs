@@ -465,10 +465,43 @@ where
         self.replay_wal(shard_id, after_oplog_index, engine).await
     }
 
+    pub async fn replay_oplog_until(
+        &self,
+        shard_id: ShardId,
+        after_oplog_index: u64,
+        through_oplog_index: u64,
+        engine: &TemporalEngine,
+    ) -> Result<ReplayReport, SharedStoreReplicationError> {
+        self.replay_wal_until(shard_id, after_oplog_index, through_oplog_index, engine)
+            .await
+    }
+
     pub async fn replay_wal(
         &self,
         shard_id: ShardId,
         after_wal_index: u64,
+        engine: &TemporalEngine,
+    ) -> Result<ReplayReport, SharedStoreReplicationError> {
+        self.replay_wal_bounded(shard_id, after_wal_index, None, engine)
+            .await
+    }
+
+    pub async fn replay_wal_until(
+        &self,
+        shard_id: ShardId,
+        after_wal_index: u64,
+        through_wal_index: u64,
+        engine: &TemporalEngine,
+    ) -> Result<ReplayReport, SharedStoreReplicationError> {
+        self.replay_wal_bounded(shard_id, after_wal_index, Some(through_wal_index), engine)
+            .await
+    }
+
+    async fn replay_wal_bounded(
+        &self,
+        shard_id: ShardId,
+        after_wal_index: u64,
+        through_wal_index: Option<u64>,
         engine: &TemporalEngine,
     ) -> Result<ReplayReport, SharedStoreReplicationError> {
         let mut next_oplog_index = after_wal_index + 1;
@@ -477,8 +510,11 @@ where
             last_oplog_index: after_wal_index,
         };
         loop {
+            if through_wal_index.is_some_and(|through| next_oplog_index > through) {
+                break;
+            }
             let (entries, reached_gap) = self
-                .read_contiguous_oplog_entries(shard_id, next_oplog_index)
+                .read_contiguous_oplog_entries(shard_id, next_oplog_index, through_wal_index)
                 .await?;
             if entries.is_empty() {
                 break;
@@ -860,7 +896,11 @@ where
         &self,
         shard_id: ShardId,
         start_oplog_index: u64,
+        through_oplog_index: Option<u64>,
     ) -> Result<(Vec<(u64, SharedStoreOplogEntry)>, bool), SharedStoreReplicationError> {
+        if through_oplog_index.is_some_and(|through| start_oplog_index > through) {
+            return Ok((Vec::new(), false));
+        }
         let Some(first) = self
             .read_oplog_entry_by_index(shard_id, start_oplog_index)
             .await?
@@ -872,9 +912,13 @@ where
         if window == 1 {
             return Ok((entries, false));
         }
+        let tail_count = through_oplog_index
+            .map(|through| through.saturating_sub(start_oplog_index) as usize)
+            .unwrap_or(window - 1)
+            .min(window - 1);
 
         let mut join_set = JoinSet::new();
-        for offset in 1..window {
+        for offset in 1..=tail_count {
             let oplog_index = start_oplog_index + offset as u64;
             let replicator = self.clone();
             join_set.spawn(async move {
