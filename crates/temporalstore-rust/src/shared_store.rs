@@ -255,7 +255,7 @@ where
             entry_byte_size: entry_bytes.len() as u64,
             entry_sha256: sha256_hex(&entry_bytes),
         };
-        self.put_with_retry(&key, Bytes::from(serde_json::to_vec(&object)?))
+        self.put_unique_with_retry(&key, Bytes::from(serde_json::to_vec(&object)?))
             .await?;
         Ok(())
     }
@@ -951,10 +951,32 @@ where
         key: &str,
         bytes: Bytes,
     ) -> Result<(), SharedStoreReplicationError> {
+        self.put_with_retry_inner(key, bytes, false).await
+    }
+
+    async fn put_unique_with_retry(
+        &self,
+        key: &str,
+        bytes: Bytes,
+    ) -> Result<(), SharedStoreReplicationError> {
+        self.put_with_retry_inner(key, bytes, true).await
+    }
+
+    async fn put_with_retry_inner(
+        &self,
+        key: &str,
+        bytes: Bytes,
+        unique: bool,
+    ) -> Result<(), SharedStoreReplicationError> {
         let attempts = self.retry_policy.max_attempts.max(1);
         let mut last_error = None;
         for attempt in 0..attempts {
-            match self.object_store.put(key, bytes.clone()).await {
+            let result = if unique {
+                self.object_store.put_unique(key, bytes.clone()).await
+            } else {
+                self.object_store.put(key, bytes.clone()).await
+            };
+            match result {
                 Ok(()) => return Ok(()),
                 Err(err) => {
                     last_error = Some(err);

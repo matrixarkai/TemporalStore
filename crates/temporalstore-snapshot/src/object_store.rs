@@ -157,6 +157,9 @@ impl ObjectMetadata {
 #[async_trait]
 pub trait ObjectStore: Send + Sync {
     async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError>;
+    async fn put_unique(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
+        self.put(key, bytes).await
+    }
     async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError>;
     async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError>;
     async fn delete(&self, key: &str) -> Result<(), ObjectStoreError>;
@@ -806,6 +809,10 @@ impl ObjectStore for MatrixObjectStore {
         self.put_atomic(key, bytes).await.map(|_| ())
     }
 
+    async fn put_unique(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
+        self.put_atomic_unique(key, bytes).await.map(|_| ())
+    }
+
     async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
         let manifest = self.root_service.get_manifest(key).await?;
         let mut reads = Vec::with_capacity(manifest.blocks.len());
@@ -859,15 +866,38 @@ impl ObjectStore for MatrixObjectStore {
         key: &str,
         bytes: Bytes,
     ) -> Result<ObjectMetadata, ObjectStoreError> {
+        self.put_atomic_inner(key, bytes, true).await
+    }
+}
+
+impl MatrixObjectStore {
+    pub async fn put_atomic_unique(
+        &self,
+        key: &str,
+        bytes: Bytes,
+    ) -> Result<ObjectMetadata, ObjectStoreError> {
+        self.put_atomic_inner(key, bytes, false).await
+    }
+
+    async fn put_atomic_inner(
+        &self,
+        key: &str,
+        bytes: Bytes,
+        cleanup_previous: bool,
+    ) -> Result<ObjectMetadata, ObjectStoreError> {
         let root_service = self.root_service.clone();
         let previous_key = key.to_string();
-        let previous_manifest_task =
-            tokio::spawn(async move { root_service.get_manifest(&previous_key).await.ok() });
+        let previous_manifest_task = cleanup_previous.then(|| {
+            tokio::spawn(async move { root_service.get_manifest(&previous_key).await.ok() })
+        });
         let checksum_sha256 = sha256_hex(&bytes);
         let blocks = self.write_chunks(key, bytes.clone()).await?;
-        let previous_manifest = previous_manifest_task
-            .await
-            .map_err(|err| ObjectStoreError::Io(std::io::Error::other(err)))?;
+        let previous_manifest = match previous_manifest_task {
+            Some(task) => task
+                .await
+                .map_err(|err| ObjectStoreError::Io(std::io::Error::other(err)))?,
+            None => None,
+        };
         let live_chunk_keys: HashSet<String> =
             blocks.iter().map(|block| block.chunk_key.clone()).collect();
         let live_block_ids: HashSet<String> =
@@ -952,6 +982,13 @@ impl ObjectStore for SharedObjectStore {
         match self {
             Self::LocalFile(store) | Self::SharedFile(store) => store.put(key, bytes).await,
             Self::MatrixObjectStore(store) => store.put(key, bytes).await,
+        }
+    }
+
+    async fn put_unique(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
+        match self {
+            Self::LocalFile(store) | Self::SharedFile(store) => store.put_unique(key, bytes).await,
+            Self::MatrixObjectStore(store) => store.put_unique(key, bytes).await,
         }
     }
 
@@ -1166,6 +1203,35 @@ mod tests {
         assert!(manifest.blocks.len() > 1);
         assert_eq!(manifest.blocks[0].offset, 0);
         assert_eq!(store.get("large/object").await.unwrap(), payload);
+    }
+
+    #[tokio::test]
+    async fn matrix_object_store_unique_put_writes_chunked_payload() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = MatrixObjectStoreConfig::local_compat(dir.path())
+            .with_chunk_target_bytes(5)
+            .with_transfer_concurrency(2);
+        let store = MatrixObjectStore::from_config(config);
+        let payload = Bytes::from_static(b"abcdefghijklmnopqrstuvwxyz");
+
+        store
+            .put_unique("shared/oplog/oplog_00000000000000000001.json", payload.clone())
+            .await
+            .unwrap();
+
+        let manifest = store
+            .root_service
+            .get_manifest("shared/oplog/oplog_00000000000000000001.json")
+            .await
+            .unwrap();
+        assert!(manifest.blocks.len() > 1);
+        assert_eq!(
+            store
+                .get("shared/oplog/oplog_00000000000000000001.json")
+                .await
+                .unwrap(),
+            payload
+        );
     }
 
     #[tokio::test]
