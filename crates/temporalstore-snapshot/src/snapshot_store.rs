@@ -266,14 +266,8 @@ where
     ) -> Result<SnapshotRef, SnapshotStoreError> {
         let started = Instant::now();
         let stable_prefix = snapshot.manifest.stable_prefix();
-        let temp_prefix = format!("{stable_prefix}.tmp-{}/", uuid::Uuid::new_v4());
-        let result = upload_snapshot_inner(
-            self.object_store.as_ref(),
-            &snapshot,
-            &stable_prefix,
-            &temp_prefix,
-        )
-        .await;
+        let result =
+            upload_snapshot_inner(self.object_store.as_ref(), &snapshot, &stable_prefix).await;
 
         match result {
             Ok(snapshot_ref) => {
@@ -292,7 +286,7 @@ where
                 Ok(snapshot_ref)
             }
             Err(err) => {
-                let _ = delete_prefix(self.object_store.as_ref(), &temp_prefix).await;
+                let _ = delete_prefix(self.object_store.as_ref(), &stable_prefix).await;
                 if let Some(metrics) = &self.metrics {
                     metrics.observe_upload(
                         snapshot.manifest.shard_id,
@@ -378,17 +372,16 @@ async fn upload_snapshot_inner<O: ObjectStore>(
     object_store: &O,
     snapshot: &LocalSnapshot,
     stable_prefix: &str,
-    temp_prefix: &str,
 ) -> Result<SnapshotRef, SnapshotStoreError> {
     put_file_unique(
         object_store,
-        &format!("{temp_prefix}{INDEX}"),
+        &format!("{stable_prefix}{INDEX}"),
         &snapshot.index_path,
     )
     .await?;
     put_file_unique(
         object_store,
-        &format!("{temp_prefix}{CHECKSUMS}"),
+        &format!("{stable_prefix}{CHECKSUMS}"),
         &snapshot.checksums_path,
     )
     .await?;
@@ -396,26 +389,16 @@ async fn upload_snapshot_inner<O: ObjectStore>(
         let name = page_segment.file_name().unwrap().to_string_lossy();
         put_file_unique(
             object_store,
-            &format!("{temp_prefix}page_segments/{name}"),
+            &format!("{stable_prefix}page_segments/{name}"),
             page_segment,
         )
         .await?;
-    }
-
-    let temp_keys = object_store.list(temp_prefix).await?;
-    for temp_key in temp_keys {
-        let suffix = temp_key.trim_start_matches(temp_prefix);
-        let bytes = object_store.get(&temp_key).await?;
-        object_store
-            .put_unique(&format!("{stable_prefix}{suffix}"), bytes)
-            .await?;
     }
 
     let manifest_bytes = Bytes::from(serde_json::to_vec_pretty(&snapshot.manifest)?);
     object_store
         .put_unique(&format!("{stable_prefix}{MANIFEST}"), manifest_bytes)
         .await?;
-    delete_prefix(object_store, temp_prefix).await?;
     snapshot_ref_from_manifest(object_store, &snapshot.manifest).await
 }
 
