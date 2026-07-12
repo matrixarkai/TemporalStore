@@ -67,7 +67,7 @@ Read path:
 ```text
 ObjectStore::get(key)
 -> RootService reads object manifest
--> manifest block ranges are validated before allocation or chunk IO
+-> manifest block layout is validated for bounds and contiguous coverage before allocation or chunk IO
 -> RootService manifest supplies block refs
 -> ChunkService reads payload chunks with bounded concurrency
 -> chunk length and checksum verification
