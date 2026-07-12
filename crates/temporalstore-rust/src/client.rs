@@ -22,7 +22,7 @@ mod commands;
 mod retry;
 mod routing;
 
-use commands::{command_is_dropped, command_key, command_routing_key, is_write};
+use commands::{command_is_dropped, command_routing_key, is_write};
 use retry::{
     classify_cpp_retry_decision, replica_read_policy_from_meta, retry_attempts_for,
     sleep_before_retry, status_is_replica_read_not_ready,
@@ -890,7 +890,8 @@ impl ClientStatsState {
         self.backend_errors.fetch_add(1, Ordering::Relaxed);
         self.backend_error_streak.fetch_add(1, Ordering::Relaxed);
         if became_continuous {
-            self.continuous_backend_failures.fetch_add(1, Ordering::Relaxed);
+            self.continuous_backend_failures
+                .fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -1226,10 +1227,10 @@ impl TemporalStoreClient {
             }
         };
         if !topology.status.ok {
-                self.inner
-                    .stats
-                    .meta_sync_errors
-                    .fetch_add(1, Ordering::Relaxed);
+            self.inner
+                .stats
+                .meta_sync_errors
+                .fetch_add(1, Ordering::Relaxed);
             self.record_meta_sync_error(&namespace, &table_name, &topology.status.message);
             return Err(ClientError::Status(topology.status.message));
         }
@@ -2990,18 +2991,24 @@ impl TemporalStoreClient {
                         continuous_failed_time_ms
                             .unwrap_or(self.inner.options.topo_error_retry_interval_ms),
                     ) {
-                        self.inner.stats.continuous_backend_failures.fetch_add(
-                            1,
-                            Ordering::Relaxed,
-                        );
+                        self.inner
+                            .stats
+                            .continuous_backend_failures
+                            .fetch_add(1, Ordering::Relaxed);
                     } else {
-                        self.inner.stats.route_cache_hits.fetch_add(1, Ordering::Relaxed);
+                        self.inner
+                            .stats
+                            .route_cache_hits
+                            .fetch_add(1, Ordering::Relaxed);
                         return Ok(server_addr);
                     }
                 }
             }
         }
-        self.inner.stats.route_cache_misses.fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .stats
+            .route_cache_misses
+            .fetch_add(1, Ordering::Relaxed);
 
         let meta_addr = self
             .inner
@@ -3029,7 +3036,10 @@ impl TemporalStoreClient {
                 shard_id,
                 CachedRoute::for_shard(shard_id, server_addr.clone(), "shard_lookup"),
             );
-        self.inner.stats.route_refreshes.fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .stats
+            .route_refreshes
+            .fetch_add(1, Ordering::Relaxed);
         Ok(server_addr)
     }
 
@@ -4595,47 +4605,53 @@ impl TemporalStoreTable {
             )?;
 
         let selected_capacity = if request.max_selected_refs == 0 {
-            cold_window_summaries.len().saturating_add(usize::from(overall_summary.is_some())).saturating_add(1)
+            cold_window_summaries
+                .len()
+                .saturating_add(usize::from(overall_summary.is_some()))
+                .saturating_add(1)
         } else {
-            request.max_selected_refs.min(cold_window_summaries.len().saturating_add(1))
+            request
+                .max_selected_refs
+                .min(cold_window_summaries.len().saturating_add(1))
         };
         let mut selected_refs = Vec::with_capacity(selected_capacity);
         let mut remote_context_refs = Vec::with_capacity(selected_refs.capacity());
         let mut used_context_tokens = 0u64;
-        let mut push_selected_ref = |ref_type: &'static str,
-                                   ref_hash: serde_json::Value,
-                                   node_hash: u64,
-                                   event_time_ms: u64,
-                                   text: String| {
-            let token_estimate = estimate_context_tokens(&text);
-            used_context_tokens = used_context_tokens.saturating_add(token_estimate);
-            let text_for_remote = text.clone();
-            selected_refs.push(serde_json::json!({
-                "ref_type": ref_type,
-                "ref_hash": ref_hash,
-                "node_hash": node_hash,
-                "event_time_ms": event_time_ms,
-                "score": 1.0,
-                "token_estimate": token_estimate,
-                "text": text,
-            }));
-            remote_context_refs.push(serde_json::json!({
-                "type": ref_type,
-                "ref_hash": ref_hash.clone(),
-                "node_hash": node_hash,
-                "score": 1.0,
-                "tokens": token_estimate,
-                "content": text_for_remote,
-            }));
-        };
+        macro_rules! push_selected_ref {
+            ($ref_type:expr, $ref_hash:expr, $node_hash:expr, $event_time_ms:expr, $text:expr $(,)?) => {{
+                let ref_hash = $ref_hash;
+                let text = $text;
+                let token_estimate = estimate_context_tokens(&text);
+                used_context_tokens = used_context_tokens.saturating_add(token_estimate);
+                let text_for_remote = text.clone();
+                let ref_hash_for_remote = ref_hash.clone();
+                selected_refs.push(serde_json::json!({
+                    "ref_type": $ref_type,
+                    "ref_hash": ref_hash,
+                    "node_hash": $node_hash,
+                    "event_time_ms": $event_time_ms,
+                    "score": 1.0,
+                    "token_estimate": token_estimate,
+                    "text": text,
+                }));
+                remote_context_refs.push(serde_json::json!({
+                    "type": $ref_type,
+                    "ref_hash": ref_hash_for_remote,
+                    "node_hash": $node_hash,
+                    "score": 1.0,
+                    "tokens": token_estimate,
+                    "content": text_for_remote,
+                }));
+            }};
+        }
         if let Some(summary) = overall_summary.as_ref() {
             if !summary.text.is_empty() {
-                let summary_hash = stable_key_hash(&format!(
+                let summary_hash: serde_json::Value = stable_key_hash(&format!(
                     "summary:{}:{}:{}",
                     tenant_hash, summary.node_hash, summary.level
                 ))
                 .into();
-                push_selected_ref(
+                push_selected_ref!(
                     "summary",
                     summary_hash,
                     summary.node_hash,
@@ -4651,9 +4667,9 @@ impl TemporalStoreTable {
             if event.summary.is_empty() {
                 continue;
             }
-            push_selected_ref(
+            push_selected_ref!(
                 "compression_event",
-                event.compression_id_hash.clone().into(),
+                serde_json::json!(event.compression_id_hash),
                 event.node_hash,
                 event.compressed_time_ms,
                 event.summary.clone(),
@@ -5242,7 +5258,9 @@ impl TemporalStoreTable {
                 if !write && is_write(command) {
                     write = true;
                 }
-                if dropped_command_key.is_none() && command_is_dropped(command, table_options.drop_percent) {
+                if dropped_command_key.is_none()
+                    && command_is_dropped(command, table_options.drop_percent)
+                {
                     dropped_command_key = command_routing_key(command).map(|key| key.into_owned());
                 }
             }
@@ -5250,7 +5268,10 @@ impl TemporalStoreTable {
                 return Ok(BatchExecuteResponse {
                     status: Status::error(
                         "traffic_dropped",
-                        format!("batch command for key {} dropped by table drop_percent", key),
+                        format!(
+                            "batch command for key {} dropped by table drop_percent",
+                            key
+                        ),
                     ),
                     responses: Vec::new(),
                 });
@@ -5331,6 +5352,7 @@ impl TemporalStoreTable {
     ) -> Result<BatchExecuteResponse, ClientError> {
         use std::sync::mpsc;
 
+        #[derive(Default)]
         struct ShardGroup {
             indexes: Vec<usize>,
             commands: Vec<Command>,
@@ -5350,7 +5372,7 @@ impl TemporalStoreTable {
                 write,
             );
         }
-        if self.shard_count > 1 {
+        if table_options.shard_count > 1 {
             let first_shard = self.shard_id_for_command(&commands[0]);
             let mut has_write = is_write(&commands[0]);
             let mut all_single_shard = true;
@@ -5414,21 +5436,22 @@ impl TemporalStoreTable {
         group_entries.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
 
         let mut responses: Vec<Option<ExecuteResponse>> = vec![None; total_commands];
-        let mut append_responses = |indexes: Vec<usize>, mut response: BatchExecuteResponse| -> Option<Status> {
-            if !response.status.ok {
-                return Some(response.status);
-            }
-            if response.responses.len() != indexes.len() {
-                return Some(Status::error(
-                    "bad_response",
-                    "batch response length mismatch",
-                ));
-            }
-            for (index, response) in indexes.into_iter().zip(response.responses.into_iter()) {
-                responses[index] = Some(response);
-            }
-            None
-        };
+        let mut append_responses =
+            |indexes: Vec<usize>, response: BatchExecuteResponse| -> Option<Status> {
+                if !response.status.ok {
+                    return Some(response.status);
+                }
+                if response.responses.len() != indexes.len() {
+                    return Some(Status::error(
+                        "bad_response",
+                        "batch response length mismatch",
+                    ));
+                }
+                for (index, response) in indexes.into_iter().zip(response.responses.into_iter()) {
+                    responses[index] = Some(response);
+                }
+                None
+            };
 
         const MAX_SEQUENTIAL_BATCH_SHARD_GROUPS: usize = 2;
         const MIN_THREADED_BATCH_COMMANDS: usize = 32;
@@ -5437,10 +5460,7 @@ impl TemporalStoreTable {
         {
             for (shard_id, indexes, commands, has_write) in group_entries {
                 let response = self.batch_execute_single_shard_with_retry(
-                    &BatchExecuteRequest {
-                        shard_id,
-                        commands,
-                    },
+                    &BatchExecuteRequest { shard_id, commands },
                     &table_options,
                     has_write,
                 )?;
@@ -5493,15 +5513,12 @@ impl TemporalStoreTable {
                 scope.spawn(move || {
                     for (shard_id, indexes, commands, has_write) in jobs {
                         let result = self.batch_execute_single_shard_with_retry(
-                            &BatchExecuteRequest {
-                                shard_id,
-                                commands,
-                            },
+                            &BatchExecuteRequest { shard_id, commands },
                             table_options,
                             has_write,
                         );
                         let _ = tx.send((indexes, result));
-                        }
+                    }
                 });
             }
         });

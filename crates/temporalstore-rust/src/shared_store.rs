@@ -916,7 +916,7 @@ where
         let mut flushed = 0usize;
         while let Some(entry) = drained.pop_front() {
             last_oplog_index = entry.oplog_index;
-            if let Err(err) = self.replicator.publish_oplog_entry(entry).await {
+            if let Err(err) = self.replicator.publish_oplog_entry(entry.clone()).await {
                 let mut to_requeue = Vec::with_capacity(drained.len() + 1);
                 let mut pending = self
                     .pending
