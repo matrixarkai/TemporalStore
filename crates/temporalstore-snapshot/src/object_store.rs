@@ -919,7 +919,13 @@ impl ObjectStore for FileObjectStore {
             match tokio::fs::copy(&source, &tmp_path).await {
                 Ok(size_bytes) => {
                     let checksum_sha256 = sha256_file_hex(&tmp_path).await?;
+                    if self.sync_writes {
+                        sync_file_path(&tmp_path).await?;
+                    }
                     tokio::fs::rename(&tmp_path, destination).await?;
+                    if self.sync_parent_dirs {
+                        sync_parent_dir(destination).await?;
+                    }
                     Ok(ObjectMetadata {
                         key: key.to_string(),
                         uri: self.uri(key),
@@ -1391,6 +1397,9 @@ impl ObjectStore for MatrixObjectStore {
                 written_bytes += chunk.len() as u64;
             }
             file.flush().await?;
+            if self.config.sync_writes {
+                file.sync_all().await?;
+            }
             drop(file);
 
             if written_bytes != manifest.size_bytes {
@@ -1406,6 +1415,9 @@ impl ObjectStore for MatrixObjectStore {
                 ))));
             }
             tokio::fs::rename(&tmp_path, destination).await?;
+            if self.config.sync_parent_dirs {
+                sync_parent_dir(destination).await?;
+            }
             Ok(ObjectMetadata {
                 key: manifest.key,
                 uri: manifest.uri,
@@ -1625,6 +1637,12 @@ async fn sync_parent_dir(path: &Path) -> Result<(), ObjectStoreError> {
     if let Some(parent) = path.parent() {
         sync_dir(parent).await?;
     }
+    Ok(())
+}
+
+async fn sync_file_path(path: &Path) -> Result<(), ObjectStoreError> {
+    let file = tokio::fs::File::open(path).await?;
+    file.sync_all().await?;
     Ok(())
 }
 
@@ -2282,6 +2300,16 @@ mod tests {
         assert_eq!(
             store.get("fast/local-object").await.unwrap(),
             Bytes::from_static(b"fast shared-store payload")
+        );
+        let destination = dir.path().join("restore/local-object");
+        let metadata = store
+            .get_to_path("fast/local-object", &destination)
+            .await
+            .unwrap();
+        assert_eq!(metadata.size_bytes, 25);
+        assert_eq!(
+            tokio::fs::read(&destination).await.unwrap(),
+            b"fast shared-store payload"
         );
     }
 
