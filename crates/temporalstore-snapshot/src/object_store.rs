@@ -1002,6 +1002,7 @@ impl MatrixObjectStore {
                 manifest.key, manifest.size_bytes
             )))
         })?;
+        let mut ranges = Vec::with_capacity(manifest.blocks.len());
         for block in &manifest.blocks {
             if block.length == 0 && manifest.size_bytes > 0 {
                 return Err(ObjectStoreError::Io(std::io::Error::other(format!(
@@ -1021,6 +1022,24 @@ impl MatrixObjectStore {
                     manifest.key, block.block_id, end, manifest.size_bytes
                 ))));
             }
+            ranges.push((block.offset, end, &block.block_id));
+        }
+        ranges.sort_by_key(|(offset, _, _)| *offset);
+        let mut expected_offset = 0u64;
+        for (offset, end, block_id) in ranges {
+            if offset != expected_offset {
+                return Err(ObjectStoreError::Io(std::io::Error::other(format!(
+                    "object {} block {} range is not contiguous: expected offset {}, got {}",
+                    manifest.key, block_id, expected_offset, offset
+                ))));
+            }
+            expected_offset = end;
+        }
+        if expected_offset != manifest.size_bytes {
+            return Err(ObjectStoreError::Io(std::io::Error::other(format!(
+                "object {} manifest covers {} bytes, expected {}",
+                manifest.key, expected_offset, manifest.size_bytes
+            ))));
         }
         Ok(object_size)
     }
@@ -2052,6 +2071,30 @@ mod tests {
             tokio::fs::read(&destination).await.unwrap(),
             b"previous-good-restore"
         );
+
+        let mut manifest = store
+            .root_service
+            .get_manifest("large/object")
+            .await
+            .unwrap();
+        manifest.blocks[0].offset = 1;
+        store.root_service.put_manifest(&manifest).await.unwrap();
+
+        assert!(store.get("large/object").await.is_err());
+        assert!(store
+            .get_to_path("large/object", &destination)
+            .await
+            .is_err());
+
+        let mut manifest = store
+            .root_service
+            .get_manifest("large/object")
+            .await
+            .unwrap();
+        manifest.blocks[1].offset = 0;
+        store.root_service.put_manifest(&manifest).await.unwrap();
+
+        assert!(store.get("large/object").await.is_err());
     }
 
     #[tokio::test]
