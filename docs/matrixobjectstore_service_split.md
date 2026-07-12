@@ -38,6 +38,8 @@ Snapshot upload uses `ObjectStore::put_path_unique`, and snapshot download uses 
 
 Snapshot checksum generation and local restore verification stream files in fixed-size buffers. Remote snapshot verification uses `ObjectStore::head`, so MatrixObjectStore can validate size and checksum from manifests without downloading chunk payloads.
 
+File-backed `ObjectStore::head` also streams checksum calculation from disk and reads size from filesystem metadata, so metadata-only verification avoids full-payload buffering on local/shared-file stores.
+
 ## Runtime Flow
 
 Write path:
