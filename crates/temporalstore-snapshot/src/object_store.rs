@@ -70,7 +70,72 @@ pub struct FileObjectStore {
     created_dirs: Arc<Mutex<HashSet<PathBuf>>>,
 }
 
-pub type MatrixObjectStore = FileObjectStore;
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MatrixObjectStoreBackendMode {
+    LocalCompat,
+    External,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MatrixObjectStoreConfig {
+    pub root: PathBuf,
+    pub uri_scheme: String,
+    pub endpoint: Option<String>,
+    pub backend_mode: MatrixObjectStoreBackendMode,
+}
+
+impl MatrixObjectStoreConfig {
+    pub fn local_compat(root: impl Into<PathBuf>) -> Self {
+        Self {
+            root: root.into(),
+            uri_scheme: "matrixobjectstore".to_string(),
+            endpoint: None,
+            backend_mode: MatrixObjectStoreBackendMode::LocalCompat,
+        }
+    }
+
+    pub fn external(endpoint: impl Into<String>, root: impl Into<PathBuf>) -> Self {
+        Self {
+            root: root.into(),
+            uri_scheme: "matrixobjectstore".to_string(),
+            endpoint: Some(endpoint.into()),
+            backend_mode: MatrixObjectStoreBackendMode::External,
+        }
+    }
+
+    pub fn with_uri_scheme(mut self, uri_scheme: impl Into<String>) -> Self {
+        self.uri_scheme = uri_scheme.into();
+        self
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MatrixObjectStore {
+    config: MatrixObjectStoreConfig,
+    local_compat: FileObjectStore,
+}
+
+impl MatrixObjectStore {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self::from_config(MatrixObjectStoreConfig::local_compat(root))
+    }
+
+    pub fn with_uri_scheme(root: impl Into<PathBuf>, uri_scheme: impl Into<String>) -> Self {
+        Self::from_config(MatrixObjectStoreConfig::local_compat(root).with_uri_scheme(uri_scheme))
+    }
+
+    pub fn from_config(config: MatrixObjectStoreConfig) -> Self {
+        let local_compat = FileObjectStore::with_uri_scheme(&config.root, &config.uri_scheme);
+        Self {
+            config,
+            local_compat,
+        }
+    }
+
+    pub fn config(&self) -> &MatrixObjectStoreConfig {
+        &self.config
+    }
+}
 
 impl FileObjectStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
@@ -182,6 +247,41 @@ impl ObjectStore for FileObjectStore {
     }
 }
 
+#[async_trait]
+impl ObjectStore for MatrixObjectStore {
+    async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
+        self.local_compat.put(key, bytes).await
+    }
+
+    async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
+        self.local_compat.get(key).await
+    }
+
+    async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
+        self.local_compat.list(prefix).await
+    }
+
+    async fn delete(&self, key: &str) -> Result<(), ObjectStoreError> {
+        self.local_compat.delete(key).await
+    }
+
+    fn uri(&self, key: &str) -> String {
+        self.local_compat.uri(key)
+    }
+
+    async fn head(&self, key: &str) -> Result<ObjectMetadata, ObjectStoreError> {
+        self.local_compat.head(key).await
+    }
+
+    async fn put_atomic(
+        &self,
+        key: &str,
+        bytes: Bytes,
+    ) -> Result<ObjectMetadata, ObjectStoreError> {
+        self.local_compat.put_atomic(key, bytes).await
+    }
+}
+
 async fn collect_files(
     root: &Path,
     dir: &Path,
@@ -208,7 +308,10 @@ async fn collect_files(
 
 #[cfg(test)]
 mod tests {
-    use super::{FileObjectStore, MatrixObjectStore, ObjectStore, ObjectStoreError};
+    use super::{
+        FileObjectStore, MatrixObjectStore, MatrixObjectStoreBackendMode, MatrixObjectStoreConfig,
+        ObjectStore, ObjectStoreError,
+    };
     use bytes::Bytes;
 
     #[tokio::test]
@@ -261,6 +364,29 @@ mod tests {
             store.list("raw/").await.unwrap(),
             vec!["raw/event-1".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn matrix_object_store_keeps_explicit_backend_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = MatrixObjectStoreConfig::external("matrixobjectstore://cluster-a", dir.path())
+            .with_uri_scheme("matrixobjectstore");
+        let store = MatrixObjectStore::from_config(config.clone());
+
+        assert_eq!(store.config(), &config);
+        assert_eq!(
+            store.config().backend_mode,
+            MatrixObjectStoreBackendMode::External
+        );
+        assert_eq!(
+            store.config().endpoint.as_deref(),
+            Some("matrixobjectstore://cluster-a")
+        );
+        let metadata = store
+            .put_atomic("snapshots/a", Bytes::from_static(b"payload"))
+            .await
+            .unwrap();
+        assert_eq!(metadata.uri, "matrixobjectstore://snapshots/a");
     }
 
     #[tokio::test]

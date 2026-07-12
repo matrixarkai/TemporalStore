@@ -7,7 +7,8 @@ pub mod types;
 
 pub use metrics::SnapshotMetrics;
 pub use object_store::{
-    FileObjectStore, MatrixObjectStore, ObjectMetadata, ObjectStore, ObjectStoreError,
+    FileObjectStore, MatrixObjectStore, MatrixObjectStoreBackendMode, MatrixObjectStoreConfig,
+    ObjectMetadata, ObjectStore, ObjectStoreError,
 };
 pub use snapshot_store::{S3SnapshotStore, SnapshotStore, SnapshotStoreError};
 pub use types::{
