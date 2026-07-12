@@ -34,7 +34,7 @@ chunk_endpoint = matrixobjectstore-chunk://chunk-service
 
 Append-only shared-store objects such as WAL/oplog entries and snapshot objects use `ObjectStore::put_unique`, which skips the previous-manifest lookup and stale-ref cleanup that normal overwrite-capable writes need. Snapshot upload writes directly to the UUID-backed stable prefix, uploads data files with bounded concurrency controlled by `TS_SNAPSHOT_UPLOAD_CONCURRENCY`, and publishes `manifest.json` last, so snapshots remain list-invisible until complete while avoiding temp object copy/read amplification. Snapshot listing, download, remote verification, failed-upload cleanup, and snapshot delete use bounded concurrent object reads/deletes controlled by `TS_SNAPSHOT_TRANSFER_CONCURRENCY`, falling back to `TS_SNAPSHOT_UPLOAD_CONCURRENCY` and then `4` when unset.
 
-Snapshot download uses `ObjectStore::get_to_path`. MatrixObjectStore overrides that hook to restore chunked objects directly to the destination file with bounded chunk memory, instead of assembling each large page segment as one in-memory byte buffer before writing it out.
+Snapshot upload uses `ObjectStore::put_path_unique`, and snapshot download uses `ObjectStore::get_to_path`. MatrixObjectStore overrides both hooks to move chunked objects between files and the chunk service with bounded chunk memory, instead of assembling each large page segment as one in-memory byte buffer.
 
 Snapshot checksum generation and local restore verification stream files in fixed-size buffers. Remote snapshot verification uses `ObjectStore::head`, so MatrixObjectStore can validate size and checksum from manifests without downloading chunk payloads.
 

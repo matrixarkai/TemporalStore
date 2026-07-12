@@ -479,8 +479,7 @@ async fn put_files_unique_concurrent<O: ObjectStore + 'static>(
             let file = files[next_to_submit].clone();
             let store = Arc::clone(&object_store);
             join_set.spawn(async move {
-                let bytes = Bytes::from(tokio::fs::read(&file.path).await?);
-                store.put_unique(&file.key, bytes).await?;
+                store.put_path_unique(&file.key, &file.path).await?;
                 Ok::<_, SnapshotStoreError>(())
             });
             next_to_submit += 1;
