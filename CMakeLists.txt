@@ -14,6 +14,7 @@ option(ENABLE_COVERAGE "enable asan" OFF)
 option(ENABLE_MTCACHE "enable mtcache" OFF)
 option(ENABLE_MTCACHE_SSD_CACHE "enable MtCache SSD/TerarkDB backend" OFF)
 option(BCACHE2_BUILD_TESTS "build bcache2 unit and smoke tests" OFF)
+option(BCACHE2_OPEN_SOURCE_SURFACE "build the trimmed open-source surface only" OFF)
 option(TEMPORALSTORE_RELEASE_DEBUG_INFO "build Release binaries with debug symbols" OFF)
 
 # Vars
@@ -209,6 +210,9 @@ foreach(_TEMPORALSTORE_BRPC_INCLUDE_CANDIDATE
         include_directories("${_TEMPORALSTORE_BRPC_INCLUDE_CANDIDATE}")
     endif()
 endforeach()
+if (BCACHE2_OPEN_SOURCE_SURFACE)
+    add_compile_definitions(BCACHE2_OPEN_SOURCE_SURFACE)
+endif()
 add_subdirectory(src)
 if (BCACHE2_BUILD_TESTS)
     add_subdirectory(test)

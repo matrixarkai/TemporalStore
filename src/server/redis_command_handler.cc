@@ -72,6 +72,57 @@ void SetRedisStatusError(brpc::RedisReply* reply, const RpcStatus& status) {
     SetRedisError(reply, status.message().empty() ? "command failed" : status.message());
 }
 
+#ifdef BCACHE2_OPEN_SOURCE_SURFACE
+bool IsOpenSourceRedisCommandAllowed(RedisCommand::CmdType cmd_type) {
+    switch (cmd_type) {
+        case RedisCommand::CmdType::kInfo:
+        case RedisCommand::CmdType::kAuth:
+        case RedisCommand::CmdType::kPing:
+        case RedisCommand::CmdType::kEcho:
+        case RedisCommand::CmdType::kCommand:
+        case RedisCommand::CmdType::kSelect:
+        case RedisCommand::CmdType::kConfig:
+        case RedisCommand::CmdType::kType:
+        case RedisCommand::CmdType::kGet:
+        case RedisCommand::CmdType::kSet:
+        case RedisCommand::CmdType::kSetNx:
+        case RedisCommand::CmdType::kSetEx:
+        case RedisCommand::CmdType::kPSetEx:
+        case RedisCommand::CmdType::kGetSet:
+        case RedisCommand::CmdType::kGetDel:
+        case RedisCommand::CmdType::kGetEx:
+        case RedisCommand::CmdType::kMGet:
+        case RedisCommand::CmdType::kMSet:
+        case RedisCommand::CmdType::kDel:
+        case RedisCommand::CmdType::kUnlink:
+        case RedisCommand::CmdType::kExists:
+        case RedisCommand::CmdType::kExpire:
+        case RedisCommand::CmdType::kPExpire:
+        case RedisCommand::CmdType::kTtl:
+        case RedisCommand::CmdType::kPTtl:
+        case RedisCommand::CmdType::kPersist:
+        case RedisCommand::CmdType::kAppend:
+        case RedisCommand::CmdType::kStrlen:
+        case RedisCommand::CmdType::kIncrBy:
+        case RedisCommand::CmdType::kHSet:
+        case RedisCommand::CmdType::kHSetNx:
+        case RedisCommand::CmdType::kHGet:
+        case RedisCommand::CmdType::kHMGet:
+        case RedisCommand::CmdType::kHDel:
+        case RedisCommand::CmdType::kHExists:
+        case RedisCommand::CmdType::kHLen:
+        case RedisCommand::CmdType::kHGetAll:
+        case RedisCommand::CmdType::kHKeys:
+        case RedisCommand::CmdType::kHVals:
+        case RedisCommand::CmdType::kHStrlen:
+        case RedisCommand::CmdType::kHIncrBy:
+            return true;
+        default:
+            return false;
+    }
+}
+#endif
+
 
 
 class RedisSyncClosure : public Closure<void> {
@@ -736,6 +787,13 @@ brpc::RedisCommandHandlerResult RedisCommandHandler::Run(
     }
 
     RedisClientContext client(args, output);
+#ifdef BCACHE2_OPEN_SOURCE_SURFACE
+    if (!IsOpenSourceRedisCommandAllowed(command_.GetCmdType())) {
+        SetRedisError(output, "command " + command_.GetName() +
+                                  " is not part of the open-source Redis surface");
+        return brpc::REDIS_CMD_HANDLED;
+    }
+#endif
     if (handler_ == nullptr) {
         Unsupported(&client);
     } else {
