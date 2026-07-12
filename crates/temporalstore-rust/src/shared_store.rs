@@ -476,23 +476,31 @@ where
             applied: 0,
             last_oplog_index: after_wal_index,
         };
-        while let Some(entry) = self
-            .read_oplog_entry_by_index(shard_id, next_oplog_index)
-            .await?
-        {
-            let response = engine.execute(ExecuteRequest {
-                shard_id,
-                command: entry.command,
-            });
-            if !response.status.ok {
-                return Err(SharedStoreReplicationError::ApplyFailed {
-                    oplog_index: next_oplog_index,
-                    status: response.status,
-                });
+        loop {
+            let (entries, reached_gap) = self
+                .read_contiguous_oplog_entries(shard_id, next_oplog_index)
+                .await?;
+            if entries.is_empty() {
+                break;
             }
-            report.applied += 1;
-            report.last_oplog_index = next_oplog_index;
-            next_oplog_index += 1;
+            for (oplog_index, entry) in entries {
+                let response = engine.execute(ExecuteRequest {
+                    shard_id,
+                    command: entry.command,
+                });
+                if !response.status.ok {
+                    return Err(SharedStoreReplicationError::ApplyFailed {
+                        oplog_index,
+                        status: response.status,
+                    });
+                }
+                report.applied += 1;
+                report.last_oplog_index = oplog_index;
+                next_oplog_index = oplog_index + 1;
+            }
+            if reached_gap {
+                break;
+            }
         }
         Ok(report)
     }
@@ -846,6 +854,51 @@ where
             }
             Err(err) => Err(err),
         }
+    }
+
+    async fn read_contiguous_oplog_entries(
+        &self,
+        shard_id: ShardId,
+        start_oplog_index: u64,
+    ) -> Result<(Vec<(u64, SharedStoreOplogEntry)>, bool), SharedStoreReplicationError> {
+        let Some(first) = self
+            .read_oplog_entry_by_index(shard_id, start_oplog_index)
+            .await?
+        else {
+            return Ok((Vec::new(), true));
+        };
+        let mut entries = vec![(start_oplog_index, first)];
+        let window = self.transfer_concurrency.max(1);
+        if window == 1 {
+            return Ok((entries, false));
+        }
+
+        let mut join_set = JoinSet::new();
+        for offset in 1..window {
+            let oplog_index = start_oplog_index + offset as u64;
+            let replicator = self.clone();
+            join_set.spawn(async move {
+                let entry = replicator
+                    .read_oplog_entry_by_index(shard_id, oplog_index)
+                    .await;
+                (oplog_index, entry)
+            });
+        }
+
+        let mut tail = Vec::new();
+        while let Some(joined) = join_set.join_next().await {
+            tail.push(joined.map_err(join_error)?);
+        }
+        tail.sort_by_key(|(oplog_index, _)| *oplog_index);
+
+        for (oplog_index, result) in tail {
+            match result {
+                Ok(Some(entry)) => entries.push((oplog_index, entry)),
+                Ok(None) => return Ok((entries, true)),
+                Err(err) => return Err(err),
+            }
+        }
+        Ok((entries, false))
     }
 
     async fn put_with_retry(
