@@ -471,33 +471,28 @@ where
         after_wal_index: u64,
         engine: &TemporalEngine,
     ) -> Result<ReplayReport, SharedStoreReplicationError> {
-        let mut keys = self.object_store.list(&self.oplog_prefix(shard_id)).await?;
-        keys.sort();
-
+        let mut next_oplog_index = after_wal_index + 1;
         let mut report = ReplayReport {
             applied: 0,
             last_oplog_index: after_wal_index,
         };
-        for key in keys {
-            let Some(oplog_index) = parse_oplog_index(&key) else {
-                continue;
-            };
-            if oplog_index <= after_wal_index {
-                continue;
-            }
-            let entry = self.read_oplog_entry(&key).await?;
+        while let Some(entry) = self
+            .read_oplog_entry_by_index(shard_id, next_oplog_index)
+            .await?
+        {
             let response = engine.execute(ExecuteRequest {
                 shard_id,
                 command: entry.command,
             });
             if !response.status.ok {
                 return Err(SharedStoreReplicationError::ApplyFailed {
-                    oplog_index,
+                    oplog_index: next_oplog_index,
                     status: response.status,
                 });
             }
             report.applied += 1;
-            report.last_oplog_index = oplog_index;
+            report.last_oplog_index = next_oplog_index;
+            next_oplog_index += 1;
         }
         Ok(report)
     }
@@ -836,6 +831,21 @@ where
             return Ok(object.entry);
         }
         Ok(serde_json::from_slice(&bytes)?)
+    }
+
+    async fn read_oplog_entry_by_index(
+        &self,
+        shard_id: ShardId,
+        oplog_index: u64,
+    ) -> Result<Option<SharedStoreOplogEntry>, SharedStoreReplicationError> {
+        let key = self.oplog_key(shard_id, oplog_index);
+        match self.read_oplog_entry(&key).await {
+            Ok(entry) => Ok(Some(entry)),
+            Err(SharedStoreReplicationError::ObjectStore(ObjectStoreError::NotFound(_))) => {
+                Ok(None)
+            }
+            Err(err) => Err(err),
+        }
     }
 
     async fn put_with_retry(
