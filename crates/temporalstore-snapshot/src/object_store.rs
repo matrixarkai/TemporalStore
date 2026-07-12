@@ -193,12 +193,44 @@ pub enum MatrixObjectStoreBackendMode {
     External,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MatrixObjectStoreServiceEndpoints {
+    pub root_endpoint: Option<String>,
+    pub block_endpoint: Option<String>,
+    pub chunk_endpoint: Option<String>,
+}
+
+impl MatrixObjectStoreServiceEndpoints {
+    pub fn unified(endpoint: impl Into<String>) -> Self {
+        let endpoint = endpoint.into();
+        Self {
+            root_endpoint: Some(endpoint.clone()),
+            block_endpoint: Some(endpoint.clone()),
+            chunk_endpoint: Some(endpoint),
+        }
+    }
+
+    pub fn split(
+        root_endpoint: impl Into<String>,
+        block_endpoint: impl Into<String>,
+        chunk_endpoint: impl Into<String>,
+    ) -> Self {
+        Self {
+            root_endpoint: Some(root_endpoint.into()),
+            block_endpoint: Some(block_endpoint.into()),
+            chunk_endpoint: Some(chunk_endpoint.into()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MatrixObjectStoreConfig {
     pub root: PathBuf,
     pub uri_scheme: String,
     pub endpoint: Option<String>,
     pub backend_mode: MatrixObjectStoreBackendMode,
+    #[serde(default)]
+    pub service_endpoints: MatrixObjectStoreServiceEndpoints,
     #[serde(default = "default_matrixobjectstore_chunk_target_bytes")]
     pub chunk_target_bytes: usize,
     #[serde(default = "default_matrixobjectstore_transfer_concurrency")]
@@ -214,6 +246,7 @@ impl MatrixObjectStoreConfig {
             uri_scheme: "matrixobjectstore".to_string(),
             endpoint: None,
             backend_mode: MatrixObjectStoreBackendMode::LocalCompat,
+            service_endpoints: MatrixObjectStoreServiceEndpoints::default(),
             chunk_target_bytes: default_matrixobjectstore_chunk_target_bytes(),
             transfer_concurrency: default_matrixobjectstore_transfer_concurrency(),
             verify_block_metadata_on_read: default_strict_block_metadata(),
@@ -221,11 +254,13 @@ impl MatrixObjectStoreConfig {
     }
 
     pub fn external(endpoint: impl Into<String>, root: impl Into<PathBuf>) -> Self {
+        let endpoint = endpoint.into();
         Self {
             root: root.into(),
             uri_scheme: "matrixobjectstore".to_string(),
-            endpoint: Some(endpoint.into()),
+            endpoint: Some(endpoint.clone()),
             backend_mode: MatrixObjectStoreBackendMode::External,
+            service_endpoints: MatrixObjectStoreServiceEndpoints::unified(endpoint),
             chunk_target_bytes: default_matrixobjectstore_chunk_target_bytes(),
             transfer_concurrency: default_matrixobjectstore_transfer_concurrency(),
             verify_block_metadata_on_read: default_strict_block_metadata(),
@@ -251,6 +286,14 @@ impl MatrixObjectStoreConfig {
         self.verify_block_metadata_on_read = verify;
         self
     }
+
+    pub fn with_service_endpoints(
+        mut self,
+        service_endpoints: MatrixObjectStoreServiceEndpoints,
+    ) -> Self {
+        self.service_endpoints = service_endpoints;
+        self
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -265,16 +308,34 @@ pub struct MatrixObjectStore {
 pub struct MatrixObjectStoreRootService {
     manifest_store: FileObjectStore,
     uri_scheme: String,
+    endpoint: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct MatrixObjectStoreBlockService {
     block_store: FileObjectStore,
+    endpoint: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct MatrixObjectStoreChunkService {
     chunk_store: FileObjectStore,
+    endpoint: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MatrixObjectStoreServiceDescriptor {
+    pub service_role: String,
+    pub endpoint: Option<String>,
+    pub local_root: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MatrixObjectStoreServiceTopology {
+    pub backend_mode: MatrixObjectStoreBackendMode,
+    pub root_service: MatrixObjectStoreServiceDescriptor,
+    pub block_service: MatrixObjectStoreServiceDescriptor,
+    pub chunk_service: MatrixObjectStoreServiceDescriptor,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -318,8 +379,12 @@ impl SharedObjectStore {
                     uri_scheme: SharedObjectStoreBackend::MatrixObjectStore
                         .uri_scheme()
                         .to_string(),
-                    endpoint: config.endpoint,
+                    endpoint: config.endpoint.clone(),
                     backend_mode: MatrixObjectStoreBackendMode::LocalCompat,
+                    service_endpoints: config
+                        .endpoint
+                        .map(MatrixObjectStoreServiceEndpoints::unified)
+                        .unwrap_or_default(),
                     chunk_target_bytes: default_matrixobjectstore_chunk_target_bytes(),
                     transfer_concurrency: default_matrixobjectstore_transfer_concurrency(),
                     verify_block_metadata_on_read: default_strict_block_metadata(),
@@ -358,11 +423,16 @@ impl MatrixObjectStore {
         let root_service = MatrixObjectStoreRootService::new(
             config.root.join("_matrixobjectstore/root"),
             &config.uri_scheme,
+            config.service_endpoints.root_endpoint.clone(),
         );
-        let block_service =
-            MatrixObjectStoreBlockService::new(config.root.join("_matrixobjectstore/blocks"));
-        let chunk_service =
-            MatrixObjectStoreChunkService::new(config.root.join("_matrixobjectstore/chunks"));
+        let block_service = MatrixObjectStoreBlockService::new(
+            config.root.join("_matrixobjectstore/blocks"),
+            config.service_endpoints.block_endpoint.clone(),
+        );
+        let chunk_service = MatrixObjectStoreChunkService::new(
+            config.root.join("_matrixobjectstore/chunks"),
+            config.service_endpoints.chunk_endpoint.clone(),
+        );
         Self {
             config,
             root_service,
@@ -374,12 +444,34 @@ impl MatrixObjectStore {
     pub fn config(&self) -> &MatrixObjectStoreConfig {
         &self.config
     }
+
+    pub fn service_topology(&self) -> MatrixObjectStoreServiceTopology {
+        MatrixObjectStoreServiceTopology {
+            backend_mode: self.config.backend_mode.clone(),
+            root_service: self.root_service.descriptor(),
+            block_service: self.block_service.descriptor(),
+            chunk_service: self.chunk_service.descriptor(),
+        }
+    }
 }
 impl MatrixObjectStoreRootService {
-    pub fn new(root: impl Into<PathBuf>, uri_scheme: impl Into<String>) -> Self {
+    pub fn new(
+        root: impl Into<PathBuf>,
+        uri_scheme: impl Into<String>,
+        endpoint: Option<String>,
+    ) -> Self {
         Self {
             manifest_store: FileObjectStore::with_uri_scheme(root, "matrixobjectstore-root"),
             uri_scheme: uri_scheme.into(),
+            endpoint,
+        }
+    }
+
+    pub fn descriptor(&self) -> MatrixObjectStoreServiceDescriptor {
+        MatrixObjectStoreServiceDescriptor {
+            service_role: "root".to_string(),
+            endpoint: self.endpoint.clone(),
+            local_root: self.manifest_store.root.clone(),
         }
     }
 
@@ -435,9 +527,18 @@ struct MatrixObjectChunkRead {
 }
 
 impl MatrixObjectStoreBlockService {
-    pub fn new(root: impl Into<PathBuf>) -> Self {
+    pub fn new(root: impl Into<PathBuf>, endpoint: Option<String>) -> Self {
         Self {
             block_store: FileObjectStore::with_uri_scheme(root, "matrixobjectstore-block"),
+            endpoint,
+        }
+    }
+
+    pub fn descriptor(&self) -> MatrixObjectStoreServiceDescriptor {
+        MatrixObjectStoreServiceDescriptor {
+            service_role: "block".to_string(),
+            endpoint: self.endpoint.clone(),
+            local_root: self.block_store.root.clone(),
         }
     }
 
@@ -468,9 +569,18 @@ impl MatrixObjectStoreBlockService {
 }
 
 impl MatrixObjectStoreChunkService {
-    pub fn new(root: impl Into<PathBuf>) -> Self {
+    pub fn new(root: impl Into<PathBuf>, endpoint: Option<String>) -> Self {
         Self {
             chunk_store: FileObjectStore::with_uri_scheme(root, "matrixobjectstore-chunk"),
+            endpoint,
+        }
+    }
+
+    pub fn descriptor(&self) -> MatrixObjectStoreServiceDescriptor {
+        MatrixObjectStoreServiceDescriptor {
+            service_role: "chunk".to_string(),
+            endpoint: self.endpoint.clone(),
+            local_root: self.chunk_store.root.clone(),
         }
     }
 
@@ -1067,8 +1177,8 @@ async fn collect_files(
 mod tests {
     use super::{
         FileObjectStore, MatrixObjectStore, MatrixObjectStoreBackendMode, MatrixObjectStoreConfig,
-        ObjectStore, ObjectStoreError, SharedObjectStore, SharedObjectStoreBackend,
-        SharedObjectStoreConfig,
+        MatrixObjectStoreServiceEndpoints, ObjectStore, ObjectStoreError, SharedObjectStore,
+        SharedObjectStoreBackend, SharedObjectStoreConfig,
     };
     use bytes::Bytes;
 
@@ -1215,7 +1325,10 @@ mod tests {
         let payload = Bytes::from_static(b"abcdefghijklmnopqrstuvwxyz");
 
         store
-            .put_unique("shared/oplog/oplog_00000000000000000001.json", payload.clone())
+            .put_unique(
+                "shared/oplog/oplog_00000000000000000001.json",
+                payload.clone(),
+            )
             .await
             .unwrap();
 
@@ -1346,6 +1459,47 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(metadata.uri, "matrixobjectstore://snapshots/a");
+    }
+
+    #[tokio::test]
+    async fn matrix_object_store_supports_split_service_endpoints() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = MatrixObjectStoreConfig::external("matrixobjectstore://cluster-a", dir.path())
+            .with_service_endpoints(MatrixObjectStoreServiceEndpoints::split(
+                "matrixobjectstore-root://root-1",
+                "matrixobjectstore-block://block-1",
+                "matrixobjectstore-chunk://chunk-1",
+            ));
+        let store = MatrixObjectStore::from_config(config.clone());
+        let topology = store.service_topology();
+
+        assert_eq!(
+            topology.backend_mode,
+            MatrixObjectStoreBackendMode::External
+        );
+        assert_eq!(topology.root_service.service_role, "root");
+        assert_eq!(
+            topology.root_service.endpoint.as_deref(),
+            Some("matrixobjectstore-root://root-1")
+        );
+        assert_eq!(
+            topology.block_service.endpoint.as_deref(),
+            Some("matrixobjectstore-block://block-1")
+        );
+        assert_eq!(
+            topology.chunk_service.endpoint.as_deref(),
+            Some("matrixobjectstore-chunk://chunk-1")
+        );
+
+        store
+            .put_atomic("split/object", Bytes::from_static(b"split payload"))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get("split/object").await.unwrap(),
+            Bytes::from_static(b"split payload")
+        );
+        assert_eq!(store.config(), &config);
     }
 
     #[tokio::test]

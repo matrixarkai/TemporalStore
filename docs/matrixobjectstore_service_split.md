@@ -16,6 +16,16 @@ MatrixObjectStore now has explicit internal services behind the existing `Object
 
 The current local-compatible implementation stores small objects as one block/chunk and splits large objects into chunked block refs. `TS_MATRIXOBJECTSTORE_CHUNK_TARGET_BYTES` controls the target chunk size, and `TS_MATRIXOBJECTSTORE_TRANSFER_CONCURRENCY` controls bounded parallel chunk reads, writes, deletes, and overwrite cleanup. Normal reads trust the root manifest block refs and verify chunk checksums without re-fetching every block metadata record; set `TS_MATRIXOBJECTSTORE_VERIFY_BLOCK_METADATA_ON_READ=1` for strict block metadata verification. That keeps compatibility with TemporalStore snapshot/shared-store callers while creating the seams needed to split these into separate root, block, and chunk server processes later.
 
+`MatrixObjectStoreConfig` now carries a `MatrixObjectStoreServiceEndpoints` section. A deployment can use one unified external endpoint for compatibility or three independent endpoints:
+
+```text
+root_endpoint  = matrixobjectstore-root://root-service
+block_endpoint = matrixobjectstore-block://block-service
+chunk_endpoint = matrixobjectstore-chunk://chunk-service
+```
+
+`MatrixObjectStore::service_topology()` reports the effective root/block/chunk service roles, local compatibility roots, and configured endpoints. TemporalStore still talks to `ObjectStore`; the split is below that stable API boundary.
+
 Append-only shared-store objects such as WAL/oplog entries and snapshot objects use `ObjectStore::put_unique`, which skips the previous-manifest lookup and stale-ref cleanup that normal overwrite-capable writes need. Snapshot upload writes directly to the UUID-backed stable prefix, uploads data files with bounded concurrency controlled by `TS_SNAPSHOT_UPLOAD_CONCURRENCY`, and publishes `manifest.json` last, so snapshots remain list-invisible until complete while avoiding temp object copy/read amplification.
 
 ## Runtime Flow
@@ -60,3 +70,5 @@ If/when MatrixObjectStore runs as separate processes, the natural split is:
 - Chunk server: byte IO, atomic chunk publish, chunk checksum verification, chunk delete/compaction.
 
 TemporalStore should still consume the stable `ObjectStore` API and should not couple to individual root/block/chunk server internals.
+
+The local-compatible service structs are intentionally named as services now, not just helpers, so future RPC clients can replace the local file implementation per service without changing snapshot or shared-store callers.
