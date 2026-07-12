@@ -407,13 +407,13 @@ async fn upload_snapshot_inner<O: ObjectStore>(
         let suffix = temp_key.trim_start_matches(temp_prefix);
         let bytes = object_store.get(&temp_key).await?;
         object_store
-            .put(&format!("{stable_prefix}{suffix}"), bytes)
+            .put_unique(&format!("{stable_prefix}{suffix}"), bytes)
             .await?;
     }
 
     let manifest_bytes = Bytes::from(serde_json::to_vec_pretty(&snapshot.manifest)?);
     object_store
-        .put(&format!("{stable_prefix}{MANIFEST}"), manifest_bytes)
+        .put_unique(&format!("{stable_prefix}{MANIFEST}"), manifest_bytes)
         .await?;
     delete_prefix(object_store, temp_prefix).await?;
     snapshot_ref_from_manifest(object_store, &snapshot.manifest).await
