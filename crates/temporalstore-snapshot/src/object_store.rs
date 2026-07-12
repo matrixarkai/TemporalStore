@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
@@ -224,7 +225,44 @@ impl MatrixObjectStoreConfig {
 #[derive(Debug, Clone)]
 pub struct MatrixObjectStore {
     config: MatrixObjectStoreConfig,
-    local_compat: FileObjectStore,
+    root_service: MatrixObjectStoreRootService,
+    block_service: MatrixObjectStoreBlockService,
+    chunk_service: MatrixObjectStoreChunkService,
+}
+
+#[derive(Debug, Clone)]
+pub struct MatrixObjectStoreRootService {
+    manifest_store: FileObjectStore,
+    uri_scheme: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct MatrixObjectStoreBlockService {
+    block_store: FileObjectStore,
+}
+
+#[derive(Debug, Clone)]
+pub struct MatrixObjectStoreChunkService {
+    chunk_store: FileObjectStore,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MatrixObjectManifest {
+    pub key: String,
+    pub uri: String,
+    pub size_bytes: u64,
+    pub checksum_sha256: String,
+    pub created_at_ms: u64,
+    pub blocks: Vec<MatrixObjectBlockRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MatrixObjectBlockRef {
+    pub block_id: String,
+    pub chunk_key: String,
+    pub offset: u64,
+    pub length: u64,
+    pub checksum_sha256: String,
 }
 
 #[derive(Debug, Clone)]
@@ -283,15 +321,126 @@ impl MatrixObjectStore {
     }
 
     pub fn from_config(config: MatrixObjectStoreConfig) -> Self {
-        let local_compat = FileObjectStore::with_uri_scheme(&config.root, &config.uri_scheme);
+        let root_service = MatrixObjectStoreRootService::new(
+            config.root.join("_matrixobjectstore/root"),
+            &config.uri_scheme,
+        );
+        let block_service =
+            MatrixObjectStoreBlockService::new(config.root.join("_matrixobjectstore/blocks"));
+        let chunk_service =
+            MatrixObjectStoreChunkService::new(config.root.join("_matrixobjectstore/chunks"));
         Self {
             config,
-            local_compat,
+            root_service,
+            block_service,
+            chunk_service,
         }
     }
 
     pub fn config(&self) -> &MatrixObjectStoreConfig {
         &self.config
+    }
+}
+impl MatrixObjectStoreRootService {
+    pub fn new(root: impl Into<PathBuf>, uri_scheme: impl Into<String>) -> Self {
+        Self {
+            manifest_store: FileObjectStore::with_uri_scheme(root, "matrixobjectstore-root"),
+            uri_scheme: uri_scheme.into(),
+        }
+    }
+
+    async fn put_manifest(&self, manifest: &MatrixObjectManifest) -> Result<(), ObjectStoreError> {
+        self.manifest_store
+            .put(
+                &manifest_key(&manifest.key),
+                Bytes::from(serde_json::to_vec(manifest).map_err(std::io::Error::other)?),
+            )
+            .await
+    }
+
+    async fn get_manifest(&self, key: &str) -> Result<MatrixObjectManifest, ObjectStoreError> {
+        let bytes = self.manifest_store.get(&manifest_key(key)).await?;
+        serde_json::from_slice(&bytes)
+            .map_err(|err| ObjectStoreError::Io(std::io::Error::other(err)))
+    }
+
+    async fn list_manifest_keys(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
+        let mut keys = Vec::new();
+        for manifest_key in self.manifest_store.list(prefix).await? {
+            if let Some(key) = manifest_key
+                .strip_suffix(".manifest.json")
+                .filter(|key| key.starts_with(prefix))
+            {
+                keys.push(key.to_string());
+            }
+        }
+        keys.sort();
+        Ok(keys)
+    }
+
+    async fn delete_manifest(&self, key: &str) -> Result<(), ObjectStoreError> {
+        self.manifest_store.delete(&manifest_key(key)).await
+    }
+
+    fn uri(&self, key: &str) -> String {
+        format!("{}://{}", self.uri_scheme, key)
+    }
+}
+
+impl MatrixObjectStoreBlockService {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self {
+            block_store: FileObjectStore::with_uri_scheme(root, "matrixobjectstore-block"),
+        }
+    }
+
+    async fn put_block_ref(
+        &self,
+        block_ref: &MatrixObjectBlockRef,
+    ) -> Result<(), ObjectStoreError> {
+        self.block_store
+            .put(
+                &block_manifest_key(&block_ref.block_id),
+                Bytes::from(serde_json::to_vec(block_ref).map_err(std::io::Error::other)?),
+            )
+            .await
+    }
+
+    async fn get_block_ref(
+        &self,
+        block_id: &str,
+    ) -> Result<MatrixObjectBlockRef, ObjectStoreError> {
+        let bytes = self.block_store.get(&block_manifest_key(block_id)).await?;
+        serde_json::from_slice(&bytes)
+            .map_err(|err| ObjectStoreError::Io(std::io::Error::other(err)))
+    }
+
+    async fn delete_block_ref(&self, block_id: &str) -> Result<(), ObjectStoreError> {
+        self.block_store.delete(&block_manifest_key(block_id)).await
+    }
+}
+
+impl MatrixObjectStoreChunkService {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self {
+            chunk_store: FileObjectStore::with_uri_scheme(root, "matrixobjectstore-chunk"),
+        }
+    }
+
+    async fn put_chunk(
+        &self,
+        chunk_key: &str,
+        bytes: Bytes,
+    ) -> Result<ObjectMetadata, ObjectStoreError> {
+        self.chunk_store.put_atomic(chunk_key, bytes).await
+    }
+
+    async fn get_chunk(&self, chunk_key: &str) -> Result<Bytes, ObjectStoreError> {
+        self.chunk_store.get(chunk_key).await
+    }
+
+    async fn delete_chunk(&self, chunk_key: &str) -> Result<(), ObjectStoreError> {
+        self.chunk_store.delete(chunk_key).await
     }
 }
 
@@ -434,27 +583,71 @@ impl ObjectStore for FileObjectStore {
 #[async_trait]
 impl ObjectStore for MatrixObjectStore {
     async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
-        self.local_compat.put(key, bytes).await
+        self.put_atomic(key, bytes).await.map(|_| ())
     }
 
     async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
-        self.local_compat.get(key).await
+        let manifest = self.root_service.get_manifest(key).await?;
+        let mut out = Vec::with_capacity(manifest.size_bytes as usize);
+        for block_ref in &manifest.blocks {
+            let stored_block_ref = self
+                .block_service
+                .get_block_ref(&block_ref.block_id)
+                .await?;
+            let chunk = self
+                .chunk_service
+                .get_chunk(&stored_block_ref.chunk_key)
+                .await?;
+            let checksum = sha256_hex(&chunk);
+            if checksum != stored_block_ref.checksum_sha256 {
+                return Err(ObjectStoreError::Io(std::io::Error::other(format!(
+                    "chunk checksum mismatch for {}",
+                    stored_block_ref.chunk_key
+                ))));
+            }
+            out.extend_from_slice(&chunk);
+        }
+        if out.len() as u64 != manifest.size_bytes || sha256_hex(&out) != manifest.checksum_sha256 {
+            return Err(ObjectStoreError::Io(std::io::Error::other(format!(
+                "object checksum mismatch for {key}"
+            ))));
+        }
+        Ok(Bytes::from(out))
     }
 
     async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
-        self.local_compat.list(prefix).await
+        self.root_service.list_manifest_keys(prefix).await
     }
 
     async fn delete(&self, key: &str) -> Result<(), ObjectStoreError> {
-        self.local_compat.delete(key).await
+        let manifest = match self.root_service.get_manifest(key).await {
+            Ok(manifest) => manifest,
+            Err(ObjectStoreError::NotFound(_)) => return Ok(()),
+            Err(err) => return Err(err),
+        };
+        for block_ref in &manifest.blocks {
+            self.chunk_service
+                .delete_chunk(&block_ref.chunk_key)
+                .await?;
+            self.block_service
+                .delete_block_ref(&block_ref.block_id)
+                .await?;
+        }
+        self.root_service.delete_manifest(key).await
     }
 
     fn uri(&self, key: &str) -> String {
-        self.local_compat.uri(key)
+        self.root_service.uri(key)
     }
 
     async fn head(&self, key: &str) -> Result<ObjectMetadata, ObjectStoreError> {
-        self.local_compat.head(key).await
+        let manifest = self.root_service.get_manifest(key).await?;
+        Ok(ObjectMetadata {
+            key: manifest.key,
+            uri: manifest.uri,
+            size_bytes: manifest.size_bytes,
+            checksum_sha256: manifest.checksum_sha256,
+        })
     }
 
     async fn put_atomic(
@@ -462,8 +655,78 @@ impl ObjectStore for MatrixObjectStore {
         key: &str,
         bytes: Bytes,
     ) -> Result<ObjectMetadata, ObjectStoreError> {
-        self.local_compat.put_atomic(key, bytes).await
+        let previous_manifest = self.root_service.get_manifest(key).await.ok();
+        let checksum_sha256 = sha256_hex(&bytes);
+        let block_id = format!("block-{}", checksum_sha256);
+        let chunk_key = format!("{}/{}", key.trim_matches('/'), block_id);
+        let chunk_metadata = self
+            .chunk_service
+            .put_chunk(&chunk_key, bytes.clone())
+            .await?;
+        let block_ref = MatrixObjectBlockRef {
+            block_id,
+            chunk_key,
+            offset: 0,
+            length: chunk_metadata.size_bytes,
+            checksum_sha256: chunk_metadata.checksum_sha256,
+        };
+        let new_block_id = block_ref.block_id.clone();
+        let new_chunk_key = block_ref.chunk_key.clone();
+        self.block_service.put_block_ref(&block_ref).await?;
+        let manifest = MatrixObjectManifest {
+            key: key.to_string(),
+            uri: self.uri(key),
+            size_bytes: bytes.len() as u64,
+            checksum_sha256,
+            created_at_ms: now_ms(),
+            blocks: vec![block_ref],
+        };
+        self.root_service.put_manifest(&manifest).await?;
+        if let Some(previous_manifest) = previous_manifest {
+            for old_block in previous_manifest.blocks {
+                if old_block.chunk_key != new_chunk_key {
+                    let _ = self.chunk_service.delete_chunk(&old_block.chunk_key).await;
+                }
+                if old_block.block_id != new_block_id {
+                    let _ = self
+                        .block_service
+                        .delete_block_ref(&old_block.block_id)
+                        .await;
+                }
+            }
+        }
+        Ok(ObjectMetadata {
+            key: manifest.key,
+            uri: manifest.uri,
+            size_bytes: manifest.size_bytes,
+            checksum_sha256: manifest.checksum_sha256,
+        })
     }
+}
+
+fn manifest_key(key: &str) -> String {
+    if key.is_empty() {
+        String::new()
+    } else {
+        format!("{key}.manifest.json")
+    }
+}
+
+fn block_manifest_key(block_id: &str) -> String {
+    format!("{block_id}.json")
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 #[async_trait]
