@@ -1253,11 +1253,15 @@ impl MatrixObjectStore {
         let block_service = self.block_service.clone();
         let verify_block_metadata = self.verify_block_metadata_on_read();
         join_set.spawn(async move {
-            let block_ref = if verify_block_metadata {
-                block_service.get_block_ref(&block_ref.block_id).await?
-            } else {
-                block_ref
-            };
+            if verify_block_metadata {
+                let published_block_ref = block_service.get_block_ref(&block_ref.block_id).await?;
+                if published_block_ref != block_ref {
+                    return Err(ObjectStoreError::Io(std::io::Error::other(format!(
+                        "block metadata mismatch for {}",
+                        block_ref.block_id
+                    ))));
+                }
+            }
             let chunk = chunk_service.get_chunk(&block_ref.chunk_key).await?;
             if chunk.len() as u64 != block_ref.length {
                 return Err(ObjectStoreError::Io(std::io::Error::other(format!(
@@ -2328,6 +2332,24 @@ mod tests {
         assert!(matches!(
             store.get("large/object").await,
             Err(ObjectStoreError::NotFound(_))
+        ));
+
+        store
+            .block_service
+            .put_block_ref(&manifest.blocks[0])
+            .await
+            .unwrap();
+        let mut corrupted_block_ref = manifest.blocks[1].clone();
+        corrupted_block_ref.length += 1;
+        store
+            .block_service
+            .put_block_ref(&corrupted_block_ref)
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            store.get("large/object").await,
+            Err(ObjectStoreError::Io(_))
         ));
     }
 
