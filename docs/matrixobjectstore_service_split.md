@@ -40,7 +40,7 @@ Snapshot checksum generation and local restore verification stream files in fixe
 
 File-backed `ObjectStore::head` also streams checksum calculation from disk and reads size from filesystem metadata, so metadata-only verification avoids full-payload buffering on local/shared-file stores.
 
-File-backed and MatrixObjectStore `get_to_path` restore into a sibling temp file, verify the downloaded bytes, and rename into the requested destination only after success. A failed chunk read, checksum mismatch, or missing source leaves any previous destination file intact and removes the temp file best-effort.
+File-backed and MatrixObjectStore `get_to_path` restore into a sibling temp file, verify the downloaded bytes, and rename into the requested destination only after success. Durable mode syncs the temp file before publish and syncs the destination parent after rename; tuned async mode can disable those syncs through `TS_MATRIXOBJECTSTORE_SYNC_WRITES` and `TS_MATRIXOBJECTSTORE_SYNC_PARENT_DIRS`. A failed chunk read, checksum mismatch, or missing source leaves any previous destination file intact and removes the temp file best-effort.
 
 ## Runtime Flow
 
