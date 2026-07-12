@@ -14,7 +14,7 @@ MatrixObjectStore now has explicit internal services behind the existing `Object
 - `MatrixObjectStoreBlockService`: owns block metadata, block id to chunk refs, offsets, lengths, and block checksums.
 - `MatrixObjectStoreChunkService`: owns payload bytes and chunk-level atomic publish/read/delete.
 
-The current local-compatible implementation stores one object as one block and one chunk. That keeps compatibility with TemporalStore snapshot/shared-store callers while creating the seams needed to split these into separate root, block, and chunk server processes later.
+The current local-compatible implementation stores small objects as one block/chunk and splits large objects into chunked block refs. `TS_MATRIXOBJECTSTORE_CHUNK_TARGET_BYTES` controls the target chunk size, and `TS_MATRIXOBJECTSTORE_TRANSFER_CONCURRENCY` controls bounded parallel chunk reads/writes. That keeps compatibility with TemporalStore snapshot/shared-store callers while creating the seams needed to split these into separate root, block, and chunk server processes later.
 
 ## Runtime Flow
 
@@ -22,8 +22,8 @@ Write path:
 
 ```text
 ObjectStore::put_atomic(key, bytes)
--> ChunkService writes payload chunk atomically
--> BlockService writes block metadata
+-> ChunkService writes one or more payload chunks atomically, with bounded concurrency
+-> BlockService writes block metadata for each chunk
 -> RootService writes object manifest
 -> ObjectMetadata is returned to TemporalStore
 ```
@@ -34,7 +34,7 @@ Read path:
 ObjectStore::get(key)
 -> RootService reads object manifest
 -> BlockService resolves block refs
--> ChunkService reads payload chunks
+-> ChunkService reads payload chunks with bounded concurrency
 -> checksum verification
 -> bytes returned to TemporalStore
 ```
