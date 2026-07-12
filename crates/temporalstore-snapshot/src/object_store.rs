@@ -364,6 +364,8 @@ pub struct MatrixObjectBlockRef {
     pub offset: u64,
     pub length: u64,
     pub checksum_sha256: String,
+    #[serde(default = "default_block_metadata_published")]
+    pub block_metadata_published: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -828,6 +830,7 @@ impl MatrixObjectStore {
                         offset: chunk.offset,
                         length: chunk_metadata.size_bytes,
                         checksum_sha256: chunk_metadata.checksum_sha256,
+                        block_metadata_published: publish_block_metadata,
                     };
                     if publish_block_metadata {
                         if let Err(err) = block_service.put_block_ref(&block_ref).await {
@@ -917,7 +920,9 @@ impl MatrixObjectStore {
                 let block_service = self.block_service.clone();
                 join_set.spawn(async move {
                     chunk_service.delete_chunk(&block_ref.chunk_key).await?;
-                    block_service.delete_block_ref(&block_ref.block_id).await?;
+                    if block_ref.block_metadata_published {
+                        block_service.delete_block_ref(&block_ref.block_id).await?;
+                    }
                     Ok::<_, ObjectStoreError>(())
                 });
                 next_to_submit += 1;
@@ -1086,6 +1091,10 @@ fn manifest_key(key: &str) -> String {
 
 fn block_manifest_key(block_id: &str) -> String {
     format!("{block_id}.json")
+}
+
+fn default_block_metadata_published() -> bool {
+    true
 }
 
 fn object_key_fingerprint(object_key: &str) -> String {
@@ -1479,6 +1488,7 @@ mod tests {
             .unwrap();
 
         assert!(manifest.blocks.len() > 1);
+        assert!(!manifest.blocks[0].block_metadata_published);
         assert!(matches!(
             store
                 .block_service
@@ -1505,6 +1515,7 @@ mod tests {
             .get_manifest("large/object")
             .await
             .unwrap();
+        assert!(manifest.blocks[0].block_metadata_published);
         store
             .block_service
             .get_block_ref(&manifest.blocks[0].block_id)

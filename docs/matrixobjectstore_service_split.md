@@ -18,6 +18,8 @@ The current local-compatible implementation stores small objects as one block/ch
 
 Block metadata ids include an object-key fingerprint plus chunk offset and checksum. That prevents two different objects with identical chunk bytes from overwriting each other's block metadata in the block service, while still allowing chunk-level checksum verification.
 
+Manifest block refs include `block_metadata_published`. New fast-path writes set it to `false` so delete/overwrite cleanup skips unnecessary block metadata deletes; strict or explicitly published writes set it to `true`. Older manifests that do not have the field default to `true` so pre-existing block metadata is still cleaned up.
+
 `MatrixObjectStoreConfig` now carries a `MatrixObjectStoreServiceEndpoints` section. A deployment can use one unified external endpoint for compatibility or three independent endpoints:
 
 ```text
