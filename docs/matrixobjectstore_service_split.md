@@ -22,9 +22,11 @@ Write path:
 
 ```text
 ObjectStore::put_atomic(key, bytes)
+-> RootService previous-manifest lookup runs in parallel with new chunk writes
 -> ChunkService writes one or more payload chunks atomically, with bounded concurrency
 -> BlockService writes block metadata for each chunk
 -> RootService writes object manifest
+-> stale old chunk/block cleanup runs after overwrite
 -> ObjectMetadata is returned to TemporalStore
 ```
 
