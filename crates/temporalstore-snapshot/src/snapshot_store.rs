@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 use thiserror::Error;
-use tokio::io::AsyncWriteExt;
 use tokio::task::JoinSet;
 
 use crate::metrics::SnapshotMetrics;
@@ -539,8 +538,7 @@ async fn get_files_concurrent<O: ObjectStore + 'static>(
             let file = files[next_to_submit].clone();
             let store = Arc::clone(&object_store);
             join_set.spawn(async move {
-                let bytes = store.get(&file.key).await?;
-                write_file(&file.path, bytes).await?;
+                store.get_to_path(&file.key, &file.path).await?;
                 Ok::<_, SnapshotStoreError>(())
             });
             next_to_submit += 1;
@@ -641,16 +639,6 @@ fn snapshot_transfer_concurrency_from_env(name: &str) -> usize {
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(4)
-}
-
-async fn write_file(path: &Path, bytes: Bytes) -> Result<(), SnapshotStoreError> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    let mut file = tokio::fs::File::create(path).await?;
-    file.write_all(&bytes).await?;
-    file.flush().await?;
-    Ok(())
 }
 
 async fn list_local_page_segments(dir: &Path) -> Result<Vec<PathBuf>, SnapshotStoreError> {
