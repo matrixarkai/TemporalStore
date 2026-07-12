@@ -879,8 +879,19 @@ impl ObjectStore for FileObjectStore {
     }
 
     async fn head(&self, key: &str) -> Result<ObjectMetadata, ObjectStoreError> {
-        let bytes = self.get(key).await?;
-        Ok(ObjectMetadata::from_bytes(key, self.uri(key), &bytes))
+        let path = self.resolve(key)?;
+        match tokio::fs::metadata(&path).await {
+            Ok(metadata) => Ok(ObjectMetadata {
+                key: key.to_string(),
+                uri: self.uri(key),
+                size_bytes: metadata.len(),
+                checksum_sha256: sha256_file_hex(&path).await?,
+            }),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                Err(ObjectStoreError::NotFound(key.to_string()))
+            }
+            Err(err) => Err(ObjectStoreError::Io(err)),
+        }
     }
 
     async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
@@ -2297,6 +2308,7 @@ mod tests {
             store.get("objects/payload.bin").await.unwrap(),
             Bytes::from_static(b"file-object-store-payload")
         );
+        assert_eq!(store.head("objects/payload.bin").await.unwrap(), metadata);
     }
 
     #[tokio::test]
