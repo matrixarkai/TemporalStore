@@ -29,6 +29,7 @@ struct HarnessOptions {
     compare_shared_store: bool,
     shared_store_ops: usize,
     shared_store_flush_every: usize,
+    shared_store_flush_concurrency: usize,
     shared_store_root: Option<PathBuf>,
     shared_store_backend: SharedObjectStoreBackend,
 }
@@ -49,6 +50,7 @@ impl Default for HarnessOptions {
             compare_shared_store: false,
             shared_store_ops: 1_000,
             shared_store_flush_every: 25,
+            shared_store_flush_concurrency: 8,
             shared_store_root: None,
             shared_store_backend: SharedObjectStoreBackend::LocalFile,
         }
@@ -116,6 +118,7 @@ struct SharedStoreComparisonSummary {
     sync_max_lag: u64,
     async_max_lag: u64,
     async_flush_every: usize,
+    async_flush_concurrency: usize,
     shared_store_root: String,
     shared_store_backend: String,
     shared_store_uri_scheme: String,
@@ -387,6 +390,9 @@ fn parse_options() -> HarnessOptions {
             }
             "--shared-store-ops" => options.shared_store_ops = parse(value, key),
             "--shared-store-flush-every" => options.shared_store_flush_every = parse(value, key),
+            "--shared-store-flush-concurrency" => {
+                options.shared_store_flush_concurrency = parse(value, key)
+            }
             "--shared-store-root" => options.shared_store_root = Some(PathBuf::from(value)),
             "--shared-store-backend" => {
                 options.shared_store_backend = SharedObjectStoreBackend::parse(value);
@@ -431,6 +437,7 @@ fn usage_and_exit() -> ! {
     eprintln!("  --compare-shared-store <bool> default false");
     eprintln!("  --shared-store-ops <n> default 1000");
     eprintln!("  --shared-store-flush-every <n> default 25");
+    eprintln!("  --shared-store-flush-concurrency <n> default 8");
     eprintln!("  --shared-store-root <path> default temp dir");
     eprintln!("  --shared-store-backend local_file|shared_file|matrixobjectstore|s3|ceph_s3|ceph_rados default local_file");
     std::process::exit(2);
@@ -492,6 +499,7 @@ where
         SharedStoreStorageMode::Sync,
         options.shared_store_ops,
         1,
+        1,
     )
     .await;
     let async_report = run_shared_store_mode(
@@ -500,6 +508,7 @@ where
         SharedStoreStorageMode::Async,
         options.shared_store_ops,
         options.shared_store_flush_every,
+        options.shared_store_flush_concurrency,
     )
     .await;
 
@@ -521,6 +530,7 @@ where
         sync_max_lag: sync.max_lag,
         async_max_lag: async_report.max_lag,
         async_flush_every: options.shared_store_flush_every.max(1),
+        async_flush_concurrency: options.shared_store_flush_concurrency.max(1),
         shared_store_root: root.display().to_string(),
         shared_store_backend: options.shared_store_backend.canonical_name().to_string(),
         shared_store_uri_scheme: options.shared_store_backend.uri_scheme().to_string(),
@@ -545,6 +555,7 @@ async fn run_shared_store_mode<O>(
     mode: SharedStoreStorageMode,
     ops: usize,
     flush_every: usize,
+    flush_concurrency: usize,
 ) -> SharedStoreModeReport
 where
     O: temporalstore_snapshot::object_store::ObjectStore + 'static,
@@ -574,6 +585,7 @@ where
     }
     let writer = replicator.storage_writer(mode, 1);
     let flush_every = flush_every.max(1);
+    let flush_concurrency = flush_concurrency.max(1);
     let mut last_written = 0;
     let mut last_replayed = 0;
     let mut max_lag = 0;
@@ -611,7 +623,7 @@ where
         if mode == SharedStoreStorageMode::Async && (i + 1) % flush_every == 0 {
             let flush_start = Instant::now();
             let flush = writer
-                .flush_pending(flush_every)
+                .flush_pending_concurrent(flush_every, flush_concurrency)
                 .await
                 .expect("shared-store async flush should publish");
             let elapsed = flush_start.elapsed();
@@ -638,7 +650,7 @@ where
     if mode == SharedStoreStorageMode::Async || writer.queued_len() > 0 {
         let flush_start = Instant::now();
         let flush = writer
-            .flush_pending(usize::MAX)
+            .flush_pending_concurrent(usize::MAX, flush_concurrency)
             .await
             .expect("final shared-store async flush should publish");
         let elapsed = flush_start.elapsed();

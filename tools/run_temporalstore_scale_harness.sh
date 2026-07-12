@@ -33,5 +33,6 @@ fi
   --compare-shared-store "${TS_SCALE_COMPARE_SHARED_STORE:-false}" \
   --shared-store-ops "${TS_SCALE_SHARED_STORE_OPS:-1000}" \
   --shared-store-flush-every "${TS_SCALE_SHARED_STORE_FLUSH_EVERY:-25}" \
+  --shared-store-flush-concurrency "${TS_SCALE_SHARED_STORE_FLUSH_CONCURRENCY:-8}" \
   --shared-store-backend "${TS_SCALE_SHARED_STORE_BACKEND:-local_file}" \
   "${EXTRA_ARGS[@]}"
