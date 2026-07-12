@@ -16,7 +16,7 @@ MatrixObjectStore now has explicit internal services behind the existing `Object
 
 The current local-compatible implementation stores small objects as one block/chunk and splits large objects into chunked block refs. `TS_MATRIXOBJECTSTORE_CHUNK_TARGET_BYTES` controls the target chunk size, and `TS_MATRIXOBJECTSTORE_TRANSFER_CONCURRENCY` controls bounded parallel chunk reads, writes, deletes, and overwrite cleanup. Normal reads trust the root manifest block refs and verify chunk checksums without re-fetching every block metadata record; set `TS_MATRIXOBJECTSTORE_VERIFY_BLOCK_METADATA_ON_READ=1` for strict block metadata verification. That keeps compatibility with TemporalStore snapshot/shared-store callers while creating the seams needed to split these into separate root, block, and chunk server processes later.
 
-Append-only shared-store objects such as WAL/oplog entries use `ObjectStore::put_unique`, which skips the previous-manifest lookup and stale-ref cleanup that normal overwrite-capable writes need.
+Append-only shared-store objects such as WAL/oplog entries and snapshot temp uploads use `ObjectStore::put_unique`, which skips the previous-manifest lookup and stale-ref cleanup that normal overwrite-capable writes need.
 
 ## Runtime Flow
 

@@ -380,13 +380,13 @@ async fn upload_snapshot_inner<O: ObjectStore>(
     stable_prefix: &str,
     temp_prefix: &str,
 ) -> Result<SnapshotRef, SnapshotStoreError> {
-    put_file(
+    put_file_unique(
         object_store,
         &format!("{temp_prefix}{INDEX}"),
         &snapshot.index_path,
     )
     .await?;
-    put_file(
+    put_file_unique(
         object_store,
         &format!("{temp_prefix}{CHECKSUMS}"),
         &snapshot.checksums_path,
@@ -394,7 +394,7 @@ async fn upload_snapshot_inner<O: ObjectStore>(
     .await?;
     for page_segment in &snapshot.page_segments {
         let name = page_segment.file_name().unwrap().to_string_lossy();
-        put_file(
+        put_file_unique(
             object_store,
             &format!("{temp_prefix}page_segments/{name}"),
             page_segment,
@@ -489,13 +489,13 @@ async fn snapshot_ref_from_manifest<O: ObjectStore>(
     })
 }
 
-async fn put_file<O: ObjectStore>(
+async fn put_file_unique<O: ObjectStore>(
     object_store: &O,
     key: &str,
     path: &Path,
 ) -> Result<(), SnapshotStoreError> {
     object_store
-        .put(key, Bytes::from(tokio::fs::read(path).await?))
+        .put_unique(key, Bytes::from(tokio::fs::read(path).await?))
         .await?;
     Ok(())
 }
@@ -635,7 +635,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::object_store::FileObjectStore;
+    use crate::object_store::{FileObjectStore, MatrixObjectStore, MatrixObjectStoreConfig};
 
     async fn sample_snapshot(root: &Path, shard_id: ShardId, log_index: u64) -> LocalSnapshot {
         let shard_root = root.join(format!("shard-{shard_id}"));
@@ -698,6 +698,35 @@ mod tests {
             .unwrap();
 
         assert_eq!(restored.manifest.shard_id, 7);
+        assert_eq!(
+            tokio::fs::read(restored.root_dir.join("page_segments/0001.seg"))
+                .await
+                .unwrap(),
+            b"page-segment-bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn matrix_object_store_snapshot_upload_uses_unique_temp_objects() {
+        let tmp = TempDir::new().unwrap();
+        let config = MatrixObjectStoreConfig::local_compat(tmp.path().join("objects"))
+            .with_chunk_target_bytes(5)
+            .with_transfer_concurrency(2);
+        let store = Arc::new(MatrixObjectStore::from_config(config));
+        let snapshots =
+            S3SnapshotStore::new("cluster-a", "test", tmp.path().join("local"), store);
+        let local = sample_snapshot(&tmp.path().join("source"), 11, 321).await;
+
+        let uploaded = snapshots.upload_snapshot(local).await.unwrap();
+        snapshots.verify_snapshot(&uploaded).await.unwrap();
+        let listed = snapshots.list_snapshots(11).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        let restored = snapshots
+            .download_snapshot(&uploaded, tmp.path().join("restore-matrixobjectstore"))
+            .await
+            .unwrap();
+
+        assert_eq!(restored.manifest.last_log_index, 321);
         assert_eq!(
             tokio::fs::read(restored.root_dir.join("page_segments/0001.seg"))
                 .await
