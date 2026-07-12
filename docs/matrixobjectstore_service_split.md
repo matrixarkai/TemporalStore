@@ -65,9 +65,11 @@ ObjectStore::get(key)
 List/delete path:
 
 ```text
-list(prefix) -> RootService manifest-prefix listing -> object keys
+list(prefix) -> RootService manifest-prefix/suffix listing -> object keys
 delete(key) -> RootService manifest -> bounded parallel ChunkService/BlockService cleanup -> RootService delete
 ```
+
+Root listing walks only manifest files ending in `.manifest.json`, so list-heavy snapshot/shared-store scans do not materialize unrelated root-service files or payload chunk metadata.
 
 ## Future Separate Services
 
