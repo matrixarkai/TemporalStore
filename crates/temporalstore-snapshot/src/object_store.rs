@@ -3,11 +3,12 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
+use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::task::JoinSet;
 use uuid::Uuid;
 
@@ -161,6 +162,15 @@ pub trait ObjectStore: Send + Sync {
         self.put(key, bytes).await
     }
     async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError>;
+    async fn get_to_path(
+        &self,
+        key: &str,
+        path: &Path,
+    ) -> Result<ObjectMetadata, ObjectStoreError> {
+        let bytes = self.get(key).await?;
+        write_object_file(path, &bytes).await?;
+        Ok(ObjectMetadata::from_bytes(key, self.uri(key), &bytes))
+    }
     async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError>;
     async fn delete(&self, key: &str) -> Result<(), ObjectStoreError>;
     fn uri(&self, key: &str) -> String;
@@ -825,6 +835,29 @@ impl ObjectStore for FileObjectStore {
         }
     }
 
+    async fn get_to_path(
+        &self,
+        key: &str,
+        destination: &Path,
+    ) -> Result<ObjectMetadata, ObjectStoreError> {
+        let source = self.resolve(key)?;
+        if let Some(parent) = destination.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        match tokio::fs::copy(&source, destination).await {
+            Ok(size_bytes) => Ok(ObjectMetadata {
+                key: key.to_string(),
+                uri: self.uri(key),
+                size_bytes,
+                checksum_sha256: sha256_file_hex(destination).await?,
+            }),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                Err(ObjectStoreError::NotFound(key.to_string()))
+            }
+            Err(err) => Err(ObjectStoreError::Io(err)),
+        }
+    }
+
     async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
         let mut out = Vec::new();
         let root = self.root.clone();
@@ -1089,6 +1122,80 @@ impl ObjectStore for MatrixObjectStore {
         Ok(Bytes::from(out))
     }
 
+    async fn get_to_path(
+        &self,
+        key: &str,
+        destination: &Path,
+    ) -> Result<ObjectMetadata, ObjectStoreError> {
+        let manifest = self.root_service.get_manifest(key).await?;
+        if let Some(parent) = destination.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let mut file = tokio::fs::File::create(destination).await?;
+        file.set_len(manifest.size_bytes).await?;
+        let mut written_bytes = 0u64;
+
+        let mut join_set = JoinSet::new();
+        let mut next_to_submit = 0usize;
+        while next_to_submit < manifest.blocks.len() || !join_set.is_empty() {
+            while next_to_submit < manifest.blocks.len()
+                && join_set.len() < self.transfer_concurrency()
+            {
+                let block_ref = manifest.blocks[next_to_submit].clone();
+                let chunk_service = self.chunk_service.clone();
+                let block_service = self.block_service.clone();
+                let verify_block_metadata = self.verify_block_metadata_on_read();
+                join_set.spawn(async move {
+                    let block_ref = if verify_block_metadata {
+                        block_service.get_block_ref(&block_ref.block_id).await?
+                    } else {
+                        block_ref
+                    };
+                    let chunk = chunk_service.get_chunk(&block_ref.chunk_key).await?;
+                    let checksum = sha256_hex(&chunk);
+                    if checksum != block_ref.checksum_sha256 {
+                        return Err(ObjectStoreError::Io(std::io::Error::other(format!(
+                            "chunk checksum mismatch for {}",
+                            block_ref.chunk_key
+                        ))));
+                    }
+                    Ok::<_, ObjectStoreError>((block_ref.offset, chunk))
+                });
+                next_to_submit += 1;
+            }
+
+            let (offset, chunk) = join_set
+                .join_next()
+                .await
+                .expect("matrixobjectstore get_to_path task missing")
+                .map_err(|err| ObjectStoreError::Io(std::io::Error::other(err)))??;
+            file.seek(SeekFrom::Start(offset)).await?;
+            file.write_all(&chunk).await?;
+            written_bytes += chunk.len() as u64;
+        }
+        file.flush().await?;
+        drop(file);
+
+        if written_bytes != manifest.size_bytes {
+            return Err(ObjectStoreError::Io(std::io::Error::other(format!(
+                "object size mismatch for {key}: expected {}, wrote {}",
+                manifest.size_bytes, written_bytes
+            ))));
+        }
+        let checksum_sha256 = sha256_file_hex(destination).await?;
+        if checksum_sha256 != manifest.checksum_sha256 {
+            return Err(ObjectStoreError::Io(std::io::Error::other(format!(
+                "object checksum mismatch for {key}"
+            ))));
+        }
+        Ok(ObjectMetadata {
+            key: manifest.key,
+            uri: manifest.uri,
+            size_bytes: manifest.size_bytes,
+            checksum_sha256,
+        })
+    }
+
     async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
         self.root_service.list_manifest_keys(prefix).await
     }
@@ -1297,6 +1404,30 @@ async fn sync_dir(_path: &Path) -> Result<(), ObjectStoreError> {
     Ok(())
 }
 
+async fn write_object_file(path: &Path, bytes: &Bytes) -> Result<(), ObjectStoreError> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let mut file = tokio::fs::File::create(path).await?;
+    file.write_all(bytes).await?;
+    file.flush().await?;
+    Ok(())
+}
+
+async fn sha256_file_hex(path: &Path) -> Result<String, ObjectStoreError> {
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 64 * 1024];
+    loop {
+        let bytes_read = file.read(&mut buffer).await?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
 #[async_trait]
 impl ObjectStore for SharedObjectStore {
     async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
@@ -1317,6 +1448,17 @@ impl ObjectStore for SharedObjectStore {
         match self {
             Self::LocalFile(store) | Self::SharedFile(store) => store.get(key).await,
             Self::MatrixObjectStore(store) => store.get(key).await,
+        }
+    }
+
+    async fn get_to_path(
+        &self,
+        key: &str,
+        path: &Path,
+    ) -> Result<ObjectMetadata, ObjectStoreError> {
+        match self {
+            Self::LocalFile(store) | Self::SharedFile(store) => store.get_to_path(key, path).await,
+            Self::MatrixObjectStore(store) => store.get_to_path(key, path).await,
         }
     }
 
@@ -1536,6 +1678,29 @@ mod tests {
         assert!(manifest.blocks.len() > 1);
         assert_eq!(manifest.blocks[0].offset, 0);
         assert_eq!(store.get("large/object").await.unwrap(), payload);
+    }
+
+    #[tokio::test]
+    async fn matrix_object_store_downloads_chunked_object_directly_to_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = MatrixObjectStoreConfig::local_compat(dir.path())
+            .with_chunk_target_bytes(5)
+            .with_transfer_concurrency(2);
+        let store = MatrixObjectStore::from_config(config);
+        let payload = Bytes::from_static(b"abcdefghijklmnopqrstuvwxyz");
+
+        let put_metadata = store
+            .put_atomic("large/object", payload.clone())
+            .await
+            .unwrap();
+        let destination = dir.path().join("restore/large-object.bin");
+        let get_metadata = store
+            .get_to_path("large/object", &destination)
+            .await
+            .unwrap();
+
+        assert_eq!(get_metadata, put_metadata);
+        assert_eq!(tokio::fs::read(destination).await.unwrap(), payload);
     }
 
     #[tokio::test]
