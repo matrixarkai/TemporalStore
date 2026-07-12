@@ -184,6 +184,7 @@ pub trait ObjectStore: Send + Sync {
 pub struct FileObjectStore {
     root: PathBuf,
     uri_scheme: String,
+    sync_writes: bool,
     created_dirs: Arc<Mutex<HashSet<PathBuf>>>,
 }
 
@@ -239,6 +240,8 @@ pub struct MatrixObjectStoreConfig {
     pub verify_block_metadata_on_read: bool,
     #[serde(default = "default_publish_block_metadata")]
     pub publish_block_metadata_on_write: bool,
+    #[serde(default = "default_matrixobjectstore_sync_writes")]
+    pub sync_writes: bool,
 }
 
 impl MatrixObjectStoreConfig {
@@ -253,6 +256,7 @@ impl MatrixObjectStoreConfig {
             transfer_concurrency: default_matrixobjectstore_transfer_concurrency(),
             verify_block_metadata_on_read: default_strict_block_metadata(),
             publish_block_metadata_on_write: default_publish_block_metadata(),
+            sync_writes: default_matrixobjectstore_sync_writes(),
         }
     }
 
@@ -268,6 +272,7 @@ impl MatrixObjectStoreConfig {
             transfer_concurrency: default_matrixobjectstore_transfer_concurrency(),
             verify_block_metadata_on_read: default_strict_block_metadata(),
             publish_block_metadata_on_write: default_publish_block_metadata(),
+            sync_writes: default_matrixobjectstore_sync_writes(),
         }
     }
 
@@ -293,6 +298,11 @@ impl MatrixObjectStoreConfig {
 
     pub fn with_publish_block_metadata_on_write(mut self, publish: bool) -> Self {
         self.publish_block_metadata_on_write = publish;
+        self
+    }
+
+    pub fn with_sync_writes(mut self, sync_writes: bool) -> Self {
+        self.sync_writes = sync_writes;
         self
     }
 
@@ -400,6 +410,7 @@ impl SharedObjectStore {
                     transfer_concurrency: default_matrixobjectstore_transfer_concurrency(),
                     verify_block_metadata_on_read: default_strict_block_metadata(),
                     publish_block_metadata_on_write: default_publish_block_metadata(),
+                    sync_writes: default_matrixobjectstore_sync_writes(),
                 }),
             )),
             SharedObjectStoreBackend::S3
@@ -436,14 +447,17 @@ impl MatrixObjectStore {
             config.root.join("_matrixobjectstore/root"),
             &config.uri_scheme,
             config.service_endpoints.root_endpoint.clone(),
+            config.sync_writes,
         );
         let block_service = MatrixObjectStoreBlockService::new(
             config.root.join("_matrixobjectstore/blocks"),
             config.service_endpoints.block_endpoint.clone(),
+            config.sync_writes,
         );
         let chunk_service = MatrixObjectStoreChunkService::new(
             config.root.join("_matrixobjectstore/chunks"),
             config.service_endpoints.chunk_endpoint.clone(),
+            config.sync_writes,
         );
         Self {
             config,
@@ -471,9 +485,14 @@ impl MatrixObjectStoreRootService {
         root: impl Into<PathBuf>,
         uri_scheme: impl Into<String>,
         endpoint: Option<String>,
+        sync_writes: bool,
     ) -> Self {
         Self {
-            manifest_store: FileObjectStore::with_uri_scheme(root, "matrixobjectstore-root"),
+            manifest_store: FileObjectStore::with_uri_scheme_and_sync_writes(
+                root,
+                "matrixobjectstore-root",
+                sync_writes,
+            ),
             uri_scheme: uri_scheme.into(),
             endpoint,
         }
@@ -539,9 +558,13 @@ struct MatrixObjectChunkRead {
 }
 
 impl MatrixObjectStoreBlockService {
-    pub fn new(root: impl Into<PathBuf>, endpoint: Option<String>) -> Self {
+    pub fn new(root: impl Into<PathBuf>, endpoint: Option<String>, sync_writes: bool) -> Self {
         Self {
-            block_store: FileObjectStore::with_uri_scheme(root, "matrixobjectstore-block"),
+            block_store: FileObjectStore::with_uri_scheme_and_sync_writes(
+                root,
+                "matrixobjectstore-block",
+                sync_writes,
+            ),
             endpoint,
         }
     }
@@ -581,9 +604,13 @@ impl MatrixObjectStoreBlockService {
 }
 
 impl MatrixObjectStoreChunkService {
-    pub fn new(root: impl Into<PathBuf>, endpoint: Option<String>) -> Self {
+    pub fn new(root: impl Into<PathBuf>, endpoint: Option<String>, sync_writes: bool) -> Self {
         Self {
-            chunk_store: FileObjectStore::with_uri_scheme(root, "matrixobjectstore-chunk"),
+            chunk_store: FileObjectStore::with_uri_scheme_and_sync_writes(
+                root,
+                "matrixobjectstore-chunk",
+                sync_writes,
+            ),
             endpoint,
         }
     }
@@ -618,14 +645,24 @@ impl FileObjectStore {
         Self {
             root: root.into(),
             uri_scheme: "file".to_string(),
+            sync_writes: true,
             created_dirs: Arc::default(),
         }
     }
 
     pub fn with_uri_scheme(root: impl Into<PathBuf>, uri_scheme: impl Into<String>) -> Self {
+        Self::with_uri_scheme_and_sync_writes(root, uri_scheme, true)
+    }
+
+    pub fn with_uri_scheme_and_sync_writes(
+        root: impl Into<PathBuf>,
+        uri_scheme: impl Into<String>,
+        sync_writes: bool,
+    ) -> Self {
         Self {
             root: root.into(),
             uri_scheme: uri_scheme.into(),
+            sync_writes,
             created_dirs: Arc::default(),
         }
     }
@@ -696,7 +733,9 @@ impl ObjectStore for FileObjectStore {
         let mut file = tokio::fs::File::create(&tmp_path).await?;
         file.write_all(&bytes).await?;
         file.flush().await?;
-        file.sync_all().await?;
+        if self.sync_writes {
+            file.sync_all().await?;
+        }
         drop(file);
         match tokio::fs::rename(&tmp_path, &path).await {
             Ok(()) => {}
@@ -1131,17 +1170,27 @@ fn default_matrixobjectstore_transfer_concurrency() -> usize {
 }
 
 fn default_strict_block_metadata() -> bool {
-    std::env::var("TS_MATRIXOBJECTSTORE_VERIFY_BLOCK_METADATA_ON_READ")
-        .ok()
-        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
-        .unwrap_or(false)
+    env_bool("TS_MATRIXOBJECTSTORE_VERIFY_BLOCK_METADATA_ON_READ", false)
 }
 
 fn default_publish_block_metadata() -> bool {
-    std::env::var("TS_MATRIXOBJECTSTORE_PUBLISH_BLOCK_METADATA")
+    env_bool("TS_MATRIXOBJECTSTORE_PUBLISH_BLOCK_METADATA", false)
+}
+
+fn default_matrixobjectstore_sync_writes() -> bool {
+    env_bool("TS_MATRIXOBJECTSTORE_SYNC_WRITES", true)
+}
+
+fn env_bool(name: &str, default: bool) -> bool {
+    std::env::var(name)
         .ok()
-        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
-        .unwrap_or(false)
+        .map(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(default)
 }
 
 #[async_trait]
@@ -1557,10 +1606,12 @@ mod tests {
     async fn matrix_object_store_keeps_explicit_backend_config() {
         let dir = tempfile::tempdir().unwrap();
         let config = MatrixObjectStoreConfig::external("matrixobjectstore://cluster-a", dir.path())
-            .with_uri_scheme("matrixobjectstore");
+            .with_uri_scheme("matrixobjectstore")
+            .with_sync_writes(false);
         let store = MatrixObjectStore::from_config(config.clone());
 
         assert_eq!(store.config(), &config);
+        assert!(!store.config().sync_writes);
         assert_eq!(
             store.config().backend_mode,
             MatrixObjectStoreBackendMode::External
@@ -1574,6 +1625,30 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(metadata.uri, "matrixobjectstore://snapshots/a");
+    }
+
+    #[tokio::test]
+    async fn matrix_object_store_threads_sync_write_policy_to_split_services() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = MatrixObjectStoreConfig::local_compat(dir.path()).with_sync_writes(false);
+        let store = MatrixObjectStore::from_config(config);
+
+        assert!(!store.config().sync_writes);
+        assert!(!store.root_service.manifest_store.sync_writes);
+        assert!(!store.block_service.block_store.sync_writes);
+        assert!(!store.chunk_service.chunk_store.sync_writes);
+
+        store
+            .put_atomic(
+                "fast/local-object",
+                Bytes::from_static(b"fast shared-store payload"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get("fast/local-object").await.unwrap(),
+            Bytes::from_static(b"fast shared-store payload")
+        );
     }
 
     #[tokio::test]
