@@ -16,6 +16,8 @@ MatrixObjectStore now has explicit internal services behind the existing `Object
 
 The current local-compatible implementation stores small objects as one block/chunk and splits large objects into chunked block refs. `TS_MATRIXOBJECTSTORE_CHUNK_TARGET_BYTES` controls the target chunk size, and `TS_MATRIXOBJECTSTORE_TRANSFER_CONCURRENCY` controls bounded parallel chunk reads, writes, deletes, and overwrite cleanup. Normal reads trust the root manifest block refs and verify chunk checksums without re-fetching every block metadata record; set `TS_MATRIXOBJECTSTORE_VERIFY_BLOCK_METADATA_ON_READ=1` for strict block metadata verification. That keeps compatibility with TemporalStore snapshot/shared-store callers while creating the seams needed to split these into separate root, block, and chunk server processes later.
 
+Block metadata ids include an object-key fingerprint plus chunk offset and checksum. That prevents two different objects with identical chunk bytes from overwriting each other's block metadata in the block service, while still allowing chunk-level checksum verification.
+
 `MatrixObjectStoreConfig` now carries a `MatrixObjectStoreServiceEndpoints` section. A deployment can use one unified external endpoint for compatibility or three independent endpoints:
 
 ```text
