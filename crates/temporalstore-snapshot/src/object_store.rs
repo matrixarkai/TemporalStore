@@ -755,6 +755,49 @@ impl MatrixObjectStore {
         }
         Ok(chunks)
     }
+
+    async fn delete_block_refs(
+        &self,
+        blocks: Vec<MatrixObjectBlockRef>,
+    ) -> Result<(), ObjectStoreError> {
+        let mut join_set = JoinSet::new();
+        let mut next_to_submit = 0;
+        while next_to_submit < blocks.len() || !join_set.is_empty() {
+            while next_to_submit < blocks.len() && join_set.len() < self.transfer_concurrency() {
+                let block_ref = blocks[next_to_submit].clone();
+                let chunk_service = self.chunk_service.clone();
+                let block_service = self.block_service.clone();
+                join_set.spawn(async move {
+                    chunk_service.delete_chunk(&block_ref.chunk_key).await?;
+                    block_service.delete_block_ref(&block_ref.block_id).await?;
+                    Ok::<_, ObjectStoreError>(())
+                });
+                next_to_submit += 1;
+            }
+            join_set
+                .join_next()
+                .await
+                .expect("matrixobjectstore delete task missing")
+                .map_err(|err| ObjectStoreError::Io(std::io::Error::other(err)))??;
+        }
+        Ok(())
+    }
+
+    async fn delete_stale_block_refs_best_effort(
+        &self,
+        blocks: Vec<MatrixObjectBlockRef>,
+        live_chunk_keys: &HashSet<String>,
+        live_block_ids: &HashSet<String>,
+    ) {
+        let stale_blocks: Vec<_> = blocks
+            .into_iter()
+            .filter(|block| {
+                !live_chunk_keys.contains(&block.chunk_key)
+                    || !live_block_ids.contains(&block.block_id)
+            })
+            .collect();
+        let _ = self.delete_block_refs(stale_blocks).await;
+    }
 }
 
 #[async_trait]
@@ -793,14 +836,7 @@ impl ObjectStore for MatrixObjectStore {
             Err(ObjectStoreError::NotFound(_)) => return Ok(()),
             Err(err) => return Err(err),
         };
-        for block_ref in &manifest.blocks {
-            self.chunk_service
-                .delete_chunk(&block_ref.chunk_key)
-                .await?;
-            self.block_service
-                .delete_block_ref(&block_ref.block_id)
-                .await?;
-        }
+        self.delete_block_refs(manifest.blocks).await?;
         self.root_service.delete_manifest(key).await
     }
 
@@ -840,17 +876,12 @@ impl ObjectStore for MatrixObjectStore {
         };
         self.root_service.put_manifest(&manifest).await?;
         if let Some(previous_manifest) = previous_manifest {
-            for old_block in previous_manifest.blocks {
-                if !live_chunk_keys.contains(&old_block.chunk_key) {
-                    let _ = self.chunk_service.delete_chunk(&old_block.chunk_key).await;
-                }
-                if !live_block_ids.contains(&old_block.block_id) {
-                    let _ = self
-                        .block_service
-                        .delete_block_ref(&old_block.block_id)
-                        .await;
-                }
-            }
+            self.delete_stale_block_refs_best_effort(
+                previous_manifest.blocks,
+                &live_chunk_keys,
+                &live_block_ids,
+            )
+            .await;
         }
         Ok(ObjectMetadata {
             key: manifest.key,
@@ -1073,6 +1104,40 @@ mod tests {
         assert!(manifest.blocks.len() > 1);
         assert_eq!(manifest.blocks[0].offset, 0);
         assert_eq!(store.get("large/object").await.unwrap(), payload);
+    }
+
+    #[tokio::test]
+    async fn matrix_object_store_delete_removes_chunked_payload_refs() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = MatrixObjectStoreConfig::local_compat(dir.path())
+            .with_chunk_target_bytes(5)
+            .with_transfer_concurrency(2);
+        let store = MatrixObjectStore::from_config(config);
+        let payload = Bytes::from_static(b"abcdefghijklmnopqrstuvwxyz");
+
+        store.put_atomic("large/object", payload).await.unwrap();
+        let manifest = store
+            .root_service
+            .get_manifest("large/object")
+            .await
+            .unwrap();
+        assert!(manifest.blocks.len() > 1);
+        store.delete("large/object").await.unwrap();
+
+        assert!(matches!(
+            store.root_service.get_manifest("large/object").await,
+            Err(ObjectStoreError::NotFound(_))
+        ));
+        for block in manifest.blocks {
+            assert!(matches!(
+                store.chunk_service.get_chunk(&block.chunk_key).await,
+                Err(ObjectStoreError::NotFound(_))
+            ));
+            assert!(matches!(
+                store.block_service.get_block_ref(&block.block_id).await,
+                Err(ObjectStoreError::NotFound(_))
+            ));
+        }
     }
 
     #[tokio::test]
