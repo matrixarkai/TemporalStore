@@ -666,16 +666,17 @@ where
         shard_id: ShardId,
         retain_from_wal_index: u64,
     ) -> Result<SharedStoreGcReport, SharedStoreReplicationError> {
-        let mut deleted_oplog_objects = 0usize;
+        let mut delete_keys = Vec::new();
         for key in self.object_store.list(&self.oplog_prefix(shard_id)).await? {
             let Some(oplog_index) = parse_oplog_index(&key) else {
                 continue;
             };
             if oplog_index < retain_from_wal_index {
-                self.object_store.delete(&key).await?;
-                deleted_oplog_objects += 1;
+                delete_keys.push(key);
             }
         }
+        let deleted_oplog_objects = delete_keys.len();
+        self.delete_keys_concurrent(delete_keys).await?;
         Ok(SharedStoreGcReport {
             shard_id,
             deleted_oplog_objects,
