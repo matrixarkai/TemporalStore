@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use temporalstore_snapshot::object_store::{ObjectStore, ObjectStoreError};
 use thiserror::Error;
+use tokio::task::JoinSet;
 
 use crate::block_store::{BlockStoreError, LocalBlockStore};
 use crate::engine::TemporalEngine;
@@ -945,6 +946,94 @@ where
             remaining,
             last_oplog_index,
         })
+    }
+
+    pub async fn flush_pending_concurrent(
+        &self,
+        max_entries: usize,
+        max_in_flight: usize,
+    ) -> Result<SharedStoreFlushReport, SharedStoreReplicationError> {
+        let limit = max_entries.max(1);
+        let max_in_flight = max_in_flight.max(1);
+        if max_in_flight == 1 {
+            return self.flush_pending(limit).await;
+        }
+
+        let mut drained = Vec::new();
+        {
+            let mut pending = self
+                .pending
+                .lock()
+                .expect("shared-store async queue lock poisoned");
+            for _ in 0..limit {
+                let Some(entry) = pending.pop_front() else {
+                    break;
+                };
+                drained.push(entry);
+            }
+        }
+
+        if drained.is_empty() {
+            let remaining = self.queued_len();
+            return Ok(SharedStoreFlushReport {
+                flushed: 0,
+                remaining,
+                last_oplog_index: 0,
+            });
+        }
+
+        let mut next_to_submit = 0usize;
+        let mut flushed = 0usize;
+        let mut last_oplog_index = 0u64;
+        let mut join_set = JoinSet::new();
+        while next_to_submit < drained.len() || !join_set.is_empty() {
+            while next_to_submit < drained.len() && join_set.len() < max_in_flight {
+                let entry = drained[next_to_submit].clone();
+                let replicator = self.replicator.clone();
+                let entry_index = next_to_submit;
+                join_set.spawn(async move {
+                    let oplog_index = entry.oplog_index;
+                    let result = replicator.publish_oplog_entry(entry).await;
+                    (entry_index, oplog_index, result)
+                });
+                next_to_submit += 1;
+            }
+
+            let Some(joined) = join_set.join_next().await else {
+                continue;
+            };
+            let (entry_index, oplog_index, result) = joined.map_err(|err| {
+                SharedStoreReplicationError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("shared-store flush task failed: {err}"),
+                ))
+            })?;
+            if let Err(err) = result {
+                join_set.abort_all();
+                while join_set.join_next().await.is_some() {}
+                self.requeue_unflushed(&drained, entry_index);
+                return Err(err);
+            }
+            flushed += 1;
+            last_oplog_index = last_oplog_index.max(oplog_index);
+        }
+
+        let remaining = self.queued_len();
+        Ok(SharedStoreFlushReport {
+            flushed,
+            remaining,
+            last_oplog_index,
+        })
+    }
+
+    fn requeue_unflushed(&self, drained: &[SharedStoreOplogEntry], failed_index: usize) {
+        let mut pending = self
+            .pending
+            .lock()
+            .expect("shared-store async queue lock poisoned");
+        for entry in drained[failed_index..].iter().rev() {
+            pending.push_front(entry.clone());
+        }
     }
 }
 
