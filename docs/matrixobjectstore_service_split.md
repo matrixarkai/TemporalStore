@@ -36,6 +36,8 @@ Append-only shared-store objects such as WAL/oplog entries and snapshot objects 
 
 Snapshot download uses `ObjectStore::get_to_path`. MatrixObjectStore overrides that hook to restore chunked objects directly to the destination file with bounded chunk memory, instead of assembling each large page segment as one in-memory byte buffer before writing it out.
 
+Snapshot checksum generation and local restore verification stream files in fixed-size buffers. Remote snapshot verification uses `ObjectStore::head`, so MatrixObjectStore can validate size and checksum from manifests without downloading chunk payloads.
+
 ## Runtime Flow
 
 Write path:
