@@ -767,7 +767,7 @@ impl FileObjectStore {
             return Ok(out);
         }
         collect_files_with_suffix(&root, &start_dir, suffix, &mut out).await?;
-        out.retain(|key| key.starts_with(prefix) && !key.contains(".matrixobjectstore-tmp-"));
+        out.retain(|key| key.starts_with(prefix) && !is_internal_temp_key(key));
         out.sort();
         Ok(out)
     }
@@ -957,7 +957,7 @@ impl ObjectStore for FileObjectStore {
             return Ok(out);
         }
         collect_files(&root, &start_dir, &mut out).await?;
-        out.retain(|key| key.starts_with(prefix) && !key.contains(".matrixobjectstore-tmp-"));
+        out.retain(|key| key.starts_with(prefix) && !is_internal_temp_key(key));
         out.sort();
         Ok(out)
     }
@@ -1684,6 +1684,10 @@ async fn write_object_file(path: &Path, bytes: &Bytes) -> Result<(), ObjectStore
 
 fn temp_sibling_path(path: &Path, label: &str) -> PathBuf {
     path.with_extension(format!("{label}-{}", Uuid::new_v4().simple()))
+}
+
+fn is_internal_temp_key(key: &str) -> bool {
+    key.contains("matrixobjectstore-tmp") || key.contains("matrixobjectstore-download-tmp")
 }
 
 async fn sha256_file_hex(path: &Path) -> Result<String, ObjectStoreError> {
@@ -2430,6 +2434,35 @@ mod tests {
         assert_eq!(
             tokio::fs::read(&destination).await.unwrap(),
             b"previous-good-restore"
+        );
+    }
+
+    #[tokio::test]
+    async fn file_object_store_list_hides_internal_temp_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FileObjectStore::new(dir.path());
+        store
+            .put_atomic("objects/live.bin", Bytes::from_static(b"live"))
+            .await
+            .unwrap();
+        tokio::fs::write(
+            dir.path()
+                .join("objects/live.matrixobjectstore-tmp-leftover"),
+            b"stale-upload-temp",
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(
+            dir.path()
+                .join("objects/live.matrixobjectstore-download-tmp-leftover"),
+            b"stale-download-temp",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            store.list("objects/").await.unwrap(),
+            vec!["objects/live.bin".to_string()]
         );
     }
 
