@@ -7,9 +7,10 @@ pub mod types;
 
 pub use metrics::SnapshotMetrics;
 pub use object_store::{
-    FileObjectStore, MatrixObjectStore, MatrixObjectStoreBackendMode, MatrixObjectStoreConfig,
-    ObjectMetadata, ObjectStore, ObjectStoreError, SharedObjectStore, SharedObjectStoreBackend,
-    SharedObjectStoreConfig,
+    FileObjectStore, MatrixObjectBlockRef, MatrixObjectManifest, MatrixObjectStore,
+    MatrixObjectStoreBackendMode, MatrixObjectStoreBlockService, MatrixObjectStoreChunkService,
+    MatrixObjectStoreConfig, MatrixObjectStoreRootService, ObjectMetadata, ObjectStore,
+    ObjectStoreError, SharedObjectStore, SharedObjectStoreBackend, SharedObjectStoreConfig,
 };
 pub use snapshot_store::{S3SnapshotStore, SnapshotStore, SnapshotStoreError};
 pub use types::{
