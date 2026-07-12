@@ -539,7 +539,11 @@ impl MatrixObjectStoreRootService {
 
     async fn list_manifest_keys(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
         let mut keys = Vec::new();
-        for manifest_key in self.manifest_store.list(prefix).await? {
+        for manifest_key in self
+            .manifest_store
+            .list_with_suffix(prefix, ".manifest.json")
+            .await?
+        {
             if let Some(key) = manifest_key
                 .strip_suffix(".manifest.json")
                 .filter(|key| key.starts_with(prefix))
@@ -727,6 +731,26 @@ impl FileObjectStore {
                 .root
                 .join(dir_prefix.replace('/', std::path::MAIN_SEPARATOR_STR)))
         }
+    }
+
+    async fn list_with_suffix(
+        &self,
+        prefix: &str,
+        suffix: &str,
+    ) -> Result<Vec<String>, ObjectStoreError> {
+        let mut out = Vec::new();
+        let root = self.root.clone();
+        if !root.exists() {
+            return Ok(out);
+        }
+        let start_dir = self.list_start_dir(prefix)?;
+        if !start_dir.exists() {
+            return Ok(out);
+        }
+        collect_files_with_suffix(&root, &start_dir, suffix, &mut out).await?;
+        out.retain(|key| key.starts_with(prefix) && !key.contains(".matrixobjectstore-tmp-"));
+        out.sort();
+        Ok(out)
     }
 }
 
@@ -1341,6 +1365,15 @@ async fn collect_files(
     dir: &Path,
     out: &mut Vec<String>,
 ) -> Result<(), ObjectStoreError> {
+    collect_files_with_suffix(root, dir, "", out).await
+}
+
+async fn collect_files_with_suffix(
+    root: &Path,
+    dir: &Path,
+    suffix: &str,
+    out: &mut Vec<String>,
+) -> Result<(), ObjectStoreError> {
     let mut stack = vec![dir.to_path_buf()];
     while let Some(current) = stack.pop() {
         let mut entries = tokio::fs::read_dir(&current).await?;
@@ -1353,7 +1386,10 @@ async fn collect_files(
                 let rel = path.strip_prefix(root).map_err(|_| {
                     ObjectStoreError::InvalidKey(path.to_string_lossy().to_string())
                 })?;
-                out.push(rel.to_string_lossy().replace('\\', "/"));
+                let key = rel.to_string_lossy().replace('\\', "/");
+                if suffix.is_empty() || key.ends_with(suffix) {
+                    out.push(key);
+                }
             }
         }
     }
@@ -1776,6 +1812,28 @@ mod tests {
             Bytes::from_static(b"split payload")
         );
         assert_eq!(store.config(), &config);
+    }
+
+    #[tokio::test]
+    async fn matrix_object_store_list_only_materializes_manifests() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = MatrixObjectStore::new(dir.path());
+
+        store
+            .put_atomic("raw/object-a", Bytes::from_static(b"payload-a"))
+            .await
+            .unwrap();
+        let stray = store
+            .root_service
+            .manifest_store
+            .root
+            .join("raw/not-a-manifest.tmp");
+        tokio::fs::write(&stray, b"ignore me").await.unwrap();
+
+        assert_eq!(
+            store.list("raw/").await.unwrap(),
+            vec!["raw/object-a".to_string()]
+        );
     }
 
     #[tokio::test]
