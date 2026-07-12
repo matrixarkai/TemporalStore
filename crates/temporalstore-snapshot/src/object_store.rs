@@ -1489,6 +1489,7 @@ impl ObjectStore for MatrixObjectStore {
 
     async fn head(&self, key: &str) -> Result<ObjectMetadata, ObjectStoreError> {
         let manifest = self.root_service.get_manifest(key).await?;
+        self.validate_manifest_for_read(&manifest)?;
         Ok(ObjectMetadata {
             key: manifest.key,
             uri: manifest.uri,
@@ -2084,6 +2085,7 @@ mod tests {
         manifest.blocks[0].offset = 1;
         store.root_service.put_manifest(&manifest).await.unwrap();
 
+        assert!(store.head("large/object").await.is_err());
         assert!(store.get("large/object").await.is_err());
         assert!(store
             .get_to_path("large/object", &destination)
@@ -2098,6 +2100,7 @@ mod tests {
         manifest.blocks[1].offset = 0;
         store.root_service.put_manifest(&manifest).await.unwrap();
 
+        assert!(store.head("large/object").await.is_err());
         assert!(store.get("large/object").await.is_err());
     }
 
@@ -2124,6 +2127,7 @@ mod tests {
         manifest.blocks[0].offset = manifest.size_bytes + 1;
         store.root_service.put_manifest(&manifest).await.unwrap();
 
+        assert!(store.head("large/object").await.is_err());
         assert!(store.get("large/object").await.is_err());
         let destination = dir.path().join("restore/large-object.bin");
         tokio::fs::create_dir_all(destination.parent().unwrap())
