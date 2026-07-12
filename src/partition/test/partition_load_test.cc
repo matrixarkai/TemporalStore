@@ -48,8 +48,8 @@ class PartitionLoadTest : public testing::Test {
         FLAGS_blockcache_pmem_capacity = 0;
         FLAGS_blockcache_ssd_capacity = 0;
         FLAGS_blockcache_enable_metrics = false;
-        bytestore_set_flag("bytestore_client_log_level", "1");
-        bytestore_init();
+        matrixobjectstore_set_flag("matrixobjectstore_client_log_level", "1");
+        matrixobjectstore_init();
         byte::AsyncThreadPoolOptions tp_options;
         tp_options.name_ = "test";
         background_pool_.reset(new byte::AsyncThreadPool());
@@ -78,7 +78,7 @@ class PartitionLoadTest : public testing::Test {
             blockcache_->Stop();
         }
 
-        bytestore_shutdown();
+        matrixobjectstore_shutdown();
     }
 
     void ReloadPartition() {

@@ -20,7 +20,7 @@
 #include "bench/workloads/string_workload.h"
 #include "bench/workloads/workloads.h"
 #include "bvar/latency_recorder.h"
-#include "bytestore/bytestore.h"
+#include "matrixobjectstore/matrixobjectstore.h"
 #include "common/controller.h"
 #include "common/logging.h"
 #include "common/partition_id_type.h"
@@ -41,7 +41,7 @@ class BenchmarkTest : public ::testing::Test {
     virtual ~BenchmarkTest() {}
 
     void SetUp() override {
-        bytestore_init();
+        matrixobjectstore_init();
         // init bcache2 mini cluster
         MiniCluster::Options options;
         options.server_count = 1;
@@ -64,7 +64,7 @@ class BenchmarkTest : public ::testing::Test {
     }
     void TearDown() override {
         cluster_.Stop();
-        bytestore_shutdown();
+        matrixobjectstore_shutdown();
     }
 
  protected:

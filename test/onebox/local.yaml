@@ -134,8 +134,8 @@ CODE_FIU_CONFIG:
     - GROUP: index_gc
     - GROUP: oplog_gc
     - GROUP: dump
-    - GROUP: bytestore
-    - GROUP: bytestore_data_distort
+    - GROUP: matrixobjectstore
+    - GROUP: matrixobjectstore_data_distort
 
 SLA:
   TOTAL:

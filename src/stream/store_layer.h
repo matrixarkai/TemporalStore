@@ -10,7 +10,7 @@
 #include <vector>
 
 #include "common/coclosure.h"
-#include "stream/store/bytestore_store.h"
+#include "stream/store/matrixobjectstore_store.h"
 #include "stream/store/local_file_store.h"
 #include "stream/store/object_store_backend.h"
 #include "stream/store/shared_file_store.h"
@@ -53,7 +53,7 @@ namespace stream {
 class StoreLayer {
  public:
     explicit StoreLayer(byte::AsyncThreadPool* bg_thread_pool) : bg_thread_pool_(bg_thread_pool) {
-        bytestore_store_.reset(new ByteStoreImpl());
+        matrixobjectstore_store_.reset(new MatrixObjectStoreImpl());
 #ifdef BCACHE2_ENABLE_S3_STORE
         s3_store_.reset(new S3Store("S3"));
         ceph_s3_store_.reset(new S3Store("CephS3"));
@@ -110,8 +110,8 @@ class StoreLayer {
  private:
     Store* GetStoreEnv(const std::string& uri) {
         switch (DetectObjectStoreBackend(uri)) {
-        case ObjectStoreBackend::kByteStore:
-            return bytestore_store_.get();
+        case ObjectStoreBackend::kMatrixObjectStore:
+            return matrixobjectstore_store_.get();
         case ObjectStoreBackend::kS3:
             return s3_store_.get();
         case ObjectStoreBackend::kCephS3:
@@ -129,7 +129,7 @@ class StoreLayer {
     }
 
     byte::AsyncThreadPool* bg_thread_pool_ = nullptr;
-    std::unique_ptr<ByteStoreImpl> bytestore_store_;
+    std::unique_ptr<MatrixObjectStoreImpl> matrixobjectstore_store_;
     std::unique_ptr<Store> s3_store_;
     std::unique_ptr<Store> ceph_s3_store_;
     std::unique_ptr<UnsupportedObjectStore> ceph_rados_store_;

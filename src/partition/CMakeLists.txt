@@ -7,7 +7,7 @@ target_link_libraries(partition
     partition_storage
     partition_compute
     co
-    bytestore
+    matrixobjectstore
     byte
     gflags
     brpc-static

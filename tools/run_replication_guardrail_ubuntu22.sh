@@ -307,7 +307,7 @@ run_positive_case \
 
 object_root="/tmp/temporalstore-guardrail-object-store-$(date +%Y%m%d_%H%M%S)"
 run_positive_case \
-  bytestore_compat \
+  matrixobjectstore_compat \
   temporal_guardrail_local \
   /tmp/temporalstore-guardrail-local \
   19050 19060 19070 19051 \

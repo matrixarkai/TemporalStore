@@ -175,4 +175,4 @@ Expected result:
 
 This integration proves Codex can use the same MCP protocol/tool surface against
 both codebases. It does not claim internal binary layout parity, brpc/thrift wire
-compatibility, or live ByteStore/S3 integration for Rust.
+compatibility, or live MatrixObjectStore/S3 integration for Rust.

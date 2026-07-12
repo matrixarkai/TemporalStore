@@ -8,7 +8,7 @@ namespace bcache2 {
 namespace stream {
 
 enum class ObjectStoreBackend {
-    kByteStore,
+    kMatrixObjectStore,
     kS3,
     kCephS3,
     kCephRados,
@@ -18,8 +18,9 @@ enum class ObjectStoreBackend {
 };
 
 inline ObjectStoreBackend DetectObjectStoreBackend(const std::string& uri) {
-    if (absl::StartsWith(uri, "blob://") || absl::StartsWith(uri, "local://")) {
-        return ObjectStoreBackend::kByteStore;
+    if (absl::StartsWith(uri, "matrixobjectstore://") || absl::StartsWith(uri, "blob://") ||
+        absl::StartsWith(uri, "local://")) {
+        return ObjectStoreBackend::kMatrixObjectStore;
     }
     if (absl::StartsWith(uri, "s3://")) {
         return ObjectStoreBackend::kS3;
@@ -44,8 +45,8 @@ inline ObjectStoreBackend DetectObjectStoreBackend(const std::string& uri) {
 
 inline const char* ObjectStoreBackendName(ObjectStoreBackend backend) {
     switch (backend) {
-    case ObjectStoreBackend::kByteStore:
-        return "ByteStore";
+    case ObjectStoreBackend::kMatrixObjectStore:
+        return "MatrixObjectStore";
     case ObjectStoreBackend::kS3:
         return "S3";
     case ObjectStoreBackend::kCephS3:

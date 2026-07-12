@@ -2,7 +2,7 @@
 
 Goal: make Rust storage production-ready and scalable enough for the current Rust-native target
 while matching the important C++ TemporalStore storage lifecycle behavior. legacy C++ wire, S3, and
-ByteStore integration remain out of scope for this plan.
+MatrixObjectStore integration remain out of scope for this plan.
 
 ## Current Production Posture Gate
 
@@ -156,7 +156,7 @@ current Rust-native deployment target:
 
 This closes the in-repo Rust migration verifier, external artifact-export contract, CI-published
 golden corpus path, and local production-harness slice for Rust-native storage formats. It does not
-claim global storage production readiness; live ByteStore/S3 integration and broader
+claim global storage production readiness; live MatrixObjectStore/S3 integration and broader
 deployment-scale evidence remain separately tracked blockers.
 
 ## Global Readiness Boundary

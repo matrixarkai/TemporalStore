@@ -99,7 +99,7 @@ class StreamImpl : public Stream {
         std::string data;
 
         bool inplace = false;
-        bytestore_message message;
+        matrixobjectstore_message message;
     };
 
     struct BlobTailInfo {

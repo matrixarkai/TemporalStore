@@ -823,7 +823,7 @@ Completed since the last backlog update:
 
 - Keep S3/object-store backend as a future durable shared storage option.
   - Use one unified stream/store interface.
-  - Support S3-compatible stores and future ByteStore-like backends.
+  - Support S3-compatible stores and future MatrixObjectStore-like backends.
   - Test MinIO or another S3-compatible implementation for local/dev only.
 
 - Add AWS credential and cloud object-store readiness for MatrixArk resource/skill ingestion.

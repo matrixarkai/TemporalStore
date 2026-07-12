@@ -14,7 +14,7 @@ The implementation decision remains explicit:
 - no byte-for-byte C++ page/log layout requirement
 - Rust-native HTTP/JSON, RESP, and tonic are the production migration surfaces
 - Rust-native page/log formats are accepted when migration/replay corpus evidence passes
-- live ByteStore/S3 remains out of scope unless separately reintroduced
+- live MatrixObjectStore/S3 remains out of scope unless separately reintroduced
 
 ## Current Evidence Snapshot
 
@@ -200,5 +200,5 @@ They are not VikingMem paper-comparable until a live reader endpoint run succeed
 - Native C++ execution for many shared corpus cases that are currently C++ static surface gates,
   including the recent ContextEntity/ContextSegment benchmark-injection contract.
 - Continued migration of Rust-local product tests into the shared corpus.
-- Any future live ByteStore/S3 requirement, if brought back into scope, needs separate follower-cursor
+- Any future live MatrixObjectStore/S3 requirement, if brought back into scope, needs separate follower-cursor
   and Raft-snapshot retention evidence.

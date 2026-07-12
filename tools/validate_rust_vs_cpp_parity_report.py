@@ -14,7 +14,7 @@ REQUIRED_PHRASES = [
     "no brpc or Thrift in Rust",
     "no byte-for-byte C++ page/log layout requirement",
     "Rust-native HTTP/JSON, RESP, and tonic",
-    "live ByteStore/S3 remains out of scope",
+    "live MatrixObjectStore/S3 remains out of scope",
     "`raft_replication`",
     "`storage_cache`",
     "`client` / `proxy`",

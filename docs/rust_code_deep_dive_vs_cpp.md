@@ -26,7 +26,7 @@ What is still missing versus C++:
   page compaction; Rust already has logical object/page-ref/dirty-slot stats, append-only oplog and
   index-log streams, GC retention boundaries, and readonly replica replay from primary streams
 - full Feature, IPS, and Risk semantics from the C++ extension protos
-- ByteStore stream backend parity, blockcache/mtcache-compatible cache engine, legacy C++ wire SDK
+- MatrixObjectStore stream backend parity, blockcache/mtcache-compatible cache engine, legacy C++ wire SDK
   compatibility, full dashboards/runbooks, and operational tooling. Rust already has shared-store
   object/file flows, local multi-layer cache, local quota/admission, heartbeat/load reporting, and
   Prometheus metric output.
@@ -243,7 +243,7 @@ From the C++ deep-dive docs and local source, C++ TemporalStore is a mature serv
 - dirty index and slot tracking
 - background `StorageManager` dump/merge/load
 - `SlotStore` and `PageStore`
-- local file and ByteStore stream backends
+- local file and MatrixObjectStore stream backends
 - optional block/page cache
 - readonly replica replay from primary
 - heartbeat/load reporting
@@ -268,14 +268,14 @@ That is why "rewrite C++ TemporalStore in Rust" is not just translating syntax. 
 | Replication | In-process behavior model | RustRaft-backed production replication | Need real Raft library and networked nodes. |
 | Metaserver | Simple route + in-process raft model | Full topology and routing control plane | Need namespace/table/shard/slot topology and heartbeat. |
 | Read policy | Pin-primary default, optional replica reads | Primary/secondary serving with readonly replay | Need real lag control/read-index/lease semantics. |
-| Snapshot | S3-compatible snapshot store crate | C++ storage/load ecosystem, ByteStore/local streams | Need actual engine/Raft integration. |
+| Snapshot | S3-compatible snapshot store crate | C++ storage/load ecosystem, MatrixObjectStore/local streams | Need actual engine/Raft integration. |
 | Redis | Useful RESP adapter | C++ has product protocol/SDKs, not just Redis | Need exact client compatibility depending on migration target. |
 | Deployment | Docker + existing-EKS Terraform | Internal production deployment system | Need service discovery, autoscale controllers, dashboards, runbooks. |
 | Observability | Snapshot metrics and local stats | Production metrics/logging/tracing | Need metrics HTTP endpoint and raft/storage/cache dashboards. |
 
 ## Pros Of The Rust Rewrite
 
-- **Open-source friendly:** avoids direct dependence on internal non-open-source `byte`, `rustraft`, `mtcache`, ByteStore, and related infrastructure.
+- **Open-source friendly:** avoids direct dependence on internal non-open-source `byte`, `rustraft`, `mtcache`, MatrixObjectStore, and related infrastructure.
 - **Safer implementation base:** Rust reduces memory safety and lifetime bugs common in large C++ storage engines.
 - **Clear API model:** one central `Command` enum makes behavior easy to inspect, serialize, test, and wrap with Redis/HTTP/proxy layers.
 - **Fast local iteration:** TemporalStore Rust engine and in-process workflow tests run without a full internal deployment.
@@ -303,7 +303,7 @@ That is why "rewrite C++ TemporalStore in Rust" is not just translating syntax. 
 
 ## Cons Of Keeping/Using The C++ Code
 
-- **Hard to open source:** critical dependencies like `byte`, `rustraft`, `mtcache`, ByteStore, and likely internal build/runtime pieces are not open source.
+- **Hard to open source:** critical dependencies like `byte`, `rustraft`, `mtcache`, MatrixObjectStore, and likely internal build/runtime pieces are not open source.
 - **Complex build/dependency graph:** legacy C++ RPC/protobuf/library ABI details make external builds harder.
 - **Harder to simplify:** historical naming and internal architecture make a clean public product harder to explain and maintain.
 - **Memory safety risk:** C++ needs stricter review and testing discipline for lifetime, concurrency, and ABI issues.
@@ -337,7 +337,7 @@ P1, required for production-like parity:
   scheduling
 - full C++ placement policy beyond current load-aware/location-diverse replica fill and heartbeat
   load reporting
-- production ByteStore stream backend; current shared-store work covers local file/object-store
+- production MatrixObjectStore stream backend; current shared-store work covers local file/object-store
   checkpoint, page, index, and oplog flows
 - distributed quota and admission plus kill switch wiring across real services; local
   shard/table/tenant QPS admission and shard `maxmemory_bytes` admission already exist

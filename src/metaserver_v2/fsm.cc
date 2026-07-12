@@ -889,7 +889,7 @@ Status StateMachine::SubmitUpdateMembershipTask(const PartitionPtr& partition) {
     UpdateMembershipTask::Options opts;
     switch (partition->GetState()) {
     case PartitionState::P_FREEZING:
-        // Since there is a fence mechanism between server and storage pool called bytestore
+        // Since there is a fence mechanism between server and storage pool called matrixobjectstore
         // inline blob, we do not need a quorum threshold to ensure data reliability
         opts.success_threshold = 1;
         opts.submit_fsm = true;

@@ -6,7 +6,7 @@
 #include <byte/container/intrusive_list.h>
 #include <byte/include/macros.h>
 #include <byte/thread/async_thread.h>
-#include <bytestore/bytestore.h>
+#include <matrixobjectstore/matrixobjectstore.h>
 #include <sys/uio.h>
 
 #include <array>

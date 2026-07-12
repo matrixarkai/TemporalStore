@@ -28,17 +28,17 @@ void UserSignalHandler(int /*signal*/) {
 
 int main(int args, char** argv) {
     BYTE_DEFER({ LOG_FLUSH(); });
-    bytestore_init();
+    matrixobjectstore_init();
     BYTE_ASSERT_EQ(0, fiu_init(0));
     BYTE_ASSERT_EQ(0, fiu_rc_fifo("/tmp/fiu-ctrl"));
     GFLAGS_NAMESPACE::ParseCommandLineFlags(&args, &argv, true);
 
-    bytestore_set_flag("bytestore_client_max_write_size",
-                       std::to_string(FLAGS_bytestore_client_max_write_size).c_str());
-    bytestore_set_flag("bytestore_log_file_num",
-                       std::to_string(FLAGS_bytestore_log_file_num).c_str());
-    bytestore_set_flag("bytestore_log_file_size_mb",
-                       std::to_string(FLAGS_bytestore_log_file_size_mb).c_str());
+    matrixobjectstore_set_flag("matrixobjectstore_client_max_write_size",
+                       std::to_string(FLAGS_matrixobjectstore_client_max_write_size).c_str());
+    matrixobjectstore_set_flag("matrixobjectstore_log_file_num",
+                       std::to_string(FLAGS_matrixobjectstore_log_file_num).c_str());
+    matrixobjectstore_set_flag("matrixobjectstore_log_file_size_mb",
+                       std::to_string(FLAGS_matrixobjectstore_log_file_size_mb).c_str());
 
     bcache2::server::Server::Options options;
     options.service_thread_num = 8;  // passed to the bRPC server
@@ -100,6 +100,6 @@ int main(int args, char** argv) {
     LOG_INFO("Stopping server");
     server.Stop();
 
-    bytestore_shutdown();
+    matrixobjectstore_shutdown();
     return 0;
 }

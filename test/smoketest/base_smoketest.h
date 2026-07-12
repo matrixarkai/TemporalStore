@@ -20,7 +20,7 @@ class BaseSmoketest : public ::testing::Test {
     virtual ~BaseSmoketest() {}
 
     void SetUp() override {
-        bytestore_init();
+        matrixobjectstore_init();
 
         MiniCluster::Options options;
         options.server_count = 1;
@@ -56,7 +56,7 @@ class BaseSmoketest : public ::testing::Test {
 
     void TearDown() override {
         cluster_.Stop();
-        bytestore_shutdown();
+        matrixobjectstore_shutdown();
     }
 
     void ReloadServer() {

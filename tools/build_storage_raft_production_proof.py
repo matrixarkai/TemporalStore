@@ -341,7 +341,7 @@ def global_production_blockers(raft_readiness: dict[str, Any]) -> list[str]:
     blockers.extend(
         [
             "byte_for_byte_cpp_storage_layout_not_targeted",
-            "live_bytestore_s3_object_store_integration_not_in_scope",
+            "live_matrixobjectstore_s3_object_store_integration_not_in_scope",
             "docker_or_aws_multi_service_slo_evidence_required_for_global_release",
         ]
     )

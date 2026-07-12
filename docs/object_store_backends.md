@@ -10,8 +10,8 @@ object-store layer.
 | URI scheme | Backend | Current status |
 | --- | --- | --- |
 | `file://...` | Local filesystem | Functional; used by local and smoke tests. |
-| `blob://...` | ByteStore-compatible adapter | Functional when the compatibility library is linked. |
-| `local://...` | ByteStore-compatible adapter | Functional when the compatibility library is linked. |
+| `blob://...` | MatrixObjectStore-compatible adapter | Functional when the compatibility library is linked. |
+| `local://...` | MatrixObjectStore-compatible adapter | Functional when the compatibility library is linked. |
 | `s3://bucket/prefix/...` | S3 adapter | API route exists; returns `Unimplemented` until an S3 SDK adapter is linked. |
 | `ceph://bucket/prefix/...` | Ceph RGW through S3-compatible API | API route exists; returns `Unimplemented` until the S3 adapter is linked. |
 | `ceph+s3://bucket/prefix/...` | Ceph RGW through S3-compatible API | Same as `ceph://`, but the compatibility mode is explicit. |
@@ -32,8 +32,8 @@ latency or features that RGW cannot expose.
 stream/page/index/oplog
   -> StoreLayer
      -> file://       LocalFileStore
-     -> blob://       ByteStore-compatible Store
-     -> local://      ByteStore-compatible Store
+     -> blob://       MatrixObjectStore-compatible Store
+     -> local://      MatrixObjectStore-compatible Store
      -> s3://         S3 Store adapter
      -> ceph://       S3 Store adapter against Ceph RGW
      -> ceph+s3://    S3 Store adapter against Ceph RGW

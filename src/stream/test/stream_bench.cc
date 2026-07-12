@@ -344,8 +344,8 @@ Operation* StreamVerifier::GeneratorOp(int op_type) {
 class StreamBench : public testing::Test {
  public:
     void SetUp() override {
-        bytestore_set_flag("bytestore_client_log_level", "1");
-        bytestore_init();
+        matrixobjectstore_set_flag("matrixobjectstore_client_log_level", "1");
+        matrixobjectstore_init();
         byte::SetByteLogDir("./");
         byte::SetByteLogMaxFileNum(10);
         byte::SetByteLogMaxFileSize(1UL << 30);

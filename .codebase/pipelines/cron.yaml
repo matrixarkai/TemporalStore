@@ -6,8 +6,8 @@ jobs:
     name: build and test
     image: hub.byted.org/compile/byteredis_dev:c5c924ea8375950f1b87ded47ccc4ed7
     envs:
-      MY_HOST_IP : "127.0.0.1"        # For bytestore client init
-      BDC_PRIVATE_CLOUD : "True"      # Bytestore client requires private IP. Set $BDC_PRIVATE_CLOUD to ignore it 
+      MY_HOST_IP : "127.0.0.1"        # For matrixobjectstore client init
+      BDC_PRIVATE_CLOUD : "True"      # MatrixObjectStore client requires private IP. Set $BDC_PRIVATE_CLOUD to ignore it
     steps:
       - uses: actions/setup-consul
       - uses: actions/setup-proxy
@@ -46,8 +46,8 @@ jobs:
     image: hub.byted.org/compile/byteredis_dev:c5c924ea8375950f1b87ded47ccc4ed7
     timeout: 360
     envs:
-      MY_HOST_IP : "127.0.0.1"        # For bytestore client init
-      BDC_PRIVATE_CLOUD : "True"      # Bytestore client requires private IP. Set $BDC_PRIVATE_CLOUD to ignore it 
+      MY_HOST_IP : "127.0.0.1"        # For matrixobjectstore client init
+      BDC_PRIVATE_CLOUD : "True"      # MatrixObjectStore client requires private IP. Set $BDC_PRIVATE_CLOUD to ignore it
     steps:
       - uses: actions/setup-consul
       - uses: actions/setup-proxy
@@ -73,8 +73,8 @@ jobs:
     image: hub.byted.org/compile/byteredis_dev:c5c924ea8375950f1b87ded47ccc4ed7
     timeout: 360
     envs:
-      MY_HOST_IP : "127.0.0.1"        # For bytestore client init
-      BDC_PRIVATE_CLOUD : "True"      # Bytestore client requires private IP. Set $BDC_PRIVATE_CLOUD to ignore it 
+      MY_HOST_IP : "127.0.0.1"        # For matrixobjectstore client init
+      BDC_PRIVATE_CLOUD : "True"      # MatrixObjectStore client requires private IP. Set $BDC_PRIVATE_CLOUD to ignore it
     steps:
       - uses: actions/setup-consul
       - uses: actions/setup-proxy

@@ -15,8 +15,8 @@ namespace stream {
 class StoreLayerTest : public testing::Test {
  public:
     void SetUp() override {
-        bytestore_set_flag("bytestore_client_log_level", "1");
-        bytestore_init();
+        matrixobjectstore_set_flag("matrixobjectstore_client_log_level", "1");
+        matrixobjectstore_init();
         base_uri_ = FLAGS_schema + temp_dir_.GetDir() + "/cluster/public";
 
         metrics_manager_.reset(new MetricsManager({}, "partition"));
@@ -61,7 +61,7 @@ class StoreLayerTest : public testing::Test {
         SYNC_CALL(blob_->Append, &ctrl, data.data(), data.size());
         ASSERT_TRUE(ctrl.status().ok());
     }
-    void TearDown() override { bytestore_shutdown(); }
+    void TearDown() override { matrixobjectstore_shutdown(); }
 
  protected:
     Env::ConditionData BuildValue(const std::string& data) {
