@@ -185,6 +185,7 @@ pub struct FileObjectStore {
     root: PathBuf,
     uri_scheme: String,
     sync_writes: bool,
+    sync_parent_dirs: bool,
     created_dirs: Arc<Mutex<HashSet<PathBuf>>>,
 }
 
@@ -242,6 +243,8 @@ pub struct MatrixObjectStoreConfig {
     pub publish_block_metadata_on_write: bool,
     #[serde(default = "default_matrixobjectstore_sync_writes")]
     pub sync_writes: bool,
+    #[serde(default = "default_matrixobjectstore_sync_parent_dirs")]
+    pub sync_parent_dirs: bool,
 }
 
 impl MatrixObjectStoreConfig {
@@ -257,6 +260,7 @@ impl MatrixObjectStoreConfig {
             verify_block_metadata_on_read: default_strict_block_metadata(),
             publish_block_metadata_on_write: default_publish_block_metadata(),
             sync_writes: default_matrixobjectstore_sync_writes(),
+            sync_parent_dirs: default_matrixobjectstore_sync_parent_dirs(),
         }
     }
 
@@ -273,6 +277,7 @@ impl MatrixObjectStoreConfig {
             verify_block_metadata_on_read: default_strict_block_metadata(),
             publish_block_metadata_on_write: default_publish_block_metadata(),
             sync_writes: default_matrixobjectstore_sync_writes(),
+            sync_parent_dirs: default_matrixobjectstore_sync_parent_dirs(),
         }
     }
 
@@ -303,6 +308,11 @@ impl MatrixObjectStoreConfig {
 
     pub fn with_sync_writes(mut self, sync_writes: bool) -> Self {
         self.sync_writes = sync_writes;
+        self
+    }
+
+    pub fn with_sync_parent_dirs(mut self, sync_parent_dirs: bool) -> Self {
+        self.sync_parent_dirs = sync_parent_dirs;
         self
     }
 
@@ -411,6 +421,7 @@ impl SharedObjectStore {
                     verify_block_metadata_on_read: default_strict_block_metadata(),
                     publish_block_metadata_on_write: default_publish_block_metadata(),
                     sync_writes: default_matrixobjectstore_sync_writes(),
+                    sync_parent_dirs: default_matrixobjectstore_sync_parent_dirs(),
                 }),
             )),
             SharedObjectStoreBackend::S3
@@ -448,16 +459,19 @@ impl MatrixObjectStore {
             &config.uri_scheme,
             config.service_endpoints.root_endpoint.clone(),
             config.sync_writes,
+            config.sync_parent_dirs,
         );
         let block_service = MatrixObjectStoreBlockService::new(
             config.root.join("_matrixobjectstore/blocks"),
             config.service_endpoints.block_endpoint.clone(),
             config.sync_writes,
+            config.sync_parent_dirs,
         );
         let chunk_service = MatrixObjectStoreChunkService::new(
             config.root.join("_matrixobjectstore/chunks"),
             config.service_endpoints.chunk_endpoint.clone(),
             config.sync_writes,
+            config.sync_parent_dirs,
         );
         Self {
             config,
@@ -486,12 +500,14 @@ impl MatrixObjectStoreRootService {
         uri_scheme: impl Into<String>,
         endpoint: Option<String>,
         sync_writes: bool,
+        sync_parent_dirs: bool,
     ) -> Self {
         Self {
-            manifest_store: FileObjectStore::with_uri_scheme_and_sync_writes(
+            manifest_store: FileObjectStore::with_uri_scheme_and_sync_policy(
                 root,
                 "matrixobjectstore-root",
                 sync_writes,
+                sync_parent_dirs,
             ),
             uri_scheme: uri_scheme.into(),
             endpoint,
@@ -558,12 +574,18 @@ struct MatrixObjectChunkRead {
 }
 
 impl MatrixObjectStoreBlockService {
-    pub fn new(root: impl Into<PathBuf>, endpoint: Option<String>, sync_writes: bool) -> Self {
+    pub fn new(
+        root: impl Into<PathBuf>,
+        endpoint: Option<String>,
+        sync_writes: bool,
+        sync_parent_dirs: bool,
+    ) -> Self {
         Self {
-            block_store: FileObjectStore::with_uri_scheme_and_sync_writes(
+            block_store: FileObjectStore::with_uri_scheme_and_sync_policy(
                 root,
                 "matrixobjectstore-block",
                 sync_writes,
+                sync_parent_dirs,
             ),
             endpoint,
         }
@@ -604,12 +626,18 @@ impl MatrixObjectStoreBlockService {
 }
 
 impl MatrixObjectStoreChunkService {
-    pub fn new(root: impl Into<PathBuf>, endpoint: Option<String>, sync_writes: bool) -> Self {
+    pub fn new(
+        root: impl Into<PathBuf>,
+        endpoint: Option<String>,
+        sync_writes: bool,
+        sync_parent_dirs: bool,
+    ) -> Self {
         Self {
-            chunk_store: FileObjectStore::with_uri_scheme_and_sync_writes(
+            chunk_store: FileObjectStore::with_uri_scheme_and_sync_policy(
                 root,
                 "matrixobjectstore-chunk",
                 sync_writes,
+                sync_parent_dirs,
             ),
             endpoint,
         }
@@ -646,23 +674,26 @@ impl FileObjectStore {
             root: root.into(),
             uri_scheme: "file".to_string(),
             sync_writes: true,
+            sync_parent_dirs: true,
             created_dirs: Arc::default(),
         }
     }
 
     pub fn with_uri_scheme(root: impl Into<PathBuf>, uri_scheme: impl Into<String>) -> Self {
-        Self::with_uri_scheme_and_sync_writes(root, uri_scheme, true)
+        Self::with_uri_scheme_and_sync_policy(root, uri_scheme, true, true)
     }
 
-    pub fn with_uri_scheme_and_sync_writes(
+    pub fn with_uri_scheme_and_sync_policy(
         root: impl Into<PathBuf>,
         uri_scheme: impl Into<String>,
         sync_writes: bool,
+        sync_parent_dirs: bool,
     ) -> Self {
         Self {
             root: root.into(),
             uri_scheme: uri_scheme.into(),
             sync_writes,
+            sync_parent_dirs,
             created_dirs: Arc::default(),
         }
     }
@@ -721,6 +752,9 @@ impl ObjectStore for FileObjectStore {
             };
             if !already_created {
                 tokio::fs::create_dir_all(parent).await?;
+                if self.sync_parent_dirs {
+                    sync_directory_chain(&self.root, parent).await?;
+                }
                 let mut created = self
                     .created_dirs
                     .lock()
@@ -738,7 +772,11 @@ impl ObjectStore for FileObjectStore {
         }
         drop(file);
         match tokio::fs::rename(&tmp_path, &path).await {
-            Ok(()) => {}
+            Ok(()) => {
+                if self.sync_parent_dirs {
+                    sync_parent_dir(&path).await?;
+                }
+            }
             Err(err) => {
                 let _ = tokio::fs::remove_file(&tmp_path).await;
                 return Err(ObjectStoreError::Io(err));
@@ -781,8 +819,13 @@ impl ObjectStore for FileObjectStore {
 
     async fn delete(&self, key: &str) -> Result<(), ObjectStoreError> {
         let path = self.resolve(key)?;
-        match tokio::fs::remove_file(path).await {
-            Ok(()) => Ok(()),
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => {
+                if self.sync_parent_dirs {
+                    sync_parent_dir(&path).await?;
+                }
+                Ok(())
+            }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(err) => Err(ObjectStoreError::Io(err)),
         }
@@ -1181,6 +1224,10 @@ fn default_matrixobjectstore_sync_writes() -> bool {
     env_bool("TS_MATRIXOBJECTSTORE_SYNC_WRITES", true)
 }
 
+fn default_matrixobjectstore_sync_parent_dirs() -> bool {
+    env_bool("TS_MATRIXOBJECTSTORE_SYNC_PARENT_DIRS", true)
+}
+
 fn env_bool(name: &str, default: bool) -> bool {
     std::env::var(name)
         .ok()
@@ -1191,6 +1238,39 @@ fn env_bool(name: &str, default: bool) -> bool {
             )
         })
         .unwrap_or(default)
+}
+
+async fn sync_parent_dir(path: &Path) -> Result<(), ObjectStoreError> {
+    if let Some(parent) = path.parent() {
+        sync_dir(parent).await?;
+    }
+    Ok(())
+}
+
+async fn sync_directory_chain(root: &Path, dir: &Path) -> Result<(), ObjectStoreError> {
+    let mut current = root.to_path_buf();
+    sync_dir(&current).await?;
+    if let Ok(relative) = dir.strip_prefix(root) {
+        for component in relative.components() {
+            current.push(component);
+            sync_dir(&current).await?;
+        }
+    } else {
+        sync_dir(dir).await?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn sync_dir(path: &Path) -> Result<(), ObjectStoreError> {
+    let dir = tokio::fs::File::open(path).await?;
+    dir.sync_all().await?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn sync_dir(_path: &Path) -> Result<(), ObjectStoreError> {
+    Ok(())
 }
 
 #[async_trait]
@@ -1630,13 +1710,19 @@ mod tests {
     #[tokio::test]
     async fn matrix_object_store_threads_sync_write_policy_to_split_services() {
         let dir = tempfile::tempdir().unwrap();
-        let config = MatrixObjectStoreConfig::local_compat(dir.path()).with_sync_writes(false);
+        let config = MatrixObjectStoreConfig::local_compat(dir.path())
+            .with_sync_writes(false)
+            .with_sync_parent_dirs(false);
         let store = MatrixObjectStore::from_config(config);
 
         assert!(!store.config().sync_writes);
+        assert!(!store.config().sync_parent_dirs);
         assert!(!store.root_service.manifest_store.sync_writes);
+        assert!(!store.root_service.manifest_store.sync_parent_dirs);
         assert!(!store.block_service.block_store.sync_writes);
+        assert!(!store.block_service.block_store.sync_parent_dirs);
         assert!(!store.chunk_service.chunk_store.sync_writes);
+        assert!(!store.chunk_service.chunk_store.sync_parent_dirs);
 
         store
             .put_atomic(
