@@ -631,7 +631,7 @@ where
             flush_latencies.push(elapsed);
         }
         let replay = replicator
-            .replay_oplog(shard_id, last_replayed, &follower)
+            .replay_oplog_until(shard_id, last_replayed, last_written, &follower)
             .await
             .expect("shared-store follower replay should succeed");
         last_replayed = replay.last_oplog_index;
@@ -658,7 +658,7 @@ where
         flush_latencies.push(elapsed);
     }
     let replay = replicator
-        .replay_oplog(shard_id, last_replayed, &follower)
+        .replay_oplog_until(shard_id, last_replayed, last_written, &follower)
         .await
         .expect("final shared-store replay should succeed");
     last_replayed = replay.last_oplog_index;
