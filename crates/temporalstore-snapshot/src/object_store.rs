@@ -859,9 +859,15 @@ impl ObjectStore for MatrixObjectStore {
         key: &str,
         bytes: Bytes,
     ) -> Result<ObjectMetadata, ObjectStoreError> {
-        let previous_manifest = self.root_service.get_manifest(key).await.ok();
+        let root_service = self.root_service.clone();
+        let previous_key = key.to_string();
+        let previous_manifest_task =
+            tokio::spawn(async move { root_service.get_manifest(&previous_key).await.ok() });
         let checksum_sha256 = sha256_hex(&bytes);
         let blocks = self.write_chunks(key, bytes.clone()).await?;
+        let previous_manifest = previous_manifest_task
+            .await
+            .map_err(|err| ObjectStoreError::Io(std::io::Error::other(err)))?;
         let live_chunk_keys: HashSet<String> =
             blocks.iter().map(|block| block.chunk_key.clone()).collect();
         let live_block_ids: HashSet<String> =
@@ -1079,6 +1085,62 @@ mod tests {
             store.list("raw/").await.unwrap(),
             vec!["raw/event-1".to_string()]
         );
+    }
+
+    #[tokio::test]
+    async fn matrix_object_store_overwrite_removes_stale_chunked_refs() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = MatrixObjectStoreConfig::local_compat(dir.path())
+            .with_chunk_target_bytes(5)
+            .with_transfer_concurrency(2);
+        let store = MatrixObjectStore::from_config(config);
+
+        store
+            .put_atomic(
+                "large/object",
+                Bytes::from_static(b"abcdefghijklmnopqrstuvwxyz"),
+            )
+            .await
+            .unwrap();
+        let old_manifest = store
+            .root_service
+            .get_manifest("large/object")
+            .await
+            .unwrap();
+        store
+            .put_atomic("large/object", Bytes::from_static(b"1234567890"))
+            .await
+            .unwrap();
+        let new_manifest = store
+            .root_service
+            .get_manifest("large/object")
+            .await
+            .unwrap();
+        let new_chunk_keys: std::collections::HashSet<_> = new_manifest
+            .blocks
+            .iter()
+            .map(|block| block.chunk_key.as_str())
+            .collect();
+        let new_block_ids: std::collections::HashSet<_> = new_manifest
+            .blocks
+            .iter()
+            .map(|block| block.block_id.as_str())
+            .collect();
+
+        for block in old_manifest.blocks {
+            if !new_chunk_keys.contains(block.chunk_key.as_str()) {
+                assert!(matches!(
+                    store.chunk_service.get_chunk(&block.chunk_key).await,
+                    Err(ObjectStoreError::NotFound(_))
+                ));
+            }
+            if !new_block_ids.contains(block.block_id.as_str()) {
+                assert!(matches!(
+                    store.block_service.get_block_ref(&block.block_id).await,
+                    Err(ObjectStoreError::NotFound(_))
+                ));
+            }
+        }
     }
 
     #[tokio::test]
