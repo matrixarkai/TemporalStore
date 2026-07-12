@@ -438,7 +438,7 @@ impl TemporalEngine {
                 start_routing_slot,
                 end_routing_slot,
                 shard,
-                command,
+                command.clone(),
             )
         };
         if outcome.mutated {
@@ -6367,7 +6367,7 @@ impl TemporalEngine {
                     start_routing_slot,
                     end_routing_slot,
                     shard,
-                    command,
+                    command.clone(),
                 )
             };
             if outcome.mutated {

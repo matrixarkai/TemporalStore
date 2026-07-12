@@ -1936,8 +1936,7 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/StringSetConditional")
-            | ("POST", "/StringSetConditional") => {
+            ("POST", "/ProxyService/StringSetConditional") | ("POST", "/StringSetConditional") => {
                 match parse_json::<ProxySetConditionalCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = Command::StringSetConditional {
@@ -3462,10 +3461,9 @@ impl ProxyService {
         }
         self.invalidate_cached_routes_if_meta_changed();
         let response = match self.table_for_request_ref(&request.namespace, &request.table_name) {
-            Ok(table) => table.execute(command).unwrap_or_else(|err| execute_error(
-                "server_error",
-                err.to_string(),
-            )),
+            Ok(table) => table
+                .execute(command)
+                .unwrap_or_else(|err| execute_error("server_error", err.to_string())),
             Err(err) => execute_error("server_error", err.to_string()),
         };
         self.sync_client_stats_throttled();
@@ -3533,9 +3531,11 @@ impl ProxyService {
             });
         }
         let expected_len = commands.len();
-        let (mut status, responses) = match self
-            .execute_risk_query_batch(&request.namespace, &request.table_name, commands)
-        {
+        let (mut status, responses) = match self.execute_risk_query_batch(
+            &request.namespace,
+            &request.table_name,
+            commands,
+        ) {
             Ok(result) => result,
             Err(status) => {
                 return serde_json::json!({
@@ -3579,9 +3579,11 @@ impl ProxyService {
             });
         }
         let expected_len = commands.len();
-        let (mut status, responses) = match self
-            .execute_risk_query_batch(&request.namespace, &request.table_name, commands)
-        {
+        let (mut status, responses) = match self.execute_risk_query_batch(
+            &request.namespace,
+            &request.table_name,
+            commands,
+        ) {
             Ok(result) => result,
             Err(status) => {
                 return serde_json::json!({
@@ -3639,12 +3641,15 @@ impl ProxyService {
         let table = self
             .table_for_request_ref(namespace, table_name)
             .map_err(|err| Status::error("server_error", err.to_string()))?;
-        let batch_response = table.batch_execute(commands).unwrap_or_else(|err| BatchExecuteResponse {
-            status: Status::error("server_error", err.to_string()),
-            responses: Vec::new(),
-        });
+        let batch_response =
+            table
+                .batch_execute(commands)
+                .unwrap_or_else(|err| BatchExecuteResponse {
+                    status: Status::error("server_error", err.to_string()),
+                    responses: Vec::new(),
+                });
         let mut status = Status::ok();
-        let responses = if batch_response.status.ok() {
+        let responses = if batch_response.status.ok {
             let mut list = batch_response.responses;
             if list.len() < expected_len {
                 let missing = expected_len - list.len();
@@ -4300,10 +4305,10 @@ impl ProxyService {
                 report: Some(report),
             },
             Err(err) => {
-                    self.inner
-                        .stats
-                        .metaserver_errors
-                        .fetch_add(1, Ordering::Relaxed);
+                self.inner
+                    .stats
+                    .metaserver_errors
+                    .fetch_add(1, Ordering::Relaxed);
                 ProxyTopologyRefreshResponse {
                     status: Status::error("refresh_failed", err.to_string()),
                     report: None,
@@ -4514,10 +4519,10 @@ impl ProxyService {
         )
         .map_err(|err| {
             if count_error {
-                    self.inner
-                        .stats
-                        .metaserver_errors
-                        .fetch_add(1, Ordering::Relaxed);
+                self.inner
+                    .stats
+                    .metaserver_errors
+                    .fetch_add(1, Ordering::Relaxed);
             }
             Status::error("metaserver_error", err.to_string())
         })
@@ -4549,10 +4554,7 @@ impl ProxyService {
     fn sync_client_stats_inner(&self, min_interval_ms: u64) {
         if min_interval_ms > 0 {
             let now = now_ms();
-            let due = self
-                .inner
-                .client_stats_sync_due_ms
-                .load(Ordering::Acquire);
+            let due = self.inner.client_stats_sync_due_ms.load(Ordering::Acquire);
             if now < due {
                 return;
             }
@@ -4656,10 +4658,7 @@ impl ProxyService {
             .read()
             .expect("proxy options lock poisoned");
         let refresh_interval_ms = options.route_cache_ttl_ms.max(50);
-        let mut due = self
-            .inner
-            .route_invalidation_due_ms
-            .load(Ordering::Relaxed);
+        let mut due = self.inner.route_invalidation_due_ms.load(Ordering::Relaxed);
         loop {
             if now < due {
                 return;
@@ -4748,9 +4747,9 @@ fn feature_points_response_json_with_fields(
     fields: &[String],
 ) -> serde_json::Value {
     let point_list = match &response.response {
-        CommandResponse::FeaturePoints { points } => {
-            Some(feature_point_list_json(&project_feature_points(points, fields)))
-        }
+        CommandResponse::FeaturePoints { points } => Some(feature_point_list_json(
+            &project_feature_points(points, fields),
+        )),
         _ => None,
     };
     let mut value = execute_response_json(response);

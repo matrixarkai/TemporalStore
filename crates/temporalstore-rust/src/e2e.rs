@@ -150,7 +150,7 @@ impl AsyncStorageJournal {
         let mut inner = self.inner.lock().expect("async storage lock poisoned");
         let mut queued = mem::take(&mut inner.queued);
         let flushed = queued.len();
-        inner.flushed.append(&mut queued);
+        inner.flushed.extend(queued.drain(..));
         flushed
     }
 

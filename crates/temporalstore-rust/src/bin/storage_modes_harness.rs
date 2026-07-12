@@ -9,7 +9,7 @@ use temporalstore_rust::{
     ReplayReport, SharedStoreFlushReport, SharedStoreReplicator, SharedStoreStorageMode,
     SharedStoreWriteReport, TemporalEngine,
 };
-use temporalstore_snapshot::object_store::FileObjectStore;
+use temporalstore_snapshot::object_store::{FileObjectStore, MatrixObjectStore, ObjectStore};
 
 #[derive(Debug, Clone)]
 struct HarnessOptions {
@@ -17,11 +17,39 @@ struct HarnessOptions {
     shared_store_root: Option<PathBuf>,
     raft_wal_root: Option<PathBuf>,
     async_flush_limit: usize,
+    shared_store_backend: SharedStoreBackend,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SharedStoreBackend {
+    LocalFs,
+    MatrixObjectStore,
+}
+
+impl SharedStoreBackend {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "local_fs" | "file" | "file_object_store" => Some(Self::LocalFs),
+            "matrixobjectstore" | "matrix_object_store" | "matrixobjectstore_local_compat" => {
+                Some(Self::MatrixObjectStore)
+            }
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::LocalFs => "local_fs",
+            Self::MatrixObjectStore => "matrixobjectstore_local_compat",
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
 struct StorageModesSummary {
     root: String,
+    shared_store_backend: String,
+    shared_store_uri_scheme: String,
     shared_store_sync: SharedStoreModeSummary,
     shared_store_async: SharedStoreModeSummary,
     raft_local_file: RaftLocalFileSummary,
@@ -88,7 +116,31 @@ async fn main() {
         .clone()
         .unwrap_or_else(|| options.root.join("shared-store"));
     fs::create_dir_all(&shared_store_root).expect("failed to create shared-store root");
-    let store = Arc::new(FileObjectStore::new(shared_store_root));
+    let summary = match options.shared_store_backend {
+        SharedStoreBackend::LocalFs => {
+            let store = Arc::new(FileObjectStore::new(shared_store_root));
+            run_storage_modes(options, store, "file").await
+        }
+        SharedStoreBackend::MatrixObjectStore => {
+            let store = Arc::new(MatrixObjectStore::new(shared_store_root));
+            run_storage_modes(options, store, "matrixobjectstore").await
+        }
+    };
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&summary).expect("summary should serialize")
+    );
+}
+
+async fn run_storage_modes<O>(
+    options: HarnessOptions,
+    store: Arc<O>,
+    shared_store_uri_scheme: &str,
+) -> StorageModesSummary
+where
+    O: ObjectStore + 'static,
+{
     let replicator = SharedStoreReplicator::new("storage-modes-harness", store);
 
     let sync = run_shared_store_mode(
@@ -121,24 +173,25 @@ async fn main() {
     .await;
     let raft_local_file = run_raft_local_file(raft_wal_root);
 
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&StorageModesSummary {
-            root: options.root.display().to_string(),
-            shared_store_sync: sync,
-            shared_store_async: async_mode,
-            raft_local_file,
-            dynamic_event_replication,
-        })
-        .expect("summary should serialize")
-    );
+    StorageModesSummary {
+        root: options.root.display().to_string(),
+        shared_store_backend: options.shared_store_backend.as_str().to_string(),
+        shared_store_uri_scheme: shared_store_uri_scheme.to_string(),
+        shared_store_sync: sync,
+        shared_store_async: async_mode,
+        raft_local_file,
+        dynamic_event_replication,
+    }
 }
 
-async fn run_dynamic_event_replication(
-    replicator: &SharedStoreReplicator<FileObjectStore>,
+async fn run_dynamic_event_replication<O>(
+    replicator: &SharedStoreReplicator<O>,
     raft_wal_dir: PathBuf,
     flush_limit: usize,
-) -> DynamicEventReplicationSummary {
+) -> DynamicEventReplicationSummary
+where
+    O: ObjectStore + 'static,
+{
     let mut events = Vec::new();
     let sync_writer = replicator.storage_writer(SharedStoreStorageMode::Sync, 1);
     let sync_write = sync_writer
@@ -227,11 +280,14 @@ async fn run_dynamic_event_replication(
     }
 }
 
-async fn replay_dynamic_shared_store(
-    replicator: &SharedStoreReplicator<FileObjectStore>,
+async fn replay_dynamic_shared_store<O>(
+    replicator: &SharedStoreReplicator<O>,
     shard_id: u64,
     key: &str,
-) -> Option<String> {
+) -> Option<String>
+where
+    O: ObjectStore + 'static,
+{
     let follower = TemporalEngine::with_local_dirs(
         1024,
         unique_child("dynamic-storage-mode-cache"),
@@ -259,14 +315,17 @@ async fn replay_dynamic_shared_store(
     }
 }
 
-async fn run_shared_store_mode(
-    replicator: &SharedStoreReplicator<FileObjectStore>,
+async fn run_shared_store_mode<O>(
+    replicator: &SharedStoreReplicator<O>,
     mode: SharedStoreStorageMode,
     shard_id: u64,
     key: &str,
     value: &str,
     flush_limit: usize,
-) -> SharedStoreModeSummary {
+) -> SharedStoreModeSummary
+where
+    O: ObjectStore + 'static,
+{
     let writer = replicator.storage_writer(mode, 1);
     let mut writes = Vec::new();
     let first = writer
@@ -412,6 +471,7 @@ fn parse_options() -> HarnessOptions {
     let mut shared_store_root = None;
     let mut raft_wal_root = None;
     let mut async_flush_limit = 1usize;
+    let mut shared_store_backend = SharedStoreBackend::LocalFs;
     let mut args = std::env::args().skip(1);
     while let Some(key) = args.next() {
         let Some(value) = args.next() else {
@@ -422,6 +482,12 @@ fn parse_options() -> HarnessOptions {
             "--shared-store-root" => shared_store_root = Some(PathBuf::from(value)),
             "--raft-wal-root" => raft_wal_root = Some(PathBuf::from(value)),
             "--async-flush-limit" => async_flush_limit = parse(&value, &key),
+            "--shared-store-backend" => {
+                shared_store_backend = SharedStoreBackend::parse(&value).unwrap_or_else(|| {
+                    eprintln!("invalid value for {key}: {value}");
+                    usage_and_exit();
+                })
+            }
             _ => usage_and_exit(),
         }
     }
@@ -430,6 +496,7 @@ fn parse_options() -> HarnessOptions {
         shared_store_root,
         raft_wal_root,
         async_flush_limit,
+        shared_store_backend,
     }
 }
 
@@ -442,7 +509,7 @@ fn parse<T: std::str::FromStr>(value: &str, key: &str) -> T {
 
 fn usage_and_exit() -> ! {
     eprintln!(
-        "usage: storage_modes_harness [--root <path>] [--shared-store-root <path>] [--raft-wal-root <path>] [--async-flush-limit <n>]"
+        "usage: storage_modes_harness [--root <path>] [--shared-store-root <path>] [--raft-wal-root <path>] [--async-flush-limit <n>] [--shared-store-backend local_fs|matrixobjectstore_local_compat]"
     );
     std::process::exit(2);
 }

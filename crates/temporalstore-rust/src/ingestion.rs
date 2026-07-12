@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
-use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -472,7 +472,11 @@ impl TemporalEngine {
                     status: response.status,
                     response: response.response,
                 });
-                if !response.status.ok {
+                if !results
+                    .last()
+                    .map(|result| result.status.ok)
+                    .unwrap_or(false)
+                {
                     break;
                 }
             }
@@ -497,7 +501,8 @@ impl TemporalEngine {
                 .dead_letter_total
                 .saturating_add(dead_letters.len() as u64);
             state.dead_letters.extend(dead_letters.clone());
-            state.stats.max_kafka_lag = compute_max_kafka_lag(&state, &request.kafka_high_watermarks);
+            state.stats.max_kafka_lag =
+                compute_max_kafka_lag(&state, &request.kafka_high_watermarks);
             let state_persist_status = persist_ingestion_state(&self.ingestion_dir(), &state);
             return IngestionBatchReport {
                 status,
@@ -537,13 +542,20 @@ impl TemporalEngine {
                     shard_id: record.shard_id,
                     status: status.clone(),
                 });
-                per_record[index] = Some((index, record.source, record.shard_id, status, CommandResponse::Empty));
+                per_record[index] = Some((
+                    index,
+                    record.source,
+                    record.shard_id,
+                    status,
+                    CommandResponse::Empty,
+                ));
                 continue;
             }
-            grouped
-                .entry(record.shard_id)
-                .or_default()
-                .push((index, record.source, record.command));
+            grouped.entry(record.shard_id).or_default().push((
+                index,
+                record.source,
+                record.command,
+            ));
         }
 
         type BatchRecordOutcome = (usize, IngestionSource, ShardId, ExecuteResponse);
@@ -561,10 +573,7 @@ impl TemporalEngine {
                     commands.push(command);
                 }
                 scope.spawn(move || {
-                    let response = self.batch_execute(BatchExecuteRequest {
-                        shard_id,
-                        commands,
-                    });
+                    let response = self.batch_execute(BatchExecuteRequest { shard_id, commands });
                     let batch_results = if response.responses.len() != request_metadata.len() {
                         let status = Status::error(
                             "bad_response",
@@ -588,9 +597,7 @@ impl TemporalEngine {
                         request_metadata
                             .into_iter()
                             .zip(response.responses)
-                            .map(|((index, source), response)| {
-                                (index, source, shard_id, response)
-                            })
+                            .map(|((index, source), response)| (index, source, shard_id, response))
                             .collect()
                     };
                     let _ = tx.send(batch_results);
@@ -601,7 +608,8 @@ impl TemporalEngine {
 
         for batch_results in rx {
             for (index, source, shard_id, response) in batch_results {
-                per_record[index] = Some((index, source, shard_id, response.status, response.response));
+                per_record[index] =
+                    Some((index, source, shard_id, response.status, response.response));
             }
         }
 
