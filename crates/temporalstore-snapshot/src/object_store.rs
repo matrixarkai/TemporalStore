@@ -161,6 +161,15 @@ pub trait ObjectStore: Send + Sync {
     async fn put_unique(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
         self.put(key, bytes).await
     }
+    async fn put_path_unique(
+        &self,
+        key: &str,
+        path: &Path,
+    ) -> Result<ObjectMetadata, ObjectStoreError> {
+        let bytes = Bytes::from(tokio::fs::read(path).await?);
+        self.put_unique(key, bytes).await?;
+        self.head(key).await
+    }
     async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError>;
     async fn get_to_path(
         &self,
@@ -1003,6 +1012,131 @@ impl MatrixObjectStore {
         Ok(blocks.into_iter().map(|(_, block)| block).collect())
     }
 
+    async fn write_chunks_from_path(
+        &self,
+        key: &str,
+        path: &Path,
+    ) -> Result<(Vec<MatrixObjectBlockRef>, String, u64), ObjectStoreError> {
+        let mut file = tokio::fs::File::open(path).await?;
+        let mut buffer = vec![0u8; self.chunk_target_bytes()];
+        let mut hasher = Sha256::new();
+        let mut blocks = Vec::new();
+        let mut join_set = JoinSet::new();
+        let mut offset = 0u64;
+        let mut index = 0usize;
+        loop {
+            let bytes_read = file.read(&mut buffer).await?;
+            if bytes_read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..bytes_read]);
+            let chunk = MatrixObjectChunkWrite {
+                index,
+                offset,
+                bytes: Bytes::copy_from_slice(&buffer[..bytes_read]),
+            };
+            self.spawn_chunk_write(key, chunk, &mut join_set);
+            index += 1;
+            offset += bytes_read as u64;
+            if join_set.len() >= self.transfer_concurrency() {
+                let result = Self::finish_chunk_write(&mut join_set).await;
+                match result {
+                    Ok(result) => blocks.push(result),
+                    Err(err) => {
+                        join_set.abort_all();
+                        let partial_blocks: Vec<_> =
+                            blocks.into_iter().map(|(_, block)| block).collect();
+                        let _ = self.delete_block_refs(partial_blocks).await;
+                        return Err(err);
+                    }
+                }
+            }
+        }
+        if index == 0 {
+            self.spawn_chunk_write(
+                key,
+                MatrixObjectChunkWrite {
+                    index: 0,
+                    offset: 0,
+                    bytes: Bytes::new(),
+                },
+                &mut join_set,
+            );
+        }
+        while !join_set.is_empty() {
+            let result = Self::finish_chunk_write(&mut join_set).await;
+            match result {
+                Ok(result) => blocks.push(result),
+                Err(err) => {
+                    join_set.abort_all();
+                    let partial_blocks: Vec<_> =
+                        blocks.into_iter().map(|(_, block)| block).collect();
+                    let _ = self.delete_block_refs(partial_blocks).await;
+                    return Err(err);
+                }
+            }
+        }
+        blocks.sort_by_key(|(index, _)| *index);
+        Ok((
+            blocks.into_iter().map(|(_, block)| block).collect(),
+            hex::encode(hasher.finalize()),
+            offset,
+        ))
+    }
+
+    fn spawn_chunk_write(
+        &self,
+        key: &str,
+        chunk: MatrixObjectChunkWrite,
+        join_set: &mut JoinSet<Result<(usize, MatrixObjectBlockRef), ObjectStoreError>>,
+    ) {
+        let chunk_service = self.chunk_service.clone();
+        let block_service = self.block_service.clone();
+        let publish_block_metadata = self.publish_block_metadata_on_write();
+        let object_key = key.trim_matches('/').to_string();
+        let object_key_fingerprint = object_key_fingerprint(&object_key);
+        join_set.spawn(async move {
+            let checksum_sha256 = sha256_hex(&chunk.bytes);
+            let block_id = format!(
+                "block-{}-{:020}-{}",
+                object_key_fingerprint, chunk.offset, checksum_sha256
+            );
+            let chunk_key = format!(
+                "{}/chunks/{:020}-{}",
+                object_key, chunk.offset, checksum_sha256
+            );
+            let chunk_metadata = chunk_service
+                .put_chunk(&chunk_key, chunk.bytes.clone())
+                .await?;
+            let block_ref = MatrixObjectBlockRef {
+                block_id,
+                chunk_key,
+                offset: chunk.offset,
+                length: chunk_metadata.size_bytes,
+                checksum_sha256: chunk_metadata.checksum_sha256,
+                block_metadata_published: publish_block_metadata,
+            };
+            if publish_block_metadata {
+                if let Err(err) = block_service.put_block_ref(&block_ref).await {
+                    let _ = chunk_service.delete_chunk(&block_ref.chunk_key).await;
+                    return Err(err);
+                }
+            }
+            Ok::<_, ObjectStoreError>((chunk.index, block_ref))
+        });
+    }
+
+    async fn finish_chunk_write(
+        join_set: &mut JoinSet<Result<(usize, MatrixObjectBlockRef), ObjectStoreError>>,
+    ) -> Result<(usize, MatrixObjectBlockRef), ObjectStoreError> {
+        join_set
+            .join_next()
+            .await
+            .expect("matrixobjectstore chunk write task missing")
+            .map_err(|err| ObjectStoreError::Io(std::io::Error::other(err)))
+            .and_then(|result| result)
+    }
+
     async fn read_chunks(
         &self,
         reads: Vec<MatrixObjectChunkRead>,
@@ -1100,6 +1234,14 @@ impl ObjectStore for MatrixObjectStore {
 
     async fn put_unique(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
         self.put_atomic_unique(key, bytes).await.map(|_| ())
+    }
+
+    async fn put_path_unique(
+        &self,
+        key: &str,
+        path: &Path,
+    ) -> Result<ObjectMetadata, ObjectStoreError> {
+        self.put_path_unique_inner(key, path).await
     }
 
     async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
@@ -1240,6 +1382,32 @@ impl MatrixObjectStore {
         bytes: Bytes,
     ) -> Result<ObjectMetadata, ObjectStoreError> {
         self.put_atomic_inner(key, bytes, false).await
+    }
+
+    async fn put_path_unique_inner(
+        &self,
+        key: &str,
+        path: &Path,
+    ) -> Result<ObjectMetadata, ObjectStoreError> {
+        let (blocks, checksum_sha256, size_bytes) = self.write_chunks_from_path(key, path).await?;
+        let manifest = MatrixObjectManifest {
+            key: key.to_string(),
+            uri: self.uri(key),
+            size_bytes,
+            checksum_sha256,
+            created_at_ms: now_ms(),
+            blocks,
+        };
+        if let Err(err) = self.root_service.put_manifest(&manifest).await {
+            let _ = self.delete_block_refs(manifest.blocks.clone()).await;
+            return Err(err);
+        }
+        Ok(ObjectMetadata {
+            key: manifest.key,
+            uri: manifest.uri,
+            size_bytes: manifest.size_bytes,
+            checksum_sha256: manifest.checksum_sha256,
+        })
     }
 
     async fn put_atomic_inner(
@@ -1441,6 +1609,19 @@ impl ObjectStore for SharedObjectStore {
         match self {
             Self::LocalFile(store) | Self::SharedFile(store) => store.put_unique(key, bytes).await,
             Self::MatrixObjectStore(store) => store.put_unique(key, bytes).await,
+        }
+    }
+
+    async fn put_path_unique(
+        &self,
+        key: &str,
+        path: &Path,
+    ) -> Result<ObjectMetadata, ObjectStoreError> {
+        match self {
+            Self::LocalFile(store) | Self::SharedFile(store) => {
+                store.put_path_unique(key, path).await
+            }
+            Self::MatrixObjectStore(store) => store.put_path_unique(key, path).await,
         }
     }
 
@@ -1701,6 +1882,39 @@ mod tests {
 
         assert_eq!(get_metadata, put_metadata);
         assert_eq!(tokio::fs::read(destination).await.unwrap(), payload);
+    }
+
+    #[tokio::test]
+    async fn matrix_object_store_uploads_file_as_chunked_object() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = MatrixObjectStoreConfig::local_compat(dir.path())
+            .with_chunk_target_bytes(5)
+            .with_transfer_concurrency(2);
+        let store = MatrixObjectStore::from_config(config);
+        let source = dir.path().join("source/large-object.bin");
+        tokio::fs::create_dir_all(source.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&source, b"abcdefghijklmnopqrstuvwxyz")
+            .await
+            .unwrap();
+
+        let metadata = store
+            .put_path_unique("large/object", &source)
+            .await
+            .unwrap();
+        let manifest = store
+            .root_service
+            .get_manifest("large/object")
+            .await
+            .unwrap();
+
+        assert_eq!(metadata.size_bytes, 26);
+        assert_eq!(manifest.blocks.len(), 6);
+        assert_eq!(
+            store.get("large/object").await.unwrap(),
+            Bytes::from_static(b"abcdefghijklmnopqrstuvwxyz")
+        );
     }
 
     #[tokio::test]
