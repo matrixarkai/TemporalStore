@@ -71,7 +71,7 @@ ObjectStore::get(key)
 -> RootService manifest supplies block refs
 -> ChunkService reads payload chunks with bounded concurrency
 -> chunk length and checksum verification
--> optional strict BlockService metadata verification
+-> optional strict BlockService metadata verification against the RootService manifest refs
 -> chunks are copied into one pre-sized output buffer by manifest offset
 -> bytes returned to TemporalStore
 ```
