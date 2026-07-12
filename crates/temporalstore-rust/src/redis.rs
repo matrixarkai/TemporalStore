@@ -37,6 +37,11 @@ pub fn execute_redis_command_with_state(
         return RespValue::Error("ERR empty command".to_string());
     }
     let command = upper(&args[0]);
+    if open_source_redis_surface_enabled() && !open_source_redis_command_allowed(&command) {
+        return RespValue::Error(format!(
+            "ERR command {command} is not part of the open-source Redis surface"
+        ));
+    }
     match command.as_str() {
         "AUTH" if args.len() == 2 => {
             let configured = state
@@ -1887,6 +1892,87 @@ pub fn execute_redis_command_with_state(
         }
         _ => RespValue::Error(format!("ERR unsupported command or arity: {command}")),
     }
+}
+
+fn open_source_redis_surface_enabled() -> bool {
+    std::env::var("TEMPORALSTORE_OPEN_SOURCE_SURFACE")
+        .or_else(|_| std::env::var("TS_OPEN_SOURCE_SURFACE"))
+        .map(|value| {
+            matches!(
+                value.as_str(),
+                "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn open_source_redis_command_allowed(command: &str) -> bool {
+    matches!(
+        command,
+        "AUTH"
+            | "PING"
+            | "ECHO"
+            | "SELECT"
+            | "COMMAND"
+            | "CONFIG"
+            | "INFO"
+            | "DBSIZE"
+            | "TYPE"
+            | "GET"
+            | "MGET"
+            | "GETDEL"
+            | "GETSET"
+            | "GETEX"
+            | "SET"
+            | "SETNX"
+            | "SETEX"
+            | "PSETEX"
+            | "MSET"
+            | "MSETNX"
+            | "EXISTS"
+            | "DEL"
+            | "UNLINK"
+            | "TOUCH"
+            | "EXPIRE"
+            | "PEXPIRE"
+            | "EXPIREAT"
+            | "PEXPIREAT"
+            | "EXPIRETIME"
+            | "PEXPIRETIME"
+            | "TTL"
+            | "PTTL"
+            | "PERSIST"
+            | "STRLEN"
+            | "GETRANGE"
+            | "SETRANGE"
+            | "APPEND"
+            | "INCR"
+            | "DECR"
+            | "INCRBY"
+            | "DECRBY"
+            | "HSET"
+            | "HSETNX"
+            | "HGET"
+            | "HMGET"
+            | "HMSET"
+            | "HDEL"
+            | "HEXISTS"
+            | "HLEN"
+            | "HGETALL"
+            | "HKEYS"
+            | "HVALS"
+            | "HSTRLEN"
+            | "HINCRBY"
+            | "HSCAN"
+            | "FADD"
+            | "FADDNX"
+            | "FQUERY"
+            | "FQUERYFILTER"
+            | "FQUERYRANGE"
+            | "FREPLACE"
+            | "FDEL"
+            | "FAGGQUERY"
+    )
 }
 
 fn risk_family_for_command(command: &str) -> RiskFamily {

@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""Validate the trimmed TemporalStore open-source surface.
+
+This intentionally checks source policy rather than doing a full release build:
+the goal is to catch accidental re-exposure of internal modules/models and
+non-basic Redis commands in the public build surface.
+"""
+
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+
+REPO = Path(__file__).resolve().parents[1]
+
+
+def read(rel: str) -> str:
+    return (REPO / rel).read_text(encoding="utf-8")
+
+
+def require(condition: bool, message: str, failures: list[str]) -> None:
+    if not condition:
+        failures.append(message)
+
+
+def cxx_guarded_symbol(text: str, symbol: str) -> bool:
+    pattern = re.compile(
+        r"#ifndef\s+BCACHE2_OPEN_SOURCE_SURFACE(?:(?!#endif).)*"
+        + re.escape(symbol)
+        + r"(?:(?!#endif).)*#endif",
+        re.DOTALL,
+    )
+    return bool(pattern.search(text))
+
+
+def rust_allowlist_body(text: str) -> str:
+    match = re.search(
+        r"fn open_source_redis_command_allowed\(command: &str\) -> bool \{(?P<body>.*?)\n\}",
+        text,
+        re.DOTALL,
+    )
+    if not match:
+        return ""
+    return match.group("body")
+
+
+def main() -> int:
+    failures: list[str] = []
+
+    root_cmake = read("CMakeLists.txt")
+    extension_cmake = read("src/extension/CMakeLists.txt")
+    set_cmake = read("src/extension/set/CMakeLists.txt")
+    model_cmake = read("src/model/CMakeLists.txt")
+    model_manager = read("src/model/model_manager.cc")
+    cxx_redis = read("src/server/redis_command_handler.cc")
+    rust_redis = read("crates/temporalstore-rust/src/redis.rs")
+
+    require(
+        "option(BCACHE2_OPEN_SOURCE_SURFACE" in root_cmake,
+        "root CMake must define BCACHE2_OPEN_SOURCE_SURFACE",
+        failures,
+    )
+    require(
+        "add_compile_definitions(BCACHE2_OPEN_SOURCE_SURFACE)" in root_cmake,
+        "root CMake must publish BCACHE2_OPEN_SOURCE_SURFACE to C++ code",
+        failures,
+    )
+
+    for module in ("ips", "risk", "temporal_aggregate"):
+        require(
+            re.search(
+                r"if\s*\(NOT BCACHE2_OPEN_SOURCE_SURFACE\)(?:(?!endif).)*"
+                + re.escape(f"add_subdirectory({module})"),
+                extension_cmake,
+                re.DOTALL,
+            )
+            is not None,
+            f"extension module {module} must be gated out of open-source builds",
+            failures,
+        )
+    require(
+        "add_subdirectory(set)" in extension_cmake,
+        "set protobuf compatibility helper must remain available for C++ Redis compilation",
+        failures,
+    )
+    require(
+        re.search(
+            r"if\s*\(NOT BCACHE2_OPEN_SOURCE_SURFACE\)(?:(?!endif).)*add_module\(set_module set_proto_lib\)",
+            set_cmake,
+            re.DOTALL,
+        )
+        is not None,
+        "set module registration must be gated out of open-source builds",
+        failures,
+    )
+
+    require(
+        'set(SRCS\n        flags.cc\n        model_context.cc\n        model_manager.cc)' in model_cmake,
+        "open-source model compile list must be trimmed to shared model sources",
+        failures,
+    )
+    for symbol in ("REGISTER_MODEL(TimeSeriesModel", "REGISTER_MODEL(IpsModel", "REGISTER_MODEL(RiskHashModel"):
+        require(
+            cxx_guarded_symbol(model_manager, symbol),
+            f"{symbol} must be disabled under BCACHE2_OPEN_SOURCE_SURFACE",
+            failures,
+        )
+    for symbol in ("REGISTER_MODEL(FeatureModel", "REGISTER_MODEL(HashModel", "REGISTER_MODEL(CPCModel"):
+        require(symbol in model_manager, f"{symbol} must remain available", failures)
+
+    require(
+        "IsOpenSourceRedisCommandAllowed" in cxx_redis,
+        "C++ Redis handler must reject non-basic commands in open-source builds",
+        failures,
+    )
+    for denied in ("kSAdd", "kLPush", "kZAdd", "kPartition", "kBgSave"):
+        require(
+            f"case RedisCommand::CmdType::{denied}" not in cxx_redis,
+            f"C++ open-source Redis allowlist must not include {denied}",
+            failures,
+        )
+
+    body = rust_allowlist_body(rust_redis)
+    require(body, "Rust Redis open-source allowlist must exist", failures)
+    for allowed in ("HSET", "HGET", "HGETALL", "GET", "SET", "FADD", "FQUERY"):
+        require(f'"{allowed}"' in body, f"Rust allowlist must keep {allowed}", failures)
+    for denied in ("SADD", "LPUSH", "ZADD", "IPSADD", "RISKINCR", "PARTITION"):
+        require(f'"{denied}"' not in body, f"Rust allowlist must not include {denied}", failures)
+
+    if failures:
+        print("open-source surface validation failed:")
+        for failure in failures:
+            print(f" - {failure}")
+        return 1
+
+    print("open-source surface validation passed")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
