@@ -793,9 +793,13 @@ impl MatrixObjectStore {
                 let chunk_service = self.chunk_service.clone();
                 let block_service = self.block_service.clone();
                 let object_key = key.trim_matches('/').to_string();
+                let object_key_fingerprint = object_key_fingerprint(&object_key);
                 join_set.spawn(async move {
                     let checksum_sha256 = sha256_hex(&chunk.bytes);
-                    let block_id = format!("block-{:020}-{}", chunk.offset, checksum_sha256);
+                    let block_id = format!(
+                        "block-{}-{:020}-{}",
+                        object_key_fingerprint, chunk.offset, checksum_sha256
+                    );
                     let chunk_key = format!(
                         "{}/chunks/{:020}-{}",
                         object_key, chunk.offset, checksum_sha256
@@ -1065,6 +1069,10 @@ fn manifest_key(key: &str) -> String {
 
 fn block_manifest_key(block_id: &str) -> String {
     format!("{block_id}.json")
+}
+
+fn object_key_fingerprint(object_key: &str) -> String {
+    sha256_hex(object_key.as_bytes()).chars().take(16).collect()
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -1453,6 +1461,26 @@ mod tests {
             store.get("large/object").await,
             Err(ObjectStoreError::NotFound(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn matrix_object_store_block_ids_are_object_scoped() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = MatrixObjectStoreConfig::local_compat(dir.path())
+            .with_chunk_target_bytes(5)
+            .with_transfer_concurrency(2)
+            .with_verify_block_metadata_on_read(true);
+        let store = MatrixObjectStore::from_config(config);
+        let payload = Bytes::from_static(b"same-payload-same-offsets");
+
+        store.put_atomic("object/a", payload.clone()).await.unwrap();
+        store.put_atomic("object/b", payload.clone()).await.unwrap();
+        let manifest_a = store.root_service.get_manifest("object/a").await.unwrap();
+        let manifest_b = store.root_service.get_manifest("object/b").await.unwrap();
+
+        assert_ne!(manifest_a.blocks[0].block_id, manifest_b.blocks[0].block_id);
+        store.delete("object/a").await.unwrap();
+        assert_eq!(store.get("object/b").await.unwrap(), payload);
     }
 
     #[tokio::test]
