@@ -590,12 +590,6 @@ struct MatrixObjectChunkWrite {
     bytes: Bytes,
 }
 
-#[derive(Debug, Clone)]
-struct MatrixObjectChunkRead {
-    index: usize,
-    block_ref: MatrixObjectBlockRef,
-}
-
 impl MatrixObjectStoreBlockService {
     pub fn new(
         root: impl Into<PathBuf>,
@@ -1204,49 +1198,6 @@ impl MatrixObjectStore {
             .and_then(|result| result)
     }
 
-    async fn read_chunks(
-        &self,
-        reads: Vec<MatrixObjectChunkRead>,
-    ) -> Result<Vec<(usize, Bytes)>, ObjectStoreError> {
-        let mut join_set = JoinSet::new();
-        let mut next_to_submit = 0;
-        let mut chunks = Vec::with_capacity(reads.len());
-        while next_to_submit < reads.len() || !join_set.is_empty() {
-            while next_to_submit < reads.len() && join_set.len() < self.transfer_concurrency() {
-                let read = reads[next_to_submit].clone();
-                let chunk_service = self.chunk_service.clone();
-                let block_service = self.block_service.clone();
-                let verify_block_metadata = self.verify_block_metadata_on_read();
-                join_set.spawn(async move {
-                    let block_ref = if verify_block_metadata {
-                        block_service
-                            .get_block_ref(&read.block_ref.block_id)
-                            .await?
-                    } else {
-                        read.block_ref
-                    };
-                    let chunk = chunk_service.get_chunk(&block_ref.chunk_key).await?;
-                    let checksum = sha256_hex(&chunk);
-                    if checksum != block_ref.checksum_sha256 {
-                        return Err(ObjectStoreError::Io(std::io::Error::other(format!(
-                            "chunk checksum mismatch for {}",
-                            block_ref.chunk_key
-                        ))));
-                    }
-                    Ok::<_, ObjectStoreError>((read.index, chunk))
-                });
-                next_to_submit += 1;
-            }
-            let result = join_set
-                .join_next()
-                .await
-                .expect("matrixobjectstore chunk read task missing")
-                .map_err(|err| ObjectStoreError::Io(std::io::Error::other(err)))??;
-            chunks.push(result);
-        }
-        Ok(chunks)
-    }
-
     async fn delete_block_refs(
         &self,
         blocks: Vec<MatrixObjectBlockRef>,
@@ -1313,17 +1264,54 @@ impl ObjectStore for MatrixObjectStore {
 
     async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
         let manifest = self.root_service.get_manifest(key).await?;
-        let mut reads = Vec::with_capacity(manifest.blocks.len());
-        for (index, block_ref) in manifest.blocks.iter().cloned().enumerate() {
-            reads.push(MatrixObjectChunkRead { index, block_ref });
+        let mut out = vec![0u8; manifest.size_bytes as usize];
+        let mut written_bytes = 0u64;
+        let mut join_set = JoinSet::new();
+        let mut next_to_submit = 0usize;
+        while next_to_submit < manifest.blocks.len() || !join_set.is_empty() {
+            while next_to_submit < manifest.blocks.len()
+                && join_set.len() < self.transfer_concurrency()
+            {
+                let block_ref = manifest.blocks[next_to_submit].clone();
+                let chunk_service = self.chunk_service.clone();
+                let block_service = self.block_service.clone();
+                let verify_block_metadata = self.verify_block_metadata_on_read();
+                join_set.spawn(async move {
+                    let block_ref = if verify_block_metadata {
+                        block_service.get_block_ref(&block_ref.block_id).await?
+                    } else {
+                        block_ref
+                    };
+                    let chunk = chunk_service.get_chunk(&block_ref.chunk_key).await?;
+                    let checksum = sha256_hex(&chunk);
+                    if checksum != block_ref.checksum_sha256 {
+                        return Err(ObjectStoreError::Io(std::io::Error::other(format!(
+                            "chunk checksum mismatch for {}",
+                            block_ref.chunk_key
+                        ))));
+                    }
+                    Ok::<_, ObjectStoreError>((block_ref.offset, chunk))
+                });
+                next_to_submit += 1;
+            }
+
+            let (offset, chunk) = join_set
+                .join_next()
+                .await
+                .expect("matrixobjectstore chunk read task missing")
+                .map_err(|err| ObjectStoreError::Io(std::io::Error::other(err)))??;
+            let offset = offset as usize;
+            let end = offset + chunk.len();
+            if end > out.len() {
+                return Err(ObjectStoreError::Io(std::io::Error::other(format!(
+                    "object chunk range mismatch for {key}: end {end}, size {}",
+                    out.len()
+                ))));
+            }
+            out[offset..end].copy_from_slice(&chunk);
+            written_bytes += chunk.len() as u64;
         }
-        let mut chunks = self.read_chunks(reads).await?;
-        let mut out = Vec::with_capacity(manifest.size_bytes as usize);
-        chunks.sort_by_key(|(index, _)| *index);
-        for (_, chunk) in chunks {
-            out.extend_from_slice(&chunk);
-        }
-        if out.len() as u64 != manifest.size_bytes || sha256_hex(&out) != manifest.checksum_sha256 {
+        if written_bytes != manifest.size_bytes || sha256_hex(&out) != manifest.checksum_sha256 {
             return Err(ObjectStoreError::Io(std::io::Error::other(format!(
                 "object checksum mismatch for {key}"
             ))));

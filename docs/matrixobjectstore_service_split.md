@@ -70,6 +70,7 @@ ObjectStore::get(key)
 -> ChunkService reads payload chunks with bounded concurrency
 -> chunk checksum verification
 -> optional strict BlockService metadata verification
+-> chunks are copied into one pre-sized output buffer by manifest offset
 -> bytes returned to TemporalStore
 ```
 
