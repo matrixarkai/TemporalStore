@@ -42,6 +42,8 @@ File-backed `ObjectStore::head` also streams checksum calculation from disk and 
 
 File-backed and MatrixObjectStore `get_to_path` restore into a sibling temp file, verify the downloaded bytes, and rename into the requested destination only after success. Durable mode syncs the temp file before publish and syncs the destination parent after rename; tuned async mode can disable those syncs through `TS_MATRIXOBJECTSTORE_SYNC_WRITES` and `TS_MATRIXOBJECTSTORE_SYNC_PARENT_DIRS`. A failed chunk read, checksum mismatch, or missing source leaves any previous destination file intact and removes the temp file best-effort.
 
+File-backed shared-store listings hide internal upload and restore temp siblings, so crash leftovers from atomic publish paths do not appear as live object keys or slow higher-level object scans.
+
 ## Runtime Flow
 
 Write path:
