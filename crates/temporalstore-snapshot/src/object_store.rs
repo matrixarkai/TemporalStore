@@ -15,6 +15,8 @@ pub enum ObjectStoreError {
     NotFound(String),
     #[error("invalid object key: {0}")]
     InvalidKey(String),
+    #[error("object-store backend {backend} is not linked for {uri}")]
+    UnsupportedBackend { backend: String, uri: String },
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -25,6 +27,116 @@ pub struct ObjectMetadata {
     pub uri: String,
     pub size_bytes: u64,
     pub checksum_sha256: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SharedObjectStoreBackend {
+    LocalFile,
+    SharedFile,
+    MatrixObjectStore,
+    S3,
+    CephS3,
+    CephRados,
+    Unknown,
+}
+
+impl SharedObjectStoreBackend {
+    pub fn parse(value: &str) -> Self {
+        let normalized = value.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "local_file" | "local_fs" | "file" | "file_object_store" => Self::LocalFile,
+            "shared_file" | "shared" | "shared-file" | "efs" | "nfs" => Self::SharedFile,
+            "matrixobjectstore"
+            | "matrix_object_store"
+            | "matrixobjectstore_local_compat"
+            | "blob"
+            | "local" => Self::MatrixObjectStore,
+            "s3" => Self::S3,
+            "ceph" | "ceph_s3" | "ceph+s3" => Self::CephS3,
+            "rados" | "ceph_rados" => Self::CephRados,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn from_uri(uri: &str) -> Self {
+        let Some((scheme, _)) = uri.split_once("://") else {
+            return Self::parse(uri);
+        };
+        Self::parse(scheme)
+    }
+
+    pub fn canonical_name(self) -> &'static str {
+        match self {
+            Self::LocalFile => "local_file",
+            Self::SharedFile => "shared_file",
+            Self::MatrixObjectStore => "matrixobjectstore",
+            Self::S3 => "s3",
+            Self::CephS3 => "ceph_s3",
+            Self::CephRados => "ceph_rados",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn uri_scheme(self) -> &'static str {
+        match self {
+            Self::LocalFile => "file",
+            Self::SharedFile => "shared-file",
+            Self::MatrixObjectStore => "matrixobjectstore",
+            Self::S3 => "s3",
+            Self::CephS3 => "ceph+s3",
+            Self::CephRados => "rados",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedObjectStoreConfig {
+    pub backend: SharedObjectStoreBackend,
+    pub uri: String,
+    pub root: PathBuf,
+    pub endpoint: Option<String>,
+}
+
+impl SharedObjectStoreConfig {
+    pub fn new(
+        backend: SharedObjectStoreBackend,
+        uri: impl Into<String>,
+        root: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            backend,
+            uri: uri.into(),
+            root: root.into(),
+            endpoint: None,
+        }
+    }
+
+    pub fn from_backend_and_root(
+        backend: SharedObjectStoreBackend,
+        root: impl Into<PathBuf>,
+    ) -> Self {
+        let root = root.into();
+        Self::new(backend, format!("{}://", backend.uri_scheme()), root)
+    }
+
+    pub fn from_uri(uri: impl Into<String>, root: impl Into<PathBuf>) -> Self {
+        let uri = uri.into();
+        Self::new(SharedObjectStoreBackend::from_uri(&uri), uri, root)
+    }
+
+    pub fn with_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.endpoint = Some(endpoint.into());
+        self
+    }
+
+    pub fn canonical_backend_name(&self) -> &'static str {
+        self.backend.canonical_name()
+    }
+
+    pub fn uri_scheme(&self) -> &'static str {
+        self.backend.uri_scheme()
+    }
 }
 
 impl ObjectMetadata {
@@ -113,6 +225,52 @@ impl MatrixObjectStoreConfig {
 pub struct MatrixObjectStore {
     config: MatrixObjectStoreConfig,
     local_compat: FileObjectStore,
+}
+
+#[derive(Debug, Clone)]
+pub enum SharedObjectStore {
+    LocalFile(FileObjectStore),
+    SharedFile(FileObjectStore),
+    MatrixObjectStore(MatrixObjectStore),
+}
+
+impl SharedObjectStore {
+    pub fn from_config(config: SharedObjectStoreConfig) -> Result<Self, ObjectStoreError> {
+        match config.backend {
+            SharedObjectStoreBackend::LocalFile => Ok(Self::LocalFile(FileObjectStore::new(
+                config.root.join("objects"),
+            ))),
+            SharedObjectStoreBackend::SharedFile => Ok(Self::SharedFile(
+                FileObjectStore::with_uri_scheme(config.root.join("objects"), "shared-file"),
+            )),
+            SharedObjectStoreBackend::MatrixObjectStore => Ok(Self::MatrixObjectStore(
+                MatrixObjectStore::from_config(MatrixObjectStoreConfig {
+                    root: config.root.join("objects"),
+                    uri_scheme: SharedObjectStoreBackend::MatrixObjectStore
+                        .uri_scheme()
+                        .to_string(),
+                    endpoint: config.endpoint,
+                    backend_mode: MatrixObjectStoreBackendMode::LocalCompat,
+                }),
+            )),
+            SharedObjectStoreBackend::S3
+            | SharedObjectStoreBackend::CephS3
+            | SharedObjectStoreBackend::CephRados
+            | SharedObjectStoreBackend::Unknown => Err(ObjectStoreError::UnsupportedBackend {
+                backend: config.canonical_backend_name().to_string(),
+                uri: config.uri,
+            }),
+        }
+    }
+
+    pub fn from_backend_root(
+        backend: SharedObjectStoreBackend,
+        root: impl Into<PathBuf>,
+    ) -> Result<Self, ObjectStoreError> {
+        Self::from_config(SharedObjectStoreConfig::from_backend_and_root(
+            backend, root,
+        ))
+    }
 }
 
 impl MatrixObjectStore {
@@ -282,6 +440,62 @@ impl ObjectStore for MatrixObjectStore {
     }
 }
 
+#[async_trait]
+impl ObjectStore for SharedObjectStore {
+    async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
+        match self {
+            Self::LocalFile(store) | Self::SharedFile(store) => store.put(key, bytes).await,
+            Self::MatrixObjectStore(store) => store.put(key, bytes).await,
+        }
+    }
+
+    async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
+        match self {
+            Self::LocalFile(store) | Self::SharedFile(store) => store.get(key).await,
+            Self::MatrixObjectStore(store) => store.get(key).await,
+        }
+    }
+
+    async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
+        match self {
+            Self::LocalFile(store) | Self::SharedFile(store) => store.list(prefix).await,
+            Self::MatrixObjectStore(store) => store.list(prefix).await,
+        }
+    }
+
+    async fn delete(&self, key: &str) -> Result<(), ObjectStoreError> {
+        match self {
+            Self::LocalFile(store) | Self::SharedFile(store) => store.delete(key).await,
+            Self::MatrixObjectStore(store) => store.delete(key).await,
+        }
+    }
+
+    fn uri(&self, key: &str) -> String {
+        match self {
+            Self::LocalFile(store) | Self::SharedFile(store) => store.uri(key),
+            Self::MatrixObjectStore(store) => store.uri(key),
+        }
+    }
+
+    async fn head(&self, key: &str) -> Result<ObjectMetadata, ObjectStoreError> {
+        match self {
+            Self::LocalFile(store) | Self::SharedFile(store) => store.head(key).await,
+            Self::MatrixObjectStore(store) => store.head(key).await,
+        }
+    }
+
+    async fn put_atomic(
+        &self,
+        key: &str,
+        bytes: Bytes,
+    ) -> Result<ObjectMetadata, ObjectStoreError> {
+        match self {
+            Self::LocalFile(store) | Self::SharedFile(store) => store.put_atomic(key, bytes).await,
+            Self::MatrixObjectStore(store) => store.put_atomic(key, bytes).await,
+        }
+    }
+}
+
 async fn collect_files(
     root: &Path,
     dir: &Path,
@@ -310,7 +524,8 @@ async fn collect_files(
 mod tests {
     use super::{
         FileObjectStore, MatrixObjectStore, MatrixObjectStoreBackendMode, MatrixObjectStoreConfig,
-        ObjectStore, ObjectStoreError,
+        ObjectStore, ObjectStoreError, SharedObjectStore, SharedObjectStoreBackend,
+        SharedObjectStoreConfig,
     };
     use bytes::Bytes;
 
@@ -399,5 +614,64 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ObjectStoreError::InvalidKey(_)));
+    }
+
+    #[tokio::test]
+    async fn shared_object_store_backend_contract_normalizes_aliases() {
+        assert_eq!(
+            SharedObjectStoreBackend::from_uri("matrixobjectstore://bucket/a"),
+            SharedObjectStoreBackend::MatrixObjectStore
+        );
+        assert_eq!(
+            SharedObjectStoreBackend::from_uri("s3://bucket/a"),
+            SharedObjectStoreBackend::S3
+        );
+        assert_eq!(
+            SharedObjectStoreBackend::parse("shared-file"),
+            SharedObjectStoreBackend::SharedFile
+        );
+        assert_eq!(
+            SharedObjectStoreBackend::parse("file_object_store").canonical_name(),
+            "local_file"
+        );
+        assert_eq!(SharedObjectStoreBackend::CephS3.uri_scheme(), "ceph+s3");
+    }
+
+    #[tokio::test]
+    async fn shared_object_store_factory_uses_one_public_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = SharedObjectStoreConfig::from_backend_and_root(
+            SharedObjectStoreBackend::MatrixObjectStore,
+            dir.path(),
+        );
+        assert_eq!(config.canonical_backend_name(), "matrixobjectstore");
+        assert_eq!(config.uri_scheme(), "matrixobjectstore");
+        let store = SharedObjectStore::from_config(config).unwrap();
+
+        let metadata = store
+            .put_atomic("shared/key", Bytes::from_static(b"shared payload"))
+            .await
+            .unwrap();
+
+        assert_eq!(metadata.uri, "matrixobjectstore://shared/key");
+        assert_eq!(
+            store.get("shared/key").await.unwrap(),
+            Bytes::from_static(b"shared payload")
+        );
+    }
+
+    #[tokio::test]
+    async fn shared_object_store_remote_backends_fail_closed_until_linked() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = SharedObjectStore::from_config(SharedObjectStoreConfig::from_uri(
+            "s3://bucket/prefix",
+            dir.path(),
+        ))
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            ObjectStoreError::UnsupportedBackend { backend, .. } if backend == "s3"
+        ));
     }
 }

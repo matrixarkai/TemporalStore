@@ -46,21 +46,41 @@ inline ObjectStoreBackend DetectObjectStoreBackend(const std::string& uri) {
 inline const char* ObjectStoreBackendName(ObjectStoreBackend backend) {
     switch (backend) {
     case ObjectStoreBackend::kMatrixObjectStore:
-        return "MatrixObjectStore";
+        return "matrixobjectstore";
     case ObjectStoreBackend::kS3:
-        return "S3";
+        return "s3";
     case ObjectStoreBackend::kCephS3:
-        return "CephS3";
+        return "ceph_s3";
     case ObjectStoreBackend::kCephRados:
-        return "CephRados";
+        return "ceph_rados";
     case ObjectStoreBackend::kSharedFile:
-        return "SharedFile";
+        return "shared_file";
     case ObjectStoreBackend::kLocalFile:
-        return "LocalFile";
+        return "local_file";
     case ObjectStoreBackend::kUnknown:
-        return "Unknown";
+        return "unknown";
     }
-    return "Unknown";
+    return "unknown";
+}
+
+inline const char* ObjectStoreBackendUriScheme(ObjectStoreBackend backend) {
+    switch (backend) {
+    case ObjectStoreBackend::kMatrixObjectStore:
+        return "matrixobjectstore";
+    case ObjectStoreBackend::kS3:
+        return "s3";
+    case ObjectStoreBackend::kCephS3:
+        return "ceph+s3";
+    case ObjectStoreBackend::kCephRados:
+        return "rados";
+    case ObjectStoreBackend::kSharedFile:
+        return "shared-file";
+    case ObjectStoreBackend::kLocalFile:
+        return "file";
+    case ObjectStoreBackend::kUnknown:
+        return "unknown";
+    }
+    return "unknown";
 }
 
 }  // namespace stream
