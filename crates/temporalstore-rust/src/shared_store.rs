@@ -175,6 +175,7 @@ pub struct SharedStoreReplicator<O> {
     cluster_id: String,
     object_store: Arc<O>,
     retry_policy: SharedStoreRetryPolicy,
+    transfer_concurrency: usize,
 }
 
 impl<O> Clone for SharedStoreReplicator<O> {
@@ -183,6 +184,7 @@ impl<O> Clone for SharedStoreReplicator<O> {
             cluster_id: self.cluster_id.clone(),
             object_store: Arc::clone(&self.object_store),
             retry_policy: self.retry_policy,
+            transfer_concurrency: self.transfer_concurrency,
         }
     }
 }
@@ -210,6 +212,7 @@ where
             cluster_id: cluster_id.into(),
             object_store,
             retry_policy: SharedStoreRetryPolicy::default(),
+            transfer_concurrency: default_transfer_concurrency(),
         }
     }
 
@@ -225,7 +228,13 @@ where
                 max_attempts: retry_policy.max_attempts.max(1),
                 backoff_ms: retry_policy.backoff_ms,
             },
+            transfer_concurrency: default_transfer_concurrency(),
         }
+    }
+
+    pub fn with_transfer_concurrency(mut self, transfer_concurrency: usize) -> Self {
+        self.transfer_concurrency = transfer_concurrency.max(1);
+        self
     }
 
     pub async fn publish_oplog_entry(
@@ -287,16 +296,14 @@ where
         shard_id: ShardId,
         block_store: &LocalBlockStore,
     ) -> Result<Vec<u64>, SharedStoreReplicationError> {
+        let mut objects = Vec::new();
         let mut published = Vec::new();
         for page_segment_id in block_store.segment_ids()? {
-            self.object_store
-                .put(
-                    &self.page_segment_key(shard_id, page_segment_id),
-                    Bytes::from(block_store.read_segment(page_segment_id)?),
-                )
-                .await?;
+            let key = self.page_segment_key(shard_id, page_segment_id);
+            objects.push((key, Bytes::from(block_store.read_segment(page_segment_id)?)));
             published.push(page_segment_id);
         }
+        self.put_objects_concurrent(objects).await?;
         Ok(published)
     }
 
@@ -316,19 +323,19 @@ where
             .await?;
 
         let mut page_segments = Vec::new();
+        let mut objects = Vec::new();
         for page_segment_id in block_store.segment_ids()? {
             let bytes = block_store.read_segment(page_segment_id)?;
             let key = format!("{prefix}page_segments/page_segment_{page_segment_id:020}.seg");
-            self.object_store
-                .put(&key, Bytes::from(bytes.clone()))
-                .await?;
             page_segments.push(SharedStorePageSegment {
                 page_segment_id,
-                key,
+                key: key.clone(),
                 byte_size: bytes.len() as u64,
                 sha256: sha256_hex(&bytes),
             });
+            objects.push((key, Bytes::from(bytes)));
         }
+        self.put_objects_concurrent(objects).await?;
 
         let manifest = SharedStoreCheckpointManifest {
             cluster_id: self.cluster_id.clone(),
@@ -360,16 +367,28 @@ where
         engine.install_index_bytes(shard_id, &index)?;
 
         let prefix = self.page_segment_prefix(shard_id);
+        let mut page_keys = self
+            .object_store
+            .list(&prefix)
+            .await?
+            .into_iter()
+            .filter_map(|key| {
+                parse_page_segment_id(&key).map(|page_segment_id| (page_segment_id, key))
+            })
+            .collect::<Vec<_>>();
+        page_keys.sort_by_key(|(page_segment_id, _)| *page_segment_id);
+        let page_segment_ids = page_keys
+            .iter()
+            .map(|(page_segment_id, _)| *page_segment_id)
+            .collect::<Vec<_>>();
+        let page_bytes = self
+            .get_objects_concurrent(page_keys.into_iter().map(|(_, key)| key).collect())
+            .await?;
         let mut restored = Vec::new();
-        for key in self.object_store.list(&prefix).await? {
-            let Some(page_segment_id) = parse_page_segment_id(&key) else {
-                continue;
-            };
-            let bytes = self.object_store.get(&key).await?;
+        for (page_segment_id, (_, bytes)) in page_segment_ids.into_iter().zip(page_bytes) {
             block_store.install_segment(page_segment_id, &bytes)?;
             restored.push(page_segment_id);
         }
-        restored.sort_unstable();
         Ok(restored)
     }
 
@@ -377,16 +396,16 @@ where
         &self,
         shard_id: ShardId,
     ) -> Result<Vec<SharedStoreCheckpointManifest>, SharedStoreReplicationError> {
-        let mut manifests = Vec::new();
-        for key in self
+        let manifest_keys = self
             .object_store
             .list(&self.checkpoints_prefix(shard_id))
             .await?
-        {
-            if !key.ends_with("/manifest.json") {
-                continue;
-            }
-            manifests.push(serde_json::from_slice(&self.object_store.get(&key).await?)?);
+            .into_iter()
+            .filter(|key| key.ends_with("/manifest.json"))
+            .collect::<Vec<_>>();
+        let mut manifests = Vec::new();
+        for (_, bytes) in self.get_objects_concurrent(manifest_keys).await? {
+            manifests.push(serde_json::from_slice(&bytes)?);
         }
         manifests.sort_by_key(|manifest: &SharedStoreCheckpointManifest| {
             (manifest.checkpoint_oplog_index, manifest.created_at_ms)
@@ -409,8 +428,12 @@ where
         )?;
         engine.install_index_bytes(manifest.shard_id, &index)?;
 
-        for segment in &manifest.page_segments {
-            let bytes = self.object_store.get(&segment.key).await?;
+        let mut segments = manifest.page_segments.clone();
+        segments.sort_by_key(|segment| segment.page_segment_id);
+        let segment_bytes = self
+            .get_objects_concurrent(segments.iter().map(|segment| segment.key.clone()).collect())
+            .await?;
+        for (segment, (_, bytes)) in segments.iter().zip(segment_bytes) {
             verify_checksum(&segment.key, &bytes, segment.byte_size, &segment.sha256)?;
             block_store.install_segment(segment.page_segment_id, &bytes)?;
         }
@@ -842,11 +865,134 @@ where
     async fn delete_prefix(&self, prefix: &str) -> Result<usize, SharedStoreReplicationError> {
         let keys = self.object_store.list(prefix).await?;
         let deleted = keys.len();
-        for key in keys {
-            self.object_store.delete(&key).await?;
-        }
+        self.delete_keys_concurrent(keys).await?;
         Ok(deleted)
     }
+
+    async fn put_objects_concurrent(
+        &self,
+        objects: Vec<(String, Bytes)>,
+    ) -> Result<(), SharedStoreReplicationError> {
+        if self.transfer_concurrency <= 1 {
+            for (key, bytes) in objects {
+                self.put_with_retry(&key, bytes).await?;
+            }
+            return Ok(());
+        }
+
+        let mut join_set = JoinSet::new();
+        let mut next_to_submit = 0usize;
+        while next_to_submit < objects.len() || !join_set.is_empty() {
+            while next_to_submit < objects.len() && join_set.len() < self.transfer_concurrency {
+                let (key, bytes) = objects[next_to_submit].clone();
+                let replicator = self.clone();
+                join_set.spawn(async move { replicator.put_with_retry(&key, bytes).await });
+                next_to_submit += 1;
+            }
+            let Some(joined) = join_set.join_next().await else {
+                continue;
+            };
+            joined.map_err(join_error)?.map_err(|err| {
+                join_set.abort_all();
+                err
+            })?;
+        }
+        Ok(())
+    }
+
+    async fn get_objects_concurrent(
+        &self,
+        keys: Vec<String>,
+    ) -> Result<Vec<(String, Bytes)>, SharedStoreReplicationError> {
+        if self.transfer_concurrency <= 1 {
+            let mut out = Vec::with_capacity(keys.len());
+            for key in keys {
+                let bytes = self.object_store.get(&key).await?;
+                out.push((key, bytes));
+            }
+            return Ok(out);
+        }
+
+        let mut join_set = JoinSet::new();
+        let mut next_to_submit = 0usize;
+        let mut out = Vec::with_capacity(keys.len());
+        while next_to_submit < keys.len() || !join_set.is_empty() {
+            while next_to_submit < keys.len() && join_set.len() < self.transfer_concurrency {
+                let key = keys[next_to_submit].clone();
+                let store = Arc::clone(&self.object_store);
+                let index = next_to_submit;
+                join_set.spawn(async move {
+                    let bytes = store.get(&key).await?;
+                    Ok::<_, SharedStoreReplicationError>((index, key, bytes))
+                });
+                next_to_submit += 1;
+            }
+            let Some(joined) = join_set.join_next().await else {
+                continue;
+            };
+            match joined.map_err(join_error)? {
+                Ok(item) => out.push(item),
+                Err(err) => {
+                    join_set.abort_all();
+                    return Err(err);
+                }
+            }
+        }
+        out.sort_by_key(|(index, _, _)| *index);
+        Ok(out
+            .into_iter()
+            .map(|(_, key, bytes)| (key, bytes))
+            .collect())
+    }
+
+    async fn delete_keys_concurrent(
+        &self,
+        keys: Vec<String>,
+    ) -> Result<(), SharedStoreReplicationError> {
+        if self.transfer_concurrency <= 1 {
+            for key in keys {
+                self.object_store.delete(&key).await?;
+            }
+            return Ok(());
+        }
+
+        let mut join_set = JoinSet::new();
+        let mut next_to_submit = 0usize;
+        while next_to_submit < keys.len() || !join_set.is_empty() {
+            while next_to_submit < keys.len() && join_set.len() < self.transfer_concurrency {
+                let key = keys[next_to_submit].clone();
+                let store = Arc::clone(&self.object_store);
+                join_set.spawn(async move { store.delete(&key).await.map_err(Into::into) });
+                next_to_submit += 1;
+            }
+            let Some(joined) = join_set.join_next().await else {
+                continue;
+            };
+            match joined.map_err(join_error)? {
+                Ok(()) => {}
+                Err(err) => {
+                    join_set.abort_all();
+                    return Err(err);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn default_transfer_concurrency() -> usize {
+    std::env::var("TS_SHARED_STORE_TRANSFER_CONCURRENCY")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(8)
+}
+
+fn join_error(err: tokio::task::JoinError) -> SharedStoreReplicationError {
+    SharedStoreReplicationError::Io(std::io::Error::new(
+        std::io::ErrorKind::Other,
+        format!("shared-store transfer task failed: {err}"),
+    ))
 }
 
 impl<O> SharedStoreStorageWriter<O>
