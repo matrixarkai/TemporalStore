@@ -4,7 +4,7 @@
 
 #include <byte/base/closure.h>
 #include <byte/include/assert.h>
-#include <bytestore/bytestore.h>
+#include <matrixobjectstore/matrixobjectstore.h>
 #include <common/logging.h>
 
 #include <memory>
@@ -22,7 +22,7 @@ namespace stream {
 
 class BlobImpl : public Blob {
  public:
-    BlobImpl(const std::string& uri, MetricsManager* metrics_manager, bytestore_blob* blob);
+    BlobImpl(const std::string& uri, MetricsManager* metrics_manager, matrixobjectstore_blob* blob);
     virtual ~BlobImpl();
 
     void Close() override;
@@ -42,19 +42,19 @@ class BlobImpl : public Blob {
         BlobMetrics* metrics = nullptr;
     };
 
-    static void IoCallback(ssize_t size, struct bytestore_message* message, void* args);
+    static void IoCallback(ssize_t size, struct matrixobjectstore_message* message, void* args);
 
     std::string uri_;
-    bytestore_blob* blob_ = nullptr;
+    matrixobjectstore_blob* blob_ = nullptr;
     BlobMetrics metrics_;
 
     DISALLOW_COPY_AND_ASSIGN(BlobImpl);
 };
 
-class ByteStoreImpl : public Store {
+class MatrixObjectStoreImpl : public Store {
  public:
-    ByteStoreImpl();
-    virtual ~ByteStoreImpl();
+    MatrixObjectStoreImpl();
+    virtual ~MatrixObjectStoreImpl();
 
     void SetCondition(Controller* ctrl, const std::string& uri, const ConditionData& data,
                       const SetConditionOptions& options) override;
@@ -77,9 +77,9 @@ class ByteStoreImpl : public Store {
                 const RenameOptions& options) override;
 
  private:
-    static void SetCondition(const Condition& condition, bytestore_blob_condition* blob_condition);
+    static void SetCondition(const Condition& condition, matrixobjectstore_blob_condition* blob_condition);
 
-    DISALLOW_COPY_AND_ASSIGN(ByteStoreImpl);
+    DISALLOW_COPY_AND_ASSIGN(MatrixObjectStoreImpl);
 };
 
 }  // namespace stream

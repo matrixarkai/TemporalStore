@@ -190,7 +190,7 @@ evidence, but they cannot satisfy production readiness by themselves:
 - Local/shared-store object manifest dependency matrix is now explicit in the readiness gate:
   local file objects, checkpoint manifests, oplog cursor retention, page segment manifests, and
   follower-cursor retention plus Raft snapshot manifest retention are covered for the
-  local-file/shared-store target. Live ByteStore/S3 object-store dependency wiring remains blocked
+  local-file/shared-store target. Live MatrixObjectStore/S3 object-store dependency wiring remains blocked
   until those backends are implemented and validated.
 - Local cache pressure coverage is now explicit in the readiness gate: memory read-through, disk
   block cache, admission/eviction counters, slot warmup, cache invalidation, SSD tiering policy,
@@ -211,7 +211,7 @@ evidence, but they cannot satisfy production readiness by themselves:
   manifests, shared-store replay cursors, Raft snapshot refs, checkpoint floors, Raft install
   floors, and delayed-destroy grace. WAL reclaim evidence covers durable slot-generation
   frontiers, follower cursors, and Raft snapshot retain floors before truncation.
-- ByteStore/S3 live backend integration tied to follower cursors and Raft snapshots.
+- MatrixObjectStore/S3 live backend integration tied to follower cursors and Raft snapshots.
 
 The local gate now writes one combined proof envelope:
 
@@ -316,6 +316,6 @@ The broader Docker/AWS deployment-scale SLO report is tracked separately by
 `scale_slo_report.storage_deployment_scale_slo_ready` and covers metaserver, proxy, client,
 data-node, Raft failover, storage pressure, cache pressure, proxy convergence, workload replay,
 p50/p95/p99, throughput, error budget, CPU/memory/disk/network collectors, replica lag, failover
-count, and scale events. Live external object-store evidence, including ByteStore/S3 follower-cursor
+count, and scale events. Live external object-store evidence, including MatrixObjectStore/S3 follower-cursor
 and Raft-snapshot manifest retention, is also scoped separately unless that backend is explicitly
 enabled for a release target.

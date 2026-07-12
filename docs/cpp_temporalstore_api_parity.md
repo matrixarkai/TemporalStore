@@ -308,7 +308,7 @@ Partially covered, but still materially smaller than C++:
   write-through accounting, bounded SSD capacity eviction, hotness metadata, warmup, pinning, and
   observability. It is still not blockcache/mtcache binary/API compatibility.
 - Shared-store replication exists for file/object-store checkpoint, page, index, and oplog flows.
-  There is still no production ByteStore stream backend parity.
+  There is still no production MatrixObjectStore stream backend parity.
 - Raft has local/distributed model coverage, HTTP transport contracts, WAL persistence, snapshots,
   external snapshot refs, membership safety models, and local harnesses. It is still not production
   RustRaft parity and still lacks real OpenRaft/raft-rs FSM/storage integration, actual mTLS

@@ -16,7 +16,7 @@ class SwigClientTest : public ::testing::Test {
     virtual ~SwigClientTest() {}
 
     void SetUp() override {
-        bytestore_init();
+        matrixobjectstore_init();
 
         MiniCluster::Options options;
         options.server_count = 1;
@@ -51,7 +51,7 @@ class SwigClientTest : public ::testing::Test {
 
     void TearDown() override {
         cluster_.Stop();
-        bytestore_shutdown();
+        matrixobjectstore_shutdown();
     }
 
  protected:

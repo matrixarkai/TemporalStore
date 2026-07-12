@@ -410,7 +410,7 @@ void StreamImpl::TryAppend(bool aggregate_flush) {
              stream_buffer_->Length() == inflight_offset_ || closed_ || staled_) ||
             (aggregate_flush &&  // loop flush periodically & size satisfied
              size < FLAGS_stream_aggregate_flush_batch_size_byte))) {
-        LOG_DEBUG("Append to bytestore: no need")
+        LOG_DEBUG("Append to matrixobjectstore: no need")
             .put("Uri", stream_base_->Uri())
             .put("StreamLength", stream_buffer_->Length())
             .put("InflightOffset", inflight_offset_)
@@ -423,7 +423,7 @@ void StreamImpl::TryAppend(bool aggregate_flush) {
     task->offset = inflight_offset_;
     task->data.resize(size);
     if (UNLIKELY(!stream_buffer_->CanReadFront(size))) {
-        LOG_WARNING("Append to bytestore skipped because front buffer is not readable")
+        LOG_WARNING("Append to matrixobjectstore skipped because front buffer is not readable")
             .put("Uri", stream_base_->Uri())
             .put("StreamLength", stream_buffer_->Length())
             .put("StreamStart", stream_buffer_->Start())
@@ -435,7 +435,7 @@ void StreamImpl::TryAppend(bool aggregate_flush) {
     }
     stream_buffer_->GetFrontData(&task->data[0], size);
 
-    LOG_DEBUG("Try append to bytestore")
+    LOG_DEBUG("Try append to matrixobjectstore")
         .put("Uri", stream_base_->Uri())
         .put("Offset", task->offset)
         .put("Size", task->data.size());
@@ -487,7 +487,7 @@ void StreamImpl::OnAppendDone(Task* task) {
     BYTE_ASSERT_DEBUG(!task->inplace);
     BYTE_ASSERT(task->offset == persistent_offset_);
     if (!task->ctrl.status().ok() && !closed_ && !staled_) {
-        LOG_ERROR("Append bytestore failed, need to switch new blob")
+        LOG_ERROR("Append matrixobjectstore failed, need to switch new blob")
             .put("Uri", stream_base_->Uri())
             .put("InflightOffset", inflight_offset_)
             .put("InflightBlobOffset", inflight_blob_offset_)
@@ -531,7 +531,7 @@ void StreamImpl::OnAppendDone(Task* task) {
         return;
     }
 
-    LOG_DEBUG("Append bytestore success")
+    LOG_DEBUG("Append matrixobjectstore success")
         .put("Uri", stream_base_->Uri())
         .put("InflightOffset", inflight_offset_)
         .put("InflightBlobOffset", inflight_blob_offset_)

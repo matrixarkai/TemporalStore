@@ -644,8 +644,8 @@ class SimplePartitionBench : public testing::Test {
 };
 
 TEST(SimplePartitionBench, Smoketest) {
-    bytestore_set_flag("bytestore_client_log_level", "1");
-    bytestore_init();
+    matrixobjectstore_set_flag("matrixobjectstore_client_log_level", "1");
+    matrixobjectstore_init();
 
     byte::AsyncThreadPoolOptions tp_options;
     tp_options.name_ = "test";
@@ -699,14 +699,14 @@ TEST(SimplePartitionBench, Smoketest) {
     bench.Stop();
     work_pool.Stop();
     background_pool.Stop();
-    bytestore_shutdown();
+    matrixobjectstore_shutdown();
 }
 
 TEST(SimplePartitionBench, PartitionLatency) {
     brpc::StartDummyServerAt(FLAGS_brpc_server_port);
 
-    bytestore_set_flag("bytestore_client_log_level", "1");
-    bytestore_init();
+    matrixobjectstore_set_flag("matrixobjectstore_client_log_level", "1");
+    matrixobjectstore_init();
 
     byte::AsyncThreadPoolOptions tp_options;
     tp_options.name_ = "test";
@@ -784,7 +784,7 @@ TEST(SimplePartitionBench, PartitionLatency) {
 
     work_pool.Stop();
     background_pool.Stop();
-    bytestore_shutdown();
+    matrixobjectstore_shutdown();
 }
 
 // allocator memory used check
@@ -810,8 +810,8 @@ TEST(WaterLevelPartitionBench, MemWaterLevelTest) {
     std::unique_ptr<byte::AsyncThreadPool> work_pool_;
     TempDir temp_dir_;
     std::string uri_;
-    bytestore_set_flag("bytestore_client_log_level", "1");
-    bytestore_init();
+    matrixobjectstore_set_flag("matrixobjectstore_client_log_level", "1");
+    matrixobjectstore_init();
     byte::AsyncThreadPoolOptions tp_options;
     tp_options.name_ = "test";
     background_pool_.reset(new byte::AsyncThreadPool());
@@ -908,8 +908,8 @@ TEST(SimplePartitionBench, StoreLayerFaultInject) {
 
     brpc::StartDummyServerAt(FLAGS_brpc_server_port);
 
-    bytestore_set_flag("bytestore_client_log_level", "1");
-    bytestore_init();
+    matrixobjectstore_set_flag("matrixobjectstore_client_log_level", "1");
+    matrixobjectstore_init();
 
     byte::AsyncThreadPoolOptions tp_options;
     tp_options.name_ = "test";
@@ -991,7 +991,7 @@ TEST(SimplePartitionBench, StoreLayerFaultInject) {
 
     work_pool.Stop();
     background_pool.Stop();
-    bytestore_shutdown();
+    matrixobjectstore_shutdown();
 }
 
 int64_t GetDirectorySize(const char* dir) {
@@ -1132,8 +1132,8 @@ TEST(WaterLevelPartitionBench, StorageWaterLevelTest) {
     std::cout << "WaterLevelPatitionBench.StorageWaterLevelTest will cost about 10 mins"
               << std::endl;
 
-    bytestore_set_flag("bytestore_client_log_level", "1");
-    bytestore_init();
+    matrixobjectstore_set_flag("matrixobjectstore_client_log_level", "1");
+    matrixobjectstore_init();
     byte::AsyncThreadPoolOptions tp_options;
     tp_options.name_ = "test";
     byte::AsyncThreadPool background_pool;
@@ -1217,7 +1217,7 @@ TEST(WaterLevelPartitionBench, StorageWaterLevelTest) {
     partition->Unload();
     work_pool.Stop();
     background_pool.Stop();
-    bytestore_shutdown();
+    matrixobjectstore_shutdown();
 }
 
 }  // namespace partition

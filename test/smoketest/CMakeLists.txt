@@ -11,7 +11,7 @@ target_link_libraries(smoketest
     partition
     recordstream
     bcache2_proto
-    bytestore
+    matrixobjectstore
     byte
     absl_base
     absl_int128
@@ -43,7 +43,7 @@ target_link_libraries(consistency_smoketest
     partition
     recordstream
     bcache2_proto
-    bytestore
+    matrixobjectstore
     byte
     absl_base
     absl_int128

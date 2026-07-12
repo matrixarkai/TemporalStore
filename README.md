@@ -23,7 +23,7 @@ must be backed by readiness reports, shared corpus runs, or harness evidence.
 - Explicitly out of scope unless separately re-added:
   - brpc/thrift wire compatibility in Rust
   - byte-for-byte C++ page/log layout compatibility
-  - live ByteStore/S3 production integration
+  - live MatrixObjectStore/S3 production integration
 
 Production-readiness claims should be made from passing readiness reports, not
 from this README alone. See:

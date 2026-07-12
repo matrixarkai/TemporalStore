@@ -8008,7 +8008,7 @@
             "uri": "blob://pool/stream/"
           },
           "expect": {
-            "backend": "bytestore",
+            "backend": "matrixobjectstore",
             "kind": "object_store_backend"
           },
           "name": "detect_object_store_backend_0"
@@ -8019,7 +8019,7 @@
             "uri": "local://pool/stream/"
           },
           "expect": {
-            "backend": "bytestore",
+            "backend": "matrixobjectstore",
             "kind": "object_store_backend"
           },
           "name": "detect_object_store_backend_1"

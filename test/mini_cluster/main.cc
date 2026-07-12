@@ -14,7 +14,7 @@ DEFINE_uint32(partition_set_num, 1, "partition set num");
 DEFINE_uint32(partition_num, 2, "partition num");
 DEFINE_string(table_namespace, "test", "table namespace");
 DEFINE_string(table_name, "table1", "table name");
-DEFINE_string(cluster_uri, "", "bytestore uri");
+DEFINE_string(cluster_uri, "", "matrixobjectstore uri");
 
 namespace bcache2 {
 
@@ -32,7 +32,7 @@ int Main(int argc, char** argv) {
     FLAGS_blockcache_ssd_capacity = 134217728;   // 128 MB
 
     gflags::ParseCommandLineFlags(&argc, &argv, true);
-    bytestore_init();
+    matrixobjectstore_init();
 
     MiniCluster::Options options;
     options.server_count = FLAGS_server_count;

@@ -8,7 +8,7 @@ add_library(recordstream ${HDRS} ${SRCS})
 target_link_libraries(recordstream
     common
     bcache2_proto
-    bytestore
+    matrixobjectstore
     byte
     gflags
     fiu)

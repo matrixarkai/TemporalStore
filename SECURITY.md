@@ -31,6 +31,6 @@ Common environment variables used by tests and local runs include
 ## Security Boundaries
 
 Rust TemporalStore currently treats brpc/thrift compatibility and live
-ByteStore/S3 production integration as out of scope unless explicitly re-added.
+MatrixObjectStore/S3 production integration as out of scope unless explicitly re-added.
 Security review for those integrations is required before claiming production
 readiness.

@@ -110,7 +110,7 @@ class PartitionReplicatorTest : public testing::Test {
     void SetUp() {
         FLAGS_storage_oplog_delay_dump_length = 0;
 
-        bytestore_init();
+        matrixobjectstore_init();
         partition_id_ = butil::fast_rand();
 
         StartServer(&master_, RandomPort());
@@ -121,7 +121,7 @@ class PartitionReplicatorTest : public testing::Test {
     }
 
     void TearDown() {
-        bytestore_shutdown();
+        matrixobjectstore_shutdown();
         master_.Stop();
         slave_.Stop();
         sleep(1);

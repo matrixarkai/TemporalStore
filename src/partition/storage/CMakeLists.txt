@@ -9,7 +9,7 @@ target_link_libraries(partition_storage
     bcache2_proto
     common
     blockcache
-    bytestore
+    matrixobjectstore
     byte
     byteraft
     /usr/lib/x86_64-linux-gnu/libabsl_time_zone.so

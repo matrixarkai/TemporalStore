@@ -46,8 +46,8 @@ std::string random_string(size_t length) {
 class StreamTest : public testing::Test {
  public:
     void SetUp() override {
-        bytestore_set_flag("bytestore_client_log_level", "1");
-        bytestore_init();
+        matrixobjectstore_set_flag("matrixobjectstore_client_log_level", "1");
+        matrixobjectstore_init();
 
         metrics_manager_.reset(new MetricsManager({}, ""));
 
@@ -77,7 +77,7 @@ class StreamTest : public testing::Test {
         Close(stream_.get());
         Close(stream_reader_.get());
 
-        bytestore_shutdown();
+        matrixobjectstore_shutdown();
     }
 
  protected:

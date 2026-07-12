@@ -8,7 +8,7 @@
 #include <random>
 #include <string>
 
-#include "bytestore/bytestore.h"
+#include "matrixobjectstore/matrixobjectstore.h"
 #include "client/client.h"
 #include "client/client_impl.h"
 #include "common/logging.h"
@@ -216,7 +216,7 @@ class BaseConsistencyTest : public ::testing::Test {
         FLAGS_blockcache_dram_capacity = 134217728;  // 128 MB
         FLAGS_blockcache_ssd_capacity = 134217728;   // 128 MB
 
-        bytestore_init();
+        matrixobjectstore_init();
 
         if (FLAGS_setup_server) {
             // init bcache2 mini cluster
@@ -249,7 +249,7 @@ class BaseConsistencyTest : public ::testing::Test {
 
     void TearDown() override {
         cluster_.Stop();
-        bytestore_shutdown();
+        matrixobjectstore_shutdown();
     }
 
  protected:

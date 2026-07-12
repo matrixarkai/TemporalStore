@@ -2,7 +2,7 @@
 
 ## Source
 
-- Source PDF: `C:/Users/Deeproute/Downloads/BYTESTORE.pdf`
+- Source PDF: `C:/Users/Deeproute/Downloads/MATRIXOBJECTSTORE.pdf`
 - PDF metadata: 26 pages, image-based, produced by jsPDF 2.3.1, no embedded text layer.
 - Extraction method: rendered pages with Poppler and OCR with `tesseract -l chi_sim+eng`.
 - Product naming: this repository uses `MatrixObjectStore` for the Rust-native object-store path. Historical or external source names in the PDF are treated as design ancestry, not the public name for new code, docs, or APIs.

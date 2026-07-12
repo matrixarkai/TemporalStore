@@ -18,7 +18,7 @@ class BCache2Test : public ::testing::Test {
     virtual ~BCache2Test() {}
 
     void SetUp() override {
-        bytestore_init();
+        matrixobjectstore_init();
 
         bcache2::MiniCluster::Options options;
         options.work_dir = temp_dir_.GetDir();
@@ -36,7 +36,7 @@ class BCache2Test : public ::testing::Test {
 
     void TearDown() override {
         cluster_.Stop();
-        bytestore_shutdown();
+        matrixobjectstore_shutdown();
     }
 
  protected:

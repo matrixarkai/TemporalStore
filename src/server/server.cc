@@ -11,7 +11,7 @@
 #include "butil/endpoint.h"
 #include "butil/file_util.h"
 #include "byte/base/closure.h"
-#include "bytestore/bytestore.h"
+#include "matrixobjectstore/matrixobjectstore.h"
 #include "gflags/gflags.h"
 #include "json2pb/json_to_pb.h"
 #include "json2pb/pb_to_json.h"
@@ -146,7 +146,7 @@ Status Server::Start() {
                                                   blockcache_.get()));
 
     // Init Logger
-    bytestore_set_flag("bytestore_log_dir", options_.log_dir.c_str());
+    matrixobjectstore_set_flag("matrixobjectstore_log_dir", options_.log_dir.c_str());
 
     byte::SetByteLogDir(options_.log_dir);
     byte::SetByteLogFilePrefix(std::to_string(options_.port) + "_");

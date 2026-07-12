@@ -81,7 +81,7 @@ pub struct StorageCacheDependencyMatrixReport {
     pub external_object_store_evidence_scoped_separately: bool,
     pub broad_deployment_evidence_scoped_separately: bool,
     pub rust_native_storage_format_ready: bool,
-    pub bytestore_live_backend_ready: bool,
+    pub matrixobjectstore_live_backend_ready: bool,
     pub s3_live_backend_ready: bool,
     pub local_shared_store_ready: bool,
     pub production_ready: bool,
@@ -929,7 +929,7 @@ pub fn storage_cache_dependency_matrix_report() -> StorageCacheDependencyMatrixR
     let external_object_store_evidence_scoped_separately = true;
     let broad_deployment_evidence_scoped_separately = true;
     let rust_native_storage_format_ready = true;
-    let bytestore_live_backend_ready = false;
+    let matrixobjectstore_live_backend_ready = false;
     let s3_live_backend_ready = false;
     let local_shared_store_ready = local_shared_store_production_ready;
     let production_ready = local_shared_store_production_ready
@@ -958,7 +958,7 @@ pub fn storage_cache_dependency_matrix_report() -> StorageCacheDependencyMatrixR
         external_object_store_evidence_scoped_separately,
         broad_deployment_evidence_scoped_separately,
         rust_native_storage_format_ready,
-        bytestore_live_backend_ready,
+        matrixobjectstore_live_backend_ready,
         s3_live_backend_ready,
         local_shared_store_ready,
         production_ready,
@@ -1590,7 +1590,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "local/shared-store object manifest dependency matrix covers local file objects, checkpoint manifests, oplog cursor retention, page segment manifests, follower-cursor retention, and Raft snapshot manifest retention"
                     .to_string(),
-                "storage cache dependency matrix keeps live external ByteStore/S3 object-store integration explicitly out of scope while local/shared-store is the production target"
+                "storage cache dependency matrix keeps live external MatrixObjectStore/S3 object-store integration explicitly out of scope while local/shared-store is the production target"
                     .to_string(),
                 "storage cache readiness is strong for Rust-native local/shared-store paths; broad Docker/AWS deployment evidence and live external object-store evidence are scoped as separate readiness gates"
                     .to_string(),
@@ -1883,7 +1883,7 @@ fn evidence_field_for(area: &str, capability: &str) -> &'static str {
             "storage_cplusplus_corpus_report.external_corpus_publication_ready"
         }
         "storage_cache"
-            if capability.contains("object-store") || capability.contains("ByteStore/S3") =>
+            if capability.contains("object-store") || capability.contains("MatrixObjectStore/S3") =>
         {
             "storage_object_store_dependency_matrix.live_backend_dependency_matrix_ready"
         }
@@ -2102,7 +2102,7 @@ mod tests {
         assert!(matrix.external_object_store_evidence_scoped_separately);
         assert!(matrix.broad_deployment_evidence_scoped_separately);
         assert!(matrix.rust_native_storage_format_ready);
-        assert!(!matrix.bytestore_live_backend_ready);
+        assert!(!matrix.matrixobjectstore_live_backend_ready);
         assert!(!matrix.s3_live_backend_ready);
         assert!(matrix.production_ready);
         assert!(matrix.missing.is_empty());
@@ -2118,7 +2118,7 @@ mod tests {
             .iter()
             .any(|item| item.contains("local/shared-store object manifest dependency matrix")));
         assert!(storage_cache.covered.iter().any(|item| item.contains(
-            "live external ByteStore/S3 object-store integration explicitly out of scope"
+            "live external MatrixObjectStore/S3 object-store integration explicitly out of scope"
         )));
         assert!(storage_cache.covered.iter().any(|item| item.contains(
             "broad Docker/AWS deployment evidence and live external object-store evidence are scoped as separate readiness gates"
@@ -2532,7 +2532,7 @@ mod tests {
             .iter()
             .any(|item| item.contains("admission tuning")));
         assert!(storage_cache.covered.iter().any(|item| item.contains(
-            "live external ByteStore/S3 object-store integration explicitly out of scope"
+            "live external MatrixObjectStore/S3 object-store integration explicitly out of scope"
         )));
         assert!(storage_cache.ready);
         for missing in &report.missing {

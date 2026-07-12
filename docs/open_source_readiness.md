@@ -39,7 +39,7 @@ Current Rust compatibility positioning:
 - Rust public surfaces are Rust APIs, HTTP/JSON, RESP, tonic/gRPC, Codex MCP,
   and harness contracts.
 - brpc/thrift compatibility remains explicitly out of scope for Rust.
-- live ByteStore/S3 production integration remains explicitly out of scope until
+- live MatrixObjectStore/S3 production integration remains explicitly out of scope until
   re-scoped and security-reviewed.
 
 ## Validation

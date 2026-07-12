@@ -182,7 +182,7 @@ Findings:
 - The local scale harness is the right validation for current Rust alpha behavior:
   multi-node routing, failover cadence, string/hash/sequence writes, and optional
   shared-store comparison.
-- It does not prove production C++ parity for legacy C++ wire, real ByteStore, OpenRaft or
+- It does not prove production C++ parity for legacy C++ wire, real MatrixObjectStore, OpenRaft or
   raft-rs FSM/storage, AWS multi-node chaos, or crash recovery under disk faults.
 
 Filled:

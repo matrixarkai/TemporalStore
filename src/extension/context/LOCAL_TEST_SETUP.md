@@ -104,7 +104,7 @@ Use the local dependency cache rather than downloading or editing third-party so
 cd <workspace>/Codex/2026-06-07/what-s-the-topology-for-all/temporalstore-service-fix
 
 env \
-  BYTESTORE_COMPAT_INCLUDE_DIR="<workspace>/Codex/2026-06-06/set-up-wsl-with-ubuntu-2022/work/cmake-glue/compat-include" \
+  MATRIXOBJECTSTORE_COMPAT_INCLUDE_DIR="<workspace>/Codex/2026-06-06/set-up-wsl-with-ubuntu-2022/work/cmake-glue/compat-include" \
   BRPC_STATIC_LIBRARY="<repo>-main-no-deps/build-ubuntu22/release/_open_source_brpc/output/lib/libbrpc.a" \
   EXTRA_CMAKE_ARGS="-DTEMPORALSTORE_USE_ROOT_CMAKE_GLUE=ON" \
   BUILD_TARGETS=context_module \
@@ -117,7 +117,7 @@ To generate and run the context mini-cluster test target, enable tests:
 
 ```bash
 env \
-  BYTESTORE_COMPAT_INCLUDE_DIR="<workspace>/Codex/2026-06-06/set-up-wsl-with-ubuntu-2022/work/cmake-glue/compat-include" \
+  MATRIXOBJECTSTORE_COMPAT_INCLUDE_DIR="<workspace>/Codex/2026-06-06/set-up-wsl-with-ubuntu-2022/work/cmake-glue/compat-include" \
   BRPC_STATIC_LIBRARY="<repo>-main-no-deps/build-ubuntu22/release/_open_source_brpc/output/lib/libbrpc.a" \
   EXTRA_CMAKE_ARGS="-DTEMPORALSTORE_USE_ROOT_CMAKE_GLUE=ON" \
   BCACHE2_BUILD_TESTS=ON \

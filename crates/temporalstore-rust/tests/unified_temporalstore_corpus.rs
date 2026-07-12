@@ -717,7 +717,7 @@ fn assert_static_expectation(case: &UnifiedCase, step: &UnifiedStep) {
                 || uri.starts_with("s3://")
                 || uri.starts_with("ceph://")
                 || uri.starts_with("ceph+s3://")
-                || uri.starts_with("bytestore://");
+                || uri.starts_with("matrixobjectstore://");
             let expected = step
                 .expect
                 .as_ref()
@@ -731,10 +731,10 @@ fn assert_static_expectation(case: &UnifiedCase, step: &UnifiedStep) {
         }
         "object_store_backend_detect" => {
             let uri = json_string(&step.command, "uri");
-            let backend = if uri.starts_with("blob://") || uri.starts_with("bytestore://") {
-                "bytestore"
+            let backend = if uri.starts_with("blob://") || uri.starts_with("matrixobjectstore://") {
+                "matrixobjectstore"
             } else if uri.starts_with("local://") {
-                "bytestore"
+                "matrixobjectstore"
             } else if uri.starts_with("ceph+s3://") || uri.starts_with("ceph://") {
                 "ceph_s3"
             } else if uri.starts_with("rados://") {
