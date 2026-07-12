@@ -810,16 +810,30 @@ impl MatrixObjectStore {
                         length: chunk_metadata.size_bytes,
                         checksum_sha256: chunk_metadata.checksum_sha256,
                     };
-                    block_service.put_block_ref(&block_ref).await?;
+                    if let Err(err) = block_service.put_block_ref(&block_ref).await {
+                        let _ = chunk_service.delete_chunk(&block_ref.chunk_key).await;
+                        return Err(err);
+                    }
                     Ok::<_, ObjectStoreError>((chunk.index, block_ref))
                 });
                 next_to_submit += 1;
             }
-            let result = join_set
+            let result = match join_set
                 .join_next()
                 .await
                 .expect("matrixobjectstore chunk write task missing")
-                .map_err(|err| ObjectStoreError::Io(std::io::Error::other(err)))??;
+                .map_err(|err| ObjectStoreError::Io(std::io::Error::other(err)))
+                .and_then(|result| result)
+            {
+                Ok(result) => result,
+                Err(err) => {
+                    join_set.abort_all();
+                    let partial_blocks: Vec<_> =
+                        blocks.into_iter().map(|(_, block)| block).collect();
+                    let _ = self.delete_block_refs(partial_blocks).await;
+                    return Err(err);
+                }
+            };
             blocks.push(result);
         }
         blocks.sort_by_key(|(index, _)| *index);
@@ -1020,7 +1034,10 @@ impl MatrixObjectStore {
             created_at_ms: now_ms(),
             blocks,
         };
-        self.root_service.put_manifest(&manifest).await?;
+        if let Err(err) = self.root_service.put_manifest(&manifest).await {
+            let _ = self.delete_block_refs(manifest.blocks.clone()).await;
+            return Err(err);
+        }
         if let Some(previous_manifest) = previous_manifest {
             self.delete_stale_block_refs_best_effort(
                 previous_manifest.blocks,

@@ -42,6 +42,8 @@ ObjectStore::put_atomic(key, bytes)
 -> ObjectMetadata is returned to TemporalStore
 ```
 
+If a chunk write, block metadata write, or final manifest publish fails, MatrixObjectStore now aborts remaining write tasks where possible and deletes already-published new chunk/block refs with bounded best-effort cleanup. That keeps retry storms and partial object-store failures from accumulating orphan shared-store objects.
+
 Read path:
 
 ```text
