@@ -1220,6 +1220,40 @@ impl MatrixObjectStore {
         });
     }
 
+    fn spawn_chunk_read(
+        &self,
+        block_ref: MatrixObjectBlockRef,
+        join_set: &mut JoinSet<Result<(u64, Bytes), ObjectStoreError>>,
+    ) {
+        let chunk_service = self.chunk_service.clone();
+        let block_service = self.block_service.clone();
+        let verify_block_metadata = self.verify_block_metadata_on_read();
+        join_set.spawn(async move {
+            let block_ref = if verify_block_metadata {
+                block_service.get_block_ref(&block_ref.block_id).await?
+            } else {
+                block_ref
+            };
+            let chunk = chunk_service.get_chunk(&block_ref.chunk_key).await?;
+            if chunk.len() as u64 != block_ref.length {
+                return Err(ObjectStoreError::Io(std::io::Error::other(format!(
+                    "chunk length mismatch for {}: expected {}, got {}",
+                    block_ref.chunk_key,
+                    block_ref.length,
+                    chunk.len()
+                ))));
+            }
+            let checksum = sha256_hex(&chunk);
+            if checksum != block_ref.checksum_sha256 {
+                return Err(ObjectStoreError::Io(std::io::Error::other(format!(
+                    "chunk checksum mismatch for {}",
+                    block_ref.chunk_key
+                ))));
+            }
+            Ok::<_, ObjectStoreError>((block_ref.offset, chunk))
+        });
+    }
+
     async fn finish_chunk_write(
         join_set: &mut JoinSet<Result<(usize, MatrixObjectBlockRef), ObjectStoreError>>,
     ) -> Result<(usize, MatrixObjectBlockRef), ObjectStoreError> {
@@ -1307,25 +1341,7 @@ impl ObjectStore for MatrixObjectStore {
                 && join_set.len() < self.transfer_concurrency()
             {
                 let block_ref = manifest.blocks[next_to_submit].clone();
-                let chunk_service = self.chunk_service.clone();
-                let block_service = self.block_service.clone();
-                let verify_block_metadata = self.verify_block_metadata_on_read();
-                join_set.spawn(async move {
-                    let block_ref = if verify_block_metadata {
-                        block_service.get_block_ref(&block_ref.block_id).await?
-                    } else {
-                        block_ref
-                    };
-                    let chunk = chunk_service.get_chunk(&block_ref.chunk_key).await?;
-                    let checksum = sha256_hex(&chunk);
-                    if checksum != block_ref.checksum_sha256 {
-                        return Err(ObjectStoreError::Io(std::io::Error::other(format!(
-                            "chunk checksum mismatch for {}",
-                            block_ref.chunk_key
-                        ))));
-                    }
-                    Ok::<_, ObjectStoreError>((block_ref.offset, chunk))
-                });
+                self.spawn_chunk_read(block_ref, &mut join_set);
                 next_to_submit += 1;
             }
 
@@ -1376,25 +1392,7 @@ impl ObjectStore for MatrixObjectStore {
                     && join_set.len() < self.transfer_concurrency()
                 {
                     let block_ref = manifest.blocks[next_to_submit].clone();
-                    let chunk_service = self.chunk_service.clone();
-                    let block_service = self.block_service.clone();
-                    let verify_block_metadata = self.verify_block_metadata_on_read();
-                    join_set.spawn(async move {
-                        let block_ref = if verify_block_metadata {
-                            block_service.get_block_ref(&block_ref.block_id).await?
-                        } else {
-                            block_ref
-                        };
-                        let chunk = chunk_service.get_chunk(&block_ref.chunk_key).await?;
-                        let checksum = sha256_hex(&chunk);
-                        if checksum != block_ref.checksum_sha256 {
-                            return Err(ObjectStoreError::Io(std::io::Error::other(format!(
-                                "chunk checksum mismatch for {}",
-                                block_ref.chunk_key
-                            ))));
-                        }
-                        Ok::<_, ObjectStoreError>((block_ref.offset, chunk))
-                    });
+                    self.spawn_chunk_read(block_ref, &mut join_set);
                     next_to_submit += 1;
                 }
 
@@ -2040,6 +2038,7 @@ mod tests {
         tokio::fs::write(&destination, b"previous-good-restore")
             .await
             .unwrap();
+        assert!(store.get("large/object").await.is_err());
         assert!(store
             .get_to_path("large/object", &destination)
             .await
