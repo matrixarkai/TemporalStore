@@ -52,6 +52,7 @@ Write path:
 ObjectStore::put_atomic(key, bytes)
 -> RootService previous-manifest lookup runs in parallel with new chunk writes
 -> object key, object fingerprint, and block-metadata policy are computed once per object
+-> in-memory payload chunk descriptors are scheduled incrementally, not pre-materialized
 -> ChunkService writes one or more payload chunks atomically, with bounded concurrency
 -> BlockService writes block metadata for each chunk
 -> RootService writes object manifest
