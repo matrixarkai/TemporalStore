@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use thiserror::Error;
 use tokio::io::AsyncWriteExt;
+use tokio::task::JoinSet;
 
 use crate::metrics::SnapshotMetrics;
 use crate::object_store::{ObjectStore, ObjectStoreError};
@@ -267,7 +268,7 @@ where
         let started = Instant::now();
         let stable_prefix = snapshot.manifest.stable_prefix();
         let result =
-            upload_snapshot_inner(self.object_store.as_ref(), &snapshot, &stable_prefix).await;
+            upload_snapshot_inner(Arc::clone(&self.object_store), &snapshot, &stable_prefix).await;
 
         match result {
             Ok(snapshot_ref) => {
@@ -368,38 +369,35 @@ where
     }
 }
 
-async fn upload_snapshot_inner<O: ObjectStore>(
-    object_store: &O,
+async fn upload_snapshot_inner<O: ObjectStore + 'static>(
+    object_store: Arc<O>,
     snapshot: &LocalSnapshot,
     stable_prefix: &str,
 ) -> Result<SnapshotRef, SnapshotStoreError> {
-    put_file_unique(
-        object_store,
-        &format!("{stable_prefix}{INDEX}"),
-        &snapshot.index_path,
-    )
-    .await?;
-    put_file_unique(
-        object_store,
-        &format!("{stable_prefix}{CHECKSUMS}"),
-        &snapshot.checksums_path,
-    )
-    .await?;
+    let mut upload_files = vec![
+        SnapshotUploadFile {
+            key: format!("{stable_prefix}{INDEX}"),
+            path: snapshot.index_path.clone(),
+        },
+        SnapshotUploadFile {
+            key: format!("{stable_prefix}{CHECKSUMS}"),
+            path: snapshot.checksums_path.clone(),
+        },
+    ];
     for page_segment in &snapshot.page_segments {
         let name = page_segment.file_name().unwrap().to_string_lossy();
-        put_file_unique(
-            object_store,
-            &format!("{stable_prefix}page_segments/{name}"),
-            page_segment,
-        )
-        .await?;
+        upload_files.push(SnapshotUploadFile {
+            key: format!("{stable_prefix}page_segments/{name}"),
+            path: page_segment.clone(),
+        });
     }
+    put_files_unique_concurrent(Arc::clone(&object_store), upload_files).await?;
 
     let manifest_bytes = Bytes::from(serde_json::to_vec_pretty(&snapshot.manifest)?);
     object_store
         .put_unique(&format!("{stable_prefix}{MANIFEST}"), manifest_bytes)
         .await?;
-    snapshot_ref_from_manifest(object_store, &snapshot.manifest).await
+    snapshot_ref_from_manifest(object_store.as_ref(), &snapshot.manifest).await
 }
 
 async fn download_snapshot_inner<O: ObjectStore>(
@@ -472,15 +470,45 @@ async fn snapshot_ref_from_manifest<O: ObjectStore>(
     })
 }
 
-async fn put_file_unique<O: ObjectStore>(
-    object_store: &O,
-    key: &str,
-    path: &Path,
+#[derive(Debug, Clone)]
+struct SnapshotUploadFile {
+    key: String,
+    path: PathBuf,
+}
+
+async fn put_files_unique_concurrent<O: ObjectStore + 'static>(
+    object_store: Arc<O>,
+    files: Vec<SnapshotUploadFile>,
 ) -> Result<(), SnapshotStoreError> {
-    object_store
-        .put_unique(key, Bytes::from(tokio::fs::read(path).await?))
-        .await?;
+    let concurrency = snapshot_upload_concurrency();
+    let mut join_set = JoinSet::new();
+    let mut next_to_submit = 0usize;
+    while next_to_submit < files.len() || !join_set.is_empty() {
+        while next_to_submit < files.len() && join_set.len() < concurrency {
+            let file = files[next_to_submit].clone();
+            let store = Arc::clone(&object_store);
+            join_set.spawn(async move {
+                let bytes = Bytes::from(tokio::fs::read(&file.path).await?);
+                store.put_unique(&file.key, bytes).await?;
+                Ok::<_, SnapshotStoreError>(())
+            });
+            next_to_submit += 1;
+        }
+        join_set
+            .join_next()
+            .await
+            .expect("snapshot upload task missing")
+            .map_err(std::io::Error::other)??;
+    }
     Ok(())
+}
+
+fn snapshot_upload_concurrency() -> usize {
+    std::env::var("TS_SNAPSHOT_UPLOAD_CONCURRENCY")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(4)
 }
 
 async fn write_file(path: &Path, bytes: Bytes) -> Result<(), SnapshotStoreError> {
@@ -690,7 +718,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn matrix_object_store_snapshot_upload_uses_unique_temp_objects() {
+    async fn matrix_object_store_snapshot_upload_uses_direct_unique_objects() {
         let tmp = TempDir::new().unwrap();
         let config = MatrixObjectStoreConfig::local_compat(tmp.path().join("objects"))
             .with_chunk_target_bytes(5)
