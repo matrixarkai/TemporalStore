@@ -287,7 +287,8 @@ where
                 Ok(snapshot_ref)
             }
             Err(err) => {
-                let _ = delete_prefix(self.object_store.as_ref(), &stable_prefix).await;
+                let _ =
+                    delete_prefix_concurrent(Arc::clone(&self.object_store), &stable_prefix).await;
                 if let Some(metrics) = &self.metrics {
                     metrics.observe_upload(
                         snapshot.manifest.shard_id,
@@ -330,23 +331,15 @@ where
     ) -> Result<Vec<SnapshotRef>, SnapshotStoreError> {
         let prefix = self.snapshot_prefix(shard_id);
         let keys = self.object_store.list(&prefix).await?;
-        let mut snapshots = Vec::new();
-        for key in keys {
-            if !key.ends_with(MANIFEST) || key.contains("/.tmp-") {
-                continue;
-            }
-            let manifest_bytes = self.object_store.get(&key).await?;
-            let manifest: SnapshotManifest = serde_json::from_slice(&manifest_bytes)?;
-            snapshots
-                .push(snapshot_ref_from_manifest(self.object_store.as_ref(), &manifest).await?);
-        }
+        let mut snapshots =
+            list_snapshot_refs_concurrent(Arc::clone(&self.object_store), keys).await?;
         snapshots.sort_by_key(|s| (s.last_log_index, s.created_at));
         Ok(snapshots)
     }
 
     async fn delete_snapshot(&self, snapshot_ref: &SnapshotRef) -> Result<(), SnapshotStoreError> {
         let prefix = prefix_from_ref(snapshot_ref);
-        delete_prefix(self.object_store.as_ref(), &prefix).await?;
+        delete_prefix_concurrent(Arc::clone(&self.object_store), &prefix).await?;
         Ok(())
     }
 
@@ -469,6 +462,11 @@ struct SnapshotDownloadFile {
     path: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+struct SnapshotDeleteObject {
+    key: String,
+}
+
 async fn put_files_unique_concurrent<O: ObjectStore + 'static>(
     object_store: Arc<O>,
     files: Vec<SnapshotUploadFile>,
@@ -496,6 +494,39 @@ async fn put_files_unique_concurrent<O: ObjectStore + 'static>(
     Ok(())
 }
 
+async fn list_snapshot_refs_concurrent<O: ObjectStore + 'static>(
+    object_store: Arc<O>,
+    keys: Vec<String>,
+) -> Result<Vec<SnapshotRef>, SnapshotStoreError> {
+    let manifest_keys: Vec<_> = keys
+        .into_iter()
+        .filter(|key| key.ends_with(MANIFEST) && !key.contains("/.tmp-"))
+        .collect();
+    let concurrency = snapshot_transfer_concurrency();
+    let mut join_set = JoinSet::new();
+    let mut next_to_submit = 0usize;
+    let mut snapshots = Vec::with_capacity(manifest_keys.len());
+    while next_to_submit < manifest_keys.len() || !join_set.is_empty() {
+        while next_to_submit < manifest_keys.len() && join_set.len() < concurrency {
+            let key = manifest_keys[next_to_submit].clone();
+            let store = Arc::clone(&object_store);
+            join_set.spawn(async move {
+                let manifest_bytes = store.get(&key).await?;
+                let manifest: SnapshotManifest = serde_json::from_slice(&manifest_bytes)?;
+                snapshot_ref_from_manifest(store.as_ref(), &manifest).await
+            });
+            next_to_submit += 1;
+        }
+        let snapshot_ref = join_set
+            .join_next()
+            .await
+            .expect("snapshot list task missing")
+            .map_err(std::io::Error::other)??;
+        snapshots.push(snapshot_ref);
+    }
+    Ok(snapshots)
+}
+
 async fn get_files_concurrent<O: ObjectStore + 'static>(
     object_store: Arc<O>,
     files: Vec<SnapshotDownloadFile>,
@@ -518,6 +549,38 @@ async fn get_files_concurrent<O: ObjectStore + 'static>(
             .join_next()
             .await
             .expect("snapshot download task missing")
+            .map_err(std::io::Error::other)??;
+    }
+    Ok(())
+}
+
+async fn delete_prefix_concurrent<O: ObjectStore + 'static>(
+    object_store: Arc<O>,
+    prefix: &str,
+) -> Result<(), SnapshotStoreError> {
+    let objects: Vec<_> = object_store
+        .list(prefix)
+        .await?
+        .into_iter()
+        .map(|key| SnapshotDeleteObject { key })
+        .collect();
+    let concurrency = snapshot_transfer_concurrency();
+    let mut join_set = JoinSet::new();
+    let mut next_to_submit = 0usize;
+    while next_to_submit < objects.len() || !join_set.is_empty() {
+        while next_to_submit < objects.len() && join_set.len() < concurrency {
+            let object = objects[next_to_submit].clone();
+            let store = Arc::clone(&object_store);
+            join_set.spawn(async move {
+                store.delete(&object.key).await?;
+                Ok::<_, SnapshotStoreError>(())
+            });
+            next_to_submit += 1;
+        }
+        join_set
+            .join_next()
+            .await
+            .expect("snapshot delete task missing")
             .map_err(std::io::Error::other)??;
     }
     Ok(())
@@ -587,16 +650,6 @@ async fn write_file(path: &Path, bytes: Bytes) -> Result<(), SnapshotStoreError>
     let mut file = tokio::fs::File::create(path).await?;
     file.write_all(&bytes).await?;
     file.flush().await?;
-    Ok(())
-}
-
-async fn delete_prefix<O: ObjectStore>(
-    object_store: &O,
-    prefix: &str,
-) -> Result<(), SnapshotStoreError> {
-    for key in object_store.list(prefix).await? {
-        object_store.delete(&key).await?;
-    }
     Ok(())
 }
 
