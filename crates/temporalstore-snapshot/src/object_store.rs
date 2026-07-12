@@ -771,20 +771,45 @@ impl FileObjectStore {
         out.sort();
         Ok(out)
     }
-}
 
-#[async_trait]
-impl ObjectStore for FileObjectStore {
-    async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
-        self.put_atomic(key, bytes).await.map(|_| ())
-    }
-
-    async fn put_atomic(
+    async fn put_path_atomic(
         &self,
         key: &str,
-        bytes: Bytes,
+        source: &Path,
     ) -> Result<ObjectMetadata, ObjectStoreError> {
         let path = self.resolve(key)?;
+        self.ensure_parent_dir(&path).await?;
+        let tmp_path =
+            path.with_extension(format!("matrixobjectstore-tmp-{}", Uuid::new_v4().simple()));
+        let size_bytes = match tokio::fs::copy(source, &tmp_path).await {
+            Ok(size_bytes) => size_bytes,
+            Err(err) => return Err(ObjectStoreError::Io(err)),
+        };
+        let checksum_sha256 = sha256_file_hex(&tmp_path).await?;
+        if self.sync_writes {
+            let file = tokio::fs::File::open(&tmp_path).await?;
+            file.sync_all().await?;
+        }
+        match tokio::fs::rename(&tmp_path, &path).await {
+            Ok(()) => {
+                if self.sync_parent_dirs {
+                    sync_parent_dir(&path).await?;
+                }
+            }
+            Err(err) => {
+                let _ = tokio::fs::remove_file(&tmp_path).await;
+                return Err(ObjectStoreError::Io(err));
+            }
+        }
+        Ok(ObjectMetadata {
+            key: key.to_string(),
+            uri: self.uri(key),
+            size_bytes,
+            checksum_sha256,
+        })
+    }
+
+    async fn ensure_parent_dir(&self, path: &Path) -> Result<(), ObjectStoreError> {
         if let Some(parent) = path.parent() {
             let already_created = {
                 let created = self
@@ -805,6 +830,31 @@ impl ObjectStore for FileObjectStore {
                 created.insert(parent.to_path_buf());
             }
         }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl ObjectStore for FileObjectStore {
+    async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
+        self.put_atomic(key, bytes).await.map(|_| ())
+    }
+
+    async fn put_path_unique(
+        &self,
+        key: &str,
+        source: &Path,
+    ) -> Result<ObjectMetadata, ObjectStoreError> {
+        self.put_path_atomic(key, source).await
+    }
+
+    async fn put_atomic(
+        &self,
+        key: &str,
+        bytes: Bytes,
+    ) -> Result<ObjectMetadata, ObjectStoreError> {
+        let path = self.resolve(key)?;
+        self.ensure_parent_dir(&path).await?;
         let tmp_path =
             path.with_extension(format!("matrixobjectstore-tmp-{}", Uuid::new_v4().simple()));
         let mut file = tokio::fs::File::create(&tmp_path).await?;
@@ -2225,6 +2275,28 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ObjectStoreError::InvalidKey(_)));
+    }
+
+    #[tokio::test]
+    async fn file_object_store_uploads_file_without_buffering_payload() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FileObjectStore::new(dir.path());
+        let source = dir.path().join("source.bin");
+        tokio::fs::write(&source, b"file-object-store-payload")
+            .await
+            .unwrap();
+
+        let metadata = store
+            .put_path_unique("objects/payload.bin", &source)
+            .await
+            .unwrap();
+
+        assert_eq!(metadata.key, "objects/payload.bin");
+        assert_eq!(metadata.size_bytes, 25);
+        assert_eq!(
+            store.get("objects/payload.bin").await.unwrap(),
+            Bytes::from_static(b"file-object-store-payload")
+        );
     }
 
     #[tokio::test]
