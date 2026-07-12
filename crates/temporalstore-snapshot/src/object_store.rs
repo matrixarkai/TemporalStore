@@ -237,6 +237,8 @@ pub struct MatrixObjectStoreConfig {
     pub transfer_concurrency: usize,
     #[serde(default = "default_strict_block_metadata")]
     pub verify_block_metadata_on_read: bool,
+    #[serde(default = "default_publish_block_metadata")]
+    pub publish_block_metadata_on_write: bool,
 }
 
 impl MatrixObjectStoreConfig {
@@ -250,6 +252,7 @@ impl MatrixObjectStoreConfig {
             chunk_target_bytes: default_matrixobjectstore_chunk_target_bytes(),
             transfer_concurrency: default_matrixobjectstore_transfer_concurrency(),
             verify_block_metadata_on_read: default_strict_block_metadata(),
+            publish_block_metadata_on_write: default_publish_block_metadata(),
         }
     }
 
@@ -264,6 +267,7 @@ impl MatrixObjectStoreConfig {
             chunk_target_bytes: default_matrixobjectstore_chunk_target_bytes(),
             transfer_concurrency: default_matrixobjectstore_transfer_concurrency(),
             verify_block_metadata_on_read: default_strict_block_metadata(),
+            publish_block_metadata_on_write: default_publish_block_metadata(),
         }
     }
 
@@ -284,6 +288,11 @@ impl MatrixObjectStoreConfig {
 
     pub fn with_verify_block_metadata_on_read(mut self, verify: bool) -> Self {
         self.verify_block_metadata_on_read = verify;
+        self
+    }
+
+    pub fn with_publish_block_metadata_on_write(mut self, publish: bool) -> Self {
+        self.publish_block_metadata_on_write = publish;
         self
     }
 
@@ -388,6 +397,7 @@ impl SharedObjectStore {
                     chunk_target_bytes: default_matrixobjectstore_chunk_target_bytes(),
                     transfer_concurrency: default_matrixobjectstore_transfer_concurrency(),
                     verify_block_metadata_on_read: default_strict_block_metadata(),
+                    publish_block_metadata_on_write: default_publish_block_metadata(),
                 }),
             )),
             SharedObjectStoreBackend::S3
@@ -755,6 +765,10 @@ impl MatrixObjectStore {
         self.config.verify_block_metadata_on_read
     }
 
+    fn publish_block_metadata_on_write(&self) -> bool {
+        self.config.publish_block_metadata_on_write || self.verify_block_metadata_on_read()
+    }
+
     fn chunk_writes(&self, bytes: &Bytes) -> Vec<MatrixObjectChunkWrite> {
         let chunk_target_bytes = self.chunk_target_bytes();
         if bytes.is_empty() {
@@ -792,6 +806,7 @@ impl MatrixObjectStore {
                 let chunk = chunks[next_to_submit].clone();
                 let chunk_service = self.chunk_service.clone();
                 let block_service = self.block_service.clone();
+                let publish_block_metadata = self.publish_block_metadata_on_write();
                 let object_key = key.trim_matches('/').to_string();
                 let object_key_fingerprint = object_key_fingerprint(&object_key);
                 join_set.spawn(async move {
@@ -814,9 +829,11 @@ impl MatrixObjectStore {
                         length: chunk_metadata.size_bytes,
                         checksum_sha256: chunk_metadata.checksum_sha256,
                     };
-                    if let Err(err) = block_service.put_block_ref(&block_ref).await {
-                        let _ = chunk_service.delete_chunk(&block_ref.chunk_key).await;
-                        return Err(err);
+                    if publish_block_metadata {
+                        if let Err(err) = block_service.put_block_ref(&block_ref).await {
+                            let _ = chunk_service.delete_chunk(&block_ref.chunk_key).await;
+                            return Err(err);
+                        }
                     }
                     Ok::<_, ObjectStoreError>((chunk.index, block_ref))
                 });
@@ -1106,6 +1123,13 @@ fn default_matrixobjectstore_transfer_concurrency() -> usize {
 
 fn default_strict_block_metadata() -> bool {
     std::env::var("TS_MATRIXOBJECTSTORE_VERIFY_BLOCK_METADATA_ON_READ")
+        .ok()
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
+fn default_publish_block_metadata() -> bool {
+    std::env::var("TS_MATRIXOBJECTSTORE_PUBLISH_BLOCK_METADATA")
         .ok()
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
         .unwrap_or(false)
@@ -1436,6 +1460,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn matrix_object_store_default_write_skips_block_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = MatrixObjectStoreConfig::local_compat(dir.path())
+            .with_chunk_target_bytes(5)
+            .with_transfer_concurrency(2);
+        let store = MatrixObjectStore::from_config(config);
+        let payload = Bytes::from_static(b"abcdefghijklmnopqrstuvwxyz");
+
+        store
+            .put_atomic("large/object", payload.clone())
+            .await
+            .unwrap();
+        let manifest = store
+            .root_service
+            .get_manifest("large/object")
+            .await
+            .unwrap();
+
+        assert!(manifest.blocks.len() > 1);
+        assert!(matches!(
+            store
+                .block_service
+                .get_block_ref(&manifest.blocks[0].block_id)
+                .await,
+            Err(ObjectStoreError::NotFound(_))
+        ));
+        assert_eq!(store.get("large/object").await.unwrap(), payload);
+    }
+
+    #[tokio::test]
     async fn matrix_object_store_strict_read_verifies_block_metadata() {
         let dir = tempfile::tempdir().unwrap();
         let config = MatrixObjectStoreConfig::local_compat(dir.path())
@@ -1449,6 +1503,11 @@ mod tests {
         let manifest = store
             .root_service
             .get_manifest("large/object")
+            .await
+            .unwrap();
+        store
+            .block_service
+            .get_block_ref(&manifest.blocks[0].block_id)
             .await
             .unwrap();
         store
