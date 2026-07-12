@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 use thiserror::Error;
+use tokio::io::AsyncReadExt;
 use tokio::task::JoinSet;
 
 use crate::metrics::SnapshotMetrics;
@@ -599,13 +600,14 @@ async fn verify_remote_checksum_entries<O: ObjectStore + 'static>(
             let key = format!("{prefix}{}", entry.relative_path);
             let store = Arc::clone(&object_store);
             join_set.spawn(async move {
-                let bytes = store.get(&key).await?;
-                let actual = sha256_hex(&bytes);
-                if actual != entry.sha256 {
+                let metadata = store.head(&key).await?;
+                if metadata.checksum_sha256 != entry.sha256
+                    || metadata.size_bytes != entry.byte_size
+                {
                     return Err(SnapshotStoreError::ChecksumMismatch {
                         path: entry.relative_path,
                         expected: entry.sha256,
-                        actual,
+                        actual: metadata.checksum_sha256,
                     });
                 }
                 Ok::<_, SnapshotStoreError>(())
@@ -662,13 +664,13 @@ async fn page_segment_manifests(
 ) -> Result<Vec<PageSegmentManifest>, SnapshotStoreError> {
     let mut out = Vec::new();
     for path in &snapshot.page_segments {
-        let bytes = tokio::fs::read(path).await?;
+        let (sha256, byte_size) = file_digest(path).await?;
         let file_name = path.file_name().unwrap().to_string_lossy().to_string();
         out.push(PageSegmentManifest {
             page_segment_id: file_name.trim_end_matches(".seg").to_string(),
             relative_path: format!("page_segments/{file_name}"),
-            byte_size: bytes.len() as u64,
-            sha256: sha256_hex(&bytes),
+            byte_size,
+            sha256,
         });
     }
     Ok(out)
@@ -682,11 +684,11 @@ async fn checksum_entries(
         (INDEX.to_string(), snapshot.index_path.clone()),
         (CHECKSUMS.to_string(), snapshot.checksums_path.clone()),
     ] {
-        let bytes = tokio::fs::read(path).await?;
+        let (sha256, byte_size) = file_digest(&path).await?;
         entries.push(ChecksumEntry {
             relative_path: relative,
-            sha256: sha256_hex(&bytes),
-            byte_size: bytes.len() as u64,
+            sha256,
+            byte_size,
         });
     }
     for segment in &snapshot.manifest.page_segments {
@@ -702,9 +704,8 @@ async fn checksum_entries(
 async fn verify_local_snapshot(snapshot: &LocalSnapshot) -> Result<(), SnapshotStoreError> {
     for entry in &snapshot.manifest.checksums {
         let path = snapshot.root_dir.join(&entry.relative_path);
-        let bytes = tokio::fs::read(&path).await?;
-        let actual = sha256_hex(&bytes);
-        if actual != entry.sha256 {
+        let (actual, byte_size) = file_digest(&path).await?;
+        if actual != entry.sha256 || byte_size != entry.byte_size {
             return Err(SnapshotStoreError::ChecksumMismatch {
                 path: entry.relative_path.clone(),
                 expected: entry.sha256.clone(),
@@ -741,10 +742,20 @@ fn parse_log_index(last_log_id: &str) -> u64 {
         .unwrap_or_default()
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+async fn file_digest(path: &Path) -> Result<(String, u64), SnapshotStoreError> {
+    let mut file = tokio::fs::File::open(path).await?;
     let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    hex::encode(hasher.finalize())
+    let mut buffer = vec![0u8; 64 * 1024];
+    let mut byte_size = 0u64;
+    loop {
+        let bytes_read = file.read(&mut buffer).await?;
+        if bytes_read == 0 {
+            break;
+        }
+        byte_size += bytes_read as u64;
+        hasher.update(&buffer[..bytes_read]);
+    }
+    Ok((hex::encode(hasher.finalize()), byte_size))
 }
 
 #[cfg(test)]
