@@ -17,6 +17,23 @@ object-store layer.
 | `ceph+s3://bucket/prefix/...` | Ceph RGW through S3-compatible API | Same as `ceph://`, but the compatibility mode is explicit. |
 | `rados://pool/object...` | Native Ceph/librados | Reserved for a future native Ceph adapter. |
 
+## Rust MatrixObjectStore Boundary
+
+Rust exposes `MatrixObjectStore`, `MatrixObjectStoreConfig`, and
+`MatrixObjectStoreBackendMode` from `temporalstore-snapshot`. The default Rust
+mode is `LocalCompat`, which preserves the same `matrixobjectstore://` URI
+contract and atomic object-store semantics on top of a local durable directory.
+`External` mode records the MatrixObjectStore endpoint in config so the same
+snapshot/shared-store code can switch to a native MatrixObjectStore client when
+that crate is linked.
+
+This keeps Rust and C++ on the same public object-store contract:
+
+- `matrixobjectstore://...` identifies MatrixObjectStore-backed durable objects.
+- `MatrixObjectStore` is the public backend name.
+- Retired legacy object-store naming is not part of public APIs, docs, build
+  flags, or validation output.
+
 ## Why Ceph Should Use S3 First
 
 Ceph RGW exposes an S3-compatible object API, so the first production implementation should be a
