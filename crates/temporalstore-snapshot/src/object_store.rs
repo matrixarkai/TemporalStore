@@ -992,6 +992,39 @@ impl MatrixObjectStore {
         self.config.publish_block_metadata_on_write || self.verify_block_metadata_on_read()
     }
 
+    fn validate_manifest_for_read(
+        &self,
+        manifest: &MatrixObjectManifest,
+    ) -> Result<usize, ObjectStoreError> {
+        let object_size = usize::try_from(manifest.size_bytes).map_err(|_| {
+            ObjectStoreError::Io(std::io::Error::other(format!(
+                "object {} is too large for this platform: {} bytes",
+                manifest.key, manifest.size_bytes
+            )))
+        })?;
+        for block in &manifest.blocks {
+            if block.length == 0 && manifest.size_bytes > 0 {
+                return Err(ObjectStoreError::Io(std::io::Error::other(format!(
+                    "object {} has zero-length block {}",
+                    manifest.key, block.block_id
+                ))));
+            }
+            let end = block.offset.checked_add(block.length).ok_or_else(|| {
+                ObjectStoreError::Io(std::io::Error::other(format!(
+                    "object {} block {} range overflows",
+                    manifest.key, block.block_id
+                )))
+            })?;
+            if end > manifest.size_bytes {
+                return Err(ObjectStoreError::Io(std::io::Error::other(format!(
+                    "object {} block {} range exceeds object size: end {}, size {}",
+                    manifest.key, block.block_id, end, manifest.size_bytes
+                ))));
+            }
+        }
+        Ok(object_size)
+    }
+
     fn chunk_writes(&self, bytes: &Bytes) -> Vec<MatrixObjectChunkWrite> {
         let chunk_target_bytes = self.chunk_target_bytes();
         if bytes.is_empty() {
@@ -1264,7 +1297,8 @@ impl ObjectStore for MatrixObjectStore {
 
     async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
         let manifest = self.root_service.get_manifest(key).await?;
-        let mut out = vec![0u8; manifest.size_bytes as usize];
+        let object_size = self.validate_manifest_for_read(&manifest)?;
+        let mut out = vec![0u8; object_size];
         let mut written_bytes = 0u64;
         let mut join_set = JoinSet::new();
         let mut next_to_submit = 0usize;
@@ -1325,6 +1359,7 @@ impl ObjectStore for MatrixObjectStore {
         destination: &Path,
     ) -> Result<ObjectMetadata, ObjectStoreError> {
         let manifest = self.root_service.get_manifest(key).await?;
+        self.validate_manifest_for_read(&manifest)?;
         if let Some(parent) = destination.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
@@ -1998,6 +2033,47 @@ mod tests {
             .await
             .unwrap();
 
+        let destination = dir.path().join("restore/large-object.bin");
+        tokio::fs::create_dir_all(destination.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&destination, b"previous-good-restore")
+            .await
+            .unwrap();
+        assert!(store
+            .get_to_path("large/object", &destination)
+            .await
+            .is_err());
+        assert_eq!(
+            tokio::fs::read(&destination).await.unwrap(),
+            b"previous-good-restore"
+        );
+    }
+
+    #[tokio::test]
+    async fn matrix_object_store_rejects_invalid_manifest_ranges_before_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = MatrixObjectStoreConfig::local_compat(dir.path())
+            .with_chunk_target_bytes(5)
+            .with_transfer_concurrency(2);
+        let store = MatrixObjectStore::from_config(config);
+
+        store
+            .put_atomic(
+                "large/object",
+                Bytes::from_static(b"abcdefghijklmnopqrstuvwxyz"),
+            )
+            .await
+            .unwrap();
+        let mut manifest = store
+            .root_service
+            .get_manifest("large/object")
+            .await
+            .unwrap();
+        manifest.blocks[0].offset = manifest.size_bytes + 1;
+        store.root_service.put_manifest(&manifest).await.unwrap();
+
+        assert!(store.get("large/object").await.is_err());
         let destination = dir.path().join("restore/large-object.bin");
         tokio::fs::create_dir_all(destination.parent().unwrap())
             .await
