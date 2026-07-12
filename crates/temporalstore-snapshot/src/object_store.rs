@@ -320,6 +320,28 @@ impl FileObjectStore {
             .root
             .join(key.replace('/', std::path::MAIN_SEPARATOR_STR)))
     }
+
+    fn list_start_dir(&self, prefix: &str) -> Result<PathBuf, ObjectStoreError> {
+        if prefix.contains("..") || prefix.starts_with('/') || prefix.starts_with('\\') {
+            return Err(ObjectStoreError::InvalidKey(prefix.to_string()));
+        }
+        if prefix.is_empty() {
+            return Ok(self.root.clone());
+        }
+        let normalized = prefix.trim_end_matches('/');
+        let dir_prefix = if prefix.ends_with('/') {
+            normalized
+        } else {
+            normalized.rsplit_once('/').map_or("", |(parent, _)| parent)
+        };
+        if dir_prefix.is_empty() {
+            Ok(self.root.clone())
+        } else {
+            Ok(self
+                .root
+                .join(dir_prefix.replace('/', std::path::MAIN_SEPARATOR_STR)))
+        }
+    }
 }
 
 #[async_trait]
@@ -385,7 +407,11 @@ impl ObjectStore for FileObjectStore {
         if !root.exists() {
             return Ok(out);
         }
-        collect_files(&root, &root, &mut out).await?;
+        let start_dir = self.list_start_dir(prefix)?;
+        if !start_dir.exists() {
+            return Ok(out);
+        }
+        collect_files(&root, &start_dir, &mut out).await?;
         out.retain(|key| key.starts_with(prefix) && !key.contains(".matrixobjectstore-tmp-"));
         out.sort();
         Ok(out)
