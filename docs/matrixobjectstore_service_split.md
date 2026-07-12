@@ -20,7 +20,7 @@ Block metadata ids include an object-key fingerprint plus chunk offset and check
 
 Manifest block refs include `block_metadata_published`. New fast-path writes set it to `false` so delete/overwrite cleanup skips unnecessary block metadata deletes; strict or explicitly published writes set it to `true`. Older manifests that do not have the field default to `true` so pre-existing block metadata is still cleaned up.
 
-Local-compatible MatrixObjectStore writes call filesystem `sync_all` by default. Set `TS_MATRIXOBJECTSTORE_SYNC_WRITES=0` or use `MatrixObjectStoreConfig::with_sync_writes(false)` only for benchmark, ephemeral, or externally durable deployments where higher layers own recovery. The setting is carried in `MatrixObjectStoreConfig` and threaded into root, block, and chunk services so performance reports can distinguish durable local writes from faster async local file writes.
+Local-compatible MatrixObjectStore writes call filesystem `sync_all` and sync parent directory entries by default. Set `TS_MATRIXOBJECTSTORE_SYNC_WRITES=0` / `TS_MATRIXOBJECTSTORE_SYNC_PARENT_DIRS=0`, or use `MatrixObjectStoreConfig::with_sync_writes(false).with_sync_parent_dirs(false)`, only for benchmark, ephemeral, or externally durable deployments where higher layers own recovery. These settings are carried in `MatrixObjectStoreConfig` and threaded into root, block, and chunk services so performance reports can distinguish durable local writes from faster async local file writes.
 
 `MatrixObjectStoreConfig` now carries a `MatrixObjectStoreServiceEndpoints` section. A deployment can use one unified external endpoint for compatibility or three independent endpoints:
 
