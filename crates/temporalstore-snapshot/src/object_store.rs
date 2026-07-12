@@ -1030,43 +1030,19 @@ impl MatrixObjectStore {
         let mut join_set = JoinSet::new();
         let mut next_to_submit = 0;
         let mut blocks = Vec::with_capacity(chunks.len());
+        let object_key = key.trim_matches('/').to_string();
+        let object_key_fingerprint = object_key_fingerprint(&object_key);
+        let publish_block_metadata = self.publish_block_metadata_on_write();
         while next_to_submit < chunks.len() || !join_set.is_empty() {
             while next_to_submit < chunks.len() && join_set.len() < self.transfer_concurrency() {
                 let chunk = chunks[next_to_submit].clone();
-                let chunk_service = self.chunk_service.clone();
-                let block_service = self.block_service.clone();
-                let publish_block_metadata = self.publish_block_metadata_on_write();
-                let object_key = key.trim_matches('/').to_string();
-                let object_key_fingerprint = object_key_fingerprint(&object_key);
-                join_set.spawn(async move {
-                    let checksum_sha256 = sha256_hex(&chunk.bytes);
-                    let block_id = format!(
-                        "block-{}-{:020}-{}",
-                        object_key_fingerprint, chunk.offset, checksum_sha256
-                    );
-                    let chunk_key = format!(
-                        "{}/chunks/{:020}-{}",
-                        object_key, chunk.offset, checksum_sha256
-                    );
-                    let chunk_metadata = chunk_service
-                        .put_chunk(&chunk_key, chunk.bytes.clone())
-                        .await?;
-                    let block_ref = MatrixObjectBlockRef {
-                        block_id,
-                        chunk_key,
-                        offset: chunk.offset,
-                        length: chunk_metadata.size_bytes,
-                        checksum_sha256: chunk_metadata.checksum_sha256,
-                        block_metadata_published: publish_block_metadata,
-                    };
-                    if publish_block_metadata {
-                        if let Err(err) = block_service.put_block_ref(&block_ref).await {
-                            let _ = chunk_service.delete_chunk(&block_ref.chunk_key).await;
-                            return Err(err);
-                        }
-                    }
-                    Ok::<_, ObjectStoreError>((chunk.index, block_ref))
-                });
+                self.spawn_chunk_write(
+                    chunk,
+                    &object_key,
+                    &object_key_fingerprint,
+                    publish_block_metadata,
+                    &mut join_set,
+                );
                 next_to_submit += 1;
             }
             let result = match join_set
@@ -1103,6 +1079,9 @@ impl MatrixObjectStore {
         let mut join_set = JoinSet::new();
         let mut offset = 0u64;
         let mut index = 0usize;
+        let object_key = key.trim_matches('/').to_string();
+        let object_key_fingerprint = object_key_fingerprint(&object_key);
+        let publish_block_metadata = self.publish_block_metadata_on_write();
         loop {
             let bytes_read = file.read(&mut buffer).await?;
             if bytes_read == 0 {
@@ -1114,7 +1093,13 @@ impl MatrixObjectStore {
                 offset,
                 bytes: Bytes::copy_from_slice(&buffer[..bytes_read]),
             };
-            self.spawn_chunk_write(key, chunk, &mut join_set);
+            self.spawn_chunk_write(
+                chunk,
+                &object_key,
+                &object_key_fingerprint,
+                publish_block_metadata,
+                &mut join_set,
+            );
             index += 1;
             offset += bytes_read as u64;
             if join_set.len() >= self.transfer_concurrency() {
@@ -1133,12 +1118,14 @@ impl MatrixObjectStore {
         }
         if index == 0 {
             self.spawn_chunk_write(
-                key,
                 MatrixObjectChunkWrite {
                     index: 0,
                     offset: 0,
                     bytes: Bytes::new(),
                 },
+                &object_key,
+                &object_key_fingerprint,
+                publish_block_metadata,
                 &mut join_set,
             );
         }
@@ -1165,15 +1152,16 @@ impl MatrixObjectStore {
 
     fn spawn_chunk_write(
         &self,
-        key: &str,
         chunk: MatrixObjectChunkWrite,
+        object_key: &str,
+        object_key_fingerprint: &str,
+        publish_block_metadata: bool,
         join_set: &mut JoinSet<Result<(usize, MatrixObjectBlockRef), ObjectStoreError>>,
     ) {
         let chunk_service = self.chunk_service.clone();
         let block_service = self.block_service.clone();
-        let publish_block_metadata = self.publish_block_metadata_on_write();
-        let object_key = key.trim_matches('/').to_string();
-        let object_key_fingerprint = object_key_fingerprint(&object_key);
+        let object_key = object_key.to_string();
+        let object_key_fingerprint = object_key_fingerprint.to_string();
         join_set.spawn(async move {
             let checksum_sha256 = sha256_hex(&chunk.bytes);
             let block_id = format!(
