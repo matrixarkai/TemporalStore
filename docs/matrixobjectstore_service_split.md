@@ -14,7 +14,7 @@ MatrixObjectStore now has explicit internal services behind the existing `Object
 - `MatrixObjectStoreBlockService`: owns block metadata, block id to chunk refs, offsets, lengths, and block checksums.
 - `MatrixObjectStoreChunkService`: owns payload bytes and chunk-level atomic publish/read/delete.
 
-The current local-compatible implementation stores small objects as one block/chunk and splits large objects into chunked block refs. `TS_MATRIXOBJECTSTORE_CHUNK_TARGET_BYTES` controls the target chunk size, and `TS_MATRIXOBJECTSTORE_TRANSFER_CONCURRENCY` controls bounded parallel chunk reads/writes. That keeps compatibility with TemporalStore snapshot/shared-store callers while creating the seams needed to split these into separate root, block, and chunk server processes later.
+The current local-compatible implementation stores small objects as one block/chunk and splits large objects into chunked block refs. `TS_MATRIXOBJECTSTORE_CHUNK_TARGET_BYTES` controls the target chunk size, and `TS_MATRIXOBJECTSTORE_TRANSFER_CONCURRENCY` controls bounded parallel chunk reads/writes. Normal reads trust the root manifest block refs and verify chunk checksums without re-fetching every block metadata record; set `TS_MATRIXOBJECTSTORE_VERIFY_BLOCK_METADATA_ON_READ=1` for strict block metadata verification. That keeps compatibility with TemporalStore snapshot/shared-store callers while creating the seams needed to split these into separate root, block, and chunk server processes later.
 
 ## Runtime Flow
 
@@ -33,9 +33,10 @@ Read path:
 ```text
 ObjectStore::get(key)
 -> RootService reads object manifest
--> BlockService resolves block refs
+-> RootService manifest supplies block refs
 -> ChunkService reads payload chunks with bounded concurrency
--> checksum verification
+-> chunk checksum verification
+-> optional strict BlockService metadata verification
 -> bytes returned to TemporalStore
 ```
 
