@@ -10,7 +10,7 @@ use temporalstore_rust::shared_store::{SharedStoreReplicator, SharedStoreStorage
 use temporalstore_rust::types::{
     Command, CommandResponse, ExecuteRequest, FeatureFilter, FeatureFilterOp, SequenceFeatureRow,
 };
-use temporalstore_snapshot::object_store::FileObjectStore;
+use temporalstore_snapshot::object_store::{FileObjectStore, MatrixObjectStore, ObjectStore};
 
 #[derive(Debug, Clone)]
 struct HarnessOptions {
@@ -28,6 +28,39 @@ struct HarnessOptions {
     shared_store_ops: usize,
     shared_store_flush_every: usize,
     shared_store_root: Option<PathBuf>,
+    shared_store_backend: SharedStoreBackend,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SharedStoreBackend {
+    LocalFs,
+    MatrixObjectStore,
+}
+
+impl SharedStoreBackend {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "local_fs" | "file" | "file_object_store" => Some(Self::LocalFs),
+            "matrixobjectstore" | "matrix_object_store" | "matrixobjectstore_local_compat" => {
+                Some(Self::MatrixObjectStore)
+            }
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::LocalFs => "local_fs",
+            Self::MatrixObjectStore => "matrixobjectstore_local_compat",
+        }
+    }
+
+    fn uri_scheme(self) -> &'static str {
+        match self {
+            Self::LocalFs => "file",
+            Self::MatrixObjectStore => "matrixobjectstore",
+        }
+    }
 }
 
 impl Default for HarnessOptions {
@@ -47,6 +80,7 @@ impl Default for HarnessOptions {
             shared_store_ops: 1_000,
             shared_store_flush_every: 25,
             shared_store_root: None,
+            shared_store_backend: SharedStoreBackend::LocalFs,
         }
     }
 }
@@ -113,6 +147,8 @@ struct SharedStoreComparisonSummary {
     async_max_lag: u64,
     async_flush_every: usize,
     shared_store_root: String,
+    shared_store_backend: String,
+    shared_store_uri_scheme: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -382,6 +418,13 @@ fn parse_options() -> HarnessOptions {
             "--shared-store-ops" => options.shared_store_ops = parse(value, key),
             "--shared-store-flush-every" => options.shared_store_flush_every = parse(value, key),
             "--shared-store-root" => options.shared_store_root = Some(PathBuf::from(value)),
+            "--shared-store-backend" => {
+                options.shared_store_backend =
+                    SharedStoreBackend::parse(value).unwrap_or_else(|| {
+                        eprintln!("invalid {key} value {value:?}");
+                        usage_and_exit();
+                    });
+            }
             "--help" | "-h" => usage_and_exit(),
             other => {
                 eprintln!("unknown option: {other}");
@@ -419,6 +462,7 @@ fn usage_and_exit() -> ! {
     eprintln!("  --shared-store-ops <n> default 1000");
     eprintln!("  --shared-store-flush-every <n> default 25");
     eprintln!("  --shared-store-root <path> default temp dir");
+    eprintln!("  --shared-store-backend local_fs|matrixobjectstore_local_compat default local_fs");
     std::process::exit(2);
 }
 
@@ -448,47 +492,68 @@ fn run_shared_store_comparison(options: &HarnessOptions) -> SharedStoreCompariso
         let root = options.shared_store_root.clone().unwrap_or_else(|| {
             std::env::temp_dir().join(format!("temporalstore-shared-store-scale-{}", now_ms()))
         });
-        let store = Arc::new(FileObjectStore::new(root.join("objects")));
-        let replicator = SharedStoreReplicator::new("scale-harness", store);
-
-        let sync = run_shared_store_mode(
-            &replicator,
-            options.shard_id,
-            SharedStoreStorageMode::Sync,
-            options.shared_store_ops,
-            1,
-        )
-        .await;
-        let async_report = run_shared_store_mode(
-            &replicator,
-            options.shard_id + 1,
-            SharedStoreStorageMode::Async,
-            options.shared_store_ops,
-            options.shared_store_flush_every,
-        )
-        .await;
-
-        SharedStoreComparisonSummary {
-            sync_ops: options.shared_store_ops,
-            async_ops: options.shared_store_ops,
-            sync_primary_write_latency: sync.primary_write_latency,
-            async_primary_write_latency: async_report.primary_write_latency,
-            sync_storage_write_latency: sync.storage_write_latency,
-            async_storage_write_latency: async_report.durable_write_latency,
-            async_storage_enqueue_latency: async_report.storage_write_latency,
-            async_storage_flush_latency: async_report.flush_latency,
-            sync_replica_read_latency: sync.read_latency,
-            async_replica_read_latency: async_report.read_latency,
-            sync_primary_write_qps: sync.primary_write_qps,
-            async_primary_write_qps: async_report.primary_write_qps,
-            sync_replica_read_qps: sync.replica_read_qps,
-            async_replica_read_qps: async_report.replica_read_qps,
-            sync_max_lag: sync.max_lag,
-            async_max_lag: async_report.max_lag,
-            async_flush_every: options.shared_store_flush_every.max(1),
-            shared_store_root: root.display().to_string(),
+        match options.shared_store_backend {
+            SharedStoreBackend::LocalFs => {
+                let store = Arc::new(FileObjectStore::new(root.join("objects")));
+                run_shared_store_comparison_with_store(options, root, store).await
+            }
+            SharedStoreBackend::MatrixObjectStore => {
+                let store = Arc::new(MatrixObjectStore::new(root.join("objects")));
+                run_shared_store_comparison_with_store(options, root, store).await
+            }
         }
     })
+}
+
+async fn run_shared_store_comparison_with_store<O>(
+    options: &HarnessOptions,
+    root: PathBuf,
+    store: Arc<O>,
+) -> SharedStoreComparisonSummary
+where
+    O: ObjectStore + 'static,
+{
+    let replicator = SharedStoreReplicator::new("scale-harness", store);
+
+    let sync = run_shared_store_mode(
+        &replicator,
+        options.shard_id,
+        SharedStoreStorageMode::Sync,
+        options.shared_store_ops,
+        1,
+    )
+    .await;
+    let async_report = run_shared_store_mode(
+        &replicator,
+        options.shard_id + 1,
+        SharedStoreStorageMode::Async,
+        options.shared_store_ops,
+        options.shared_store_flush_every,
+    )
+    .await;
+
+    SharedStoreComparisonSummary {
+        sync_ops: options.shared_store_ops,
+        async_ops: options.shared_store_ops,
+        sync_primary_write_latency: sync.primary_write_latency,
+        async_primary_write_latency: async_report.primary_write_latency,
+        sync_storage_write_latency: sync.storage_write_latency,
+        async_storage_write_latency: async_report.durable_write_latency,
+        async_storage_enqueue_latency: async_report.storage_write_latency,
+        async_storage_flush_latency: async_report.flush_latency,
+        sync_replica_read_latency: sync.read_latency,
+        async_replica_read_latency: async_report.read_latency,
+        sync_primary_write_qps: sync.primary_write_qps,
+        async_primary_write_qps: async_report.primary_write_qps,
+        sync_replica_read_qps: sync.replica_read_qps,
+        async_replica_read_qps: async_report.replica_read_qps,
+        sync_max_lag: sync.max_lag,
+        async_max_lag: async_report.max_lag,
+        async_flush_every: options.shared_store_flush_every.max(1),
+        shared_store_root: root.display().to_string(),
+        shared_store_backend: options.shared_store_backend.as_str().to_string(),
+        shared_store_uri_scheme: options.shared_store_backend.uri_scheme().to_string(),
+    }
 }
 
 #[derive(Debug)]
