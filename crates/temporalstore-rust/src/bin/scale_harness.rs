@@ -10,7 +10,9 @@ use temporalstore_rust::shared_store::{SharedStoreReplicator, SharedStoreStorage
 use temporalstore_rust::types::{
     Command, CommandResponse, ExecuteRequest, FeatureFilter, FeatureFilterOp, SequenceFeatureRow,
 };
-use temporalstore_snapshot::object_store::{FileObjectStore, MatrixObjectStore, ObjectStore};
+use temporalstore_snapshot::object_store::{
+    ObjectStore, SharedObjectStore, SharedObjectStoreBackend, SharedObjectStoreConfig,
+};
 
 #[derive(Debug, Clone)]
 struct HarnessOptions {
@@ -28,39 +30,7 @@ struct HarnessOptions {
     shared_store_ops: usize,
     shared_store_flush_every: usize,
     shared_store_root: Option<PathBuf>,
-    shared_store_backend: SharedStoreBackend,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SharedStoreBackend {
-    LocalFs,
-    MatrixObjectStore,
-}
-
-impl SharedStoreBackend {
-    fn parse(value: &str) -> Option<Self> {
-        match value {
-            "local_fs" | "file" | "file_object_store" => Some(Self::LocalFs),
-            "matrixobjectstore" | "matrix_object_store" | "matrixobjectstore_local_compat" => {
-                Some(Self::MatrixObjectStore)
-            }
-            _ => None,
-        }
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::LocalFs => "local_fs",
-            Self::MatrixObjectStore => "matrixobjectstore_local_compat",
-        }
-    }
-
-    fn uri_scheme(self) -> &'static str {
-        match self {
-            Self::LocalFs => "file",
-            Self::MatrixObjectStore => "matrixobjectstore",
-        }
-    }
+    shared_store_backend: SharedObjectStoreBackend,
 }
 
 impl Default for HarnessOptions {
@@ -80,7 +50,7 @@ impl Default for HarnessOptions {
             shared_store_ops: 1_000,
             shared_store_flush_every: 25,
             shared_store_root: None,
-            shared_store_backend: SharedStoreBackend::LocalFs,
+            shared_store_backend: SharedObjectStoreBackend::LocalFile,
         }
     }
 }
@@ -419,11 +389,11 @@ fn parse_options() -> HarnessOptions {
             "--shared-store-flush-every" => options.shared_store_flush_every = parse(value, key),
             "--shared-store-root" => options.shared_store_root = Some(PathBuf::from(value)),
             "--shared-store-backend" => {
-                options.shared_store_backend =
-                    SharedStoreBackend::parse(value).unwrap_or_else(|| {
-                        eprintln!("invalid {key} value {value:?}");
-                        usage_and_exit();
-                    });
+                options.shared_store_backend = SharedObjectStoreBackend::parse(value);
+                if options.shared_store_backend == SharedObjectStoreBackend::Unknown {
+                    eprintln!("invalid {key} value {value:?}");
+                    usage_and_exit();
+                }
             }
             "--help" | "-h" => usage_and_exit(),
             other => {
@@ -462,7 +432,7 @@ fn usage_and_exit() -> ! {
     eprintln!("  --shared-store-ops <n> default 1000");
     eprintln!("  --shared-store-flush-every <n> default 25");
     eprintln!("  --shared-store-root <path> default temp dir");
-    eprintln!("  --shared-store-backend local_fs|matrixobjectstore_local_compat default local_fs");
+    eprintln!("  --shared-store-backend local_file|shared_file|matrixobjectstore|s3|ceph_s3|ceph_rados default local_file");
     std::process::exit(2);
 }
 
@@ -492,16 +462,17 @@ fn run_shared_store_comparison(options: &HarnessOptions) -> SharedStoreCompariso
         let root = options.shared_store_root.clone().unwrap_or_else(|| {
             std::env::temp_dir().join(format!("temporalstore-shared-store-scale-{}", now_ms()))
         });
-        match options.shared_store_backend {
-            SharedStoreBackend::LocalFs => {
-                let store = Arc::new(FileObjectStore::new(root.join("objects")));
-                run_shared_store_comparison_with_store(options, root, store).await
-            }
-            SharedStoreBackend::MatrixObjectStore => {
-                let store = Arc::new(MatrixObjectStore::new(root.join("objects")));
-                run_shared_store_comparison_with_store(options, root, store).await
-            }
-        }
+        let config =
+            SharedObjectStoreConfig::from_backend_and_root(options.shared_store_backend, &root);
+        let store = Arc::new(
+            SharedObjectStore::from_config(config).unwrap_or_else(|err| {
+                panic!(
+                    "shared-store backend {} is not available: {err}",
+                    options.shared_store_backend.canonical_name()
+                )
+            }),
+        );
+        run_shared_store_comparison_with_store(options, root, store).await
     })
 }
 
@@ -551,7 +522,7 @@ where
         async_max_lag: async_report.max_lag,
         async_flush_every: options.shared_store_flush_every.max(1),
         shared_store_root: root.display().to_string(),
-        shared_store_backend: options.shared_store_backend.as_str().to_string(),
+        shared_store_backend: options.shared_store_backend.canonical_name().to_string(),
         shared_store_uri_scheme: options.shared_store_backend.uri_scheme().to_string(),
     }
 }
