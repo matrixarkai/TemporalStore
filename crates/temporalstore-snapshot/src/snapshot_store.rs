@@ -308,7 +308,8 @@ where
     ) -> Result<LocalSnapshot, SnapshotStoreError> {
         let started = Instant::now();
         let result =
-            download_snapshot_inner(self.object_store.as_ref(), snapshot_ref, destination).await;
+            download_snapshot_inner(Arc::clone(&self.object_store), snapshot_ref, destination)
+                .await;
         if let Some(metrics) = &self.metrics {
             metrics.observe_download(
                 snapshot_ref.shard_id,
@@ -353,18 +354,7 @@ where
         let manifest_key = format!("{}{}", prefix_from_ref(snapshot_ref), MANIFEST);
         let manifest_bytes = self.object_store.get(&manifest_key).await?;
         let manifest: SnapshotManifest = serde_json::from_slice(&manifest_bytes)?;
-        for entry in &manifest.checksums {
-            let key = format!("{}{}", manifest.stable_prefix(), entry.relative_path);
-            let bytes = self.object_store.get(&key).await?;
-            let actual = sha256_hex(&bytes);
-            if actual != entry.sha256 {
-                return Err(SnapshotStoreError::ChecksumMismatch {
-                    path: entry.relative_path.clone(),
-                    expected: entry.sha256.clone(),
-                    actual,
-                });
-            }
-        }
+        verify_remote_checksum_entries(Arc::clone(&self.object_store), &manifest).await?;
         Ok(())
     }
 }
@@ -400,8 +390,8 @@ async fn upload_snapshot_inner<O: ObjectStore + 'static>(
     snapshot_ref_from_manifest(object_store.as_ref(), &snapshot.manifest).await
 }
 
-async fn download_snapshot_inner<O: ObjectStore>(
-    object_store: &O,
+async fn download_snapshot_inner<O: ObjectStore + 'static>(
+    object_store: Arc<O>,
     snapshot_ref: &SnapshotRef,
     destination: PathBuf,
 ) -> Result<LocalSnapshot, SnapshotStoreError> {
@@ -411,30 +401,27 @@ async fn download_snapshot_inner<O: ObjectStore>(
     tokio::fs::create_dir_all(destination.join("page_segments")).await?;
 
     let index_path = destination.join(INDEX);
-    write_file(
-        &index_path,
-        object_store.get(&format!("{prefix}{INDEX}")).await?,
-    )
-    .await?;
     let checksums_path = destination.join(CHECKSUMS);
-    write_file(
-        &checksums_path,
-        object_store.get(&format!("{prefix}{CHECKSUMS}")).await?,
-    )
-    .await?;
-
     let mut page_segments = Vec::new();
+    let mut download_files = vec![
+        SnapshotDownloadFile {
+            key: format!("{prefix}{INDEX}"),
+            path: index_path.clone(),
+        },
+        SnapshotDownloadFile {
+            key: format!("{prefix}{CHECKSUMS}"),
+            path: checksums_path.clone(),
+        },
+    ];
     for segment in &manifest.page_segments {
         let path = destination.join(&segment.relative_path);
-        write_file(
-            &path,
-            object_store
-                .get(&format!("{prefix}{}", segment.relative_path))
-                .await?,
-        )
-        .await?;
+        download_files.push(SnapshotDownloadFile {
+            key: format!("{prefix}{}", segment.relative_path),
+            path: path.clone(),
+        });
         page_segments.push(path);
     }
+    get_files_concurrent(object_store, download_files).await?;
 
     let local = LocalSnapshot {
         manifest,
@@ -476,6 +463,12 @@ struct SnapshotUploadFile {
     path: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+struct SnapshotDownloadFile {
+    key: String,
+    path: PathBuf,
+}
+
 async fn put_files_unique_concurrent<O: ObjectStore + 'static>(
     object_store: Arc<O>,
     files: Vec<SnapshotUploadFile>,
@@ -503,8 +496,84 @@ async fn put_files_unique_concurrent<O: ObjectStore + 'static>(
     Ok(())
 }
 
+async fn get_files_concurrent<O: ObjectStore + 'static>(
+    object_store: Arc<O>,
+    files: Vec<SnapshotDownloadFile>,
+) -> Result<(), SnapshotStoreError> {
+    let concurrency = snapshot_transfer_concurrency();
+    let mut join_set = JoinSet::new();
+    let mut next_to_submit = 0usize;
+    while next_to_submit < files.len() || !join_set.is_empty() {
+        while next_to_submit < files.len() && join_set.len() < concurrency {
+            let file = files[next_to_submit].clone();
+            let store = Arc::clone(&object_store);
+            join_set.spawn(async move {
+                let bytes = store.get(&file.key).await?;
+                write_file(&file.path, bytes).await?;
+                Ok::<_, SnapshotStoreError>(())
+            });
+            next_to_submit += 1;
+        }
+        join_set
+            .join_next()
+            .await
+            .expect("snapshot download task missing")
+            .map_err(std::io::Error::other)??;
+    }
+    Ok(())
+}
+
+async fn verify_remote_checksum_entries<O: ObjectStore + 'static>(
+    object_store: Arc<O>,
+    manifest: &SnapshotManifest,
+) -> Result<(), SnapshotStoreError> {
+    let concurrency = snapshot_transfer_concurrency();
+    let prefix = manifest.stable_prefix();
+    let entries = manifest.checksums.clone();
+    let mut join_set = JoinSet::new();
+    let mut next_to_submit = 0usize;
+    while next_to_submit < entries.len() || !join_set.is_empty() {
+        while next_to_submit < entries.len() && join_set.len() < concurrency {
+            let entry = entries[next_to_submit].clone();
+            let key = format!("{prefix}{}", entry.relative_path);
+            let store = Arc::clone(&object_store);
+            join_set.spawn(async move {
+                let bytes = store.get(&key).await?;
+                let actual = sha256_hex(&bytes);
+                if actual != entry.sha256 {
+                    return Err(SnapshotStoreError::ChecksumMismatch {
+                        path: entry.relative_path,
+                        expected: entry.sha256,
+                        actual,
+                    });
+                }
+                Ok::<_, SnapshotStoreError>(())
+            });
+            next_to_submit += 1;
+        }
+        join_set
+            .join_next()
+            .await
+            .expect("snapshot verify task missing")
+            .map_err(std::io::Error::other)??;
+    }
+    Ok(())
+}
+
 fn snapshot_upload_concurrency() -> usize {
-    std::env::var("TS_SNAPSHOT_UPLOAD_CONCURRENCY")
+    snapshot_transfer_concurrency_from_env("TS_SNAPSHOT_UPLOAD_CONCURRENCY")
+}
+
+fn snapshot_transfer_concurrency() -> usize {
+    std::env::var("TS_SNAPSHOT_TRANSFER_CONCURRENCY")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or_else(|| snapshot_transfer_concurrency_from_env("TS_SNAPSHOT_UPLOAD_CONCURRENCY"))
+}
+
+fn snapshot_transfer_concurrency_from_env(name: &str) -> usize {
+    std::env::var(name)
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
@@ -683,7 +752,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let object_root = tmp.path().join("objects");
         let store = Arc::new(FileObjectStore::with_uri_scheme(&object_root, "s3"));
-        let snapshots = S3SnapshotStore::new("cluster-a", "test", tmp.path().join("local"), store);
+        let snapshots =
+            S3SnapshotStore::new("cluster-a", "test", tmp.path().join("local"), store);
         let local = sample_snapshot(&tmp.path().join("source"), 42, 100).await;
 
         let uploaded = snapshots.upload_snapshot(local).await.unwrap();
@@ -724,8 +794,7 @@ mod tests {
             .with_chunk_target_bytes(5)
             .with_transfer_concurrency(2);
         let store = Arc::new(MatrixObjectStore::from_config(config));
-        let snapshots =
-            S3SnapshotStore::new("cluster-a", "test", tmp.path().join("local"), store);
+        let snapshots = S3SnapshotStore::new("cluster-a", "test", tmp.path().join("local"), store);
         let local = sample_snapshot(&tmp.path().join("source"), 11, 321).await;
 
         let uploaded = snapshots.upload_snapshot(local).await.unwrap();

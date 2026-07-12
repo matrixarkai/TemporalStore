@@ -26,7 +26,7 @@ chunk_endpoint = matrixobjectstore-chunk://chunk-service
 
 `MatrixObjectStore::service_topology()` reports the effective root/block/chunk service roles, local compatibility roots, and configured endpoints. TemporalStore still talks to `ObjectStore`; the split is below that stable API boundary.
 
-Append-only shared-store objects such as WAL/oplog entries and snapshot objects use `ObjectStore::put_unique`, which skips the previous-manifest lookup and stale-ref cleanup that normal overwrite-capable writes need. Snapshot upload writes directly to the UUID-backed stable prefix, uploads data files with bounded concurrency controlled by `TS_SNAPSHOT_UPLOAD_CONCURRENCY`, and publishes `manifest.json` last, so snapshots remain list-invisible until complete while avoiding temp object copy/read amplification.
+Append-only shared-store objects such as WAL/oplog entries and snapshot objects use `ObjectStore::put_unique`, which skips the previous-manifest lookup and stale-ref cleanup that normal overwrite-capable writes need. Snapshot upload writes directly to the UUID-backed stable prefix, uploads data files with bounded concurrency controlled by `TS_SNAPSHOT_UPLOAD_CONCURRENCY`, and publishes `manifest.json` last, so snapshots remain list-invisible until complete while avoiding temp object copy/read amplification. Snapshot download and remote verification use bounded concurrent object reads controlled by `TS_SNAPSHOT_TRANSFER_CONCURRENCY`, falling back to `TS_SNAPSHOT_UPLOAD_CONCURRENCY` and then `4` when unset.
 
 ## Runtime Flow
 
