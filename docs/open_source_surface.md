@@ -28,6 +28,8 @@ Rust Redis command execution also supports a runtime guard:
 
 When enabled, unsupported Redis/module commands fail closed before execution.
 
+The canonical Redis API contract is `compat/redis_open_source_surface_manifest.json`. MatrixObject is a shared object-store backend below TemporalStore storage/backfill; enabling MatrixObject must not expand the public Redis API into set/list/zset collection-clone commands or storage-provider-specific commands.
+
 Run the policy validator after changing this surface:
 
 ```bash
