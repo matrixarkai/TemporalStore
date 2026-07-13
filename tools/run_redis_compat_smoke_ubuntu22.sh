@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REDIS_HOST="${REDIS_HOST:-127.0.0.1}"
 REDIS_PORT="${REDIS_PORT:-6379}"
 REDIS_AUTH="${REDIS_AUTH:-}"
@@ -476,8 +477,9 @@ if [[ "${RUN_BENCH}" == "1" ]]; then
     2> "${RESULT_DIR}/redis-benchmark-expire.err"
   echo "PASS redis_benchmark_expire" | tee -a "${SUMMARY}"
 
-  python3 - "${RESULT_DIR}" "${BENCH_REQUESTS}" "${BENCH_CLIENTS}" "${BENCH_KEYSPACE}" <<'BENCHPY'
+  python3 - "${RESULT_DIR}" "${BENCH_REQUESTS}" "${BENCH_CLIENTS}" "${BENCH_KEYSPACE}" "${ROOT}/compat/redis_open_source_surface_manifest.json" <<'BENCHPY'
 import csv
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -486,6 +488,9 @@ result_dir = Path(sys.argv[1])
 requests = int(sys.argv[2])
 clients = int(sys.argv[3])
 keyspace = int(sys.argv[4])
+manifest_path = Path(sys.argv[5])
+manifest_bytes = manifest_path.read_bytes()
+manifest = json.loads(manifest_bytes.decode("utf-8"))
 artifacts = [
     ("set_get", "redis-benchmark.csv"),
     ("hset", "redis-benchmark-hset.csv"),
@@ -529,6 +534,12 @@ for command, file_name in artifacts:
 
 summary = {
     "schema": "temporalstore_trimmed_redis_benchmark_summary_v1",
+    "redis_surface_schema": manifest.get("schema"),
+    "redis_surface": manifest.get("surface"),
+    "redis_surface_manifest": str(manifest_path),
+    "redis_surface_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+    "cxx_command_count": manifest.get("cxx_command_count"),
+    "blocked_command_family_count": len(manifest.get("blocked_command_families", [])),
     "hincrbyfloat_enabled": hincrbyfloat_path.exists(),
     "requests": requests,
     "clients": clients,
