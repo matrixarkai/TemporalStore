@@ -351,12 +351,29 @@ def main() -> int:
         "redis-benchmark-hincrby.csv",
         "redis-benchmark-incr.csv",
         "redis-benchmark-expire.csv",
+        "redis-benchmark-summary.json",
     ):
         require(
             artifact_name in redis_compat_smoke,
             f"Redis benchmark must write {artifact_name}",
             failures,
         )
+    for summary_field in (
+        "temporalstore_trimmed_redis_benchmark_summary_v1",
+        "requests_per_second_min",
+        "requests_per_second_max",
+        "requests_per_second_avg",
+    ):
+        require(
+            summary_field in redis_compat_smoke,
+            f"Redis benchmark summary must include {summary_field}",
+            failures,
+        )
+    require(
+        "`redis-benchmark-summary.json`" in redis_docs,
+        "Redis docs must document the benchmark JSON summary artifact",
+        failures,
+    )
     for stale_claim in ("- Set: `SADD`", "- List: `LPUSH`", "- ZSet: `ZADD`"):
         require(stale_claim not in redis_docs, f"Redis docs must not keep stale claim {stale_claim}", failures)
     for rust_helper in (
