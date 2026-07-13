@@ -73,6 +73,8 @@ S3-compatible stores, Ceph RGW, local files, and future object backends:
   adapters should map this to server-side copy when available.
 - `delete_prefix`: delete all objects matching a prefix through paged listing
   and `delete_objects`, using backend-native bulk delete when available.
+  The S3-compatible adapter maps `delete_objects` to one `POST ?delete`
+  multi-object request for unsigned HTTP endpoints.
 - `capabilities`: report support for atomic put, unique put, conditional create,
   path upload, path download, metadata head, prefix list, paginated list,
   delete, bulk delete, object copy, prefix deletion, byte-range read, checksum,

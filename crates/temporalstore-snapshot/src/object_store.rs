@@ -508,6 +508,15 @@ fn xml_unescape(value: &str) -> String {
         .replace("&amp;", "&")
 }
 
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
 fn map_http_status(
     status: u16,
     key: &str,
@@ -1018,6 +1027,22 @@ impl RemoteObjectStore {
         self.plan_object_request("DELETE", key, None)
     }
 
+    pub fn plan_delete_objects(&self) -> Result<RemoteObjectRequestPlan, ObjectStoreError> {
+        let endpoint = self.endpoint_base()?;
+        let namespace = self.namespace()?;
+        Ok(RemoteObjectRequestPlan {
+            backend: self.backend.canonical_name().to_string(),
+            method: "POST".to_string(),
+            url: format!(
+                "{}/{}?delete",
+                endpoint,
+                percent_encode_path_segment(namespace)
+            ),
+            object_key: None,
+            copy_source: None,
+        })
+    }
+
     pub fn plan_copy(
         &self,
         source_key: &str,
@@ -1151,6 +1176,18 @@ impl RemoteObjectStore {
                         .map(ToString::to_string)
                 },
             )
+    }
+
+    fn delete_objects_body(&self, keys: &[String]) -> Result<Bytes, ObjectStoreError> {
+        let mut body = String::from("<Delete><Quiet>true</Quiet>");
+        for key in keys {
+            let object_key = self.remote_object_key(key)?;
+            body.push_str("<Object><Key>");
+            body.push_str(&xml_escape(&object_key));
+            body.push_str("</Key></Object>");
+        }
+        body.push_str("</Delete>");
+        Ok(Bytes::from(body))
     }
 }
 
@@ -2981,12 +3018,19 @@ impl ObjectStore for RemoteObjectStore {
     }
 
     async fn delete_objects(&self, keys: &[String]) -> Result<usize, ObjectStoreError> {
-        let mut deleted = 0usize;
-        for key in keys {
-            self.delete(key).await?;
-            deleted += 1;
+        if keys.is_empty() {
+            return Ok(0);
         }
-        Ok(deleted)
+        let body = self.delete_objects_body(keys)?;
+        let response = self
+            .http_request(
+                self.plan_delete_objects()?,
+                vec![("Content-Type".to_string(), "application/xml".to_string())],
+                body,
+            )
+            .await?;
+        map_http_status(response.status, "delete_objects", || Ok(()))?;
+        Ok(keys.len())
     }
 
     async fn copy_object(
@@ -4633,6 +4677,15 @@ mod tests {
             keys,
             vec!["objects/a.bin", "objects/b.bin", "objects/unique.bin"]
         );
+        let deleted = store
+            .delete_objects(&[
+                "objects/b.bin".to_string(),
+                "objects/unique.bin".to_string(),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(deleted, 2);
+        assert_eq!(store.list("objects/").await.unwrap(), vec!["objects/a.bin"]);
 
         store.delete("objects/a.bin").await.unwrap();
         assert!(matches!(
@@ -4686,6 +4739,10 @@ mod tests {
             list.url,
             "http://127.0.0.1:19000/bucket?list-type=2&prefix=base%2Fprefix%2Fsnapshots%2F&max-keys=17&continuation-token=base%2Fprefix%2Fsnapshots%2Fa%20object.bin"
         );
+
+        let delete_objects = remote.plan_delete_objects().unwrap();
+        assert_eq!(delete_objects.method, "POST");
+        assert_eq!(delete_objects.url, "http://127.0.0.1:19000/bucket?delete");
     }
 
     #[test]
@@ -4893,6 +4950,28 @@ mod tests {
             )
             .await;
         }
+        if method == "POST" && query == "delete" {
+            let body = String::from_utf8_lossy(&body);
+            let keys = test_xml_tag_values(&body, "Key");
+            let mut objects = objects.lock().await;
+            for key in &keys {
+                objects.remove(key);
+            }
+            let mut xml = String::from("<DeleteResult>");
+            for key in keys {
+                xml.push_str("<Deleted><Key>");
+                xml.push_str(&xml_escape(&key));
+                xml.push_str("</Key></Deleted>");
+            }
+            xml.push_str("</DeleteResult>");
+            return write_test_s3_response(
+                stream,
+                200,
+                &[("Content-Type", "application/xml")],
+                xml.as_bytes(),
+            )
+            .await;
+        }
         match method {
             "PUT" => {
                 if let Some(copy_source) = headers.get("x-amz-copy-source") {
@@ -5008,6 +5087,22 @@ mod tests {
             .replace('>', "&gt;")
             .replace('"', "&quot;")
             .replace('\'', "&apos;")
+    }
+
+    fn test_xml_tag_values(xml: &str, tag: &str) -> Vec<String> {
+        let open = format!("<{tag}>");
+        let close = format!("</{tag}>");
+        let mut values = Vec::new();
+        let mut remaining = xml;
+        while let Some(start) = remaining.find(&open) {
+            remaining = &remaining[start + open.len()..];
+            let Some(end) = remaining.find(&close) else {
+                break;
+            };
+            values.push(super::xml_unescape(&remaining[..end]));
+            remaining = &remaining[end + close.len()..];
+        }
+        values
     }
 
     fn percent_decode(value: &str) -> String {
