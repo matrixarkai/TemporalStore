@@ -550,6 +550,16 @@ def main() -> int:
         "Redis smokes must cover narrow HSCAN while broad scans stay unsupported",
         failures,
     )
+    for runtime_metric in (
+        "redis_surface:trimmed_open_source",
+        "redis_surface_schema:temporalstore_open_source_redis_surface_v1",
+        "redis_surface_blocked_command_family_count:10",
+    ):
+        require(
+            runtime_metric in redis_compat_smoke and runtime_metric in redis_live_smoke,
+            f"Redis smokes must assert INFO stats runtime surface field {runtime_metric}",
+            failures,
+        )
     require(
         'REDIS_EXPECT_HINCRBYFLOAT:-0' in redis_live_smoke
         and "SKIP hincrbyfloat" in redis_live_smoke
