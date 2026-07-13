@@ -293,8 +293,14 @@ def main() -> int:
         "GENERIC_OBJECT_STORE_OPERATIONS",
         "generic_object_store_contract",
         "object_store_contract",
+        "raw_message_provider_name",
     ):
         require(symbol in raw_storage_contract, f"raw-message contract must expose {symbol}", failures)
+    require(
+        '"object_store_name": raw_message_provider_name(resolved)' in raw_storage_contract,
+        "raw-message object_store_name must be derived from the resolved backend provider",
+        failures,
+    )
     for operation in (
         "put_atomic",
         "put_unique",

@@ -13,6 +13,7 @@ from matrixark_raw_message_storage_contract import (
     raw_message_marker,
     raw_message_payload_sha256,
     raw_message_payload_size_bytes,
+    raw_message_provider_name,
     raw_message_should_spill_to_object_store,
     raw_message_time_ms,
     raw_message_timeline_key,
@@ -42,6 +43,7 @@ class RawMessageStorageContractTest(unittest.TestCase):
         self.assertEqual(report["promotion_policy"], "NoPromotion")
         self.assertEqual(report["metadata_backend"], "temporalstore")
         self.assertTrue(report["metadata_persisted_in_temporalstore"])
+        self.assertEqual(report["object_store_name"], "temporalstore")
 
     def test_matrixkv_target_resolves_storage_object_key(self) -> None:
         target = RawMessageStorageTarget.matrixkv("user:deeproute", "raw_agent_messages", "codex/raw-1")
@@ -74,6 +76,7 @@ class RawMessageStorageContractTest(unittest.TestCase):
         self.assertEqual(marker["object_key"], "matrixkv:user:raw:k1")
         self.assertEqual(marker["metadata_backend"], "matrixkv")
         self.assertEqual(marker["metadata_object_key"], "matrixkv:user:raw:k1")
+        self.assertEqual(marker["object_store_name"], "matrixkv")
 
     def test_same_timestamp_uses_event_key_for_unique_timeline_key(self) -> None:
         timestamp = 1781777200000
@@ -121,6 +124,8 @@ class RawMessageStorageContractTest(unittest.TestCase):
         self.assertEqual(report["metadata_target"]["table"], "context_raw_agent_messages")
         self.assertEqual(report["object_store_contract"]["backend"], "s3")
         self.assertEqual(report["object_store_contract"]["provider_name"], "S3")
+        self.assertEqual(report["object_store_name"], "S3")
+        self.assertEqual(report["object_ref"]["object_store_name"], "S3")
         self.assertIn("get_range", report["object_store_contract"]["required_operations"])
         self.assertIn("list_page", report["object_store_contract"]["required_operations"])
         self.assertIn("byte_range_read", report["object_store_contract"]["required_capabilities"])
@@ -132,6 +137,13 @@ class RawMessageStorageContractTest(unittest.TestCase):
         self.assertEqual(normalize_raw_backend("blob"), "objectstore")
         self.assertEqual(normalize_raw_backend("matrix_object_store"), "objectstore")
         self.assertEqual(normalize_raw_backend("aws_s3"), "s3")
+
+    def test_provider_name_tracks_resolved_backend(self) -> None:
+        self.assertEqual(raw_message_provider_name("temporalstore"), "temporalstore")
+        self.assertEqual(raw_message_provider_name("matrixkv"), "matrixkv")
+        self.assertEqual(raw_message_provider_name("s3"), "S3")
+        self.assertEqual(raw_message_provider_name("matrixobject"), "MatrixObject")
+        self.assertEqual(raw_message_provider_name("matrixobjectstore"), "MatrixObject")
 
     def test_generic_object_store_contract_matches_matrixobject_and_s3_adapter_shape(self) -> None:
         matrix_contract = generic_object_store_contract(RawMessageStorageTarget(backend="matrixobjectstore"))
