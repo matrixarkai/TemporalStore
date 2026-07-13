@@ -50,6 +50,15 @@ The TemporalStore native Redis bridge is production-ready only for the documente
 - Feature model: `FAPPEND`, `FAPPENDPOLICY`, `FQUERY`, `FQUERYFILTER`, `FQUERYFILTERSTR`, `FAGG`
 - Frequency-control model: `RISKINCR`, `RISKINCROPT`, `RISKCHANGE`, `RISKCOUNT`, `RISKQUERY`, `RISKDETAIL`, `RISKHSET`, `HCHANGE`, `HQUERY`, `HSETANDGET`, `CPCSET`, `CPCSETANDGET`, `FOLSET`, `FOLQUERY`
 
+Rust's RESP bridge also advertises additional normal string/TTL/hash helpers in
+the trimmed surface: `MSETNX`, `TOUCH`, `EXPIREAT`, `PEXPIREAT`,
+`EXPIRETIME`, `PEXPIRETIME`, `GETRANGE`, `SETRANGE`, `INCRBYFLOAT`, and
+`HINCRBYFLOAT`. These are still part of the basic data-model surface; they are
+not generic collection clones, server-admin APIs, scripting, streams, pub/sub,
+or debug commands. The C++ Redis bridge currently exposes a narrower
+basic/string/hash subset in open-source builds and reports `COMMAND COUNT=42`;
+feature and frequency-control commands are Rust bridge APIs.
+
 Open-source production builds do not claim generic Redis SET/LIST/ZSET compatibility or Redis server-configuration APIs. `SADD`, `LPUSH`, `ZADD`, `SCAN`, `PARTITION`, `CONFIG`, `DBSIZE`, `IPS*`, scripting, streams, pub/sub, GEO, HyperLogLog, and bitmap commands must return deterministic unsupported/open-surface errors.
 
 The bridge must not claim full Redis compatibility yet. Unsupported command families return deterministic Redis errors rather than fake success. When `TEMPORALSTORE_OPEN_SOURCE_SURFACE=1` or `TS_OPEN_SOURCE_SURFACE=1`, Rust filters both execution and `COMMAND` advertising to the trimmed production data-model surface. The current local bridge serializes backend Redis data-command execution while storage concurrency semantics are hardened; this favors correctness over peak Redis QPS.
