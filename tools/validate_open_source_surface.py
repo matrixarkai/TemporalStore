@@ -55,6 +55,7 @@ def main() -> int:
     manifest_blocked_commands = set(manifest.get("blocked_commands", []))
     manifest_rust_extra_commands = set(manifest.get("rust_extra_commands", []))
     manifest_rust_normal_helpers = set(manifest.get("rust_normal_helpers", []))
+    manifest_blocked_smoke_samples = manifest.get("blocked_smoke_samples", {})
     expected_cxx_command_count = int(manifest.get("cxx_command_count", 0))
     expected_blocked_family_count = len(manifest.get("blocked_command_families", []))
     expected_rust_trimmed_command_count = expected_cxx_command_count + len(manifest_rust_extra_commands)
@@ -211,6 +212,24 @@ def main() -> int:
             f"Redis surface manifest blocked command {command} must not be advertised by C++",
             failures,
         )
+
+    for smoke_name, script in (
+        ("compat", redis_compat_smoke),
+        ("live", redis_live_smoke),
+    ):
+        samples = manifest_blocked_smoke_samples.get(smoke_name, [])
+        require(samples, f"Redis surface manifest must define blocked_smoke_samples.{smoke_name}", failures)
+        for command in samples:
+            require(
+                command in manifest_blocked_commands,
+                f"blocked_smoke_samples.{smoke_name} command {command} must also be in blocked_commands",
+                failures,
+            )
+            require(
+                re.search(rf"expect_error\s+unsupported_[^\s]*\s+{re.escape(command)}\b", script) is not None,
+                f"Redis {smoke_name} smoke must assert unsupported {command} from the manifest samples",
+                failures,
+            )
 
     cxx_registered_commands = {
         name.upper(): handler

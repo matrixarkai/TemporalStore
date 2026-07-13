@@ -262,10 +262,17 @@ fi
 expect_error unsupported_bgsave BGSAVE
 expect_error unsupported_flushall FLUSHALL
 expect_error unsupported_pslotinfo PSLOTINFO
+expect_error unsupported_config CONFIG GET maxmemory
 expect_error unsupported_scan SCAN 0
+expect_error unsupported_sscan SSCAN rs 0
+expect_error unsupported_zscan ZSCAN rz 0
+expect_error unsupported_keys KEYS "*"
+expect_error unsupported_dbsize DBSIZE
 expect_error unsupported_multi MULTI
 expect_error unsupported_eval EVAL "return 1" 0
+expect_error unsupported_evalsha EVALSHA abcdef 0
 expect_error unsupported_xadd XADD rx "*" f v
+expect_error unsupported_xgroup XGROUP CREATE rx g "$"
 
 if [[ "${RUN_COMPAT_SMOKE:-1}" == "1" ]]; then
   REDIS_HOST=127.0.0.1 \
