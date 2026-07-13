@@ -63,6 +63,8 @@ def main() -> int:
     redis_docs = read("docs/redis_compatibility_matrix.md")
     raw_storage_contract = read("tools/matrixark_raw_message_storage_contract.py")
     matrixobject_docs = read("docs/matrixobjectstore_design_extraction_and_readiness.md")
+    context_resource = read("crates/temporalstore-rust/src/context_workflow/resource.rs")
+    context_resource_tests = read("crates/temporalstore-rust/src/context_workflow/tests.rs")
     object_store_code = read("crates/temporalstore-snapshot/src/object_store.rs")
     cxx_object_store_backend = read("src/stream/store/object_store_backend.h")
     cxx_object_store_guardrail = read("src/stream/test/object_store_guardrail_test.cc")
@@ -511,6 +513,18 @@ def main() -> int:
     require(
         "opaque manifest `version_id`" in matrixobject_docs,
         "MatrixObject docs must require provider-neutral manifest version validators",
+        failures,
+    )
+    require(
+        "matrixobject://matrixark/resources/" in context_resource
+        and "objectstore://matrixark/resources/" not in context_resource,
+        "context resource object refs must use canonical matrixobject:// URIs",
+        failures,
+    )
+    require(
+        '"matrixobject".to_string()' in context_resource
+        and 'Some("matrixobject")' in context_resource_tests,
+        "context resource metadata must report canonical matrixobject storage backend",
         failures,
     )
     require(
