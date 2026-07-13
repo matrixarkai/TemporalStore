@@ -43,6 +43,8 @@ for i in $(seq 1 "${REPEAT}"); do
 
   echo "== Redis production gate: live storage smoke run ${i}/${REPEAT} =="
   RUN_COMPAT_SMOKE=1 \
+    REDIS_COMPAT_SURFACE=trimmed \
+    REDIS_EXPECT_UNSUPPORTED_COLLECTIONS=1 \
     RUN_BENCH="${RUN_BENCH}" \
     BENCH_REQUESTS="${BENCH_REQUESTS}" \
     BENCH_CLIENTS="${BENCH_CLIENTS}" \
