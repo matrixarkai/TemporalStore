@@ -182,8 +182,12 @@ expect_eq hexists 1 HEXISTS "$(k hash)" f2
 expect_eq hlen 3 HLEN "$(k hash)"
 expect_eq hincrby_1 3 HINCRBY "$(k hash)" counter 3
 expect_eq hincrby_2 7 HINCRBY "$(k hash)" counter 4
-expect_eq hincrbyfloat_1 1.5 HINCRBYFLOAT "$(k hash)" float 1.5
-expect_eq hincrbyfloat_2 2 HINCRBYFLOAT "$(k hash)" float 0.5
+if [[ "${REDIS_EXPECT_HINCRBYFLOAT:-0}" == "1" ]]; then
+  expect_eq hincrbyfloat_1 1.5 HINCRBYFLOAT "$(k hash)" float 1.5
+  expect_eq hincrbyfloat_2 2 HINCRBYFLOAT "$(k hash)" float 0.5
+else
+  echo "SKIP hincrbyfloat: REDIS_EXPECT_HINCRBYFLOAT=${REDIS_EXPECT_HINCRBYFLOAT:-0}" | tee -a "${SUMMARY}"
+fi
 expect_contains_line hgetall_f1 f1 HGETALL "$(k hash)"
 expect_contains_line hgetall_v1 v1b HGETALL "$(k hash)"
 expect_contains_line hkeys_f1 f1 HKEYS "$(k hash)"
@@ -450,11 +454,15 @@ if [[ "${RUN_BENCH}" == "1" ]]; then
     2> "${RESULT_DIR}/redis-benchmark-hincrby.err"
   echo "PASS redis_benchmark_hincrby" | tee -a "${SUMMARY}"
 
-  redis-benchmark "${bench_args[@]}" -r "${BENCH_KEYSPACE}" \
-    HINCRBYFLOAT "${KEY_PREFIX}:bench:hash" float:__rand_int__ 1.5 \
-    > "${RESULT_DIR}/redis-benchmark-hincrbyfloat.csv" \
-    2> "${RESULT_DIR}/redis-benchmark-hincrbyfloat.err"
-  echo "PASS redis_benchmark_hincrbyfloat" | tee -a "${SUMMARY}"
+  if [[ "${REDIS_EXPECT_HINCRBYFLOAT:-0}" == "1" ]]; then
+    redis-benchmark "${bench_args[@]}" -r "${BENCH_KEYSPACE}" \
+      HINCRBYFLOAT "${KEY_PREFIX}:bench:hash" float:__rand_int__ 1.5 \
+      > "${RESULT_DIR}/redis-benchmark-hincrbyfloat.csv" \
+      2> "${RESULT_DIR}/redis-benchmark-hincrbyfloat.err"
+    echo "PASS redis_benchmark_hincrbyfloat" | tee -a "${SUMMARY}"
+  else
+    echo "SKIP redis_benchmark_hincrbyfloat: REDIS_EXPECT_HINCRBYFLOAT=${REDIS_EXPECT_HINCRBYFLOAT:-0}" | tee -a "${SUMMARY}"
+  fi
 
   redis-benchmark "${bench_args[@]}" -r "${BENCH_KEYSPACE}" \
     INCR "${KEY_PREFIX}:bench:counter:__rand_int__" \
@@ -483,10 +491,12 @@ artifacts = [
     ("hset", "redis-benchmark-hset.csv"),
     ("hget", "redis-benchmark-hget.csv"),
     ("hincrby", "redis-benchmark-hincrby.csv"),
-    ("hincrbyfloat", "redis-benchmark-hincrbyfloat.csv"),
     ("incr", "redis-benchmark-incr.csv"),
     ("expire", "redis-benchmark-expire.csv"),
 ]
+hincrbyfloat_path = result_dir / "redis-benchmark-hincrbyfloat.csv"
+if hincrbyfloat_path.exists():
+    artifacts.append(("hincrbyfloat", "redis-benchmark-hincrbyfloat.csv"))
 
 commands = []
 for command, file_name in artifacts:
@@ -519,6 +529,7 @@ for command, file_name in artifacts:
 
 summary = {
     "schema": "temporalstore_trimmed_redis_benchmark_summary_v1",
+    "hincrbyfloat_enabled": hincrbyfloat_path.exists(),
     "requests": requests,
     "clients": clients,
     "keyspace": keyspace,

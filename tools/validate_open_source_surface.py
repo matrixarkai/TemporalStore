@@ -462,6 +462,15 @@ def main() -> int:
         "C++ live Redis smoke must keep HINCRBYFLOAT opt-in until the C++ bridge wires a native handler",
         failures,
     )
+    require(
+        'REDIS_EXPECT_HINCRBYFLOAT:-0' in redis_compat_smoke
+        and 'SKIP hincrbyfloat' in redis_compat_smoke
+        and 'SKIP redis_benchmark_hincrbyfloat' in redis_compat_smoke
+        and 'hincrbyfloat_enabled' in redis_compat_smoke
+        and 'Rust-only/opt-in bridge capability' in redis_docs,
+        "shared Redis compatibility smoke/docs must not require HINCRBYFLOAT unless explicitly enabled",
+        failures,
+    )
 
     for symbol in (
         "OBJECT_STORE_PROVIDER_ALIASES",
