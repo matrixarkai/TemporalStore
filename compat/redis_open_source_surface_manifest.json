@@ -1,4 +1,6 @@
 {
+  "schema": "temporalstore_open_source_redis_surface_v1",
+  "surface": "trimmed_open_source_context_feature_frequency",
   "allowed_surface_families": [
     "connection",
     "auth_client",
@@ -232,7 +234,5 @@
     "SETRANGE",
     "INCRBYFLOAT",
     "HINCRBYFLOAT"
-  ],
-  "schema": "temporalstore_open_source_redis_surface_v1",
-  "surface": "trimmed_open_source"
+  ]
 }
