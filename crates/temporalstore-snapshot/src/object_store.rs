@@ -3207,11 +3207,6 @@ impl ObjectStore for RemoteObjectStore {
         Ok(metadata)
     }
 
-    async fn delete_prefix(&self, prefix: &str) -> Result<usize, ObjectStoreError> {
-        let keys = self.list(prefix).await?;
-        self.delete_objects(&keys).await
-    }
-
     fn uri(&self, key: &str) -> String {
         let key = key.trim_start_matches('/');
         let scheme = self.backend.uri_scheme();
@@ -4858,6 +4853,20 @@ mod tests {
             .unwrap();
         assert_eq!(deleted, 3);
         assert_eq!(store.list("objects/").await.unwrap(), vec!["objects/a.bin"]);
+
+        for key in [
+            "bulk/delete-a.bin",
+            "bulk/delete-b.bin",
+            "bulk/delete-c.bin",
+            "bulk/delete-d.bin",
+        ] {
+            store
+                .put_atomic(key, Bytes::from_static(b"delete prefix payload"))
+                .await
+                .unwrap();
+        }
+        assert_eq!(store.delete_prefix("bulk/").await.unwrap(), 4);
+        assert!(store.list("bulk/").await.unwrap().is_empty());
 
         store.delete("objects/a.bin").await.unwrap();
         assert!(matches!(
