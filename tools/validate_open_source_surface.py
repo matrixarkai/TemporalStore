@@ -546,6 +546,19 @@ def main() -> int:
     ):
         require(metric in cxx_redis, f"C++ Redis INFO stats must expose {metric}", failures)
     require(
+        "REDIS_TRIMMED_COMMAND_COUNT_MIN" in redis_compat_smoke
+        and "REDIS_TRIMMED_COMMAND_COUNT_MAX" in redis_compat_smoke
+        and "outside ${REDIS_TRIMMED_COMMAND_COUNT_MIN}-${REDIS_TRIMMED_COMMAND_COUNT_MAX}" in redis_compat_smoke,
+        "Redis compatibility smoke must bound COMMAND COUNT for the trimmed surface",
+        failures,
+    )
+    require(
+        "REDIS_CXX_TRIMMED_COMMAND_COUNT" in redis_live_smoke
+        and 'expect_eq command_count "${REDIS_CXX_TRIMMED_COMMAND_COUNT}" COMMAND COUNT' in redis_live_smoke,
+        "Redis live C++ smoke must assert exact open-source COMMAND COUNT",
+        failures,
+    )
+    require(
         "HSCAN" in redis_compat_smoke and "HSCAN rh 0 MATCH f* COUNT 8" in redis_live_smoke,
         "Redis smokes must cover narrow HSCAN while broad scans stay unsupported",
         failures,
