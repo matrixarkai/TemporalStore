@@ -60,6 +60,7 @@ def main() -> int:
     manifest_benchmark_commands = manifest.get("benchmark_commands", {})
     manifest_required_benchmarks = manifest_benchmark_commands.get("required", [])
     manifest_opt_in_benchmarks = manifest_benchmark_commands.get("opt_in", [])
+    manifest_gate_artifacts = manifest.get("production_gate_artifacts", {})
     expected_cxx_command_count = int(manifest.get("cxx_command_count", 0))
     expected_blocked_family_count = len(manifest.get("blocked_command_families", []))
     expected_rust_trimmed_command_count = expected_cxx_command_count + len(manifest_rust_extra_commands)
@@ -78,6 +79,20 @@ def main() -> int:
         manifest_required_benchmarks == ["set_get", "hset", "hget", "hincrby", "incr", "expire"]
         and manifest_opt_in_benchmarks == ["hincrbyfloat"],
         "Redis open-source surface manifest must declare required and opt-in benchmark command coverage",
+        failures,
+    )
+    expected_gate_artifacts = {
+        "required": [
+            "redis_open_source_surface_manifest.json",
+            "redis_open_source_surface_validation.txt",
+            "matrixobject_name_validation.txt",
+            "redis-production-gate-summary.json",
+        ],
+        "benchmark_enabled": ["redis-production-benchmark-rollup.json"],
+    }
+    require(
+        manifest_gate_artifacts == expected_gate_artifacts,
+        "Redis open-source surface manifest must declare the production gate evidence artifacts",
         failures,
     )
 
@@ -589,9 +604,16 @@ def main() -> int:
             f"Redis production gate must emit benchmark rollup field {rollup_field}",
             failures,
         )
+    for artifact_name in manifest_gate_artifacts.get("required", []) + manifest_gate_artifacts.get("benchmark_enabled", []):
+        require(
+            artifact_name in redis_production_gate,
+            f"Redis production gate must mention manifest-declared evidence artifact {artifact_name}",
+            failures,
+        )
     for gate_summary_field in (
         "redis-production-gate-summary.json",
         "temporalstore_trimmed_redis_production_gate_summary_v1",
+        "production_gate_artifacts",
         "open_source_surface_validation",
         "matrixobject_name_validation",
         "matrixobject_boundary",
