@@ -49,9 +49,9 @@ S3-compatible stores, Ceph RGW, local files, and future object backends:
 - `put_unique` / `put_path_unique`: append-style uploads for snapshots, WAL,
   and oplog objects that do not need overwrite cleanup.
 - `put_if_absent`: conditional create for append-style objects. MatrixObject and
-  file-backed stores reject existing keys with `AlreadyExists`; S3-compatible
-  adapters should map this to `If-None-Match: *` or an equivalent create-only
-  operation.
+  file-backed stores reject existing keys with `AlreadyExists`; the unsigned
+  HTTP S3-compatible path maps this to `If-None-Match: *`, and SDK-backed
+  adapters should use the same create-only semantic or an equivalent condition.
 - `get` / `get_to_path`: read a complete object into memory or directly to a
   destination path.
 - `get_range`: read only a byte range, matching the natural S3 ranged-GET
