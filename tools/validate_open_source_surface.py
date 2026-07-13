@@ -535,6 +535,12 @@ def main() -> int:
         failures,
     )
     require(
+        "validate_matrixobjectstore_names.py" in redis_production_gate
+        and "matrixobject_name_validation.txt" in redis_production_gate,
+        "Redis production gate must run and persist the MatrixObject naming guard",
+        failures,
+    )
+    require(
         "REDIS_EXPECT_UNSUPPORTED_COLLECTIONS=1" in redis_production_gate,
         "Redis production gate must assert unsupported collection-clone commands",
         failures,
