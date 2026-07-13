@@ -520,17 +520,41 @@ def main() -> int:
         )
     for field in (
         "operations_fail_closed",
-        "condition_metadata",
+        "atomic_publish",
+        "unique_put",
+        "conditional_create",
+        "direct_upload_from_path",
+        "direct_download_to_path",
+        "metadata_head",
         "prefix_list",
-        "metadata_stat",
-        "append_write",
+        "paginated_list",
+        "delete_capability",
+        "bulk_delete",
+        "object_copy",
+        "prefix_delete",
         "byte_range_read",
+        "checksum_sha256",
+        "opaque_object_validators",
+        "object_version_ids",
         "split_services",
         "s3_compatible",
+        "local_file_compatible",
     ):
         require(
             field in cxx_object_store_backend,
             f"C++ object-store capability report must expose {field}",
+            failures,
+        )
+    for compatibility_field in (
+        "condition_metadata",
+        "metadata_stat",
+        "append_write",
+        "delete_object",
+        "copy_or_rename",
+    ):
+        require(
+            compatibility_field in cxx_object_store_backend,
+            f"C++ object-store capability report must keep compatibility alias {compatibility_field}",
             failures,
         )
     require(
