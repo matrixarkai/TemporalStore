@@ -167,6 +167,17 @@ if run_bench and not benchmark_rollup_path.exists():
 
 manifest_bytes = manifest_path.read_bytes()
 manifest = json.loads(manifest_bytes.decode("utf-8"))
+gate_artifacts = manifest.get("production_gate_artifacts", {})
+for artifact_name in gate_artifacts.get("required", []):
+    if artifact_name == "redis-production-gate-summary.json":
+        continue
+    artifact_path = result_root / artifact_name
+    if not artifact_path.exists():
+        raise SystemExit(f"missing manifest-declared production gate artifact: {artifact_path}")
+for artifact_name in gate_artifacts.get("benchmark_enabled", []):
+    artifact_path = result_root / artifact_name
+    if run_bench and not artifact_path.exists():
+        raise SystemExit(f"missing manifest-declared benchmark production gate artifact: {artifact_path}")
 summary = {
     "schema": "temporalstore_trimmed_redis_production_gate_summary_v1",
     "result_root": str(result_root),
@@ -175,6 +186,7 @@ summary = {
     "redis_surface": manifest.get("surface"),
     "redis_surface_schema": manifest.get("schema"),
     "redis_surface_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+    "production_gate_artifacts": gate_artifacts,
     "open_source_surface_validation": {
         "path": str(surface_validation_path),
         "status": "passed",
