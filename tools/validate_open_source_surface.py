@@ -8,6 +8,7 @@ non-basic Redis commands in the public build surface.
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -48,6 +49,23 @@ def rust_allowlist_body(text: str) -> str:
 
 def main() -> int:
     failures: list[str] = []
+
+    manifest = json.loads(read("compat/redis_open_source_surface_manifest.json"))
+    manifest_cxx_commands = manifest.get("cxx_commands", [])
+    manifest_blocked_commands = set(manifest.get("blocked_commands", []))
+    manifest_rust_extra_commands = set(manifest.get("rust_extra_commands", []))
+    manifest_rust_normal_helpers = set(manifest.get("rust_normal_helpers", []))
+
+    require(
+        manifest.get("schema") == "temporalstore_open_source_redis_surface_v1",
+        "Redis open-source surface manifest must use the v1 schema",
+        failures,
+    )
+    require(
+        manifest.get("cxx_command_count") == 47 and len(manifest_cxx_commands) == 47,
+        "Redis open-source surface manifest must declare exactly 47 C++ commands",
+        failures,
+    )
 
     root_cmake = read("CMakeLists.txt")
     extension_cmake = read("src/extension/CMakeLists.txt")
@@ -179,6 +197,18 @@ def main() -> int:
         r'\{RedisCommand::CmdType::k[A-Za-z0-9]+, "([A-Z0-9]+)"',
         cxx_descriptor_body,
     )
+    require(
+        cxx_advertised_commands == manifest_cxx_commands,
+        "C++ trimmed Redis descriptor table must match compat/redis_open_source_surface_manifest.json",
+        failures,
+    )
+    for command in manifest_blocked_commands:
+        require(
+            command not in cxx_advertised_commands,
+            f"Redis surface manifest blocked command {command} must not be advertised by C++",
+            failures,
+        )
+
     cxx_registered_commands = {
         name.upper(): handler
         for name, handler in re.findall(
@@ -274,15 +304,18 @@ def main() -> int:
         "HGETALL",
         "GET",
         "SET",
-        "FAPPEND",
-        "FQUERY",
-        "RISKINCR",
-        "CPCSET",
-        "FOLQUERY",
         "QUIT",
         "CLIENT",
     ):
         require(f'"{allowed}"' in body, f"Rust allowlist must keep {allowed}", failures)
+    for allowed in sorted(manifest_rust_extra_commands):
+        require(
+            f'"{allowed}"' in body,
+            f"Rust allowlist must keep manifest extra command {allowed}",
+            failures,
+        )
+    for denied in sorted(manifest_blocked_commands):
+        require(f'"{denied}"' not in body, f"Rust allowlist must not include manifest blocked command {denied}", failures)
     for denied in (
         "SADD",
         "SCARD",
@@ -469,18 +502,7 @@ def main() -> int:
     )
     for stale_claim in ("- Set: `SADD`", "- List: `LPUSH`", "- ZSet: `ZADD`"):
         require(stale_claim not in redis_docs, f"Redis docs must not keep stale claim {stale_claim}", failures)
-    for rust_helper in (
-        "MSETNX",
-        "TOUCH",
-        "EXPIREAT",
-        "PEXPIREAT",
-        "EXPIRETIME",
-        "PEXPIRETIME",
-        "GETRANGE",
-        "SETRANGE",
-        "INCRBYFLOAT",
-        "HINCRBYFLOAT",
-    ):
+    for rust_helper in sorted(manifest_rust_normal_helpers):
         require(
             f'"{rust_helper}"' in body,
             f"Rust allowlist must keep documented normal helper {rust_helper}",
