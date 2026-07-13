@@ -16,19 +16,19 @@ from dataclasses import dataclass, field
 from typing import Any
 
 Json = dict[str, Any]
-SUPPORTED_BACKENDS = {"temporalstore", "matrixkv", "s3", "objectstore"}
+SUPPORTED_BACKENDS = {"temporalstore", "matrixkv", "s3", "matrixobject"}
 KV_INLINE_BACKENDS = {"temporalstore", "matrixkv"}
-OBJECT_STORE_BACKENDS = {"s3", "objectstore"}
+OBJECT_STORE_BACKENDS = {"s3", "matrixobject"}
 OBJECT_STORE_PROVIDER_ALIASES = {
-    "matrixobject": "objectstore",
-    "matrix_object": "objectstore",
-    "matrixobjectstore": "objectstore",
-    "matrix_object_store": "objectstore",
-    "object_store": "objectstore",
-    "object": "objectstore",
-    "blob": "objectstore",
-    "blobstore": "objectstore",
-    "blob_store": "objectstore",
+    "matrix_object": "matrixobject",
+    "matrixobjectstore": "matrixobject",
+    "matrix_object_store": "matrixobject",
+    "objectstore": "matrixobject",
+    "object_store": "matrixobject",
+    "object": "matrixobject",
+    "blob": "matrixobject",
+    "blobstore": "matrixobject",
+    "blob_store": "matrixobject",
     "aws_s3": "s3",
     "s3_object": "s3",
     "s3_objectstore": "s3",
@@ -91,7 +91,7 @@ def normalize_raw_backend(value: Any) -> str:
     if backend in OBJECT_STORE_PROVIDER_ALIASES:
         return OBJECT_STORE_PROVIDER_ALIASES[backend]
     if backend not in SUPPORTED_BACKENDS:
-        raise ValueError("raw message backend must be temporalstore, matrixkv, s3, or objectstore")
+        raise ValueError("raw message backend must be temporalstore, matrixkv, s3, or matrixobject")
     return backend
 
 
@@ -126,7 +126,11 @@ class RawMessageStorageTarget:
 
     @classmethod
     def objectstore(cls, uri: str = "") -> "RawMessageStorageTarget":
-        return cls(backend="objectstore", uri=uri)
+        return cls(backend="matrixobject", uri=uri)
+
+    @classmethod
+    def matrixobject(cls, uri: str = "") -> "RawMessageStorageTarget":
+        return cls(backend="matrixobject", uri=uri)
 
     @classmethod
     def from_dict(cls, value: Json | None) -> "RawMessageStorageTarget":
@@ -161,7 +165,7 @@ class RawMessageStorageTarget:
             bucket = options.get("bucket") or "matrixark-raw-agent-messages"
             prefix = (options.get("prefix") or "raw-agent-messages").strip("/")
             uri = uri or f"s3://{bucket}/{prefix}/{event_time_ms:020d}/{event_id_hash:020d}.json"
-        elif self.backend == "objectstore":
+        elif self.backend == "matrixobject":
             base = (uri or DEFAULT_OBJECT_STORE_PREFIX).rstrip("/")
             uri = f"{base}/{event_time_ms:020d}/{event_id_hash:020d}.json"
         return RawMessageStorageTarget(
@@ -178,7 +182,7 @@ class RawMessageStorageTarget:
             return "temporalstore:context_event"
         if self.backend == "matrixkv":
             return f"matrixkv:{self.namespace}:{self.table}:{self.key}"
-        if self.backend in {"s3", "objectstore"}:
+        if self.backend in {"s3", "matrixobject"}:
             return self.uri
         return self.uri
 
@@ -252,13 +256,13 @@ def generic_object_store_contract(target: RawMessageStorageTarget | None = None)
     """
     selected = target or RawMessageStorageTarget.objectstore()
     backend = normalize_raw_backend(selected.backend)
-    provider_name = "MatrixObject" if backend == "objectstore" else "S3" if backend == "s3" else backend
+    provider_name = "MatrixObject" if backend == "matrixobject" else "S3" if backend == "s3" else backend
     return {
         "schema": "temporalstore.generic_object_store_adapter.v1",
         "backend": backend,
         "provider_name": provider_name,
-        "canonical_uri_schemes": ["matrixobject"] if backend == "objectstore" else ["s3"] if backend == "s3" else [],
-        "legacy_uri_schemes": ["matrixobjectstore", "blob"] if backend == "objectstore" else [],
+        "canonical_uri_schemes": ["matrixobject"] if backend == "matrixobject" else ["s3"] if backend == "s3" else [],
+        "legacy_uri_schemes": ["objectstore", "matrixobjectstore", "blob"] if backend == "matrixobject" else [],
         "required_operations": list(GENERIC_OBJECT_STORE_OPERATIONS),
         "required_capabilities": list(GENERIC_OBJECT_STORE_CAPABILITIES),
         "compatibility_capability_aliases": {
@@ -309,7 +313,7 @@ def raw_message_metadata_backend(target: RawMessageStorageTarget) -> str:
 
 def raw_message_provider_name(target: RawMessageStorageTarget | str) -> str:
     backend = normalize_raw_backend(target.backend if isinstance(target, RawMessageStorageTarget) else target)
-    if backend == "objectstore":
+    if backend == "matrixobject":
         return "MatrixObject"
     if backend == "s3":
         return "S3"
@@ -358,7 +362,7 @@ def raw_message_marker(
     event_key_hash = int(event_id_hash)
     payload_size = raw_message_payload_size_bytes(message)
     inline_limit = raw_message_max_inline_bytes(target) if max_inline_bytes is None else max(1, int(max_inline_bytes))
-    spill = target.backend in {"s3", "objectstore"} or payload_size > inline_limit
+    spill = target.backend in {"s3", "matrixobject"} or payload_size > inline_limit
     selected = target
     if spill and selected.backend in KV_INLINE_BACKENDS:
         selected = RawMessageStorageTarget.objectstore()
