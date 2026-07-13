@@ -551,15 +551,9 @@ for command, file_name in artifacts:
         }
     )
 
-all_qps_values = [
-    value
-    for command in commands
-    for value in (
-        command["requests_per_second_min"],
-        command["requests_per_second_max"],
-        command["requests_per_second_avg"],
-    )
-]
+command_qps_mins = [command["requests_per_second_min"] for command in commands]
+command_qps_maxes = [command["requests_per_second_max"] for command in commands]
+command_qps_avgs = [command["requests_per_second_avg"] for command in commands]
 summary = {
     "schema": "temporalstore_trimmed_redis_benchmark_summary_v1",
     "redis_surface_schema": manifest.get("schema"),
@@ -573,9 +567,9 @@ summary = {
     "requests": requests,
     "clients": clients,
     "keyspace": keyspace,
-    "requests_per_second_overall_min": min(all_qps_values),
-    "requests_per_second_overall_max": max(all_qps_values),
-    "requests_per_second_overall_avg": sum(all_qps_values) / len(all_qps_values),
+    "requests_per_second_overall_min": min(command_qps_mins),
+    "requests_per_second_overall_max": max(command_qps_maxes),
+    "requests_per_second_overall_avg": sum(command_qps_avgs) / len(command_qps_avgs),
     "commands": commands,
 }
 (result_dir / "redis-benchmark-summary.json").write_text(
