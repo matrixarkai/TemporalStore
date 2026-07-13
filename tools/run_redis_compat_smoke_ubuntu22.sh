@@ -526,6 +526,9 @@ artifacts = [
 hincrbyfloat_path = result_dir / "redis-benchmark-hincrbyfloat.csv"
 if hincrbyfloat_path.exists():
     artifacts.append(("hincrbyfloat", "redis-benchmark-hincrbyfloat.csv"))
+expected_benchmark_command_count = len(required_benchmark_commands) + (
+    1 if hincrbyfloat_path.exists() else 0
+)
 
 commands = []
 for command, file_name in artifacts:
@@ -556,6 +559,10 @@ for command, file_name in artifacts:
         }
     )
 
+if len(commands) != expected_benchmark_command_count:
+    raise SystemExit(
+        f"benchmark command count {len(commands)} does not match manifest expected {expected_benchmark_command_count}"
+    )
 command_qps_mins = [command["requests_per_second_min"] for command in commands]
 command_qps_maxes = [command["requests_per_second_max"] for command in commands]
 command_qps_avgs = [command["requests_per_second_avg"] for command in commands]
@@ -576,6 +583,7 @@ summary = {
     "required_benchmark_commands": required_benchmark_commands,
     "optional_benchmark_commands": optional_benchmark_commands,
     "hincrbyfloat_enabled": hincrbyfloat_path.exists(),
+    "expected_benchmark_command_count": expected_benchmark_command_count,
     "benchmark_command_count": len(commands),
     "requests": requests,
     "clients": clients,
