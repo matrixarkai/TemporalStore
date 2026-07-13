@@ -64,6 +64,8 @@ S3-compatible stores, Ceph RGW, local files, and future object backends:
 - `head`: return key, URI, size, SHA-256 metadata, and optional opaque object
   validators such as `etag` and `version_id` without requiring callers to know
   whether the backend stores manifests, local files, or remote object metadata.
+  Remote S3-compatible writes, path transfers, and metadata reads preserve those
+  validators whenever the backend returns them.
 - `list` / `list_page` / `delete` / `delete_objects`: full or paginated prefix
   listing and single-key or batch object deletion. Production scans should
   prefer `list_page` so S3 and MatrixObject prefixes do not have to materialize

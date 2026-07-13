@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import html
 import os
 import shutil
@@ -16,6 +17,11 @@ def safe_path(root, bucket, key):
     if not path.startswith(root_abs + os.sep):
         raise ValueError("path escaped fake S3 root")
     return path
+
+
+def object_validators(data):
+    digest = hashlib.sha256(data).hexdigest()
+    return f'"sha256:{digest}"', digest[:16]
 
 
 class FakeS3Handler(BaseHTTPRequestHandler):
@@ -41,6 +47,16 @@ class FakeS3Handler(BaseHTTPRequestHandler):
         if body and self.command != "HEAD":
             self.wfile.write(body)
 
+    def send_status_with_validators(self, code, body, validator_data):
+        etag, version_id = object_validators(validator_data)
+        self.send_response(code)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("ETag", etag)
+        self.send_header("x-amz-version-id", version_id)
+        self.end_headers()
+        if body and self.command != "HEAD":
+            self.wfile.write(body)
+
     def do_PUT(self):
         bucket, key, _ = self.parse_path()
         if not bucket or not key:
@@ -59,7 +75,9 @@ class FakeS3Handler(BaseHTTPRequestHandler):
                 self.send_status(404, b"not found")
                 return
             shutil.copyfile(src, dst)
-            self.send_status(200, b"<CopyObjectResult/>")
+            with open(src, "rb") as fh:
+                source_data = fh.read()
+            self.send_status_with_validators(200, b"<CopyObjectResult/>", source_data)
             return
         if self.headers.get("If-None-Match") == "*" and os.path.exists(dst):
             self.send_status(412, b"precondition failed")
@@ -68,7 +86,7 @@ class FakeS3Handler(BaseHTTPRequestHandler):
         data = self.rfile.read(length)
         with open(dst, "wb") as fh:
             fh.write(data)
-        self.send_status(200)
+        self.send_status_with_validators(200, b"", data)
 
     def do_GET(self):
         bucket, key, parsed = self.parse_path()
@@ -133,6 +151,11 @@ class FakeS3Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(length))
         if range_header:
             self.send_header("Content-Range", f"bytes {begin}-{end}/{size}")
+        with open(path, "rb") as fh:
+            validator_data = fh.read()
+        etag, version_id = object_validators(validator_data)
+        self.send_header("ETag", etag)
+        self.send_header("x-amz-version-id", version_id)
         self.end_headers()
         if not head_only:
             with open(path, "rb") as fh:

@@ -479,6 +479,11 @@ fn http_header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a st
         .map(|(_, value)| value.as_str())
 }
 
+fn apply_http_object_validators(metadata: &mut ObjectMetadata, headers: &[(String, String)]) {
+    metadata.etag = http_header(headers, "etag").map(ToString::to_string);
+    metadata.version_id = http_header(headers, "x-amz-version-id").map(ToString::to_string);
+}
+
 fn parse_s3_list_keys(xml: &str) -> Vec<String> {
     parse_xml_tag_values(xml, "Key")
 }
@@ -1264,17 +1269,14 @@ impl RemoteObjectStore {
         file.flush().await?;
         drop(file);
         tokio::fs::rename(&temp_path, path).await?;
-        Ok(ObjectMetadata::from_parts(
+        let mut metadata = ObjectMetadata::from_parts(
             key,
             self.uri(key),
             size_bytes,
             hex::encode(hasher.finalize()),
-        ))
-    }
-
-    async fn http_metadata_from_get(&self, key: &str) -> Result<ObjectMetadata, ObjectStoreError> {
-        let bytes = self.get(key).await?;
-        Ok(ObjectMetadata::from_bytes(key, self.uri(key), &bytes))
+        );
+        apply_http_object_validators(&mut metadata, &_headers);
+        Ok(metadata)
     }
 
     fn public_key_from_remote(&self, object_key: &str) -> Option<String> {
@@ -3024,7 +3026,9 @@ impl ObjectStore for RemoteObjectStore {
             )
             .await?;
         map_http_status(response.status, key, || Ok(()))?;
-        Ok(ObjectMetadata::from_bytes(key, self.uri(key), &bytes))
+        let mut metadata = ObjectMetadata::from_bytes(key, self.uri(key), &bytes);
+        apply_http_object_validators(&mut metadata, &response.headers);
+        Ok(metadata)
     }
 
     async fn put_path_unique(
@@ -3040,12 +3044,14 @@ impl ObjectStore for RemoteObjectStore {
             )
             .await?;
         map_http_status(response.status, key, || Ok(()))?;
-        Ok(ObjectMetadata::from_parts(
+        let mut metadata = ObjectMetadata::from_parts(
             key,
             self.uri(key),
             tokio::fs::metadata(path).await?.len(),
             sha256_file_hex(path).await?,
-        ))
+        );
+        apply_http_object_validators(&mut metadata, &response.headers);
+        Ok(metadata)
     }
 
     async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
@@ -3171,7 +3177,7 @@ impl ObjectStore for RemoteObjectStore {
             )
             .await?;
         map_http_status(response.status, destination_key, || Ok(()))?;
-        self.http_metadata_from_get(destination_key).await
+        self.head(destination_key).await
     }
 
     async fn head(&self, key: &str) -> Result<ObjectMetadata, ObjectStoreError> {
@@ -3183,9 +3189,7 @@ impl ObjectStore for RemoteObjectStore {
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(0);
         let mut metadata = ObjectMetadata::from_parts(key, self.uri(key), size_bytes, "");
-        metadata.etag = http_header(&response.headers, "etag").map(ToString::to_string);
-        metadata.version_id =
-            http_header(&response.headers, "x-amz-version-id").map(ToString::to_string);
+        apply_http_object_validators(&mut metadata, &response.headers);
         Ok(metadata)
     }
 
@@ -3198,7 +3202,9 @@ impl ObjectStore for RemoteObjectStore {
             .http_request(self.plan_put(key)?, Vec::new(), bytes.clone())
             .await?;
         map_http_status(response.status, key, || Ok(()))?;
-        Ok(ObjectMetadata::from_bytes(key, self.uri(key), &bytes))
+        let mut metadata = ObjectMetadata::from_bytes(key, self.uri(key), &bytes);
+        apply_http_object_validators(&mut metadata, &response.headers);
+        Ok(metadata)
     }
 
     async fn delete_prefix(&self, prefix: &str) -> Result<usize, ObjectStoreError> {
@@ -4751,6 +4757,11 @@ mod tests {
             .unwrap();
         assert_eq!(metadata.uri, "s3://bucket/base/objects/a.bin");
         assert_eq!(
+            metadata.etag.as_deref(),
+            Some("\"sha256:0765c4430851d16c57f30d0feac4ecfcd83bfb0e28bd1076d1484dd187f22277\"")
+        );
+        assert_eq!(metadata.version_id.as_deref(), Some("0765c4430851d16c"));
+        assert_eq!(
             store.get("objects/a.bin").await.unwrap(),
             Bytes::from_static(b"hello remote object")
         );
@@ -4772,7 +4783,10 @@ mod tests {
             store.get_range("objects/a.bin", 6, 6).await.unwrap(),
             Bytes::from_static(b"remote")
         );
-        assert_eq!(store.head("objects/a.bin").await.unwrap().size_bytes, 19);
+        let head = store.head("objects/a.bin").await.unwrap();
+        assert_eq!(head.size_bytes, 19);
+        assert_eq!(head.etag, metadata.etag);
+        assert_eq!(head.version_id, metadata.version_id);
 
         let path_dir = tempfile::tempdir().unwrap();
         let source_path = path_dir.path().join("source.bin");
@@ -4785,11 +4799,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(uploaded.size_bytes, 19);
+        assert_eq!(uploaded.version_id.as_deref(), Some("9beaa3b9a425f1c7"));
         let downloaded = store
             .get_to_path("objects/path.bin", &destination_path)
             .await
             .unwrap();
         assert_eq!(downloaded.size_bytes, 19);
+        assert_eq!(downloaded.etag, uploaded.etag);
+        assert_eq!(downloaded.version_id, uploaded.version_id);
         assert_eq!(
             tokio::fs::read(&destination_path).await.unwrap(),
             b"path upload payload"
@@ -5140,8 +5157,14 @@ mod tests {
                     let Some(source) = source else {
                         return write_test_s3_response(stream, 404, &[], b"not found").await;
                     };
-                    objects.lock().await.insert(key, source);
-                    write_test_s3_response(stream, 200, &[], b"<CopyObjectResult/>").await
+                    objects.lock().await.insert(key, source.clone());
+                    let etag = test_s3_etag(&source);
+                    let version_id = test_s3_version_id(&source);
+                    let headers = [
+                        ("ETag", etag.as_str()),
+                        ("x-amz-version-id", version_id.as_str()),
+                    ];
+                    write_test_s3_response(stream, 200, &headers, b"<CopyObjectResult/>").await
                 } else {
                     if headers
                         .get("if-none-match")
@@ -5151,15 +5174,23 @@ mod tests {
                         return write_test_s3_response(stream, 412, &[], b"precondition failed")
                             .await;
                     }
+                    let etag = test_s3_etag(&body);
+                    let version_id = test_s3_version_id(&body);
                     objects.lock().await.insert(key, body);
-                    write_test_s3_response(stream, 200, &[], b"").await
+                    let headers = [
+                        ("ETag", etag.as_str()),
+                        ("x-amz-version-id", version_id.as_str()),
+                    ];
+                    write_test_s3_response(stream, 200, &headers, b"").await
                 }
             }
             "GET" | "HEAD" => {
-                let Some(data) = objects.lock().await.get(&key).cloned() else {
+                let Some(object_data) = objects.lock().await.get(&key).cloned() else {
                     return write_test_s3_response(stream, 404, &[], b"not found").await;
                 };
-                let mut data = data;
+                let etag = test_s3_etag(&object_data);
+                let version_id = test_s3_version_id(&object_data);
+                let mut data = object_data;
                 let status = if let Some(range) = headers
                     .get("range")
                     .and_then(|value| value.strip_prefix("bytes="))
@@ -5175,8 +5206,12 @@ mod tests {
                 } else {
                     200
                 };
-                let headers = [("Content-Length", data.len().to_string())];
-                let header_refs = [("Content-Length", headers[0].1.as_str())];
+                let content_length = data.len().to_string();
+                let header_refs = [
+                    ("Content-Length", content_length.as_str()),
+                    ("ETag", etag.as_str()),
+                    ("x-amz-version-id", version_id.as_str()),
+                ];
                 if method == "HEAD" {
                     write_test_s3_response(stream, status, &header_refs, b"").await
                 } else {
@@ -5242,6 +5277,14 @@ mod tests {
             .replace('>', "&gt;")
             .replace('"', "&quot;")
             .replace('\'', "&apos;")
+    }
+
+    fn test_s3_etag(data: &[u8]) -> String {
+        format!("\"sha256:{}\"", super::sha256_hex(data))
+    }
+
+    fn test_s3_version_id(data: &[u8]) -> String {
+        super::sha256_hex(data).chars().take(16).collect()
     }
 
     fn test_xml_tag_values(xml: &str, tag: &str) -> Vec<String> {
