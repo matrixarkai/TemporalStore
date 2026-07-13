@@ -51,6 +51,7 @@ pub struct ObjectStoreCapabilities {
     pub uri_scheme: String,
     pub runtime_linked: bool,
     pub operations_fail_closed: bool,
+    pub atomic_publish: bool,
     pub atomic_put: bool,
     pub unique_put: bool,
     pub conditional_create: bool,
@@ -59,13 +60,18 @@ pub struct ObjectStoreCapabilities {
     pub metadata_head: bool,
     pub prefix_list: bool,
     pub paginated_list: bool,
+    pub delete_capability: bool,
     pub delete: bool,
     pub bulk_delete: bool,
+    pub object_copy: bool,
     pub copy_object: bool,
+    pub prefix_delete: bool,
     pub delete_prefix: bool,
     pub byte_range_read: bool,
     pub checksum_sha256: bool,
+    pub opaque_object_validators: bool,
     pub object_etag: bool,
+    pub object_version_ids: bool,
     pub object_version_id: bool,
     pub split_services: bool,
 }
@@ -82,6 +88,7 @@ impl ObjectStoreCapabilities {
             uri_scheme,
             runtime_linked: true,
             operations_fail_closed: false,
+            atomic_publish: true,
             atomic_put: true,
             unique_put: true,
             conditional_create: true,
@@ -90,13 +97,18 @@ impl ObjectStoreCapabilities {
             metadata_head: true,
             prefix_list: true,
             paginated_list: true,
+            delete_capability: true,
             delete: true,
             bulk_delete: true,
+            object_copy: true,
             copy_object: true,
+            prefix_delete: true,
             delete_prefix: true,
             byte_range_read: true,
             checksum_sha256: true,
+            opaque_object_validators: true,
             object_etag: true,
+            object_version_ids: false,
             object_version_id: false,
             split_services: false,
         }
@@ -108,6 +120,7 @@ impl ObjectStoreCapabilities {
             uri_scheme: uri_scheme.into(),
             runtime_linked: true,
             operations_fail_closed: false,
+            atomic_publish: true,
             atomic_put: true,
             unique_put: true,
             conditional_create: true,
@@ -116,13 +129,18 @@ impl ObjectStoreCapabilities {
             metadata_head: true,
             prefix_list: true,
             paginated_list: true,
+            delete_capability: true,
             delete: true,
             bulk_delete: true,
+            object_copy: true,
             copy_object: true,
+            prefix_delete: true,
             delete_prefix: true,
             byte_range_read: true,
             checksum_sha256: true,
+            opaque_object_validators: true,
             object_etag: true,
+            object_version_ids: true,
             object_version_id: true,
             split_services,
         }
@@ -134,6 +152,7 @@ impl ObjectStoreCapabilities {
             uri_scheme: backend.uri_scheme().to_string(),
             runtime_linked: false,
             operations_fail_closed: true,
+            atomic_publish: false,
             atomic_put: false,
             unique_put: false,
             conditional_create: false,
@@ -142,13 +161,18 @@ impl ObjectStoreCapabilities {
             metadata_head: false,
             prefix_list: false,
             paginated_list: false,
+            delete_capability: false,
             delete: false,
             bulk_delete: false,
+            object_copy: false,
             copy_object: false,
+            prefix_delete: false,
             delete_prefix: false,
             byte_range_read: false,
             checksum_sha256: false,
+            opaque_object_validators: false,
             object_etag: false,
+            object_version_ids: false,
             object_version_id: false,
             split_services: false,
         }
@@ -166,6 +190,7 @@ impl ObjectStoreCapabilities {
             uri_scheme: backend.uri_scheme().to_string(),
             runtime_linked: false,
             operations_fail_closed: true,
+            atomic_publish: supports_object_api,
             atomic_put: supports_object_api,
             unique_put: supports_object_api,
             conditional_create: supports_object_api,
@@ -174,13 +199,18 @@ impl ObjectStoreCapabilities {
             metadata_head: supports_object_api,
             prefix_list: supports_object_api,
             paginated_list: supports_object_api,
+            delete_capability: supports_object_api,
             delete: supports_object_api,
             bulk_delete: supports_object_api,
+            object_copy: supports_object_api,
             copy_object: supports_object_api,
+            prefix_delete: supports_object_api,
             delete_prefix: supports_object_api,
             byte_range_read: supports_object_api,
             checksum_sha256: supports_object_api,
+            opaque_object_validators: supports_object_api,
             object_etag: supports_object_api,
+            object_version_ids: supports_object_api,
             object_version_id: supports_object_api,
             split_services: false,
         }
@@ -717,6 +747,7 @@ pub trait ObjectStore: Send + Sync {
             uri_scheme: "custom".to_string(),
             runtime_linked: true,
             operations_fail_closed: false,
+            atomic_publish: true,
             atomic_put: true,
             unique_put: true,
             conditional_create: true,
@@ -725,13 +756,18 @@ pub trait ObjectStore: Send + Sync {
             metadata_head: false,
             prefix_list: true,
             paginated_list: true,
+            delete_capability: true,
             delete: true,
             bulk_delete: true,
+            object_copy: true,
             copy_object: true,
+            prefix_delete: true,
             delete_prefix: true,
             byte_range_read: false,
             checksum_sha256: false,
+            opaque_object_validators: false,
             object_etag: false,
+            object_version_ids: false,
             object_version_id: false,
             split_services: false,
         }
@@ -3697,16 +3733,22 @@ mod tests {
         assert_eq!(capabilities.uri_scheme, "matrixobject");
         assert!(capabilities.runtime_linked);
         assert!(!capabilities.operations_fail_closed);
+        assert!(capabilities.atomic_publish);
         assert!(capabilities.atomic_put);
         assert!(capabilities.unique_put);
         assert!(capabilities.conditional_create);
         assert!(capabilities.copy_object);
+        assert!(capabilities.object_copy);
         assert!(capabilities.delete_prefix);
+        assert!(capabilities.prefix_delete);
         assert!(capabilities.paginated_list);
+        assert!(capabilities.delete_capability);
         assert!(capabilities.bulk_delete);
         assert!(capabilities.byte_range_read);
         assert!(capabilities.checksum_sha256);
+        assert!(capabilities.opaque_object_validators);
         assert!(capabilities.object_etag);
+        assert!(capabilities.object_version_ids);
         assert!(capabilities.object_version_id);
         assert!(capabilities.split_services);
 
@@ -4722,14 +4764,20 @@ mod tests {
         assert_eq!(capabilities.uri_scheme, "s3");
         assert!(!capabilities.runtime_linked);
         assert!(capabilities.operations_fail_closed);
+        assert!(capabilities.atomic_publish);
         assert!(capabilities.atomic_put);
         assert!(capabilities.conditional_create);
         assert!(capabilities.copy_object);
+        assert!(capabilities.object_copy);
         assert!(capabilities.delete_prefix);
+        assert!(capabilities.prefix_delete);
         assert!(capabilities.paginated_list);
+        assert!(capabilities.delete_capability);
         assert!(capabilities.bulk_delete);
         assert!(capabilities.byte_range_read);
+        assert!(capabilities.opaque_object_validators);
         assert!(capabilities.object_etag);
+        assert!(capabilities.object_version_ids);
         assert!(capabilities.object_version_id);
 
         let topology = store.topology();
