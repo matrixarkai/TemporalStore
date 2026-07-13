@@ -4669,8 +4669,14 @@ mod tests {
                 other => panic!("unexpected COMMAND entry: {other:?}"),
             })
             .collect::<Vec<_>>();
+        let command_count = run(&mut state, vec!["COMMAND", "COUNT"]);
+        assert_eq!(
+            command_count,
+            RespValue::Integer(command_names.len() as i64)
+        );
         for allowed in [
-            "GET", "SET", "HSET", "HGET", "FAPPEND", "FQUERY", "RISKINCR", "CPCSET", "FOLQUERY",
+            "CLIENT", "QUIT", "GET", "SET", "HSET", "HGET", "FAPPEND", "FQUERY", "RISKINCR",
+            "CPCSET", "FOLQUERY",
         ] {
             assert!(
                 command_names.contains(&allowed.to_string()),
@@ -4701,6 +4707,18 @@ mod tests {
             run(&mut state, vec!["RISKINCR", "risk", "10", "5"]),
             RespValue::SimpleString("OK".to_string())
         );
+        assert_eq!(
+            run(&mut state, vec!["CLIENT", "SETNAME", "matrixark-smoke"]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(&mut state, vec!["CLIENT", "GETNAME"]),
+            RespValue::Bulk(None)
+        );
+        assert_eq!(
+            run(&mut state, vec!["QUIT"]),
+            RespValue::SimpleString("OK".to_string())
+        );
         assert!(matches!(
             run(&mut state, vec!["LPUSH", "list", "v"]),
             RespValue::Error(message) if message.contains("open-source Redis surface")
@@ -4709,6 +4727,14 @@ mod tests {
             run(&mut state, vec!["FADD", "feature", "10", "2"]),
             RespValue::Error(message) if message.contains("open-source Redis surface")
         ));
+        let info = run(&mut state, vec!["INFO", "stats"]);
+        let RespValue::Bulk(Some(info)) = info else {
+            panic!("INFO stats must return bulk string");
+        };
+        let info = String::from_utf8(info).unwrap();
+        assert!(info.contains("rejected_commands:2"), "{info}");
+        assert!(info.contains("open_source_rejected_commands:2"), "{info}");
+        assert!(info.contains("unsupported_commands:0"), "{info}");
 
         std::env::remove_var("TEMPORALSTORE_OPEN_SOURCE_SURFACE");
     }
