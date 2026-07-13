@@ -76,6 +76,17 @@ pub struct ObjectStoreCapabilities {
     pub split_services: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CanonicalObjectStoreCapabilities {
+    pub backend: String,
+    pub uri_scheme: String,
+    pub runtime_linked: bool,
+    pub operations_fail_closed: bool,
+    pub operations: Vec<String>,
+    pub validators: Vec<String>,
+    pub split_services: bool,
+}
+
 impl ObjectStoreCapabilities {
     pub fn file(uri_scheme: impl Into<String>) -> Self {
         let uri_scheme = uri_scheme.into();
@@ -213,6 +224,68 @@ impl ObjectStoreCapabilities {
             object_version_ids: supports_object_api,
             object_version_id: supports_object_api,
             split_services: false,
+        }
+    }
+
+    pub fn canonical(&self) -> CanonicalObjectStoreCapabilities {
+        let mut operations = Vec::new();
+        let mut validators = Vec::new();
+        if self.atomic_publish {
+            operations.push("atomic_publish".to_string());
+        }
+        if self.unique_put {
+            operations.push("unique_put".to_string());
+        }
+        if self.conditional_create {
+            operations.push("conditional_create".to_string());
+        }
+        if self.direct_upload_from_path {
+            operations.push("direct_upload_from_path".to_string());
+        }
+        if self.direct_download_to_path {
+            operations.push("direct_download_to_path".to_string());
+        }
+        if self.metadata_head {
+            operations.push("metadata_head".to_string());
+        }
+        if self.prefix_list {
+            operations.push("prefix_list".to_string());
+        }
+        if self.paginated_list {
+            operations.push("paginated_list".to_string());
+        }
+        if self.delete_capability {
+            operations.push("delete_capability".to_string());
+        }
+        if self.bulk_delete {
+            operations.push("bulk_delete".to_string());
+        }
+        if self.object_copy {
+            operations.push("object_copy".to_string());
+        }
+        if self.prefix_delete {
+            operations.push("prefix_delete".to_string());
+        }
+        if self.byte_range_read {
+            operations.push("byte_range_read".to_string());
+        }
+        if self.checksum_sha256 {
+            validators.push("checksum_sha256".to_string());
+        }
+        if self.opaque_object_validators {
+            validators.push("opaque_object_validators".to_string());
+        }
+        if self.object_version_ids {
+            validators.push("object_version_ids".to_string());
+        }
+        CanonicalObjectStoreCapabilities {
+            backend: self.backend.clone(),
+            uri_scheme: self.uri_scheme.clone(),
+            runtime_linked: self.runtime_linked,
+            operations_fail_closed: self.operations_fail_closed,
+            operations,
+            validators,
+            split_services: self.split_services,
         }
     }
 }
@@ -771,6 +844,9 @@ pub trait ObjectStore: Send + Sync {
             object_version_id: false,
             split_services: false,
         }
+    }
+    fn canonical_capabilities(&self) -> CanonicalObjectStoreCapabilities {
+        self.capabilities().canonical()
     }
     fn topology(&self) -> ObjectStoreTopology {
         let capabilities = self.capabilities();
@@ -3769,6 +3845,79 @@ mod tests {
             .services
             .iter()
             .all(|service| service.local_root.is_some()));
+    }
+
+    #[tokio::test]
+    async fn canonical_object_store_capabilities_hide_compatibility_aliases() {
+        let dir = tempfile::tempdir().unwrap();
+        let matrixobject = SharedObjectStore::from_backend_root(
+            SharedObjectStoreBackend::MatrixObjectStore,
+            dir.path(),
+        )
+        .unwrap()
+        .canonical_capabilities();
+        assert_eq!(matrixobject.backend, "matrixobject");
+        assert_eq!(matrixobject.uri_scheme, "matrixobject");
+        assert!(matrixobject.runtime_linked);
+        assert!(!matrixobject.operations_fail_closed);
+        assert!(matrixobject.split_services);
+        for required in [
+            "atomic_publish",
+            "unique_put",
+            "conditional_create",
+            "direct_upload_from_path",
+            "direct_download_to_path",
+            "metadata_head",
+            "prefix_list",
+            "paginated_list",
+            "delete_capability",
+            "bulk_delete",
+            "object_copy",
+            "prefix_delete",
+            "byte_range_read",
+        ] {
+            assert!(
+                matrixobject.operations.iter().any(|op| op == required),
+                "missing canonical operation {required}"
+            );
+        }
+        for legacy in ["atomic_put", "copy_object", "delete_prefix", "object_etag"] {
+            assert!(
+                !matrixobject.operations.iter().any(|op| op == legacy),
+                "legacy alias leaked into canonical operations: {legacy}"
+            );
+            assert!(
+                !matrixobject
+                    .validators
+                    .iter()
+                    .any(|validator| validator == legacy),
+                "legacy alias leaked into canonical validators: {legacy}"
+            );
+        }
+        assert!(matrixobject
+            .validators
+            .iter()
+            .any(|validator| validator == "checksum_sha256"));
+        assert!(matrixobject
+            .validators
+            .iter()
+            .any(|validator| validator == "object_version_ids"));
+
+        let s3 = SharedObjectStore::from_config(
+            SharedObjectStoreConfig::from_uri("s3://bucket/prefix", dir.path())
+                .with_endpoint("https://s3.example.invalid"),
+        )
+        .unwrap()
+        .canonical_capabilities();
+        assert_eq!(s3.backend, "s3");
+        assert_eq!(s3.uri_scheme, "s3");
+        assert!(!s3.runtime_linked);
+        assert!(s3.operations_fail_closed);
+        assert!(s3.operations.iter().any(|op| op == "byte_range_read"));
+        assert!(s3
+            .validators
+            .iter()
+            .any(|validator| validator == "opaque_object_validators"));
     }
 
     #[tokio::test]
