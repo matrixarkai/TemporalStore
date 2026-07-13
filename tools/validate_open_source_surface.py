@@ -329,6 +329,34 @@ def main() -> int:
         "Redis production gate must assert unsupported collection-clone commands",
         failures,
     )
+    require(
+        'BENCH_KEYSPACE="${BENCH_KEYSPACE}"' in redis_production_gate,
+        "Redis production gate must pass benchmark keyspace into the live smoke",
+        failures,
+    )
+    for benchmark_command in ("HSET", "HGET", "HINCRBY", "INCR", "EXPIRE"):
+        require(
+            benchmark_command in redis_compat_smoke,
+            f"Redis compatibility benchmark must cover {benchmark_command}",
+            failures,
+        )
+        require(
+            f"`{benchmark_command}`" in redis_docs,
+            f"Redis docs must describe {benchmark_command} benchmark coverage",
+            failures,
+        )
+    for artifact_name in (
+        "redis-benchmark-hset.csv",
+        "redis-benchmark-hget.csv",
+        "redis-benchmark-hincrby.csv",
+        "redis-benchmark-incr.csv",
+        "redis-benchmark-expire.csv",
+    ):
+        require(
+            artifact_name in redis_compat_smoke,
+            f"Redis benchmark must write {artifact_name}",
+            failures,
+        )
     for stale_claim in ("- Set: `SADD`", "- List: `LPUSH`", "- ZSet: `ZADD`"):
         require(stale_claim not in redis_docs, f"Redis docs must not keep stale claim {stale_claim}", failures)
     for rust_helper in (

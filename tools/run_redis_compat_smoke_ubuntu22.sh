@@ -10,6 +10,7 @@ TIMEOUT_S="${TIMEOUT_S:-5}"
 RUN_BENCH="${RUN_BENCH:-0}"
 BENCH_REQUESTS="${BENCH_REQUESTS:-1000}"
 BENCH_CLIENTS="${BENCH_CLIENTS:-8}"
+BENCH_KEYSPACE="${BENCH_KEYSPACE:-100000}"
 REDIS_COMPAT_SURFACE="${REDIS_COMPAT_SURFACE:-trimmed}"
 REDIS_TEST_MODEL_COMMANDS="${REDIS_TEST_MODEL_COMMANDS:-0}"
 REDIS_EXPECT_UNSUPPORTED_COLLECTIONS="${REDIS_EXPECT_UNSUPPORTED_COLLECTIONS:-0}"
@@ -416,14 +417,48 @@ if [[ "${RUN_BENCH}" == "1" ]]; then
     echo "missing redis-benchmark; install redis-tools" >&2
     exit 2
   fi
-  bench_args=(-h "${REDIS_HOST}" -p "${REDIS_PORT}" -n "${BENCH_REQUESTS}" -c "${BENCH_CLIENTS}" -t set,get --csv)
+  bench_args=(-h "${REDIS_HOST}" -p "${REDIS_PORT}" -n "${BENCH_REQUESTS}" -c "${BENCH_CLIENTS}" --csv)
   if [[ -n "${REDIS_AUTH}" ]]; then
     bench_args+=(-a "${REDIS_AUTH}")
   fi
-  redis-benchmark "${bench_args[@]}" \
+
+  redis-benchmark "${bench_args[@]}" -t set,get \
     > "${RESULT_DIR}/redis-benchmark.csv" \
     2> "${RESULT_DIR}/redis-benchmark.err"
-  echo "PASS redis_benchmark" | tee -a "${SUMMARY}"
+  echo "PASS redis_benchmark_set_get" | tee -a "${SUMMARY}"
+
+  redis_cmd HSET "${KEY_PREFIX}:bench:hash" hit value >/dev/null
+  redis_cmd SET "${KEY_PREFIX}:bench:string" value >/dev/null
+
+  redis-benchmark "${bench_args[@]}" -r "${BENCH_KEYSPACE}" \
+    HSET "${KEY_PREFIX}:bench:hash" __rand_int__ value \
+    > "${RESULT_DIR}/redis-benchmark-hset.csv" \
+    2> "${RESULT_DIR}/redis-benchmark-hset.err"
+  echo "PASS redis_benchmark_hset" | tee -a "${SUMMARY}"
+
+  redis-benchmark "${bench_args[@]}" \
+    HGET "${KEY_PREFIX}:bench:hash" hit \
+    > "${RESULT_DIR}/redis-benchmark-hget.csv" \
+    2> "${RESULT_DIR}/redis-benchmark-hget.err"
+  echo "PASS redis_benchmark_hget" | tee -a "${SUMMARY}"
+
+  redis-benchmark "${bench_args[@]}" -r "${BENCH_KEYSPACE}" \
+    HINCRBY "${KEY_PREFIX}:bench:hash" counter:__rand_int__ 1 \
+    > "${RESULT_DIR}/redis-benchmark-hincrby.csv" \
+    2> "${RESULT_DIR}/redis-benchmark-hincrby.err"
+  echo "PASS redis_benchmark_hincrby" | tee -a "${SUMMARY}"
+
+  redis-benchmark "${bench_args[@]}" -r "${BENCH_KEYSPACE}" \
+    INCR "${KEY_PREFIX}:bench:counter:__rand_int__" \
+    > "${RESULT_DIR}/redis-benchmark-incr.csv" \
+    2> "${RESULT_DIR}/redis-benchmark-incr.err"
+  echo "PASS redis_benchmark_incr" | tee -a "${SUMMARY}"
+
+  redis-benchmark "${bench_args[@]}" \
+    EXPIRE "${KEY_PREFIX}:bench:string" 60 \
+    > "${RESULT_DIR}/redis-benchmark-expire.csv" \
+    2> "${RESULT_DIR}/redis-benchmark-expire.err"
+  echo "PASS redis_benchmark_expire" | tee -a "${SUMMARY}"
 fi
 
 echo "PASS Redis compatibility smoke" | tee -a "${SUMMARY}"

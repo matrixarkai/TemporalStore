@@ -10,6 +10,7 @@ BASE_PORT="${BASE_PORT:-23500}"
 RUN_BENCH="${RUN_BENCH:-1}"
 BENCH_REQUESTS="${BENCH_REQUESTS:-1000}"
 BENCH_CLIENTS="${BENCH_CLIENTS:-8}"
+BENCH_KEYSPACE="${BENCH_KEYSPACE:-100000}"
 
 mkdir -p "${RESULT_ROOT}"
 
@@ -48,6 +49,7 @@ for i in $(seq 1 "${REPEAT}"); do
     RUN_BENCH="${RUN_BENCH}" \
     BENCH_REQUESTS="${BENCH_REQUESTS}" \
     BENCH_CLIENTS="${BENCH_CLIENTS}" \
+    BENCH_KEYSPACE="${BENCH_KEYSPACE}" \
     CLUSTER_NAME="${cluster_name}" \
     MS_PORT="${port_base}" \
     MS_RAFT_PORT="$((port_base + 10))" \
