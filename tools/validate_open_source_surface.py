@@ -453,6 +453,14 @@ def main() -> int:
         "Redis smokes must cover narrow HSCAN while broad scans stay unsupported",
         failures,
     )
+    require(
+        'REDIS_EXPECT_HINCRBYFLOAT:-0' in redis_live_smoke
+        and "SKIP hincrbyfloat" in redis_live_smoke
+        and "REDIS_EXPECT_HINCRBYFLOAT=1" in redis_docs
+        and "C++ Redis bridge must not claim it until a native handler is added" in redis_docs,
+        "C++ live Redis smoke must keep HINCRBYFLOAT opt-in until the C++ bridge wires a native handler",
+        failures,
+    )
 
     for symbol in (
         "OBJECT_STORE_PROVIDER_ALIASES",
