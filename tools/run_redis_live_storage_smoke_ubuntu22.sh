@@ -16,6 +16,7 @@ SERVER_PORT="${SERVER_PORT:-18101}"
 MAX_SLOT="${MAX_SLOT:-1073741823}"
 REDIS_COMPAT_SURFACE="${REDIS_COMPAT_SURFACE:-trimmed}"
 REDIS_EXPECT_UNSUPPORTED_COLLECTIONS="${REDIS_EXPECT_UNSUPPORTED_COLLECTIONS:-0}"
+REDIS_CXX_TRIMMED_COMMAND_COUNT="${REDIS_CXX_TRIMMED_COMMAND_COUNT:-47}"
 
 smoke_out="${SMOKE_DIR}.out"
 bin_dir="${SMOKE_DIR}.bin"
@@ -147,6 +148,7 @@ expect_contains_line() {
 expect_contains_line info_surface redis_surface:trimmed_open_source INFO stats
 expect_contains_line info_surface_schema redis_surface_schema:temporalstore_open_source_redis_surface_v1 INFO stats
 expect_contains_line info_surface_blocked_families redis_surface_blocked_command_family_count:10 INFO stats
+expect_eq command_count "${REDIS_CXX_TRIMMED_COMMAND_COUNT}" COMMAND COUNT
 expect_eq ping PONG PING
 expect_eq set OK SET rk rv
 expect_eq get rv GET rk

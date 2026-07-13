@@ -15,6 +15,8 @@ BENCH_KEYSPACE="${BENCH_KEYSPACE:-100000}"
 REDIS_COMPAT_SURFACE="${REDIS_COMPAT_SURFACE:-trimmed}"
 REDIS_TEST_MODEL_COMMANDS="${REDIS_TEST_MODEL_COMMANDS:-0}"
 REDIS_EXPECT_UNSUPPORTED_COLLECTIONS="${REDIS_EXPECT_UNSUPPORTED_COLLECTIONS:-0}"
+REDIS_TRIMMED_COMMAND_COUNT_MIN="${REDIS_TRIMMED_COMMAND_COUNT_MIN:-47}"
+REDIS_TRIMMED_COMMAND_COUNT_MAX="${REDIS_TRIMMED_COMMAND_COUNT_MAX:-77}"
 
 mkdir -p "${RESULT_DIR}"
 SUMMARY="${RESULT_DIR}/summary.txt"
@@ -97,12 +99,17 @@ expect_eq client_id 0 CLIENT ID
 command_count="$(redis_cmd COMMAND COUNT 2>/dev/null || true)"
 printf '%s
 ' "${command_count}" > "${RESULT_DIR}/command_count.out"
-if [[ "${command_count}" =~ ^[0-9]+$ ]]; then
-  echo "PASS command_count" | tee -a "${SUMMARY}"
-else
+if ! [[ "${command_count}" =~ ^[0-9]+$ ]]; then
   echo "FAIL command_count: expected integer got [${command_count}]" | tee -a "${SUMMARY}"
   exit 1
 fi
+if [[ "${REDIS_COMPAT_SURFACE}" == "trimmed" ]] && \
+   ([[ "${command_count}" -lt "${REDIS_TRIMMED_COMMAND_COUNT_MIN}" ]] || \
+    [[ "${command_count}" -gt "${REDIS_TRIMMED_COMMAND_COUNT_MAX}" ]]); then
+  echo "FAIL command_count: trimmed surface count ${command_count} outside ${REDIS_TRIMMED_COMMAND_COUNT_MIN}-${REDIS_TRIMMED_COMMAND_COUNT_MAX}" | tee -a "${SUMMARY}"
+  exit 1
+fi
+echo "PASS command_count" | tee -a "${SUMMARY}"
 expect_contains_line info_surface redis_surface:trimmed_open_source INFO stats
 expect_contains_line info_surface_schema redis_surface_schema:temporalstore_open_source_redis_surface_v1 INFO stats
 expect_contains_line info_surface_blocked_families redis_surface_blocked_command_family_count:10 INFO stats
