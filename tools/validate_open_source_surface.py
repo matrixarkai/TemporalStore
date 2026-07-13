@@ -201,8 +201,35 @@ def main() -> int:
         "object_store_contract",
     ):
         require(symbol in raw_storage_contract, f"raw-message contract must expose {symbol}", failures)
-    for operation in ("put_atomic", "head", "list", "delete"):
+    for operation in (
+        "put_atomic",
+        "put_unique",
+        "put_if_absent",
+        "put_path_unique",
+        "get_range",
+        "get_to_path",
+        "head",
+        "list_page",
+        "delete_objects",
+        "delete_prefix",
+        "copy_object",
+        "capabilities",
+        "topology",
+    ):
         require(f'"{operation}"' in raw_storage_contract, f"generic object-store contract must require {operation}", failures)
+    for capability in (
+        "conditional_create",
+        "paginated_list",
+        "bulk_delete",
+        "byte_range_read",
+        "opaque_object_validators",
+        "split_services",
+    ):
+        require(
+            f'"{capability}"' in raw_storage_contract,
+            f"generic object-store contract must expose capability {capability}",
+            failures,
+        )
     require(
         '"matrixobjectstore": "objectstore"' in raw_storage_contract,
         "MatrixObject legacy backend alias must stay compatible",
@@ -216,6 +243,16 @@ def main() -> int:
     require(
         "generic object-store adapter contract" in matrixobject_docs,
         "MatrixObject docs must describe the generic object-store adapter",
+        failures,
+    )
+    require(
+        "Selection should be by URI scheme plus reported capabilities" in matrixobject_docs,
+        "MatrixObject docs must require provider-neutral URI/capability selection",
+        failures,
+    )
+    require(
+        "failing closed" in matrixobject_docs,
+        "MatrixObject docs must require unlinked remote providers to fail closed",
         failures,
     )
 
