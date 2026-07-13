@@ -72,5 +72,66 @@ for i in $(seq 1 "${REPEAT}"); do
     "${ROOT}/tools/run_redis_live_storage_smoke_ubuntu22.sh"
 done
 
+if [[ "${RUN_BENCH}" == "1" ]]; then
+  python3 - "${RESULT_ROOT}" "${REPEAT}" <<'ROLLUPPY'
+import json
+import sys
+from pathlib import Path
+
+result_root = Path(sys.argv[1])
+repeat = int(sys.argv[2])
+summaries = []
+for i in range(1, repeat + 1):
+    path = result_root / f"run-{i}" / "redis-benchmark-summary.json"
+    if not path.exists():
+        raise SystemExit(f"missing redis benchmark summary for production gate run {i}: {path}")
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    summaries.append(summary)
+
+if not summaries:
+    raise SystemExit("no Redis benchmark summaries found for production gate rollup")
+
+surface = summaries[0].get("redis_surface")
+manifest_sha = summaries[0].get("redis_surface_manifest_sha256")
+expected_commands = summaries[0].get("expected_benchmark_commands")
+for i, summary in enumerate(summaries, start=1):
+    for field, expected in (
+        ("redis_surface", surface),
+        ("redis_surface_manifest_sha256", manifest_sha),
+        ("expected_benchmark_commands", expected_commands),
+    ):
+        if summary.get(field) != expected:
+            raise SystemExit(
+                f"benchmark summary run {i} has {field}={summary.get(field)!r}, expected {expected!r}"
+            )
+
+overall_mins = [summary["requests_per_second_overall_min"] for summary in summaries]
+overall_avgs = [summary["requests_per_second_overall_avg"] for summary in summaries]
+rollup = {
+    "schema": "temporalstore_trimmed_redis_production_benchmark_rollup_v1",
+    "run_count": len(summaries),
+    "redis_surface": surface,
+    "redis_surface_manifest_sha256": manifest_sha,
+    "expected_benchmark_commands": expected_commands,
+    "requests_per_second_overall_min_min": min(overall_mins),
+    "requests_per_second_overall_min_max": max(overall_mins),
+    "requests_per_second_overall_avg_avg": sum(overall_avgs) / len(overall_avgs),
+    "runs": [
+        {
+            "run": i,
+            "requests_per_second_overall_min": summary["requests_per_second_overall_min"],
+            "requests_per_second_overall_avg": summary["requests_per_second_overall_avg"],
+            "benchmark_command_count": summary["benchmark_command_count"],
+        }
+        for i, summary in enumerate(summaries, start=1)
+    ],
+}
+(result_root / "redis-production-benchmark-rollup.json").write_text(
+    json.dumps(rollup, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+ROLLUPPY
+fi
+
 echo "PASS Redis production gate"
 echo "${RESULT_ROOT}"

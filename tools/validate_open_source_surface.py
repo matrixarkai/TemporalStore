@@ -575,6 +575,19 @@ def main() -> int:
         "Redis production gate and benchmark summary must support optional min overall QPS threshold",
         failures,
     )
+    for rollup_field in (
+        "redis-production-benchmark-rollup.json",
+        "temporalstore_trimmed_redis_production_benchmark_rollup_v1",
+        "requests_per_second_overall_min_min",
+        "requests_per_second_overall_avg_avg",
+        "expected_benchmark_commands",
+        "redis_surface_manifest_sha256",
+    ):
+        require(
+            rollup_field in redis_production_gate,
+            f"Redis production gate must emit benchmark rollup field {rollup_field}",
+            failures,
+        )
     benchmark_artifact_names = {
         "set_get": "redis-benchmark.csv",
         "hset": "redis-benchmark-hset.csv",
