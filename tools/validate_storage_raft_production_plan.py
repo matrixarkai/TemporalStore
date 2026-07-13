@@ -28,6 +28,7 @@ REQUIRED_SCRIPT_SNIPPETS = (
     "storage-raft-production-proof.json",
     "external_chaos_gate",
     "validate_raft_storage_parity_evidence.py",
+    "validate_metaserver_production_meta_management.py",
 )
 
 REQUIRED_RAFT_PARITY_SCRIPT_SNIPPETS = (
