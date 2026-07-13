@@ -158,11 +158,11 @@ def main() -> int:
     require(cxx_descriptor_block is not None, "C++ trimmed Redis descriptor table must be discoverable", failures)
     cxx_descriptor_body = cxx_descriptor_block.group("body") if cxx_descriptor_block else ""
     require(
-        cxx_descriptor_body.count("RedisCommand::CmdType::") == 43,
-        "C++ trimmed Redis descriptor table must contain exactly 43 commands",
+        cxx_descriptor_body.count("RedisCommand::CmdType::") == 47,
+        "C++ trimmed Redis descriptor table must contain exactly 47 commands",
         failures,
     )
-    for command in ("GET", "SET", "HSET", "HGET", "HSCAN", "HINCRBY", "CLIENT", "QUIT"):
+    for command in ("GET", "SET", "HSET", "HMSET", "HGET", "HSCAN", "INCR", "DECR", "DECRBY", "HINCRBY", "CLIENT", "QUIT"):
         require(
             f'"{command}"' in cxx_descriptor_body,
             f"C++ trimmed Redis descriptor table must advertise {command}",
@@ -465,8 +465,8 @@ def main() -> int:
             failures,
         )
     require(
-        "COMMAND COUNT=43" in redis_docs,
-        "Redis docs must state the narrower C++ open-source COMMAND COUNT including HSCAN",
+        "COMMAND COUNT=47" in redis_docs,
+        "Redis docs must state the narrower C++ open-source COMMAND COUNT including aliases and HSCAN",
         failures,
     )
     require(
