@@ -459,6 +459,68 @@ if [[ "${RUN_BENCH}" == "1" ]]; then
     > "${RESULT_DIR}/redis-benchmark-expire.csv" \
     2> "${RESULT_DIR}/redis-benchmark-expire.err"
   echo "PASS redis_benchmark_expire" | tee -a "${SUMMARY}"
+
+  python3 - "${RESULT_DIR}" "${BENCH_REQUESTS}" "${BENCH_CLIENTS}" "${BENCH_KEYSPACE}" <<'BENCHPY'
+import csv
+import json
+import sys
+from pathlib import Path
+
+result_dir = Path(sys.argv[1])
+requests = int(sys.argv[2])
+clients = int(sys.argv[3])
+keyspace = int(sys.argv[4])
+artifacts = [
+    ("set_get", "redis-benchmark.csv"),
+    ("hset", "redis-benchmark-hset.csv"),
+    ("hget", "redis-benchmark-hget.csv"),
+    ("hincrby", "redis-benchmark-hincrby.csv"),
+    ("incr", "redis-benchmark-incr.csv"),
+    ("expire", "redis-benchmark-expire.csv"),
+]
+
+commands = []
+for command, file_name in artifacts:
+    path = result_dir / file_name
+    rows = []
+    with path.open(newline="", encoding="utf-8") as source:
+        for row in csv.reader(source):
+            if len(row) >= 2:
+                rows.append(row)
+    if not rows:
+        raise SystemExit(f"benchmark artifact has no rows: {file_name}")
+    qps_values = []
+    for row in rows:
+        try:
+            qps_values.append(float(row[1]))
+        except ValueError:
+            pass
+    if not qps_values:
+        raise SystemExit(f"benchmark artifact has no numeric QPS: {file_name}")
+    commands.append(
+        {
+            "command": command,
+            "csv": file_name,
+            "row_count": len(rows),
+            "requests_per_second_min": min(qps_values),
+            "requests_per_second_max": max(qps_values),
+            "requests_per_second_avg": sum(qps_values) / len(qps_values),
+        }
+    )
+
+summary = {
+    "schema": "temporalstore_trimmed_redis_benchmark_summary_v1",
+    "requests": requests,
+    "clients": clients,
+    "keyspace": keyspace,
+    "commands": commands,
+}
+(result_dir / "redis-benchmark-summary.json").write_text(
+    json.dumps(summary, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+BENCHPY
+  echo "PASS redis_benchmark_summary" | tee -a "${SUMMARY}"
 fi
 
 echo "PASS Redis compatibility smoke" | tee -a "${SUMMARY}"
