@@ -14,6 +14,9 @@ BENCH_KEYSPACE="${BENCH_KEYSPACE:-100000}"
 
 mkdir -p "${RESULT_ROOT}"
 
+echo "== Redis production gate: open-source surface manifest == "
+python3 "${ROOT}/tools/validate_open_source_surface.py"
+
 echo "== Redis production gate: release build =="
 cmake --build "${BUILD_DIR}" --target bcache2-server -j "${BUILD_JOBS:-2}"
 
