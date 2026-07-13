@@ -2863,13 +2863,17 @@ impl ObjectStore for RemoteObjectStore {
     async fn put_if_absent(
         &self,
         key: &str,
-        _bytes: Bytes,
+        bytes: Bytes,
     ) -> Result<ObjectMetadata, ObjectStoreError> {
-        match self.head(key).await {
-            Ok(_) => Err(ObjectStoreError::AlreadyExists(key.to_string())),
-            Err(ObjectStoreError::NotFound(_)) => self.put_atomic(key, _bytes).await,
-            Err(err) => Err(err),
-        }
+        let response = self
+            .http_request(
+                self.plan_put(key)?,
+                vec![("If-None-Match".to_string(), "*".to_string())],
+                bytes.clone(),
+            )
+            .await?;
+        map_http_status(response.status, key, || Ok(()))?;
+        Ok(ObjectMetadata::from_bytes(key, self.uri(key), &bytes))
     }
 
     async fn put_path_unique(
@@ -4581,6 +4585,20 @@ mod tests {
             store.get("objects/a.bin").await.unwrap(),
             Bytes::from_static(b"hello remote object")
         );
+        assert!(matches!(
+            store
+                .put_if_absent("objects/a.bin", Bytes::from_static(b"duplicate"))
+                .await,
+            Err(ObjectStoreError::AlreadyExists(_))
+        ));
+        assert_eq!(
+            store
+                .put_if_absent("objects/unique.bin", Bytes::from_static(b"unique"))
+                .await
+                .unwrap()
+                .size_bytes,
+            6
+        );
         assert_eq!(
             store.get_range("objects/a.bin", 6, 6).await.unwrap(),
             Bytes::from_static(b"remote")
@@ -4598,7 +4616,10 @@ mod tests {
 
         let mut keys = store.list("objects/").await.unwrap();
         keys.sort();
-        assert_eq!(keys, vec!["objects/a.bin", "objects/b.bin"]);
+        assert_eq!(
+            keys,
+            vec!["objects/a.bin", "objects/b.bin", "objects/unique.bin"]
+        );
 
         store.delete("objects/a.bin").await.unwrap();
         assert!(matches!(
@@ -4851,6 +4872,14 @@ mod tests {
                     objects.lock().await.insert(key, source);
                     write_test_s3_response(stream, 200, &[], b"<CopyObjectResult/>").await
                 } else {
+                    if headers
+                        .get("if-none-match")
+                        .is_some_and(|value| value == "*")
+                        && objects.lock().await.contains_key(&key)
+                    {
+                        return write_test_s3_response(stream, 412, &[], b"precondition failed")
+                            .await;
+                    }
                     objects.lock().await.insert(key, body);
                     write_test_s3_response(stream, 200, &[], b"").await
                 }

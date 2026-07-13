@@ -61,6 +61,9 @@ class FakeS3Handler(BaseHTTPRequestHandler):
             shutil.copyfile(src, dst)
             self.send_status(200, b"<CopyObjectResult/>")
             return
+        if self.headers.get("If-None-Match") == "*" and os.path.exists(dst):
+            self.send_status(412, b"precondition failed")
+            return
         length = int(self.headers.get("Content-Length", "0"))
         data = self.rfile.read(length)
         with open(dst, "wb") as fh:
