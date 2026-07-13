@@ -23,6 +23,9 @@
     ],
     "benchmark_enabled": [
       "redis-production-benchmark-rollup.json"
+    ],
+    "live_run_required": [
+      "redis-live-storage-smoke-summary.json"
     ]
   },
   "allowed_surface_families": [
