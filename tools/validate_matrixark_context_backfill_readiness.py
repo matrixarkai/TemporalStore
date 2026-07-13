@@ -20,11 +20,15 @@ import matrixark_dual_write_ingestion_benchmark as dual_bench  # noqa: E402
 
 Json = dict[str, Any]
 
+CANONICAL_RAW_BACKENDS = {"temporalstore", "matrixkv", "s3", "matrixobject"}
+
 
 REQUIRED_DOC_MARKERS = [
     "--raw-backend=temporalstore",
     "--raw-backend=matrixkv",
-    "--raw-backends=both",
+    "--raw-backend=s3",
+    "--raw-backend=matrixobject",
+    "--raw-backends=all",
     "--min-backend-qps-ratio",
     "--prometheus-output",
     "--dual-write-evidence-dir",
@@ -107,8 +111,8 @@ def parser_support_checks() -> list[Json]:
     return [
         check("backfill_modes_cover_batch_and_incremental", {"shadow", "validate_shadow", "activate_shadow", "rollback_activation", "incremental_repair", "in_place"}.issubset(set(mode_action.choices or []))),
         check("backfill_has_manifest_verification_mode", "verify_manifest" in set(mode_action.choices or [])),
-        check("backfill_raw_backend_choices_cover_all_raw_options", {"temporalstore", "matrixkv"}.issubset(set(raw_backend_action.choices or []))),
-        check("benchmark_raw_backend_choices_cover_all_raw_options", {"both", "temporalstore", "matrixkv"}.issubset(set(benchmark_raw_action.choices or []))),
+        check("backfill_raw_backend_choices_cover_all_raw_options", {"temporalstore", "matrixkv", "s3", "matrixobject"}.issubset(set(raw_backend_action.choices or []))),
+        check("benchmark_raw_backend_choices_cover_all_raw_options", {"all", "both", "temporalstore", "matrixkv", "s3", "matrixobject"}.issubset(set(benchmark_raw_action.choices or []))),
         check("benchmark_has_batch_sweep_option", "--batch-sizes" in benchmark_options),
         check("benchmark_has_latency_gate_options", {"--max-full-shadow-p95-ms", "--max-incremental-shadow-p95-ms", "--max-incremental-repair-p95-ms", "--max-partial-shadow-p95-ms", "--max-partial-repair-p95-ms"}.issubset(benchmark_options)),
         check("benchmark_has_partial_repair_qps_gate", "--min-partial-repair-qps" in benchmark_options),
@@ -162,7 +166,7 @@ def run_local_gate(args: argparse.Namespace) -> Json:
         payload_bytes=args.payload_bytes,
         incremental_records=args.incremental_records,
         repeat=args.repeat,
-        raw_backends="both",
+        raw_backends="all",
         min_full_shadow_qps=1.0,
         min_incremental_repair_qps=1.0,
         min_partial_repair_qps=1.0,
@@ -202,7 +206,7 @@ def run_baseline_gate(args: argparse.Namespace) -> Json:
             payload_bytes=args.payload_bytes,
             incremental_records=args.incremental_records,
             repeat=1,
-            raw_backends="both",
+            raw_backends="all",
             min_full_shadow_qps=1.0,
             min_incremental_repair_qps=1.0,
             min_partial_repair_qps=1.0,
@@ -245,7 +249,7 @@ def run_cutover_gate(args: argparse.Namespace) -> Json:
     results: list[Json] = []
     source_prefix = "matrixark:mcp:readiness_cutover"
     records = max(2, int(args.records))
-    for raw_backend in ["temporalstore", "matrixkv"]:
+    for raw_backend in sorted(CANONICAL_RAW_BACKENDS):
         with tempfile.TemporaryDirectory(prefix=f"matrixark_backfill_cutover_{raw_backend}_") as tmp:
             kv_path = Path(tmp) / "kv.json"
             kv = backfill.LocalJsonKV(kv_path)
@@ -559,7 +563,7 @@ def run_source_scan_gate(args: argparse.Namespace) -> Json:
         ("record_index", seed_legacy_raw_log, None),
         ("scan_hash", seed_scan_hash_raw_log, records),
     ]
-    for raw_backend in ["temporalstore", "matrixkv"]:
+    for raw_backend in sorted(CANONICAL_RAW_BACKENDS):
         for expected_scan_mode, seed_fn, end_seq in scenarios:
             with tempfile.TemporaryDirectory(prefix=f"matrixark_backfill_scan_{raw_backend}_{expected_scan_mode}_") as tmp:
                 kv_path = Path(tmp) / "kv.json"
@@ -681,7 +685,7 @@ def run_partial_repair_gate(args: argparse.Namespace) -> Json:
         "partial_session_ids": "session-hot",
         "partial_filter_json": json.dumps({"kind": "message", "scope": {"team": "search"}}, sort_keys=True),
     }
-    for raw_backend in ["temporalstore", "matrixkv"]:
+    for raw_backend in sorted(CANONICAL_RAW_BACKENDS):
         with tempfile.TemporaryDirectory(prefix=f"matrixark_backfill_partial_{raw_backend}_") as tmp:
             kv_path = Path(tmp) / "kv.json"
             kv = backfill.LocalJsonKV(kv_path)
@@ -793,7 +797,7 @@ def run_unvalidated_repair_gate(args: argparse.Namespace) -> Json:
     source_prefix = "matrixark:mcp:readiness_unvalidated_repair"
     records = max(2, min(max(2, int(args.records)), max(2, int(args.incremental_records))))
     end_seq = min(records, max(2, int(args.batch_size)))
-    for raw_backend in ["temporalstore", "matrixkv"]:
+    for raw_backend in sorted(CANONICAL_RAW_BACKENDS):
         with tempfile.TemporaryDirectory(prefix=f"matrixark_backfill_unvalidated_repair_{raw_backend}_") as tmp:
             kv_path = Path(tmp) / "kv.json"
             kv = backfill.LocalJsonKV(kv_path)
@@ -893,7 +897,7 @@ def run_manifest_verification_gate(args: argparse.Namespace) -> Json:
     results: list[Json] = []
     records = max(2, min(max(2, int(args.records)), max(2, int(args.incremental_records))))
     source_prefix = "matrixark:mcp:readiness_manifest"
-    for raw_backend in ["temporalstore", "matrixkv"]:
+    for raw_backend in sorted(CANONICAL_RAW_BACKENDS):
         with tempfile.TemporaryDirectory(prefix=f"matrixark_backfill_manifest_{raw_backend}_") as tmp:
             kv_path = Path(tmp) / "kv.json"
             kv = backfill.LocalJsonKV(kv_path)
@@ -986,7 +990,7 @@ def run_dead_letter_gate(args: argparse.Namespace) -> Json:
     source_prefix = "matrixark:mcp:readiness_dead_letter"
     records = max(3, int(args.records))
     missing_sequence = 1
-    for raw_backend in ["temporalstore", "matrixkv"]:
+    for raw_backend in sorted(CANONICAL_RAW_BACKENDS):
         with tempfile.TemporaryDirectory(prefix=f"matrixark_backfill_dead_letter_{raw_backend}_") as tmp:
             kv_path = Path(tmp) / "kv.json"
             kv = backfill.LocalJsonKV(kv_path)
@@ -1068,7 +1072,7 @@ def run_resume_gate(args: argparse.Namespace) -> Json:
     source_prefix = "matrixark:mcp:readiness_resume"
     records = max(2, int(args.records))
     first_end_seq = max(1, min(records - 1, records // 2))
-    for raw_backend in ["temporalstore", "matrixkv"]:
+    for raw_backend in sorted(CANONICAL_RAW_BACKENDS):
         with tempfile.TemporaryDirectory(prefix=f"matrixark_backfill_resume_{raw_backend}_") as tmp:
             kv_path = Path(tmp) / "kv.json"
             kv = backfill.LocalJsonKV(kv_path)
@@ -1217,7 +1221,7 @@ def run_prometheus_gate(args: argparse.Namespace) -> Json:
     records = max(2, int(args.records))
     incremental_records = max(1, min(int(args.incremental_records), records))
     incremental_start = records - incremental_records
-    for raw_backend in ["temporalstore", "matrixkv"]:
+    for raw_backend in sorted(CANONICAL_RAW_BACKENDS):
         with tempfile.TemporaryDirectory(prefix=f"matrixark_backfill_prometheus_{raw_backend}_") as tmp:
             tmp_path = Path(tmp)
             kv_path = tmp_path / "kv.json"
@@ -1441,7 +1445,7 @@ def run_dual_write_gate(args: argparse.Namespace) -> Json:
         storage_prefix="matrixark:mcp:readiness_dual_write",
         raw_storage_prefix="",
         raw_backend="temporalstore",
-        raw_backends="both",
+        raw_backends="all",
         shard_size=4096,
         metaserver="unused",
         namespace="unused",
@@ -1494,14 +1498,13 @@ def run_dual_write_gate(args: argparse.Namespace) -> Json:
     counts_validated = bool(results) and all(bool(item.get("dual_write_counts_validated")) for item in results)
     status_ok = (
         summary.get("status") == "ok"
-        and raw_backends == {"temporalstore", "matrixkv"}
+        and raw_backends == CANONICAL_RAW_BACKENDS
         and counts_validated
         and ratio_checked
         and bool(performance_gate.get("passed"))
         and all(metrics_present.values())
         and len(metric_samples) > 0
-        and 'raw_backend="temporalstore"' in prometheus_text
-        and 'raw_backend="matrixkv"' in prometheus_text
+        and all(f'raw_backend="{backend}"' in prometheus_text for backend in CANONICAL_RAW_BACKENDS)
     )
     return {
         "status": "ok" if status_ok else "failed",
@@ -1543,7 +1546,7 @@ def benchmark_checks(summary: Json) -> list[Json]:
         check("local_benchmark_status_ok", summary.get("status") == "ok"),
         check("local_benchmark_gate_passed", bool(performance_gate.get("passed"))),
         check("local_benchmark_baseline_gate_available", isinstance(summary.get("baseline_gate"), dict)),
-        check("local_benchmark_covers_temporalstore_and_matrixkv", set(summary.get("raw_backends") or []) == {"temporalstore", "matrixkv"}),
+        check("local_benchmark_covers_canonical_raw_backends", set(summary.get("raw_backends") or []) == CANONICAL_RAW_BACKENDS),
         check("local_benchmark_exercised_batch_sweep", len(summary.get("batch_sizes") or []) >= 2),
         check("local_benchmark_reports_partial_repair_recommendation", isinstance(recommendations.get("best_partial_repair_qps"), dict)),
         check("local_benchmark_reports_balanced_recommendation", isinstance(recommendations.get("best_balanced_min_qps"), dict)),
@@ -1559,7 +1562,7 @@ def baseline_gate_checks(summary: Json) -> list[Json]:
         check("baseline_gate_baseline_artifact_written", bool(summary.get("baseline_json_written"))),
         check("baseline_gate_candidate_enabled", bool(gate.get("enabled"))),
         check("baseline_gate_candidate_passed", bool(gate.get("passed"))),
-        check("baseline_gate_covers_temporalstore_and_matrixkv", set(summary.get("raw_backends") or []) == {"temporalstore", "matrixkv"}),
+        check("baseline_gate_covers_canonical_raw_backends", set(summary.get("raw_backends") or []) == CANONICAL_RAW_BACKENDS),
         check("baseline_gate_compared_qps_and_latency", {item.get("metric") for item in checks} == {"baseline_qps_ratio", "baseline_latency_ratio"}),
         check("baseline_gate_exercised_batch_sweep", len(summary.get("batch_sizes") or []) >= 2),
     ]
@@ -1569,7 +1572,7 @@ def cutover_checks(summary: Json) -> list[Json]:
     results = summary.get("results") if isinstance(summary.get("results"), list) else []
     return [
         check("cutover_gate_status_ok", summary.get("status") == "ok"),
-        check("cutover_gate_covers_temporalstore_and_matrixkv", {item.get("raw_backend") for item in results} == {"temporalstore", "matrixkv"}),
+        check("cutover_gate_covers_canonical_raw_backends", {item.get("raw_backend") for item in results} == CANONICAL_RAW_BACKENDS),
         check("cutover_gate_shadow_wrote_records", all(int(item.get("shadow_written", 0) or 0) > 0 for item in results)),
         check("cutover_gate_blocks_missing_active_precondition", all(bool(item.get("missing_active_precondition_blocked")) for item in results)),
         check("cutover_gate_bypass_is_explicitly_audited", all(bool(item.get("bypass_audited")) for item in results)),
@@ -1589,7 +1592,7 @@ def dead_letter_checks(summary: Json) -> list[Json]:
     results = summary.get("results") if isinstance(summary.get("results"), list) else []
     return [
         check("dead_letter_gate_status_ok", summary.get("status") == "ok"),
-        check("dead_letter_gate_covers_temporalstore_and_matrixkv", {item.get("raw_backend") for item in results} == {"temporalstore", "matrixkv"}),
+        check("dead_letter_gate_covers_canonical_raw_backends", {item.get("raw_backend") for item in results} == CANONICAL_RAW_BACKENDS),
         check("dead_letter_gate_records_failure", all(int(item.get("failed", 0) or 0) == 1 for item in results)),
         check("dead_letter_gate_marks_completed_with_errors", all(item.get("data_quality_status") == "completed_with_errors" for item in results)),
         check("dead_letter_gate_writes_dead_letter", all(int(item.get("dead_letter_count", 0) or 0) == 1 and bool(item.get("dead_letter_preview_has_error")) for item in results)),
@@ -1605,7 +1608,7 @@ def source_scan_checks(summary: Json) -> list[Json]:
     backends = {item.get("raw_backend") for item in results}
     return [
         check("source_scan_gate_status_ok", summary.get("status") == "ok"),
-        check("source_scan_gate_covers_temporalstore_and_matrixkv", backends == {"temporalstore", "matrixkv"}),
+        check("source_scan_gate_covers_canonical_raw_backends", backends == CANONICAL_RAW_BACKENDS),
         check("source_scan_gate_covers_record_count_record_index_scan_hash", scan_modes == {"record_count", "record_index", "scan_hash"}),
         check("source_scan_gate_validates_shadow", all(item.get("validation_status") == "ok" and bool(item.get("validation_fingerprint_match")) for item in results)),
         check("source_scan_gate_writes_all_records", all(int(item.get("written", 0) or 0) == int(item.get("records", -1) or -1) for item in results)),
@@ -1618,7 +1621,7 @@ def partial_repair_checks(summary: Json) -> list[Json]:
     results = summary.get("results") if isinstance(summary.get("results"), list) else []
     return [
         check("partial_repair_gate_status_ok", summary.get("status") == "ok"),
-        check("partial_repair_gate_covers_temporalstore_and_matrixkv", {item.get("raw_backend") for item in results} == {"temporalstore", "matrixkv"}),
+        check("partial_repair_gate_covers_canonical_raw_backends", {item.get("raw_backend") for item in results} == CANONICAL_RAW_BACKENDS),
         check("partial_repair_gate_filters_source_records", all(int(item.get("shadow_filtered", 0) or 0) > 0 for item in results)),
         check("partial_repair_gate_writes_expected_slice", all(int(item.get("shadow_written", 0) or 0) == int(item.get("expected_matches", -1) or -1) for item in results)),
         check("partial_repair_gate_validates_shadow", all(item.get("validation_status") == "ok" and bool(item.get("validation_fingerprint_match")) for item in results)),
@@ -1634,7 +1637,7 @@ def unvalidated_repair_checks(summary: Json) -> list[Json]:
     results = summary.get("results") if isinstance(summary.get("results"), list) else []
     return [
         check("unvalidated_repair_gate_status_ok", summary.get("status") == "ok"),
-        check("unvalidated_repair_gate_covers_temporalstore_and_matrixkv", {item.get("raw_backend") for item in results} == {"temporalstore", "matrixkv"}),
+        check("unvalidated_repair_gate_covers_canonical_raw_backends", {item.get("raw_backend") for item in results} == CANONICAL_RAW_BACKENDS),
         check("unvalidated_repair_gate_blocks_without_target_state_confirmation", all(bool(item.get("blocked_without_target_state_confirmation")) for item in results)),
         check("unvalidated_repair_gate_confirms_and_audits_target_state", all(bool(item.get("unvalidated_target_state_confirmed")) and bool(item.get("audit_unvalidated_target_state_confirmed")) for item in results)),
         check("unvalidated_repair_gate_records_unhealthy_target_state", all(int_or_default(item.get("validation_target_record_count")) == 0 and item.get("validation_target_healthy") is False and int_or_default(item.get("audit_validation_target_record_count")) == 0 and item.get("audit_validation_target_healthy") is False for item in results)),
@@ -1646,7 +1649,7 @@ def manifest_verification_checks(summary: Json) -> list[Json]:
     results = summary.get("results") if isinstance(summary.get("results"), list) else []
     return [
         check("manifest_verification_gate_status_ok", summary.get("status") == "ok"),
-        check("manifest_verification_gate_covers_temporalstore_and_matrixkv", {item.get("raw_backend") for item in results} == {"temporalstore", "matrixkv"}),
+        check("manifest_verification_gate_covers_canonical_raw_backends", {item.get("raw_backend") for item in results} == CANONICAL_RAW_BACKENDS),
         check("manifest_verification_gate_schema_and_hash_present", all(item.get("manifest_schema") == "matrixark_context_backfill_manifest_v1" and isinstance(item.get("manifest_payload_sha256"), str) and len(str(item.get("manifest_payload_sha256"))) == 64 for item in results)),
         check("manifest_verification_gate_verifies_valid_manifest", all(item.get("verify_status") == "ok" and bool(item.get("verify_hash_match")) and bool(item.get("verify_schema_supported")) for item in results)),
         check("manifest_verification_gate_checks_identity", all(bool(item.get("verify_job_id_matches")) and bool(item.get("verify_target_prefix_matches")) and bool(item.get("verify_raw_backend_matches")) for item in results)),
@@ -1660,7 +1663,7 @@ def resume_checks(summary: Json) -> list[Json]:
     results = summary.get("results") if isinstance(summary.get("results"), list) else []
     return [
         check("resume_gate_status_ok", summary.get("status") == "ok"),
-        check("resume_gate_covers_temporalstore_and_matrixkv", {item.get("raw_backend") for item in results} == {"temporalstore", "matrixkv"}),
+        check("resume_gate_covers_canonical_raw_backends", {item.get("raw_backend") for item in results} == CANONICAL_RAW_BACKENDS),
         check("resume_gate_checkpoint_found_on_second_run", all(bool(item.get("second_resume_state", {}).get("checkpoint_found")) for item in results)),
         check("resume_gate_second_run_started_after_first_window", all(int(item.get("second_resume_state", {}).get("effective_start_seq", -1)) == int(item.get("first_end_seq", -2)) for item in results)),
         check("resume_gate_blocks_incompatible_source_range", all(bool(item.get("incompatible_resume_blocked")) for item in results)),
@@ -1677,7 +1680,7 @@ def prometheus_checks(summary: Json) -> list[Json]:
     results = summary.get("results") if isinstance(summary.get("results"), list) else []
     return [
         check("prometheus_gate_status_ok", summary.get("status") == "ok"),
-        check("prometheus_gate_covers_temporalstore_and_matrixkv", {item.get("raw_backend") for item in results} == {"temporalstore", "matrixkv"}),
+        check("prometheus_gate_covers_canonical_raw_backends", {item.get("raw_backend") for item in results} == CANONICAL_RAW_BACKENDS),
         check("prometheus_gate_plan_execution_readiness_ready", all(item.get("plan_execution_readiness_status") == "ready" and bool(item.get("plan_execution_readiness_ready")) for item in results)),
         check("prometheus_gate_plan_metrics_present", all(all((item.get("plan_metrics_present") or {}).values()) for item in results)),
         check("prometheus_gate_shadow_metrics_present", all(all((item.get("shadow_metrics_present") or {}).values()) for item in results)),
@@ -1696,7 +1699,7 @@ def dual_write_gate_checks(summary: Json) -> list[Json]:
     gate_checks = performance_gate.get("checks") if isinstance(performance_gate.get("checks"), list) else []
     return [
         check("dual_write_gate_status_ok", summary.get("status") == "ok"),
-        check("dual_write_gate_covers_temporalstore_and_matrixkv", set(summary.get("raw_backends") or []) == {"temporalstore", "matrixkv"}),
+        check("dual_write_gate_covers_canonical_raw_backends", set(summary.get("raw_backends") or []) == CANONICAL_RAW_BACKENDS),
         check("dual_write_gate_counts_validated", bool(results) and all(bool(item.get("dual_write_counts_validated")) for item in results)),
         check("dual_write_gate_backend_ratio_checked", any(item.get("metric") == "backend_ingestion_qps_ratio" and item.get("passed") for item in gate_checks)),
         check("dual_write_gate_performance_gate_passed", bool(performance_gate.get("passed"))),

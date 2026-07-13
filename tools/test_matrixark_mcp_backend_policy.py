@@ -3417,6 +3417,54 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         expected_session_index_key = f"matrixkv:raw:messages:session_index:{mcp_core.stable_hash('conv-matrixkv')}"
         self.assertIn(expected_session_index_key, {entry["key"] for entry in raw_call["entries"]})
 
+    def test_direct_append_normalizes_matrixobject_raw_backend_aliases(self) -> None:
+        client = _NativeAppendClient()
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._client = client
+        adapter._storage_prefix = "matrixark:test:matrixobject-raw"
+        adapter._record_hash_key = f"{adapter._storage_prefix}:records"
+        adapter._index_key = f"{adapter._storage_prefix}:record_index"
+        adapter._count_key = f"{adapter._storage_prefix}:record_count"
+        adapter._raw_ingestion_prefix = "matrixobject:raw:messages"
+        adapter._raw_record_hash_key = f"{adapter._raw_ingestion_prefix}:records"
+        adapter._raw_count_key = f"{adapter._raw_ingestion_prefix}:record_count"
+        adapter._raw_storage_backend = "objectstore"
+        adapter._raw_entry_count_cache = None
+        adapter._shard_size = 1024
+        adapter._index_cache = None
+        adapter._records_cache = None
+        adapter._retrieval_candidate_cache = {}
+        adapter._retrieval_candidate_cache_lock = threading.RLock()
+        adapter._entry_count_cache = None
+        adapter._legacy_index_mode = False
+        adapter._records_lock = threading.RLock()
+        adapter._write_retries = 0
+        adapter._write_backoff_s = 0.0
+        adapter._write_throttle_s = 0.0
+
+        adapter.append(
+            {
+                "record_type": "context_event",
+                "event_id_hash": 993,
+                "tenant_hash": 8,
+                "scope_key": "tenant=8",
+                "node_hash": 10,
+                "updated_at_ms": 1780000003000,
+                "scope": {"session_id": "session-matrixobject"},
+                "text": "matrixobject raw option",
+            }
+        )
+
+        self.assertEqual(len(client.calls), 2)
+        raw_call = client.calls[0]
+        self.assertEqual(raw_call["count_key"], "matrixobject:raw:messages:record_count")
+        self.assertEqual(raw_call["append_options"]["append_path"], "matrixark_raw_ingestion_matrixobject_ref")
+        self.assertEqual(raw_call["append_options"]["raw_storage_backend"], "matrixobject")
+        self.assertEqual(raw_call["append_options"]["raw_message_store"], "matrixobject")
+        self.assertEqual(raw_call["entries"][0]["key"], "matrixobject:raw:messages:records:000000")
+        expected_session_index_key = f"matrixobject:raw:messages:session_index:{mcp_core.stable_hash('session-matrixobject')}"
+        self.assertIn(expected_session_index_key, {entry["key"] for entry in raw_call["entries"]})
+
     def test_direct_retrieval_records_reuses_candidate_cache_by_count_and_scope(self) -> None:
         records = [
             {
