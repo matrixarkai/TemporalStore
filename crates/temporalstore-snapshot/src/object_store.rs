@@ -64,6 +64,8 @@ pub struct ObjectStoreCapabilities {
     pub delete_prefix: bool,
     pub byte_range_read: bool,
     pub checksum_sha256: bool,
+    pub object_etag: bool,
+    pub object_version_id: bool,
     pub split_services: bool,
 }
 
@@ -93,6 +95,8 @@ impl ObjectStoreCapabilities {
             delete_prefix: true,
             byte_range_read: true,
             checksum_sha256: true,
+            object_etag: true,
+            object_version_id: false,
             split_services: false,
         }
     }
@@ -117,6 +121,8 @@ impl ObjectStoreCapabilities {
             delete_prefix: true,
             byte_range_read: true,
             checksum_sha256: true,
+            object_etag: true,
+            object_version_id: false,
             split_services,
         }
     }
@@ -141,6 +147,8 @@ impl ObjectStoreCapabilities {
             delete_prefix: false,
             byte_range_read: false,
             checksum_sha256: false,
+            object_etag: false,
+            object_version_id: false,
             split_services: false,
         }
     }
@@ -171,6 +179,8 @@ impl ObjectStoreCapabilities {
             delete_prefix: supports_object_api,
             byte_range_read: supports_object_api,
             checksum_sha256: supports_object_api,
+            object_etag: supports_object_api,
+            object_version_id: supports_object_api,
             split_services: false,
         }
     }
@@ -524,6 +534,8 @@ pub trait ObjectStore: Send + Sync {
             delete_prefix: true,
             byte_range_read: false,
             checksum_sha256: false,
+            object_etag: false,
+            object_version_id: false,
             split_services: false,
         }
     }
@@ -2998,6 +3010,8 @@ mod tests {
         assert!(capabilities.bulk_delete);
         assert!(capabilities.byte_range_read);
         assert!(capabilities.checksum_sha256);
+        assert!(capabilities.object_etag);
+        assert!(!capabilities.object_version_id);
         assert!(capabilities.split_services);
 
         let topology = shared.topology();
@@ -4012,6 +4026,8 @@ mod tests {
         assert!(capabilities.paginated_list);
         assert!(capabilities.bulk_delete);
         assert!(capabilities.byte_range_read);
+        assert!(capabilities.object_etag);
+        assert!(capabilities.object_version_id);
 
         let topology = store.topology();
         assert_eq!(topology.backend, "s3");
