@@ -94,11 +94,13 @@ if not summaries:
 surface = summaries[0].get("redis_surface")
 manifest_sha = summaries[0].get("redis_surface_manifest_sha256")
 expected_commands = summaries[0].get("expected_benchmark_commands")
+min_qps_threshold = summaries[0].get("min_overall_qps_threshold")
 for i, summary in enumerate(summaries, start=1):
     for field, expected in (
         ("redis_surface", surface),
         ("redis_surface_manifest_sha256", manifest_sha),
         ("expected_benchmark_commands", expected_commands),
+        ("min_overall_qps_threshold", min_qps_threshold),
     ):
         if summary.get(field) != expected:
             raise SystemExit(
@@ -113,6 +115,7 @@ rollup = {
     "redis_surface": surface,
     "redis_surface_manifest_sha256": manifest_sha,
     "expected_benchmark_commands": expected_commands,
+    "min_overall_qps_threshold": min_qps_threshold,
     "requests_per_second_overall_min_min": min(overall_mins),
     "requests_per_second_overall_min_max": max(overall_mins),
     "requests_per_second_overall_avg_avg": sum(overall_avgs) / len(overall_avgs),
@@ -122,6 +125,7 @@ rollup = {
             "requests_per_second_overall_min": summary["requests_per_second_overall_min"],
             "requests_per_second_overall_avg": summary["requests_per_second_overall_avg"],
             "benchmark_command_count": summary["benchmark_command_count"],
+            "min_overall_qps_threshold": summary["min_overall_qps_threshold"],
         }
         for i, summary in enumerate(summaries, start=1)
     ],
