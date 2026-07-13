@@ -55,6 +55,9 @@ def main() -> int:
     manifest_blocked_commands = set(manifest.get("blocked_commands", []))
     manifest_rust_extra_commands = set(manifest.get("rust_extra_commands", []))
     manifest_rust_normal_helpers = set(manifest.get("rust_normal_helpers", []))
+    expected_cxx_command_count = int(manifest.get("cxx_command_count", 0))
+    expected_blocked_family_count = len(manifest.get("blocked_command_families", []))
+    expected_rust_trimmed_command_count = expected_cxx_command_count + len(manifest_rust_extra_commands)
 
     require(
         manifest.get("schema") == "temporalstore_open_source_redis_surface_v1",
@@ -383,8 +386,8 @@ def main() -> int:
     for metric in (
         "redis_surface:trimmed_open_source",
         "redis_surface_schema:temporalstore_open_source_redis_surface_v1",
-        "redis_surface_cxx_command_count:47",
-        "redis_surface_blocked_command_family_count:10",
+        f"redis_surface_cxx_command_count:{expected_cxx_command_count}",
+        f"redis_surface_blocked_command_family_count:{expected_blocked_family_count}",
         "total_commands_processed",
         "rejected_commands",
         "open_source_rejected_commands",
@@ -542,7 +545,7 @@ def main() -> int:
         "redis_surface:trimmed_open_source",
         "redis_surface_schema:temporalstore_open_source_redis_surface_v1",
         "redis_surface_cxx_command_count:",
-        "redis_surface_blocked_command_family_count:10",
+        f"redis_surface_blocked_command_family_count:{expected_blocked_family_count}",
     ):
         require(metric in cxx_redis, f"C++ Redis INFO stats must expose {metric}", failures)
     require(
@@ -560,8 +563,6 @@ def main() -> int:
         r'REDIS_TRIMMED_COMMAND_COUNT_MAX="\$\{REDIS_TRIMMED_COMMAND_COUNT_MAX:-(\d+)\}"',
         redis_compat_smoke,
     )
-    expected_cxx_command_count = int(manifest.get("cxx_command_count", 0))
-    expected_rust_trimmed_command_count = expected_cxx_command_count + len(manifest_rust_extra_commands)
     require(
         compat_count_min is not None and int(compat_count_min.group(1)) == expected_cxx_command_count,
         "Redis compatibility smoke COMMAND COUNT min must match manifest cxx_command_count",
@@ -595,7 +596,7 @@ def main() -> int:
     for runtime_metric in (
         "redis_surface:trimmed_open_source",
         "redis_surface_schema:temporalstore_open_source_redis_surface_v1",
-        "redis_surface_blocked_command_family_count:10",
+        f"redis_surface_blocked_command_family_count:{expected_blocked_family_count}",
     ):
         require(
             runtime_metric in redis_compat_smoke and runtime_metric in redis_live_smoke,
