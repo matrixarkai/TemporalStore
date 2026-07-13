@@ -1240,6 +1240,14 @@ void RedisCommandHandler::Info(RedisClientContext* c) {
             "partition_loading_stats:" +
             partition_loading_stats +
             "\r\n"
+#ifdef BCACHE2_OPEN_SOURCE_SURFACE
+            "redis_surface:trimmed_open_source\r\n"
+            "redis_surface_schema:temporalstore_open_source_redis_surface_v1\r\n"
+            "redis_surface_cxx_command_count:" +
+            std::to_string(OpenSourceRedisCommandCount()) +
+            "\r\n"
+            "redis_surface_blocked_command_family_count:10\r\n"
+#endif
             "total_connections_received:982455\r\n"
             "total_commands_processed:10909755651\r\n"
             "total_commands_dropped:0\r\n"

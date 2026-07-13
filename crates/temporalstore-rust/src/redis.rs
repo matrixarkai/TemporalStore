@@ -2974,7 +2974,7 @@ fn redis_info(section: &str, shard_id: ShardId, state: &RedisCommandState) -> St
             "not_exist"
         };
         parts.push(format!(
-            "# Stats\r\npartition_loading_stats:{loading}\r\ntotal_commands_processed:{}\r\nrejected_commands:{}\r\nopen_source_rejected_commands:{}\r\nunsupported_commands:{}\r\n",
+            "# Stats\r\npartition_loading_stats:{loading}\r\nredis_surface:trimmed_open_source\r\nredis_surface_schema:temporalstore_open_source_redis_surface_v1\r\nredis_surface_cxx_command_count:47\r\nredis_surface_blocked_command_family_count:10\r\ntotal_commands_processed:{}\r\nrejected_commands:{}\r\nopen_source_rejected_commands:{}\r\nunsupported_commands:{}\r\n",
             state.total_commands_processed,
             state.rejected_commands,
             state.open_source_rejected_commands,

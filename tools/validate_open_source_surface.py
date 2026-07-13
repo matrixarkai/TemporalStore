@@ -381,6 +381,10 @@ def main() -> int:
         require(f'"{denied}"' not in body, f"Rust allowlist must not include {denied}", failures)
 
     for metric in (
+        "redis_surface:trimmed_open_source",
+        "redis_surface_schema:temporalstore_open_source_redis_surface_v1",
+        "redis_surface_cxx_command_count:47",
+        "redis_surface_blocked_command_family_count:10",
         "total_commands_processed",
         "rejected_commands",
         "open_source_rejected_commands",
@@ -534,6 +538,13 @@ def main() -> int:
         "C++ Redis service must wire narrow HSCAN through the hash handler",
         failures,
     )
+    for metric in (
+        "redis_surface:trimmed_open_source",
+        "redis_surface_schema:temporalstore_open_source_redis_surface_v1",
+        "redis_surface_cxx_command_count:",
+        "redis_surface_blocked_command_family_count:10",
+    ):
+        require(metric in cxx_redis, f"C++ Redis INFO stats must expose {metric}", failures)
     require(
         "HSCAN" in redis_compat_smoke and "HSCAN rh 0 MATCH f* COUNT 8" in redis_live_smoke,
         "Redis smokes must cover narrow HSCAN while broad scans stay unsupported",
