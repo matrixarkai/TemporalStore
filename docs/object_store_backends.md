@@ -66,6 +66,8 @@ S3-compatible stores, Ceph RGW, local files, and future object backends:
   MatrixObject implements this at the manifest/root service boundary and returns
   continuation tokens in the public object-key namespace, not internal manifest
   file names.
+  The unsigned S3-compatible fake path exercises S3-style `max-keys` plus
+  `continuation-token` pagination so remote adapters share the same contract.
 - `copy_object`: copy one object to another key. MatrixObject copies into
   destination-owned chunks so deleting the source cannot break the copy; S3
   adapters should map this to server-side copy when available.
