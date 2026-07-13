@@ -72,6 +72,59 @@ for i in $(seq 1 "${REPEAT}"); do
     "${ROOT}/tools/run_redis_live_storage_smoke_ubuntu22.sh"
 done
 
+python3 - "${RESULT_ROOT}" "${REPEAT}" <<'LIVEROLLUPPY'
+import json
+import sys
+from pathlib import Path
+
+result_root = Path(sys.argv[1])
+repeat = int(sys.argv[2])
+summaries = []
+for i in range(1, repeat + 1):
+    path = result_root / f"run-{i}" / "redis-live-storage-smoke-summary.json"
+    if not path.exists():
+        raise SystemExit(f"missing Redis live storage smoke summary for production gate run {i}: {path}")
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    summaries.append(summary)
+
+surface = summaries[0].get("redis_surface")
+manifest_sha = summaries[0].get("redis_surface_manifest_sha256")
+command_count = summaries[0].get("command_count")
+for i, summary in enumerate(summaries, start=1):
+    for field, expected in (
+        ("schema", "temporalstore_trimmed_redis_live_storage_smoke_summary_v1"),
+        ("redis_surface", surface),
+        ("redis_surface_manifest_sha256", manifest_sha),
+        ("command_count", command_count),
+        ("unsupported_collections_expected", True),
+    ):
+        if summary.get(field) != expected:
+            raise SystemExit(
+                f"live smoke summary run {i} has {field}={summary.get(field)!r}, expected {expected!r}"
+            )
+
+rollup = {
+    "schema": "temporalstore_trimmed_redis_live_storage_smoke_rollup_v1",
+    "run_count": len(summaries),
+    "redis_surface": surface,
+    "redis_surface_manifest_sha256": manifest_sha,
+    "command_count": command_count,
+    "unsupported_collections_expected": True,
+    "runs": [
+        {
+            "run": i,
+            "summary": str(result_root / f"run-{i}" / "redis-live-storage-smoke-summary.json"),
+            "benchmark_summary": summary.get("benchmark_summary"),
+        }
+        for i, summary in enumerate(summaries, start=1)
+    ],
+}
+(result_root / "redis-live-storage-smoke-rollup.json").write_text(
+    json.dumps(rollup, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+LIVEROLLUPPY
+
 if [[ "${RUN_BENCH}" == "1" ]]; then
   python3 - "${RESULT_ROOT}" "${REPEAT}" <<'ROLLUPPY'
 import json
@@ -151,8 +204,9 @@ manifest_path = result_root / "redis_open_source_surface_manifest.json"
 surface_validation_path = result_root / "redis_open_source_surface_validation.txt"
 matrixobject_validation_path = result_root / "matrixobject_name_validation.txt"
 benchmark_rollup_path = result_root / "redis-production-benchmark-rollup.json"
+live_rollup_path = result_root / "redis-live-storage-smoke-rollup.json"
 
-for path in (manifest_path, surface_validation_path, matrixobject_validation_path):
+for path in (manifest_path, surface_validation_path, matrixobject_validation_path, live_rollup_path):
     if not path.exists():
         raise SystemExit(f"missing Redis production gate evidence artifact: {path}")
 
@@ -197,6 +251,7 @@ summary = {
     },
     "matrixobject_boundary": "below_temporalstore_storage_backfill_no_redis_api_expansion",
     "benchmark_rollup": str(benchmark_rollup_path) if benchmark_rollup_path.exists() else None,
+    "live_storage_smoke_rollup": str(live_rollup_path),
     "unsupported_collections_expected": True,
 }
 (result_root / "redis-production-gate-summary.json").write_text(

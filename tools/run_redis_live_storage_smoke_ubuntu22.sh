@@ -284,5 +284,69 @@ if [[ "${RUN_COMPAT_SMOKE:-1}" == "1" ]]; then
     bash "${ROOT}/tools/run_redis_compat_smoke_ubuntu22.sh"
 fi
 
+python3 - "${RESULT_DIR}" "${REDIS_COMPAT_SURFACE}" "${REDIS_EXPECT_UNSUPPORTED_COLLECTIONS}" "${REDIS_CXX_TRIMMED_COMMAND_COUNT}" "${REDIS_SURFACE_MANIFEST_PATH}" <<'LIVESUMMARYPY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+result_dir = Path(sys.argv[1])
+compat_surface = sys.argv[2]
+unsupported_collections_expected = sys.argv[3] == "1"
+expected_command_count = int(sys.argv[4])
+manifest_path = Path(sys.argv[5])
+manifest_bytes = manifest_path.read_bytes()
+manifest = json.loads(manifest_bytes.decode("utf-8"))
+
+required_outputs = {
+    "info_surface": "redis_surface:trimmed_open_source_context_feature_frequency",
+    "info_surface_schema": "redis_surface_schema:temporalstore_open_source_redis_surface_v1",
+    "info_surface_blocked_families": f"redis_surface_blocked_command_family_count:{len(manifest.get('blocked_command_families', []))}",
+}
+for name, expected in required_outputs.items():
+    out_path = result_dir / f"{name}.out"
+    if not out_path.exists():
+        raise SystemExit(f"missing Redis live smoke output: {out_path}")
+    if expected not in out_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        raise SystemExit(f"Redis live smoke output {out_path} missing expected line {expected!r}")
+
+command_count_path = result_dir / "command_count.out"
+if not command_count_path.exists():
+    raise SystemExit(f"missing Redis live smoke command count output: {command_count_path}")
+command_count = int(command_count_path.read_text(encoding="utf-8").strip())
+if command_count != expected_command_count:
+    raise SystemExit(f"Redis live smoke command count {command_count} != expected {expected_command_count}")
+
+unsupported_outputs = []
+if unsupported_collections_expected:
+    for name in ("unsupported_sadd_trimmed", "unsupported_lpush_trimmed", "unsupported_zadd_trimmed"):
+        out_path = result_dir / f"{name}.out"
+        if not out_path.exists():
+            raise SystemExit(f"missing unsupported collection proof: {out_path}")
+        unsupported_outputs.append(str(out_path))
+
+compat_dir = result_dir / "compat"
+compat_summary = compat_dir / "summary.txt"
+benchmark_summary = compat_dir / "redis-benchmark-summary.json"
+summary = {
+    "schema": "temporalstore_trimmed_redis_live_storage_smoke_summary_v1",
+    "redis_surface": manifest.get("surface"),
+    "redis_surface_schema": manifest.get("schema"),
+    "redis_surface_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+    "compat_surface": compat_surface,
+    "command_count": command_count,
+    "expected_command_count": expected_command_count,
+    "blocked_command_family_count": len(manifest.get("blocked_command_families", [])),
+    "unsupported_collections_expected": unsupported_collections_expected,
+    "unsupported_collection_outputs": unsupported_outputs,
+    "compat_summary": str(compat_summary) if compat_summary.exists() else None,
+    "benchmark_summary": str(benchmark_summary) if benchmark_summary.exists() else None,
+}
+(result_dir / "redis-live-storage-smoke-summary.json").write_text(
+    json.dumps(summary, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+LIVESUMMARYPY
+
 echo "PASS Redis live storage smoke" | tee -a "${SUMMARY}"
 echo "${RESULT_DIR}"

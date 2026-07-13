@@ -89,6 +89,7 @@ def main() -> int:
             "redis-production-gate-summary.json",
         ],
         "benchmark_enabled": ["redis-production-benchmark-rollup.json"],
+        "live_run_required": ["redis-live-storage-smoke-summary.json"],
     }
     require(
         manifest_gate_artifacts == expected_gate_artifacts,
@@ -580,6 +581,13 @@ def main() -> int:
         failures,
     )
     require(
+        "redis-live-storage-smoke-summary.json" in redis_live_smoke
+        and "temporalstore_trimmed_redis_live_storage_smoke_summary_v1" in redis_live_smoke
+        and "unsupported_collection_outputs" in redis_live_smoke,
+        "Redis live storage smoke must emit a machine-readable trimmed-surface summary",
+        failures,
+    )
+    require(
         'BENCH_KEYSPACE="${BENCH_KEYSPACE}"' in redis_production_gate,
         "Redis production gate must pass benchmark keyspace into the live smoke",
         failures,
@@ -619,6 +627,11 @@ def main() -> int:
         "matrixobject_boundary",
         "below_temporalstore_storage_backfill_no_redis_api_expansion",
         "unsupported_collections_expected",
+        "redis-live-storage-smoke-summary.json",
+        "redis-live-storage-smoke-rollup.json",
+        "temporalstore_trimmed_redis_live_storage_smoke_summary_v1",
+        "temporalstore_trimmed_redis_live_storage_smoke_rollup_v1",
+        "live_storage_smoke_rollup",
     ):
         require(
             gate_summary_field in redis_production_gate,
