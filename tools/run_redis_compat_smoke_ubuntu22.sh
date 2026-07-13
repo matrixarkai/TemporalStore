@@ -13,6 +13,14 @@ BENCH_REQUESTS="${BENCH_REQUESTS:-1000}"
 BENCH_CLIENTS="${BENCH_CLIENTS:-8}"
 BENCH_KEYSPACE="${BENCH_KEYSPACE:-100000}"
 REDIS_COMPAT_SURFACE="${REDIS_COMPAT_SURFACE:-trimmed}"
+REDIS_SURFACE_MANIFEST_PATH="${REDIS_SURFACE_MANIFEST_PATH:-${ROOT}/compat/redis_open_source_surface_manifest.json}"
+REDIS_SURFACE_BLOCKED_FAMILY_COUNT="${REDIS_SURFACE_BLOCKED_FAMILY_COUNT:-$(python3 - "${REDIS_SURFACE_MANIFEST_PATH}" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as fh:
+    print(len(json.load(fh).get("blocked_command_families", [])))
+PY
+)}"
 REDIS_TEST_MODEL_COMMANDS="${REDIS_TEST_MODEL_COMMANDS:-0}"
 REDIS_EXPECT_UNSUPPORTED_COLLECTIONS="${REDIS_EXPECT_UNSUPPORTED_COLLECTIONS:-0}"
 REDIS_TRIMMED_COMMAND_COUNT_MIN="${REDIS_TRIMMED_COMMAND_COUNT_MIN:-47}"
@@ -112,7 +120,7 @@ fi
 echo "PASS command_count" | tee -a "${SUMMARY}"
 expect_contains_line info_surface redis_surface:trimmed_open_source INFO stats
 expect_contains_line info_surface_schema redis_surface_schema:temporalstore_open_source_redis_surface_v1 INFO stats
-expect_contains_line info_surface_blocked_families redis_surface_blocked_command_family_count:10 INFO stats
+expect_contains_line info_surface_blocked_families redis_surface_blocked_command_family_count:${REDIS_SURFACE_BLOCKED_FAMILY_COUNT} INFO stats
 expect_eq set OK SET "$(k string)" v1
 expect_eq get v1 GET "$(k string)"
 expect_eq type_string string TYPE "$(k string)"

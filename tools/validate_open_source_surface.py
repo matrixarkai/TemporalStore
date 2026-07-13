@@ -596,13 +596,22 @@ def main() -> int:
     for runtime_metric in (
         "redis_surface:trimmed_open_source",
         "redis_surface_schema:temporalstore_open_source_redis_surface_v1",
-        f"redis_surface_blocked_command_family_count:{expected_blocked_family_count}",
     ):
         require(
             runtime_metric in redis_compat_smoke and runtime_metric in redis_live_smoke,
             f"Redis smokes must assert INFO stats runtime surface field {runtime_metric}",
             failures,
         )
+    require(
+        "REDIS_SURFACE_MANIFEST_PATH" in redis_compat_smoke
+        and "REDIS_SURFACE_MANIFEST_PATH" in redis_live_smoke
+        and "blocked_command_families" in redis_compat_smoke
+        and "blocked_command_families" in redis_live_smoke
+        and "redis_surface_blocked_command_family_count:${REDIS_SURFACE_BLOCKED_FAMILY_COUNT}" in redis_compat_smoke
+        and "redis_surface_blocked_command_family_count:${REDIS_SURFACE_BLOCKED_FAMILY_COUNT}" in redis_live_smoke,
+        "Redis smokes must derive blocked-family INFO assertion from the surface manifest",
+        failures,
+    )
     require(
         'REDIS_EXPECT_HINCRBYFLOAT:-0' in redis_live_smoke
         and "SKIP hincrbyfloat" in redis_live_smoke
