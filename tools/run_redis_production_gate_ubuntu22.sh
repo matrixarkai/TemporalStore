@@ -19,6 +19,8 @@ cp "${ROOT}/compat/redis_open_source_surface_manifest.json" \
   "${RESULT_ROOT}/redis_open_source_surface_manifest.json"
 python3 "${ROOT}/tools/validate_open_source_surface.py" \
   | tee "${RESULT_ROOT}/redis_open_source_surface_validation.txt"
+python3 "${ROOT}/tools/validate_matrixobjectstore_names.py" \
+  | tee "${RESULT_ROOT}/matrixobject_name_validation.txt"
 
 echo "== Redis production gate: release build =="
 cmake --build "${BUILD_DIR}" --target bcache2-server -j "${BUILD_JOBS:-2}"
