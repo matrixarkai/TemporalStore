@@ -57,6 +57,9 @@ def main() -> int:
     manifest_rust_extra_commands = set(manifest.get("rust_extra_commands", []))
     manifest_rust_normal_helpers = set(manifest.get("rust_normal_helpers", []))
     manifest_blocked_smoke_samples = manifest.get("blocked_smoke_samples", {})
+    manifest_benchmark_commands = manifest.get("benchmark_commands", {})
+    manifest_required_benchmarks = manifest_benchmark_commands.get("required", [])
+    manifest_opt_in_benchmarks = manifest_benchmark_commands.get("opt_in", [])
     expected_cxx_command_count = int(manifest.get("cxx_command_count", 0))
     expected_blocked_family_count = len(manifest.get("blocked_command_families", []))
     expected_rust_trimmed_command_count = expected_cxx_command_count + len(manifest_rust_extra_commands)
@@ -69,6 +72,12 @@ def main() -> int:
     require(
         manifest.get("cxx_command_count") == 47 and len(manifest_cxx_commands) == 47,
         "Redis open-source surface manifest must declare exactly 47 C++ commands",
+        failures,
+    )
+    require(
+        manifest_required_benchmarks == ["set_get", "hset", "hget", "hincrby", "incr", "expire"]
+        and manifest_opt_in_benchmarks == ["hincrbyfloat"],
+        "Redis open-source surface manifest must declare required and opt-in benchmark command coverage",
         failures,
     )
 
@@ -566,12 +575,23 @@ def main() -> int:
         "Redis production gate and benchmark summary must support optional min overall QPS threshold",
         failures,
     )
-    for benchmark_command in ("HSET", "HGET", "HINCRBY", "HINCRBYFLOAT", "INCR", "EXPIRE"):
+    benchmark_artifact_names = {
+        "set_get": "redis-benchmark.csv",
+        "hset": "redis-benchmark-hset.csv",
+        "hget": "redis-benchmark-hget.csv",
+        "hincrby": "redis-benchmark-hincrby.csv",
+        "incr": "redis-benchmark-incr.csv",
+        "expire": "redis-benchmark-expire.csv",
+        "hincrbyfloat": "redis-benchmark-hincrbyfloat.csv",
+    }
+    for benchmark_command in manifest_required_benchmarks + manifest_opt_in_benchmarks:
+        artifact = benchmark_artifact_names.get(benchmark_command)
         require(
-            benchmark_command in redis_compat_smoke,
-            f"Redis compatibility benchmark must cover {benchmark_command}",
+            artifact is not None and artifact in redis_compat_smoke,
+            f"Redis compatibility benchmark must cover manifest command {benchmark_command}",
             failures,
         )
+    for benchmark_command in ("HSET", "HGET", "HINCRBY", "HINCRBYFLOAT", "INCR", "EXPIRE"):
         require(
             f"`{benchmark_command}`" in redis_docs,
             f"Redis docs must describe {benchmark_command} benchmark coverage",
@@ -596,6 +616,9 @@ def main() -> int:
         'command_qps_maxes = [command["requests_per_second_max"] for command in commands]',
         'command_qps_avgs = [command["requests_per_second_avg"] for command in commands]',
         'min_overall_qps = float(sys.argv[5])',
+        'benchmark_manifest = manifest.get("benchmark_commands", {})',
+        '"required_benchmark_commands": required_benchmark_commands',
+        '"optional_benchmark_commands": optional_benchmark_commands',
         'if min_overall_qps > 0 and overall_min_qps < min_overall_qps:',
         '"min_overall_qps_threshold": min_overall_qps',
         '"requests_per_second_overall_min": overall_min_qps',
@@ -613,6 +636,8 @@ def main() -> int:
         "redis_surface_schema",
         "redis_surface_manifest_sha256",
         "blocked_command_family_count",
+        "required_benchmark_commands",
+        "optional_benchmark_commands",
         "benchmark_command_count",
         "requests_per_second_min",
         "requests_per_second_max",

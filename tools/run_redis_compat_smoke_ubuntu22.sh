@@ -512,6 +512,9 @@ min_overall_qps = float(sys.argv[5])
 manifest_path = Path(sys.argv[6])
 manifest_bytes = manifest_path.read_bytes()
 manifest = json.loads(manifest_bytes.decode("utf-8"))
+benchmark_manifest = manifest.get("benchmark_commands", {})
+required_benchmark_commands = benchmark_manifest.get("required", [])
+optional_benchmark_commands = benchmark_manifest.get("opt_in", [])
 artifacts = [
     ("set_get", "redis-benchmark.csv"),
     ("hset", "redis-benchmark-hset.csv"),
@@ -570,6 +573,8 @@ summary = {
     "redis_surface_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
     "cxx_command_count": manifest.get("cxx_command_count"),
     "blocked_command_family_count": len(manifest.get("blocked_command_families", [])),
+    "required_benchmark_commands": required_benchmark_commands,
+    "optional_benchmark_commands": optional_benchmark_commands,
     "hincrbyfloat_enabled": hincrbyfloat_path.exists(),
     "benchmark_command_count": len(commands),
     "requests": requests,

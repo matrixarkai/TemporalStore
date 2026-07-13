@@ -1,6 +1,19 @@
 {
   "schema": "temporalstore_open_source_redis_surface_v1",
   "surface": "trimmed_open_source_context_feature_frequency",
+  "benchmark_commands": {
+    "required": [
+      "set_get",
+      "hset",
+      "hget",
+      "hincrby",
+      "incr",
+      "expire"
+    ],
+    "opt_in": [
+      "hincrbyfloat"
+    ]
+  },
   "allowed_surface_families": [
     "connection",
     "auth_client",
