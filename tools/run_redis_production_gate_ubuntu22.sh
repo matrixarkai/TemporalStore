@@ -137,5 +137,61 @@ rollup = {
 ROLLUPPY
 fi
 
+python3 - "${RESULT_ROOT}" "${REPEAT}" "${RUN_BENCH}" <<'GATESUMMARYPY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+result_root = Path(sys.argv[1])
+repeat = int(sys.argv[2])
+run_bench = sys.argv[3] == "1"
+
+manifest_path = result_root / "redis_open_source_surface_manifest.json"
+surface_validation_path = result_root / "redis_open_source_surface_validation.txt"
+matrixobject_validation_path = result_root / "matrixobject_name_validation.txt"
+benchmark_rollup_path = result_root / "redis-production-benchmark-rollup.json"
+
+for path in (manifest_path, surface_validation_path, matrixobject_validation_path):
+    if not path.exists():
+        raise SystemExit(f"missing Redis production gate evidence artifact: {path}")
+
+surface_validation = surface_validation_path.read_text(encoding="utf-8", errors="replace")
+matrixobject_validation = matrixobject_validation_path.read_text(encoding="utf-8", errors="replace")
+if "open-source surface validation passed" not in surface_validation:
+    raise SystemExit(f"Redis surface validation did not pass: {surface_validation_path}")
+if "matrixobject_names: ok" not in matrixobject_validation:
+    raise SystemExit(f"MatrixObject naming validation did not pass: {matrixobject_validation_path}")
+if run_bench and not benchmark_rollup_path.exists():
+    raise SystemExit(f"missing Redis production benchmark rollup: {benchmark_rollup_path}")
+
+manifest_bytes = manifest_path.read_bytes()
+manifest = json.loads(manifest_bytes.decode("utf-8"))
+summary = {
+    "schema": "temporalstore_trimmed_redis_production_gate_summary_v1",
+    "result_root": str(result_root),
+    "run_count": repeat,
+    "run_bench": run_bench,
+    "redis_surface": manifest.get("surface"),
+    "redis_surface_schema": manifest.get("schema"),
+    "redis_surface_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+    "open_source_surface_validation": {
+        "path": str(surface_validation_path),
+        "status": "passed",
+    },
+    "matrixobject_name_validation": {
+        "path": str(matrixobject_validation_path),
+        "status": "passed",
+    },
+    "matrixobject_boundary": "below_temporalstore_storage_backfill_no_redis_api_expansion",
+    "benchmark_rollup": str(benchmark_rollup_path) if benchmark_rollup_path.exists() else None,
+    "unsupported_collections_expected": True,
+}
+(result_root / "redis-production-gate-summary.json").write_text(
+    json.dumps(summary, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+GATESUMMARYPY
+
 echo "PASS Redis production gate"
 echo "${RESULT_ROOT}"
