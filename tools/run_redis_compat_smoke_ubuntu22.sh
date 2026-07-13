@@ -12,6 +12,7 @@ RUN_BENCH="${RUN_BENCH:-0}"
 BENCH_REQUESTS="${BENCH_REQUESTS:-1000}"
 BENCH_CLIENTS="${BENCH_CLIENTS:-8}"
 BENCH_KEYSPACE="${BENCH_KEYSPACE:-100000}"
+REDIS_BENCH_MIN_OVERALL_QPS="${REDIS_BENCH_MIN_OVERALL_QPS:-0}"
 REDIS_COMPAT_SURFACE="${REDIS_COMPAT_SURFACE:-trimmed}"
 REDIS_SURFACE_MANIFEST_PATH="${REDIS_SURFACE_MANIFEST_PATH:-${ROOT}/compat/redis_open_source_surface_manifest.json}"
 REDIS_SURFACE_BLOCKED_FAMILY_COUNT="${REDIS_SURFACE_BLOCKED_FAMILY_COUNT:-$(python3 - "${REDIS_SURFACE_MANIFEST_PATH}" <<'PY'
@@ -496,7 +497,7 @@ if [[ "${RUN_BENCH}" == "1" ]]; then
     2> "${RESULT_DIR}/redis-benchmark-expire.err"
   echo "PASS redis_benchmark_expire" | tee -a "${SUMMARY}"
 
-  python3 - "${RESULT_DIR}" "${BENCH_REQUESTS}" "${BENCH_CLIENTS}" "${BENCH_KEYSPACE}" "${ROOT}/compat/redis_open_source_surface_manifest.json" <<'BENCHPY'
+  python3 - "${RESULT_DIR}" "${BENCH_REQUESTS}" "${BENCH_CLIENTS}" "${BENCH_KEYSPACE}" "${REDIS_BENCH_MIN_OVERALL_QPS}" "${ROOT}/compat/redis_open_source_surface_manifest.json" <<'BENCHPY'
 import csv
 import hashlib
 import json
@@ -507,7 +508,8 @@ result_dir = Path(sys.argv[1])
 requests = int(sys.argv[2])
 clients = int(sys.argv[3])
 keyspace = int(sys.argv[4])
-manifest_path = Path(sys.argv[5])
+min_overall_qps = float(sys.argv[5])
+manifest_path = Path(sys.argv[6])
 manifest_bytes = manifest_path.read_bytes()
 manifest = json.loads(manifest_bytes.decode("utf-8"))
 artifacts = [
@@ -554,6 +556,12 @@ for command, file_name in artifacts:
 command_qps_mins = [command["requests_per_second_min"] for command in commands]
 command_qps_maxes = [command["requests_per_second_max"] for command in commands]
 command_qps_avgs = [command["requests_per_second_avg"] for command in commands]
+overall_min_qps = min(command_qps_mins)
+if min_overall_qps > 0 and overall_min_qps < min_overall_qps:
+    raise SystemExit(
+        f"trimmed Redis benchmark overall min QPS {overall_min_qps:.3f} below REDIS_BENCH_MIN_OVERALL_QPS={min_overall_qps:.3f}"
+    )
+
 summary = {
     "schema": "temporalstore_trimmed_redis_benchmark_summary_v1",
     "redis_surface_schema": manifest.get("schema"),
@@ -567,7 +575,8 @@ summary = {
     "requests": requests,
     "clients": clients,
     "keyspace": keyspace,
-    "requests_per_second_overall_min": min(command_qps_mins),
+    "min_overall_qps_threshold": min_overall_qps,
+    "requests_per_second_overall_min": overall_min_qps,
     "requests_per_second_overall_max": max(command_qps_maxes),
     "requests_per_second_overall_avg": sum(command_qps_avgs) / len(command_qps_avgs),
     "commands": commands,
