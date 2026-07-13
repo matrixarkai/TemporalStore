@@ -153,7 +153,7 @@ expect_contains_line() {
   echo "PASS ${name}" | tee -a "${SUMMARY}"
 }
 
-expect_contains_line info_surface redis_surface:trimmed_open_source INFO stats
+expect_contains_line info_surface redis_surface:trimmed_open_source_context_feature_frequency INFO stats
 expect_contains_line info_surface_schema redis_surface_schema:temporalstore_open_source_redis_surface_v1 INFO stats
 expect_contains_line info_surface_blocked_families redis_surface_blocked_command_family_count:${REDIS_SURFACE_BLOCKED_FAMILY_COUNT} INFO stats
 expect_eq command_count "${REDIS_CXX_TRIMMED_COMMAND_COUNT}" COMMAND COUNT

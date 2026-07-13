@@ -1241,7 +1241,7 @@ void RedisCommandHandler::Info(RedisClientContext* c) {
             partition_loading_stats +
             "\r\n"
 #ifdef BCACHE2_OPEN_SOURCE_SURFACE
-            "redis_surface:trimmed_open_source\r\n"
+            "redis_surface:trimmed_open_source_context_feature_frequency\r\n"
             "redis_surface_schema:temporalstore_open_source_redis_surface_v1\r\n"
             "redis_surface_cxx_command_count:" +
             std::to_string(OpenSourceRedisCommandCount()) +

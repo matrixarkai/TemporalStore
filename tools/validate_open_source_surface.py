@@ -445,7 +445,7 @@ def main() -> int:
         require(f'"{denied}"' not in body, f"Rust allowlist must not include {denied}", failures)
 
     for metric in (
-        "redis_surface:trimmed_open_source",
+        "redis_surface:trimmed_open_source_context_feature_frequency",
         "redis_surface_schema:temporalstore_open_source_redis_surface_v1",
         f"redis_surface_cxx_command_count:{expected_cxx_command_count}",
         f"redis_surface_blocked_command_family_count:{expected_blocked_family_count}",
@@ -656,7 +656,7 @@ def main() -> int:
         failures,
     )
     for metric in (
-        "redis_surface:trimmed_open_source",
+        "redis_surface:trimmed_open_source_context_feature_frequency",
         "redis_surface_schema:temporalstore_open_source_redis_surface_v1",
         "redis_surface_cxx_command_count:",
         f"redis_surface_blocked_command_family_count:{expected_blocked_family_count}",
@@ -708,7 +708,7 @@ def main() -> int:
         failures,
     )
     for runtime_metric in (
-        "redis_surface:trimmed_open_source",
+        "redis_surface:trimmed_open_source_context_feature_frequency",
         "redis_surface_schema:temporalstore_open_source_redis_surface_v1",
     ):
         require(
