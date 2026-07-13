@@ -50,7 +50,7 @@ The TemporalStore native Redis bridge is production-ready only for the documente
 - Feature model: `FAPPEND`, `FAPPENDPOLICY`, `FQUERY`, `FQUERYFILTER`, `FQUERYFILTERSTR`, `FAGG`
 - Frequency-control model: `RISKINCR`, `RISKINCROPT`, `RISKCHANGE`, `RISKCOUNT`, `RISKQUERY`, `RISKDETAIL`, `RISKHSET`, `HCHANGE`, `HQUERY`, `HSETANDGET`, `CPCSET`, `CPCSETANDGET`, `FOLSET`, `FOLQUERY`
 
-Open-source production builds do not claim generic Redis SET/LIST/ZSET compatibility. `SADD`, `LPUSH`, `ZADD`, `SCAN`, `PARTITION`, `IPS*`, scripting, streams, pub/sub, GEO, HyperLogLog, and bitmap commands must return deterministic unsupported/open-surface errors.
+Open-source production builds do not claim generic Redis SET/LIST/ZSET compatibility or Redis server-configuration APIs. `SADD`, `LPUSH`, `ZADD`, `SCAN`, `PARTITION`, `CONFIG`, `DBSIZE`, `IPS*`, scripting, streams, pub/sub, GEO, HyperLogLog, and bitmap commands must return deterministic unsupported/open-surface errors.
 
 The bridge must not claim full Redis compatibility yet. Unsupported command families return deterministic Redis errors rather than fake success. When `TEMPORALSTORE_OPEN_SOURCE_SURFACE=1` or `TS_OPEN_SOURCE_SURFACE=1`, Rust filters both execution and `COMMAND` advertising to the trimmed production data-model surface. The current local bridge serializes backend Redis data-command execution while storage concurrency semantics are hardened; this favors correctness over peak Redis QPS.
 
@@ -61,7 +61,7 @@ python3 tools/validate_open_source_surface.py
 cargo check -p temporalstore-rust --lib
 ```
 
-Result expectation: the public Rust surface keeps string/common, hash, feature, and frequency-control commands; `COMMAND` does not advertise `SADD`, `LPUSH`, `ZADD`, `SCAN`, `PARTITION`, stale feature aliases such as `FADD`, or internal/debug families such as `IPS*`/`RISKDEBUG`.
+Result expectation: the public Rust surface keeps string/common, hash, feature, and frequency-control commands; `COMMAND` does not advertise `SADD`, `LPUSH`, `ZADD`, `SCAN`, `PARTITION`, `CONFIG`, `DBSIZE`, stale feature aliases such as `FADD`, or internal/debug families such as `IPS*`/`RISKDEBUG`.
 
 ## Production Gate
 

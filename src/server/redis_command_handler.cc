@@ -83,7 +83,6 @@ bool IsOpenSourceRedisCommandAllowed(RedisCommand::CmdType cmd_type) {
         case RedisCommand::CmdType::kClient:
         case RedisCommand::CmdType::kCommand:
         case RedisCommand::CmdType::kSelect:
-        case RedisCommand::CmdType::kConfig:
         case RedisCommand::CmdType::kType:
         case RedisCommand::CmdType::kGet:
         case RedisCommand::CmdType::kSet:
@@ -128,7 +127,7 @@ int64_t OpenSourceRedisCommandCount() {
     // Keep this aligned with IsOpenSourceRedisCommandAllowed(). C++ currently
     // exposes the basic/string/hash surface; feature/frequency model commands
     // are Rust bridge APIs and are not advertised by the C++ Redis bridge.
-    return 43;
+    return 42;
 }
 #endif
 
