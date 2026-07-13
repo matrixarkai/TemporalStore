@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+use tokio::net::TcpStream;
 use tokio::task::JoinSet;
 use uuid::Uuid;
 
@@ -400,6 +401,128 @@ fn percent_encode(value: &str, encode_slash: bool) -> String {
     out
 }
 
+fn parse_http_url(url: &str) -> Result<(String, u16, String), ObjectStoreError> {
+    let Some(remainder) = url.strip_prefix("http://") else {
+        return Err(ObjectStoreError::UnsupportedBackend {
+            backend: "http".to_string(),
+            uri: url.to_string(),
+        });
+    };
+    let (authority, path) = remainder
+        .split_once('/')
+        .map_or((remainder, "/"), |(authority, path)| (authority, path));
+    if authority.is_empty() {
+        return Err(ObjectStoreError::InvalidKey(format!(
+            "remote endpoint has no host: {url}"
+        )));
+    }
+    let (host, port) = authority
+        .rsplit_once(':')
+        .and_then(|(host, port)| port.parse::<u16>().ok().map(|port| (host, port)))
+        .map_or((authority, 80), |(host, port)| (host, port));
+    if host.is_empty() {
+        return Err(ObjectStoreError::InvalidKey(format!(
+            "remote endpoint has no host: {url}"
+        )));
+    }
+    Ok((host.to_string(), port, format!("/{path}")))
+}
+
+fn host_header(host: &str, port: u16) -> String {
+    if port == 80 {
+        host.to_string()
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
+fn parse_http_response(raw: Vec<u8>) -> Result<RemoteHttpResponse, ObjectStoreError> {
+    let header_end = raw
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or_else(|| ObjectStoreError::Io(std::io::Error::other("invalid HTTP response")))?;
+    let header_bytes = &raw[..header_end];
+    let body = Bytes::from(raw[(header_end + 4)..].to_vec());
+    let header_text = String::from_utf8_lossy(header_bytes);
+    let mut lines = header_text.lines();
+    let status_line = lines
+        .next()
+        .ok_or_else(|| ObjectStoreError::Io(std::io::Error::other("missing HTTP status")))?;
+    let status = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|value| value.parse::<u16>().ok())
+        .ok_or_else(|| ObjectStoreError::Io(std::io::Error::other("invalid HTTP status")))?;
+    let headers = lines
+        .filter_map(|line| {
+            line.split_once(':')
+                .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_string()))
+        })
+        .collect();
+    Ok(RemoteHttpResponse {
+        status,
+        headers,
+        body,
+    })
+}
+
+fn http_header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    let name = name.to_ascii_lowercase();
+    headers
+        .iter()
+        .find(|(header, _)| header == &name)
+        .map(|(_, value)| value.as_str())
+}
+
+fn parse_s3_list_keys(xml: &str) -> Vec<String> {
+    parse_xml_tag_values(xml, "Key")
+}
+
+fn parse_s3_next_continuation_token(xml: &str) -> Option<String> {
+    parse_xml_tag_values(xml, "NextContinuationToken")
+        .into_iter()
+        .next()
+}
+
+fn parse_xml_tag_values(xml: &str, tag: &str) -> Vec<String> {
+    let start_tag = format!("<{tag}>");
+    let end_tag = format!("</{tag}>");
+    let mut values = Vec::new();
+    let mut remainder = xml;
+    while let Some((_, after_start)) = remainder.split_once(&start_tag) {
+        let Some((value, after_end)) = after_start.split_once(&end_tag) else {
+            break;
+        };
+        values.push(xml_unescape(value));
+        remainder = after_end;
+    }
+    values
+}
+
+fn xml_unescape(value: &str) -> String {
+    value
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+}
+
+fn map_http_status(
+    status: u16,
+    key: &str,
+    ok: impl FnOnce() -> Result<(), ObjectStoreError>,
+) -> Result<(), ObjectStoreError> {
+    match status {
+        200..=299 => ok(),
+        404 => Err(ObjectStoreError::NotFound(key.to_string())),
+        409 | 412 => Err(ObjectStoreError::AlreadyExists(key.to_string())),
+        _ => Err(ObjectStoreError::Io(std::io::Error::other(format!(
+            "remote object HTTP status {status} for {key}"
+        )))),
+    }
+}
+
 impl ObjectMetadata {
     pub fn from_parts(
         key: impl Into<String>,
@@ -786,6 +909,12 @@ pub struct RemoteObjectRequestPlan {
     pub copy_source: Option<String>,
 }
 
+struct RemoteHttpResponse {
+    status: u16,
+    headers: Vec<(String, String)>,
+    body: Bytes,
+}
+
 impl RemoteObjectStore {
     pub fn new(
         backend: SharedObjectStoreBackend,
@@ -808,6 +937,24 @@ impl RemoteObjectStore {
             backend: self.backend.canonical_name().to_string(),
             uri: self.uri.clone(),
         })
+    }
+
+    fn supports_unsigned_http(&self) -> bool {
+        matches!(
+            self.backend,
+            SharedObjectStoreBackend::S3 | SharedObjectStoreBackend::CephS3
+        ) && self
+            .endpoint
+            .as_deref()
+            .is_some_and(|endpoint| endpoint.starts_with("http://"))
+    }
+
+    fn require_unsigned_http(&self) -> Result<(), ObjectStoreError> {
+        if self.supports_unsigned_http() {
+            Ok(())
+        } else {
+            self.unsupported()
+        }
     }
 
     fn endpoint_base(&self) -> Result<String, ObjectStoreError> {
@@ -946,6 +1093,64 @@ impl RemoteObjectStore {
             object_key: Some(object_key),
             copy_source,
         })
+    }
+
+    async fn http_request(
+        &self,
+        plan: RemoteObjectRequestPlan,
+        extra_headers: Vec<(String, String)>,
+        body: Bytes,
+    ) -> Result<RemoteHttpResponse, ObjectStoreError> {
+        self.require_unsigned_http()?;
+        let (host, port, path) = parse_http_url(&plan.url)?;
+        let mut stream = TcpStream::connect((host.as_str(), port)).await?;
+        let mut request = format!(
+            "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nContent-Length: {}\r\n",
+            plan.method,
+            path,
+            host_header(&host, port),
+            body.len()
+        );
+        if let Some(copy_source) = plan.copy_source {
+            request.push_str("x-amz-copy-source: ");
+            request.push_str(&copy_source);
+            request.push_str("\r\n");
+        }
+        for (name, value) in extra_headers {
+            request.push_str(&name);
+            request.push_str(": ");
+            request.push_str(&value);
+            request.push_str("\r\n");
+        }
+        request.push_str("\r\n");
+        stream.write_all(request.as_bytes()).await?;
+        if !body.is_empty() {
+            stream.write_all(&body).await?;
+        }
+        stream.flush().await?;
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).await?;
+        parse_http_response(raw)
+    }
+
+    async fn http_metadata_from_get(&self, key: &str) -> Result<ObjectMetadata, ObjectStoreError> {
+        let bytes = self.get(key).await?;
+        Ok(ObjectMetadata::from_bytes(key, self.uri(key), &bytes))
+    }
+
+    fn public_key_from_remote(&self, object_key: &str) -> Option<String> {
+        self.key_prefix
+            .as_deref()
+            .filter(|prefix| !prefix.is_empty())
+            .map_or_else(
+                || Some(object_key.to_string()),
+                |prefix| {
+                    object_key
+                        .strip_prefix(prefix)
+                        .and_then(|key| key.strip_prefix('/'))
+                        .map(ToString::to_string)
+                },
+            )
     }
 }
 
@@ -2647,82 +2852,185 @@ impl MatrixObjectStore {
 
 #[async_trait]
 impl ObjectStore for RemoteObjectStore {
-    async fn put(&self, _key: &str, _bytes: Bytes) -> Result<(), ObjectStoreError> {
-        self.unsupported()
+    async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
+        self.put_atomic(key, bytes).await.map(|_| ())
     }
 
-    async fn put_unique(&self, _key: &str, _bytes: Bytes) -> Result<(), ObjectStoreError> {
-        self.unsupported()
+    async fn put_unique(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
+        self.put_if_absent(key, bytes).await.map(|_| ())
     }
 
     async fn put_if_absent(
         &self,
-        _key: &str,
+        key: &str,
         _bytes: Bytes,
     ) -> Result<ObjectMetadata, ObjectStoreError> {
-        self.unsupported()
+        match self.head(key).await {
+            Ok(_) => Err(ObjectStoreError::AlreadyExists(key.to_string())),
+            Err(ObjectStoreError::NotFound(_)) => self.put_atomic(key, _bytes).await,
+            Err(err) => Err(err),
+        }
     }
 
     async fn put_path_unique(
         &self,
-        _key: &str,
-        _path: &Path,
+        key: &str,
+        path: &Path,
     ) -> Result<ObjectMetadata, ObjectStoreError> {
-        self.unsupported()
+        let bytes = Bytes::from(tokio::fs::read(path).await?);
+        self.put_if_absent(key, bytes).await
     }
 
-    async fn get(&self, _key: &str) -> Result<Bytes, ObjectStoreError> {
-        self.unsupported()
+    async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
+        let response = self
+            .http_request(self.plan_get(key)?, Vec::new(), Bytes::new())
+            .await?;
+        map_http_status(response.status, key, || Ok(()))?;
+        Ok(response.body)
     }
 
     async fn get_range(
         &self,
-        _key: &str,
-        _offset: u64,
-        _length: usize,
+        key: &str,
+        offset: u64,
+        length: usize,
     ) -> Result<Bytes, ObjectStoreError> {
-        self.unsupported()
+        if length == 0 {
+            return Ok(Bytes::new());
+        }
+        let end = offset.saturating_add(length as u64).saturating_sub(1);
+        let response = self
+            .http_request(
+                self.plan_get(key)?,
+                vec![("Range".to_string(), format!("bytes={offset}-{end}"))],
+                Bytes::new(),
+            )
+            .await?;
+        map_http_status(response.status, key, || Ok(()))?;
+        Ok(response.body)
     }
 
     async fn get_to_path(
         &self,
-        _key: &str,
-        _path: &Path,
+        key: &str,
+        path: &Path,
     ) -> Result<ObjectMetadata, ObjectStoreError> {
-        self.unsupported()
+        let bytes = self.get(key).await?;
+        write_object_file(path, &bytes).await?;
+        Ok(ObjectMetadata::from_bytes(key, self.uri(key), &bytes))
     }
 
-    async fn list(&self, _prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
-        self.unsupported()
+    async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
+        let mut out = Vec::new();
+        let mut continuation_token = None;
+        loop {
+            let page = self
+                .list_page(prefix, continuation_token.as_deref(), 1024)
+                .await?;
+            if page.keys.is_empty() {
+                break;
+            }
+            continuation_token = page.next_continuation_token.clone();
+            out.extend(page.keys);
+            if continuation_token.is_none() {
+                break;
+            }
+        }
+        Ok(out)
     }
 
     async fn list_page(
         &self,
-        _prefix: &str,
-        _continuation_token: Option<&str>,
-        _max_keys: usize,
+        prefix: &str,
+        continuation_token: Option<&str>,
+        max_keys: usize,
     ) -> Result<ObjectListPage, ObjectStoreError> {
-        self.unsupported()
+        let response = self
+            .http_request(
+                self.plan_list(prefix, continuation_token, max_keys)?,
+                Vec::new(),
+                Bytes::new(),
+            )
+            .await?;
+        map_http_status(response.status, prefix, || Ok(()))?;
+        let body = String::from_utf8_lossy(&response.body);
+        let keys = parse_s3_list_keys(&body)
+            .into_iter()
+            .filter_map(|key| self.public_key_from_remote(&key))
+            .collect::<Vec<_>>();
+        Ok(ObjectListPage {
+            keys,
+            next_continuation_token: parse_s3_next_continuation_token(&body),
+        })
     }
 
-    async fn delete(&self, _key: &str) -> Result<(), ObjectStoreError> {
-        self.unsupported()
+    async fn delete(&self, key: &str) -> Result<(), ObjectStoreError> {
+        let response = self
+            .http_request(self.plan_delete(key)?, Vec::new(), Bytes::new())
+            .await?;
+        match response.status {
+            200..=299 | 404 => Ok(()),
+            status => Err(ObjectStoreError::Io(std::io::Error::other(format!(
+                "remote object HTTP status {status} for {key}"
+            )))),
+        }
     }
 
-    async fn delete_objects(&self, _keys: &[String]) -> Result<usize, ObjectStoreError> {
-        self.unsupported()
+    async fn delete_objects(&self, keys: &[String]) -> Result<usize, ObjectStoreError> {
+        let mut deleted = 0usize;
+        for key in keys {
+            self.delete(key).await?;
+            deleted += 1;
+        }
+        Ok(deleted)
     }
 
     async fn copy_object(
         &self,
-        _source_key: &str,
-        _destination_key: &str,
+        source_key: &str,
+        destination_key: &str,
     ) -> Result<ObjectMetadata, ObjectStoreError> {
-        self.unsupported()
+        let response = self
+            .http_request(
+                self.plan_copy(source_key, destination_key)?,
+                Vec::new(),
+                Bytes::new(),
+            )
+            .await?;
+        map_http_status(response.status, destination_key, || Ok(()))?;
+        self.http_metadata_from_get(destination_key).await
     }
 
-    async fn delete_prefix(&self, _prefix: &str) -> Result<usize, ObjectStoreError> {
-        self.unsupported()
+    async fn head(&self, key: &str) -> Result<ObjectMetadata, ObjectStoreError> {
+        let response = self
+            .http_request(self.plan_head(key)?, Vec::new(), Bytes::new())
+            .await?;
+        map_http_status(response.status, key, || Ok(()))?;
+        let size_bytes = http_header(&response.headers, "content-length")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
+        let mut metadata = ObjectMetadata::from_parts(key, self.uri(key), size_bytes, "");
+        metadata.etag = http_header(&response.headers, "etag").map(ToString::to_string);
+        metadata.version_id =
+            http_header(&response.headers, "x-amz-version-id").map(ToString::to_string);
+        Ok(metadata)
+    }
+
+    async fn put_atomic(
+        &self,
+        key: &str,
+        bytes: Bytes,
+    ) -> Result<ObjectMetadata, ObjectStoreError> {
+        let response = self
+            .http_request(self.plan_put(key)?, Vec::new(), bytes.clone())
+            .await?;
+        map_http_status(response.status, key, || Ok(()))?;
+        Ok(ObjectMetadata::from_bytes(key, self.uri(key), &bytes))
+    }
+
+    async fn delete_prefix(&self, prefix: &str) -> Result<usize, ObjectStoreError> {
+        let keys = self.list(prefix).await?;
+        self.delete_objects(&keys).await
     }
 
     fn uri(&self, key: &str) -> String {
@@ -2753,7 +3061,12 @@ impl ObjectStore for RemoteObjectStore {
     }
 
     fn capabilities(&self) -> ObjectStoreCapabilities {
-        ObjectStoreCapabilities::remote_expected(self.backend)
+        let mut capabilities = ObjectStoreCapabilities::remote_expected(self.backend);
+        if self.supports_unsigned_http() {
+            capabilities.runtime_linked = true;
+            capabilities.operations_fail_closed = false;
+        }
+        capabilities
     }
 
     fn topology(&self) -> ObjectStoreTopology {
@@ -3151,6 +3464,7 @@ mod tests {
         SharedObjectStoreBackend, SharedObjectStoreConfig,
     };
     use bytes::Bytes;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[tokio::test]
     async fn matrix_object_store_put_atomic_returns_checksum_metadata() {
@@ -4249,6 +4563,51 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn remote_object_store_unsigned_http_s3_path_supports_basic_object_ops() {
+        let server = TestS3Server::start().await;
+        let store = SharedObjectStore::from_config(
+            SharedObjectStoreConfig::from_uri("s3://bucket/base", "/tmp/unused")
+                .with_endpoint(server.endpoint.clone()),
+        )
+        .unwrap();
+
+        let metadata = store
+            .put_atomic("objects/a.bin", Bytes::from_static(b"hello remote object"))
+            .await
+            .unwrap();
+        assert_eq!(metadata.uri, "s3://bucket/base/objects/a.bin");
+        assert_eq!(
+            store.get("objects/a.bin").await.unwrap(),
+            Bytes::from_static(b"hello remote object")
+        );
+        assert_eq!(
+            store.get_range("objects/a.bin", 6, 6).await.unwrap(),
+            Bytes::from_static(b"remote")
+        );
+        assert_eq!(store.head("objects/a.bin").await.unwrap().size_bytes, 19);
+
+        store
+            .copy_object("objects/a.bin", "objects/b.bin")
+            .await
+            .unwrap();
+        assert_eq!(
+            store.get("objects/b.bin").await.unwrap(),
+            Bytes::from_static(b"hello remote object")
+        );
+
+        let mut keys = store.list("objects/").await.unwrap();
+        keys.sort();
+        assert_eq!(keys, vec!["objects/a.bin", "objects/b.bin"]);
+
+        store.delete("objects/a.bin").await.unwrap();
+        assert!(matches!(
+            store.get("objects/a.bin").await,
+            Err(ObjectStoreError::NotFound(_))
+        ));
+        drop(server);
+    }
+
     #[test]
     fn remote_object_store_plans_s3_compatible_requests_generically() {
         let store = SharedObjectStore::from_config(
@@ -4355,5 +4714,231 @@ mod tests {
             assert_eq!(topology.key_prefix.as_deref(), key_prefix);
             assert_eq!(store.uri("manifest.json"), object_uri);
         }
+    }
+
+    struct TestS3Server {
+        endpoint: String,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl TestS3Server {
+        async fn start() -> Self {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = format!("http://{}", listener.local_addr().unwrap());
+            let objects =
+                std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::<
+                    String,
+                    Vec<u8>,
+                >::new()));
+            let task = tokio::spawn({
+                let objects = objects.clone();
+                async move {
+                    loop {
+                        let Ok((mut stream, _)) = listener.accept().await else {
+                            break;
+                        };
+                        let objects = objects.clone();
+                        tokio::spawn(async move {
+                            let _ = handle_test_s3_connection(&mut stream, objects).await;
+                        });
+                    }
+                }
+            });
+            Self { endpoint, task }
+        }
+    }
+
+    impl Drop for TestS3Server {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    async fn handle_test_s3_connection(
+        stream: &mut tokio::net::TcpStream,
+        objects: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>>,
+    ) -> std::io::Result<()> {
+        let mut buffer = Vec::new();
+        let header_end = loop {
+            let mut chunk = [0u8; 1024];
+            let read = stream.read(&mut chunk).await?;
+            if read == 0 {
+                return Ok(());
+            }
+            buffer.extend_from_slice(&chunk[..read]);
+            if let Some(pos) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+                break pos;
+            }
+        };
+        let header_text = String::from_utf8_lossy(&buffer[..header_end]).to_string();
+        let mut lines = header_text.lines();
+        let request_line = lines.next().unwrap_or_default();
+        let mut request_parts = request_line.split_whitespace();
+        let method = request_parts.next().unwrap_or_default();
+        let target = request_parts.next().unwrap_or_default();
+        let headers = lines
+            .filter_map(|line| {
+                line.split_once(':').map(|(name, value)| {
+                    (name.trim().to_ascii_lowercase(), value.trim().to_string())
+                })
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        let content_length = headers
+            .get("content-length")
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(0);
+        let body_start = header_end + 4;
+        while buffer.len() < body_start + content_length {
+            let mut chunk = vec![0u8; body_start + content_length - buffer.len()];
+            let read = stream.read(&mut chunk).await?;
+            if read == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&chunk[..read]);
+        }
+        let body =
+            buffer[body_start..body_start + content_length.min(buffer.len() - body_start)].to_vec();
+        let (path, query) = target
+            .split_once('?')
+            .map_or((target, ""), |(path, query)| (path, query));
+        let mut path_parts = path.trim_start_matches('/').splitn(2, '/');
+        let bucket = path_parts.next().unwrap_or_default();
+        let key = percent_decode(path_parts.next().unwrap_or_default());
+        if bucket.is_empty() {
+            return write_test_s3_response(stream, 400, &[], b"bucket required").await;
+        }
+        if method == "GET" && query.contains("list-type=2") {
+            let prefix = query
+                .split('&')
+                .find_map(|part| part.strip_prefix("prefix="))
+                .map(percent_decode)
+                .unwrap_or_default();
+            let objects = objects.lock().await;
+            let mut keys = objects
+                .keys()
+                .filter(|stored_key| stored_key.starts_with(&prefix))
+                .cloned()
+                .collect::<Vec<_>>();
+            keys.sort();
+            let mut xml = String::from("<ListBucketResult>");
+            for key in keys {
+                xml.push_str("<Contents><Key>");
+                xml.push_str(&key);
+                xml.push_str("</Key></Contents>");
+            }
+            xml.push_str("</ListBucketResult>");
+            return write_test_s3_response(
+                stream,
+                200,
+                &[("Content-Type", "application/xml")],
+                xml.as_bytes(),
+            )
+            .await;
+        }
+        match method {
+            "PUT" => {
+                if let Some(copy_source) = headers.get("x-amz-copy-source") {
+                    let source_key = percent_decode(
+                        copy_source
+                            .trim_start_matches('/')
+                            .split_once('/')
+                            .map_or("", |(_, key)| key),
+                    );
+                    let source = { objects.lock().await.get(&source_key).cloned() };
+                    let Some(source) = source else {
+                        return write_test_s3_response(stream, 404, &[], b"not found").await;
+                    };
+                    objects.lock().await.insert(key, source);
+                    write_test_s3_response(stream, 200, &[], b"<CopyObjectResult/>").await
+                } else {
+                    objects.lock().await.insert(key, body);
+                    write_test_s3_response(stream, 200, &[], b"").await
+                }
+            }
+            "GET" | "HEAD" => {
+                let Some(data) = objects.lock().await.get(&key).cloned() else {
+                    return write_test_s3_response(stream, 404, &[], b"not found").await;
+                };
+                let mut data = data;
+                let status = if let Some(range) = headers
+                    .get("range")
+                    .and_then(|value| value.strip_prefix("bytes="))
+                {
+                    let (start, end) = range.split_once('-').unwrap_or((range, ""));
+                    let start = start.parse::<usize>().unwrap_or(0);
+                    let end = end
+                        .parse::<usize>()
+                        .unwrap_or_else(|_| data.len().saturating_sub(1));
+                    data = data[start.min(data.len())..=end.min(data.len().saturating_sub(1))]
+                        .to_vec();
+                    206
+                } else {
+                    200
+                };
+                let headers = [("Content-Length", data.len().to_string())];
+                let header_refs = [("Content-Length", headers[0].1.as_str())];
+                if method == "HEAD" {
+                    write_test_s3_response(stream, status, &header_refs, b"").await
+                } else {
+                    write_test_s3_response(stream, status, &header_refs, &data).await
+                }
+            }
+            "DELETE" => {
+                objects.lock().await.remove(&key);
+                write_test_s3_response(stream, 204, &[], b"").await
+            }
+            _ => write_test_s3_response(stream, 405, &[], b"method not allowed").await,
+        }
+    }
+
+    async fn write_test_s3_response(
+        stream: &mut tokio::net::TcpStream,
+        status: u16,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> std::io::Result<()> {
+        let reason = match status {
+            200 => "OK",
+            204 => "No Content",
+            206 => "Partial Content",
+            400 => "Bad Request",
+            404 => "Not Found",
+            405 => "Method Not Allowed",
+            _ => "OK",
+        };
+        let mut response = format!("HTTP/1.1 {status} {reason}\r\nConnection: close\r\n");
+        if !headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+        {
+            response.push_str(&format!("Content-Length: {}\r\n", body.len()));
+        }
+        for (name, value) in headers {
+            response.push_str(name);
+            response.push_str(": ");
+            response.push_str(value);
+            response.push_str("\r\n");
+        }
+        response.push_str("\r\n");
+        stream.write_all(response.as_bytes()).await?;
+        stream.write_all(body).await
+    }
+
+    fn percent_decode(value: &str) -> String {
+        let bytes = value.as_bytes();
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut idx = 0usize;
+        while idx < bytes.len() {
+            if bytes[idx] == b'%' && idx + 2 < bytes.len() {
+                if let Ok(byte) = u8::from_str_radix(&value[idx + 1..idx + 3], 16) {
+                    out.push(byte);
+                    idx += 3;
+                    continue;
+                }
+            }
+            out.push(bytes[idx]);
+            idx += 1;
+        }
+        String::from_utf8_lossy(&out).to_string()
     }
 }
