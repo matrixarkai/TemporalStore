@@ -443,6 +443,15 @@ fn parse_http_response(raw: Vec<u8>) -> Result<RemoteHttpResponse, ObjectStoreEr
         .ok_or_else(|| ObjectStoreError::Io(std::io::Error::other("invalid HTTP response")))?;
     let header_bytes = &raw[..header_end];
     let body = Bytes::from(raw[(header_end + 4)..].to_vec());
+    let (status, headers) = parse_http_head(header_bytes)?;
+    Ok(RemoteHttpResponse {
+        status,
+        headers,
+        body,
+    })
+}
+
+fn parse_http_head(header_bytes: &[u8]) -> Result<(u16, Vec<(String, String)>), ObjectStoreError> {
     let header_text = String::from_utf8_lossy(header_bytes);
     let mut lines = header_text.lines();
     let status_line = lines
@@ -459,11 +468,7 @@ fn parse_http_response(raw: Vec<u8>) -> Result<RemoteHttpResponse, ObjectStoreEr
                 .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_string()))
         })
         .collect();
-    Ok(RemoteHttpResponse {
-        status,
-        headers,
-        body,
-    })
+    Ok((status, headers))
 }
 
 fn http_header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
@@ -1156,6 +1161,115 @@ impl RemoteObjectStore {
         let mut raw = Vec::new();
         stream.read_to_end(&mut raw).await?;
         parse_http_response(raw)
+    }
+
+    async fn http_request_from_path(
+        &self,
+        plan: RemoteObjectRequestPlan,
+        extra_headers: Vec<(String, String)>,
+        path: &Path,
+    ) -> Result<RemoteHttpResponse, ObjectStoreError> {
+        self.require_unsigned_http()?;
+        let (host, port, path_part) = parse_http_url(&plan.url)?;
+        let size_bytes = tokio::fs::metadata(path).await?.len();
+        let mut stream = TcpStream::connect((host.as_str(), port)).await?;
+        let mut request = format!(
+            "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nContent-Length: {}\r\n",
+            plan.method,
+            path_part,
+            host_header(&host, port),
+            size_bytes
+        );
+        if let Some(copy_source) = plan.copy_source {
+            request.push_str("x-amz-copy-source: ");
+            request.push_str(&copy_source);
+            request.push_str("\r\n");
+        }
+        for (name, value) in extra_headers {
+            request.push_str(&name);
+            request.push_str(": ");
+            request.push_str(&value);
+            request.push_str("\r\n");
+        }
+        request.push_str("\r\n");
+        stream.write_all(request.as_bytes()).await?;
+        let mut file = tokio::fs::File::open(path).await?;
+        tokio::io::copy(&mut file, &mut stream).await?;
+        stream.flush().await?;
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).await?;
+        parse_http_response(raw)
+    }
+
+    async fn http_download_to_path(
+        &self,
+        key: &str,
+        plan: RemoteObjectRequestPlan,
+        path: &Path,
+    ) -> Result<ObjectMetadata, ObjectStoreError> {
+        self.require_unsigned_http()?;
+        let (host, port, path_part) = parse_http_url(&plan.url)?;
+        let mut stream = TcpStream::connect((host.as_str(), port)).await?;
+        let request = format!(
+            "{} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+            plan.method,
+            path_part,
+            host_header(&host, port)
+        );
+        stream.write_all(request.as_bytes()).await?;
+        stream.flush().await?;
+
+        let mut head_buffer = Vec::new();
+        let mut scratch = vec![0u8; 16 * 1024];
+        let (header_end, first_body) = loop {
+            let bytes_read = stream.read(&mut scratch).await?;
+            if bytes_read == 0 {
+                return Err(ObjectStoreError::Io(std::io::Error::other(
+                    "remote object HTTP response ended before headers",
+                )));
+            }
+            head_buffer.extend_from_slice(&scratch[..bytes_read]);
+            if let Some(header_end) = head_buffer
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+            {
+                let first_body = head_buffer[(header_end + 4)..].to_vec();
+                break (header_end, first_body);
+            }
+        };
+        let (status, _headers) = parse_http_head(&head_buffer[..header_end])?;
+        map_http_status(status, key, || Ok(()))?;
+
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let temp_path = temp_sibling_path(path, "matrixobjectstore-download-tmp");
+        let mut file = tokio::fs::File::create(&temp_path).await?;
+        let mut hasher = Sha256::new();
+        let mut size_bytes = 0u64;
+        if !first_body.is_empty() {
+            hasher.update(&first_body);
+            size_bytes += first_body.len() as u64;
+            file.write_all(&first_body).await?;
+        }
+        loop {
+            let bytes_read = stream.read(&mut scratch).await?;
+            if bytes_read == 0 {
+                break;
+            }
+            hasher.update(&scratch[..bytes_read]);
+            size_bytes += bytes_read as u64;
+            file.write_all(&scratch[..bytes_read]).await?;
+        }
+        file.flush().await?;
+        drop(file);
+        tokio::fs::rename(&temp_path, path).await?;
+        Ok(ObjectMetadata::from_parts(
+            key,
+            self.uri(key),
+            size_bytes,
+            hex::encode(hasher.finalize()),
+        ))
     }
 
     async fn http_metadata_from_get(&self, key: &str) -> Result<ObjectMetadata, ObjectStoreError> {
@@ -2918,8 +3032,20 @@ impl ObjectStore for RemoteObjectStore {
         key: &str,
         path: &Path,
     ) -> Result<ObjectMetadata, ObjectStoreError> {
-        let bytes = Bytes::from(tokio::fs::read(path).await?);
-        self.put_if_absent(key, bytes).await
+        let response = self
+            .http_request_from_path(
+                self.plan_put(key)?,
+                vec![("If-None-Match".to_string(), "*".to_string())],
+                path,
+            )
+            .await?;
+        map_http_status(response.status, key, || Ok(()))?;
+        Ok(ObjectMetadata::from_parts(
+            key,
+            self.uri(key),
+            tokio::fs::metadata(path).await?.len(),
+            sha256_file_hex(path).await?,
+        ))
     }
 
     async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
@@ -2956,9 +3082,8 @@ impl ObjectStore for RemoteObjectStore {
         key: &str,
         path: &Path,
     ) -> Result<ObjectMetadata, ObjectStoreError> {
-        let bytes = self.get(key).await?;
-        write_object_file(path, &bytes).await?;
-        Ok(ObjectMetadata::from_bytes(key, self.uri(key), &bytes))
+        self.http_download_to_path(key, self.plan_get(key)?, path)
+            .await
     }
 
     async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
@@ -4649,6 +4774,27 @@ mod tests {
         );
         assert_eq!(store.head("objects/a.bin").await.unwrap().size_bytes, 19);
 
+        let path_dir = tempfile::tempdir().unwrap();
+        let source_path = path_dir.path().join("source.bin");
+        let destination_path = path_dir.path().join("downloaded.bin");
+        tokio::fs::write(&source_path, b"path upload payload")
+            .await
+            .unwrap();
+        let uploaded = store
+            .put_path_unique("objects/path.bin", &source_path)
+            .await
+            .unwrap();
+        assert_eq!(uploaded.size_bytes, 19);
+        let downloaded = store
+            .get_to_path("objects/path.bin", &destination_path)
+            .await
+            .unwrap();
+        assert_eq!(downloaded.size_bytes, 19);
+        assert_eq!(
+            tokio::fs::read(&destination_path).await.unwrap(),
+            b"path upload payload"
+        );
+
         store
             .copy_object("objects/a.bin", "objects/b.bin")
             .await
@@ -4668,23 +4814,32 @@ mod tests {
             .list_page("objects/", first_page.next_continuation_token.as_deref(), 2)
             .await
             .unwrap();
-        assert_eq!(second_page.keys, vec!["objects/unique.bin"]);
+        assert_eq!(
+            second_page.keys,
+            vec!["objects/path.bin", "objects/unique.bin"]
+        );
         assert!(second_page.next_continuation_token.is_none());
 
         let mut keys = store.list("objects/").await.unwrap();
         keys.sort();
         assert_eq!(
             keys,
-            vec!["objects/a.bin", "objects/b.bin", "objects/unique.bin"]
+            vec![
+                "objects/a.bin",
+                "objects/b.bin",
+                "objects/path.bin",
+                "objects/unique.bin"
+            ]
         );
         let deleted = store
             .delete_objects(&[
                 "objects/b.bin".to_string(),
+                "objects/path.bin".to_string(),
                 "objects/unique.bin".to_string(),
             ])
             .await
             .unwrap();
-        assert_eq!(deleted, 2);
+        assert_eq!(deleted, 3);
         assert_eq!(store.list("objects/").await.unwrap(), vec!["objects/a.bin"]);
 
         store.delete("objects/a.bin").await.unwrap();
