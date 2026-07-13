@@ -3,6 +3,7 @@
 #include <absl/strings/match.h>
 
 #include <string>
+#include <vector>
 
 namespace bcache2 {
 namespace stream {
@@ -51,6 +52,18 @@ struct ObjectStoreBackendCapabilities {
     bool append_write = false;
     bool delete_object = false;
     bool copy_or_rename = false;
+};
+
+struct CanonicalObjectStoreBackendCapabilities {
+    const char* backend = "unknown";
+    const char* uri_scheme = "unknown";
+    bool runtime_linked = false;
+    bool operations_fail_closed = true;
+    std::vector<std::string> operations;
+    std::vector<std::string> validators;
+    bool split_services = false;
+    bool s3_compatible = false;
+    bool local_file_compatible = false;
 };
 
 inline ObjectStoreBackend DetectObjectStoreBackend(const std::string& uri) {
@@ -180,6 +193,37 @@ inline ObjectStoreBackendCapabilities ObjectStoreBackendCapabilityReport(ObjectS
     report.delete_object = report.delete_capability;
     report.copy_or_rename = report.object_copy;
     return report;
+}
+
+inline CanonicalObjectStoreBackendCapabilities CanonicalObjectStoreBackendCapabilityReport(
+    ObjectStoreBackend backend) {
+    const auto report = ObjectStoreBackendCapabilityReport(backend);
+    CanonicalObjectStoreBackendCapabilities canonical;
+    canonical.backend = report.backend;
+    canonical.uri_scheme = report.uri_scheme;
+    canonical.runtime_linked = report.runtime_linked;
+    canonical.operations_fail_closed = report.operations_fail_closed;
+    if (report.atomic_publish) canonical.operations.emplace_back("atomic_publish");
+    if (report.unique_put) canonical.operations.emplace_back("unique_put");
+    if (report.conditional_create) canonical.operations.emplace_back("conditional_create");
+    if (report.direct_upload_from_path) canonical.operations.emplace_back("direct_upload_from_path");
+    if (report.direct_download_to_path) canonical.operations.emplace_back("direct_download_to_path");
+    if (report.metadata_head) canonical.operations.emplace_back("metadata_head");
+    if (report.prefix_list) canonical.operations.emplace_back("prefix_list");
+    if (report.paginated_list) canonical.operations.emplace_back("paginated_list");
+    if (report.delete_capability) canonical.operations.emplace_back("delete_capability");
+    if (report.bulk_delete) canonical.operations.emplace_back("bulk_delete");
+    if (report.object_copy) canonical.operations.emplace_back("object_copy");
+    if (report.prefix_delete) canonical.operations.emplace_back("prefix_delete");
+    if (report.byte_range_read) canonical.operations.emplace_back("byte_range_read");
+    if (report.checksum_sha256) canonical.validators.emplace_back("checksum_sha256");
+    if (report.opaque_object_validators)
+        canonical.validators.emplace_back("opaque_object_validators");
+    if (report.object_version_ids) canonical.validators.emplace_back("object_version_ids");
+    canonical.split_services = report.split_services;
+    canonical.s3_compatible = report.s3_compatible;
+    canonical.local_file_compatible = report.local_file_compatible;
+    return canonical;
 }
 
 }  // namespace stream
