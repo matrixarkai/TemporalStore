@@ -139,6 +139,16 @@ stream/page/index/oplog
      -> rados://      Native Ceph Store adapter
 ```
 
+C++ also exposes `ObjectStoreBackendCapabilityReport`, a provider-neutral
+capability summary for the same backend families. It reports canonical backend
+name, canonical URI scheme, runtime-linked status, fail-closed status,
+condition metadata support, prefix listing, metadata stat/head, append/open
+write support, byte-range read support, delete, copy/rename, split services,
+S3 compatibility, and local/shared-file compatibility. The capability report is
+intentionally separate from MatrixObject internals so stream/page/index/oplog
+planning can compare MatrixObject, S3-compatible stores, local files, and
+future object-store backends through one shape.
+
 The Rust remote adapter now has a backend-neutral request planner for S3-compatible stores.
 It maps `s3://bucket/prefix`, `ceph://bucket/prefix`, and `ceph+s3://bucket/prefix` plus an
 endpoint into path-style object URLs for put/get/head/delete, prefix listing, and copy-source

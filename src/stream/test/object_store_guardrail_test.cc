@@ -177,5 +177,51 @@ TEST(ObjectStoreBackendGuardrailTest, PublicBackendNamesAreCanonical) {
     EXPECT_EQ("file", std::string(ObjectStoreBackendUriScheme(ObjectStoreBackend::kLocalFile)));
 }
 
+TEST(ObjectStoreBackendGuardrailTest, PublicCapabilityReportsAreProviderNeutral) {
+    const auto matrixobject =
+        ObjectStoreBackendCapabilityReport(ObjectStoreBackend::kMatrixObjectStore);
+    EXPECT_EQ("matrixobject", std::string(matrixobject.backend));
+    EXPECT_EQ("matrixobject", std::string(matrixobject.uri_scheme));
+    EXPECT_TRUE(matrixobject.runtime_linked);
+    EXPECT_FALSE(matrixobject.operations_fail_closed);
+    EXPECT_TRUE(matrixobject.condition_metadata);
+    EXPECT_TRUE(matrixobject.prefix_list);
+    EXPECT_TRUE(matrixobject.metadata_stat);
+    EXPECT_TRUE(matrixobject.append_write);
+    EXPECT_TRUE(matrixobject.byte_range_read);
+    EXPECT_TRUE(matrixobject.delete_object);
+    EXPECT_TRUE(matrixobject.copy_or_rename);
+    EXPECT_TRUE(matrixobject.split_services);
+    EXPECT_FALSE(matrixobject.s3_compatible);
+
+    const auto s3 = ObjectStoreBackendCapabilityReport(ObjectStoreBackend::kS3);
+    EXPECT_EQ("s3", std::string(s3.backend));
+    EXPECT_EQ("s3", std::string(s3.uri_scheme));
+    EXPECT_TRUE(s3.s3_compatible);
+#ifdef BCACHE2_ENABLE_S3_STORE
+    EXPECT_TRUE(s3.runtime_linked);
+    EXPECT_FALSE(s3.operations_fail_closed);
+#else
+    EXPECT_FALSE(s3.runtime_linked);
+    EXPECT_TRUE(s3.operations_fail_closed);
+#endif
+
+    const auto ceph = ObjectStoreBackendCapabilityReport(ObjectStoreBackend::kCephS3);
+    EXPECT_EQ("ceph_s3", std::string(ceph.backend));
+    EXPECT_EQ("ceph+s3", std::string(ceph.uri_scheme));
+    EXPECT_TRUE(ceph.s3_compatible);
+
+    const auto rados = ObjectStoreBackendCapabilityReport(ObjectStoreBackend::kCephRados);
+    EXPECT_EQ("ceph_rados", std::string(rados.backend));
+    EXPECT_EQ("rados", std::string(rados.uri_scheme));
+    EXPECT_FALSE(rados.runtime_linked);
+    EXPECT_TRUE(rados.operations_fail_closed);
+
+    const auto shared_file = ObjectStoreBackendCapabilityReport(ObjectStoreBackend::kSharedFile);
+    EXPECT_TRUE(shared_file.runtime_linked);
+    EXPECT_TRUE(shared_file.local_file_compatible);
+    EXPECT_FALSE(shared_file.operations_fail_closed);
+}
+
 }  // namespace stream
 }  // namespace bcache2
