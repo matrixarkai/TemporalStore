@@ -209,6 +209,33 @@ def main() -> int:
     )
     for stale_claim in ("- Set: `SADD`", "- List: `LPUSH`", "- ZSet: `ZADD`"):
         require(stale_claim not in redis_docs, f"Redis docs must not keep stale claim {stale_claim}", failures)
+    for rust_helper in (
+        "MSETNX",
+        "TOUCH",
+        "EXPIREAT",
+        "PEXPIREAT",
+        "EXPIRETIME",
+        "PEXPIRETIME",
+        "GETRANGE",
+        "SETRANGE",
+        "INCRBYFLOAT",
+        "HINCRBYFLOAT",
+    ):
+        require(
+            f'"{rust_helper}"' in body,
+            f"Rust allowlist must keep documented normal helper {rust_helper}",
+            failures,
+        )
+        require(
+            f"`{rust_helper}`" in redis_docs,
+            f"Redis docs must document Rust normal helper {rust_helper}",
+            failures,
+        )
+    require(
+        "COMMAND COUNT=42" in redis_docs,
+        "Redis docs must state the narrower C++ open-source COMMAND COUNT",
+        failures,
+    )
 
     for symbol in (
         "OBJECT_STORE_PROVIDER_ALIASES",
