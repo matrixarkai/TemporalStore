@@ -32,6 +32,10 @@ pub struct ObjectMetadata {
     pub uri: String,
     pub size_bytes: u64,
     pub checksum_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub etag: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -337,15 +341,28 @@ fn parse_remote_namespace_and_prefix(uri: &str) -> (Option<String>, Option<Strin
 }
 
 impl ObjectMetadata {
+    pub fn from_parts(
+        key: impl Into<String>,
+        uri: impl Into<String>,
+        size_bytes: u64,
+        checksum_sha256: impl Into<String>,
+    ) -> Self {
+        let checksum_sha256 = checksum_sha256.into();
+        let etag = (!checksum_sha256.is_empty()).then(|| format!("sha256:{checksum_sha256}"));
+        Self {
+            key: key.into(),
+            uri: uri.into(),
+            size_bytes,
+            checksum_sha256,
+            etag,
+            version_id: None,
+        }
+    }
+
     pub fn from_bytes(key: &str, uri: String, bytes: &[u8]) -> Self {
         let mut hasher = Sha256::new();
         hasher.update(bytes);
-        Self {
-            key: key.to_string(),
-            uri,
-            size_bytes: bytes.len() as u64,
-            checksum_sha256: hex::encode(hasher.finalize()),
-        }
+        Self::from_parts(key, uri, bytes.len() as u64, hex::encode(hasher.finalize()))
     }
 }
 
@@ -1211,12 +1228,12 @@ impl FileObjectStore {
                 return Err(ObjectStoreError::Io(err));
             }
         }
-        Ok(ObjectMetadata {
-            key: key.to_string(),
-            uri: self.uri(key),
+        Ok(ObjectMetadata::from_parts(
+            key,
+            self.uri(key),
             size_bytes,
             checksum_sha256,
-        })
+        ))
     }
 
     async fn ensure_parent_dir(&self, path: &Path) -> Result<(), ObjectStoreError> {
@@ -1280,12 +1297,12 @@ impl ObjectStore for FileObjectStore {
             if self.sync_parent_dirs {
                 sync_parent_dir(&path).await?;
             }
-            Ok(ObjectMetadata {
-                key: key.to_string(),
-                uri: self.uri(key),
+            Ok(ObjectMetadata::from_parts(
+                key,
+                self.uri(key),
                 size_bytes,
-                checksum_sha256: sha256_file_hex(&path).await?,
-            })
+                sha256_file_hex(&path).await?,
+            ))
         }
         .await;
         if result.is_err() {
@@ -1365,12 +1382,12 @@ impl ObjectStore for FileObjectStore {
     async fn head(&self, key: &str) -> Result<ObjectMetadata, ObjectStoreError> {
         let path = self.resolve(key)?;
         match tokio::fs::metadata(&path).await {
-            Ok(metadata) => Ok(ObjectMetadata {
-                key: key.to_string(),
-                uri: self.uri(key),
-                size_bytes: metadata.len(),
-                checksum_sha256: sha256_file_hex(&path).await?,
-            }),
+            Ok(metadata) => Ok(ObjectMetadata::from_parts(
+                key,
+                self.uri(key),
+                metadata.len(),
+                sha256_file_hex(&path).await?,
+            )),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 Err(ObjectStoreError::NotFound(key.to_string()))
             }
@@ -1438,12 +1455,12 @@ impl ObjectStore for FileObjectStore {
                     if self.sync_parent_dirs {
                         sync_parent_dir(destination).await?;
                     }
-                    Ok(ObjectMetadata {
-                        key: key.to_string(),
-                        uri: self.uri(key),
+                    Ok(ObjectMetadata::from_parts(
+                        key,
+                        self.uri(key),
                         size_bytes,
                         checksum_sha256,
-                    })
+                    ))
                 }
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                     Err(ObjectStoreError::NotFound(key.to_string()))
@@ -2205,12 +2222,12 @@ impl ObjectStore for MatrixObjectStore {
             if self.config.sync_parent_dirs {
                 sync_parent_dir(destination).await?;
             }
-            Ok(ObjectMetadata {
-                key: manifest.key,
-                uri: manifest.uri,
-                size_bytes: manifest.size_bytes,
+            Ok(ObjectMetadata::from_parts(
+                manifest.key,
+                manifest.uri,
+                manifest.size_bytes,
                 checksum_sha256,
-            })
+            ))
         }
         .await;
         if result.is_err() {
@@ -2279,12 +2296,12 @@ impl ObjectStore for MatrixObjectStore {
             )
             .await;
         }
-        Ok(ObjectMetadata {
-            key: manifest.key,
-            uri: manifest.uri,
-            size_bytes: manifest.size_bytes,
-            checksum_sha256: manifest.checksum_sha256,
-        })
+        Ok(ObjectMetadata::from_parts(
+            manifest.key,
+            manifest.uri,
+            manifest.size_bytes,
+            manifest.checksum_sha256,
+        ))
     }
 
     fn uri(&self, key: &str) -> String {
@@ -2303,12 +2320,12 @@ impl ObjectStore for MatrixObjectStore {
     async fn head(&self, key: &str) -> Result<ObjectMetadata, ObjectStoreError> {
         let manifest = self.root_service.get_manifest(key).await?;
         self.validate_manifest_for_read(&manifest)?;
-        Ok(ObjectMetadata {
-            key: manifest.key,
-            uri: manifest.uri,
-            size_bytes: manifest.size_bytes,
-            checksum_sha256: manifest.checksum_sha256,
-        })
+        Ok(ObjectMetadata::from_parts(
+            manifest.key,
+            manifest.uri,
+            manifest.size_bytes,
+            manifest.checksum_sha256,
+        ))
     }
 
     async fn put_atomic(
@@ -2352,12 +2369,12 @@ impl MatrixObjectStore {
             let _ = self.delete_block_refs(manifest.blocks.clone()).await;
             return Err(err);
         }
-        Ok(ObjectMetadata {
-            key: manifest.key,
-            uri: manifest.uri,
-            size_bytes: manifest.size_bytes,
-            checksum_sha256: manifest.checksum_sha256,
-        })
+        Ok(ObjectMetadata::from_parts(
+            manifest.key,
+            manifest.uri,
+            manifest.size_bytes,
+            manifest.checksum_sha256,
+        ))
     }
 
     async fn put_atomic_inner(
@@ -2410,12 +2427,12 @@ impl MatrixObjectStore {
             )
             .await;
         }
-        Ok(ObjectMetadata {
-            key: manifest.key,
-            uri: manifest.uri,
-            size_bytes: manifest.size_bytes,
-            checksum_sha256: manifest.checksum_sha256,
-        })
+        Ok(ObjectMetadata::from_parts(
+            manifest.key,
+            manifest.uri,
+            manifest.size_bytes,
+            manifest.checksum_sha256,
+        ))
     }
 }
 
@@ -2946,6 +2963,11 @@ mod tests {
             metadata.checksum_sha256,
             "32bf29e5bb7440b15303a464d7e8e0c4e2a94c026e0d9820bdba0a6a8a0dc5a9"
         );
+        assert_eq!(
+            metadata.etag.as_deref(),
+            Some("sha256:32bf29e5bb7440b15303a464d7e8e0c4e2a94c026e0d9820bdba0a6a8a0dc5a9")
+        );
+        assert_eq!(metadata.version_id, None);
         assert_eq!(
             store.get("tenant/a/blob-1").await.unwrap(),
             Bytes::from_static(b"hello matrix object store")
@@ -3959,6 +3981,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(metadata.uri, "matrixobject://shared/key");
+        let expected_etag = format!("sha256:{}", metadata.checksum_sha256);
+        assert_eq!(metadata.etag.as_deref(), Some(expected_etag.as_str()));
+        assert_eq!(metadata.version_id, None);
+        assert_eq!(store.head("shared/key").await.unwrap().etag, metadata.etag);
         assert_eq!(
             store.get("shared/key").await.unwrap(),
             Bytes::from_static(b"shared payload")

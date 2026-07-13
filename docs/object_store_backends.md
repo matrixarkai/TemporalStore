@@ -56,9 +56,9 @@ S3-compatible stores, Ceph RGW, local files, and future object backends:
   destination path.
 - `get_range`: read only a byte range, matching the natural S3 ranged-GET
   model and MatrixObject chunk manifests.
-- `head`: return key, URI, size, and SHA-256 metadata without requiring callers
-  to know whether the backend stores manifests, local files, or remote object
-  metadata.
+- `head`: return key, URI, size, SHA-256 metadata, and optional opaque object
+  validators such as `etag` and `version_id` without requiring callers to know
+  whether the backend stores manifests, local files, or remote object metadata.
 - `list` / `list_page` / `delete` / `delete_objects`: full or paginated prefix
   listing and single-key or batch object deletion. Production scans should
   prefer `list_page` so S3 and MatrixObject prefixes do not have to materialize
