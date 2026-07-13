@@ -56,6 +56,9 @@ def main() -> int:
     model_manager = read("src/model/model_manager.cc")
     cxx_redis = read("src/server/redis_command_handler.cc")
     rust_redis = read("crates/temporalstore-rust/src/redis.rs")
+    redis_compat_smoke = read("tools/run_redis_compat_smoke_ubuntu22.sh")
+    redis_live_smoke = read("tools/run_redis_live_storage_smoke_ubuntu22.sh")
+    redis_docs = read("docs/redis_compatibility_matrix.md")
 
     require(
         "option(BCACHE2_OPEN_SOURCE_SURFACE" in root_cmake,
@@ -139,6 +142,29 @@ def main() -> int:
         require(f'"{allowed}"' in body, f"Rust allowlist must keep {allowed}", failures)
     for denied in ("SADD", "LPUSH", "ZADD", "IPSADD", "FADD", "RISKDEBUG", "PARTITION"):
         require(f'"{denied}"' not in body, f"Rust allowlist must not include {denied}", failures)
+
+    for script_name, script in (
+        ("run_redis_compat_smoke_ubuntu22.sh", redis_compat_smoke),
+        ("run_redis_live_storage_smoke_ubuntu22.sh", redis_live_smoke),
+    ):
+        require(
+            'REDIS_COMPAT_SURFACE="${REDIS_COMPAT_SURFACE:-trimmed}"' in script,
+            f"{script_name} must default to the trimmed Redis surface",
+            failures,
+        )
+        require(
+            'REDIS_COMPAT_SURFACE}" == "full"' in script,
+            f"{script_name} must keep broad collection compatibility opt-in",
+            failures,
+        )
+
+    require(
+        "Open-source production builds do not claim generic Redis SET/LIST/ZSET compatibility" in redis_docs,
+        "Redis docs must state that generic collection clones are not part of the open-source claim",
+        failures,
+    )
+    for stale_claim in ("- Set: `SADD`", "- List: `LPUSH`", "- ZSet: `ZADD`"):
+        require(stale_claim not in redis_docs, f"Redis docs must not keep stale claim {stale_claim}", failures)
 
     if failures:
         print("open-source surface validation failed:")

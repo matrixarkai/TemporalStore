@@ -71,7 +71,7 @@ Run the local production gate with:
 tools/run_redis_production_gate_ubuntu22.sh
 ```
 
-The gate builds the release server, audits no-op success paths, rejects `nullptr` Redis command handlers, runs the live storage smoke twice by default, runs the trimmed compatibility/pipeline/concurrency smoke, and runs a small `redis-benchmark` set/get profile when `redis-benchmark` is installed.
+The gate builds the release server, audits no-op success paths, rejects `nullptr` Redis command handlers, runs the live storage smoke twice by default, runs the trimmed compatibility/pipeline/concurrency smoke, and runs a small `redis-benchmark` set/get profile when `redis-benchmark` is installed. `REDIS_COMPAT_SURFACE=trimmed` is the default; use `REDIS_COMPAT_SURFACE=full` only for private/broad Redis compatibility experiments, and `REDIS_EXPECT_UNSUPPORTED_COLLECTIONS=1` only when validating an actual open-source build that rejects collection clones at runtime.
 
 The production claim for the trimmed Redis-style API requires:
 

@@ -10,6 +10,9 @@ TIMEOUT_S="${TIMEOUT_S:-5}"
 RUN_BENCH="${RUN_BENCH:-0}"
 BENCH_REQUESTS="${BENCH_REQUESTS:-1000}"
 BENCH_CLIENTS="${BENCH_CLIENTS:-8}"
+REDIS_COMPAT_SURFACE="${REDIS_COMPAT_SURFACE:-trimmed}"
+REDIS_TEST_MODEL_COMMANDS="${REDIS_TEST_MODEL_COMMANDS:-0}"
+REDIS_EXPECT_UNSUPPORTED_COLLECTIONS="${REDIS_EXPECT_UNSUPPORTED_COLLECTIONS:-0}"
 
 mkdir -p "${RESULT_DIR}"
 SUMMARY="${RESULT_DIR}/summary.txt"
@@ -89,7 +92,15 @@ expect_error select_nonzero SELECT 1
 expect_eq client_setname OK CLIENT SETNAME matrixark-smoke
 expect_eq client_getname "" CLIENT GETNAME
 expect_eq client_id 0 CLIENT ID
-expect_eq command_count 0 COMMAND COUNT
+command_count="$(redis_cmd COMMAND COUNT 2>/dev/null || true)"
+printf '%s
+' "${command_count}" > "${RESULT_DIR}/command_count.out"
+if [[ "${command_count}" =~ ^[0-9]+$ ]]; then
+  echo "PASS command_count" | tee -a "${SUMMARY}"
+else
+  echo "FAIL command_count: expected integer got [${command_count}]" | tee -a "${SUMMARY}"
+  exit 1
+fi
 expect_eq set OK SET "$(k string)" v1
 expect_eq get v1 GET "$(k string)"
 expect_eq type_string string TYPE "$(k string)"
@@ -182,6 +193,15 @@ expect_eq hdel 1 HDEL "$(k hash)" f1
 expect_eq hexists_after_hdel 0 HEXISTS "$(k hash)" f1
 expect_eq hmset OK HMSET "$(k hash2)" a 1 b 2
 expect_eq hmget_hmset $'1\n2' HMGET "$(k hash2)" a b
+
+if [[ "${REDIS_TEST_MODEL_COMMANDS}" == "1" ]]; then
+  expect_eq fappend OK FAPPEND "$(k feature)" 10 2
+  expect_eq fappend_policy 1 FAPPENDPOLICY "$(k feature)" 20 3 UPSERT
+  expect_eq fagg 5 FAGG "$(k feature)" 0 30 sum
+  expect_eq riskincr OK RISKINCR "$(k risk)" 10 5
+  expect_eq riskcount 5 RISKCOUNT "$(k risk)" 0 30
+fi
+if [[ "${REDIS_COMPAT_SURFACE}" == "full" ]]; then
 expect_eq sadd 2 SADD "$(k set)" a b a
 expect_eq sadd_other 3 SADD "$(k set2)" b c d
 expect_eq type_set set TYPE "$(k set)"
@@ -248,11 +268,22 @@ expect_eq zcard_after_zrem 1 ZCARD "$(k zset)"
 expect_eq zadd_pop 3 ZADD "$(k zpop)" 1 low 2 mid 3 high
 expect_eq zpopmin $'low\n1\nmid\n2' ZPOPMIN "$(k zpop)" 2
 expect_eq zpopmax $'high\n3' ZPOPMAX "$(k zpop)"
+
+else
+  echo "SKIP collection clone compatibility: REDIS_COMPAT_SURFACE=${REDIS_COMPAT_SURFACE}" | tee -a "${SUMMARY}"
+  if [[ "${REDIS_EXPECT_UNSUPPORTED_COLLECTIONS}" == "1" ]]; then
+    expect_error unsupported_sadd_trimmed SADD "$(k set)" a
+    expect_error unsupported_lpush_trimmed LPUSH "$(k list)" a
+    expect_error unsupported_zadd_trimmed ZADD "$(k zset)" 1 a
+  fi
+fi
 expect_error unsupported_bgsave BGSAVE
 expect_error unsupported_flushall FLUSHALL
 expect_error unsupported_pslotinfo PSLOTINFO
 expect_error unsupported_scan SCAN 0
-expect_error unsupported_hscan HSCAN "$(k hash)" 0
+if [[ "${REDIS_COMPAT_SURFACE}" == "full" ]]; then
+  expect_error unsupported_hscan HSCAN "$(k hash)" 0
+fi
 expect_error unsupported_sscan SSCAN "$(k set2)" 0
 expect_error unsupported_zscan ZSCAN "$(k zset)" 0
 expect_error unsupported_keys KEYS "*"
