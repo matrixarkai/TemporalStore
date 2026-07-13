@@ -575,6 +575,19 @@ def main() -> int:
             f"Redis benchmark must write {artifact_name}",
             failures,
         )
+    for aggregate_expression in (
+        'command_qps_mins = [command["requests_per_second_min"] for command in commands]',
+        'command_qps_maxes = [command["requests_per_second_max"] for command in commands]',
+        'command_qps_avgs = [command["requests_per_second_avg"] for command in commands]',
+        '"requests_per_second_overall_min": min(command_qps_mins)',
+        '"requests_per_second_overall_max": max(command_qps_maxes)',
+        '"requests_per_second_overall_avg": sum(command_qps_avgs) / len(command_qps_avgs)',
+    ):
+        require(
+            aggregate_expression in redis_compat_smoke,
+            f"Redis benchmark summary must compute aggregate QPS with clear semantics: {aggregate_expression}",
+            failures,
+        )
     for summary_field in (
         "temporalstore_trimmed_redis_benchmark_summary_v1",
         "redis_surface_schema",
