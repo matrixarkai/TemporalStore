@@ -589,6 +589,20 @@ def main() -> int:
             f"Redis production gate must emit benchmark rollup field {rollup_field}",
             failures,
         )
+    for gate_summary_field in (
+        "redis-production-gate-summary.json",
+        "temporalstore_trimmed_redis_production_gate_summary_v1",
+        "open_source_surface_validation",
+        "matrixobject_name_validation",
+        "matrixobject_boundary",
+        "below_temporalstore_storage_backfill_no_redis_api_expansion",
+        "unsupported_collections_expected",
+    ):
+        require(
+            gate_summary_field in redis_production_gate,
+            f"Redis production gate must emit top-level evidence summary field {gate_summary_field}",
+            failures,
+        )
     benchmark_artifact_names = {
         "set_get": "redis-benchmark.csv",
         "hset": "redis-benchmark-hset.csv",
