@@ -1927,7 +1927,6 @@ fn open_source_redis_command_allowed(command: &str) -> bool {
             | "COMMAND"
             | "CONFIG"
             | "INFO"
-            | "DBSIZE"
             | "TYPE"
             | "GET"
             | "MGET"
@@ -4689,6 +4688,7 @@ mod tests {
             "ZADD",
             "SCAN",
             "PARTITION",
+            "DBSIZE",
             "FADD",
             "IPSADD",
             "RISKDEBUG",
