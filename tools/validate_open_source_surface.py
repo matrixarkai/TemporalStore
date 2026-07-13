@@ -609,6 +609,7 @@ def main() -> int:
         )
     for summary_field in (
         "temporalstore_trimmed_redis_benchmark_summary_v1",
+        "redis_surface",
         "redis_surface_schema",
         "redis_surface_manifest_sha256",
         "blocked_command_family_count",
@@ -628,7 +629,7 @@ def main() -> int:
         )
     require(
         "`redis-benchmark-summary.json`" in redis_docs
-        and "Redis surface schema and manifest hash" in redis_docs,
+        and "Redis surface identity, schema, and manifest hash" in redis_docs,
         "Redis docs must document the benchmark JSON summary artifact and Redis surface metadata",
         failures,
     )
