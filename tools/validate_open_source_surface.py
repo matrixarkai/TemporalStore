@@ -132,7 +132,12 @@ def main() -> int:
         "C++ COMMAND COUNT must report the trimmed open-source command count",
         failures,
     )
-    for denied in ("kSAdd", "kLPush", "kZAdd", "kPartition", "kBgSave"):
+    require(
+        "return 42;" in cxx_redis,
+        "C++ COMMAND COUNT must match the trimmed open-source allowlist size",
+        failures,
+    )
+    for denied in ("kSAdd", "kLPush", "kZAdd", "kPartition", "kBgSave", "kConfig"):
         require(
             f"case RedisCommand::CmdType::{denied}" not in cxx_redis,
             f"C++ open-source Redis allowlist must not include {denied}",
@@ -156,7 +161,17 @@ def main() -> int:
         "CLIENT",
     ):
         require(f'"{allowed}"' in body, f"Rust allowlist must keep {allowed}", failures)
-    for denied in ("SADD", "LPUSH", "ZADD", "IPSADD", "FADD", "RISKDEBUG", "PARTITION", "DBSIZE"):
+    for denied in (
+        "SADD",
+        "LPUSH",
+        "ZADD",
+        "IPSADD",
+        "FADD",
+        "RISKDEBUG",
+        "PARTITION",
+        "DBSIZE",
+        "CONFIG",
+    ):
         require(f'"{denied}"' not in body, f"Rust allowlist must not include {denied}", failures)
 
     for metric in (
