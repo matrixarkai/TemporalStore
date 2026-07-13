@@ -75,6 +75,11 @@ S3-compatible stores, Ceph RGW, local files, and future object backends:
   root/block/chunk services; local file and shared file map to one object
   service; S3-style adapters should map to one remote object service unless a
   deployment has a richer split.
+- `topology.namespace` and `topology.key_prefix`: expose remote object location
+  pieces generically. For example, `s3://bucket/prefix` reports
+  `namespace=bucket` and `key_prefix=prefix`; `rados://pool/path` reports
+  `namespace=pool` and `key_prefix=path`. Local and MatrixObject-compatible
+  stores leave these fields empty.
 
 This keeps the TemporalStore side generic: storage code can select by URI,
 inspect capabilities, and use byte-range reads without hardcoding MatrixObject

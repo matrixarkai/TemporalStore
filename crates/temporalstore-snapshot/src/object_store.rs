@@ -194,6 +194,8 @@ impl ObjectStoreServiceDescriptor {
 pub struct ObjectStoreTopology {
     pub backend: String,
     pub uri_scheme: String,
+    pub namespace: Option<String>,
+    pub key_prefix: Option<String>,
     pub services: Vec<ObjectStoreServiceDescriptor>,
 }
 
@@ -308,6 +310,23 @@ impl SharedObjectStoreConfig {
     pub fn uri_scheme(&self) -> &'static str {
         self.backend.uri_scheme()
     }
+}
+
+fn parse_remote_namespace_and_prefix(uri: &str) -> (Option<String>, Option<String>) {
+    let Some((_, remainder)) = uri.split_once("://") else {
+        return (None, None);
+    };
+    let remainder = remainder.trim_matches('/');
+    if remainder.is_empty() {
+        return (None, None);
+    }
+    let (namespace, prefix) = remainder
+        .split_once('/')
+        .map_or((remainder, ""), |(namespace, prefix)| (namespace, prefix));
+    let namespace = (!namespace.is_empty()).then(|| namespace.to_string());
+    let prefix = prefix.trim_matches('/');
+    let key_prefix = (!prefix.is_empty()).then(|| prefix.to_string());
+    (namespace, key_prefix)
 }
 
 impl ObjectMetadata {
@@ -477,6 +496,8 @@ pub trait ObjectStore: Send + Sync {
         ObjectStoreTopology {
             backend: capabilities.backend,
             uri_scheme: capabilities.uri_scheme,
+            namespace: None,
+            key_prefix: None,
             services: vec![ObjectStoreServiceDescriptor::endpoint("object", None)],
         }
     }
@@ -654,6 +675,8 @@ pub struct RemoteObjectStore {
     backend: SharedObjectStoreBackend,
     uri: String,
     endpoint: Option<String>,
+    namespace: Option<String>,
+    key_prefix: Option<String>,
 }
 
 impl RemoteObjectStore {
@@ -662,10 +685,14 @@ impl RemoteObjectStore {
         uri: impl Into<String>,
         endpoint: Option<String>,
     ) -> Self {
+        let uri = uri.into();
+        let (namespace, key_prefix) = parse_remote_namespace_and_prefix(&uri);
         Self {
             backend,
-            uri: uri.into(),
+            uri,
             endpoint,
+            namespace,
+            key_prefix,
         }
     }
 
@@ -726,6 +753,8 @@ impl MatrixObjectStoreServiceTopology {
         ObjectStoreTopology {
             backend: "matrixobject".to_string(),
             uri_scheme: uri_scheme.into(),
+            namespace: None,
+            key_prefix: None,
             services: vec![
                 self.root_service.as_generic(),
                 self.block_service.as_generic(),
@@ -1390,6 +1419,8 @@ impl ObjectStore for FileObjectStore {
         ObjectStoreTopology {
             backend: self.capabilities().backend,
             uri_scheme: self.uri_scheme.clone(),
+            namespace: None,
+            key_prefix: None,
             services: vec![ObjectStoreServiceDescriptor::local(
                 "object",
                 self.root.clone(),
@@ -2348,11 +2379,29 @@ impl ObjectStore for RemoteObjectStore {
     }
 
     fn uri(&self, key: &str) -> String {
-        let base = self.uri.trim_end_matches('/');
-        if base.ends_with("://") {
-            format!("{base}{key}")
+        let key = key.trim_start_matches('/');
+        let scheme = self.backend.uri_scheme();
+        if let Some(namespace) = &self.namespace {
+            if let Some(prefix) = &self.key_prefix {
+                if key.is_empty() {
+                    format!("{scheme}://{namespace}/{prefix}")
+                } else {
+                    format!("{scheme}://{namespace}/{prefix}/{key}")
+                }
+            } else if key.is_empty() {
+                format!("{scheme}://{namespace}")
+            } else {
+                format!("{scheme}://{namespace}/{key}")
+            }
         } else {
-            format!("{base}/{key}")
+            let base = self.uri.trim_end_matches('/');
+            if base.ends_with("://") {
+                format!("{base}{key}")
+            } else if key.is_empty() {
+                base.to_string()
+            } else {
+                format!("{base}/{key}")
+            }
         }
     }
 
@@ -2364,6 +2413,8 @@ impl ObjectStore for RemoteObjectStore {
         ObjectStoreTopology {
             backend: self.backend.canonical_name().to_string(),
             uri_scheme: self.backend.uri_scheme().to_string(),
+            namespace: self.namespace.clone(),
+            key_prefix: self.key_prefix.clone(),
             services: vec![ObjectStoreServiceDescriptor::endpoint(
                 "object",
                 self.endpoint.clone().or_else(|| Some(self.uri.clone())),
@@ -2794,6 +2845,8 @@ mod tests {
         let topology = shared.topology();
         assert_eq!(topology.backend, "matrixobject");
         assert_eq!(topology.uri_scheme, "matrixobject");
+        assert_eq!(topology.namespace, None);
+        assert_eq!(topology.key_prefix, None);
         assert_eq!(
             topology
                 .services
@@ -3765,16 +3818,60 @@ mod tests {
         let topology = store.topology();
         assert_eq!(topology.backend, "s3");
         assert_eq!(topology.uri_scheme, "s3");
+        assert_eq!(topology.namespace.as_deref(), Some("bucket"));
+        assert_eq!(topology.key_prefix.as_deref(), Some("prefix"));
         assert_eq!(topology.services.len(), 1);
         assert_eq!(topology.services[0].role, "object");
         assert_eq!(
             topology.services[0].endpoint.as_deref(),
             Some("https://s3.example.invalid")
         );
+        assert_eq!(store.uri("object"), "s3://bucket/prefix/object");
+        assert_eq!(
+            store.uri("/nested/object"),
+            "s3://bucket/prefix/nested/object"
+        );
 
         assert!(matches!(
             store.get("prefix/object").await,
             Err(ObjectStoreError::UnsupportedBackend { backend, .. }) if backend == "s3"
         ));
+    }
+
+    #[test]
+    fn shared_object_store_remote_uri_parsing_is_generic() {
+        let dir = tempfile::tempdir().unwrap();
+        for (uri, backend, namespace, key_prefix, object_uri) in [
+            (
+                "s3://bucket-a/snapshots/cluster-a/",
+                "s3",
+                Some("bucket-a"),
+                Some("snapshots/cluster-a"),
+                "s3://bucket-a/snapshots/cluster-a/manifest.json",
+            ),
+            (
+                "ceph+s3://bucket-b/prefix",
+                "ceph_s3",
+                Some("bucket-b"),
+                Some("prefix"),
+                "ceph+s3://bucket-b/prefix/manifest.json",
+            ),
+            (
+                "rados://pool-c",
+                "ceph_rados",
+                Some("pool-c"),
+                None,
+                "rados://pool-c/manifest.json",
+            ),
+        ] {
+            let store =
+                SharedObjectStore::from_config(SharedObjectStoreConfig::from_uri(uri, dir.path()))
+                    .unwrap();
+            let topology = store.topology();
+            assert_eq!(topology.backend, backend);
+            assert_eq!(topology.namespace.as_deref(), namespace);
+            assert_eq!(topology.key_prefix.as_deref(), key_prefix);
+            assert_eq!(store.uri("manifest.json"), object_uri);
+        }
     }
 }
