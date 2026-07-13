@@ -55,6 +55,7 @@ def main() -> int:
     model_cmake = read("src/model/CMakeLists.txt")
     model_manager = read("src/model/model_manager.cc")
     cxx_redis = read("src/server/redis_command_handler.cc")
+    cxx_redis_service = read("src/server/redis_service.cc")
     rust_redis = read("crates/temporalstore-rust/src/redis.rs")
     redis_compat_smoke = read("tools/run_redis_compat_smoke_ubuntu22.sh")
     redis_live_smoke = read("tools/run_redis_live_storage_smoke_ubuntu22.sh")
@@ -402,6 +403,17 @@ def main() -> int:
     require(
         "COMMAND COUNT=42" in redis_docs,
         "Redis docs must state the narrower C++ open-source COMMAND COUNT",
+        failures,
+    )
+    require(
+        "Rust also keeps `HSCAN` as a narrow single-hash helper" in redis_docs
+        and "`HSCAN` is explicitly outside the first production-ready subset" in redis_docs,
+        "Redis docs must distinguish Rust HSCAN support from the first production-ready C++ subset",
+        failures,
+    )
+    require(
+        '"hscan"' in cxx_redis_service and "&RedisCommandHandler::Unsupported" in cxx_redis_service,
+        "C++ Redis service must still fail closed for HSCAN until the C++ hash scan path is wired",
         failures,
     )
 
