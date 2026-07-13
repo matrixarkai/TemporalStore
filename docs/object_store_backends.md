@@ -75,6 +75,12 @@ internals. MatrixObject remains the optimized implementation that can split
 large objects into root manifests, block refs, and chunks behind the same
 adapter API.
 
+Remote backends that are not linked yet, such as `s3://`, `ceph+s3://`, and
+`rados://`, still instantiate as generic remote adapters so callers can inspect
+their backend identity, URI scheme, endpoint, capabilities, and topology through
+the same API. Their data operations fail closed with `UnsupportedBackend` until
+the concrete SDK/client implementation is linked.
+
 ## Why Ceph Should Use S3 First
 
 Ceph RGW exposes an S3-compatible object API, so the first production implementation should be a

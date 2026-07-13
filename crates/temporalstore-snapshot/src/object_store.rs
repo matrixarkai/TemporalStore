@@ -530,6 +530,34 @@ pub struct MatrixObjectStore {
 }
 
 #[derive(Debug, Clone)]
+pub struct RemoteObjectStore {
+    backend: SharedObjectStoreBackend,
+    uri: String,
+    endpoint: Option<String>,
+}
+
+impl RemoteObjectStore {
+    pub fn new(
+        backend: SharedObjectStoreBackend,
+        uri: impl Into<String>,
+        endpoint: Option<String>,
+    ) -> Self {
+        Self {
+            backend,
+            uri: uri.into(),
+            endpoint,
+        }
+    }
+
+    fn unsupported<T>(&self) -> Result<T, ObjectStoreError> {
+        Err(ObjectStoreError::UnsupportedBackend {
+            backend: self.backend.canonical_name().to_string(),
+            uri: self.uri.clone(),
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct MatrixObjectStoreRootService {
     manifest_store: FileObjectStore,
     uri_scheme: String,
@@ -613,6 +641,7 @@ pub enum SharedObjectStore {
     LocalFile(FileObjectStore),
     SharedFile(FileObjectStore),
     MatrixObjectStore(MatrixObjectStore),
+    Remote(RemoteObjectStore),
 }
 
 impl SharedObjectStore {
@@ -646,8 +675,12 @@ impl SharedObjectStore {
             )),
             SharedObjectStoreBackend::S3
             | SharedObjectStoreBackend::CephS3
-            | SharedObjectStoreBackend::CephRados
-            | SharedObjectStoreBackend::Unknown => Err(ObjectStoreError::UnsupportedBackend {
+            | SharedObjectStoreBackend::CephRados => Ok(Self::Remote(RemoteObjectStore::new(
+                config.backend,
+                config.uri,
+                config.endpoint,
+            ))),
+            SharedObjectStoreBackend::Unknown => Err(ObjectStoreError::UnsupportedBackend {
                 backend: config.canonical_backend_name().to_string(),
                 uri: config.uri,
             }),
@@ -2097,6 +2130,90 @@ impl MatrixObjectStore {
     }
 }
 
+#[async_trait]
+impl ObjectStore for RemoteObjectStore {
+    async fn put(&self, _key: &str, _bytes: Bytes) -> Result<(), ObjectStoreError> {
+        self.unsupported()
+    }
+
+    async fn put_unique(&self, _key: &str, _bytes: Bytes) -> Result<(), ObjectStoreError> {
+        self.unsupported()
+    }
+
+    async fn put_path_unique(
+        &self,
+        _key: &str,
+        _path: &Path,
+    ) -> Result<ObjectMetadata, ObjectStoreError> {
+        self.unsupported()
+    }
+
+    async fn get(&self, _key: &str) -> Result<Bytes, ObjectStoreError> {
+        self.unsupported()
+    }
+
+    async fn get_range(
+        &self,
+        _key: &str,
+        _offset: u64,
+        _length: usize,
+    ) -> Result<Bytes, ObjectStoreError> {
+        self.unsupported()
+    }
+
+    async fn get_to_path(
+        &self,
+        _key: &str,
+        _path: &Path,
+    ) -> Result<ObjectMetadata, ObjectStoreError> {
+        self.unsupported()
+    }
+
+    async fn list(&self, _prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
+        self.unsupported()
+    }
+
+    async fn delete(&self, _key: &str) -> Result<(), ObjectStoreError> {
+        self.unsupported()
+    }
+
+    async fn copy_object(
+        &self,
+        _source_key: &str,
+        _destination_key: &str,
+    ) -> Result<ObjectMetadata, ObjectStoreError> {
+        self.unsupported()
+    }
+
+    async fn delete_prefix(&self, _prefix: &str) -> Result<usize, ObjectStoreError> {
+        self.unsupported()
+    }
+
+    fn uri(&self, key: &str) -> String {
+        let base = self.uri.trim_end_matches('/');
+        if base.ends_with("://") {
+            format!("{base}{key}")
+        } else {
+            format!("{base}/{key}")
+        }
+    }
+
+    fn capabilities(&self) -> ObjectStoreCapabilities {
+        ObjectStoreCapabilities::unsupported(self.backend)
+    }
+
+    fn topology(&self) -> ObjectStoreTopology {
+        ObjectStoreTopology {
+            backend: self.backend.canonical_name().to_string(),
+            uri_scheme: self.backend.uri_scheme().to_string(),
+            services: vec![ObjectStoreServiceDescriptor::endpoint(
+                "object",
+                self.endpoint.clone().or_else(|| Some(self.uri.clone())),
+            )],
+        }
+    }
+}
+
 fn manifest_key(key: &str) -> String {
     if key.is_empty() {
         String::new()
@@ -2251,6 +2368,7 @@ impl ObjectStore for SharedObjectStore {
         match self {
             Self::LocalFile(store) | Self::SharedFile(store) => store.put(key, bytes).await,
             Self::MatrixObjectStore(store) => store.put(key, bytes).await,
+            Self::Remote(store) => store.put(key, bytes).await,
         }
     }
 
@@ -2258,6 +2376,7 @@ impl ObjectStore for SharedObjectStore {
         match self {
             Self::LocalFile(store) | Self::SharedFile(store) => store.put_unique(key, bytes).await,
             Self::MatrixObjectStore(store) => store.put_unique(key, bytes).await,
+            Self::Remote(store) => store.put_unique(key, bytes).await,
         }
     }
 
@@ -2271,6 +2390,7 @@ impl ObjectStore for SharedObjectStore {
                 store.put_path_unique(key, path).await
             }
             Self::MatrixObjectStore(store) => store.put_path_unique(key, path).await,
+            Self::Remote(store) => store.put_path_unique(key, path).await,
         }
     }
 
@@ -2278,6 +2398,7 @@ impl ObjectStore for SharedObjectStore {
         match self {
             Self::LocalFile(store) | Self::SharedFile(store) => store.get(key).await,
             Self::MatrixObjectStore(store) => store.get(key).await,
+            Self::Remote(store) => store.get(key).await,
         }
     }
 
@@ -2292,6 +2413,7 @@ impl ObjectStore for SharedObjectStore {
                 store.get_range(key, offset, length).await
             }
             Self::MatrixObjectStore(store) => store.get_range(key, offset, length).await,
+            Self::Remote(store) => store.get_range(key, offset, length).await,
         }
     }
 
@@ -2303,6 +2425,7 @@ impl ObjectStore for SharedObjectStore {
         match self {
             Self::LocalFile(store) | Self::SharedFile(store) => store.get_to_path(key, path).await,
             Self::MatrixObjectStore(store) => store.get_to_path(key, path).await,
+            Self::Remote(store) => store.get_to_path(key, path).await,
         }
     }
 
@@ -2310,6 +2433,7 @@ impl ObjectStore for SharedObjectStore {
         match self {
             Self::LocalFile(store) | Self::SharedFile(store) => store.list(prefix).await,
             Self::MatrixObjectStore(store) => store.list(prefix).await,
+            Self::Remote(store) => store.list(prefix).await,
         }
     }
 
@@ -2317,6 +2441,7 @@ impl ObjectStore for SharedObjectStore {
         match self {
             Self::LocalFile(store) | Self::SharedFile(store) => store.delete(key).await,
             Self::MatrixObjectStore(store) => store.delete(key).await,
+            Self::Remote(store) => store.delete(key).await,
         }
     }
 
@@ -2330,6 +2455,7 @@ impl ObjectStore for SharedObjectStore {
                 store.copy_object(source_key, destination_key).await
             }
             Self::MatrixObjectStore(store) => store.copy_object(source_key, destination_key).await,
+            Self::Remote(store) => store.copy_object(source_key, destination_key).await,
         }
     }
 
@@ -2337,6 +2463,7 @@ impl ObjectStore for SharedObjectStore {
         match self {
             Self::LocalFile(store) | Self::SharedFile(store) => store.delete_prefix(prefix).await,
             Self::MatrixObjectStore(store) => store.delete_prefix(prefix).await,
+            Self::Remote(store) => store.delete_prefix(prefix).await,
         }
     }
 
@@ -2344,6 +2471,7 @@ impl ObjectStore for SharedObjectStore {
         match self {
             Self::LocalFile(store) | Self::SharedFile(store) => store.uri(key),
             Self::MatrixObjectStore(store) => store.uri(key),
+            Self::Remote(store) => store.uri(key),
         }
     }
 
@@ -2351,6 +2479,7 @@ impl ObjectStore for SharedObjectStore {
         match self {
             Self::LocalFile(store) | Self::SharedFile(store) => store.capabilities(),
             Self::MatrixObjectStore(store) => store.capabilities(),
+            Self::Remote(store) => store.capabilities(),
         }
     }
 
@@ -2358,6 +2487,7 @@ impl ObjectStore for SharedObjectStore {
         match self {
             Self::LocalFile(store) | Self::SharedFile(store) => store.topology(),
             Self::MatrixObjectStore(store) => store.topology(),
+            Self::Remote(store) => store.topology(),
         }
     }
 
@@ -2365,6 +2495,7 @@ impl ObjectStore for SharedObjectStore {
         match self {
             Self::LocalFile(store) | Self::SharedFile(store) => store.head(key).await,
             Self::MatrixObjectStore(store) => store.head(key).await,
+            Self::Remote(store) => store.head(key).await,
         }
     }
 
@@ -2376,6 +2507,7 @@ impl ObjectStore for SharedObjectStore {
         match self {
             Self::LocalFile(store) | Self::SharedFile(store) => store.put_atomic(key, bytes).await,
             Self::MatrixObjectStore(store) => store.put_atomic(key, bytes).await,
+            Self::Remote(store) => store.put_atomic(key, bytes).await,
         }
     }
 }
@@ -3333,17 +3465,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shared_object_store_remote_backends_fail_closed_until_linked() {
+    async fn shared_object_store_remote_backends_report_contract_and_fail_closed_until_linked() {
         let dir = tempfile::tempdir().unwrap();
-        let err = SharedObjectStore::from_config(SharedObjectStoreConfig::from_uri(
-            "s3://bucket/prefix",
-            dir.path(),
-        ))
-        .unwrap_err();
+        let store = SharedObjectStore::from_config(
+            SharedObjectStoreConfig::from_uri("s3://bucket/prefix", dir.path())
+                .with_endpoint("https://s3.example.invalid"),
+        )
+        .unwrap();
+
+        let capabilities = store.capabilities();
+        assert_eq!(capabilities.backend, "s3");
+        assert_eq!(capabilities.uri_scheme, "s3");
+        assert!(!capabilities.atomic_put);
+        assert!(!capabilities.byte_range_read);
+
+        let topology = store.topology();
+        assert_eq!(topology.backend, "s3");
+        assert_eq!(topology.uri_scheme, "s3");
+        assert_eq!(topology.services.len(), 1);
+        assert_eq!(topology.services[0].role, "object");
+        assert_eq!(
+            topology.services[0].endpoint.as_deref(),
+            Some("https://s3.example.invalid")
+        );
 
         assert!(matches!(
-            err,
-            ObjectStoreError::UnsupportedBackend { backend, .. } if backend == "s3"
+            store.get("prefix/object").await,
+            Err(ObjectStoreError::UnsupportedBackend { backend, .. }) if backend == "s3"
         ));
     }
 }
