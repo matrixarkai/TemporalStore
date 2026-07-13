@@ -59,7 +59,7 @@ commands. The C++ Redis bridge currently exposes a narrower
 basic/string/hash subset in open-source builds and reports `COMMAND COUNT=47`;
 feature and frequency-control commands are Rust bridge APIs.
 
-`HSCAN` is intentionally limited to a single hash key and is implemented by
+Narrow `HSCAN` is intentionally limited to a single hash key and is implemented by
 fetching that hash's fields through native hash storage, applying optional
 `MATCH`/`COUNT` paging, and returning Redis-style cursor pages. It must not be
 treated as broad keyspace scan support.
@@ -68,7 +68,7 @@ Open-source production builds do not claim generic Redis SET/LIST/ZSET compatibi
 
 The bridge must not claim full Redis compatibility yet. Unsupported command families return deterministic Redis errors rather than fake success. When `TEMPORALSTORE_OPEN_SOURCE_SURFACE=1` or `TS_OPEN_SOURCE_SURFACE=1`, Rust filters both execution and `COMMAND` advertising to the trimmed production data-model surface. C++ open-source builds likewise derive `COMMAND`, `COMMAND COUNT`, and `COMMAND INFO` from one canonical trimmed descriptor table. The current local bridge serializes backend Redis data-command execution while storage concurrency semantics are hardened; this favors correctness over peak Redis QPS.
 
-The canonical machine-readable contract for this surface is `compat/redis_open_source_surface_manifest.json`. The validator `tools/validate_open_source_surface.py` checks the C++ `COMMAND` descriptor table, Rust allowlist, blocked families, required blocked-command smoke samples, helper commands, and docs against that manifest so the public API cannot silently drift.
+The canonical machine-readable contract for this surface is `compat/redis_open_source_surface_manifest.json`; its `allowed_surface_families` field is the authoritative list of public Redis-style families for this open-source build. The validator `tools/validate_open_source_surface.py` checks the C++ `COMMAND` descriptor table, Rust allowlist, blocked families, required blocked-command smoke samples, helper commands, and docs against that manifest so the public API cannot silently drift.
 
 Latest open-source surface gate:
 
