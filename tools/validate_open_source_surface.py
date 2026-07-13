@@ -134,22 +134,47 @@ def main() -> int:
         "C++ Redis handler must reject non-basic commands in open-source builds",
         failures,
     )
-    for allowed in ("kQuit", "kClient"):
+    require(
+        "OpenSourceRedisCommands" in cxx_redis,
+        "C++ Redis handler must expose one canonical trimmed open-source command descriptor table",
+        failures,
+    )
+    require(
+        "OpenSourceRedisCommandCount" in cxx_redis
+        and "OpenSourceRedisCommands().size()" in cxx_redis,
+        "C++ COMMAND COUNT must derive from the trimmed descriptor table",
+        failures,
+    )
+    require(
+        '(*c->reply)[i].SetString(commands[i].name)' in cxx_redis,
+        "C++ COMMAND must advertise the trimmed open-source command names",
+        failures,
+    )
+    cxx_descriptor_block = re.search(
+        r"OpenSourceRedisCommands\(\) \{(?P<body>.*?)\n\}",
+        cxx_redis,
+        re.S,
+    )
+    require(cxx_descriptor_block is not None, "C++ trimmed Redis descriptor table must be discoverable", failures)
+    cxx_descriptor_body = cxx_descriptor_block.group("body") if cxx_descriptor_block else ""
+    require(
+        cxx_descriptor_body.count("RedisCommand::CmdType::") == 43,
+        "C++ trimmed Redis descriptor table must contain exactly 43 commands",
+        failures,
+    )
+    for command in ("GET", "SET", "HSET", "HGET", "HSCAN", "HINCRBY", "CLIENT", "QUIT"):
         require(
-            f"case RedisCommand::CmdType::{allowed}" in cxx_redis,
-            f"C++ open-source Redis allowlist must keep basic client command {allowed}",
+            f'"{command}"' in cxx_descriptor_body,
+            f"C++ trimmed Redis descriptor table must advertise {command}",
             failures,
         )
-    require(
-        "OpenSourceRedisCommandCount" in cxx_redis,
-        "C++ COMMAND COUNT must report the trimmed open-source command count",
-        failures,
-    )
-    require(
-        "return 43;" in cxx_redis,
-        "C++ COMMAND COUNT must match the trimmed open-source allowlist size",
-        failures,
-    )
+    for command in ("SADD", "LPUSH", "ZADD", "SCAN", "KEYS", "CONFIG", "DBSIZE", "PARTITION", "HINCRBYFLOAT"):
+        require(
+            f'"{command}"' not in cxx_descriptor_body,
+            f"C++ trimmed Redis descriptor table must not advertise {command}",
+            failures,
+        )
+
     for denied in (
         "kBgSave",
         "kConfig",

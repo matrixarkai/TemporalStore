@@ -73,62 +73,85 @@ void SetRedisStatusError(brpc::RedisReply* reply, const RpcStatus& status) {
 }
 
 #ifdef BCACHE2_OPEN_SOURCE_SURFACE
+struct OpenSourceRedisCommandDescriptor {
+    RedisCommand::CmdType type;
+    const char* name;
+    int64_t arity;
+    const char* flag;
+};
+
+const std::vector<OpenSourceRedisCommandDescriptor>& OpenSourceRedisCommands() {
+    static const std::vector<OpenSourceRedisCommandDescriptor> commands = {
+        {RedisCommand::CmdType::kInfo, "INFO", -1, "admin"},
+        {RedisCommand::CmdType::kAuth, "AUTH", 2, "admin"},
+        {RedisCommand::CmdType::kPing, "PING", -1, "readonly"},
+        {RedisCommand::CmdType::kEcho, "ECHO", 2, "readonly"},
+        {RedisCommand::CmdType::kQuit, "QUIT", 1, "admin"},
+        {RedisCommand::CmdType::kClient, "CLIENT", -2, "admin"},
+        {RedisCommand::CmdType::kCommand, "COMMAND", -1, "admin"},
+        {RedisCommand::CmdType::kSelect, "SELECT", 2, "admin"},
+        {RedisCommand::CmdType::kType, "TYPE", 2, "readonly"},
+        {RedisCommand::CmdType::kGet, "GET", 2, "readonly"},
+        {RedisCommand::CmdType::kSet, "SET", -3, "write"},
+        {RedisCommand::CmdType::kSetNx, "SETNX", 3, "write"},
+        {RedisCommand::CmdType::kSetEx, "SETEX", 4, "write"},
+        {RedisCommand::CmdType::kPSetEx, "PSETEX", 4, "write"},
+        {RedisCommand::CmdType::kGetSet, "GETSET", 3, "write"},
+        {RedisCommand::CmdType::kGetDel, "GETDEL", 2, "write"},
+        {RedisCommand::CmdType::kGetEx, "GETEX", -2, "write"},
+        {RedisCommand::CmdType::kMGet, "MGET", -2, "readonly"},
+        {RedisCommand::CmdType::kMSet, "MSET", -3, "write"},
+        {RedisCommand::CmdType::kDel, "DEL", -2, "write"},
+        {RedisCommand::CmdType::kUnlink, "UNLINK", -2, "write"},
+        {RedisCommand::CmdType::kExists, "EXISTS", -2, "readonly"},
+        {RedisCommand::CmdType::kExpire, "EXPIRE", 3, "write"},
+        {RedisCommand::CmdType::kPExpire, "PEXPIRE", 3, "write"},
+        {RedisCommand::CmdType::kTtl, "TTL", 2, "readonly"},
+        {RedisCommand::CmdType::kPTtl, "PTTL", 2, "readonly"},
+        {RedisCommand::CmdType::kPersist, "PERSIST", 2, "write"},
+        {RedisCommand::CmdType::kAppend, "APPEND", 3, "write"},
+        {RedisCommand::CmdType::kStrlen, "STRLEN", 2, "readonly"},
+        {RedisCommand::CmdType::kIncrBy, "INCRBY", 3, "write"},
+        {RedisCommand::CmdType::kHSet, "HSET", -4, "write"},
+        {RedisCommand::CmdType::kHSetNx, "HSETNX", 4, "write"},
+        {RedisCommand::CmdType::kHGet, "HGET", 3, "readonly"},
+        {RedisCommand::CmdType::kHMGet, "HMGET", -3, "readonly"},
+        {RedisCommand::CmdType::kHDel, "HDEL", -3, "write"},
+        {RedisCommand::CmdType::kHExists, "HEXISTS", 3, "readonly"},
+        {RedisCommand::CmdType::kHLen, "HLEN", 2, "readonly"},
+        {RedisCommand::CmdType::kHGetAll, "HGETALL", 2, "readonly"},
+        {RedisCommand::CmdType::kHKeys, "HKEYS", 2, "readonly"},
+        {RedisCommand::CmdType::kHVals, "HVALS", 2, "readonly"},
+        {RedisCommand::CmdType::kHScan, "HSCAN", -3, "readonly"},
+        {RedisCommand::CmdType::kHStrlen, "HSTRLEN", 3, "readonly"},
+        {RedisCommand::CmdType::kHIncrBy, "HINCRBY", 4, "write"},
+    };
+    return commands;
+}
+
 bool IsOpenSourceRedisCommandAllowed(RedisCommand::CmdType cmd_type) {
-    switch (cmd_type) {
-        case RedisCommand::CmdType::kInfo:
-        case RedisCommand::CmdType::kAuth:
-        case RedisCommand::CmdType::kPing:
-        case RedisCommand::CmdType::kEcho:
-        case RedisCommand::CmdType::kQuit:
-        case RedisCommand::CmdType::kClient:
-        case RedisCommand::CmdType::kCommand:
-        case RedisCommand::CmdType::kSelect:
-        case RedisCommand::CmdType::kType:
-        case RedisCommand::CmdType::kGet:
-        case RedisCommand::CmdType::kSet:
-        case RedisCommand::CmdType::kSetNx:
-        case RedisCommand::CmdType::kSetEx:
-        case RedisCommand::CmdType::kPSetEx:
-        case RedisCommand::CmdType::kGetSet:
-        case RedisCommand::CmdType::kGetDel:
-        case RedisCommand::CmdType::kGetEx:
-        case RedisCommand::CmdType::kMGet:
-        case RedisCommand::CmdType::kMSet:
-        case RedisCommand::CmdType::kDel:
-        case RedisCommand::CmdType::kUnlink:
-        case RedisCommand::CmdType::kExists:
-        case RedisCommand::CmdType::kExpire:
-        case RedisCommand::CmdType::kPExpire:
-        case RedisCommand::CmdType::kTtl:
-        case RedisCommand::CmdType::kPTtl:
-        case RedisCommand::CmdType::kPersist:
-        case RedisCommand::CmdType::kAppend:
-        case RedisCommand::CmdType::kStrlen:
-        case RedisCommand::CmdType::kIncrBy:
-        case RedisCommand::CmdType::kHSet:
-        case RedisCommand::CmdType::kHSetNx:
-        case RedisCommand::CmdType::kHGet:
-        case RedisCommand::CmdType::kHMGet:
-        case RedisCommand::CmdType::kHDel:
-        case RedisCommand::CmdType::kHExists:
-        case RedisCommand::CmdType::kHLen:
-        case RedisCommand::CmdType::kHGetAll:
-        case RedisCommand::CmdType::kHKeys:
-        case RedisCommand::CmdType::kHVals:
-        case RedisCommand::CmdType::kHScan:
-        case RedisCommand::CmdType::kHStrlen:
-        case RedisCommand::CmdType::kHIncrBy:
+    for (const auto& command : OpenSourceRedisCommands()) {
+        if (command.type == cmd_type) {
             return true;
-        default:
-            return false;
+        }
     }
+    return false;
+}
+
+const OpenSourceRedisCommandDescriptor* FindOpenSourceRedisCommand(const std::string& name) {
+    for (const auto& command : OpenSourceRedisCommands()) {
+        if (!strcasecmp(command.name, name.c_str())) {
+            return &command;
+        }
+    }
+    return nullptr;
 }
 
 int64_t OpenSourceRedisCommandCount() {
     // Keep this aligned with IsOpenSourceRedisCommandAllowed(). C++ currently
     // exposes the basic/string/hash surface; feature/frequency model commands
     // are Rust bridge APIs and are not advertised by the C++ Redis bridge.
-    return 43;
+    return static_cast<int64_t>(OpenSourceRedisCommands().size());
 }
 #endif
 
@@ -906,17 +929,51 @@ void RedisCommandHandler::Client(RedisClientContext* c) {
 }
 
 void RedisCommandHandler::Command(RedisClientContext* c) {
+#ifdef BCACHE2_OPEN_SOURCE_SURFACE
+    const auto& commands = OpenSourceRedisCommands();
+    if (c->ArgSize() == 1) {
+        c->reply->SetArray(commands.size());
+        for (size_t i = 0; i < commands.size(); ++i) {
+            (*c->reply)[i].SetString(commands[i].name);
+        }
+        return;
+    }
+    const std::string op = c->StrArg(1);
+    if (!strcasecmp(op.c_str(), "count") && c->ArgSize() == 2) {
+        c->reply->SetInteger(OpenSourceRedisCommandCount());
+        return;
+    }
+    if (!strcasecmp(op.c_str(), "docs") && c->ArgSize() >= 2) {
+        c->reply->SetArray(0);
+        return;
+    }
+    if (!strcasecmp(op.c_str(), "info") && c->ArgSize() >= 2) {
+        const size_t requested = c->ArgSize() > 2 ? c->ArgSize() - 2 : commands.size();
+        c->reply->SetArray(requested);
+        for (size_t i = 0; i < requested; ++i) {
+            const auto* command = c->ArgSize() > 2
+                                      ? FindOpenSourceRedisCommand(c->StrArg(i + 2))
+                                      : &commands[i];
+            if (command == nullptr) {
+                (*c->reply)[i].SetNullString();
+                continue;
+            }
+            (*c->reply)[i].SetArray(3);
+            (*c->reply)[i][0].SetString(command->name);
+            (*c->reply)[i][1].SetInteger(command->arity);
+            (*c->reply)[i][2].SetArray(1);
+            (*c->reply)[i][2][0].SetString(command->flag);
+        }
+        return;
+    }
+#else
     if (c->ArgSize() == 1) {
         c->reply->SetArray(0);
         return;
     }
     const std::string op = c->StrArg(1);
     if (!strcasecmp(op.c_str(), "count") && c->ArgSize() == 2) {
-#ifdef BCACHE2_OPEN_SOURCE_SURFACE
-        c->reply->SetInteger(OpenSourceRedisCommandCount());
-#else
         c->reply->SetInteger(0);
-#endif
         return;
     }
     if (!strcasecmp(op.c_str(), "docs") && c->ArgSize() >= 2) {
@@ -927,6 +984,7 @@ void RedisCommandHandler::Command(RedisClientContext* c) {
         c->reply->SetArray(0);
         return;
     }
+#endif
     c->reply->SetError("ERR unsupported COMMAND subcommand");
 }
 
