@@ -31,7 +31,7 @@ The OCR output is noisy because the PDF is image-only, but the first-page extrac
 - `head` and `put_atomic` APIs for metadata-first callers.
 - Path traversal rejection for object keys.
 - Temporary-file filtering during prefix listing.
-- Raw-message spill contract using `matrixobjectstore://...` object refs.
+- Raw-message spill contract using canonical `matrixobject://...` object refs, with `matrixobjectstore://...` accepted as a legacy alias.
 - Raw-message object refs that include payload size and SHA-256 checksum.
 - TemporalStore-owned metadata rows for S3/MatrixObjectStore payloads, unless MatrixKV is explicitly selected as the metadata backend.
 

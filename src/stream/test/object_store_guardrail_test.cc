@@ -159,7 +159,10 @@ TEST(ObjectStoreBackendGuardrailTest, UnknownBackendsRemainInvalidArguments) {
 }
 
 TEST(ObjectStoreBackendGuardrailTest, PublicBackendNamesAreCanonical) {
-    EXPECT_EQ("matrixobjectstore",
+    EXPECT_EQ("matrixobject",
+              std::string(ObjectStoreBackendName(
+                  DetectObjectStoreBackend("matrixobject://bucket/prefix"))));
+    EXPECT_EQ("matrixobject",
               std::string(ObjectStoreBackendName(
                   DetectObjectStoreBackend("matrixobjectstore://bucket/prefix"))));
     EXPECT_EQ("s3", std::string(ObjectStoreBackendName(DetectObjectStoreBackend("s3://b/k"))));
@@ -169,7 +172,7 @@ TEST(ObjectStoreBackendGuardrailTest, PublicBackendNamesAreCanonical) {
               std::string(ObjectStoreBackendName(DetectObjectStoreBackend("shared-file://b/k"))));
     EXPECT_EQ("local_file",
               std::string(ObjectStoreBackendName(DetectObjectStoreBackend("file:///tmp/k"))));
-    EXPECT_EQ("matrixobjectstore",
+    EXPECT_EQ("matrixobject",
               std::string(ObjectStoreBackendUriScheme(ObjectStoreBackend::kMatrixObjectStore)));
     EXPECT_EQ("file", std::string(ObjectStoreBackendUriScheme(ObjectStoreBackend::kLocalFile)));
 }

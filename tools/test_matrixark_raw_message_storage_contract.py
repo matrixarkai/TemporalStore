@@ -95,8 +95,8 @@ class RawMessageStorageContractTest(unittest.TestCase):
         self.assertEqual(report["metadata_backend"], "temporalstore")
         self.assertTrue(report["metadata_persisted_in_temporalstore"])
         self.assertEqual(report["object_ref"]["metadata_backend"], "temporalstore")
-        self.assertEqual(report["object_store_name"], "MatrixObjectStore")
-        self.assertIn("matrixobjectstore://matrixark/raw-agent-messages/", report["object_ref"]["object_key"])
+        self.assertEqual(report["object_store_name"], "MatrixObject")
+        self.assertIn("matrixobject://matrixark/raw-agent-messages/", report["object_ref"]["object_key"])
         self.assertEqual(report["payload_sha256"], raw_message_payload_sha256(message))
         self.assertEqual(report["object_ref"]["payload_sha256"], report["payload_sha256"])
         self.assertEqual(report["payload_size_bytes"], 128)
@@ -121,6 +121,7 @@ class RawMessageStorageContractTest(unittest.TestCase):
 
     def test_object_store_backend_aliases_are_supported(self) -> None:
         self.assertEqual(normalize_raw_backend("object_store"), "objectstore")
+        self.assertEqual(normalize_raw_backend("matrixobject"), "objectstore")
         self.assertEqual(normalize_raw_backend("matrix_object_store"), "objectstore")
         self.assertEqual(normalize_raw_backend("aws_s3"), "s3")
 

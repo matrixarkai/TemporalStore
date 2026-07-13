@@ -4,11 +4,11 @@
 
 The downloaded object-store reference PDF is image-only: 26 pages and no embedded text layer. The implementation therefore uses the durable object-store architecture signals already extracted in this repo: separate metadata ownership, block placement metadata, byte/chunk serving, checksums, listing, deletion, and future server registration/discovery.
 
-New public code and docs continue to use `MatrixObjectStore`. Historical external names are design ancestry only and should not reappear in public APIs.
+New public code and docs should use `MatrixObject` and `matrixobject://` as the product/API name and URI scheme. `MatrixObjectStore` remains as an implementation type name and `matrixobjectstore://` remains a backward-compatible URI alias for older configs.
 
 ## Service Boundary
 
-MatrixObjectStore now has explicit internal services behind the existing `ObjectStore` trait:
+MatrixObject now has explicit internal services behind the existing `ObjectStore` trait:
 
 - `MatrixObjectStoreRootService`: owns object manifests, object listing, object URI identity, and the root metadata view.
 - `MatrixObjectStoreBlockService`: owns block metadata, block id to chunk refs, offsets, lengths, and block checksums.
@@ -25,9 +25,9 @@ Local-compatible MatrixObjectStore writes call filesystem `sync_all` and sync pa
 `MatrixObjectStoreConfig` now carries a `MatrixObjectStoreServiceEndpoints` section. A deployment can use one unified external endpoint for compatibility or three independent endpoints:
 
 ```text
-root_endpoint  = matrixobjectstore-root://root-service
-block_endpoint = matrixobjectstore-block://block-service
-chunk_endpoint = matrixobjectstore-chunk://chunk-service
+root_endpoint  = matrixobject-root://root-service
+block_endpoint = matrixobject-block://block-service
+chunk_endpoint = matrixobject-chunk://chunk-service
 ```
 
 `MatrixObjectStore::service_topology()` reports the effective root/block/chunk service roles, local compatibility roots, and configured endpoints. TemporalStore still talks to `ObjectStore`; the split is below that stable API boundary.
@@ -89,7 +89,7 @@ Root listing walks only manifest files ending in `.manifest.json`, so list-heavy
 
 ## Future Separate Services
 
-If/when MatrixObjectStore runs as separate processes, the natural split is:
+If/when MatrixObject runs as separate processes, the natural split is:
 
 - Root server: namespace, object manifest, ownership, conditional metadata, placement policy, server discovery.
 - Block server: block placement/index metadata, block health, block checksums, lifecycle and GC eligibility.

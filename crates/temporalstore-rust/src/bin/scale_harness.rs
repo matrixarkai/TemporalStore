@@ -439,7 +439,7 @@ fn usage_and_exit() -> ! {
     eprintln!("  --shared-store-flush-every <n> default 25");
     eprintln!("  --shared-store-flush-concurrency <n> default 8");
     eprintln!("  --shared-store-root <path> default temp dir");
-    eprintln!("  --shared-store-backend local_file|shared_file|matrixobjectstore|s3|ceph_s3|ceph_rados default local_file");
+    eprintln!("  --shared-store-backend local_file|shared_file|matrixobject|matrixobjectstore|s3|ceph_s3|ceph_rados default local_file");
     std::process::exit(2);
 }
 

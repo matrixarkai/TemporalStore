@@ -18,8 +18,9 @@ enum class ObjectStoreBackend {
 };
 
 inline ObjectStoreBackend DetectObjectStoreBackend(const std::string& uri) {
-    if (absl::StartsWith(uri, "matrixobjectstore://") || absl::StartsWith(uri, "blob://") ||
-        absl::StartsWith(uri, "local://")) {
+    if (absl::StartsWith(uri, "matrixobject://") ||
+        absl::StartsWith(uri, "matrixobjectstore://") ||
+        absl::StartsWith(uri, "blob://") || absl::StartsWith(uri, "local://")) {
         return ObjectStoreBackend::kMatrixObjectStore;
     }
     if (absl::StartsWith(uri, "s3://")) {
@@ -46,7 +47,7 @@ inline ObjectStoreBackend DetectObjectStoreBackend(const std::string& uri) {
 inline const char* ObjectStoreBackendName(ObjectStoreBackend backend) {
     switch (backend) {
     case ObjectStoreBackend::kMatrixObjectStore:
-        return "matrixobjectstore";
+        return "matrixobject";
     case ObjectStoreBackend::kS3:
         return "s3";
     case ObjectStoreBackend::kCephS3:
@@ -66,7 +67,7 @@ inline const char* ObjectStoreBackendName(ObjectStoreBackend backend) {
 inline const char* ObjectStoreBackendUriScheme(ObjectStoreBackend backend) {
     switch (backend) {
     case ObjectStoreBackend::kMatrixObjectStore:
-        return "matrixobjectstore";
+        return "matrixobject";
     case ObjectStoreBackend::kS3:
         return "s3";
     case ObjectStoreBackend::kCephS3:
