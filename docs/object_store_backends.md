@@ -38,6 +38,38 @@ This keeps Rust and C++ on the same public object-store contract:
 - Retired legacy object-store naming is not part of public APIs, docs, build
   flags, or validation output.
 
+## Generic ObjectStore Contract
+
+TemporalStore callers should code against the `ObjectStore` trait and
+`SharedObjectStoreConfig`, not against MatrixObject-specific implementation
+types. The generic contract now exposes the operations needed by MatrixObject,
+S3-compatible stores, Ceph RGW, local files, and future object backends:
+
+- `put` / `put_atomic`: publish a complete object and return metadata.
+- `put_unique` / `put_path_unique`: append-style uploads for snapshots, WAL,
+  and oplog objects that do not need overwrite cleanup.
+- `get` / `get_to_path`: read a complete object into memory or directly to a
+  destination path.
+- `get_range`: read only a byte range, matching the natural S3 ranged-GET
+  model and MatrixObject chunk manifests.
+- `head`: return key, URI, size, and SHA-256 metadata without requiring callers
+  to know whether the backend stores manifests, local files, or remote object
+  metadata.
+- `list` / `delete`: prefix listing and object deletion.
+- `capabilities`: report support for atomic put, unique put, path upload,
+  path download, metadata head, prefix list, delete, byte-range read, checksum,
+  and split services.
+- `topology`: report a generic service list. MatrixObject maps this to
+  root/block/chunk services; local file and shared file map to one object
+  service; S3-style adapters should map to one remote object service unless a
+  deployment has a richer split.
+
+This keeps the TemporalStore side generic: storage code can select by URI,
+inspect capabilities, and use byte-range reads without hardcoding MatrixObject
+internals. MatrixObject remains the optimized implementation that can split
+large objects into root manifests, block refs, and chunks behind the same
+adapter API.
+
 ## Why Ceph Should Use S3 First
 
 Ceph RGW exposes an S3-compatible object API, so the first production implementation should be a

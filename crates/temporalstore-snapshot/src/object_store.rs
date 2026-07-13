@@ -32,6 +32,112 @@ pub struct ObjectMetadata {
     pub checksum_sha256: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObjectStoreCapabilities {
+    pub backend: String,
+    pub uri_scheme: String,
+    pub atomic_put: bool,
+    pub unique_put: bool,
+    pub direct_upload_from_path: bool,
+    pub direct_download_to_path: bool,
+    pub metadata_head: bool,
+    pub prefix_list: bool,
+    pub delete: bool,
+    pub byte_range_read: bool,
+    pub checksum_sha256: bool,
+    pub split_services: bool,
+}
+
+impl ObjectStoreCapabilities {
+    pub fn file(uri_scheme: impl Into<String>) -> Self {
+        let uri_scheme = uri_scheme.into();
+        Self {
+            backend: if uri_scheme == "shared-file" {
+                "shared_file".to_string()
+            } else {
+                "local_file".to_string()
+            },
+            uri_scheme,
+            atomic_put: true,
+            unique_put: true,
+            direct_upload_from_path: true,
+            direct_download_to_path: true,
+            metadata_head: true,
+            prefix_list: true,
+            delete: true,
+            byte_range_read: true,
+            checksum_sha256: true,
+            split_services: false,
+        }
+    }
+
+    pub fn matrixobject(uri_scheme: impl Into<String>, split_services: bool) -> Self {
+        Self {
+            backend: "matrixobject".to_string(),
+            uri_scheme: uri_scheme.into(),
+            atomic_put: true,
+            unique_put: true,
+            direct_upload_from_path: true,
+            direct_download_to_path: true,
+            metadata_head: true,
+            prefix_list: true,
+            delete: true,
+            byte_range_read: true,
+            checksum_sha256: true,
+            split_services,
+        }
+    }
+
+    pub fn unsupported(backend: SharedObjectStoreBackend) -> Self {
+        Self {
+            backend: backend.canonical_name().to_string(),
+            uri_scheme: backend.uri_scheme().to_string(),
+            atomic_put: false,
+            unique_put: false,
+            direct_upload_from_path: false,
+            direct_download_to_path: false,
+            metadata_head: false,
+            prefix_list: false,
+            delete: false,
+            byte_range_read: false,
+            checksum_sha256: false,
+            split_services: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObjectStoreServiceDescriptor {
+    pub role: String,
+    pub endpoint: Option<String>,
+    pub local_root: Option<PathBuf>,
+}
+
+impl ObjectStoreServiceDescriptor {
+    pub fn local(role: impl Into<String>, local_root: impl Into<PathBuf>) -> Self {
+        Self {
+            role: role.into(),
+            endpoint: None,
+            local_root: Some(local_root.into()),
+        }
+    }
+
+    pub fn endpoint(role: impl Into<String>, endpoint: Option<String>) -> Self {
+        Self {
+            role: role.into(),
+            endpoint,
+            local_root: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObjectStoreTopology {
+    pub backend: String,
+    pub uri_scheme: String,
+    pub services: Vec<ObjectStoreServiceDescriptor>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SharedObjectStoreBackend {
     LocalFile,
@@ -174,6 +280,24 @@ pub trait ObjectStore: Send + Sync {
         self.head(key).await
     }
     async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError>;
+    async fn get_range(
+        &self,
+        key: &str,
+        offset: u64,
+        length: usize,
+    ) -> Result<Bytes, ObjectStoreError> {
+        let bytes = self.get(key).await?;
+        let start = usize::try_from(offset).map_err(|_| {
+            ObjectStoreError::Io(std::io::Error::other(format!(
+                "range offset too large for object {key}: {offset}"
+            )))
+        })?;
+        if start >= bytes.len() || length == 0 {
+            return Ok(Bytes::new());
+        }
+        let end = start.saturating_add(length).min(bytes.len());
+        Ok(bytes.slice(start..end))
+    }
     async fn get_to_path(
         &self,
         key: &str,
@@ -186,6 +310,30 @@ pub trait ObjectStore: Send + Sync {
     async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError>;
     async fn delete(&self, key: &str) -> Result<(), ObjectStoreError>;
     fn uri(&self, key: &str) -> String;
+    fn capabilities(&self) -> ObjectStoreCapabilities {
+        ObjectStoreCapabilities {
+            backend: "custom".to_string(),
+            uri_scheme: "custom".to_string(),
+            atomic_put: true,
+            unique_put: true,
+            direct_upload_from_path: false,
+            direct_download_to_path: false,
+            metadata_head: false,
+            prefix_list: true,
+            delete: true,
+            byte_range_read: false,
+            checksum_sha256: false,
+            split_services: false,
+        }
+    }
+    fn topology(&self) -> ObjectStoreTopology {
+        let capabilities = self.capabilities();
+        ObjectStoreTopology {
+            backend: capabilities.backend,
+            uri_scheme: capabilities.uri_scheme,
+            services: vec![ObjectStoreServiceDescriptor::endpoint("object", None)],
+        }
+    }
 
     async fn head(&self, key: &str) -> Result<ObjectMetadata, ObjectStoreError> {
         let bytes = self.get(key).await?;
@@ -387,6 +535,30 @@ pub struct MatrixObjectStoreServiceTopology {
     pub root_service: MatrixObjectStoreServiceDescriptor,
     pub block_service: MatrixObjectStoreServiceDescriptor,
     pub chunk_service: MatrixObjectStoreServiceDescriptor,
+}
+
+impl MatrixObjectStoreServiceDescriptor {
+    fn as_generic(&self) -> ObjectStoreServiceDescriptor {
+        ObjectStoreServiceDescriptor {
+            role: self.service_role.clone(),
+            endpoint: self.endpoint.clone(),
+            local_root: Some(self.local_root.clone()),
+        }
+    }
+}
+
+impl MatrixObjectStoreServiceTopology {
+    pub fn as_generic(&self, uri_scheme: impl Into<String>) -> ObjectStoreTopology {
+        ObjectStoreTopology {
+            backend: "matrixobject".to_string(),
+            uri_scheme: uri_scheme.into(),
+            services: vec![
+                self.root_service.as_generic(),
+                self.block_service.as_generic(),
+                self.chunk_service.as_generic(),
+            ],
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -902,6 +1074,34 @@ impl ObjectStore for FileObjectStore {
         }
     }
 
+    async fn get_range(
+        &self,
+        key: &str,
+        offset: u64,
+        length: usize,
+    ) -> Result<Bytes, ObjectStoreError> {
+        if length == 0 {
+            return Ok(Bytes::new());
+        }
+        let path = self.resolve(key)?;
+        let mut file = match tokio::fs::File::open(path).await {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Err(ObjectStoreError::NotFound(key.to_string()));
+            }
+            Err(err) => return Err(ObjectStoreError::Io(err)),
+        };
+        let object_len = file.metadata().await?.len();
+        if offset >= object_len {
+            return Ok(Bytes::new());
+        }
+        let bytes_to_read = length.min((object_len - offset) as usize);
+        let mut buffer = vec![0u8; bytes_to_read];
+        file.seek(SeekFrom::Start(offset)).await?;
+        file.read_exact(&mut buffer).await?;
+        Ok(Bytes::from(buffer))
+    }
+
     async fn get_to_path(
         &self,
         key: &str,
@@ -975,6 +1175,21 @@ impl ObjectStore for FileObjectStore {
 
     fn uri(&self, key: &str) -> String {
         format!("{}://{}", self.uri_scheme, key)
+    }
+
+    fn capabilities(&self) -> ObjectStoreCapabilities {
+        ObjectStoreCapabilities::file(self.uri_scheme.clone())
+    }
+
+    fn topology(&self) -> ObjectStoreTopology {
+        ObjectStoreTopology {
+            backend: self.capabilities().backend,
+            uri_scheme: self.uri_scheme.clone(),
+            services: vec![ObjectStoreServiceDescriptor::local(
+                "object",
+                self.root.clone(),
+            )],
+        }
     }
 }
 
@@ -1370,6 +1585,45 @@ impl MatrixObjectStore {
         Ok((block_ref.offset, chunk))
     }
 
+    async fn read_range_from_manifest(
+        &self,
+        key: &str,
+        manifest: &MatrixObjectManifest,
+        offset: u64,
+        length: usize,
+    ) -> Result<Bytes, ObjectStoreError> {
+        self.validate_manifest_for_read(manifest)?;
+        if length == 0 || offset >= manifest.size_bytes {
+            return Ok(Bytes::new());
+        }
+        let end_offset = offset
+            .saturating_add(length as u64)
+            .min(manifest.size_bytes);
+        let mut out = Vec::with_capacity((end_offset - offset) as usize);
+        for block_ref in manifest
+            .blocks
+            .iter()
+            .filter(|block| block.offset < end_offset && block.offset + block.length > offset)
+        {
+            let (chunk_offset, chunk) = self.read_chunk_direct(block_ref.clone()).await?;
+            let chunk_end = chunk_offset + chunk.len() as u64;
+            if chunk_end <= offset || chunk_offset >= end_offset {
+                continue;
+            }
+            let slice_start = offset.saturating_sub(chunk_offset) as usize;
+            let slice_end = (end_offset.min(chunk_end) - chunk_offset) as usize;
+            out.extend_from_slice(&chunk.slice(slice_start..slice_end));
+        }
+        if out.len() != (end_offset - offset) as usize {
+            return Err(ObjectStoreError::Io(std::io::Error::other(format!(
+                "object range read for {key} returned {} bytes, expected {}",
+                out.len(),
+                end_offset - offset
+            ))));
+        }
+        Ok(Bytes::from(out))
+    }
+
     async fn finish_chunk_write(
         join_set: &mut JoinSet<Result<(usize, MatrixObjectBlockRef), ObjectStoreError>>,
     ) -> Result<(usize, MatrixObjectBlockRef), ObjectStoreError> {
@@ -1497,6 +1751,17 @@ impl ObjectStore for MatrixObjectStore {
         Ok(Bytes::from(out))
     }
 
+    async fn get_range(
+        &self,
+        key: &str,
+        offset: u64,
+        length: usize,
+    ) -> Result<Bytes, ObjectStoreError> {
+        let manifest = self.root_service.get_manifest(key).await?;
+        self.read_range_from_manifest(key, &manifest, offset, length)
+            .await
+    }
+
     async fn get_to_path(
         &self,
         key: &str,
@@ -1596,6 +1861,15 @@ impl ObjectStore for MatrixObjectStore {
 
     fn uri(&self, key: &str) -> String {
         self.root_service.uri(key)
+    }
+
+    fn capabilities(&self) -> ObjectStoreCapabilities {
+        ObjectStoreCapabilities::matrixobject(self.config.uri_scheme.clone(), true)
+    }
+
+    fn topology(&self) -> ObjectStoreTopology {
+        self.service_topology()
+            .as_generic(self.config.uri_scheme.clone())
     }
 
     async fn head(&self, key: &str) -> Result<ObjectMetadata, ObjectStoreError> {
@@ -1889,6 +2163,20 @@ impl ObjectStore for SharedObjectStore {
         }
     }
 
+    async fn get_range(
+        &self,
+        key: &str,
+        offset: u64,
+        length: usize,
+    ) -> Result<Bytes, ObjectStoreError> {
+        match self {
+            Self::LocalFile(store) | Self::SharedFile(store) => {
+                store.get_range(key, offset, length).await
+            }
+            Self::MatrixObjectStore(store) => store.get_range(key, offset, length).await,
+        }
+    }
+
     async fn get_to_path(
         &self,
         key: &str,
@@ -1918,6 +2206,20 @@ impl ObjectStore for SharedObjectStore {
         match self {
             Self::LocalFile(store) | Self::SharedFile(store) => store.uri(key),
             Self::MatrixObjectStore(store) => store.uri(key),
+        }
+    }
+
+    fn capabilities(&self) -> ObjectStoreCapabilities {
+        match self {
+            Self::LocalFile(store) | Self::SharedFile(store) => store.capabilities(),
+            Self::MatrixObjectStore(store) => store.capabilities(),
+        }
+    }
+
+    fn topology(&self) -> ObjectStoreTopology {
+        match self {
+            Self::LocalFile(store) | Self::SharedFile(store) => store.topology(),
+            Self::MatrixObjectStore(store) => store.topology(),
         }
     }
 
@@ -2010,6 +2312,88 @@ mod tests {
             Bytes::from_static(b"hello matrix object store")
         );
         assert_eq!(store.head("tenant/a/blob-1").await.unwrap(), metadata);
+    }
+
+    #[tokio::test]
+    async fn object_store_capabilities_and_topology_are_generic() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = SharedObjectStore::from_backend_root(
+            SharedObjectStoreBackend::MatrixObjectStore,
+            dir.path(),
+        )
+        .unwrap();
+
+        let capabilities = shared.capabilities();
+        assert_eq!(capabilities.backend, "matrixobject");
+        assert_eq!(capabilities.uri_scheme, "matrixobject");
+        assert!(capabilities.atomic_put);
+        assert!(capabilities.unique_put);
+        assert!(capabilities.byte_range_read);
+        assert!(capabilities.checksum_sha256);
+        assert!(capabilities.split_services);
+
+        let topology = shared.topology();
+        assert_eq!(topology.backend, "matrixobject");
+        assert_eq!(topology.uri_scheme, "matrixobject");
+        assert_eq!(
+            topology
+                .services
+                .iter()
+                .map(|service| service.role.as_str())
+                .collect::<Vec<_>>(),
+            vec!["root", "block", "chunk"]
+        );
+        assert!(topology
+            .services
+            .iter()
+            .all(|service| service.local_root.is_some()));
+    }
+
+    #[tokio::test]
+    async fn generic_object_store_range_reads_work_for_file_and_matrixobject() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_store = FileObjectStore::new(dir.path().join("file"));
+        file_store
+            .put_atomic("objects/range.txt", Bytes::from_static(b"0123456789abcdef"))
+            .await
+            .unwrap();
+        assert_eq!(
+            file_store
+                .get_range("objects/range.txt", 4, 6)
+                .await
+                .unwrap(),
+            Bytes::from_static(b"456789")
+        );
+        assert_eq!(
+            file_store
+                .get_range("objects/range.txt", 99, 6)
+                .await
+                .unwrap(),
+            Bytes::new()
+        );
+
+        let matrix_store = MatrixObjectStore::from_config(
+            MatrixObjectStoreConfig::local_compat(dir.path().join("matrix"))
+                .with_chunk_target_bytes(4),
+        );
+        matrix_store
+            .put_atomic("objects/range.txt", Bytes::from_static(b"0123456789abcdef"))
+            .await
+            .unwrap();
+        assert_eq!(
+            matrix_store
+                .get_range("objects/range.txt", 3, 10)
+                .await
+                .unwrap(),
+            Bytes::from_static(b"3456789abc")
+        );
+        assert_eq!(
+            matrix_store
+                .get_range("objects/range.txt", 15, 10)
+                .await
+                .unwrap(),
+            Bytes::from_static(b"f")
+        );
     }
 
     #[tokio::test]
