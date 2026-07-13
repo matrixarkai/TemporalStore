@@ -612,7 +612,15 @@ def main() -> int:
         and "fn canonical_capabilities(&self) -> CanonicalObjectStoreCapabilities" in object_store_code
         and "canonical_object_store_capabilities_hide_compatibility_aliases" in object_store_code
         and "canonical_capabilities()" in object_store_docs,
-        "Object-store integrations must expose a canonical capabilities view for MatrixObject/S3/local adapters",
+        "Rust object-store integrations must expose a canonical capabilities view for MatrixObject/S3/local adapters",
+        failures,
+    )
+    require(
+        "struct CanonicalObjectStoreBackendCapabilities" in cxx_object_store_backend
+        and "CanonicalObjectStoreBackendCapabilityReport" in cxx_object_store_backend
+        and "CanonicalCapabilityReportsHideCompatibilityAliases" in cxx_object_store_guardrail
+        and "CanonicalObjectStoreBackendCapabilityReport()" in object_store_docs,
+        "C++ object-store integrations must expose a canonical capabilities view for MatrixObject/S3/local adapters",
         failures,
     )
     for rust_capability in (

@@ -44,8 +44,9 @@ This keeps Rust and C++ on the same public object-store contract:
   `prefix_list`, `paginated_list`, `delete_capability`, `bulk_delete`,
   `object_copy`, `prefix_delete`, `byte_range_read`, `checksum_sha256`,
   `opaque_object_validators`, `object_version_ids`, and `split_services`.
-  Rust exposes `canonical_capabilities()` for new shared-store callers so they
-  only consume this provider-neutral vocabulary. Older names such as
+  Rust exposes `canonical_capabilities()` and C++ exposes
+  `CanonicalObjectStoreBackendCapabilityReport()` for new shared-store
+  callers so they only consume this provider-neutral vocabulary. Older names such as
   `atomic_put`, `delete`, `copy_object`, `delete_prefix`, `object_etag`, and
   `object_version_id` remain compatibility aliases on the legacy capability
   struct only.
@@ -154,8 +155,9 @@ stream/page/index/oplog
      -> rados://      Native Ceph Store adapter
 ```
 
-C++ also exposes `ObjectStoreBackendCapabilityReport`, a provider-neutral
-capability summary for the same backend families. It reports canonical backend
+C++ also exposes `ObjectStoreBackendCapabilityReport` for compatibility and
+`CanonicalObjectStoreBackendCapabilityReport` for new generic callers that
+need the alias-free provider-neutral capability summary for the same backend families. It reports canonical backend
 name, canonical URI scheme, runtime-linked status, fail-closed status,
 and the same generic capability names used by the Rust/Python contract:
 `atomic_publish`, `unique_put`, `conditional_create`,
