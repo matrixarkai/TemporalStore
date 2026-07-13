@@ -1,4 +1,18 @@
 {
+  "allowed_surface_families": [
+    "connection",
+    "auth_client",
+    "metadata",
+    "db_selection",
+    "typical_string",
+    "typical_counter",
+    "typical_ttl",
+    "typical_hash",
+    "narrow_hash_scan",
+    "context_management",
+    "feature_model",
+    "frequency_control"
+  ],
   "blocked_command_families": [
     "broad_keyspace_scan",
     "server_configuration",

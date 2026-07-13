@@ -52,6 +52,7 @@ def main() -> int:
 
     manifest = json.loads(read("compat/redis_open_source_surface_manifest.json"))
     manifest_cxx_commands = manifest.get("cxx_commands", [])
+    manifest_allowed_surface_families = set(manifest.get("allowed_surface_families", []))
     manifest_blocked_commands = set(manifest.get("blocked_commands", []))
     manifest_rust_extra_commands = set(manifest.get("rust_extra_commands", []))
     manifest_rust_normal_helpers = set(manifest.get("rust_normal_helpers", []))
@@ -68,6 +69,40 @@ def main() -> int:
     require(
         manifest.get("cxx_command_count") == 47 and len(manifest_cxx_commands) == 47,
         "Redis open-source surface manifest must declare exactly 47 C++ commands",
+        failures,
+    )
+
+    expected_allowed_families = {
+        "connection",
+        "auth_client",
+        "metadata",
+        "db_selection",
+        "typical_string",
+        "typical_counter",
+        "typical_ttl",
+        "typical_hash",
+        "narrow_hash_scan",
+        "context_management",
+        "feature_model",
+        "frequency_control",
+    }
+    require(
+        manifest_allowed_surface_families == expected_allowed_families,
+        "Redis open-source surface manifest must explicitly limit allowed families to typical string/hash plus context/feature/frequency-control data models",
+        failures,
+    )
+    require(
+        "context management" in manifest.get("purpose", "").lower()
+        and "feature" in manifest.get("purpose", "").lower()
+        and "frequency-control" in manifest.get("purpose", "").lower()
+        and "string/hash" in manifest.get("purpose", "").lower(),
+        "Redis open-source surface manifest purpose must describe the allowed data-model families",
+        failures,
+    )
+    require(
+        "MatrixObject integration sits below TemporalStore storage/backfill" in manifest.get("matrixobject_note", "")
+        and "must not expand the public Redis API" in manifest.get("matrixobject_note", ""),
+        "Redis open-source surface manifest must keep MatrixObject below the Redis API layer",
         failures,
     )
 
@@ -439,6 +474,16 @@ def main() -> int:
         "Redis docs must state that generic collection clones are not part of the open-source claim",
         failures,
     )
+    for family_phrase in (
+        "context, feature, and frequency-control data models",
+        "string/common, hash, feature, and frequency-control commands",
+        "Narrow `HSCAN`",
+    ):
+        require(
+            family_phrase in redis_docs,
+            f"Redis docs must describe allowed manifest surface family: {family_phrase}",
+            failures,
+        )
     require(
         "auth/ping/info/config" not in open_source_surface.lower(),
         "open-source surface overview must not advertise Redis CONFIG as public",
