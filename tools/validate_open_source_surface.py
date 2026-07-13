@@ -175,6 +175,33 @@ def main() -> int:
             failures,
         )
 
+    cxx_advertised_commands = re.findall(
+        r'\{RedisCommand::CmdType::k[A-Za-z0-9]+, "([A-Z0-9]+)"',
+        cxx_descriptor_body,
+    )
+    cxx_registered_commands = {
+        name.upper(): handler
+        for name, handler in re.findall(
+            r'RegisterCommand\("([a-z0-9]+)",\s*'
+            r'RedisCommand::CmdType::k[A-Za-z0-9]+,\s*'
+            r'-?\d+,\s*"[^"]*",\s*-?\d+,\s*-?\d+,\s*-?\d+,\s*'
+            r'&RedisCommandHandler::([A-Za-z0-9_]+)',
+            cxx_redis_service,
+            re.S,
+        )
+    }
+    for command in cxx_advertised_commands:
+        require(
+            command in cxx_registered_commands,
+            f"C++ advertised Redis command {command} must be registered in RedisServiceImpl::InitCommands",
+            failures,
+        )
+        require(
+            cxx_registered_commands.get(command) != "Unsupported",
+            f"C++ advertised Redis command {command} must not be wired to Unsupported",
+            failures,
+        )
+
     for denied in (
         "kBgSave",
         "kConfig",
