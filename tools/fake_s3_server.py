@@ -74,7 +74,14 @@ class FakeS3Handler(BaseHTTPRequestHandler):
         bucket, key, parsed = self.parse_path()
         query = urllib.parse.parse_qs(parsed.query)
         if query.get("list-type") == ["2"]:
-            self.list_objects(bucket, query.get("prefix", [""])[0])
+            max_keys = int(query.get("max-keys", ["1000"])[0])
+            continuation_token = query.get("continuation-token", [None])[0]
+            self.list_objects(
+                bucket,
+                query.get("prefix", [""])[0],
+                max(max_keys, 1),
+                continuation_token,
+            )
             return
         self.read_object(bucket, key, head_only=False)
 
@@ -125,7 +132,7 @@ class FakeS3Handler(BaseHTTPRequestHandler):
                 fh.seek(begin)
                 self.wfile.write(fh.read(length))
 
-    def list_objects(self, bucket, prefix):
+    def list_objects(self, bucket, prefix, max_keys, continuation_token):
         if not bucket:
             self.send_status(400, b"bucket required")
             return
@@ -138,12 +145,28 @@ class FakeS3Handler(BaseHTTPRequestHandler):
                     rel = os.path.relpath(path, bucket_dir).replace(os.sep, "/")
                     if rel.startswith(prefix):
                         keys.append(rel)
+        keys = sorted(keys)
+        start = 0
+        if continuation_token:
+            for idx, key in enumerate(keys):
+                if key > continuation_token:
+                    start = idx
+                    break
+            else:
+                start = len(keys)
+        page = keys[start:start + max_keys]
+        truncated = start + len(page) < len(keys)
         body = [
             '<?xml version="1.0" encoding="UTF-8"?>',
             "<ListBucketResult>",
+            f"<IsTruncated>{str(truncated).lower()}</IsTruncated>",
         ]
-        for key in sorted(keys):
+        for key in page:
             body.append(f"<Contents><Key>{html.escape(key)}</Key></Contents>")
+        if truncated and page:
+            body.append(
+                f"<NextContinuationToken>{html.escape(page[-1])}</NextContinuationToken>"
+            )
         body.append("</ListBucketResult>")
         payload = "".join(body).encode("utf-8")
         self.send_response(200)

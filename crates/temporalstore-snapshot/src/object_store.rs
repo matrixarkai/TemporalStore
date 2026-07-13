@@ -4614,6 +4614,19 @@ mod tests {
             Bytes::from_static(b"hello remote object")
         );
 
+        let first_page = store.list_page("objects/", None, 2).await.unwrap();
+        assert_eq!(first_page.keys, vec!["objects/a.bin", "objects/b.bin"]);
+        assert_eq!(
+            first_page.next_continuation_token.as_deref(),
+            Some("base/objects/b.bin")
+        );
+        let second_page = store
+            .list_page("objects/", first_page.next_continuation_token.as_deref(), 2)
+            .await
+            .unwrap();
+        assert_eq!(second_page.keys, vec!["objects/unique.bin"]);
+        assert!(second_page.next_continuation_token.is_none());
+
         let mut keys = store.list("objects/").await.unwrap();
         keys.sort();
         assert_eq!(
@@ -4829,11 +4842,12 @@ mod tests {
             return write_test_s3_response(stream, 400, &[], b"bucket required").await;
         }
         if method == "GET" && query.contains("list-type=2") {
-            let prefix = query
-                .split('&')
-                .find_map(|part| part.strip_prefix("prefix="))
-                .map(percent_decode)
-                .unwrap_or_default();
+            let prefix = query_param(query, "prefix").unwrap_or_default();
+            let continuation_token = query_param(query, "continuation-token");
+            let max_keys = query_param(query, "max-keys")
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(1000)
+                .max(1);
             let objects = objects.lock().await;
             let mut keys = objects
                 .keys()
@@ -4841,11 +4855,34 @@ mod tests {
                 .cloned()
                 .collect::<Vec<_>>();
             keys.sort();
+            let start = continuation_token
+                .as_deref()
+                .and_then(|token| keys.iter().position(|key| key.as_str() > token))
+                .unwrap_or(0);
+            let page = keys
+                .iter()
+                .skip(start)
+                .take(max_keys)
+                .cloned()
+                .collect::<Vec<_>>();
+            let truncated = start + page.len() < keys.len();
             let mut xml = String::from("<ListBucketResult>");
-            for key in keys {
+            xml.push_str(if truncated {
+                "<IsTruncated>true</IsTruncated>"
+            } else {
+                "<IsTruncated>false</IsTruncated>"
+            });
+            for key in &page {
                 xml.push_str("<Contents><Key>");
-                xml.push_str(&key);
+                xml.push_str(&xml_escape(key));
                 xml.push_str("</Key></Contents>");
+            }
+            if truncated {
+                if let Some(token) = page.last() {
+                    xml.push_str("<NextContinuationToken>");
+                    xml.push_str(&xml_escape(token));
+                    xml.push_str("</NextContinuationToken>");
+                }
             }
             xml.push_str("</ListBucketResult>");
             return write_test_s3_response(
@@ -4951,6 +4988,26 @@ mod tests {
         response.push_str("\r\n");
         stream.write_all(response.as_bytes()).await?;
         stream.write_all(body).await
+    }
+
+    fn query_param(query: &str, name: &str) -> Option<String> {
+        query.split('&').find_map(|part| {
+            let (key, value) = part.split_once('=')?;
+            if key == name {
+                Some(percent_decode(value))
+            } else {
+                None
+            }
+        })
+    }
+
+    fn xml_escape(value: &str) -> String {
+        value
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&apos;")
     }
 
     fn percent_decode(value: &str) -> String {
