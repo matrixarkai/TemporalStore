@@ -61,6 +61,7 @@ def main() -> int:
     redis_live_smoke = read("tools/run_redis_live_storage_smoke_ubuntu22.sh")
     redis_production_gate = read("tools/run_redis_production_gate_ubuntu22.sh")
     redis_docs = read("docs/redis_compatibility_matrix.md")
+    open_source_surface = read("docs/open_source_surface.md")
     temporal_adapters = read("tools/matrixark_mcp_temporal_adapters.py")
     raw_storage_contract = read("tools/matrixark_raw_message_storage_contract.py")
     dual_write_benchmark = read("tools/matrixark_dual_write_ingestion_benchmark.py")
@@ -323,6 +324,28 @@ def main() -> int:
     require(
         "Open-source production builds do not claim generic Redis SET/LIST/ZSET compatibility" in redis_docs,
         "Redis docs must state that generic collection clones are not part of the open-source claim",
+        failures,
+    )
+    require(
+        "auth/ping/info/config" not in open_source_surface.lower(),
+        "open-source surface overview must not advertise Redis CONFIG as public",
+        failures,
+    )
+    require(
+        "server-configuration or broad" in open_source_surface
+        and "`CONFIG`" in open_source_surface
+        and "`DBSIZE`" in open_source_surface
+        and "broad `KEYS`" in open_source_surface
+        and "`SADD`" in open_source_surface
+        and "`LPUSH`" in open_source_surface
+        and "`ZADD`" in open_source_surface,
+        "open-source surface overview must explicitly exclude config, broad keyspace scans, and collection clones",
+        failures,
+    )
+    require(
+        "Narrow `HSCAN` is kept only as a single-hash" in open_source_surface
+        and "broad `KEYS` /\n`SCAN`" in open_source_surface,
+        "open-source surface overview must document narrow HSCAN without broad keyspace SCAN",
         failures,
     )
     require(
