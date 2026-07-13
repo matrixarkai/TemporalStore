@@ -192,6 +192,9 @@ expect_contains_line hvals_v1 v1b HVALS "$(k hash)"
 expect_contains_line hvals_v2 v2 HVALS "$(k hash)"
 expect_eq hstrlen 3 HSTRLEN "$(k hash)" f1
 expect_eq hstrlen_missing 0 HSTRLEN "$(k hash)" nofield
+expect_contains_line hscan_cursor 0 HSCAN "$(k hash)" 0 MATCH f* COUNT 8
+expect_contains_line hscan_f1 f1 HSCAN "$(k hash)" 0 MATCH f* COUNT 8
+expect_contains_line hscan_v1 v1b HSCAN "$(k hash)" 0 MATCH f* COUNT 8
 expect_eq hdel 1 HDEL "$(k hash)" f1
 expect_eq hexists_after_hdel 0 HEXISTS "$(k hash)" f1
 expect_eq hmset OK HMSET "$(k hash2)" a 1 b 2
@@ -284,9 +287,6 @@ expect_error unsupported_bgsave BGSAVE
 expect_error unsupported_flushall FLUSHALL
 expect_error unsupported_pslotinfo PSLOTINFO
 expect_error unsupported_scan SCAN 0
-if [[ "${REDIS_COMPAT_SURFACE}" == "full" ]]; then
-  expect_error unsupported_hscan HSCAN "$(k hash)" 0
-fi
 expect_error unsupported_sscan SSCAN "$(k set2)" 0
 expect_error unsupported_zscan ZSCAN "$(k zset)" 0
 expect_error unsupported_keys KEYS "*"

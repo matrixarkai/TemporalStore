@@ -82,6 +82,7 @@ class RedisCommand {
         kHGetAll,
         kHKeys,
         kHVals,
+        kHScan,
         kHStrlen,
         kHIncrBy,
         kSAdd,
@@ -236,6 +237,7 @@ class RedisCommandHandler : public brpc::RedisCommandHandler {
     void HGetAll(RedisClientContext* c);
     void HKeys(RedisClientContext* c);
     void HVals(RedisClientContext* c);
+    void HScan(RedisClientContext* c);
     void HStrlen(RedisClientContext* c);
     void HIncrBy(RedisClientContext* c);
     void SAdd(RedisClientContext* c);
