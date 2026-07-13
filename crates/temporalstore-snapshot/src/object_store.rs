@@ -49,7 +49,10 @@ impl SharedObjectStoreBackend {
         match normalized.as_str() {
             "local_file" | "local_fs" | "file" | "file_object_store" => Self::LocalFile,
             "shared_file" | "shared" | "shared-file" | "efs" | "nfs" => Self::SharedFile,
-            "matrixobjectstore"
+            "matrixobject"
+            | "matrix_object"
+            | "matrixobject_local_compat"
+            | "matrixobjectstore"
             | "matrix_object_store"
             | "matrixobjectstore_local_compat"
             | "blob"
@@ -72,7 +75,7 @@ impl SharedObjectStoreBackend {
         match self {
             Self::LocalFile => "local_file",
             Self::SharedFile => "shared_file",
-            Self::MatrixObjectStore => "matrixobjectstore",
+            Self::MatrixObjectStore => "matrixobject",
             Self::S3 => "s3",
             Self::CephS3 => "ceph_s3",
             Self::CephRados => "ceph_rados",
@@ -84,7 +87,7 @@ impl SharedObjectStoreBackend {
         match self {
             Self::LocalFile => "file",
             Self::SharedFile => "shared-file",
-            Self::MatrixObjectStore => "matrixobjectstore",
+            Self::MatrixObjectStore => "matrixobject",
             Self::S3 => "s3",
             Self::CephS3 => "ceph+s3",
             Self::CephRados => "rados",
@@ -270,7 +273,7 @@ impl MatrixObjectStoreConfig {
     pub fn local_compat(root: impl Into<PathBuf>) -> Self {
         Self {
             root: root.into(),
-            uri_scheme: "matrixobjectstore".to_string(),
+            uri_scheme: "matrixobject".to_string(),
             endpoint: None,
             backend_mode: MatrixObjectStoreBackendMode::LocalCompat,
             service_endpoints: MatrixObjectStoreServiceEndpoints::default(),
@@ -287,7 +290,7 @@ impl MatrixObjectStoreConfig {
         let endpoint = endpoint.into();
         Self {
             root: root.into(),
-            uri_scheme: "matrixobjectstore".to_string(),
+            uri_scheme: "matrixobject".to_string(),
             endpoint: Some(endpoint.clone()),
             backend_mode: MatrixObjectStoreBackendMode::External,
             service_endpoints: MatrixObjectStoreServiceEndpoints::unified(endpoint),
@@ -524,7 +527,7 @@ impl MatrixObjectStoreRootService {
         Self {
             manifest_store: FileObjectStore::with_uri_scheme_and_sync_policy(
                 root,
-                "matrixobjectstore-root",
+                "matrixobject-root",
                 sync_writes,
                 sync_parent_dirs,
             ),
@@ -600,7 +603,7 @@ impl MatrixObjectStoreBlockService {
         Self {
             block_store: FileObjectStore::with_uri_scheme_and_sync_policy(
                 root,
-                "matrixobjectstore-block",
+                "matrixobject-block",
                 sync_writes,
                 sync_parent_dirs,
             ),
@@ -652,7 +655,7 @@ impl MatrixObjectStoreChunkService {
         Self {
             chunk_store: FileObjectStore::with_uri_scheme_and_sync_policy(
                 root,
-                "matrixobjectstore-chunk",
+                "matrixobject-chunk",
                 sync_writes,
                 sync_parent_dirs,
             ),
@@ -1985,7 +1988,7 @@ mod tests {
     #[tokio::test]
     async fn matrix_object_store_put_atomic_returns_checksum_metadata() {
         let dir = tempfile::tempdir().unwrap();
-        let store = MatrixObjectStore::with_uri_scheme(dir.path(), "matrixobjectstore");
+        let store = MatrixObjectStore::with_uri_scheme(dir.path(), "matrixobject");
 
         let metadata = store
             .put_atomic(
@@ -1996,7 +1999,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(metadata.key, "tenant/a/blob-1");
-        assert_eq!(metadata.uri, "matrixobjectstore://tenant/a/blob-1");
+        assert_eq!(metadata.uri, "matrixobject://tenant/a/blob-1");
         assert_eq!(metadata.size_bytes, 25);
         assert_eq!(
             metadata.checksum_sha256,
@@ -2488,8 +2491,8 @@ mod tests {
     #[tokio::test]
     async fn matrix_object_store_keeps_explicit_backend_config() {
         let dir = tempfile::tempdir().unwrap();
-        let config = MatrixObjectStoreConfig::external("matrixobjectstore://cluster-a", dir.path())
-            .with_uri_scheme("matrixobjectstore")
+        let config = MatrixObjectStoreConfig::external("matrixobject://cluster-a", dir.path())
+            .with_uri_scheme("matrixobject")
             .with_sync_writes(false);
         let store = MatrixObjectStore::from_config(config.clone());
 
@@ -2501,13 +2504,13 @@ mod tests {
         );
         assert_eq!(
             store.config().endpoint.as_deref(),
-            Some("matrixobjectstore://cluster-a")
+            Some("matrixobject://cluster-a")
         );
         let metadata = store
             .put_atomic("snapshots/a", Bytes::from_static(b"payload"))
             .await
             .unwrap();
-        assert_eq!(metadata.uri, "matrixobjectstore://snapshots/a");
+        assert_eq!(metadata.uri, "matrixobject://snapshots/a");
     }
 
     #[tokio::test]
@@ -2553,11 +2556,11 @@ mod tests {
     #[tokio::test]
     async fn matrix_object_store_supports_split_service_endpoints() {
         let dir = tempfile::tempdir().unwrap();
-        let config = MatrixObjectStoreConfig::external("matrixobjectstore://cluster-a", dir.path())
+        let config = MatrixObjectStoreConfig::external("matrixobject://cluster-a", dir.path())
             .with_service_endpoints(MatrixObjectStoreServiceEndpoints::split(
-                "matrixobjectstore-root://root-1",
-                "matrixobjectstore-block://block-1",
-                "matrixobjectstore-chunk://chunk-1",
+                "matrixobject-root://root-1",
+                "matrixobject-block://block-1",
+                "matrixobject-chunk://chunk-1",
             ));
         let store = MatrixObjectStore::from_config(config.clone());
         let topology = store.service_topology();
@@ -2569,15 +2572,15 @@ mod tests {
         assert_eq!(topology.root_service.service_role, "root");
         assert_eq!(
             topology.root_service.endpoint.as_deref(),
-            Some("matrixobjectstore-root://root-1")
+            Some("matrixobject-root://root-1")
         );
         assert_eq!(
             topology.block_service.endpoint.as_deref(),
-            Some("matrixobjectstore-block://block-1")
+            Some("matrixobject-block://block-1")
         );
         assert_eq!(
             topology.chunk_service.endpoint.as_deref(),
-            Some("matrixobjectstore-chunk://chunk-1")
+            Some("matrixobject-chunk://chunk-1")
         );
 
         store
@@ -2702,6 +2705,10 @@ mod tests {
     #[tokio::test]
     async fn shared_object_store_backend_contract_normalizes_aliases() {
         assert_eq!(
+            SharedObjectStoreBackend::from_uri("matrixobject://bucket/a"),
+            SharedObjectStoreBackend::MatrixObjectStore
+        );
+        assert_eq!(
             SharedObjectStoreBackend::from_uri("matrixobjectstore://bucket/a"),
             SharedObjectStoreBackend::MatrixObjectStore
         );
@@ -2717,6 +2724,10 @@ mod tests {
             SharedObjectStoreBackend::parse("file_object_store").canonical_name(),
             "local_file"
         );
+        assert_eq!(
+            SharedObjectStoreBackend::parse("matrix_object_store").canonical_name(),
+            "matrixobject"
+        );
         assert_eq!(SharedObjectStoreBackend::CephS3.uri_scheme(), "ceph+s3");
     }
 
@@ -2727,8 +2738,8 @@ mod tests {
             SharedObjectStoreBackend::MatrixObjectStore,
             dir.path(),
         );
-        assert_eq!(config.canonical_backend_name(), "matrixobjectstore");
-        assert_eq!(config.uri_scheme(), "matrixobjectstore");
+        assert_eq!(config.canonical_backend_name(), "matrixobject");
+        assert_eq!(config.uri_scheme(), "matrixobject");
         let store = SharedObjectStore::from_config(config).unwrap();
 
         let metadata = store
@@ -2736,7 +2747,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(metadata.uri, "matrixobjectstore://shared/key");
+        assert_eq!(metadata.uri, "matrixobject://shared/key");
         assert_eq!(
             store.get("shared/key").await.unwrap(),
             Bytes::from_static(b"shared payload")

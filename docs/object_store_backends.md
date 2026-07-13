@@ -10,27 +10,31 @@ object-store layer.
 | URI scheme | Backend | Current status |
 | --- | --- | --- |
 | `file://...` | Local filesystem | Functional; used by local and smoke tests. |
-| `blob://...` | MatrixObjectStore-compatible adapter | Functional when the compatibility library is linked. |
-| `local://...` | MatrixObjectStore-compatible adapter | Functional when the compatibility library is linked. |
+| `matrixobject://...` | MatrixObject adapter | Functional when the compatibility library is linked. |
+| `matrixobjectstore://...` | Legacy MatrixObject alias | Backward-compatible alias for older configs. |
+| `blob://...` | Legacy MatrixObject-compatible adapter | Functional when the compatibility library is linked. |
+| `local://...` | Legacy MatrixObject-compatible adapter | Functional when the compatibility library is linked. |
 | `s3://bucket/prefix/...` | S3 adapter | API route exists; returns `Unimplemented` until an S3 SDK adapter is linked. |
 | `ceph://bucket/prefix/...` | Ceph RGW through S3-compatible API | API route exists; returns `Unimplemented` until the S3 adapter is linked. |
 | `ceph+s3://bucket/prefix/...` | Ceph RGW through S3-compatible API | Same as `ceph://`, but the compatibility mode is explicit. |
 | `rados://pool/object...` | Native Ceph/librados | Reserved for a future native Ceph adapter. |
 
-## Rust MatrixObjectStore Boundary
+## Rust MatrixObject Boundary
 
 Rust exposes `MatrixObjectStore`, `MatrixObjectStoreConfig`, and
 `MatrixObjectStoreBackendMode` from `temporalstore-snapshot`. The default Rust
-mode is `LocalCompat`, which preserves the same `matrixobjectstore://` URI
-contract and atomic object-store semantics on top of a local durable directory.
-`External` mode records the MatrixObjectStore endpoint in config so the same
-snapshot/shared-store code can switch to a native MatrixObjectStore client when
+mode is `LocalCompat`, which uses the canonical `matrixobject://` URI contract
+and atomic object-store semantics on top of a local durable directory.
+`External` mode records the MatrixObject endpoint in config so the same
+snapshot/shared-store code can switch to a native MatrixObject client when
 that crate is linked.
 
 This keeps Rust and C++ on the same public object-store contract:
 
-- `matrixobjectstore://...` identifies MatrixObjectStore-backed durable objects.
-- `MatrixObjectStore` is the public backend name.
+- `matrixobject://...` identifies MatrixObject-backed durable objects.
+- `matrixobjectstore://...` remains a backward-compatible legacy alias.
+- `MatrixObject` is the public product/API name.
+- `MatrixObjectStore` remains the Rust/C++ implementation type name for compatibility.
 - Retired legacy object-store naming is not part of public APIs, docs, build
   flags, or validation output.
 
@@ -47,10 +51,12 @@ latency or features that RGW cannot expose.
 
 ```text
 stream/page/index/oplog
-  -> StoreLayer
+     -> StoreLayer
      -> file://       LocalFileStore
-     -> blob://       MatrixObjectStore-compatible Store
-     -> local://      MatrixObjectStore-compatible Store
+     -> matrixobject:// MatrixObject Store
+     -> matrixobjectstore:// MatrixObject legacy alias
+     -> blob://       MatrixObject legacy alias
+     -> local://      MatrixObject legacy alias
      -> s3://         S3 Store adapter
      -> ceph://       S3 Store adapter against Ceph RGW
      -> ceph+s3://    S3 Store adapter against Ceph RGW

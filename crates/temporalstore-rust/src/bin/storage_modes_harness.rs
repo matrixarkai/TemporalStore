@@ -30,9 +30,12 @@ impl SharedStoreBackend {
     fn parse(value: &str) -> Option<Self> {
         match value {
             "local_fs" | "file" | "file_object_store" => Some(Self::LocalFs),
-            "matrixobjectstore" | "matrix_object_store" | "matrixobjectstore_local_compat" => {
-                Some(Self::MatrixObjectStore)
-            }
+            "matrixobject"
+            | "matrix_object"
+            | "matrixobject_local_compat"
+            | "matrixobjectstore"
+            | "matrix_object_store"
+            | "matrixobjectstore_local_compat" => Some(Self::MatrixObjectStore),
             _ => None,
         }
     }
@@ -40,7 +43,7 @@ impl SharedStoreBackend {
     fn as_str(self) -> &'static str {
         match self {
             Self::LocalFs => "local_fs",
-            Self::MatrixObjectStore => "matrixobjectstore_local_compat",
+            Self::MatrixObjectStore => "matrixobject_local_compat",
         }
     }
 }
@@ -509,7 +512,7 @@ fn parse<T: std::str::FromStr>(value: &str, key: &str) -> T {
 
 fn usage_and_exit() -> ! {
     eprintln!(
-        "usage: storage_modes_harness [--root <path>] [--shared-store-root <path>] [--raft-wal-root <path>] [--async-flush-limit <n>] [--shared-store-backend local_fs|matrixobjectstore_local_compat]"
+        "usage: storage_modes_harness [--root <path>] [--shared-store-root <path>] [--raft-wal-root <path>] [--async-flush-limit <n>] [--shared-store-backend local_fs|matrixobject_local_compat]"
     );
     std::process::exit(2);
 }

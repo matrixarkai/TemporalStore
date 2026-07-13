@@ -19,7 +19,7 @@ Json = dict[str, Any]
 SUPPORTED_BACKENDS = {"temporalstore", "matrixkv", "s3", "objectstore"}
 KV_INLINE_BACKENDS = {"temporalstore", "matrixkv"}
 DEFAULT_MAX_INLINE_BYTES = 1 * 1024 * 1024
-DEFAULT_OBJECT_STORE_PREFIX = "matrixobjectstore://matrixark/raw-agent-messages"
+DEFAULT_OBJECT_STORE_PREFIX = "matrixobject://matrixark/raw-agent-messages"
 RAW_MESSAGE_DEFAULT_WRITE_POLICY = "ColdStoreOnly"
 RAW_MESSAGE_DEFAULT_CACHE_POLICY = "NoCachePromotion"
 RAW_MESSAGE_DEFAULT_PROMOTION_POLICY = "NoPromotion"
@@ -33,7 +33,17 @@ def normalize_raw_backend(value: Any) -> str:
         return "temporalstore"
     if backend in {"matrix_kv", "kv"}:
         return "matrixkv"
-    if backend in {"object_store", "object", "blob", "blobstore", "blob_store", "matrixobjectstore", "matrix_object_store"}:
+    if backend in {
+        "object_store",
+        "object",
+        "blob",
+        "blobstore",
+        "blob_store",
+        "matrixobject",
+        "matrix_object",
+        "matrixobjectstore",
+        "matrix_object_store",
+    }:
         return "objectstore"
     if backend in {"aws_s3", "s3_object", "s3_objectstore"}:
         return "s3"
@@ -277,7 +287,7 @@ def raw_message_marker(
     return {
         "schema": "matrixark.context.raw_agent_message_ref.v1",
         "raw_schema": "matrixark.context.raw_agent_message.v1",
-        "object_store_name": "MatrixObjectStore",
+        "object_store_name": "MatrixObject",
         "backend": resolved.backend,
         "payload_backend": resolved.backend,
         "metadata_backend": metadata_target.backend,

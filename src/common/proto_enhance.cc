@@ -237,8 +237,9 @@ static bool IsValidStoragePoolUri(const std::string& uri) {
     if (uri.empty()) {
         return false;
     }
-    for (auto& prefix : {"matrixobjectstore://", "blob://", "local://", "file://", "shared-file://", "shared://",
-                         "efs://", "nfs://", "s3://", "ceph://", "ceph+s3://"}) {
+    for (auto& prefix : {"matrixobject://", "matrixobjectstore://", "blob://", "local://", "file://",
+                         "shared-file://", "shared://", "efs://", "nfs://", "s3://", "ceph://",
+                         "ceph+s3://"}) {
         if (absl::StartsWith(uri, prefix)) {
             return true;
         }

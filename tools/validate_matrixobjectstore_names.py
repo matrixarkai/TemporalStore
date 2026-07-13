@@ -52,7 +52,7 @@ def main() -> int:
         raise SystemExit(
             "retired legacy object-store naming found:\n" + "\n".join(matches[:200])
         )
-    print("matrixobjectstore_names: ok")
+    print("matrixobject_names: ok")
     return 0
 
 
