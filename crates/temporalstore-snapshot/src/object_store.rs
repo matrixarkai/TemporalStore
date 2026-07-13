@@ -36,6 +36,8 @@ pub struct ObjectMetadata {
 pub struct ObjectStoreCapabilities {
     pub backend: String,
     pub uri_scheme: String,
+    pub runtime_linked: bool,
+    pub operations_fail_closed: bool,
     pub atomic_put: bool,
     pub unique_put: bool,
     pub direct_upload_from_path: bool,
@@ -60,6 +62,8 @@ impl ObjectStoreCapabilities {
                 "local_file".to_string()
             },
             uri_scheme,
+            runtime_linked: true,
+            operations_fail_closed: false,
             atomic_put: true,
             unique_put: true,
             direct_upload_from_path: true,
@@ -79,6 +83,8 @@ impl ObjectStoreCapabilities {
         Self {
             backend: "matrixobject".to_string(),
             uri_scheme: uri_scheme.into(),
+            runtime_linked: true,
+            operations_fail_closed: false,
             atomic_put: true,
             unique_put: true,
             direct_upload_from_path: true,
@@ -98,6 +104,8 @@ impl ObjectStoreCapabilities {
         Self {
             backend: backend.canonical_name().to_string(),
             uri_scheme: backend.uri_scheme().to_string(),
+            runtime_linked: false,
+            operations_fail_closed: true,
             atomic_put: false,
             unique_put: false,
             direct_upload_from_path: false,
@@ -109,6 +117,33 @@ impl ObjectStoreCapabilities {
             delete_prefix: false,
             byte_range_read: false,
             checksum_sha256: false,
+            split_services: false,
+        }
+    }
+
+    pub fn remote_expected(backend: SharedObjectStoreBackend) -> Self {
+        let supports_object_api = matches!(
+            backend,
+            SharedObjectStoreBackend::S3
+                | SharedObjectStoreBackend::CephS3
+                | SharedObjectStoreBackend::CephRados
+        );
+        Self {
+            backend: backend.canonical_name().to_string(),
+            uri_scheme: backend.uri_scheme().to_string(),
+            runtime_linked: false,
+            operations_fail_closed: true,
+            atomic_put: supports_object_api,
+            unique_put: supports_object_api,
+            direct_upload_from_path: supports_object_api,
+            direct_download_to_path: supports_object_api,
+            metadata_head: supports_object_api,
+            prefix_list: supports_object_api,
+            delete: supports_object_api,
+            copy_object: supports_object_api,
+            delete_prefix: supports_object_api,
+            byte_range_read: supports_object_api,
+            checksum_sha256: supports_object_api,
             split_services: false,
         }
     }
@@ -338,6 +373,8 @@ pub trait ObjectStore: Send + Sync {
         ObjectStoreCapabilities {
             backend: "custom".to_string(),
             uri_scheme: "custom".to_string(),
+            runtime_linked: true,
+            operations_fail_closed: false,
             atomic_put: true,
             unique_put: true,
             direct_upload_from_path: false,
@@ -2199,7 +2236,7 @@ impl ObjectStore for RemoteObjectStore {
     }
 
     fn capabilities(&self) -> ObjectStoreCapabilities {
-        ObjectStoreCapabilities::unsupported(self.backend)
+        ObjectStoreCapabilities::remote_expected(self.backend)
     }
 
     fn topology(&self) -> ObjectStoreTopology {
@@ -2596,6 +2633,8 @@ mod tests {
         let capabilities = shared.capabilities();
         assert_eq!(capabilities.backend, "matrixobject");
         assert_eq!(capabilities.uri_scheme, "matrixobject");
+        assert!(capabilities.runtime_linked);
+        assert!(!capabilities.operations_fail_closed);
         assert!(capabilities.atomic_put);
         assert!(capabilities.unique_put);
         assert!(capabilities.copy_object);
@@ -3476,8 +3515,12 @@ mod tests {
         let capabilities = store.capabilities();
         assert_eq!(capabilities.backend, "s3");
         assert_eq!(capabilities.uri_scheme, "s3");
-        assert!(!capabilities.atomic_put);
-        assert!(!capabilities.byte_range_read);
+        assert!(!capabilities.runtime_linked);
+        assert!(capabilities.operations_fail_closed);
+        assert!(capabilities.atomic_put);
+        assert!(capabilities.copy_object);
+        assert!(capabilities.delete_prefix);
+        assert!(capabilities.byte_range_read);
 
         let topology = store.topology();
         assert_eq!(topology.backend, "s3");
