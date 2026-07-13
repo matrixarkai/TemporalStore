@@ -123,7 +123,7 @@ impl ObjectStoreCapabilities {
             byte_range_read: true,
             checksum_sha256: true,
             object_etag: true,
-            object_version_id: false,
+            object_version_id: true,
             split_services,
         }
     }
@@ -565,6 +565,11 @@ impl ObjectMetadata {
         let mut hasher = Sha256::new();
         hasher.update(bytes);
         Self::from_parts(key, uri, bytes.len() as u64, hex::encode(hasher.finalize()))
+    }
+
+    pub fn with_version_id(mut self, version_id: impl Into<String>) -> Self {
+        self.version_id = Some(version_id.into());
+        self
     }
 }
 
@@ -1375,6 +1380,26 @@ pub struct MatrixObjectManifest {
     pub checksum_sha256: String,
     pub created_at_ms: u64,
     pub blocks: Vec<MatrixObjectBlockRef>,
+}
+
+impl MatrixObjectManifest {
+    fn metadata(&self) -> ObjectMetadata {
+        ObjectMetadata::from_parts(
+            self.key.clone(),
+            self.uri.clone(),
+            self.size_bytes,
+            self.checksum_sha256.clone(),
+        )
+        .with_version_id(self.version_id())
+    }
+
+    fn version_id(&self) -> String {
+        let checksum_prefix = self
+            .checksum_sha256
+            .get(..16)
+            .unwrap_or(self.checksum_sha256.as_str());
+        format!("mo:{}:{checksum_prefix}", self.created_at_ms)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2789,12 +2814,7 @@ impl ObjectStore for MatrixObjectStore {
             if self.config.sync_parent_dirs {
                 sync_parent_dir(destination).await?;
             }
-            Ok(ObjectMetadata::from_parts(
-                manifest.key,
-                manifest.uri,
-                manifest.size_bytes,
-                checksum_sha256,
-            ))
+            Ok(manifest.metadata())
         }
         .await;
         if result.is_err() {
@@ -2863,12 +2883,7 @@ impl ObjectStore for MatrixObjectStore {
             )
             .await;
         }
-        Ok(ObjectMetadata::from_parts(
-            manifest.key,
-            manifest.uri,
-            manifest.size_bytes,
-            manifest.checksum_sha256,
-        ))
+        Ok(manifest.metadata())
     }
 
     fn uri(&self, key: &str) -> String {
@@ -2887,12 +2902,7 @@ impl ObjectStore for MatrixObjectStore {
     async fn head(&self, key: &str) -> Result<ObjectMetadata, ObjectStoreError> {
         let manifest = self.root_service.get_manifest(key).await?;
         self.validate_manifest_for_read(&manifest)?;
-        Ok(ObjectMetadata::from_parts(
-            manifest.key,
-            manifest.uri,
-            manifest.size_bytes,
-            manifest.checksum_sha256,
-        ))
+        Ok(manifest.metadata())
     }
 
     async fn put_atomic(
@@ -2936,12 +2946,7 @@ impl MatrixObjectStore {
             let _ = self.delete_block_refs(manifest.blocks.clone()).await;
             return Err(err);
         }
-        Ok(ObjectMetadata::from_parts(
-            manifest.key,
-            manifest.uri,
-            manifest.size_bytes,
-            manifest.checksum_sha256,
-        ))
+        Ok(manifest.metadata())
     }
 
     async fn put_atomic_inner(
@@ -2994,12 +2999,7 @@ impl MatrixObjectStore {
             )
             .await;
         }
-        Ok(ObjectMetadata::from_parts(
-            manifest.key,
-            manifest.uri,
-            manifest.size_bytes,
-            manifest.checksum_sha256,
-        ))
+        Ok(manifest.metadata())
     }
 }
 
@@ -3664,12 +3664,23 @@ mod tests {
             metadata.etag.as_deref(),
             Some("sha256:32bf29e5bb7440b15303a464d7e8e0c4e2a94c026e0d9820bdba0a6a8a0dc5a9")
         );
-        assert_eq!(metadata.version_id, None);
+        assert!(metadata
+            .version_id
+            .as_deref()
+            .is_some_and(|id| { id.starts_with("mo:") && id.ends_with(":32bf29e5bb7440b1") }));
         assert_eq!(
             store.get("tenant/a/blob-1").await.unwrap(),
             Bytes::from_static(b"hello matrix object store")
         );
         assert_eq!(store.head("tenant/a/blob-1").await.unwrap(), metadata);
+        let overwritten = store
+            .put_atomic(
+                "tenant/a/blob-1",
+                Bytes::from_static(b"hello matrix object store v2"),
+            )
+            .await
+            .unwrap();
+        assert_ne!(overwritten.version_id, metadata.version_id);
     }
 
     #[tokio::test]
@@ -3696,7 +3707,7 @@ mod tests {
         assert!(capabilities.byte_range_read);
         assert!(capabilities.checksum_sha256);
         assert!(capabilities.object_etag);
-        assert!(!capabilities.object_version_id);
+        assert!(capabilities.object_version_id);
         assert!(capabilities.split_services);
 
         let topology = shared.topology();
@@ -4682,8 +4693,15 @@ mod tests {
         assert_eq!(metadata.uri, "matrixobject://shared/key");
         let expected_etag = format!("sha256:{}", metadata.checksum_sha256);
         assert_eq!(metadata.etag.as_deref(), Some(expected_etag.as_str()));
-        assert_eq!(metadata.version_id, None);
+        assert!(metadata
+            .version_id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("mo:")));
         assert_eq!(store.head("shared/key").await.unwrap().etag, metadata.etag);
+        assert_eq!(
+            store.head("shared/key").await.unwrap().version_id,
+            metadata.version_id
+        );
         assert_eq!(
             store.get("shared/key").await.unwrap(),
             Bytes::from_static(b"shared payload")
