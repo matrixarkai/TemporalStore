@@ -155,7 +155,7 @@ def main() -> int:
         "CLIENT",
     ):
         require(f'"{allowed}"' in body, f"Rust allowlist must keep {allowed}", failures)
-    for denied in ("SADD", "LPUSH", "ZADD", "IPSADD", "FADD", "RISKDEBUG", "PARTITION"):
+    for denied in ("SADD", "LPUSH", "ZADD", "IPSADD", "FADD", "RISKDEBUG", "PARTITION", "DBSIZE"):
         require(f'"{denied}"' not in body, f"Rust allowlist must not include {denied}", failures)
 
     for metric in (
