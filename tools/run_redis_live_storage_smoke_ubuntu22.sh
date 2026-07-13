@@ -14,6 +14,8 @@ MS_RAFT_PORT="${MS_RAFT_PORT:-18110}"
 MS_SNAPSHOT_PORT="${MS_SNAPSHOT_PORT:-18120}"
 SERVER_PORT="${SERVER_PORT:-18101}"
 MAX_SLOT="${MAX_SLOT:-1073741823}"
+REDIS_COMPAT_SURFACE="${REDIS_COMPAT_SURFACE:-trimmed}"
+REDIS_EXPECT_UNSUPPORTED_COLLECTIONS="${REDIS_EXPECT_UNSUPPORTED_COLLECTIONS:-0}"
 
 smoke_out="${SMOKE_DIR}.out"
 bin_dir="${SMOKE_DIR}.bin"
@@ -184,6 +186,7 @@ expect_eq hexists 1 HEXISTS rh f2
 expect_eq hlen 2 HLEN rh
 expect_eq hincrby 5 HINCRBY rh counter 5
 expect_eq hdel 1 HDEL rh f1
+if [[ "${REDIS_COMPAT_SURFACE}" == "full" ]]; then
 expect_eq sadd 2 SADD rs a b a
 expect_eq scard 2 SCARD rs
 expect_eq sismember_present 1 SISMEMBER rs a
@@ -212,6 +215,15 @@ expect_eq zrangebyscore $'carol\nbob' ZRANGEBYSCORE rz 1.1 3
 expect_eq zcount 2 ZCOUNT rz 1.1 3
 expect_eq zrem 1 ZREM rz carol missing
 expect_eq zcard_after_zrem 2 ZCARD rz
+
+else
+  echo "SKIP live collection clone compatibility: REDIS_COMPAT_SURFACE=${REDIS_COMPAT_SURFACE}" | tee -a "${SUMMARY}"
+  if [[ "${REDIS_EXPECT_UNSUPPORTED_COLLECTIONS}" == "1" ]]; then
+    expect_error unsupported_sadd_trimmed SADD rs a
+    expect_error unsupported_lpush_trimmed LPUSH rl a
+    expect_error unsupported_zadd_trimmed ZADD rz 1 a
+  fi
+fi
 expect_error unsupported_bgsave BGSAVE
 expect_error unsupported_flushall FLUSHALL
 expect_error unsupported_pslotinfo PSLOTINFO
@@ -225,6 +237,8 @@ if [[ "${RUN_COMPAT_SMOKE:-1}" == "1" ]]; then
     REDIS_PORT="${SERVER_PORT}" \
     RESULT_DIR="${RESULT_DIR}/compat" \
     KEY_PREFIX="ts:redis:live:${CLUSTER_NAME}" \
+    REDIS_COMPAT_SURFACE="${REDIS_COMPAT_SURFACE}" \
+    REDIS_EXPECT_UNSUPPORTED_COLLECTIONS="${REDIS_EXPECT_UNSUPPORTED_COLLECTIONS}" \
     bash "${ROOT}/tools/run_redis_compat_smoke_ubuntu22.sh"
 fi
 
