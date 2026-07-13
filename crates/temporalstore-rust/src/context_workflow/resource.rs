@@ -105,7 +105,7 @@ pub fn parse_context_resource(request: ContextResourceParseRequest) -> ContextRe
                     "external_object_uri".to_string(),
                     external_object_uri.clone(),
                 );
-                unit.insert("storage_backend".to_string(), "objectstore".to_string());
+                unit.insert("storage_backend".to_string(), "matrixobject".to_string());
                 unit.insert(
                     "storage_value_mode".to_string(),
                     "object_ref_json".to_string(),
@@ -313,7 +313,7 @@ pub(super) fn default_resource_overlap_chars() -> usize {
 
 fn context_resource_object_store_uri(raw_uri: &str, payload_size_bytes: usize) -> String {
     let resource_hash = stable_hash64(&format!("resource_object:{raw_uri}:{payload_size_bytes}"));
-    format!("objectstore://matrixark/resources/{resource_hash:016x}.bin")
+    format!("matrixobject://matrixark/resources/{resource_hash:016x}.bin")
 }
 
 pub(super) fn default_resource_parser_name() -> String {

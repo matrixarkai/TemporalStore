@@ -1705,7 +1705,7 @@ fn context_resource_parser_spills_large_resource_body_to_object_store_ref() {
     assert!(!report.inline_payload);
     assert!(report
         .external_object_uri
-        .starts_with("objectstore://matrixark/resources/"));
+        .starts_with("matrixobject://matrixark/resources/"));
     assert_eq!(
         report.lifecycle.external_object_uri,
         report.external_object_uri
@@ -1715,7 +1715,7 @@ fn context_resource_parser_spills_large_resource_body_to_object_store_ref() {
         report.payload_size_bytes
     );
     assert!(report.chunks.iter().all(|chunk| {
-        chunk.metadata.get("storage_backend").map(String::as_str) == Some("objectstore")
+        chunk.metadata.get("storage_backend").map(String::as_str) == Some("matrixobject")
             && chunk.metadata.get("storage_value_mode").map(String::as_str)
                 == Some("object_ref_json")
             && chunk.metadata.get("external_object_uri") == Some(&report.external_object_uri)
