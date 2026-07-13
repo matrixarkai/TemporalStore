@@ -55,20 +55,22 @@ S3-compatible stores, Ceph RGW, local files, and future object backends:
 - `head`: return key, URI, size, and SHA-256 metadata without requiring callers
   to know whether the backend stores manifests, local files, or remote object
   metadata.
-- `list` / `list_page` / `delete`: full or paginated prefix listing and object
-  deletion. Production scans should prefer `list_page` so S3 and MatrixObject
-  prefixes do not have to materialize every key before making progress.
+- `list` / `list_page` / `delete` / `delete_objects`: full or paginated prefix
+  listing and single-key or batch object deletion. Production scans should
+  prefer `list_page` so S3 and MatrixObject prefixes do not have to materialize
+  every key before making progress.
   MatrixObject implements this at the manifest/root service boundary and returns
   continuation tokens in the public object-key namespace, not internal manifest
   file names.
 - `copy_object`: copy one object to another key. MatrixObject copies into
   destination-owned chunks so deleting the source cannot break the copy; S3
   adapters should map this to server-side copy when available.
-- `delete_prefix`: delete all objects matching a prefix, using backend-native
-  bulk/paged delete when available or the generic list-and-delete fallback.
+- `delete_prefix`: delete all objects matching a prefix through paged listing
+  and `delete_objects`, using backend-native bulk delete when available.
 - `capabilities`: report support for atomic put, unique put, path upload,
-  path download, metadata head, prefix list, paginated list, delete, object
-  copy, prefix deletion, byte-range read, checksum, and split services.
+  path download, metadata head, prefix list, paginated list, delete, bulk
+  delete, object copy, prefix deletion, byte-range read, checksum, and split
+  services.
 - `topology`: report a generic service list. MatrixObject maps this to
   root/block/chunk services; local file and shared file map to one object
   service; S3-style adapters should map to one remote object service unless a

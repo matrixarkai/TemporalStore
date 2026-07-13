@@ -52,6 +52,7 @@ pub struct ObjectStoreCapabilities {
     pub prefix_list: bool,
     pub paginated_list: bool,
     pub delete: bool,
+    pub bulk_delete: bool,
     pub copy_object: bool,
     pub delete_prefix: bool,
     pub byte_range_read: bool,
@@ -79,6 +80,7 @@ impl ObjectStoreCapabilities {
             prefix_list: true,
             paginated_list: true,
             delete: true,
+            bulk_delete: true,
             copy_object: true,
             delete_prefix: true,
             byte_range_read: true,
@@ -101,6 +103,7 @@ impl ObjectStoreCapabilities {
             prefix_list: true,
             paginated_list: true,
             delete: true,
+            bulk_delete: true,
             copy_object: true,
             delete_prefix: true,
             byte_range_read: true,
@@ -123,6 +126,7 @@ impl ObjectStoreCapabilities {
             prefix_list: false,
             paginated_list: false,
             delete: false,
+            bulk_delete: false,
             copy_object: false,
             delete_prefix: false,
             byte_range_read: false,
@@ -151,6 +155,7 @@ impl ObjectStoreCapabilities {
             prefix_list: supports_object_api,
             paginated_list: supports_object_api,
             delete: supports_object_api,
+            bulk_delete: supports_object_api,
             copy_object: supports_object_api,
             delete_prefix: supports_object_api,
             byte_range_read: supports_object_api,
@@ -410,6 +415,14 @@ pub trait ObjectStore: Send + Sync {
         ))
     }
     async fn delete(&self, key: &str) -> Result<(), ObjectStoreError>;
+    async fn delete_objects(&self, keys: &[String]) -> Result<usize, ObjectStoreError> {
+        let mut deleted = 0usize;
+        for key in keys {
+            self.delete(key).await?;
+            deleted += 1;
+        }
+        Ok(deleted)
+    }
     async fn copy_object(
         &self,
         source_key: &str,
@@ -419,10 +432,20 @@ pub trait ObjectStore: Send + Sync {
         self.put_atomic(destination_key, bytes).await
     }
     async fn delete_prefix(&self, prefix: &str) -> Result<usize, ObjectStoreError> {
-        let keys = self.list(prefix).await?;
-        let deleted = keys.len();
-        for key in keys {
-            self.delete(&key).await?;
+        let mut deleted = 0usize;
+        let mut continuation_token = None;
+        loop {
+            let page = self
+                .list_page(prefix, continuation_token.as_deref(), 1024)
+                .await?;
+            if page.keys.is_empty() {
+                break;
+            }
+            deleted += self.delete_objects(&page.keys).await?;
+            continuation_token = page.next_continuation_token;
+            if continuation_token.is_none() {
+                break;
+            }
         }
         Ok(deleted)
     }
@@ -441,6 +464,7 @@ pub trait ObjectStore: Send + Sync {
             prefix_list: true,
             paginated_list: true,
             delete: true,
+            bulk_delete: true,
             copy_object: true,
             delete_prefix: true,
             byte_range_read: false,
@@ -2307,6 +2331,10 @@ impl ObjectStore for RemoteObjectStore {
         self.unsupported()
     }
 
+    async fn delete_objects(&self, _keys: &[String]) -> Result<usize, ObjectStoreError> {
+        self.unsupported()
+    }
+
     async fn copy_object(
         &self,
         _source_key: &str,
@@ -2592,6 +2620,14 @@ impl ObjectStore for SharedObjectStore {
         }
     }
 
+    async fn delete_objects(&self, keys: &[String]) -> Result<usize, ObjectStoreError> {
+        match self {
+            Self::LocalFile(store) | Self::SharedFile(store) => store.delete_objects(keys).await,
+            Self::MatrixObjectStore(store) => store.delete_objects(keys).await,
+            Self::Remote(store) => store.delete_objects(keys).await,
+        }
+    }
+
     async fn copy_object(
         &self,
         source_key: &str,
@@ -2750,6 +2786,7 @@ mod tests {
         assert!(capabilities.copy_object);
         assert!(capabilities.delete_prefix);
         assert!(capabilities.paginated_list);
+        assert!(capabilities.bulk_delete);
         assert!(capabilities.byte_range_read);
         assert!(capabilities.checksum_sha256);
         assert!(capabilities.split_services);
@@ -2870,6 +2907,38 @@ mod tests {
         );
         assert_eq!(matrix_store.delete_prefix("objects/").await.unwrap(), 1);
         assert!(matrix_store.list("objects/").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn generic_object_store_delete_objects_works_for_file_and_matrixobject() {
+        async fn assert_delete_objects<O: ObjectStore>(store: &O) {
+            for key in ["objects/a", "objects/b", "objects/c"] {
+                store
+                    .put(key, Bytes::from_static(b"payload"))
+                    .await
+                    .unwrap();
+            }
+            let deleted = store
+                .delete_objects(&["objects/a".to_string(), "objects/c".to_string()])
+                .await
+                .unwrap();
+            assert_eq!(deleted, 2);
+            assert_eq!(store.list("objects/").await.unwrap(), vec!["objects/b"]);
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let file_store = SharedObjectStore::from_backend_root(
+            SharedObjectStoreBackend::LocalFile,
+            dir.path().join("file"),
+        )
+        .unwrap();
+        assert_delete_objects(&file_store).await;
+
+        let matrix_store = MatrixObjectStore::from_config(
+            MatrixObjectStoreConfig::local_compat(dir.path().join("matrix"))
+                .with_chunk_target_bytes(4),
+        );
+        assert_delete_objects(&matrix_store).await;
     }
 
     #[tokio::test]
@@ -3690,6 +3759,7 @@ mod tests {
         assert!(capabilities.copy_object);
         assert!(capabilities.delete_prefix);
         assert!(capabilities.paginated_list);
+        assert!(capabilities.bulk_delete);
         assert!(capabilities.byte_range_read);
 
         let topology = store.topology();
