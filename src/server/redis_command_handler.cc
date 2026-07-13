@@ -79,6 +79,8 @@ bool IsOpenSourceRedisCommandAllowed(RedisCommand::CmdType cmd_type) {
         case RedisCommand::CmdType::kAuth:
         case RedisCommand::CmdType::kPing:
         case RedisCommand::CmdType::kEcho:
+        case RedisCommand::CmdType::kQuit:
+        case RedisCommand::CmdType::kClient:
         case RedisCommand::CmdType::kCommand:
         case RedisCommand::CmdType::kSelect:
         case RedisCommand::CmdType::kConfig:
@@ -120,6 +122,13 @@ bool IsOpenSourceRedisCommandAllowed(RedisCommand::CmdType cmd_type) {
         default:
             return false;
     }
+}
+
+int64_t OpenSourceRedisCommandCount() {
+    // Keep this aligned with IsOpenSourceRedisCommandAllowed(). C++ currently
+    // exposes the basic/string/hash surface; feature/frequency model commands
+    // are Rust bridge APIs and are not advertised by the C++ Redis bridge.
+    return 43;
 }
 #endif
 
@@ -848,7 +857,11 @@ void RedisCommandHandler::Command(RedisClientContext* c) {
     }
     const std::string op = c->StrArg(1);
     if (!strcasecmp(op.c_str(), "count") && c->ArgSize() == 2) {
+#ifdef BCACHE2_OPEN_SOURCE_SURFACE
+        c->reply->SetInteger(OpenSourceRedisCommandCount());
+#else
         c->reply->SetInteger(0);
+#endif
         return;
     }
     if (!strcasecmp(op.c_str(), "docs") && c->ArgSize() >= 2) {

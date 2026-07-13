@@ -65,6 +65,8 @@ pub fn execute_redis_command_with_state(
                 .unwrap_or_else(|| "PONG".to_string()),
         ),
         "ECHO" if args.len() == 2 => RespValue::Bulk(Some(args[1].clone())),
+        "QUIT" if args.len() == 1 => RespValue::SimpleString("OK".to_string()),
+        "CLIENT" if args.len() >= 2 => redis_client_response(&args),
         "SELECT" if args.len() == 2 => match parse_u64(&args[1], "db") {
             Ok(0) => RespValue::SimpleString("OK".to_string()),
             Ok(_) => RespValue::Error("ERR DB index is out of range".to_string()),
@@ -1919,6 +1921,8 @@ fn open_source_redis_command_allowed(command: &str) -> bool {
         "AUTH"
             | "PING"
             | "ECHO"
+            | "QUIT"
+            | "CLIENT"
             | "SELECT"
             | "COMMAND"
             | "CONFIG"
@@ -1994,6 +1998,16 @@ fn open_source_redis_command_allowed(command: &str) -> bool {
             | "FOLSET"
             | "FOLQUERY"
     )
+}
+
+fn redis_client_response(args: &[Vec<u8>]) -> RespValue {
+    let subcommand = upper(&args[1]);
+    match subcommand.as_str() {
+        "SETNAME" if args.len() == 3 => RespValue::SimpleString("OK".to_string()),
+        "GETNAME" if args.len() == 2 => RespValue::Bulk(None),
+        "ID" if args.len() == 2 => RespValue::Integer(0),
+        _ => RespValue::Error("ERR unsupported CLIENT subcommand".to_string()),
+    }
 }
 
 fn risk_family_for_command(command: &str) -> RiskFamily {
@@ -2272,6 +2286,11 @@ fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
         RedisCommandDescriptor {
             name: "BGSAVE",
             arity: -1,
+            flags: ADMIN,
+        },
+        RedisCommandDescriptor {
+            name: "CLIENT",
+            arity: -2,
             flags: ADMIN,
         },
         RedisCommandDescriptor {
@@ -2653,6 +2672,11 @@ fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             name: "PTTL",
             arity: 2,
             flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "QUIT",
+            arity: 1,
+            flags: ADMIN,
         },
         RedisCommandDescriptor {
             name: "RANDOMKEY",
@@ -5187,6 +5211,7 @@ mod tests {
             "APPEND" => vec!["APPEND", "advertised:append", "x"],
             "AUTH" => vec!["AUTH", ""],
             "BGSAVE" => vec!["BGSAVE"],
+            "CLIENT" => vec!["CLIENT", "SETNAME", "matrixark-smoke"],
             "COMMAND" => vec!["COMMAND", "COUNT"],
             "CONFIG" => vec!["CONFIG", "GET", "maxmemory"],
             "COPY" => vec!["COPY", "advertised:missing", "advertised:copy"],
@@ -5249,6 +5274,7 @@ mod tests {
             "PING" => vec!["PING"],
             "PSETEX" => vec!["PSETEX", "advertised:psetex", "10", "v"],
             "PTTL" => vec!["PTTL", "advertised:missing"],
+            "QUIT" => vec!["QUIT"],
             "RANDOMKEY" => vec!["RANDOMKEY"],
             "RENAME" => vec!["RENAME", "advertised:missing", "advertised:renamed"],
             "RENAMENX" => vec!["RENAMENX", "advertised:missing", "advertised:renamed"],
