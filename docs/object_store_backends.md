@@ -14,8 +14,8 @@ object-store layer.
 | `matrixobjectstore://...` | Legacy MatrixObject alias | Backward-compatible alias for older configs. |
 | `blob://...` | Legacy MatrixObject-compatible adapter | Functional when the compatibility library is linked. |
 | `local://...` | Legacy MatrixObject-compatible adapter | Functional when the compatibility library is linked. |
-| `s3://bucket/prefix/...` | S3 adapter | API route exists; returns `Unimplemented` until an S3 SDK adapter is linked. |
-| `ceph://bucket/prefix/...` | Ceph RGW through S3-compatible API | API route exists; returns `Unimplemented` until the S3 adapter is linked. |
+| `s3://bucket/prefix/...` | S3 adapter | Functional for unsigned `http://` endpoints such as fake-S3/MinIO smoke tests; authenticated HTTPS still needs an SDK adapter. |
+| `ceph://bucket/prefix/...` | Ceph RGW through S3-compatible API | Same adapter shape as S3; unsigned `http://` endpoints work, authenticated deployments still need SDK/auth wiring. |
 | `ceph+s3://bucket/prefix/...` | Ceph RGW through S3-compatible API | Same as `ceph://`, but the compatibility mode is explicit. |
 | `rados://pool/object...` | Native Ceph/librados | Reserved for a future native Ceph adapter. |
 
@@ -125,16 +125,13 @@ stream/page/index/oplog
      -> rados://      Native Ceph Store adapter
 ```
 
-The S3 and Ceph routes are intentionally wired as explicit unsupported backends today. That is
-better than silently treating them as an invalid scheme: callers can already configure the right URI
-shape, and the next implementation step is just replacing the stub with a concrete SDK-backed
-`Store`.
-
-The Rust remote adapter now also has a backend-neutral request planner for S3-compatible stores.
+The Rust remote adapter now has a backend-neutral request planner for S3-compatible stores.
 It maps `s3://bucket/prefix`, `ceph://bucket/prefix`, and `ceph+s3://bucket/prefix` plus an
 endpoint into path-style object URLs for put/get/head/delete, prefix listing, and copy-source
-headers. Data operations still fail closed until an HTTP/S3 client is linked, but the object-key,
-prefix, endpoint, and copy semantics are no longer MatrixObject-specific.
+headers. Unsigned `http://` endpoints use this path for basic object operations today, which covers
+local fake-S3 and simple MinIO-style smoke tests without adding a large SDK dependency. Missing
+endpoints, `https://` endpoints, authenticated S3, and native `rados://` still fail closed until the
+concrete SDK/client implementation is linked.
 
 ## Next Implementation Step
 
