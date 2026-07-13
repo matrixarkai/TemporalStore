@@ -580,9 +580,13 @@ def main() -> int:
         "redis_surface_schema",
         "redis_surface_manifest_sha256",
         "blocked_command_family_count",
+        "benchmark_command_count",
         "requests_per_second_min",
         "requests_per_second_max",
         "requests_per_second_avg",
+        "requests_per_second_overall_min",
+        "requests_per_second_overall_max",
+        "requests_per_second_overall_avg",
     ):
         require(
             summary_field in redis_compat_smoke,
