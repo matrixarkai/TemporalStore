@@ -130,6 +130,12 @@ better than silently treating them as an invalid scheme: callers can already con
 shape, and the next implementation step is just replacing the stub with a concrete SDK-backed
 `Store`.
 
+The Rust remote adapter now also has a backend-neutral request planner for S3-compatible stores.
+It maps `s3://bucket/prefix`, `ceph://bucket/prefix`, and `ceph+s3://bucket/prefix` plus an
+endpoint into path-style object URLs for put/get/head/delete, prefix listing, and copy-source
+headers. Data operations still fail closed until an HTTP/S3 client is linked, but the object-key,
+prefix, endpoint, and copy semantics are no longer MatrixObject-specific.
+
 ## Next Implementation Step
 
 Build one `S3Store` with the existing `Store` contract:

@@ -350,6 +350,56 @@ fn parse_remote_namespace_and_prefix(uri: &str) -> (Option<String>, Option<Strin
     (namespace, key_prefix)
 }
 
+fn validate_object_key(key: &str) -> Result<(), ObjectStoreError> {
+    if key.is_empty()
+        || key.starts_with('/')
+        || key.contains('\\')
+        || key.split('/').any(|part| part == "." || part == "..")
+    {
+        return Err(ObjectStoreError::InvalidKey(key.to_string()));
+    }
+    Ok(())
+}
+
+fn validate_object_prefix(prefix: &str) -> Result<(), ObjectStoreError> {
+    let prefix = prefix.trim_start_matches('/');
+    if prefix.contains('\\') || prefix.split('/').any(|part| part == "." || part == "..") {
+        return Err(ObjectStoreError::InvalidKey(prefix.to_string()));
+    }
+    Ok(())
+}
+
+fn percent_encode_path(value: &str) -> String {
+    value
+        .split('/')
+        .map(percent_encode_path_segment)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn percent_encode_path_segment(value: &str) -> String {
+    percent_encode(value, false)
+}
+
+fn percent_encode_query_value(value: &str) -> String {
+    percent_encode(value, true)
+}
+
+fn percent_encode(value: &str, encode_slash: bool) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        let keep = byte.is_ascii_alphanumeric()
+            || matches!(byte, b'-' | b'_' | b'.' | b'~')
+            || (!encode_slash && byte == b'/');
+        if keep {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
 impl ObjectMetadata {
     pub fn from_parts(
         key: impl Into<String>,
@@ -727,6 +777,15 @@ pub struct RemoteObjectStore {
     key_prefix: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteObjectRequestPlan {
+    pub backend: String,
+    pub method: String,
+    pub url: String,
+    pub object_key: Option<String>,
+    pub copy_source: Option<String>,
+}
+
 impl RemoteObjectStore {
     pub fn new(
         backend: SharedObjectStoreBackend,
@@ -748,6 +807,144 @@ impl RemoteObjectStore {
         Err(ObjectStoreError::UnsupportedBackend {
             backend: self.backend.canonical_name().to_string(),
             uri: self.uri.clone(),
+        })
+    }
+
+    fn endpoint_base(&self) -> Result<String, ObjectStoreError> {
+        self.endpoint
+            .as_ref()
+            .map(|endpoint| endpoint.trim_end_matches('/').to_string())
+            .ok_or_else(|| ObjectStoreError::UnsupportedBackend {
+                backend: self.backend.canonical_name().to_string(),
+                uri: self.uri.clone(),
+            })
+    }
+
+    fn namespace(&self) -> Result<&str, ObjectStoreError> {
+        self.namespace.as_deref().ok_or_else(|| {
+            ObjectStoreError::InvalidKey(format!(
+                "remote object URI has no namespace: {}",
+                self.uri
+            ))
+        })
+    }
+
+    fn remote_object_key(&self, key: &str) -> Result<String, ObjectStoreError> {
+        let key = key.trim_start_matches('/');
+        if key.is_empty() {
+            return Err(ObjectStoreError::InvalidKey(
+                "remote object key is empty".to_string(),
+            ));
+        }
+        validate_object_key(key)?;
+        Ok(self
+            .key_prefix
+            .as_deref()
+            .filter(|prefix| !prefix.is_empty())
+            .map_or_else(|| key.to_string(), |prefix| format!("{prefix}/{key}")))
+    }
+
+    fn object_url(&self, object_key: &str) -> Result<String, ObjectStoreError> {
+        let endpoint = self.endpoint_base()?;
+        let namespace = self.namespace()?;
+        Ok(format!(
+            "{}/{}/{}",
+            endpoint,
+            percent_encode_path_segment(namespace),
+            percent_encode_path(object_key)
+        ))
+    }
+
+    pub fn plan_put(&self, key: &str) -> Result<RemoteObjectRequestPlan, ObjectStoreError> {
+        self.plan_object_request("PUT", key, None)
+    }
+
+    pub fn plan_get(&self, key: &str) -> Result<RemoteObjectRequestPlan, ObjectStoreError> {
+        self.plan_object_request("GET", key, None)
+    }
+
+    pub fn plan_head(&self, key: &str) -> Result<RemoteObjectRequestPlan, ObjectStoreError> {
+        self.plan_object_request("HEAD", key, None)
+    }
+
+    pub fn plan_delete(&self, key: &str) -> Result<RemoteObjectRequestPlan, ObjectStoreError> {
+        self.plan_object_request("DELETE", key, None)
+    }
+
+    pub fn plan_copy(
+        &self,
+        source_key: &str,
+        destination_key: &str,
+    ) -> Result<RemoteObjectRequestPlan, ObjectStoreError> {
+        let source_object_key = self.remote_object_key(source_key)?;
+        self.plan_object_request(
+            "PUT",
+            destination_key,
+            Some(format!(
+                "/{}/{}",
+                percent_encode_path_segment(self.namespace()?),
+                percent_encode_path(&source_object_key)
+            )),
+        )
+    }
+
+    pub fn plan_list(
+        &self,
+        prefix: &str,
+        continuation_token: Option<&str>,
+        max_keys: usize,
+    ) -> Result<RemoteObjectRequestPlan, ObjectStoreError> {
+        let endpoint = self.endpoint_base()?;
+        let namespace = self.namespace()?;
+        validate_object_prefix(prefix)?;
+        let object_prefix = self
+            .key_prefix
+            .as_deref()
+            .filter(|prefix| !prefix.is_empty())
+            .map_or_else(
+                || prefix.trim_start_matches('/').to_string(),
+                |key_prefix| {
+                    let prefix = prefix.trim_start_matches('/');
+                    if prefix.is_empty() {
+                        key_prefix.to_string()
+                    } else {
+                        format!("{key_prefix}/{prefix}")
+                    }
+                },
+            );
+        let mut url = format!(
+            "{}/{}?list-type=2&prefix={}&max-keys={}",
+            endpoint,
+            percent_encode_path_segment(namespace),
+            percent_encode_query_value(&object_prefix),
+            max_keys
+        );
+        if let Some(token) = continuation_token.filter(|token| !token.is_empty()) {
+            url.push_str("&continuation-token=");
+            url.push_str(&percent_encode_query_value(token));
+        }
+        Ok(RemoteObjectRequestPlan {
+            backend: self.backend.canonical_name().to_string(),
+            method: "GET".to_string(),
+            url,
+            object_key: None,
+            copy_source: None,
+        })
+    }
+
+    fn plan_object_request(
+        &self,
+        method: &str,
+        key: &str,
+        copy_source: Option<String>,
+    ) -> Result<RemoteObjectRequestPlan, ObjectStoreError> {
+        let object_key = self.remote_object_key(key)?;
+        Ok(RemoteObjectRequestPlan {
+            backend: self.backend.canonical_name().to_string(),
+            method: method.to_string(),
+            url: self.object_url(&object_key)?,
+            object_key: Some(object_key),
+            copy_source,
         })
     }
 }
@@ -4049,6 +4246,77 @@ mod tests {
         assert!(matches!(
             store.get("prefix/object").await,
             Err(ObjectStoreError::UnsupportedBackend { backend, .. }) if backend == "s3"
+        ));
+    }
+
+    #[test]
+    fn remote_object_store_plans_s3_compatible_requests_generically() {
+        let store = SharedObjectStore::from_config(
+            SharedObjectStoreConfig::from_uri("s3://bucket/base/prefix", "/tmp/unused")
+                .with_endpoint("http://127.0.0.1:19000/"),
+        )
+        .unwrap();
+        let SharedObjectStore::Remote(remote) = store else {
+            panic!("expected remote object store");
+        };
+
+        let put = remote.plan_put("snapshots/a object.bin").unwrap();
+        assert_eq!(put.backend, "s3");
+        assert_eq!(put.method, "PUT");
+        assert_eq!(
+            put.object_key.as_deref(),
+            Some("base/prefix/snapshots/a object.bin")
+        );
+        assert_eq!(
+            put.url,
+            "http://127.0.0.1:19000/bucket/base/prefix/snapshots/a%20object.bin"
+        );
+
+        let copy = remote
+            .plan_copy("snapshots/a object.bin", "snapshots/copied.bin")
+            .unwrap();
+        assert_eq!(copy.method, "PUT");
+        assert_eq!(
+            copy.copy_source.as_deref(),
+            Some("/bucket/base/prefix/snapshots/a%20object.bin")
+        );
+        assert_eq!(
+            copy.url,
+            "http://127.0.0.1:19000/bucket/base/prefix/snapshots/copied.bin"
+        );
+
+        let list = remote
+            .plan_list("snapshots/", Some("base/prefix/snapshots/a object.bin"), 17)
+            .unwrap();
+        assert_eq!(list.method, "GET");
+        assert_eq!(
+            list.url,
+            "http://127.0.0.1:19000/bucket?list-type=2&prefix=base%2Fprefix%2Fsnapshots%2F&max-keys=17&continuation-token=base%2Fprefix%2Fsnapshots%2Fa%20object.bin"
+        );
+    }
+
+    #[test]
+    fn remote_object_store_rejects_unsafe_planned_keys() {
+        let store = SharedObjectStore::from_config(
+            SharedObjectStoreConfig::from_uri("ceph+s3://bucket/prefix", "/tmp/unused")
+                .with_endpoint("http://127.0.0.1:19000"),
+        )
+        .unwrap();
+        let SharedObjectStore::Remote(remote) = store else {
+            panic!("expected remote object store");
+        };
+
+        assert!(matches!(
+            remote.plan_get("../escape"),
+            Err(ObjectStoreError::InvalidKey(_))
+        ));
+        assert!(matches!(
+            remote.plan_delete("nested\\escape"),
+            Err(ObjectStoreError::InvalidKey(_))
+        ));
+        assert!(matches!(
+            remote.plan_list("../escape", None, 10),
+            Err(ObjectStoreError::InvalidKey(_))
         ));
     }
 
