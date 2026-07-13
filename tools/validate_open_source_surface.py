@@ -582,6 +582,7 @@ def main() -> int:
         "requests_per_second_overall_avg_avg",
         "expected_benchmark_commands",
         "redis_surface_manifest_sha256",
+        "min_overall_qps_threshold",
     ):
         require(
             rollup_field in redis_production_gate,
