@@ -448,6 +448,7 @@ def main() -> int:
     for capability in (
         "conditional_create",
         "paginated_list",
+        "delete_capability",
         "bulk_delete",
         "byte_range_read",
         "opaque_object_validators",
@@ -459,6 +460,11 @@ def main() -> int:
             f"generic object-store contract must expose capability {capability}",
             failures,
         )
+    require(
+        '"delete": "delete_capability"' in raw_storage_contract,
+        "generic object-store contract must keep delete as a compatibility alias only",
+        failures,
+    )
     require(
         '"matrixobjectstore": "objectstore"' in raw_storage_contract,
         "MatrixObject legacy backend alias must stay compatible",

@@ -62,7 +62,7 @@ GENERIC_OBJECT_STORE_CAPABILITIES = (
     "metadata_head",
     "prefix_list",
     "paginated_list",
-    "delete",
+    "delete_capability",
     "bulk_delete",
     "object_copy",
     "prefix_delete",
@@ -261,6 +261,9 @@ def generic_object_store_contract(target: RawMessageStorageTarget | None = None)
         "legacy_uri_schemes": ["matrixobjectstore", "blob"] if backend == "objectstore" else [],
         "required_operations": list(GENERIC_OBJECT_STORE_OPERATIONS),
         "required_capabilities": list(GENERIC_OBJECT_STORE_CAPABILITIES),
+        "compatibility_capability_aliases": {
+            "delete": "delete_capability",
+        },
         "metadata_owner": raw_message_metadata_backend(selected),
         "payload_owner": backend if backend in OBJECT_STORE_BACKENDS else "temporalstore",
         "selection_rule": "choose_by_uri_scheme_then_capabilities",

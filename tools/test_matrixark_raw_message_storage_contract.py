@@ -170,12 +170,17 @@ class RawMessageStorageContractTest(unittest.TestCase):
         for capability in (
             "conditional_create",
             "paginated_list",
+            "delete_capability",
             "bulk_delete",
             "byte_range_read",
             "opaque_object_validators",
             "split_services",
         ):
             self.assertIn(capability, matrix_contract["required_capabilities"])
+        self.assertEqual(
+            matrix_contract["compatibility_capability_aliases"]["delete"],
+            "delete_capability",
+        )
 
         s3_contract = generic_object_store_contract(RawMessageStorageTarget(backend="aws_s3"))
         self.assertEqual(s3_contract["backend"], "s3")
