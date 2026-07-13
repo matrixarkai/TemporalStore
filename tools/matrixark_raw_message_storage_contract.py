@@ -36,16 +36,41 @@ OBJECT_STORE_PROVIDER_ALIASES = {
 GENERIC_OBJECT_STORE_OPERATIONS = (
     "put",
     "put_atomic",
+    "put_unique",
+    "put_path_unique",
+    "put_if_absent",
     "get",
+    "get_range",
+    "get_to_path",
     "head",
     "list",
+    "list_page",
     "delete",
+    "delete_objects",
+    "delete_prefix",
+    "copy_object",
+    "uri",
+    "capabilities",
+    "topology",
 )
 GENERIC_OBJECT_STORE_CAPABILITIES = (
-    "checksum_sha256",
-    "prefix_list",
-    "metadata_head",
     "atomic_publish",
+    "unique_put",
+    "conditional_create",
+    "direct_upload_from_path",
+    "direct_download_to_path",
+    "metadata_head",
+    "prefix_list",
+    "paginated_list",
+    "delete",
+    "bulk_delete",
+    "object_copy",
+    "prefix_delete",
+    "byte_range_read",
+    "checksum_sha256",
+    "opaque_object_validators",
+    "object_version_ids",
+    "split_services",
     "legacy_uri_aliases",
 )
 DEFAULT_MAX_INLINE_BYTES = 1 * 1024 * 1024
@@ -238,6 +263,12 @@ def generic_object_store_contract(target: RawMessageStorageTarget | None = None)
         "required_capabilities": list(GENERIC_OBJECT_STORE_CAPABILITIES),
         "metadata_owner": raw_message_metadata_backend(selected),
         "payload_owner": backend if backend in OBJECT_STORE_BACKENDS else "temporalstore",
+        "selection_rule": "choose_by_uri_scheme_then_capabilities",
+        "remote_backend_behavior": "fail_closed_until_linked",
+        "notes": (
+            "TemporalStore callers should depend on this generic adapter shape "
+            "instead of MatrixObject-specific implementation types."
+        ),
         "generic_adapter": True,
     }
 
