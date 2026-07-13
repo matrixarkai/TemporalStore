@@ -18,6 +18,36 @@ from typing import Any
 Json = dict[str, Any]
 SUPPORTED_BACKENDS = {"temporalstore", "matrixkv", "s3", "objectstore"}
 KV_INLINE_BACKENDS = {"temporalstore", "matrixkv"}
+OBJECT_STORE_BACKENDS = {"s3", "objectstore"}
+OBJECT_STORE_PROVIDER_ALIASES = {
+    "matrixobject": "objectstore",
+    "matrix_object": "objectstore",
+    "matrixobjectstore": "objectstore",
+    "matrix_object_store": "objectstore",
+    "object_store": "objectstore",
+    "object": "objectstore",
+    "blob": "objectstore",
+    "blobstore": "objectstore",
+    "blob_store": "objectstore",
+    "aws_s3": "s3",
+    "s3_object": "s3",
+    "s3_objectstore": "s3",
+}
+GENERIC_OBJECT_STORE_OPERATIONS = (
+    "put",
+    "put_atomic",
+    "get",
+    "head",
+    "list",
+    "delete",
+)
+GENERIC_OBJECT_STORE_CAPABILITIES = (
+    "checksum_sha256",
+    "prefix_list",
+    "metadata_head",
+    "atomic_publish",
+    "legacy_uri_aliases",
+)
 DEFAULT_MAX_INLINE_BYTES = 1 * 1024 * 1024
 DEFAULT_OBJECT_STORE_PREFIX = "matrixobject://matrixark/raw-agent-messages"
 RAW_MESSAGE_DEFAULT_WRITE_POLICY = "ColdStoreOnly"
@@ -33,20 +63,8 @@ def normalize_raw_backend(value: Any) -> str:
         return "temporalstore"
     if backend in {"matrix_kv", "kv"}:
         return "matrixkv"
-    if backend in {
-        "object_store",
-        "object",
-        "blob",
-        "blobstore",
-        "blob_store",
-        "matrixobject",
-        "matrix_object",
-        "matrixobjectstore",
-        "matrix_object_store",
-    }:
-        return "objectstore"
-    if backend in {"aws_s3", "s3_object", "s3_objectstore"}:
-        return "s3"
+    if backend in OBJECT_STORE_PROVIDER_ALIASES:
+        return OBJECT_STORE_PROVIDER_ALIASES[backend]
     if backend not in SUPPORTED_BACKENDS:
         raise ValueError("raw message backend must be temporalstore, matrixkv, s3, or objectstore")
     return backend
@@ -198,7 +216,30 @@ def raw_message_should_spill_to_object_store(
 ) -> bool:
     limit = raw_message_max_inline_bytes(target) if max_inline_bytes is None else max(1, int(max_inline_bytes))
     selected = target or RawMessageStorageTarget.temporalstore()
-    return selected.backend in {"s3", "objectstore"} or raw_message_payload_size_bytes(message) > limit
+    return selected.backend in OBJECT_STORE_BACKENDS or raw_message_payload_size_bytes(message) > limit
+
+
+def generic_object_store_contract(target: RawMessageStorageTarget | None = None) -> Json:
+    """Return the provider-neutral object-store adapter contract.
+
+    MatrixObject and S3 are intentionally represented through the same adapter
+    shape so TemporalStore does not special-case blob providers in hot paths.
+    """
+    selected = target or RawMessageStorageTarget.objectstore()
+    backend = normalize_raw_backend(selected.backend)
+    provider_name = "MatrixObject" if backend == "objectstore" else "S3" if backend == "s3" else backend
+    return {
+        "schema": "temporalstore.generic_object_store_adapter.v1",
+        "backend": backend,
+        "provider_name": provider_name,
+        "canonical_uri_schemes": ["matrixobject"] if backend == "objectstore" else ["s3"] if backend == "s3" else [],
+        "legacy_uri_schemes": ["matrixobjectstore", "blob"] if backend == "objectstore" else [],
+        "required_operations": list(GENERIC_OBJECT_STORE_OPERATIONS),
+        "required_capabilities": list(GENERIC_OBJECT_STORE_CAPABILITIES),
+        "metadata_owner": raw_message_metadata_backend(selected),
+        "payload_owner": backend if backend in OBJECT_STORE_BACKENDS else "temporalstore",
+        "generic_adapter": True,
+    }
 
 
 def raw_message_object_ref_value(marker: Json) -> str:
@@ -331,7 +372,7 @@ def contract_report(
         event_time_ms=timestamp_key_ms,
         event_id_hash=event_key_hash,
     )
-    if marker["backend"] in {"s3", "objectstore"}:
+    if marker["backend"] in OBJECT_STORE_BACKENDS:
         target_dict = {
             "backend": marker["backend"],
             "namespace": "",
@@ -346,6 +387,7 @@ def contract_report(
     return {
         "schema": "matrixark.raw_message_storage_contract.v1",
         "supported_backends": sorted(SUPPORTED_BACKENDS),
+        "object_store_contract": generic_object_store_contract(selected),
         "default_backend": "temporalstore",
         "kv_inline_backends": sorted(KV_INLINE_BACKENDS),
         "target": target_dict,

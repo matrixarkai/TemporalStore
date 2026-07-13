@@ -1,11 +1,11 @@
-# MatrixObjectStore Design Extraction And Readiness
+# MatrixObject Design Extraction And Readiness
 
 ## Source
 
 - Source PDF: `C:/Users/Deeproute/Downloads/MATRIXOBJECTSTORE.pdf`
 - PDF metadata: 26 pages, image-based, produced by jsPDF 2.3.1, no embedded text layer.
 - Extraction method: rendered pages with Poppler and OCR with `tesseract -l chi_sim+eng`.
-- Product naming: this repository uses `MatrixObjectStore` for the Rust-native object-store path. Historical or external source names in the PDF are treated as design ancestry, not the public name for new code, docs, or APIs.
+- Product naming: this repository uses `MatrixObject` as the public product/API name for the Rust-native object-store path. Historical names such as `MatrixObjectStore` and external source names in the PDF are treated as design ancestry or compatibility aliases, not the preferred public name for new code, docs, or APIs.
 
 ## Extracted Design Signals
 
@@ -23,7 +23,7 @@ The OCR output is noisy because the PDF is image-only, but the first-page extrac
 
 ## Current Implementation Coverage
 
-`temporalstore-snapshot::MatrixObjectStore` is the named Rust local production backend for object-store semantics. It currently provides:
+`temporalstore-snapshot::MatrixObjectStore` remains the Rust type name for the local production backend, while `MatrixObject` is the public provider/API name exposed in reports and contracts. The backend currently provides:
 
 - Async `put`, `get`, `list`, and `delete` object operations.
 - Atomic local-file publish by writing a temporary object in the target directory, `sync_all`, and renaming into place.
@@ -31,18 +31,19 @@ The OCR output is noisy because the PDF is image-only, but the first-page extrac
 - `head` and `put_atomic` APIs for metadata-first callers.
 - Path traversal rejection for object keys.
 - Temporary-file filtering during prefix listing.
-- Raw-message spill contract using canonical `matrixobject://...` object refs, with `matrixobjectstore://...` accepted as a legacy alias.
+- Raw-message spill contract using canonical `matrixobject://...` object refs, with `matrixobjectstore://...` and `blob://...` accepted as legacy aliases.
 - Raw-message object refs that include payload size and SHA-256 checksum.
-- TemporalStore-owned metadata rows for S3/MatrixObjectStore payloads, unless MatrixKV is explicitly selected as the metadata backend.
+- A provider-neutral object-store adapter contract shared with S3: `put`, `put_atomic`, `get`, `head`, `list`, and `delete`.
+- TemporalStore-owned metadata rows for S3/MatrixObject payloads, unless MatrixKV is explicitly selected as the metadata backend.
 
 ## Production Readiness Criteria
 
-MatrixObjectStore is ready for the current local/shared-store target when all of these are true:
+MatrixObject is ready for the current local/shared-store target when all of these are true:
 
 - Payload writes are atomic and never expose partial object bytes.
 - Object refs carry checksum metadata and can be validated by readers.
 - Metadata is queryable from TemporalStore or MatrixKV without scanning object payload storage.
-- Large resource/raw-message payloads spill to MatrixObjectStore or S3 according to size policy.
+- Large resource/raw-message payloads spill to MatrixObject or S3 according to size policy.
 - Default raw-message writes are cold-store/no-promotion.
 - Object listing is prefix-scoped and excludes temporary publish artifacts.
 - Missing, invalid, and deleted objects are distinguishable from IO failures.
@@ -51,11 +52,11 @@ MatrixObjectStore is ready for the current local/shared-store target when all of
 ## Remaining Gaps
 
 - Live remote object-store backends still need real endpoint validation.
-- Background integrity scanning is not yet a continuous MatrixObjectStore runtime.
+- Background integrity scanning is not yet a continuous MatrixObject runtime.
 - Multi-tenant QoS and throttling are policy-level today, not a standalone object-store scheduler.
 - Object version history and conditional write conflict APIs are still limited.
 - Cross-language C++/Rust executable cases should be expanded for object metadata, checksum validation, conditional write, delete/list, and restart replay.
 
 ## Naming Rule
 
-Use `MatrixObjectStore` in new Rust code, docs, reports, and APIs. Avoid introducing any new public names with a temporary or experimental suffix.
+Use `MatrixObject` in new docs, reports, and public APIs. Keep `MatrixObjectStore` only where it is already a concrete Rust type or backward-compatible URI/backend alias. New TemporalStore shared-store integrations should consume the generic object-store adapter contract first, then choose `matrixobject://`, `s3://`, or another provider URI at configuration time.

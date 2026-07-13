@@ -59,6 +59,8 @@ def main() -> int:
     redis_compat_smoke = read("tools/run_redis_compat_smoke_ubuntu22.sh")
     redis_live_smoke = read("tools/run_redis_live_storage_smoke_ubuntu22.sh")
     redis_docs = read("docs/redis_compatibility_matrix.md")
+    raw_storage_contract = read("tools/matrixark_raw_message_storage_contract.py")
+    matrixobject_docs = read("docs/matrixobjectstore_design_extraction_and_readiness.md")
 
     require(
         "option(BCACHE2_OPEN_SOURCE_SURFACE" in root_cmake,
@@ -118,6 +120,17 @@ def main() -> int:
         "C++ Redis handler must reject non-basic commands in open-source builds",
         failures,
     )
+    for allowed in ("kQuit", "kClient"):
+        require(
+            f"case RedisCommand::CmdType::{allowed}" in cxx_redis,
+            f"C++ open-source Redis allowlist must keep basic client command {allowed}",
+            failures,
+        )
+    require(
+        "OpenSourceRedisCommandCount" in cxx_redis,
+        "C++ COMMAND COUNT must report the trimmed open-source command count",
+        failures,
+    )
     for denied in ("kSAdd", "kLPush", "kZAdd", "kPartition", "kBgSave"):
         require(
             f"case RedisCommand::CmdType::{denied}" not in cxx_redis,
@@ -138,6 +151,8 @@ def main() -> int:
         "RISKINCR",
         "CPCSET",
         "FOLQUERY",
+        "QUIT",
+        "CLIENT",
     ):
         require(f'"{allowed}"' in body, f"Rust allowlist must keep {allowed}", failures)
     for denied in ("SADD", "LPUSH", "ZADD", "IPSADD", "FADD", "RISKDEBUG", "PARTITION"):
@@ -178,6 +193,31 @@ def main() -> int:
     )
     for stale_claim in ("- Set: `SADD`", "- List: `LPUSH`", "- ZSet: `ZADD`"):
         require(stale_claim not in redis_docs, f"Redis docs must not keep stale claim {stale_claim}", failures)
+
+    for symbol in (
+        "OBJECT_STORE_PROVIDER_ALIASES",
+        "GENERIC_OBJECT_STORE_OPERATIONS",
+        "generic_object_store_contract",
+        "object_store_contract",
+    ):
+        require(symbol in raw_storage_contract, f"raw-message contract must expose {symbol}", failures)
+    for operation in ("put_atomic", "head", "list", "delete"):
+        require(f'"{operation}"' in raw_storage_contract, f"generic object-store contract must require {operation}", failures)
+    require(
+        '"matrixobjectstore": "objectstore"' in raw_storage_contract,
+        "MatrixObject legacy backend alias must stay compatible",
+        failures,
+    )
+    require(
+        "MatrixObject` as the public product/API name" in matrixobject_docs,
+        "MatrixObject docs must use the short public product/API name",
+        failures,
+    )
+    require(
+        "generic object-store adapter contract" in matrixobject_docs,
+        "MatrixObject docs must describe the generic object-store adapter",
+        failures,
+    )
 
     if failures:
         print("open-source surface validation failed:")
