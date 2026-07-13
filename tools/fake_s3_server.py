@@ -89,6 +89,13 @@ class FakeS3Handler(BaseHTTPRequestHandler):
         bucket, key, _ = self.parse_path()
         self.read_object(bucket, key, head_only=True)
 
+    def do_POST(self):
+        bucket, _, parsed = self.parse_path()
+        if parsed.query == "delete":
+            self.delete_objects(bucket)
+            return
+        self.send_status(405, b"method not allowed")
+
     def do_DELETE(self):
         bucket, key, _ = self.parse_path()
         if not bucket or not key:
@@ -169,6 +176,38 @@ class FakeS3Handler(BaseHTTPRequestHandler):
             )
         body.append("</ListBucketResult>")
         payload = "".join(body).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/xml")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def delete_objects(self, bucket):
+        if not bucket:
+            self.send_status(400, b"bucket required")
+            return
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length).decode("utf-8")
+        keys = []
+        remainder = body
+        while "<Key>" in remainder:
+            _, _, after_open = remainder.partition("<Key>")
+            value, _, remainder = after_open.partition("</Key>")
+            if value:
+                keys.append(html.unescape(value))
+        for key in keys:
+            try:
+                os.remove(safe_path(self.server.root, bucket, key))
+            except FileNotFoundError:
+                pass
+        response = [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            "<DeleteResult>",
+        ]
+        for key in keys:
+            response.append(f"<Deleted><Key>{html.escape(key)}</Key></Deleted>")
+        response.append("</DeleteResult>")
+        payload = "".join(response).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/xml")
         self.send_header("Content-Length", str(len(payload)))
