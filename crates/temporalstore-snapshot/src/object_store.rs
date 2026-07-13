@@ -318,6 +318,39 @@ impl ObjectMetadata {
     }
 }
 
+fn list_page_from_sorted_keys(
+    keys: &[String],
+    continuation_token: Option<&str>,
+    max_keys: usize,
+) -> ObjectListPage {
+    let start = continuation_token
+        .and_then(|token| keys.iter().position(|key| key.as_str() > token))
+        .unwrap_or_else(|| {
+            if continuation_token.is_some() {
+                keys.len()
+            } else {
+                0
+            }
+        });
+    if max_keys == 0 || start >= keys.len() {
+        return ObjectListPage {
+            keys: Vec::new(),
+            next_continuation_token: None,
+        };
+    }
+    let end = start.saturating_add(max_keys).min(keys.len());
+    let page_keys = keys[start..end].to_vec();
+    let next_continuation_token = if end < keys.len() {
+        page_keys.last().cloned()
+    } else {
+        None
+    };
+    ObjectListPage {
+        keys: page_keys,
+        next_continuation_token,
+    }
+}
+
 #[async_trait]
 pub trait ObjectStore: Send + Sync {
     async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError>;
@@ -370,32 +403,11 @@ pub trait ObjectStore: Send + Sync {
     ) -> Result<ObjectListPage, ObjectStoreError> {
         let mut keys = self.list(prefix).await?;
         keys.sort();
-        let start = continuation_token
-            .and_then(|token| keys.iter().position(|key| key.as_str() > token))
-            .unwrap_or_else(|| {
-                if continuation_token.is_some() {
-                    keys.len()
-                } else {
-                    0
-                }
-            });
-        if max_keys == 0 || start >= keys.len() {
-            return Ok(ObjectListPage {
-                keys: Vec::new(),
-                next_continuation_token: None,
-            });
-        }
-        let end = start.saturating_add(max_keys).min(keys.len());
-        let page_keys = keys[start..end].to_vec();
-        let next_continuation_token = if end < keys.len() {
-            page_keys.last().cloned()
-        } else {
-            None
-        };
-        Ok(ObjectListPage {
-            keys: page_keys,
-            next_continuation_token,
-        })
+        Ok(list_page_from_sorted_keys(
+            &keys,
+            continuation_token,
+            max_keys,
+        ))
     }
     async fn delete(&self, key: &str) -> Result<(), ObjectStoreError>;
     async fn copy_object(
@@ -890,6 +902,20 @@ impl MatrixObjectStoreRootService {
         }
         keys.sort();
         Ok(keys)
+    }
+
+    async fn list_manifest_keys_page(
+        &self,
+        prefix: &str,
+        continuation_token: Option<&str>,
+        max_keys: usize,
+    ) -> Result<ObjectListPage, ObjectStoreError> {
+        let keys = self.list_manifest_keys(prefix).await?;
+        Ok(list_page_from_sorted_keys(
+            &keys,
+            continuation_token,
+            max_keys,
+        ))
     }
 
     async fn delete_manifest(&self, key: &str) -> Result<(), ObjectStoreError> {
@@ -2041,6 +2067,17 @@ impl ObjectStore for MatrixObjectStore {
         self.root_service.list_manifest_keys(prefix).await
     }
 
+    async fn list_page(
+        &self,
+        prefix: &str,
+        continuation_token: Option<&str>,
+        max_keys: usize,
+    ) -> Result<ObjectListPage, ObjectStoreError> {
+        self.root_service
+            .list_manifest_keys_page(prefix, continuation_token, max_keys)
+            .await
+    }
+
     async fn delete(&self, key: &str) -> Result<(), ObjectStoreError> {
         let manifest = match self.root_service.get_manifest(key).await {
             Ok(manifest) => manifest,
@@ -2883,6 +2920,14 @@ mod tests {
                 .with_chunk_target_bytes(4),
         );
         assert_pages(&matrix_store).await;
+        let first = matrix_store.list_page("objects/", None, 1).await.unwrap();
+        assert_eq!(first.keys, vec!["objects/a"]);
+        assert_eq!(first.next_continuation_token.as_deref(), Some("objects/a"));
+        assert!(!first
+            .next_continuation_token
+            .as_deref()
+            .unwrap()
+            .contains(".manifest.json"));
     }
 
     #[tokio::test]
