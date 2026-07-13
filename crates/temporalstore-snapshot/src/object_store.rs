@@ -43,6 +43,8 @@ pub struct ObjectStoreCapabilities {
     pub metadata_head: bool,
     pub prefix_list: bool,
     pub delete: bool,
+    pub copy_object: bool,
+    pub delete_prefix: bool,
     pub byte_range_read: bool,
     pub checksum_sha256: bool,
     pub split_services: bool,
@@ -65,6 +67,8 @@ impl ObjectStoreCapabilities {
             metadata_head: true,
             prefix_list: true,
             delete: true,
+            copy_object: true,
+            delete_prefix: true,
             byte_range_read: true,
             checksum_sha256: true,
             split_services: false,
@@ -82,6 +86,8 @@ impl ObjectStoreCapabilities {
             metadata_head: true,
             prefix_list: true,
             delete: true,
+            copy_object: true,
+            delete_prefix: true,
             byte_range_read: true,
             checksum_sha256: true,
             split_services,
@@ -99,6 +105,8 @@ impl ObjectStoreCapabilities {
             metadata_head: false,
             prefix_list: false,
             delete: false,
+            copy_object: false,
+            delete_prefix: false,
             byte_range_read: false,
             checksum_sha256: false,
             split_services: false,
@@ -309,6 +317,22 @@ pub trait ObjectStore: Send + Sync {
     }
     async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError>;
     async fn delete(&self, key: &str) -> Result<(), ObjectStoreError>;
+    async fn copy_object(
+        &self,
+        source_key: &str,
+        destination_key: &str,
+    ) -> Result<ObjectMetadata, ObjectStoreError> {
+        let bytes = self.get(source_key).await?;
+        self.put_atomic(destination_key, bytes).await
+    }
+    async fn delete_prefix(&self, prefix: &str) -> Result<usize, ObjectStoreError> {
+        let keys = self.list(prefix).await?;
+        let deleted = keys.len();
+        for key in keys {
+            self.delete(&key).await?;
+        }
+        Ok(deleted)
+    }
     fn uri(&self, key: &str) -> String;
     fn capabilities(&self) -> ObjectStoreCapabilities {
         ObjectStoreCapabilities {
@@ -321,6 +345,8 @@ pub trait ObjectStore: Send + Sync {
             metadata_head: false,
             prefix_list: true,
             delete: true,
+            copy_object: true,
+            delete_prefix: true,
             byte_range_read: false,
             checksum_sha256: false,
             split_services: false,
@@ -1173,6 +1199,18 @@ impl ObjectStore for FileObjectStore {
         }
     }
 
+    async fn copy_object(
+        &self,
+        source_key: &str,
+        destination_key: &str,
+    ) -> Result<ObjectMetadata, ObjectStoreError> {
+        let source = self.resolve(source_key)?;
+        if !source.exists() {
+            return Err(ObjectStoreError::NotFound(source_key.to_string()));
+        }
+        self.put_path_atomic(destination_key, &source).await
+    }
+
     fn uri(&self, key: &str) -> String {
         format!("{}://{}", self.uri_scheme, key)
     }
@@ -1679,6 +1717,43 @@ impl MatrixObjectStore {
             .collect();
         let _ = self.delete_block_refs(stale_blocks).await;
     }
+
+    async fn copy_manifest_blocks(
+        &self,
+        source_key: &str,
+        destination_key: &str,
+        source_blocks: &[MatrixObjectBlockRef],
+    ) -> Result<Vec<MatrixObjectBlockRef>, ObjectStoreError> {
+        let destination_key = destination_key.trim_matches('/').to_string();
+        let destination_fingerprint = object_key_fingerprint(&destination_key);
+        let publish_block_metadata = self.publish_block_metadata_on_write();
+        let mut copied_blocks = Vec::with_capacity(source_blocks.len());
+        for (index, source_block) in source_blocks.iter().enumerate() {
+            let (offset, bytes) = self.read_chunk_direct(source_block.clone()).await?;
+            let result = self
+                .write_chunk_direct(
+                    MatrixObjectChunkWrite {
+                        index,
+                        offset,
+                        bytes,
+                    },
+                    &destination_key,
+                    &destination_fingerprint,
+                    publish_block_metadata,
+                )
+                .await;
+            match result {
+                Ok((_, block)) => copied_blocks.push(block),
+                Err(err) => {
+                    let _ = self.delete_block_refs(copied_blocks).await;
+                    return Err(ObjectStoreError::Io(std::io::Error::other(format!(
+                        "failed to copy MatrixObject chunks from {source_key} to {destination_key}: {err}"
+                    ))));
+                }
+            }
+        }
+        Ok(copied_blocks)
+    }
 }
 
 #[async_trait]
@@ -1857,6 +1932,49 @@ impl ObjectStore for MatrixObjectStore {
         };
         self.delete_block_refs(manifest.blocks).await?;
         self.root_service.delete_manifest(key).await
+    }
+
+    async fn copy_object(
+        &self,
+        source_key: &str,
+        destination_key: &str,
+    ) -> Result<ObjectMetadata, ObjectStoreError> {
+        let source_manifest = self.root_service.get_manifest(source_key).await?;
+        self.validate_manifest_for_read(&source_manifest)?;
+        let previous_manifest = self.root_service.get_manifest(destination_key).await.ok();
+        let blocks = self
+            .copy_manifest_blocks(source_key, destination_key, &source_manifest.blocks)
+            .await?;
+        let live_chunk_keys: HashSet<String> =
+            blocks.iter().map(|block| block.chunk_key.clone()).collect();
+        let live_block_ids: HashSet<String> =
+            blocks.iter().map(|block| block.block_id.clone()).collect();
+        let manifest = MatrixObjectManifest {
+            key: destination_key.to_string(),
+            uri: self.uri(destination_key),
+            size_bytes: source_manifest.size_bytes,
+            checksum_sha256: source_manifest.checksum_sha256,
+            created_at_ms: now_ms(),
+            blocks,
+        };
+        if let Err(err) = self.root_service.put_manifest(&manifest).await {
+            let _ = self.delete_block_refs(manifest.blocks.clone()).await;
+            return Err(err);
+        }
+        if let Some(previous_manifest) = previous_manifest {
+            self.delete_stale_block_refs_best_effort(
+                previous_manifest.blocks,
+                &live_chunk_keys,
+                &live_block_ids,
+            )
+            .await;
+        }
+        Ok(ObjectMetadata {
+            key: manifest.key,
+            uri: manifest.uri,
+            size_bytes: manifest.size_bytes,
+            checksum_sha256: manifest.checksum_sha256,
+        })
     }
 
     fn uri(&self, key: &str) -> String {
@@ -2202,6 +2320,26 @@ impl ObjectStore for SharedObjectStore {
         }
     }
 
+    async fn copy_object(
+        &self,
+        source_key: &str,
+        destination_key: &str,
+    ) -> Result<ObjectMetadata, ObjectStoreError> {
+        match self {
+            Self::LocalFile(store) | Self::SharedFile(store) => {
+                store.copy_object(source_key, destination_key).await
+            }
+            Self::MatrixObjectStore(store) => store.copy_object(source_key, destination_key).await,
+        }
+    }
+
+    async fn delete_prefix(&self, prefix: &str) -> Result<usize, ObjectStoreError> {
+        match self {
+            Self::LocalFile(store) | Self::SharedFile(store) => store.delete_prefix(prefix).await,
+            Self::MatrixObjectStore(store) => store.delete_prefix(prefix).await,
+        }
+    }
+
     fn uri(&self, key: &str) -> String {
         match self {
             Self::LocalFile(store) | Self::SharedFile(store) => store.uri(key),
@@ -2328,6 +2466,8 @@ mod tests {
         assert_eq!(capabilities.uri_scheme, "matrixobject");
         assert!(capabilities.atomic_put);
         assert!(capabilities.unique_put);
+        assert!(capabilities.copy_object);
+        assert!(capabilities.delete_prefix);
         assert!(capabilities.byte_range_read);
         assert!(capabilities.checksum_sha256);
         assert!(capabilities.split_services);
@@ -2394,6 +2534,60 @@ mod tests {
                 .unwrap(),
             Bytes::from_static(b"f")
         );
+    }
+
+    #[tokio::test]
+    async fn generic_object_store_copy_and_delete_prefix_work_for_file_and_matrixobject() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_store = SharedObjectStore::from_backend_root(
+            SharedObjectStoreBackend::LocalFile,
+            dir.path().join("file"),
+        )
+        .unwrap();
+        file_store
+            .put_atomic("snapshots/a", Bytes::from_static(b"file payload"))
+            .await
+            .unwrap();
+        let copied = file_store
+            .copy_object("snapshots/a", "snapshots/copy/a")
+            .await
+            .unwrap();
+        assert_eq!(copied.key, "snapshots/copy/a");
+        assert_eq!(
+            file_store.get("snapshots/copy/a").await.unwrap(),
+            Bytes::from_static(b"file payload")
+        );
+        assert_eq!(file_store.delete_prefix("snapshots/").await.unwrap(), 2);
+        assert!(matches!(
+            file_store.get("snapshots/a").await,
+            Err(ObjectStoreError::NotFound(_))
+        ));
+
+        let matrix_store = MatrixObjectStore::from_config(
+            MatrixObjectStoreConfig::local_compat(dir.path().join("matrix"))
+                .with_chunk_target_bytes(4),
+        );
+        matrix_store
+            .put_atomic("objects/src", Bytes::from_static(b"0123456789abcdef"))
+            .await
+            .unwrap();
+        let copied = matrix_store
+            .copy_object("objects/src", "objects/copied")
+            .await
+            .unwrap();
+        assert_eq!(copied.key, "objects/copied");
+        assert_eq!(copied.size_bytes, 16);
+        assert_eq!(
+            matrix_store.get("objects/copied").await.unwrap(),
+            Bytes::from_static(b"0123456789abcdef")
+        );
+        matrix_store.delete("objects/src").await.unwrap();
+        assert_eq!(
+            matrix_store.get("objects/copied").await.unwrap(),
+            Bytes::from_static(b"0123456789abcdef")
+        );
+        assert_eq!(matrix_store.delete_prefix("objects/").await.unwrap(), 1);
+        assert!(matrix_store.list("objects/").await.unwrap().is_empty());
     }
 
     #[tokio::test]

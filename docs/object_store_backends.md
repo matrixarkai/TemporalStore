@@ -56,9 +56,14 @@ S3-compatible stores, Ceph RGW, local files, and future object backends:
   to know whether the backend stores manifests, local files, or remote object
   metadata.
 - `list` / `delete`: prefix listing and object deletion.
+- `copy_object`: copy one object to another key. MatrixObject copies into
+  destination-owned chunks so deleting the source cannot break the copy; S3
+  adapters should map this to server-side copy when available.
+- `delete_prefix`: delete all objects matching a prefix, using backend-native
+  bulk/paged delete when available or the generic list-and-delete fallback.
 - `capabilities`: report support for atomic put, unique put, path upload,
-  path download, metadata head, prefix list, delete, byte-range read, checksum,
-  and split services.
+  path download, metadata head, prefix list, delete, object copy, prefix
+  deletion, byte-range read, checksum, and split services.
 - `topology`: report a generic service list. MatrixObject maps this to
   root/block/chunk services; local file and shared file map to one object
   service; S3-style adapters should map to one remote object service unless a
