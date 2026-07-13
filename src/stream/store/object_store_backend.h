@@ -22,16 +22,35 @@ struct ObjectStoreBackendCapabilities {
     const char* uri_scheme = "unknown";
     bool runtime_linked = false;
     bool operations_fail_closed = true;
-    bool condition_metadata = false;
+
+    // Canonical generic object-store capability names shared with Rust and S3-style adapters.
+    bool atomic_publish = false;
+    bool unique_put = false;
+    bool conditional_create = false;
+    bool direct_upload_from_path = false;
+    bool direct_download_to_path = false;
+    bool metadata_head = false;
     bool prefix_list = false;
-    bool metadata_stat = false;
-    bool append_write = false;
+    bool paginated_list = false;
+    bool delete_capability = false;
+    bool bulk_delete = false;
+    bool object_copy = false;
+    bool prefix_delete = false;
     bool byte_range_read = false;
-    bool delete_object = false;
-    bool copy_or_rename = false;
+    bool checksum_sha256 = false;
+    bool opaque_object_validators = false;
+    bool object_version_ids = false;
     bool split_services = false;
     bool s3_compatible = false;
     bool local_file_compatible = false;
+
+    // Compatibility aliases for older C++ call sites. New public reports should prefer
+    // the canonical fields above.
+    bool condition_metadata = false;
+    bool metadata_stat = false;
+    bool append_write = false;
+    bool delete_object = false;
+    bool copy_or_rename = false;
 };
 
 inline ObjectStoreBackend DetectObjectStoreBackend(const std::string& uri) {
@@ -130,22 +149,37 @@ inline ObjectStoreBackendCapabilities ObjectStoreBackendCapabilityReport(ObjectS
         backend == ObjectStoreBackend::kS3 || backend == ObjectStoreBackend::kCephS3;
     const bool native_rados = backend == ObjectStoreBackend::kCephRados;
     const bool object_api = matrixobject || file_like || s3_compatible || native_rados;
-    return ObjectStoreBackendCapabilities{
-        ObjectStoreBackendName(backend),
-        ObjectStoreBackendUriScheme(backend),
-        runtime_linked,
-        object_api && !runtime_linked,
-        object_api,
-        object_api,
-        object_api,
-        object_api,
-        object_api,
-        object_api,
-        object_api,
-        matrixobject,
-        s3_compatible,
-        file_like,
-    };
+    ObjectStoreBackendCapabilities report;
+    report.backend = ObjectStoreBackendName(backend);
+    report.uri_scheme = ObjectStoreBackendUriScheme(backend);
+    report.runtime_linked = runtime_linked;
+    report.operations_fail_closed = object_api && !runtime_linked;
+    report.atomic_publish = object_api;
+    report.unique_put = object_api;
+    report.conditional_create = object_api;
+    report.direct_upload_from_path = object_api;
+    report.direct_download_to_path = object_api;
+    report.metadata_head = object_api;
+    report.prefix_list = object_api;
+    report.paginated_list = object_api;
+    report.delete_capability = object_api;
+    report.bulk_delete = object_api;
+    report.object_copy = object_api;
+    report.prefix_delete = object_api;
+    report.byte_range_read = object_api;
+    report.checksum_sha256 = object_api;
+    report.opaque_object_validators = object_api;
+    report.object_version_ids = matrixobject || s3_compatible;
+    report.split_services = matrixobject;
+    report.s3_compatible = s3_compatible;
+    report.local_file_compatible = file_like;
+
+    report.condition_metadata = report.conditional_create;
+    report.metadata_stat = report.metadata_head;
+    report.append_write = report.unique_put;
+    report.delete_object = report.delete_capability;
+    report.copy_or_rename = report.object_copy;
+    return report;
 }
 
 }  // namespace stream

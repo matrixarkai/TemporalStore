@@ -184,6 +184,23 @@ TEST(ObjectStoreBackendGuardrailTest, PublicCapabilityReportsAreProviderNeutral)
     EXPECT_EQ("matrixobject", std::string(matrixobject.uri_scheme));
     EXPECT_TRUE(matrixobject.runtime_linked);
     EXPECT_FALSE(matrixobject.operations_fail_closed);
+    EXPECT_TRUE(matrixobject.atomic_publish);
+    EXPECT_TRUE(matrixobject.unique_put);
+    EXPECT_TRUE(matrixobject.conditional_create);
+    EXPECT_TRUE(matrixobject.direct_upload_from_path);
+    EXPECT_TRUE(matrixobject.direct_download_to_path);
+    EXPECT_TRUE(matrixobject.metadata_head);
+    EXPECT_TRUE(matrixobject.prefix_list);
+    EXPECT_TRUE(matrixobject.paginated_list);
+    EXPECT_TRUE(matrixobject.delete_capability);
+    EXPECT_TRUE(matrixobject.bulk_delete);
+    EXPECT_TRUE(matrixobject.object_copy);
+    EXPECT_TRUE(matrixobject.prefix_delete);
+    EXPECT_TRUE(matrixobject.byte_range_read);
+    EXPECT_TRUE(matrixobject.checksum_sha256);
+    EXPECT_TRUE(matrixobject.opaque_object_validators);
+    EXPECT_TRUE(matrixobject.object_version_ids);
+    EXPECT_TRUE(matrixobject.split_services);
     EXPECT_TRUE(matrixobject.condition_metadata);
     EXPECT_TRUE(matrixobject.prefix_list);
     EXPECT_TRUE(matrixobject.metadata_stat);
@@ -198,6 +215,7 @@ TEST(ObjectStoreBackendGuardrailTest, PublicCapabilityReportsAreProviderNeutral)
     EXPECT_EQ("s3", std::string(s3.backend));
     EXPECT_EQ("s3", std::string(s3.uri_scheme));
     EXPECT_TRUE(s3.s3_compatible);
+    EXPECT_TRUE(s3.object_version_ids);
 #ifdef BCACHE2_ENABLE_S3_STORE
     EXPECT_TRUE(s3.runtime_linked);
     EXPECT_FALSE(s3.operations_fail_closed);

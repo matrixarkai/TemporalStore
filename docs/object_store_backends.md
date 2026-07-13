@@ -142,9 +142,15 @@ stream/page/index/oplog
 C++ also exposes `ObjectStoreBackendCapabilityReport`, a provider-neutral
 capability summary for the same backend families. It reports canonical backend
 name, canonical URI scheme, runtime-linked status, fail-closed status,
-condition metadata support, prefix listing, metadata stat/head, append/open
-write support, byte-range read support, delete, copy/rename, split services,
-S3 compatibility, and local/shared-file compatibility. The capability report is
+and the same generic capability names used by the Rust/Python contract:
+`atomic_publish`, `unique_put`, `conditional_create`,
+`direct_upload_from_path`, `direct_download_to_path`, `metadata_head`,
+`prefix_list`, `paginated_list`, `delete_capability`, `bulk_delete`,
+`object_copy`, `prefix_delete`, `byte_range_read`, `checksum_sha256`,
+`opaque_object_validators`, `object_version_ids`, and `split_services`.
+Older C++ field names such as `condition_metadata`, `metadata_stat`,
+`append_write`, `delete_object`, and `copy_or_rename` remain compatibility
+aliases only. The capability report is
 intentionally separate from MatrixObject internals so stream/page/index/oplog
 planning can compare MatrixObject, S3-compatible stores, local files, and
 future object-store backends through one shape.
