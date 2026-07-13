@@ -63,6 +63,8 @@ def main() -> int:
     raw_storage_contract = read("tools/matrixark_raw_message_storage_contract.py")
     matrixobject_docs = read("docs/matrixobjectstore_design_extraction_and_readiness.md")
     object_store_code = read("crates/temporalstore-snapshot/src/object_store.rs")
+    cxx_object_store_backend = read("src/stream/store/object_store_backend.h")
+    cxx_object_store_guardrail = read("src/stream/test/object_store_guardrail_test.cc")
     storage_modes_harness = read("crates/temporalstore-rust/src/bin/storage_modes_harness.rs")
 
     require(
@@ -458,6 +460,42 @@ def main() -> int:
         "object_version_id: true" in object_store_code
         and "ObjectStoreCapabilities::matrixobject" in object_store_code,
         "MatrixObject capabilities must report object_version_id support",
+        failures,
+    )
+    for symbol in (
+        "ObjectStoreBackendCapabilities",
+        "ObjectStoreBackendCapabilityReport",
+        "ObjectStoreBackendRuntimeLinked",
+    ):
+        require(
+            symbol in cxx_object_store_backend,
+            f"C++ object-store backend contract must expose {symbol}",
+            failures,
+        )
+    for field in (
+        "operations_fail_closed",
+        "condition_metadata",
+        "prefix_list",
+        "metadata_stat",
+        "append_write",
+        "byte_range_read",
+        "split_services",
+        "s3_compatible",
+    ):
+        require(
+            field in cxx_object_store_backend,
+            f"C++ object-store capability report must expose {field}",
+            failures,
+        )
+    require(
+        "PublicCapabilityReportsAreProviderNeutral" in cxx_object_store_guardrail,
+        "C++ object-store guardrails must validate provider-neutral capability reports",
+        failures,
+    )
+    require(
+        "ObjectStoreBackendCapabilityReport" in cxx_object_store_guardrail
+        and "operations_fail_closed" in cxx_object_store_guardrail,
+        "C++ object-store guardrails must assert fail-closed capability behavior",
         failures,
     )
 
