@@ -503,11 +503,38 @@ def main() -> int:
         failures,
     )
     require(
-        "object_version_id: true" in object_store_code
+        "object_version_ids: true" in object_store_code
+        and "object_version_id: true" in object_store_code
         and "ObjectStoreCapabilities::matrixobject" in object_store_code,
-        "MatrixObject capabilities must report object_version_id support",
+        "MatrixObject capabilities must report canonical object_version_ids support",
         failures,
     )
+    for rust_capability in (
+        "atomic_publish",
+        "delete_capability",
+        "object_copy",
+        "prefix_delete",
+        "opaque_object_validators",
+        "object_version_ids",
+    ):
+        require(
+            f"pub {rust_capability}: bool" in object_store_code,
+            f"Rust object-store capability report must expose canonical {rust_capability}",
+            failures,
+        )
+    for rust_compatibility_alias in (
+        "atomic_put",
+        "delete",
+        "copy_object",
+        "delete_prefix",
+        "object_etag",
+        "object_version_id",
+    ):
+        require(
+            f"pub {rust_compatibility_alias}: bool" in object_store_code,
+            f"Rust object-store capability report must keep compatibility alias {rust_compatibility_alias}",
+            failures,
+        )
     for symbol in (
         "ObjectStoreBackendCapabilities",
         "ObjectStoreBackendCapabilityReport",

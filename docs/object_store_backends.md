@@ -37,6 +37,16 @@ This keeps Rust and C++ on the same public object-store contract:
 - `MatrixObjectStore` remains the Rust/C++ implementation type name for compatibility.
 - Retired legacy object-store naming is not part of public APIs, docs, build
   flags, or validation output.
+- Capability reports use the same canonical field names across Rust, C++,
+  MatrixObject, S3-compatible stores, and local/shared-file stores:
+  `atomic_publish`, `unique_put`, `conditional_create`,
+  `direct_upload_from_path`, `direct_download_to_path`, `metadata_head`,
+  `prefix_list`, `paginated_list`, `delete_capability`, `bulk_delete`,
+  `object_copy`, `prefix_delete`, `byte_range_read`, `checksum_sha256`,
+  `opaque_object_validators`, `object_version_ids`, and `split_services`.
+  Rust keeps older names such as `atomic_put`, `delete`, `copy_object`,
+  `delete_prefix`, `object_etag`, and `object_version_id` as compatibility
+  aliases only.
 
 ## Generic ObjectStore Contract
 
