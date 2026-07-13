@@ -17,7 +17,7 @@ Current bridge status values:
 |---|---|---|---|---|
 | Connection | `PING`, `ECHO`, `QUIT` | required | wired | `PING`, `ECHO`, and `QUIT` are wired for client compatibility. |
 | Auth/client | `AUTH`, `CLIENT SETNAME`, `CLIENT GETNAME`, `CLIENT ID` | required | wired | `CLIENT SETNAME` is accepted, `GETNAME` returns null, and `ID` returns a deterministic compatibility value. |
-| Metadata | `INFO`, `COMMAND`, `TYPE` | required | partial | `INFO` and `TYPE` are wired. In open-source C++ builds, plain `COMMAND` advertises only the trimmed 43-command string/hash surface, `COMMAND COUNT` derives from that same table, and `COMMAND INFO` returns minimal metadata for those commands; full Redis command metadata is still future work. |
+| Metadata | `INFO`, `COMMAND`, `TYPE` | required | partial | `INFO` and `TYPE` are wired. In open-source C++ builds, plain `COMMAND` advertises only the trimmed 47-command string/hash surface, `COMMAND COUNT` derives from that same table, and `COMMAND INFO` returns minimal metadata for those commands; full Redis command metadata is still future work. |
 | DB selection | `SELECT` | required | wired | `SELECT 0` is accepted. Non-zero DB indexes are rejected because isolation is namespace/table/scope based, not Redis logical DB based. |
 | String | `GET`, `SET`, `SETNX`, `SETEX`, `PSETEX`, `GETSET`, `GETDEL`, `GETEX`, `MGET`, `MSET`, `DEL`, `UNLINK`, `EXISTS`, `APPEND`, `STRLEN` | required | partial | `GET`, `SET key value`, `SET key value NX`, `SET key value XX`, `SET key value EX/PX`, `SET key value GET`, `SETNX`, `SETEX`, `PSETEX`, `GETSET`, `GETDEL`, `GETEX`, `MGET`, `MSET`, `DEL`, `UNLINK`, `EXISTS`, `APPEND`, and `STRLEN` are wired. `SET EX/PX` combined with `NX/XX` is rejected until the native string module exposes an atomic conditional set-with-ttl primitive. |
 | Counter | `INCR`, `INCRBY`, `DECR`, `DECRBY` | required | wired | Wired through native string storage with integer parsing and overflow checks. |
@@ -56,7 +56,7 @@ the trimmed surface: `MSETNX`, `TOUCH`, `EXPIREAT`, `PEXPIREAT`,
 These are still part of the basic data-model surface; they are not generic
 collection clones, server-admin APIs, scripting, streams, pub/sub, or debug
 commands. The C++ Redis bridge currently exposes a narrower
-basic/string/hash subset in open-source builds and reports `COMMAND COUNT=43`;
+basic/string/hash subset in open-source builds and reports `COMMAND COUNT=47`;
 feature and frequency-control commands are Rust bridge APIs.
 
 `HSCAN` is intentionally limited to a single hash key and is implemented by
