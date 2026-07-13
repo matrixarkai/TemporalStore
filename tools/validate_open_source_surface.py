@@ -62,6 +62,7 @@ def main() -> int:
     redis_production_gate = read("tools/run_redis_production_gate_ubuntu22.sh")
     redis_docs = read("docs/redis_compatibility_matrix.md")
     open_source_surface = read("docs/open_source_surface.md")
+    cpp_api_parity_docs = read("docs/cpp_temporalstore_api_parity.md")
     temporal_adapters = read("tools/matrixark_mcp_temporal_adapters.py")
     raw_storage_contract = read("tools/matrixark_raw_message_storage_contract.py")
     dual_write_benchmark = read("tools/matrixark_dual_write_ingestion_benchmark.py")
@@ -346,6 +347,15 @@ def main() -> int:
         "Narrow `HSCAN` is kept only as a single-hash" in open_source_surface
         and "broad `KEYS` /\n`SCAN`" in open_source_surface,
         "open-source surface overview must document narrow HSCAN without broad keyspace SCAN",
+        failures,
+    )
+    require(
+        "this document tracks broad C++/Rust API-parity" in cpp_api_parity_docs
+        and "not the open-source production Redis surface" in cpp_api_parity_docs
+        and "redis_compatibility_matrix.md" in cpp_api_parity_docs
+        and "Generic\nSET/LIST/ZSET clones" in cpp_api_parity_docs
+        and "broad `KEYS`/`SCAN`" in cpp_api_parity_docs,
+        "C++ API parity doc must distinguish broad corpus/private compatibility from the trimmed open-source Redis surface",
         failures,
     )
     require(

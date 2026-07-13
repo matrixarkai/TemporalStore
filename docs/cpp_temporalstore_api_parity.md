@@ -1,5 +1,15 @@
 # C++ TemporalStore API Parity
 
+Scope note: this document tracks broad C++/Rust API-parity and compatibility
+corpus coverage. It is not the open-source production Redis surface. Public
+open-source builds must follow the trimmed surface in
+[`redis_compatibility_matrix.md`](redis_compatibility_matrix.md): string/common,
+hash, feature, frequency-control, and narrow single-hash `HSCAN`. Generic
+SET/LIST/ZSET clones, server-configuration/admin commands such as `CONFIG` and
+`DBSIZE`, broad `KEYS`/`SCAN`, and private/debug families remain private,
+unsupported, or full-compatibility test-only behavior unless explicitly moved
+into that trimmed production matrix.
+
 Reference sources checked:
 
 - `/home/vj/src/temporalstore/src/protocol/*module.proto`
