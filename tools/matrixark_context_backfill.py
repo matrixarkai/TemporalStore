@@ -1184,7 +1184,7 @@ def normalize_raw_backend(value: str) -> str:
     try:
         return normalize_raw_storage_backend(value)
     except ValueError as exc:
-        raise BackfillError('--raw-backend must be temporalstore, matrixkv, s3, or objectstore') from exc
+        raise BackfillError('--raw-backend must be temporalstore, matrixkv, s3, or matrixobject') from exc
 
 
 def checkpoint_key(
@@ -3953,9 +3953,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--source-prefix', default='matrixark:mcp:raw_ingestion')
     parser.add_argument(
         '--raw-backend',
-        choices=['temporalstore', 'matrixkv', 's3', 'objectstore'],
+        choices=['temporalstore', 'matrixkv', 's3', 'matrixobject', 'objectstore'],
         default=os.environ.get('MATRIXARK_RAW_INGESTION_BACKEND', 'temporalstore'),
-        help='raw ingestion message store that owns source-prefix; affects checkpoints, idempotency, manifests, and metrics',
+        help='raw ingestion message store that owns source-prefix; use matrixobject for MatrixObject; legacy objectstore alias is accepted',
     )
     parser.add_argument('--target-prefix', default='')
     parser.add_argument('--mode', choices=['plan', 'shadow', 'in_place', 'validate_shadow', 'activate_shadow', 'rollback_activation', 'incremental_repair', 'verify_manifest', 'verify_plan_artifacts', 'export_dead_letters', 'read_raw_event'], default='shadow')

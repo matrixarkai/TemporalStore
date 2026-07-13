@@ -28,8 +28,22 @@ from matrixark_raw_message_storage_contract import (  # noqa: E402
 )
 
 Json = dict[str, Any]
-RAW_BACKEND_CHOICES = ["temporalstore", "matrixkv", "s3", "objectstore"]
+RAW_BACKEND_CHOICES = ["temporalstore", "matrixkv", "s3", "matrixobject"]
+RAW_BACKEND_ALIASES = {
+    "matrix_object": "matrixobject",
+    "matrixobjectstore": "matrixobject",
+    "matrix_object_store": "matrixobject",
+    "objectstore": "matrixobject",
+    "object_store": "matrixobject",
+    "object": "matrixobject",
+    "blob": "matrixobject",
+}
 RAW_BACKEND_SWEEP_CHOICES = ["temporalstore", "matrixkv"]
+
+
+def normalize_raw_backend(value: str) -> str:
+    backend = str(value or "temporalstore").strip().lower().replace("-", "_")
+    return RAW_BACKEND_ALIASES.get(backend, backend)
 
 
 class BenchmarkError(RuntimeError):
@@ -140,7 +154,7 @@ def make_direct_adapter(args: argparse.Namespace, client: Any | None = None) -> 
     adapter._raw_ingestion_prefix = (args.raw_storage_prefix or f"{adapter._storage_prefix}:raw_ingestion").rstrip(":")
     adapter._raw_record_hash_key = f"{adapter._raw_ingestion_prefix}:records"
     adapter._raw_count_key = f"{adapter._raw_ingestion_prefix}:record_count"
-    adapter._raw_storage_backend = args.raw_backend
+    adapter._raw_storage_backend = normalize_raw_backend(args.raw_backend)
     adapter._raw_entry_count_cache = None
     adapter._shard_size = args.shard_size
     adapter._index_cache = None
@@ -204,7 +218,7 @@ def parse_raw_backends(value: str, fallback: str) -> list[str]:
         return list(RAW_BACKEND_SWEEP_CHOICES)
     backends: list[str] = []
     for item in selected.split(","):
-        backend = item.strip()
+        backend = normalize_raw_backend(item)
         if not backend:
             continue
         if backend not in RAW_BACKEND_CHOICES:
@@ -361,6 +375,7 @@ def run_backend_sweep(args: argparse.Namespace) -> Json:
 
 
 def run_benchmark(args: argparse.Namespace) -> Json:
+    args.raw_backend = normalize_raw_backend(args.raw_backend)
     if args.records <= 0:
         raise BenchmarkError("--records must be positive")
     if args.workers <= 0:
@@ -418,8 +433,8 @@ def run_benchmark(args: argparse.Namespace) -> Json:
         )
     elif args.raw_backend == "s3":
         sample_target = RawMessageStorageTarget.s3(bucket="matrixark-large-resources", prefix="raw-agent-messages")
-    elif args.raw_backend == "objectstore":
-        sample_target = RawMessageStorageTarget.objectstore()
+    elif args.raw_backend == "matrixobject":
+        sample_target = RawMessageStorageTarget.matrixobject()
     else:
         sample_target = RawMessageStorageTarget.temporalstore()
     raw_contract = contract_report(sample_record, sample_target, event_id_hash=int(sample_record["event_id_hash"]))
@@ -491,9 +506,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--raw-storage-prefix", default=os.environ.get("MATRIXARK_DIRECT_RAW_STORAGE_PREFIX", ""))
     parser.add_argument(
         "--raw-backend",
-        choices=RAW_BACKEND_CHOICES,
         default=os.environ.get("MATRIXARK_RAW_INGESTION_BACKEND", "temporalstore"),
-        help="Raw-message durability backend label used by the direct adapter.",
+        help="Raw-message durability backend label used by the direct adapter. Use matrixobject for MatrixObject; legacy objectstore aliases are accepted.",
     )
     parser.add_argument(
         "--raw-backends",

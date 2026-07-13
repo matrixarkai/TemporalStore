@@ -115,12 +115,12 @@ class MatrixArkDualWriteIngestionBenchmarkTest(unittest.TestCase):
         self.assertEqual(contract["marker"]["backend"], "s3")
         self.assertTrue(contract["marker"]["object_key"].startswith("s3://matrixark-large-resources/raw-agent-messages/"))
 
-    def test_backend_sweep_can_select_objectstore_explicitly(self) -> None:
-        args = self.make_args(records=20, workers=1, batch_size=10, raw_backends="objectstore")
+    def test_backend_sweep_can_select_matrixobject_explicitly(self) -> None:
+        args = self.make_args(records=20, workers=1, batch_size=10, raw_backends="matrixobject")
         summary = bench.run_backend_sweep(args)
         self.assertEqual(summary["status"], "ok")
-        self.assertEqual(summary["raw_backends"], ["objectstore"])
-        self.assertEqual(summary["results"][0]["raw_message_storage_contract"]["target"]["backend"], "objectstore")
+        self.assertEqual(summary["raw_backends"], ["matrixobject"])
+        self.assertEqual(summary["results"][0]["raw_message_storage_contract"]["target"]["backend"], "matrixobject")
         self.assertEqual(
             summary["results"][0]["raw_message_storage_contract"]["object_store_contract"]["provider_name"],
             "MatrixObject",
@@ -129,6 +129,13 @@ class MatrixArkDualWriteIngestionBenchmarkTest(unittest.TestCase):
             "list_page",
             summary["results"][0]["raw_message_storage_contract"]["object_store_contract"]["required_operations"],
         )
+
+    def test_backend_sweep_accepts_legacy_objectstore_alias(self) -> None:
+        args = self.make_args(records=20, workers=1, batch_size=10, raw_backends="objectstore")
+        summary = bench.run_backend_sweep(args)
+        self.assertEqual(summary["status"], "ok")
+        self.assertEqual(summary["raw_backends"], ["matrixobject"])
+        self.assertEqual(summary["results"][0]["raw_backend"], "matrixobject")
 
     def test_backend_sweep_covers_both_raw_options(self) -> None:
         args = self.make_args(records=40, workers=2, batch_size=10, require_dual_write_counts=1)

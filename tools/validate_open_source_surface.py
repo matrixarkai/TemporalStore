@@ -61,7 +61,10 @@ def main() -> int:
     redis_live_smoke = read("tools/run_redis_live_storage_smoke_ubuntu22.sh")
     redis_production_gate = read("tools/run_redis_production_gate_ubuntu22.sh")
     redis_docs = read("docs/redis_compatibility_matrix.md")
+    temporal_adapters = read("tools/matrixark_mcp_temporal_adapters.py")
     raw_storage_contract = read("tools/matrixark_raw_message_storage_contract.py")
+    dual_write_benchmark = read("tools/matrixark_dual_write_ingestion_benchmark.py")
+    context_backfill = read("tools/matrixark_context_backfill.py")
     matrixobject_docs = read("docs/matrixobjectstore_design_extraction_and_readiness.md")
     context_resource = read("crates/temporalstore-rust/src/context_workflow/resource.rs")
     context_resource_tests = read("crates/temporalstore-rust/src/context_workflow/tests.rs")
@@ -468,8 +471,30 @@ def main() -> int:
         failures,
     )
     require(
-        '"matrixobjectstore": "objectstore"' in raw_storage_contract,
-        "MatrixObject legacy backend alias must stay compatible",
+        '"objectstore": "matrixobject"' in raw_storage_contract
+        and '"matrixobjectstore": "matrixobject"' in raw_storage_contract,
+        "MatrixObject backend aliases must normalize to canonical matrixobject",
+        failures,
+    )
+    require(
+        'SUPPORTED_BACKENDS = {"temporalstore", "matrixkv", "s3", "matrixobject"}' in raw_storage_contract,
+        "raw-message contract must advertise matrixobject as the canonical object backend",
+        failures,
+    )
+    require(
+        'RAW_BACKEND_CHOICES = ["temporalstore", "matrixkv", "s3", "matrixobject"]' in dual_write_benchmark,
+        "dual-write benchmark must advertise matrixobject as the canonical raw backend",
+        failures,
+    )
+    require(
+        "'matrixobject', 'objectstore'" in context_backfill,
+        "context backfill must accept canonical matrixobject plus legacy objectstore alias",
+        failures,
+    )
+    require(
+        '"matrixark_raw_ingestion_matrixobject_ref"' in temporal_adapters
+        and '"matrixark_raw_ingestion_objectstore_ref"' not in temporal_adapters,
+        "MCP adapter raw-ingestion path must use canonical MatrixObject naming",
         failures,
     )
     require(

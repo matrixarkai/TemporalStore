@@ -95,7 +95,7 @@ class RawMessageStorageContractTest(unittest.TestCase):
         self.assertFalse(report["inline_payload"])
         self.assertTrue(report["spilled_to_object_store"])
         self.assertEqual(report["stored_value_mode"], "object_ref_json")
-        self.assertEqual(report["object_ref"]["backend"], "objectstore")
+        self.assertEqual(report["object_ref"]["backend"], "matrixobject")
         self.assertEqual(report["metadata_backend"], "temporalstore")
         self.assertTrue(report["metadata_persisted_in_temporalstore"])
         self.assertEqual(report["object_ref"]["metadata_backend"], "temporalstore")
@@ -131,11 +131,12 @@ class RawMessageStorageContractTest(unittest.TestCase):
         self.assertIn("byte_range_read", report["object_store_contract"]["required_capabilities"])
 
     def test_object_store_backend_aliases_are_supported(self) -> None:
-        self.assertEqual(normalize_raw_backend("object_store"), "objectstore")
-        self.assertEqual(normalize_raw_backend("matrixobject"), "objectstore")
-        self.assertEqual(normalize_raw_backend("matrixobjectstore"), "objectstore")
-        self.assertEqual(normalize_raw_backend("blob"), "objectstore")
-        self.assertEqual(normalize_raw_backend("matrix_object_store"), "objectstore")
+        self.assertEqual(normalize_raw_backend("object_store"), "matrixobject")
+        self.assertEqual(normalize_raw_backend("matrixobject"), "matrixobject")
+        self.assertEqual(normalize_raw_backend("matrixobjectstore"), "matrixobject")
+        self.assertEqual(normalize_raw_backend("objectstore"), "matrixobject")
+        self.assertEqual(normalize_raw_backend("blob"), "matrixobject")
+        self.assertEqual(normalize_raw_backend("matrix_object_store"), "matrixobject")
         self.assertEqual(normalize_raw_backend("aws_s3"), "s3")
 
     def test_provider_name_tracks_resolved_backend(self) -> None:
@@ -147,10 +148,11 @@ class RawMessageStorageContractTest(unittest.TestCase):
 
     def test_generic_object_store_contract_matches_matrixobject_and_s3_adapter_shape(self) -> None:
         matrix_contract = generic_object_store_contract(RawMessageStorageTarget(backend="matrixobjectstore"))
-        self.assertEqual(matrix_contract["backend"], "objectstore")
+        self.assertEqual(matrix_contract["backend"], "matrixobject")
         self.assertEqual(matrix_contract["provider_name"], "MatrixObject")
         self.assertEqual(matrix_contract["canonical_uri_schemes"], ["matrixobject"])
         self.assertIn("matrixobjectstore", matrix_contract["legacy_uri_schemes"])
+        self.assertIn("objectstore", matrix_contract["legacy_uri_schemes"])
         self.assertIn("blob", matrix_contract["legacy_uri_schemes"])
         self.assertEqual(matrix_contract["selection_rule"], "choose_by_uri_scheme_then_capabilities")
         self.assertEqual(matrix_contract["remote_backend_behavior"], "fail_closed_until_linked")

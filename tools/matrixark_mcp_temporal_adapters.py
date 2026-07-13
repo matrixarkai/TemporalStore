@@ -865,12 +865,22 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             backend = "temporalstore"
         if backend in {"matrix_kv", "kv"}:
             backend = "matrixkv"
-        if backend in {"object_store", "object", "blob", "blobstore", "blob_store"}:
-            backend = "objectstore"
+        if backend in {
+            "matrix_object",
+            "matrixobjectstore",
+            "matrix_object_store",
+            "objectstore",
+            "object_store",
+            "object",
+            "blob",
+            "blobstore",
+            "blob_store",
+        }:
+            backend = "matrixobject"
         if backend in {"aws_s3", "s3_object", "s3_objectstore"}:
             backend = "s3"
-        if backend not in {"temporalstore", "matrixkv", "s3", "objectstore"}:
-            raise MatrixArkError("MATRIXARK_RAW_INGESTION_BACKEND must be temporalstore, matrixkv, s3, or objectstore")
+        if backend not in {"temporalstore", "matrixkv", "s3", "matrixobject"}:
+            raise MatrixArkError("MATRIXARK_RAW_INGESTION_BACKEND must be temporalstore, matrixkv, s3, or matrixobject")
         return backend
 
     def _raw_ingestion_append_path(self) -> str:
@@ -883,7 +893,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             return "matrixark_raw_ingestion_matrixkv_log"
         if backend == "s3":
             return "matrixark_raw_ingestion_s3_object_ref"
-        return "matrixark_raw_ingestion_objectstore_ref"
+        return "matrixark_raw_ingestion_matrixobject_ref"
 
     def _raw_ingestion_append_options(self) -> Json:
         backend = self._normalize_raw_storage_backend(
