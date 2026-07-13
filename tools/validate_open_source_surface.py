@@ -124,9 +124,20 @@ def main() -> int:
 
     body = rust_allowlist_body(rust_redis)
     require(body, "Rust Redis open-source allowlist must exist", failures)
-    for allowed in ("HSET", "HGET", "HGETALL", "GET", "SET", "FADD", "FQUERY"):
+    for allowed in (
+        "HSET",
+        "HGET",
+        "HGETALL",
+        "GET",
+        "SET",
+        "FAPPEND",
+        "FQUERY",
+        "RISKINCR",
+        "CPCSET",
+        "FOLQUERY",
+    ):
         require(f'"{allowed}"' in body, f"Rust allowlist must keep {allowed}", failures)
-    for denied in ("SADD", "LPUSH", "ZADD", "IPSADD", "RISKINCR", "PARTITION"):
+    for denied in ("SADD", "LPUSH", "ZADD", "IPSADD", "FADD", "RISKDEBUG", "PARTITION"):
         require(f'"{denied}"' not in body, f"Rust allowlist must not include {denied}", failures)
 
     if failures:

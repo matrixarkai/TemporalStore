@@ -1950,6 +1950,7 @@ fn open_source_redis_command_allowed(command: &str) -> bool {
             | "DECR"
             | "INCRBY"
             | "DECRBY"
+            | "INCRBYFLOAT"
             | "HSET"
             | "HSETNX"
             | "HGET"
@@ -1963,15 +1964,28 @@ fn open_source_redis_command_allowed(command: &str) -> bool {
             | "HVALS"
             | "HSTRLEN"
             | "HINCRBY"
+            | "HINCRBYFLOAT"
             | "HSCAN"
-            | "FADD"
-            | "FADDNX"
+            | "FAPPEND"
+            | "FAPPENDPOLICY"
             | "FQUERY"
             | "FQUERYFILTER"
-            | "FQUERYRANGE"
-            | "FREPLACE"
-            | "FDEL"
-            | "FAGGQUERY"
+            | "FQUERYFILTERSTR"
+            | "FAGG"
+            | "RISKINCR"
+            | "RISKINCROPT"
+            | "RISKCHANGE"
+            | "RISKCOUNT"
+            | "RISKQUERY"
+            | "RISKDETAIL"
+            | "RISKHSET"
+            | "HCHANGE"
+            | "HQUERY"
+            | "HSETANDGET"
+            | "CPCSET"
+            | "CPCSETANDGET"
+            | "FOLSET"
+            | "FOLQUERY"
     )
 }
 
@@ -2175,16 +2189,16 @@ fn redis_partition_response(
 fn redis_command_response(args: &[Vec<u8>]) -> RespValue {
     match args.get(1).map(|value| upper(value)) {
         None => RespValue::Array(
-            redis_supported_commands()
+            redis_public_commands()
                 .iter()
                 .map(|command| RespValue::Bulk(Some(command.name.as_bytes().to_vec())))
                 .collect(),
         ),
         Some(subcommand) if subcommand == "COUNT" && args.len() == 2 => {
-            RespValue::Integer(redis_supported_commands().len() as i64)
+            RespValue::Integer(redis_public_commands().len() as i64)
         }
         Some(subcommand) if subcommand == "INFO" && args.len() >= 3 => {
-            let commands = redis_supported_commands();
+            let commands = redis_public_commands();
             RespValue::Array(
                 args.iter()
                     .skip(2)
@@ -2222,6 +2236,15 @@ struct RedisCommandDescriptor {
     name: &'static str,
     arity: i64,
     flags: &'static [&'static str],
+}
+
+fn redis_public_commands() -> Vec<&'static RedisCommandDescriptor> {
+    redis_supported_commands()
+        .iter()
+        .filter(|command| {
+            !open_source_redis_surface_enabled() || open_source_redis_command_allowed(command.name)
+        })
+        .collect()
 }
 
 fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
@@ -2408,6 +2431,106 @@ fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             name: "INFO",
             arity: -1,
             flags: ADMIN,
+        },
+        RedisCommandDescriptor {
+            name: "FAPPEND",
+            arity: 4,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "FAPPENDPOLICY",
+            arity: 5,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "FQUERY",
+            arity: -4,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "FQUERYFILTER",
+            arity: 8,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "FQUERYFILTERSTR",
+            arity: -6,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "FAGG",
+            arity: 5,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "RISKINCR",
+            arity: 4,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "RISKINCROPT",
+            arity: 6,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "RISKCHANGE",
+            arity: -4,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "RISKCOUNT",
+            arity: 4,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "RISKQUERY",
+            arity: 5,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "RISKDETAIL",
+            arity: -4,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "RISKHSET",
+            arity: 4,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "HCHANGE",
+            arity: -4,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "HQUERY",
+            arity: 5,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "HSETANDGET",
+            arity: 7,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "CPCSET",
+            arity: 4,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "CPCSETANDGET",
+            arity: 7,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "FOLSET",
+            arity: -4,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "FOLQUERY",
+            arity: -2,
+            flags: READ,
         },
         RedisCommandDescriptor {
             name: "INCRBYFLOAT",
@@ -4407,10 +4530,13 @@ fn upper(value: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use std::io::BufReader;
+    use std::sync::Mutex;
 
     use super::*;
     use crate::engine::TemporalEngine;
     use crate::types::{ExecuteRequest, SequenceFeatureRow};
+
+    static OPEN_SOURCE_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn resp_parser_reads_array_command() {
@@ -4419,6 +4545,90 @@ mod tests {
             read_command(&mut input).unwrap(),
             Some(vec![b"SET".to_vec(), b"k".to_vec(), b"v".to_vec()])
         );
+    }
+
+    #[test]
+    fn redis_open_source_surface_is_trimmed_to_production_data_models() {
+        let _guard = OPEN_SOURCE_ENV_LOCK.lock().unwrap();
+        std::env::set_var("TEMPORALSTORE_OPEN_SOURCE_SURFACE", "1");
+
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let mut state = RedisCommandState::default();
+        let run = |state: &mut RedisCommandState, args: Vec<&str>| {
+            execute_redis_command_with_state(
+                args.into_iter()
+                    .map(|arg| arg.as_bytes().to_vec())
+                    .collect(),
+                1,
+                state,
+                |command| {
+                    let response = engine.execute(ExecuteRequest {
+                        shard_id: 1,
+                        command,
+                    });
+                    if response.status.ok {
+                        Ok(response.response)
+                    } else {
+                        Err(response.status.message)
+                    }
+                },
+            )
+        };
+
+        let advertised = run(&mut state, vec!["COMMAND"]);
+        let RespValue::Array(commands) = advertised else {
+            panic!("COMMAND must return an array");
+        };
+        let command_names = commands
+            .into_iter()
+            .map(|value| match value {
+                RespValue::Bulk(Some(bytes)) => String::from_utf8(bytes).unwrap(),
+                other => panic!("unexpected COMMAND entry: {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        for allowed in [
+            "GET", "SET", "HSET", "HGET", "FAPPEND", "FQUERY", "RISKINCR", "CPCSET", "FOLQUERY",
+        ] {
+            assert!(
+                command_names.contains(&allowed.to_string()),
+                "missing {allowed}"
+            );
+        }
+        for denied in [
+            "SADD",
+            "LPUSH",
+            "ZADD",
+            "SCAN",
+            "PARTITION",
+            "FADD",
+            "IPSADD",
+            "RISKDEBUG",
+        ] {
+            assert!(
+                !command_names.contains(&denied.to_string()),
+                "unexpected {denied}"
+            );
+        }
+
+        assert_eq!(
+            run(&mut state, vec!["FAPPEND", "feature", "10", "2"]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(&mut state, vec!["RISKINCR", "risk", "10", "5"]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert!(matches!(
+            run(&mut state, vec!["LPUSH", "list", "v"]),
+            RespValue::Error(message) if message.contains("open-source Redis surface")
+        ));
+        assert!(matches!(
+            run(&mut state, vec!["FADD", "feature", "10", "2"]),
+            RespValue::Error(message) if message.contains("open-source Redis surface")
+        ));
+
+        std::env::remove_var("TEMPORALSTORE_OPEN_SOURCE_SURFACE");
     }
 
     #[test]
