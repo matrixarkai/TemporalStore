@@ -1928,6 +1928,7 @@ pub enum CommandResponse {
         node: Option<ContextNode>,
     },
     ContextNodes {
+        #[serde(default)]
         nodes: Vec<ContextNode>,
     },
     ContextObjectKey {

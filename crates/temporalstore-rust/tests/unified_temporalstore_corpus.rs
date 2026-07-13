@@ -353,6 +353,7 @@ fn response_kind(response: &CommandResponse) -> &'static str {
         CommandResponse::IpsStats { .. } => "ips_stats",
         CommandResponse::IpsSnapshotReport { .. } => "ips_snapshot_report",
         CommandResponse::ContextNode { .. } => "context_node",
+        CommandResponse::ContextNodes { .. } => "context_nodes",
         CommandResponse::ContextObjectKey { .. } => "context_object_key",
         CommandResponse::ContextExtractedEventWrite { .. } => "context_extracted_event_write",
         CommandResponse::ContextEvents { .. } => "context_events",
@@ -717,7 +718,8 @@ fn assert_static_expectation(case: &UnifiedCase, step: &UnifiedStep) {
                 || uri.starts_with("s3://")
                 || uri.starts_with("ceph://")
                 || uri.starts_with("ceph+s3://")
-                || uri.starts_with("matrixobjectstore://");
+                || uri.starts_with("matrixobjectstore://")
+                || uri.starts_with("matrixobject://");
             let expected = step
                 .expect
                 .as_ref()
@@ -731,10 +733,13 @@ fn assert_static_expectation(case: &UnifiedCase, step: &UnifiedStep) {
         }
         "object_store_backend_detect" => {
             let uri = json_string(&step.command, "uri");
-            let backend = if uri.starts_with("blob://") || uri.starts_with("matrixobjectstore://") {
-                "matrixobjectstore"
+            let backend = if uri.starts_with("blob://")
+                || uri.starts_with("matrixobjectstore://")
+                || uri.starts_with("matrixobject://")
+            {
+                "matrixobject"
             } else if uri.starts_with("local://") {
-                "matrixobjectstore"
+                "matrixobject"
             } else if uri.starts_with("ceph+s3://") || uri.starts_with("ceph://") {
                 "ceph_s3"
             } else if uri.starts_with("rados://") {
@@ -2148,6 +2153,7 @@ fn verify_client_cpp_partition_set_route_cache() {
                         partitions: vec![
                             TablePartition {
                                 shard_id: PartitionId::new(42, 0, 0, 17).unwrap().id(),
+                                state: MetaEntityState::Normal,
                                 start_slot: 0,
                                 end_slot: 536_870_911,
                                 primary: Some(primary_for_meta.clone()),
@@ -2163,6 +2169,7 @@ fn verify_client_cpp_partition_set_route_cache() {
                             },
                             TablePartition {
                                 shard_id: PartitionId::new(42, 1, 0, 17).unwrap().id(),
+                                state: MetaEntityState::Normal,
                                 start_slot: 536_870_912,
                                 end_slot: 1_073_741_823,
                                 primary: Some(replica_for_meta.clone()),
@@ -2412,6 +2419,7 @@ fn verify_client_metasync_outage_churn() {
                             }),
                             partitions: vec![TablePartition {
                                 shard_id: 40,
+                                state: MetaEntityState::Normal,
                                 start_slot: 0,
                                 end_slot: 1_073_741_823,
                                 primary: Some("127.0.0.1:27440".to_string()),
@@ -2640,6 +2648,7 @@ fn verify_client_deployment_placement_routing() {
                         }),
                         partitions: vec![TablePartition {
                             shard_id: 81,
+                            state: MetaEntityState::Normal,
                             start_slot: 0,
                             end_slot: u64::MAX,
                             primary: Some(primary_for_meta.clone()),
@@ -2757,6 +2766,7 @@ fn verify_client_deployment_placement_routing() {
                         }),
                         partitions: vec![TablePartition {
                             shard_id: 82,
+                            state: MetaEntityState::Normal,
                             start_slot: 0,
                             end_slot: u64::MAX,
                             primary: Some(fallback_primary_for_meta.clone()),
