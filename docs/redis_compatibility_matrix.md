@@ -23,10 +23,10 @@ Current bridge status values:
 | Counter | `INCR`, `INCRBY`, `DECR`, `DECRBY` | required | wired | Wired through native string storage with integer parsing and overflow checks. |
 | TTL | `EXPIRE`, `PEXPIRE`, `TTL`, `PTTL`, `PERSIST`, `GETEX` | required | partial | `EXPIRE`, `PEXPIRE`, `TTL`, `PTTL`, `PERSIST`, `SET EX/PX`, `SETEX`, `PSETEX`, and `GETEX` are wired. Restart/failover TTL durability still belongs to the production gate. |
 | Hash | `HSET`, `HSETNX`, `HMSET`, `HGET`, `HMGET`, `HGETALL`, `HKEYS`, `HVALS`, `HSTRLEN`, `HDEL`, `HEXISTS`, `HLEN`, `HINCRBY` | required | wired | Wired through native hash storage; smoke coverage includes conditional field creation, field listing, values, field length, integer updates, deletes, and missing-field behavior. |
-| Set | `SADD`, `SREM`, `SMEMBERS`, `SCARD`, `SISMEMBER`, `SMISMEMBER`, `SPOP`, `SRANDMEMBER`, `SINTER`, `SUNION`, `SDIFF` | required | partial | Wired through native persistent-map set storage. Membership, pop/random-member, and set algebra are covered; random commands return deterministic members in the bridge smoke path to keep tests stable. |
-| List | `LPUSH`, `RPUSH`, `LPUSHX`, `RPUSHX`, `LPOP`, `RPOP`, `LLEN`, `LINDEX`, `LRANGE`, `LTRIM`, `LSET`, `LREM` | required | partial | Wired through encoded values in native string storage. This gives real persistence with minimal storage churn, but does not yet provide a native list model or blocking list commands. |
-| ZSet | `ZADD`, `ZINCRBY`, `ZREM`, `ZPOPMIN`, `ZPOPMAX`, `ZREMRANGEBYSCORE`, `ZREMRANGEBYRANK`, `ZCARD`, `ZSCORE`, `ZMSCORE`, `ZRANK`, `ZREVRANK`, `ZRANGE`, `ZREVRANGE`, `ZRANGEBYSCORE`, `ZREVRANGEBYSCORE`, `ZCOUNT` | required | partial | Wired through encoded values in native string storage. Supports score/member ordering, score mutation, pop min/max, range removal, rank, score, multi-score, count, remove, `WITHSCORES`, and score-range `LIMIT`; advanced zset options remain future work. |
-| Scan | `SCAN`, `HSCAN`, `SSCAN`, `ZSCAN` | planned | unsupported | Needed for operational migration but can follow first smoke if documented. |
+| Feature model | `FAPPEND`, `FAPPENDPOLICY`, `FQUERY`, `FQUERYFILTER`, `FQUERYFILTERSTR`, `FAGG` | required | wired | TemporalStore feature APIs are exposed as explicit data-model commands rather than pretending to be generic Redis collections. These support timestamped feature writes, policy writes, range query, filtered query, and aggregate query. |
+| Frequency-control model | `RISKINCR`, `RISKINCROPT`, `RISKCHANGE`, `RISKCOUNT`, `RISKQUERY`, `RISKDETAIL`, `RISKHSET`, `HCHANGE`, `HQUERY`, `HSETANDGET`, `CPCSET`, `CPCSETANDGET`, `FOLSET`, `FOLQUERY` | required | wired | Frequency-cap/risk-window commands remain data-model specific. Debug-only inspection commands are not part of the open-source surface. |
+| Set/List/ZSet clone APIs | `SADD`, `SREM`, `SMEMBERS`, `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `ZADD`, `ZRANGE`, `ZRANGEBYSCORE`, and related collection commands | deferred | private/unsupported in open-source surface | These compatibility handlers may exist internally, but open-source production builds do not advertise or allow them. Context/feature/frequency use native data-model APIs instead of encoded Redis collection clones. |
+| Narrow hash scan | `HSCAN` | required | wired | `HSCAN` is allowed only as a single-hash/narrow helper. Broad keyspace `SCAN`, `SSCAN`, and `ZSCAN` are not part of the open-source production surface. |
 | Transactions | `MULTI`, `EXEC`, `DISCARD`, `WATCH` | planned | unsupported | Start same-partition only or return explicit unsupported errors. |
 | Cluster | `CLUSTER SLOTS`, `CLUSTER NODES`, `MOVED`, `ASK` | planned | unsupported | Required only if exposing Redis Cluster wire compatibility. Proxy-hidden sharding can avoid this initially. |
 | Pub/Sub | `PUBLISH`, `SUBSCRIBE`, `PSUBSCRIBE` | deferred | unsupported | Separate serving plane; not required for KV migration. |
@@ -36,7 +36,7 @@ Current bridge status values:
 
 ## Current Bridge Caveat
 
-The native Redis data-command bridge currently requires the Redis service to have an explicitly loaded partition. `tools/run_redis_live_storage_smoke_ubuntu22.sh` validates that explicit local partition load plus STRING, TTL, HASH, SET, and deterministic unsupported-command paths work against live storage. If no partition is loaded through the Redis serving path, data commands fail fast with `ERR no partition loaded for Redis command serving`; they must not block. Metaserver/proxy-routed Redis serving still needs a production bootstrap path before this can be called full Redis migration support.
+The native Redis data-command bridge currently requires the Redis service to have an explicitly loaded partition. `tools/run_redis_live_storage_smoke_ubuntu22.sh` validates that explicit local partition load plus STRING, TTL, HASH, feature/frequency data-model commands, and deterministic unsupported-command paths work against live storage. If no partition is loaded through the Redis serving path, data commands fail fast with `ERR no partition loaded for Redis command serving`; they must not block. Metaserver/proxy-routed Redis serving still needs a production bootstrap path before this can be called full Redis migration support.
 
 ## Current Production-Ready Claim
 
@@ -47,22 +47,21 @@ The TemporalStore native Redis bridge is production-ready only for the documente
 - Counters: `INCR`, `INCRBY`, `DECR`, `DECRBY`
 - TTL: `EXPIRE`, `PEXPIRE`, `TTL`, `PTTL`, `PERSIST`
 - Hash: `HSET`, `HSETNX`, `HMSET`, `HGET`, `HMGET`, `HDEL`, `HEXISTS`, `HLEN`, `HGETALL`, `HKEYS`, `HVALS`, `HSTRLEN`, `HINCRBY`
-- Set: `SADD`, `SREM`, `SMEMBERS`, `SCARD`, `SISMEMBER`, `SMISMEMBER`, `SPOP`, `SRANDMEMBER`, `SINTER`, `SUNION`, `SDIFF`
-- List: `LPUSH`, `RPUSH`, `LPUSHX`, `RPUSHX`, `LPOP`, `RPOP`, `LLEN`, `LINDEX`, `LRANGE`, `LTRIM`, `LSET`, `LREM`
-- ZSet: `ZADD`, `ZINCRBY`, `ZREM`, `ZPOPMIN`, `ZPOPMAX`, `ZREMRANGEBYSCORE`, `ZREMRANGEBYRANK`, `ZCARD`, `ZSCORE`, `ZMSCORE`, `ZRANK`, `ZREVRANK`, `ZRANGE`, `ZREVRANGE`, `ZRANGEBYSCORE`, `ZREVRANGEBYSCORE`, `ZCOUNT`
-- Admin/bootstrap: explicit `PARTITION LOAD`/`PARTITION UNLOAD` for local Redis serving
+- Feature model: `FAPPEND`, `FAPPENDPOLICY`, `FQUERY`, `FQUERYFILTER`, `FQUERYFILTERSTR`, `FAGG`
+- Frequency-control model: `RISKINCR`, `RISKINCROPT`, `RISKCHANGE`, `RISKCOUNT`, `RISKQUERY`, `RISKDETAIL`, `RISKHSET`, `HCHANGE`, `HQUERY`, `HSETANDGET`, `CPCSET`, `CPCSETANDGET`, `FOLSET`, `FOLQUERY`
 
-The bridge must not claim full Redis compatibility yet. Unsupported command families return deterministic Redis errors rather than fake success. The current local bridge serializes backend Redis data-command execution while storage concurrency semantics are hardened; this favors correctness over peak Redis QPS.
+Open-source production builds do not claim generic Redis SET/LIST/ZSET compatibility. `SADD`, `LPUSH`, `ZADD`, `SCAN`, `PARTITION`, `IPS*`, scripting, streams, pub/sub, GEO, HyperLogLog, and bitmap commands must return deterministic unsupported/open-surface errors.
 
-Latest local collection-type gate:
+The bridge must not claim full Redis compatibility yet. Unsupported command families return deterministic Redis errors rather than fake success. When `TEMPORALSTORE_OPEN_SOURCE_SURFACE=1` or `TS_OPEN_SOURCE_SURFACE=1`, Rust filters both execution and `COMMAND` advertising to the trimmed production data-model surface. The current local bridge serializes backend Redis data-command execution while storage concurrency semantics are hardened; this favors correctness over peak Redis QPS.
+
+Latest open-source surface gate:
 
 ```bash
-RESULT_ROOT=/tmp/temporalstore-redis-sets-lists-zsets-20260611-001020 \
-  REPEAT=2 BENCH_REQUESTS=20000 BENCH_CLIENTS=32 \
-  tools/run_redis_production_gate_ubuntu22.sh
+python3 tools/validate_open_source_surface.py
+cargo check -p temporalstore-rust --lib
 ```
 
-Result: PASS for the previous gate. Sets are storage-backed. Lists and sorted sets are storage-backed through encoded native string values while native LIST/ZSET modules remain future work. The compatibility smoke now also covers `GETEX`, extended `SET` forms, `HSETNX`, `HSTRLEN`, `SPOP`, `SRANDMEMBER`, `SINTER`, `SUNION`, `SDIFF`, `LPUSHX`/`RPUSHX`, `LSET`, `LREM`, `ZINCRBY`, `ZMSCORE`, `ZPOPMIN`/`ZPOPMAX`, reverse score ranges, and zset range removals.
+Result expectation: the public Rust surface keeps string/common, hash, feature, and frequency-control commands; `COMMAND` does not advertise `SADD`, `LPUSH`, `ZADD`, `SCAN`, `PARTITION`, stale feature aliases such as `FADD`, or internal/debug families such as `IPS*`/`RISKDEBUG`.
 
 ## Production Gate
 
@@ -72,14 +71,14 @@ Run the local production gate with:
 tools/run_redis_production_gate_ubuntu22.sh
 ```
 
-The gate builds the release server, audits no-op success paths, rejects `nullptr` Redis command handlers, runs the live storage smoke twice by default, runs the compatibility/pipeline/concurrency smoke, and runs a small `redis-benchmark` set/get profile when `redis-benchmark` is installed.
+The gate builds the release server, audits no-op success paths, rejects `nullptr` Redis command handlers, runs the live storage smoke twice by default, runs the trimmed compatibility/pipeline/concurrency smoke, and runs a small `redis-benchmark` set/get profile when `redis-benchmark` is installed.
 
-The first full Redis-compatible production claim still requires:
+The production claim for the trimmed Redis-style API requires:
 
-1. All `required` commands pass `tools/run_redis_compat_smoke_ubuntu22.sh`.
-2. Redis client compatibility passes with at least `redis-cli` and `redis-py`.
+1. All `required` string/common, hash, feature, and frequency-control commands pass focused smoke coverage.
+2. Redis client compatibility passes with at least `redis-cli` and `redis-py` for the supported subset.
 3. TTL survives restart and replica/failover validation.
-4. Pipelined command tests pass.
-5. Scale smoke passes for STRING, HASH, LIST, and ZSET workloads.
-6. Unsupported commands return deterministic Redis-style errors.
+4. Pipelined command tests pass for the supported subset.
+5. Scale smoke passes for STRING, HASH, feature, and frequency-control workloads.
+6. Unsupported collection-clone and advanced commands return deterministic Redis-style errors.
 7. Prometheus metrics expose command QPS, latency, errors, connection count, rejected commands, and backend routing failures.
