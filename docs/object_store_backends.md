@@ -48,6 +48,10 @@ S3-compatible stores, Ceph RGW, local files, and future object backends:
 - `put` / `put_atomic`: publish a complete object and return metadata.
 - `put_unique` / `put_path_unique`: append-style uploads for snapshots, WAL,
   and oplog objects that do not need overwrite cleanup.
+- `put_if_absent`: conditional create for append-style objects. MatrixObject and
+  file-backed stores reject existing keys with `AlreadyExists`; S3-compatible
+  adapters should map this to `If-None-Match: *` or an equivalent create-only
+  operation.
 - `get` / `get_to_path`: read a complete object into memory or directly to a
   destination path.
 - `get_range`: read only a byte range, matching the natural S3 ranged-GET
@@ -67,10 +71,10 @@ S3-compatible stores, Ceph RGW, local files, and future object backends:
   adapters should map this to server-side copy when available.
 - `delete_prefix`: delete all objects matching a prefix through paged listing
   and `delete_objects`, using backend-native bulk delete when available.
-- `capabilities`: report support for atomic put, unique put, path upload,
-  path download, metadata head, prefix list, paginated list, delete, bulk
-  delete, object copy, prefix deletion, byte-range read, checksum, and split
-  services.
+- `capabilities`: report support for atomic put, unique put, conditional create,
+  path upload, path download, metadata head, prefix list, paginated list,
+  delete, bulk delete, object copy, prefix deletion, byte-range read, checksum,
+  and split services.
 - `topology`: report a generic service list. MatrixObject maps this to
   root/block/chunk services; local file and shared file map to one object
   service; S3-style adapters should map to one remote object service unless a

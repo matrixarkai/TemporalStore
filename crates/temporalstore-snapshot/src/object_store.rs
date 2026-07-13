@@ -16,6 +16,8 @@ use uuid::Uuid;
 pub enum ObjectStoreError {
     #[error("object not found: {0}")]
     NotFound(String),
+    #[error("object already exists: {0}")]
+    AlreadyExists(String),
     #[error("invalid object key: {0}")]
     InvalidKey(String),
     #[error("object-store backend {backend} is not linked for {uri}")]
@@ -46,6 +48,7 @@ pub struct ObjectStoreCapabilities {
     pub operations_fail_closed: bool,
     pub atomic_put: bool,
     pub unique_put: bool,
+    pub conditional_create: bool,
     pub direct_upload_from_path: bool,
     pub direct_download_to_path: bool,
     pub metadata_head: bool,
@@ -74,6 +77,7 @@ impl ObjectStoreCapabilities {
             operations_fail_closed: false,
             atomic_put: true,
             unique_put: true,
+            conditional_create: true,
             direct_upload_from_path: true,
             direct_download_to_path: true,
             metadata_head: true,
@@ -97,6 +101,7 @@ impl ObjectStoreCapabilities {
             operations_fail_closed: false,
             atomic_put: true,
             unique_put: true,
+            conditional_create: true,
             direct_upload_from_path: true,
             direct_download_to_path: true,
             metadata_head: true,
@@ -120,6 +125,7 @@ impl ObjectStoreCapabilities {
             operations_fail_closed: true,
             atomic_put: false,
             unique_put: false,
+            conditional_create: false,
             direct_upload_from_path: false,
             direct_download_to_path: false,
             metadata_head: false,
@@ -149,6 +155,7 @@ impl ObjectStoreCapabilities {
             operations_fail_closed: true,
             atomic_put: supports_object_api,
             unique_put: supports_object_api,
+            conditional_create: supports_object_api,
             direct_upload_from_path: supports_object_api,
             direct_download_to_path: supports_object_api,
             metadata_head: supports_object_api,
@@ -378,8 +385,19 @@ fn list_page_from_sorted_keys(
 #[async_trait]
 pub trait ObjectStore: Send + Sync {
     async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError>;
+    async fn put_if_absent(
+        &self,
+        key: &str,
+        bytes: Bytes,
+    ) -> Result<ObjectMetadata, ObjectStoreError> {
+        match self.head(key).await {
+            Ok(_) => Err(ObjectStoreError::AlreadyExists(key.to_string())),
+            Err(ObjectStoreError::NotFound(_)) => self.put_atomic(key, bytes).await,
+            Err(err) => Err(err),
+        }
+    }
     async fn put_unique(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
-        self.put(key, bytes).await
+        self.put_if_absent(key, bytes).await.map(|_| ())
     }
     async fn put_path_unique(
         &self,
@@ -477,6 +495,7 @@ pub trait ObjectStore: Send + Sync {
             operations_fail_closed: false,
             atomic_put: true,
             unique_put: true,
+            conditional_create: true,
             direct_upload_from_path: false,
             direct_download_to_path: false,
             metadata_head: false,
@@ -1236,7 +1255,81 @@ impl ObjectStore for FileObjectStore {
         key: &str,
         source: &Path,
     ) -> Result<ObjectMetadata, ObjectStoreError> {
-        self.put_path_atomic(key, source).await
+        let path = self.resolve(key)?;
+        self.ensure_parent_dir(&path).await?;
+        let mut source_file = tokio::fs::File::open(source).await?;
+        let mut destination = match tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .await
+        {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(ObjectStoreError::AlreadyExists(key.to_string()));
+            }
+            Err(err) => return Err(ObjectStoreError::Io(err)),
+        };
+        let result = async {
+            let size_bytes = tokio::io::copy(&mut source_file, &mut destination).await?;
+            destination.flush().await?;
+            if self.sync_writes {
+                destination.sync_all().await?;
+            }
+            drop(destination);
+            if self.sync_parent_dirs {
+                sync_parent_dir(&path).await?;
+            }
+            Ok(ObjectMetadata {
+                key: key.to_string(),
+                uri: self.uri(key),
+                size_bytes,
+                checksum_sha256: sha256_file_hex(&path).await?,
+            })
+        }
+        .await;
+        if result.is_err() {
+            let _ = tokio::fs::remove_file(&path).await;
+        }
+        result
+    }
+
+    async fn put_if_absent(
+        &self,
+        key: &str,
+        bytes: Bytes,
+    ) -> Result<ObjectMetadata, ObjectStoreError> {
+        let path = self.resolve(key)?;
+        self.ensure_parent_dir(&path).await?;
+        let mut file = match tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .await
+        {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(ObjectStoreError::AlreadyExists(key.to_string()));
+            }
+            Err(err) => return Err(ObjectStoreError::Io(err)),
+        };
+        let result = async {
+            file.write_all(&bytes).await?;
+            file.flush().await?;
+            if self.sync_writes {
+                file.sync_all().await?;
+            }
+            drop(file);
+            if self.sync_parent_dirs {
+                sync_parent_dir(&path).await?;
+            }
+            Ok(ObjectMetadata::from_bytes(key, self.uri(key), &bytes))
+        }
+        .await;
+        if result.is_err() {
+            let _ = tokio::fs::remove_file(&path).await;
+        }
+        result
     }
 
     async fn put_atomic(
@@ -1964,6 +2057,14 @@ impl ObjectStore for MatrixObjectStore {
         self.put_atomic_unique(key, bytes).await.map(|_| ())
     }
 
+    async fn put_if_absent(
+        &self,
+        key: &str,
+        bytes: Bytes,
+    ) -> Result<ObjectMetadata, ObjectStoreError> {
+        self.put_atomic_unique(key, bytes).await
+    }
+
     async fn put_path_unique(
         &self,
         key: &str,
@@ -2233,6 +2334,11 @@ impl MatrixObjectStore {
         key: &str,
         path: &Path,
     ) -> Result<ObjectMetadata, ObjectStoreError> {
+        match self.root_service.get_manifest(key).await {
+            Ok(_) => return Err(ObjectStoreError::AlreadyExists(key.to_string())),
+            Err(ObjectStoreError::NotFound(_)) => {}
+            Err(err) => return Err(err),
+        }
         let (blocks, checksum_sha256, size_bytes) = self.write_chunks_from_path(key, path).await?;
         let manifest = MatrixObjectManifest {
             key: key.to_string(),
@@ -2260,6 +2366,13 @@ impl MatrixObjectStore {
         bytes: Bytes,
         cleanup_previous: bool,
     ) -> Result<ObjectMetadata, ObjectStoreError> {
+        if !cleanup_previous {
+            match self.root_service.get_manifest(key).await {
+                Ok(_) => return Err(ObjectStoreError::AlreadyExists(key.to_string())),
+                Err(ObjectStoreError::NotFound(_)) => {}
+                Err(err) => return Err(err),
+            }
+        }
         let root_service = self.root_service.clone();
         let previous_key = key.to_string();
         let previous_manifest_task = cleanup_previous.then(|| {
@@ -2313,6 +2426,14 @@ impl ObjectStore for RemoteObjectStore {
     }
 
     async fn put_unique(&self, _key: &str, _bytes: Bytes) -> Result<(), ObjectStoreError> {
+        self.unsupported()
+    }
+
+    async fn put_if_absent(
+        &self,
+        _key: &str,
+        _bytes: Bytes,
+    ) -> Result<ObjectMetadata, ObjectStoreError> {
         self.unsupported()
     }
 
@@ -2589,6 +2710,20 @@ impl ObjectStore for SharedObjectStore {
         }
     }
 
+    async fn put_if_absent(
+        &self,
+        key: &str,
+        bytes: Bytes,
+    ) -> Result<ObjectMetadata, ObjectStoreError> {
+        match self {
+            Self::LocalFile(store) | Self::SharedFile(store) => {
+                store.put_if_absent(key, bytes).await
+            }
+            Self::MatrixObjectStore(store) => store.put_if_absent(key, bytes).await,
+            Self::Remote(store) => store.put_if_absent(key, bytes).await,
+        }
+    }
+
     async fn put_path_unique(
         &self,
         key: &str,
@@ -2834,6 +2969,7 @@ mod tests {
         assert!(!capabilities.operations_fail_closed);
         assert!(capabilities.atomic_put);
         assert!(capabilities.unique_put);
+        assert!(capabilities.conditional_create);
         assert!(capabilities.copy_object);
         assert!(capabilities.delete_prefix);
         assert!(capabilities.paginated_list);
@@ -2960,6 +3096,41 @@ mod tests {
         );
         assert_eq!(matrix_store.delete_prefix("objects/").await.unwrap(), 1);
         assert!(matrix_store.list("objects/").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn generic_object_store_put_if_absent_rejects_existing_objects() {
+        async fn assert_put_if_absent<O: ObjectStore>(store: &O) {
+            let first = store
+                .put_if_absent("objects/only-once", Bytes::from_static(b"first"))
+                .await
+                .unwrap();
+            assert_eq!(first.key, "objects/only-once");
+            assert!(matches!(
+                store
+                    .put_if_absent("objects/only-once", Bytes::from_static(b"second"))
+                    .await,
+                Err(ObjectStoreError::AlreadyExists(key)) if key == "objects/only-once"
+            ));
+            assert_eq!(
+                store.get("objects/only-once").await.unwrap(),
+                Bytes::from_static(b"first")
+            );
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let file_store = SharedObjectStore::from_backend_root(
+            SharedObjectStoreBackend::LocalFile,
+            dir.path().join("file"),
+        )
+        .unwrap();
+        assert_put_if_absent(&file_store).await;
+
+        let matrix_store = MatrixObjectStore::from_config(
+            MatrixObjectStoreConfig::local_compat(dir.path().join("matrix"))
+                .with_chunk_target_bytes(4),
+        );
+        assert_put_if_absent(&matrix_store).await;
     }
 
     #[tokio::test]
@@ -3809,6 +3980,7 @@ mod tests {
         assert!(!capabilities.runtime_linked);
         assert!(capabilities.operations_fail_closed);
         assert!(capabilities.atomic_put);
+        assert!(capabilities.conditional_create);
         assert!(capabilities.copy_object);
         assert!(capabilities.delete_prefix);
         assert!(capabilities.paginated_list);
