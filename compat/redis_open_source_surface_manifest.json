@@ -74,8 +74,52 @@
     "ZUNION",
     "PSLOTHASHKEY",
     "PCLUSTERKEYSLOT",
-    "PCLUSTERHASH"
+    "PCLUSTERHASH",
+    "SCAN",
+    "FLUSHALL",
+    "MULTI",
+    "EVAL",
+    "EVALSHA",
+    "PUBLISH",
+    "SUBSCRIBE",
+    "PSUBSCRIBE",
+    "XADD",
+    "XGROUP"
   ],
+  "blocked_smoke_samples": {
+    "compat": [
+      "SADD",
+      "LPUSH",
+      "ZADD",
+      "BGSAVE",
+      "CONFIG",
+      "DBSIZE",
+      "KEYS",
+      "SCAN",
+      "SSCAN",
+      "ZSCAN",
+      "MULTI",
+      "EVAL",
+      "EVALSHA",
+      "XADD"
+    ],
+    "live": [
+      "SADD",
+      "LPUSH",
+      "ZADD",
+      "BGSAVE",
+      "CONFIG",
+      "DBSIZE",
+      "KEYS",
+      "SCAN",
+      "SSCAN",
+      "ZSCAN",
+      "MULTI",
+      "EVAL",
+      "EVALSHA",
+      "XADD"
+    ]
+  },
   "cxx_command_count": 47,
   "cxx_commands": [
     "INFO",

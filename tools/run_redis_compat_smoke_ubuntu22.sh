@@ -309,6 +309,7 @@ fi
 expect_error unsupported_bgsave BGSAVE
 expect_error unsupported_flushall FLUSHALL
 expect_error unsupported_pslotinfo PSLOTINFO
+expect_error unsupported_config CONFIG GET maxmemory
 expect_error unsupported_scan SCAN 0
 expect_error unsupported_sscan SSCAN "$(k set2)" 0
 expect_error unsupported_zscan ZSCAN "$(k zset)" 0
