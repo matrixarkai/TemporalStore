@@ -530,6 +530,16 @@ def main() -> int:
         failures,
     )
     require(
+        manifest.get("surface") == "trimmed_open_source_context_feature_frequency",
+        "Redis open-source surface manifest must declare the trimmed context/feature/frequency surface identity",
+        failures,
+    )
+    require(
+        '"redis_surface": manifest.get("surface")' in redis_compat_smoke,
+        "Redis benchmark summary must copy the manifest surface identity",
+        failures,
+    )
+    require(
         "REDIS_COMPAT_SURFACE=trimmed" in redis_production_gate,
         "Redis production gate must force the trimmed compatibility surface",
         failures,
