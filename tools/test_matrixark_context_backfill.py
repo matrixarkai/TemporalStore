@@ -1731,7 +1731,7 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(summary["metrics"]["scanned"], 2)
             self.assertEqual(summary["metrics"]["written"], 2)
 
-    def test_raw_message_store_reader_reads_temporalstore_and_matrixkv_with_same_api(self):
+    def test_raw_message_store_reader_reads_all_raw_backends_with_same_api(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "kv.json"
             kv = backfill.LocalJsonKV(path)
@@ -1746,17 +1746,24 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             kv.put_string("matrixark:mcp:record_count", "1")
 
             reports = []
-            for backend in ["temporalstore", "matrixkv"]:
+            expected_normalized = {
+                "temporalstore": "temporalstore",
+                "matrixkv": "matrixkv",
+                "s3": "s3",
+                "matrixobject": "matrixobject",
+                "objectstore": "matrixobject",
+            }
+            for backend, normalized_backend in expected_normalized.items():
                 reader = backfill.make_raw_message_reader(
                     kv,
                     prefix="matrixark:mcp",
                     raw_backend=backend,
                 )
                 self.assertEqual(reader.count(), 1)
-                self.assertEqual(reader.source_range(start_seq=0, end_seq=None)["raw_backend"], backend)
+                self.assertEqual(reader.source_range(start_seq=0, end_seq=None)["raw_backend"], normalized_backend)
                 event = reader.read_raw_event(0)
                 reports.append(event["storage_contract"])
-                self.assertEqual(event["backend"], backend)
+                self.assertEqual(event["backend"], normalized_backend)
                 self.assertEqual(event["record"]["body"], "same general raw event API")
                 self.assertEqual(event["storage_contract"]["timestamp_key_ms"], 1781777200000)
                 self.assertEqual(event["storage_contract"]["event_key_hash"], 42)
@@ -1769,7 +1776,7 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
                     read_seq=0,
                 ))
                 self.assertEqual(cli_event["mode"], "read_raw_event")
-                self.assertEqual(cli_event["backend"], backend)
+                self.assertEqual(cli_event["backend"], normalized_backend)
                 self.assertEqual(cli_event["raw_store_reader"], "matrixark.raw_message_store_reader.v1")
                 self.assertEqual(cli_event["record"], event["record"])
                 self.assertEqual(cli_event["storage_contract"], event["storage_contract"])

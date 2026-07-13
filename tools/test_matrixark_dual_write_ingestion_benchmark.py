@@ -137,21 +137,21 @@ class MatrixArkDualWriteIngestionBenchmarkTest(unittest.TestCase):
         self.assertEqual(summary["raw_backends"], ["matrixobject"])
         self.assertEqual(summary["results"][0]["raw_backend"], "matrixobject")
 
-    def test_backend_sweep_covers_both_raw_options(self) -> None:
+    def test_backend_sweep_covers_all_canonical_raw_options(self) -> None:
         args = self.make_args(records=40, workers=2, batch_size=10, require_dual_write_counts=1)
         args.raw_backends = "both"
         summary = bench.run_backend_sweep(args)
         self.assertEqual(summary["status"], "ok")
-        self.assertEqual(summary["raw_backends"], ["temporalstore", "matrixkv"])
+        self.assertEqual(summary["raw_backends"], ["temporalstore", "matrixkv", "s3", "matrixobject"])
         self.assertEqual(summary["raw_message_storage_contract"]["stored_value_mode"], "raw_body_utf8")
         self.assertTrue(summary["raw_message_storage_contract"]["uses_timestamp_and_event_key"])
         self.assertEqual(summary["records_per_backend"], 40)
-        self.assertEqual(summary["total_records"], 80)
+        self.assertEqual(summary["total_records"], 160)
         self.assertTrue(summary["performance_gate"]["enabled"])
         self.assertTrue(summary["performance_gate"]["passed"])
-        self.assertEqual(len(summary["results"]), 2)
+        self.assertEqual(len(summary["results"]), 4)
         by_backend = {result["raw_backend"]: result for result in summary["results"]}
-        self.assertEqual(set(by_backend), {"temporalstore", "matrixkv"})
+        self.assertEqual(set(by_backend), {"temporalstore", "matrixkv", "s3", "matrixobject"})
         self.assertGreater(summary["summary"]["ingestion_qps"]["min"], 0)
         self.assertGreater(summary["summary"]["caller_visible_batch_latency_ms_p95"]["max"], 0)
         for backend, result in by_backend.items():
@@ -215,7 +215,7 @@ class MatrixArkDualWriteIngestionBenchmarkTest(unittest.TestCase):
                 "--records=20",
                 "--workers=2",
                 "--batch-size=10",
-                "--raw-backends=both",
+                "--raw-backends=all",
                 "--min-backend-qps-ratio=0.000001",
                 "--require-dual-write-counts=1",
                 f"--json-output={output}",
@@ -223,14 +223,14 @@ class MatrixArkDualWriteIngestionBenchmarkTest(unittest.TestCase):
             ])
             self.assertEqual(rc, 0)
             summary = json.loads(output.read_text())
-            self.assertEqual(summary["raw_backends"], ["temporalstore", "matrixkv"])
-            self.assertEqual(summary["total_records"], 40)
+            self.assertEqual(summary["raw_backends"], ["temporalstore", "matrixkv", "s3", "matrixobject"])
+            self.assertEqual(summary["total_records"], 80)
             self.assertTrue(summary["performance_gate"]["passed"])
             self.assertEqual(summary["performance_gate"]["min_backend_qps_ratio"], 0.000001)
             prom_text = prom.read_text()
             self.assertIn("matrixark_dual_write_ingestion_qps", prom_text)
-            self.assertIn('raw_backend="temporalstore"', prom_text)
-            self.assertIn('raw_backend="matrixkv"', prom_text)
+            for backend in ("temporalstore", "matrixkv", "s3", "matrixobject"):
+                self.assertIn(f'raw_backend="{backend}"', prom_text)
             self.assertIn("matrixark_dual_write_ingestion_backend_qps_ratio", prom_text)
             self.assertIn('status="passed"', prom_text)
 

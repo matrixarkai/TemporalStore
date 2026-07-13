@@ -38,7 +38,7 @@ RAW_BACKEND_ALIASES = {
     "object": "matrixobject",
     "blob": "matrixobject",
 }
-RAW_BACKEND_SWEEP_CHOICES = ["temporalstore", "matrixkv"]
+RAW_BACKEND_SWEEP_CHOICES = ["temporalstore", "matrixkv", "s3", "matrixobject"]
 
 
 def normalize_raw_backend(value: str) -> str:
@@ -214,7 +214,7 @@ def parse_raw_backends(value: str, fallback: str) -> list[str]:
     selected = (value or "").strip()
     if not selected:
         selected = fallback
-    if selected == "both":
+    if selected in {"all", "both"}:
         return list(RAW_BACKEND_SWEEP_CHOICES)
     backends: list[str] = []
     for item in selected.split(","):
@@ -222,7 +222,7 @@ def parse_raw_backends(value: str, fallback: str) -> list[str]:
         if not backend:
             continue
         if backend not in RAW_BACKEND_CHOICES:
-            raise BenchmarkError(f"unsupported raw backend {backend!r}; expected one of {', '.join(RAW_BACKEND_CHOICES)} or both")
+            raise BenchmarkError(f"unsupported raw backend {backend!r}; expected one of {', '.join(RAW_BACKEND_CHOICES)} or all")
         if backend not in backends:
             backends.append(backend)
     if not backends:
@@ -512,7 +512,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--raw-backends",
         default=os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_RAW_BACKENDS", ""),
-        help="Run a backend sweep for temporalstore, matrixkv, both, or a comma-separated subset. Empty means --raw-backend only.",
+        help="Run a backend sweep for all canonical raw stores, one raw store, or a comma-separated subset. Empty means --raw-backend only; both is a legacy alias for all.",
     )
     parser.add_argument("--shard-size", type=int, default=int(os.environ.get("MATRIXARK_DIRECT_RECORD_LOG_SHARD_SIZE", "4096")))
     parser.add_argument("--metaserver", default=os.environ.get("TEMPORALSTORE_METASERVER", "127.0.0.1:65000"))
