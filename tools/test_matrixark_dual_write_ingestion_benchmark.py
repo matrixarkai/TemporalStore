@@ -106,6 +106,8 @@ class MatrixArkDualWriteIngestionBenchmarkTest(unittest.TestCase):
         contract = summary["raw_message_storage_contract"]
         self.assertEqual(contract["target"]["backend"], "s3")
         self.assertEqual(contract["object_store_contract"]["provider_name"], "S3")
+        self.assertEqual(contract["object_store_name"], "S3")
+        self.assertEqual(contract["marker"]["object_store_name"], "S3")
         self.assertIn("get_range", contract["object_store_contract"]["required_operations"])
         self.assertIn("byte_range_read", contract["object_store_contract"]["required_capabilities"])
         self.assertEqual(contract["stored_value_mode"], "object_ref_json")

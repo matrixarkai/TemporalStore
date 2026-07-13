@@ -304,6 +304,15 @@ def raw_message_metadata_backend(target: RawMessageStorageTarget) -> str:
     return "matrixkv" if target.backend == "matrixkv" else "temporalstore"
 
 
+def raw_message_provider_name(target: RawMessageStorageTarget | str) -> str:
+    backend = normalize_raw_backend(target.backend if isinstance(target, RawMessageStorageTarget) else target)
+    if backend == "objectstore":
+        return "MatrixObject"
+    if backend == "s3":
+        return "S3"
+    return backend
+
+
 def raw_message_metadata_target(
     target: RawMessageStorageTarget,
     *,
@@ -359,7 +368,7 @@ def raw_message_marker(
     return {
         "schema": "matrixark.context.raw_agent_message_ref.v1",
         "raw_schema": "matrixark.context.raw_agent_message.v1",
-        "object_store_name": "MatrixObject",
+        "object_store_name": raw_message_provider_name(resolved),
         "backend": resolved.backend,
         "payload_backend": resolved.backend,
         "metadata_backend": metadata_target.backend,
