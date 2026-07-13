@@ -185,6 +185,8 @@ expect_eq hmget_missing $'v1b\n\nv2' HMGET rh f1 nofield f2
 expect_eq hexists 1 HEXISTS rh f2
 expect_eq hlen 2 HLEN rh
 expect_eq hincrby 5 HINCRBY rh counter 5
+expect_eq hincrbyfloat_1 1.5 HINCRBYFLOAT rh float 1.5
+expect_eq hincrbyfloat_2 2 HINCRBYFLOAT rh float 0.5
 expect_eq hdel 1 HDEL rh f1
 if [[ "${REDIS_COMPAT_SURFACE}" == "full" ]]; then
 expect_eq sadd 2 SADD rs a b a

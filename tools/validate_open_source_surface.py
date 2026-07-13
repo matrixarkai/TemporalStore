@@ -334,7 +334,7 @@ def main() -> int:
         "Redis production gate must pass benchmark keyspace into the live smoke",
         failures,
     )
-    for benchmark_command in ("HSET", "HGET", "HINCRBY", "INCR", "EXPIRE"):
+    for benchmark_command in ("HSET", "HGET", "HINCRBY", "HINCRBYFLOAT", "INCR", "EXPIRE"):
         require(
             benchmark_command in redis_compat_smoke,
             f"Redis compatibility benchmark must cover {benchmark_command}",
@@ -349,6 +349,7 @@ def main() -> int:
         "redis-benchmark-hset.csv",
         "redis-benchmark-hget.csv",
         "redis-benchmark-hincrby.csv",
+        "redis-benchmark-hincrbyfloat.csv",
         "redis-benchmark-incr.csv",
         "redis-benchmark-expire.csv",
         "redis-benchmark-summary.json",

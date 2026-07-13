@@ -22,7 +22,7 @@ Current bridge status values:
 | String | `GET`, `SET`, `SETNX`, `SETEX`, `PSETEX`, `GETSET`, `GETDEL`, `GETEX`, `MGET`, `MSET`, `DEL`, `UNLINK`, `EXISTS`, `APPEND`, `STRLEN` | required | partial | `GET`, `SET key value`, `SET key value NX`, `SET key value XX`, `SET key value EX/PX`, `SET key value GET`, `SETNX`, `SETEX`, `PSETEX`, `GETSET`, `GETDEL`, `GETEX`, `MGET`, `MSET`, `DEL`, `UNLINK`, `EXISTS`, `APPEND`, and `STRLEN` are wired. `SET EX/PX` combined with `NX/XX` is rejected until the native string module exposes an atomic conditional set-with-ttl primitive. |
 | Counter | `INCR`, `INCRBY`, `DECR`, `DECRBY` | required | wired | Wired through native string storage with integer parsing and overflow checks. |
 | TTL | `EXPIRE`, `PEXPIRE`, `TTL`, `PTTL`, `PERSIST`, `GETEX` | required | partial | `EXPIRE`, `PEXPIRE`, `TTL`, `PTTL`, `PERSIST`, `SET EX/PX`, `SETEX`, `PSETEX`, and `GETEX` are wired. Restart/failover TTL durability still belongs to the production gate. |
-| Hash | `HSET`, `HSETNX`, `HMSET`, `HGET`, `HMGET`, `HGETALL`, `HKEYS`, `HVALS`, `HSTRLEN`, `HDEL`, `HEXISTS`, `HLEN`, `HINCRBY` | required | wired | Wired through native hash storage; smoke coverage includes conditional field creation, field listing, values, field length, integer updates, deletes, and missing-field behavior. |
+| Hash | `HSET`, `HSETNX`, `HMSET`, `HGET`, `HMGET`, `HGETALL`, `HKEYS`, `HVALS`, `HSTRLEN`, `HDEL`, `HEXISTS`, `HLEN`, `HINCRBY`, `HINCRBYFLOAT` | required | wired | Wired through native hash storage; smoke coverage includes conditional field creation, field listing, values, field length, integer and floating-point updates, deletes, and missing-field behavior. |
 | Feature model | `FAPPEND`, `FAPPENDPOLICY`, `FQUERY`, `FQUERYFILTER`, `FQUERYFILTERSTR`, `FAGG` | required | wired | TemporalStore feature APIs are exposed as explicit data-model commands rather than pretending to be generic Redis collections. These support timestamped feature writes, policy writes, range query, filtered query, and aggregate query. |
 | Frequency-control model | `RISKINCR`, `RISKINCROPT`, `RISKCHANGE`, `RISKCOUNT`, `RISKQUERY`, `RISKDETAIL`, `RISKHSET`, `HCHANGE`, `HQUERY`, `HSETANDGET`, `CPCSET`, `CPCSETANDGET`, `FOLSET`, `FOLQUERY` | required | wired | Frequency-cap/risk-window commands remain data-model specific. Debug-only inspection commands are not part of the open-source surface. |
 | Set/List/ZSet clone APIs | `SADD`, `SREM`, `SMEMBERS`, `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `ZADD`, `ZRANGE`, `ZRANGEBYSCORE`, and related collection commands | deferred | private/unsupported in open-source surface | These compatibility handlers may exist internally, but open-source production builds do not advertise or allow them. Context/feature/frequency use native data-model APIs instead of encoded Redis collection clones. |
@@ -46,16 +46,16 @@ The TemporalStore native Redis bridge is production-ready only for the documente
 - String/common: `GET`, `SET key value`, `SET key value NX`, `SET key value XX`, `SET key value EX/PX`, `SET key value GET`, `SETNX`, `SETEX`, `PSETEX`, `GETSET`, `GETDEL`, `GETEX`, `MGET`, `MSET`, `DEL`, `UNLINK`, `EXISTS`, `APPEND`, `STRLEN`
 - Counters: `INCR`, `INCRBY`, `DECR`, `DECRBY`
 - TTL: `EXPIRE`, `PEXPIRE`, `TTL`, `PTTL`, `PERSIST`
-- Hash: `HSET`, `HSETNX`, `HMSET`, `HGET`, `HMGET`, `HDEL`, `HEXISTS`, `HLEN`, `HGETALL`, `HKEYS`, `HVALS`, `HSTRLEN`, `HINCRBY`
+- Hash: `HSET`, `HSETNX`, `HMSET`, `HGET`, `HMGET`, `HDEL`, `HEXISTS`, `HLEN`, `HGETALL`, `HKEYS`, `HVALS`, `HSTRLEN`, `HINCRBY`, `HINCRBYFLOAT`
 - Feature model: `FAPPEND`, `FAPPENDPOLICY`, `FQUERY`, `FQUERYFILTER`, `FQUERYFILTERSTR`, `FAGG`
 - Frequency-control model: `RISKINCR`, `RISKINCROPT`, `RISKCHANGE`, `RISKCOUNT`, `RISKQUERY`, `RISKDETAIL`, `RISKHSET`, `HCHANGE`, `HQUERY`, `HSETANDGET`, `CPCSET`, `CPCSETANDGET`, `FOLSET`, `FOLQUERY`
 
-Rust's RESP bridge also advertises additional normal string/TTL/hash helpers in
+Rust's RESP bridge also advertises additional normal string/TTL helpers in
 the trimmed surface: `MSETNX`, `TOUCH`, `EXPIREAT`, `PEXPIREAT`,
-`EXPIRETIME`, `PEXPIRETIME`, `GETRANGE`, `SETRANGE`, `INCRBYFLOAT`, and
-`HINCRBYFLOAT`. These are still part of the basic data-model surface; they are
-not generic collection clones, server-admin APIs, scripting, streams, pub/sub,
-or debug commands. The C++ Redis bridge currently exposes a narrower
+`EXPIRETIME`, `PEXPIRETIME`, `GETRANGE`, `SETRANGE`, and `INCRBYFLOAT`.
+These are still part of the basic data-model surface; they are not generic
+collection clones, server-admin APIs, scripting, streams, pub/sub, or debug
+commands. The C++ Redis bridge currently exposes a narrower
 basic/string/hash subset in open-source builds and reports `COMMAND COUNT=42`;
 feature and frequency-control commands are Rust bridge APIs.
 
@@ -80,7 +80,7 @@ Run the local production gate with:
 tools/run_redis_production_gate_ubuntu22.sh
 ```
 
-The gate builds the release server, audits no-op success paths, rejects `nullptr` Redis command handlers, runs the live storage smoke twice by default, runs the trimmed compatibility/pipeline/concurrency smoke, and runs a small `redis-benchmark` profile when `redis-benchmark` is installed. The benchmark profile emits separate CSV artifacts for `SET/GET`, `HSET`, `HGET`, `HINCRBY`, `INCR`, and `EXPIRE`, then writes `redis-benchmark-summary.json` with per-command request/sec min/max/avg values. This covers the string/common, hash, counter, and TTL operations used by context, feature, and frequency-control data models. The production gate forces `REDIS_COMPAT_SURFACE=trimmed` and `REDIS_EXPECT_UNSUPPORTED_COLLECTIONS=1`, so it fails if collection-clone commands such as `SADD`, `LPUSH`, or `ZADD` are accepted by an open-source production build. Use `REDIS_COMPAT_SURFACE=full` only outside this gate for private/broad Redis compatibility experiments.
+The gate builds the release server, audits no-op success paths, rejects `nullptr` Redis command handlers, runs the live storage smoke twice by default, runs the trimmed compatibility/pipeline/concurrency smoke, and runs a small `redis-benchmark` profile when `redis-benchmark` is installed. The benchmark profile emits separate CSV artifacts for `SET/GET`, `HSET`, `HGET`, `HINCRBY`, `HINCRBYFLOAT`, `INCR`, and `EXPIRE`, then writes `redis-benchmark-summary.json` with per-command request/sec min/max/avg values. This covers the string/common, hash, counter, and TTL operations used by context, feature, and frequency-control data models. The production gate forces `REDIS_COMPAT_SURFACE=trimmed` and `REDIS_EXPECT_UNSUPPORTED_COLLECTIONS=1`, so it fails if collection-clone commands such as `SADD`, `LPUSH`, or `ZADD` are accepted by an open-source production build. Use `REDIS_COMPAT_SURFACE=full` only outside this gate for private/broad Redis compatibility experiments.
 
 The production claim for the trimmed Redis-style API requires:
 
