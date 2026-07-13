@@ -37,7 +37,10 @@ pub fn execute_redis_command_with_state(
         return RespValue::Error("ERR empty command".to_string());
     }
     let command = upper(&args[0]);
+    state.total_commands_processed = state.total_commands_processed.saturating_add(1);
     if open_source_redis_surface_enabled() && !open_source_redis_command_allowed(&command) {
+        state.rejected_commands = state.rejected_commands.saturating_add(1);
+        state.open_source_rejected_commands = state.open_source_rejected_commands.saturating_add(1);
         return RespValue::Error(format!(
             "ERR command {command} is not part of the open-source Redis surface"
         ));
@@ -1890,7 +1893,11 @@ pub fn execute_redis_command_with_state(
                 end_ms,
             }))
         }
-        _ => RespValue::Error(format!("ERR unsupported command or arity: {command}")),
+        _ => {
+            state.rejected_commands = state.rejected_commands.saturating_add(1);
+            state.unsupported_commands = state.unsupported_commands.saturating_add(1);
+            RespValue::Error(format!("ERR unsupported command or arity: {command}"))
+        }
     }
 }
 
@@ -2945,7 +2952,11 @@ fn redis_info(section: &str, shard_id: ShardId, state: &RedisCommandState) -> St
             "not_exist"
         };
         parts.push(format!(
-            "# Stats\r\npartition_loading_stats:{loading}\r\ntotal_commands_processed:0\r\n"
+            "# Stats\r\npartition_loading_stats:{loading}\r\ntotal_commands_processed:{}\r\nrejected_commands:{}\r\nopen_source_rejected_commands:{}\r\nunsupported_commands:{}\r\n",
+            state.total_commands_processed,
+            state.rejected_commands,
+            state.open_source_rejected_commands,
+            state.unsupported_commands
         ));
     }
     if all || default || section == "replication" {
@@ -4545,6 +4556,53 @@ mod tests {
             read_command(&mut input).unwrap(),
             Some(vec![b"SET".to_vec(), b"k".to_vec(), b"v".to_vec()])
         );
+    }
+
+    #[test]
+    fn redis_info_stats_report_command_and_rejection_counters() {
+        let _guard = OPEN_SOURCE_ENV_LOCK.lock().unwrap();
+        std::env::remove_var("TEMPORALSTORE_OPEN_SOURCE_SURFACE");
+
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let mut state = RedisCommandState::default();
+        let run = |state: &mut RedisCommandState, args: Vec<&str>| {
+            execute_redis_command_with_state(
+                args.into_iter()
+                    .map(|arg| arg.as_bytes().to_vec())
+                    .collect(),
+                1,
+                state,
+                |command| {
+                    let response = engine.execute(ExecuteRequest {
+                        shard_id: 1,
+                        command,
+                    });
+                    if response.status.ok {
+                        Ok(response.response)
+                    } else {
+                        Err(response.status.message)
+                    }
+                },
+            )
+        };
+
+        assert_eq!(
+            run(&mut state, vec!["PING"]),
+            RespValue::SimpleString("PONG".to_string())
+        );
+        assert!(matches!(
+            run(&mut state, vec!["NO_SUCH_TEMPORALSTORE_COMMAND"]),
+            RespValue::Error(_)
+        ));
+        let info = run(&mut state, vec!["INFO", "stats"]);
+        let RespValue::Bulk(Some(info)) = info else {
+            panic!("INFO stats must return bulk string");
+        };
+        let info = String::from_utf8(info).unwrap();
+        assert!(info.contains("total_commands_processed:3"), "{info}");
+        assert!(info.contains("rejected_commands:1"), "{info}");
+        assert!(info.contains("unsupported_commands:1"), "{info}");
     }
 
     #[test]

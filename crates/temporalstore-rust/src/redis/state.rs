@@ -9,6 +9,10 @@ pub struct RedisCommandState {
     pub master: Option<(String, String)>,
     pub authenticated: bool,
     pub loaded_shard_id: Option<ShardId>,
+    pub total_commands_processed: u64,
+    pub rejected_commands: u64,
+    pub open_source_rejected_commands: u64,
+    pub unsupported_commands: u64,
 }
 
 impl Default for RedisCommandState {
@@ -23,6 +27,10 @@ impl Default for RedisCommandState {
             master: None,
             authenticated: false,
             loaded_shard_id: None,
+            total_commands_processed: 0,
+            rejected_commands: 0,
+            open_source_rejected_commands: 0,
+            unsupported_commands: 0,
         }
     }
 }
