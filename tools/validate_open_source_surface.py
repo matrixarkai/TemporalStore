@@ -58,6 +58,7 @@ def main() -> int:
     rust_redis = read("crates/temporalstore-rust/src/redis.rs")
     redis_compat_smoke = read("tools/run_redis_compat_smoke_ubuntu22.sh")
     redis_live_smoke = read("tools/run_redis_live_storage_smoke_ubuntu22.sh")
+    redis_production_gate = read("tools/run_redis_production_gate_ubuntu22.sh")
     redis_docs = read("docs/redis_compatibility_matrix.md")
     raw_storage_contract = read("tools/matrixark_raw_message_storage_contract.py")
     matrixobject_docs = read("docs/matrixobjectstore_design_extraction_and_readiness.md")
@@ -314,6 +315,16 @@ def main() -> int:
     require(
         "Open-source production builds do not claim generic Redis SET/LIST/ZSET compatibility" in redis_docs,
         "Redis docs must state that generic collection clones are not part of the open-source claim",
+        failures,
+    )
+    require(
+        "REDIS_COMPAT_SURFACE=trimmed" in redis_production_gate,
+        "Redis production gate must force the trimmed compatibility surface",
+        failures,
+    )
+    require(
+        "REDIS_EXPECT_UNSUPPORTED_COLLECTIONS=1" in redis_production_gate,
+        "Redis production gate must assert unsupported collection-clone commands",
         failures,
     )
     for stale_claim in ("- Set: `SADD`", "- List: `LPUSH`", "- ZSet: `ZADD`"):
