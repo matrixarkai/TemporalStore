@@ -77,9 +77,11 @@ adapter API.
 
 Remote backends that are not linked yet, such as `s3://`, `ceph+s3://`, and
 `rados://`, still instantiate as generic remote adapters so callers can inspect
-their backend identity, URI scheme, endpoint, capabilities, and topology through
-the same API. Their data operations fail closed with `UnsupportedBackend` until
-the concrete SDK/client implementation is linked.
+their backend identity, URI scheme, endpoint, expected capabilities, runtime
+link status, and topology through the same API. Their data operations fail
+closed with `UnsupportedBackend` until the concrete SDK/client implementation is
+linked. This lets planning and report code compare MatrixObject and S3-style
+adapters through one contract without accidentally performing remote writes.
 
 ## Why Ceph Should Use S3 First
 
