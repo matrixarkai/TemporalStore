@@ -126,7 +126,7 @@ async fn main() {
         }
         SharedStoreBackend::MatrixObjectStore => {
             let store = Arc::new(MatrixObjectStore::new(shared_store_root));
-            run_storage_modes(options, store, "matrixobjectstore").await
+            run_storage_modes(options, store, "matrixobject").await
         }
     };
 
@@ -512,7 +512,7 @@ fn parse<T: std::str::FromStr>(value: &str, key: &str) -> T {
 
 fn usage_and_exit() -> ! {
     eprintln!(
-        "usage: storage_modes_harness [--root <path>] [--shared-store-root <path>] [--raft-wal-root <path>] [--async-flush-limit <n>] [--shared-store-backend local_fs|matrixobject_local_compat]"
+        "usage: storage_modes_harness [--root <path>] [--shared-store-root <path>] [--raft-wal-root <path>] [--async-flush-limit <n>] [--shared-store-backend local_fs|matrixobject|matrixobject_local_compat]"
     );
     std::process::exit(2);
 }

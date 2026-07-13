@@ -61,6 +61,7 @@ def main() -> int:
     redis_docs = read("docs/redis_compatibility_matrix.md")
     raw_storage_contract = read("tools/matrixark_raw_message_storage_contract.py")
     matrixobject_docs = read("docs/matrixobjectstore_design_extraction_and_readiness.md")
+    storage_modes_harness = read("crates/temporalstore-rust/src/bin/storage_modes_harness.rs")
 
     require(
         "option(BCACHE2_OPEN_SOURCE_SURFACE" in root_cmake,
@@ -235,6 +236,24 @@ def main() -> int:
         "MatrixObject legacy backend alias must stay compatible",
         failures,
     )
+    require(
+        'run_storage_modes(options, store, "matrixobject").await' in storage_modes_harness,
+        "MatrixObject storage mode reports must emit canonical matrixobject URI scheme",
+        failures,
+    )
+    for shared_store_alias in (
+        '"matrixobject"',
+        '"matrix_object"',
+        '"matrixobject_local_compat"',
+        '"matrixobjectstore"',
+        '"matrix_object_store"',
+        '"matrixobjectstore_local_compat"',
+    ):
+        require(
+            shared_store_alias in storage_modes_harness,
+            f"MatrixObject storage mode harness must accept alias {shared_store_alias}",
+            failures,
+        )
     require(
         "MatrixObject` as the public product/API name" in matrixobject_docs,
         "MatrixObject docs must use the short public product/API name",
