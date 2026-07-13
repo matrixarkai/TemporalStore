@@ -71,6 +71,7 @@ def main() -> int:
     context_resource = read("crates/temporalstore-rust/src/context_workflow/resource.rs")
     context_resource_tests = read("crates/temporalstore-rust/src/context_workflow/tests.rs")
     object_store_code = read("crates/temporalstore-snapshot/src/object_store.rs")
+    object_store_docs = read("docs/object_store_backends.md")
     cxx_object_store_backend = read("src/stream/store/object_store_backend.h")
     cxx_object_store_guardrail = read("src/stream/test/object_store_guardrail_test.cc")
     storage_modes_harness = read("crates/temporalstore-rust/src/bin/storage_modes_harness.rs")
@@ -604,6 +605,14 @@ def main() -> int:
         and "object_version_id: true" in object_store_code
         and "ObjectStoreCapabilities::matrixobject" in object_store_code,
         "MatrixObject capabilities must report canonical object_version_ids support",
+        failures,
+    )
+    require(
+        "pub struct CanonicalObjectStoreCapabilities" in object_store_code
+        and "fn canonical_capabilities(&self) -> CanonicalObjectStoreCapabilities" in object_store_code
+        and "canonical_object_store_capabilities_hide_compatibility_aliases" in object_store_code
+        and "canonical_capabilities()" in object_store_docs,
+        "Object-store integrations must expose a canonical capabilities view for MatrixObject/S3/local adapters",
         failures,
     )
     for rust_capability in (

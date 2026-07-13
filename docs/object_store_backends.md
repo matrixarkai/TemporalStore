@@ -44,9 +44,11 @@ This keeps Rust and C++ on the same public object-store contract:
   `prefix_list`, `paginated_list`, `delete_capability`, `bulk_delete`,
   `object_copy`, `prefix_delete`, `byte_range_read`, `checksum_sha256`,
   `opaque_object_validators`, `object_version_ids`, and `split_services`.
-  Rust keeps older names such as `atomic_put`, `delete`, `copy_object`,
-  `delete_prefix`, `object_etag`, and `object_version_id` as compatibility
-  aliases only.
+  Rust exposes `canonical_capabilities()` for new shared-store callers so they
+  only consume this provider-neutral vocabulary. Older names such as
+  `atomic_put`, `delete`, `copy_object`, `delete_prefix`, `object_etag`, and
+  `object_version_id` remain compatibility aliases on the legacy capability
+  struct only.
 
 ## Generic ObjectStore Contract
 
@@ -95,11 +97,14 @@ S3-compatible stores, Ceph RGW, local files, and future object backends:
   and `delete_objects`, using backend-native bulk delete when available.
   The S3-compatible adapter maps `delete_objects` to one `POST ?delete`
   multi-object request for unsigned HTTP endpoints.
-- `capabilities`: report support for atomic put, unique put, conditional create,
-  path upload, path download, metadata head, prefix list, paginated list,
-  delete, bulk delete, object copy, prefix deletion, byte-range read, checksum,
-  opaque object validators such as ETags, object version IDs when available,
-  and split services.
+- `capabilities` / `canonical_capabilities`: report support for atomic publish,
+  unique put, conditional create, path upload, path download, metadata head,
+  prefix list, paginated list, delete capability, bulk delete, object copy,
+  prefix deletion, byte-range read, checksum, opaque object validators such as
+  ETags, object version IDs when available, and split services. New
+  TemporalStore code should prefer `canonical_capabilities()` so generic S3,
+  MatrixObject, local, and shared-file adapters can be compared without
+  compatibility alias fields.
 - `topology`: report a generic service list. MatrixObject maps this to
   root/block/chunk services; local file and shared file map to one object
   service; S3-style adapters should map to one remote object service unless a
