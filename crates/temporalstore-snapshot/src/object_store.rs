@@ -33,6 +33,12 @@ pub struct ObjectMetadata {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObjectListPage {
+    pub keys: Vec<String>,
+    pub next_continuation_token: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObjectStoreCapabilities {
     pub backend: String,
     pub uri_scheme: String,
@@ -44,6 +50,7 @@ pub struct ObjectStoreCapabilities {
     pub direct_download_to_path: bool,
     pub metadata_head: bool,
     pub prefix_list: bool,
+    pub paginated_list: bool,
     pub delete: bool,
     pub copy_object: bool,
     pub delete_prefix: bool,
@@ -70,6 +77,7 @@ impl ObjectStoreCapabilities {
             direct_download_to_path: true,
             metadata_head: true,
             prefix_list: true,
+            paginated_list: true,
             delete: true,
             copy_object: true,
             delete_prefix: true,
@@ -91,6 +99,7 @@ impl ObjectStoreCapabilities {
             direct_download_to_path: true,
             metadata_head: true,
             prefix_list: true,
+            paginated_list: true,
             delete: true,
             copy_object: true,
             delete_prefix: true,
@@ -112,6 +121,7 @@ impl ObjectStoreCapabilities {
             direct_download_to_path: false,
             metadata_head: false,
             prefix_list: false,
+            paginated_list: false,
             delete: false,
             copy_object: false,
             delete_prefix: false,
@@ -139,6 +149,7 @@ impl ObjectStoreCapabilities {
             direct_download_to_path: supports_object_api,
             metadata_head: supports_object_api,
             prefix_list: supports_object_api,
+            paginated_list: supports_object_api,
             delete: supports_object_api,
             copy_object: supports_object_api,
             delete_prefix: supports_object_api,
@@ -351,6 +362,41 @@ pub trait ObjectStore: Send + Sync {
         Ok(ObjectMetadata::from_bytes(key, self.uri(key), &bytes))
     }
     async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError>;
+    async fn list_page(
+        &self,
+        prefix: &str,
+        continuation_token: Option<&str>,
+        max_keys: usize,
+    ) -> Result<ObjectListPage, ObjectStoreError> {
+        let mut keys = self.list(prefix).await?;
+        keys.sort();
+        let start = continuation_token
+            .and_then(|token| keys.iter().position(|key| key.as_str() > token))
+            .unwrap_or_else(|| {
+                if continuation_token.is_some() {
+                    keys.len()
+                } else {
+                    0
+                }
+            });
+        if max_keys == 0 || start >= keys.len() {
+            return Ok(ObjectListPage {
+                keys: Vec::new(),
+                next_continuation_token: None,
+            });
+        }
+        let end = start.saturating_add(max_keys).min(keys.len());
+        let page_keys = keys[start..end].to_vec();
+        let next_continuation_token = if end < keys.len() {
+            page_keys.last().cloned()
+        } else {
+            None
+        };
+        Ok(ObjectListPage {
+            keys: page_keys,
+            next_continuation_token,
+        })
+    }
     async fn delete(&self, key: &str) -> Result<(), ObjectStoreError>;
     async fn copy_object(
         &self,
@@ -381,6 +427,7 @@ pub trait ObjectStore: Send + Sync {
             direct_download_to_path: false,
             metadata_head: false,
             prefix_list: true,
+            paginated_list: true,
             delete: true,
             copy_object: true,
             delete_prefix: true,
@@ -2210,6 +2257,15 @@ impl ObjectStore for RemoteObjectStore {
         self.unsupported()
     }
 
+    async fn list_page(
+        &self,
+        _prefix: &str,
+        _continuation_token: Option<&str>,
+        _max_keys: usize,
+    ) -> Result<ObjectListPage, ObjectStoreError> {
+        self.unsupported()
+    }
+
     async fn delete(&self, _key: &str) -> Result<(), ObjectStoreError> {
         self.unsupported()
     }
@@ -2474,6 +2530,23 @@ impl ObjectStore for SharedObjectStore {
         }
     }
 
+    async fn list_page(
+        &self,
+        prefix: &str,
+        continuation_token: Option<&str>,
+        max_keys: usize,
+    ) -> Result<ObjectListPage, ObjectStoreError> {
+        match self {
+            Self::LocalFile(store) | Self::SharedFile(store) => {
+                store.list_page(prefix, continuation_token, max_keys).await
+            }
+            Self::MatrixObjectStore(store) => {
+                store.list_page(prefix, continuation_token, max_keys).await
+            }
+            Self::Remote(store) => store.list_page(prefix, continuation_token, max_keys).await,
+        }
+    }
+
     async fn delete(&self, key: &str) -> Result<(), ObjectStoreError> {
         match self {
             Self::LocalFile(store) | Self::SharedFile(store) => store.delete(key).await,
@@ -2639,6 +2712,7 @@ mod tests {
         assert!(capabilities.unique_put);
         assert!(capabilities.copy_object);
         assert!(capabilities.delete_prefix);
+        assert!(capabilities.paginated_list);
         assert!(capabilities.byte_range_read);
         assert!(capabilities.checksum_sha256);
         assert!(capabilities.split_services);
@@ -2759,6 +2833,56 @@ mod tests {
         );
         assert_eq!(matrix_store.delete_prefix("objects/").await.unwrap(), 1);
         assert!(matrix_store.list("objects/").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn generic_object_store_paginated_list_works_for_file_and_matrixobject() {
+        async fn assert_pages<O: ObjectStore>(store: &O) {
+            for key in [
+                "objects/a",
+                "objects/b",
+                "objects/c",
+                "objects/d",
+                "other/ignored",
+            ] {
+                store
+                    .put(key, Bytes::from_static(b"payload"))
+                    .await
+                    .unwrap();
+            }
+
+            let first = store.list_page("objects/", None, 2).await.unwrap();
+            assert_eq!(first.keys, vec!["objects/a", "objects/b"]);
+            assert_eq!(first.next_continuation_token.as_deref(), Some("objects/b"));
+
+            let second = store
+                .list_page("objects/", first.next_continuation_token.as_deref(), 2)
+                .await
+                .unwrap();
+            assert_eq!(second.keys, vec!["objects/c", "objects/d"]);
+            assert!(second.next_continuation_token.is_none());
+
+            let empty = store
+                .list_page("objects/", Some("objects/d"), 2)
+                .await
+                .unwrap();
+            assert!(empty.keys.is_empty());
+            assert!(empty.next_continuation_token.is_none());
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let file_store = SharedObjectStore::from_backend_root(
+            SharedObjectStoreBackend::LocalFile,
+            dir.path().join("file"),
+        )
+        .unwrap();
+        assert_pages(&file_store).await;
+
+        let matrix_store = MatrixObjectStore::from_config(
+            MatrixObjectStoreConfig::local_compat(dir.path().join("matrix"))
+                .with_chunk_target_bytes(4),
+        );
+        assert_pages(&matrix_store).await;
     }
 
     #[tokio::test]
@@ -3520,6 +3644,7 @@ mod tests {
         assert!(capabilities.atomic_put);
         assert!(capabilities.copy_object);
         assert!(capabilities.delete_prefix);
+        assert!(capabilities.paginated_list);
         assert!(capabilities.byte_range_read);
 
         let topology = store.topology();
