@@ -143,6 +143,19 @@ def main() -> int:
     for denied in ("SADD", "LPUSH", "ZADD", "IPSADD", "FADD", "RISKDEBUG", "PARTITION"):
         require(f'"{denied}"' not in body, f"Rust allowlist must not include {denied}", failures)
 
+    for metric in (
+        "total_commands_processed",
+        "rejected_commands",
+        "open_source_rejected_commands",
+        "unsupported_commands",
+    ):
+        require(metric in rust_redis, f"Rust Redis INFO stats must expose {metric}", failures)
+    require(
+        "total_commands_processed:0" not in rust_redis,
+        "Rust Redis INFO stats must not hardcode total_commands_processed:0",
+        failures,
+    )
+
     for script_name, script in (
         ("run_redis_compat_smoke_ubuntu22.sh", redis_compat_smoke),
         ("run_redis_live_storage_smoke_ubuntu22.sh", redis_live_smoke),
