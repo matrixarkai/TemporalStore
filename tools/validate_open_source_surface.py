@@ -550,6 +550,12 @@ def main() -> int:
         "Redis production gate must pass benchmark keyspace into the live smoke",
         failures,
     )
+    require(
+        "REDIS_BENCH_MIN_OVERALL_QPS" in redis_production_gate
+        and "REDIS_BENCH_MIN_OVERALL_QPS" in redis_compat_smoke,
+        "Redis production gate and benchmark summary must support optional min overall QPS threshold",
+        failures,
+    )
     for benchmark_command in ("HSET", "HGET", "HINCRBY", "HINCRBYFLOAT", "INCR", "EXPIRE"):
         require(
             benchmark_command in redis_compat_smoke,
@@ -579,7 +585,10 @@ def main() -> int:
         'command_qps_mins = [command["requests_per_second_min"] for command in commands]',
         'command_qps_maxes = [command["requests_per_second_max"] for command in commands]',
         'command_qps_avgs = [command["requests_per_second_avg"] for command in commands]',
-        '"requests_per_second_overall_min": min(command_qps_mins)',
+        'min_overall_qps = float(sys.argv[5])',
+        'if min_overall_qps > 0 and overall_min_qps < min_overall_qps:',
+        '"min_overall_qps_threshold": min_overall_qps',
+        '"requests_per_second_overall_min": overall_min_qps',
         '"requests_per_second_overall_max": max(command_qps_maxes)',
         '"requests_per_second_overall_avg": sum(command_qps_avgs) / len(command_qps_avgs)',
     ):
@@ -597,6 +606,7 @@ def main() -> int:
         "requests_per_second_min",
         "requests_per_second_max",
         "requests_per_second_avg",
+        "min_overall_qps_threshold",
         "requests_per_second_overall_min",
         "requests_per_second_overall_max",
         "requests_per_second_overall_avg",
