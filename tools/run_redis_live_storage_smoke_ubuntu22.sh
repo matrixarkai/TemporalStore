@@ -130,6 +130,23 @@ expect_error() {
   echo "PASS ${name}" | tee -a "${SUMMARY}"
 }
 
+expect_contains_line() {
+  local name="$1"
+  local expected_line="$2"
+  shift 2
+  local out
+  out="$(redis_cmd "$@" 2>"${RESULT_DIR}/${name}.err")"
+  printf '%s\n' "${out}" > "${RESULT_DIR}/${name}.out"
+  if ! printf '%s\n' "${out}" | grep -Fxq "${expected_line}"; then
+    echo "FAIL ${name}: missing line [${expected_line}]" | tee -a "${SUMMARY}"
+    exit 1
+  fi
+  echo "PASS ${name}" | tee -a "${SUMMARY}"
+}
+
+expect_contains_line info_surface redis_surface:trimmed_open_source INFO stats
+expect_contains_line info_surface_schema redis_surface_schema:temporalstore_open_source_redis_surface_v1 INFO stats
+expect_contains_line info_surface_blocked_families redis_surface_blocked_command_family_count:10 INFO stats
 expect_eq ping PONG PING
 expect_eq set OK SET rk rv
 expect_eq get rv GET rk

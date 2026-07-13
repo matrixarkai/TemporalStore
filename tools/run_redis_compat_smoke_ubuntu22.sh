@@ -103,6 +103,9 @@ else
   echo "FAIL command_count: expected integer got [${command_count}]" | tee -a "${SUMMARY}"
   exit 1
 fi
+expect_contains_line info_surface redis_surface:trimmed_open_source INFO stats
+expect_contains_line info_surface_schema redis_surface_schema:temporalstore_open_source_redis_surface_v1 INFO stats
+expect_contains_line info_surface_blocked_families redis_surface_blocked_command_family_count:10 INFO stats
 expect_eq set OK SET "$(k string)" v1
 expect_eq get v1 GET "$(k string)"
 expect_eq type_string string TYPE "$(k string)"
