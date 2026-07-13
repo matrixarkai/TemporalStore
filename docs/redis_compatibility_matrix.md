@@ -68,6 +68,8 @@ Open-source production builds do not claim generic Redis SET/LIST/ZSET compatibi
 
 The bridge must not claim full Redis compatibility yet. Unsupported command families return deterministic Redis errors rather than fake success. When `TEMPORALSTORE_OPEN_SOURCE_SURFACE=1` or `TS_OPEN_SOURCE_SURFACE=1`, Rust filters both execution and `COMMAND` advertising to the trimmed production data-model surface. C++ open-source builds likewise derive `COMMAND`, `COMMAND COUNT`, and `COMMAND INFO` from one canonical trimmed descriptor table. The current local bridge serializes backend Redis data-command execution while storage concurrency semantics are hardened; this favors correctness over peak Redis QPS.
 
+The canonical machine-readable contract for this surface is `compat/redis_open_source_surface_manifest.json`. The validator `tools/validate_open_source_surface.py` checks the C++ `COMMAND` descriptor table, Rust allowlist, blocked families, helper commands, and docs against that manifest so the public API cannot silently drift.
+
 Latest open-source surface gate:
 
 ```bash
