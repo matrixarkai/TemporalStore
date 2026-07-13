@@ -105,6 +105,9 @@ class MatrixArkDualWriteIngestionBenchmarkTest(unittest.TestCase):
         self.assertEqual(summary["raw_backend"], "s3")
         contract = summary["raw_message_storage_contract"]
         self.assertEqual(contract["target"]["backend"], "s3")
+        self.assertEqual(contract["object_store_contract"]["provider_name"], "S3")
+        self.assertIn("get_range", contract["object_store_contract"]["required_operations"])
+        self.assertIn("byte_range_read", contract["object_store_contract"]["required_capabilities"])
         self.assertEqual(contract["stored_value_mode"], "object_ref_json")
         self.assertTrue(contract["spilled_to_object_store"])
         self.assertEqual(contract["marker"]["backend"], "s3")
@@ -116,6 +119,14 @@ class MatrixArkDualWriteIngestionBenchmarkTest(unittest.TestCase):
         self.assertEqual(summary["status"], "ok")
         self.assertEqual(summary["raw_backends"], ["objectstore"])
         self.assertEqual(summary["results"][0]["raw_message_storage_contract"]["target"]["backend"], "objectstore")
+        self.assertEqual(
+            summary["results"][0]["raw_message_storage_contract"]["object_store_contract"]["provider_name"],
+            "MatrixObject",
+        )
+        self.assertIn(
+            "list_page",
+            summary["results"][0]["raw_message_storage_contract"]["object_store_contract"]["required_operations"],
+        )
 
     def test_backend_sweep_covers_both_raw_options(self) -> None:
         args = self.make_args(records=40, workers=2, batch_size=10, require_dual_write_counts=1)
