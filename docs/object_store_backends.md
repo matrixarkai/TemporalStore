@@ -74,6 +74,7 @@ S3-compatible stores, Ceph RGW, local files, and future object backends:
 - `capabilities`: report support for atomic put, unique put, conditional create,
   path upload, path download, metadata head, prefix list, paginated list,
   delete, bulk delete, object copy, prefix deletion, byte-range read, checksum,
+  opaque object validators such as ETags, object version IDs when available,
   and split services.
 - `topology`: report a generic service list. MatrixObject maps this to
   root/block/chunk services; local file and shared file map to one object
