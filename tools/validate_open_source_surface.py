@@ -436,6 +436,13 @@ def main() -> int:
         failures,
     )
     require(
+        "compat/redis_open_source_surface_manifest.json" in open_source_surface
+        and "MatrixObject is a shared object-store backend below TemporalStore storage/backfill" in open_source_surface
+        and "must not expand the public Redis API" in open_source_surface,
+        "open-source surface overview must tie Redis API scope to the manifest and keep MatrixObject below the Redis layer",
+        failures,
+    )
+    require(
         "this document tracks broad C++/Rust API-parity" in cpp_api_parity_docs
         and "not the open-source production Redis surface" in cpp_api_parity_docs
         and "redis_compatibility_matrix.md" in cpp_api_parity_docs
