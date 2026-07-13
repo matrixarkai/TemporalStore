@@ -34,6 +34,7 @@ The OCR output is noisy because the PDF is image-only, but the first-page extrac
 - Raw-message spill contract using canonical `matrixobject://...` object refs, with `matrixobjectstore://...` and `blob://...` accepted as legacy aliases.
 - Raw-message object refs that include payload size and SHA-256 checksum.
 - A provider-neutral object-store adapter contract shared with S3: `put`, `put_atomic`, `put_unique`, `put_if_absent`, `put_path_unique`, `get`, `get_range`, `get_to_path`, `head`, `list`, `list_page`, `delete`, `delete_objects`, `delete_prefix`, `copy_object`, `uri`, `capabilities`, and `topology`.
+- Generic metadata validators: MatrixObject returns `etag=sha256:<checksum>` and an opaque manifest `version_id`, while S3-compatible adapters preserve endpoint ETag/version headers through the same fields.
 - TemporalStore-owned metadata rows for S3/MatrixObject payloads, unless MatrixKV is explicitly selected as the metadata backend.
 
 ## Production Readiness Criteria
@@ -42,6 +43,7 @@ MatrixObject is ready for the current local/shared-store target when all of thes
 
 - Payload writes are atomic and never expose partial object bytes.
 - Object refs carry checksum metadata and can be validated by readers.
+- `head`/write responses expose provider-neutral object validators (`etag` and, where supported, `version_id`) without callers depending on MatrixObject internals.
 - Metadata is queryable from TemporalStore or MatrixKV without scanning object payload storage.
 - Large resource/raw-message payloads spill to MatrixObject or S3 according to size policy.
 - Default raw-message writes are cold-store/no-promotion.

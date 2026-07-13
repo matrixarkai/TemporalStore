@@ -61,6 +61,7 @@ def main() -> int:
     redis_docs = read("docs/redis_compatibility_matrix.md")
     raw_storage_contract = read("tools/matrixark_raw_message_storage_contract.py")
     matrixobject_docs = read("docs/matrixobjectstore_design_extraction_and_readiness.md")
+    object_store_code = read("crates/temporalstore-snapshot/src/object_store.rs")
     storage_modes_harness = read("crates/temporalstore-rust/src/bin/storage_modes_harness.rs")
 
     require(
@@ -380,6 +381,7 @@ def main() -> int:
         "bulk_delete",
         "byte_range_read",
         "opaque_object_validators",
+        "object_version_ids",
         "split_services",
     ):
         require(
@@ -428,6 +430,23 @@ def main() -> int:
     require(
         "failing closed" in matrixobject_docs,
         "MatrixObject docs must require unlinked remote providers to fail closed",
+        failures,
+    )
+    require(
+        "opaque manifest `version_id`" in matrixobject_docs,
+        "MatrixObject docs must require provider-neutral manifest version validators",
+        failures,
+    )
+    require(
+        "fn version_id(&self) -> String" in object_store_code
+        and 'format!("mo:{}:{checksum_prefix}", self.created_at_ms)' in object_store_code,
+        "MatrixObject metadata must expose a manifest-derived opaque version_id",
+        failures,
+    )
+    require(
+        "object_version_id: true" in object_store_code
+        and "ObjectStoreCapabilities::matrixobject" in object_store_code,
+        "MatrixObject capabilities must report object_version_id support",
         failures,
     )
 

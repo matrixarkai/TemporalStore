@@ -803,8 +803,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let object_root = tmp.path().join("objects");
         let store = Arc::new(FileObjectStore::with_uri_scheme(&object_root, "s3"));
-        let snapshots =
-            S3SnapshotStore::new("cluster-a", "test", tmp.path().join("local"), store);
+        let snapshots = S3SnapshotStore::new("cluster-a", "test", tmp.path().join("local"), store);
         let local = sample_snapshot(&tmp.path().join("source"), 42, 100).await;
 
         let uploaded = snapshots.upload_snapshot(local).await.unwrap();

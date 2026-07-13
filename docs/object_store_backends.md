@@ -64,6 +64,9 @@ S3-compatible stores, Ceph RGW, local files, and future object backends:
 - `head`: return key, URI, size, SHA-256 metadata, and optional opaque object
   validators such as `etag` and `version_id` without requiring callers to know
   whether the backend stores manifests, local files, or remote object metadata.
+  MatrixObject returns `etag=sha256:<checksum>` plus a manifest-derived
+  `version_id`; S3-compatible stores preserve ETag/version headers when the
+  endpoint provides them.
   Remote S3-compatible writes, path transfers, and metadata reads preserve those
   validators whenever the backend returns them.
 - `list` / `list_page` / `delete` / `delete_objects`: full or paginated prefix
