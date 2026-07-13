@@ -26,7 +26,7 @@ Current bridge status values:
 | Feature model | `FAPPEND`, `FAPPENDPOLICY`, `FQUERY`, `FQUERYFILTER`, `FQUERYFILTERSTR`, `FAGG` | required | wired | TemporalStore feature APIs are exposed as explicit data-model commands rather than pretending to be generic Redis collections. These support timestamped feature writes, policy writes, range query, filtered query, and aggregate query. |
 | Frequency-control model | `RISKINCR`, `RISKINCROPT`, `RISKCHANGE`, `RISKCOUNT`, `RISKQUERY`, `RISKDETAIL`, `RISKHSET`, `HCHANGE`, `HQUERY`, `HSETANDGET`, `CPCSET`, `CPCSETANDGET`, `FOLSET`, `FOLQUERY` | required | wired | Frequency-cap/risk-window commands remain data-model specific. Debug-only inspection commands are not part of the open-source surface. |
 | Set/List/ZSet clone APIs | `SADD`, `SREM`, `SMEMBERS`, `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `ZADD`, `ZRANGE`, `ZRANGEBYSCORE`, and related collection commands | deferred | private/unsupported in open-source surface | These compatibility handlers may exist internally, but open-source production builds do not advertise or allow them. Context/feature/frequency use native data-model APIs instead of encoded Redis collection clones. |
-| Narrow hash scan | `HSCAN` | planned | partial | Rust's RESP bridge supports `HSCAN` as a single-hash/narrow helper. The C++ open-source bridge still returns deterministic unsupported for `HSCAN`, so it is not part of the first production claim yet. Broad keyspace `SCAN`, `SSCAN`, and `ZSCAN` are not part of the open-source production surface. |
+| Narrow hash scan | `HSCAN` | required | wired | `HSCAN` is allowed only as a single-hash/narrow helper. Broad keyspace `SCAN`, `SSCAN`, and `ZSCAN` are not part of the open-source production surface. |
 | Transactions | `MULTI`, `EXEC`, `DISCARD`, `WATCH` | planned | unsupported | Start same-partition only or return explicit unsupported errors. |
 | Cluster | `CLUSTER SLOTS`, `CLUSTER NODES`, `MOVED`, `ASK` | planned | unsupported | Required only if exposing Redis Cluster wire compatibility. Proxy-hidden sharding can avoid this initially. |
 | Pub/Sub | `PUBLISH`, `SUBSCRIBE`, `PSUBSCRIBE` | deferred | unsupported | Separate serving plane; not required for KV migration. |
@@ -46,7 +46,7 @@ The TemporalStore native Redis bridge is production-ready only for the documente
 - String/common: `GET`, `SET key value`, `SET key value NX`, `SET key value XX`, `SET key value EX/PX`, `SET key value GET`, `SETNX`, `SETEX`, `PSETEX`, `GETSET`, `GETDEL`, `GETEX`, `MGET`, `MSET`, `DEL`, `UNLINK`, `EXISTS`, `APPEND`, `STRLEN`
 - Counters: `INCR`, `INCRBY`, `DECR`, `DECRBY`
 - TTL: `EXPIRE`, `PEXPIRE`, `TTL`, `PTTL`, `PERSIST`
-- Hash: `HSET`, `HSETNX`, `HMSET`, `HGET`, `HMGET`, `HDEL`, `HEXISTS`, `HLEN`, `HGETALL`, `HKEYS`, `HVALS`, `HSTRLEN`, `HINCRBY`, `HINCRBYFLOAT`
+- Hash: `HSET`, `HSETNX`, `HMSET`, `HGET`, `HMGET`, `HDEL`, `HEXISTS`, `HLEN`, `HGETALL`, `HKEYS`, `HVALS`, `HSTRLEN`, `HINCRBY`, `HINCRBYFLOAT`, `HSCAN`
 - Feature model: `FAPPEND`, `FAPPENDPOLICY`, `FQUERY`, `FQUERYFILTER`, `FQUERYFILTERSTR`, `FAGG`
 - Frequency-control model: `RISKINCR`, `RISKINCROPT`, `RISKCHANGE`, `RISKCOUNT`, `RISKQUERY`, `RISKDETAIL`, `RISKHSET`, `HCHANGE`, `HQUERY`, `HSETANDGET`, `CPCSET`, `CPCSETANDGET`, `FOLSET`, `FOLQUERY`
 
@@ -56,13 +56,13 @@ the trimmed surface: `MSETNX`, `TOUCH`, `EXPIREAT`, `PEXPIREAT`,
 These are still part of the basic data-model surface; they are not generic
 collection clones, server-admin APIs, scripting, streams, pub/sub, or debug
 commands. The C++ Redis bridge currently exposes a narrower
-basic/string/hash subset in open-source builds and reports `COMMAND COUNT=42`;
+basic/string/hash subset in open-source builds and reports `COMMAND COUNT=43`;
 feature and frequency-control commands are Rust bridge APIs.
 
-Rust also keeps `HSCAN` as a narrow single-hash helper for RESP clients that
-iterate large hash values. C++ still registers `HSCAN` as unsupported, so
-`HSCAN` is explicitly outside the first production-ready subset until the C++
-hash scan path is wired and covered by the live storage smoke.
+`HSCAN` is intentionally limited to a single hash key and is implemented by
+fetching that hash's fields through native hash storage, applying optional
+`MATCH`/`COUNT` paging, and returning Redis-style cursor pages. It must not be
+treated as broad keyspace scan support.
 
 Open-source production builds do not claim generic Redis SET/LIST/ZSET compatibility or Redis server-configuration APIs. `SADD`, `LPUSH`, `ZADD`, `SCAN`, `PARTITION`, `CONFIG`, `DBSIZE`, `IPS*`, scripting, streams, pub/sub, GEO, HyperLogLog, and bitmap commands must return deterministic unsupported/open-surface errors.
 
@@ -75,7 +75,7 @@ python3 tools/validate_open_source_surface.py
 cargo check -p temporalstore-rust --lib
 ```
 
-Result expectation: the public Rust surface keeps string/common, hash, feature, and frequency-control commands; `COMMAND` does not advertise `SADD`, `LPUSH`, `ZADD`, `SCAN`, `PARTITION`, `CONFIG`, `DBSIZE`, stale feature aliases such as `FADD`, or internal/debug families such as `IPS*`/`RISKDEBUG`.
+Result expectation: the public Rust surface keeps string/common, hash, feature, and frequency-control commands; `COMMAND` does not advertise `SADD`, `LPUSH`, `ZADD`, broad `SCAN`, `PARTITION`, `CONFIG`, `DBSIZE`, stale feature aliases such as `FADD`, or internal/debug families such as `IPS*`/`RISKDEBUG`.
 
 ## Production Gate
 

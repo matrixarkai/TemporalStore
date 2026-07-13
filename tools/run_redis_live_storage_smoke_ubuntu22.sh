@@ -187,6 +187,7 @@ expect_eq hlen 2 HLEN rh
 expect_eq hincrby 5 HINCRBY rh counter 5
 expect_eq hincrbyfloat_1 1.5 HINCRBYFLOAT rh float 1.5
 expect_eq hincrbyfloat_2 2 HINCRBYFLOAT rh float 0.5
+expect_eq hscan_f_fields $'0\nf1\nv1b\nf2\nv2\nfloat\n2' HSCAN rh 0 MATCH f* COUNT 8
 expect_eq hdel 1 HDEL rh f1
 if [[ "${REDIS_COMPAT_SURFACE}" == "full" ]]; then
 expect_eq sadd 2 SADD rs a b a

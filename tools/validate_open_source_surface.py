@@ -138,7 +138,7 @@ def main() -> int:
         failures,
     )
     require(
-        "return 42;" in cxx_redis,
+        "return 43;" in cxx_redis,
         "C++ COMMAND COUNT must match the trimmed open-source allowlist size",
         failures,
     )
@@ -401,19 +401,18 @@ def main() -> int:
             failures,
         )
     require(
-        "COMMAND COUNT=42" in redis_docs,
-        "Redis docs must state the narrower C++ open-source COMMAND COUNT",
+        "COMMAND COUNT=43" in redis_docs,
+        "Redis docs must state the narrower C++ open-source COMMAND COUNT including HSCAN",
         failures,
     )
     require(
-        "Rust also keeps `HSCAN` as a narrow single-hash helper" in redis_docs
-        and "`HSCAN` is explicitly outside the first production-ready subset" in redis_docs,
-        "Redis docs must distinguish Rust HSCAN support from the first production-ready C++ subset",
+        "kHScan" in cxx_redis and "&RedisCommandHandler::HScan" in cxx_redis_service,
+        "C++ Redis service must wire narrow HSCAN through the hash handler",
         failures,
     )
     require(
-        '"hscan"' in cxx_redis_service and "&RedisCommandHandler::Unsupported" in cxx_redis_service,
-        "C++ Redis service must still fail closed for HSCAN until the C++ hash scan path is wired",
+        "HSCAN" in redis_compat_smoke and "HSCAN rh 0 MATCH f* COUNT 8" in redis_live_smoke,
+        "Redis smokes must cover narrow HSCAN while broad scans stay unsupported",
         failures,
     )
 

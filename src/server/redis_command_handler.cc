@@ -115,6 +115,7 @@ bool IsOpenSourceRedisCommandAllowed(RedisCommand::CmdType cmd_type) {
         case RedisCommand::CmdType::kHGetAll:
         case RedisCommand::CmdType::kHKeys:
         case RedisCommand::CmdType::kHVals:
+        case RedisCommand::CmdType::kHScan:
         case RedisCommand::CmdType::kHStrlen:
         case RedisCommand::CmdType::kHIncrBy:
             return true;
@@ -127,7 +128,7 @@ int64_t OpenSourceRedisCommandCount() {
     // Keep this aligned with IsOpenSourceRedisCommandAllowed(). C++ currently
     // exposes the basic/string/hash surface; feature/frequency model commands
     // are Rust bridge APIs and are not advertised by the C++ Redis bridge.
-    return 42;
+    return 43;
 }
 #endif
 
@@ -418,6 +419,61 @@ bool ParseInt64Arg(const std::string& arg, int64_t* value) {
     } catch (...) {
         return false;
     }
+}
+
+bool RedisPatternMatchesAt(const std::string& pattern, size_t pattern_index,
+                           const std::string& value, size_t value_index) {
+    if (pattern_index == pattern.size()) {
+        return value_index == value.size();
+    }
+    if (pattern[pattern_index] == '*') {
+        return RedisPatternMatchesAt(pattern, pattern_index + 1, value, value_index) ||
+               (value_index < value.size() &&
+                RedisPatternMatchesAt(pattern, pattern_index, value, value_index + 1));
+    }
+    if (pattern[pattern_index] == '?') {
+        return value_index < value.size() &&
+               RedisPatternMatchesAt(pattern, pattern_index + 1, value, value_index + 1);
+    }
+    return value_index < value.size() && pattern[pattern_index] == value[value_index] &&
+           RedisPatternMatchesAt(pattern, pattern_index + 1, value, value_index + 1);
+}
+
+bool RedisPatternMatches(const std::string& pattern, const std::string& value) {
+    return RedisPatternMatchesAt(pattern, 0, value, 0);
+}
+
+bool ParseScanTailOptions(RedisClientContext* c, size_t start_index, std::string* pattern,
+                          int64_t* count, brpc::RedisReply* reply) {
+    *pattern = "*";
+    *count = 10;
+    size_t index = start_index;
+    while (index < c->ArgSize()) {
+        const std::string option = c->StrArg(index);
+        if (!strcasecmp(option.c_str(), "match")) {
+            if (index + 1 >= c->ArgSize()) {
+                SetRedisError(reply, "syntax error");
+                return false;
+            }
+            *pattern = c->StrArg(index + 1);
+            index += 2;
+            continue;
+        }
+        if (!strcasecmp(option.c_str(), "count")) {
+            if (index + 1 >= c->ArgSize() || !ParseInt64Arg(c->StrArg(index + 1), count)) {
+                SetRedisError(reply, "invalid count");
+                return false;
+            }
+            if (*count < 1) {
+                *count = 1;
+            }
+            index += 2;
+            continue;
+        }
+        SetRedisError(reply, "syntax error");
+        return false;
+    }
+    return true;
 }
 
 void SetStringArrayReply(brpc::RedisReply* reply, const std::vector<std::string>& values) {
@@ -2168,6 +2224,62 @@ void RedisCommandHandler::HVals(RedisClientContext* c) {
     c->reply->SetArray(getall_response.values_size());
     for (int i = 0; i < getall_response.values_size(); ++i) {
         (*c->reply)[i].SetString(getall_response.values(i));
+    }
+}
+
+void RedisCommandHandler::HScan(RedisClientContext* c) {
+    int64_t cursor = 0;
+    if (!ParseInt64Arg(c->StrArg(2), &cursor) || cursor < 0) {
+        SetRedisError(c->reply, "invalid cursor");
+        return;
+    }
+    std::string pattern;
+    int64_t count = 10;
+    if (!ParseScanTailOptions(c, 3, &pattern, &count, c->reply)) {
+        return;
+    }
+
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service_, HashGetAllCmd(c->StrArg(1)), &response, c->reply)) {
+        return;
+    }
+    if (!IsOkStatus(response.response_status())) {
+        c->reply->SetArray(2);
+        (*c->reply)[0].SetString("0");
+        (*c->reply)[1].SetArray(0);
+        return;
+    }
+    hash2::GetAllResponse getall_response;
+    if (!getall_response.ParseFromString(response.response_bytes())) {
+        SetRedisError(c->reply, "failed to parse HSCAN response");
+        return;
+    }
+
+    std::vector<std::pair<std::string, std::string>> entries;
+    entries.reserve(getall_response.fields_size());
+    for (int i = 0; i < getall_response.fields_size(); ++i) {
+        const std::string& field = getall_response.fields(i);
+        if (RedisPatternMatches(pattern, field)) {
+            entries.emplace_back(field, getall_response.values(i));
+        }
+    }
+    std::sort(entries.begin(), entries.end(),
+              [](const auto& left, const auto& right) { return left.first < right.first; });
+
+    const size_t start = static_cast<size_t>(cursor);
+    const size_t total_values = entries.size() * 2;
+    const size_t selected_values =
+        start >= total_values ? 0 : std::min(static_cast<size_t>(count), total_values - start);
+    const size_t next_cursor = (start + selected_values >= total_values) ? 0 : start + selected_values;
+
+    c->reply->SetArray(2);
+    (*c->reply)[0].SetString(std::to_string(next_cursor));
+    brpc::RedisReply& values_reply = (*c->reply)[1];
+    values_reply.SetArray(selected_values);
+    for (size_t i = 0; i < selected_values; ++i) {
+        const size_t flat_index = start + i;
+        const auto& entry = entries[flat_index / 2];
+        values_reply[i].SetString(flat_index % 2 == 0 ? entry.first : entry.second);
     }
 }
 
