@@ -552,10 +552,39 @@ def main() -> int:
         "Redis compatibility smoke must bound COMMAND COUNT for the trimmed surface",
         failures,
     )
+    compat_count_min = re.search(
+        r'REDIS_TRIMMED_COMMAND_COUNT_MIN="\$\{REDIS_TRIMMED_COMMAND_COUNT_MIN:-(\d+)\}"',
+        redis_compat_smoke,
+    )
+    compat_count_max = re.search(
+        r'REDIS_TRIMMED_COMMAND_COUNT_MAX="\$\{REDIS_TRIMMED_COMMAND_COUNT_MAX:-(\d+)\}"',
+        redis_compat_smoke,
+    )
+    expected_cxx_command_count = int(manifest.get("cxx_command_count", 0))
+    expected_rust_trimmed_command_count = expected_cxx_command_count + len(manifest_rust_extra_commands)
+    require(
+        compat_count_min is not None and int(compat_count_min.group(1)) == expected_cxx_command_count,
+        "Redis compatibility smoke COMMAND COUNT min must match manifest cxx_command_count",
+        failures,
+    )
+    require(
+        compat_count_max is not None and int(compat_count_max.group(1)) == expected_rust_trimmed_command_count,
+        "Redis compatibility smoke COMMAND COUNT max must match manifest C++ count plus Rust extras",
+        failures,
+    )
     require(
         "REDIS_CXX_TRIMMED_COMMAND_COUNT" in redis_live_smoke
         and 'expect_eq command_count "${REDIS_CXX_TRIMMED_COMMAND_COUNT}" COMMAND COUNT' in redis_live_smoke,
         "Redis live C++ smoke must assert exact open-source COMMAND COUNT",
+        failures,
+    )
+    live_cxx_count = re.search(
+        r'REDIS_CXX_TRIMMED_COMMAND_COUNT="\$\{REDIS_CXX_TRIMMED_COMMAND_COUNT:-(\d+)\}"',
+        redis_live_smoke,
+    )
+    require(
+        live_cxx_count is not None and int(live_cxx_count.group(1)) == expected_cxx_command_count,
+        "Redis live storage smoke COMMAND COUNT must match manifest cxx_command_count",
         failures,
     )
     require(
