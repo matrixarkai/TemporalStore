@@ -355,6 +355,13 @@ def main() -> int:
 
     body = rust_allowlist_body(rust_redis)
     require(body, "Rust Redis open-source allowlist must exist", failures)
+    rust_allowed_commands = set(re.findall(r'"([A-Z0-9]+)"', body))
+    expected_rust_allowed_commands = set(manifest_cxx_commands) | manifest_rust_extra_commands
+    require(
+        rust_allowed_commands == expected_rust_allowed_commands,
+        "Rust Redis open-source allowlist must exactly match manifest C++ commands plus Rust extras",
+        failures,
+    )
     for allowed in (
         "HSET",
         "HGET",
@@ -364,15 +371,15 @@ def main() -> int:
         "QUIT",
         "CLIENT",
     ):
-        require(f'"{allowed}"' in body, f"Rust allowlist must keep {allowed}", failures)
+        require(allowed in rust_allowed_commands, f"Rust allowlist must keep {allowed}", failures)
     for allowed in sorted(manifest_rust_extra_commands):
         require(
-            f'"{allowed}"' in body,
+            allowed in rust_allowed_commands,
             f"Rust allowlist must keep manifest extra command {allowed}",
             failures,
         )
     for denied in sorted(manifest_blocked_commands):
-        require(f'"{denied}"' not in body, f"Rust allowlist must not include manifest blocked command {denied}", failures)
+        require(denied not in rust_allowed_commands, f"Rust allowlist must not include manifest blocked command {denied}", failures)
     for denied in (
         "SADD",
         "SCARD",
