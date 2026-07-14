@@ -1950,10 +1950,6 @@ fn open_source_redis_command_allowed(command: &str) -> bool {
             | "HCHANGE"
             | "HQUERY"
             | "HSETANDGET"
-            | "CPCSET"
-            | "CPCSETANDGET"
-            | "FOLSET"
-            | "FOLQUERY"
     )
 }
 fn redis_client_response(args: &[Vec<u8>]) -> RespValue {

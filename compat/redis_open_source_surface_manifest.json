@@ -160,6 +160,12 @@
     "PEXPIRETIME",
     "GETRANGE",
     "SETRANGE",
+    "CPCSET",
+    "CPCSETANDGET",
+    "FOLSET",
+    "FOLQUERY",
+    "FOLSETANDGET",
+    "CPCQUERY",
     "INCRBYFLOAT",
     "HINCRBYFLOAT"
   ],
@@ -236,7 +242,7 @@
   ],
   "matrixobject_note": "MatrixObject integration sits below TemporalStore storage/backfill. It must not expand the public Redis API into collection-clone commands.",
   "opt_in_commands": {},
-  "purpose": "Keep only first-release Redis commands needed for minimal string/hash/TTL access plus MatrixArk context, feature, and frequency-control data models.",
+  "purpose": "Keep only first-release Redis commands needed for minimal string/hash/TTL access plus MatrixArk context, feature, and the single Risk frequency-control data model.",
   "rust_extra_commands": [
     "FAPPEND",
     "FAPPENDPOLICY",
@@ -253,11 +259,7 @@
     "RISKHSET",
     "HCHANGE",
     "HQUERY",
-    "HSETANDGET",
-    "CPCSET",
-    "CPCSETANDGET",
-    "FOLSET",
-    "FOLQUERY"
+    "HSETANDGET"
   ],
   "rust_normal_helpers": []
 }

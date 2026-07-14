@@ -9,7 +9,7 @@ The open-source build keeps:
   string commands, minimal key lifetime commands, and minimal hash commands.
 - MatrixArk context-management data models.
 - Feature data model.
-- Frequency-control data model.
+- Single Risk frequency-control data model. CPC/FOL command names are not public first-release APIs.
 
 The open-source build excludes non-public/internal model families and extension
 modules such as set, IPS, risk-only, temporal aggregate, and time-series model
