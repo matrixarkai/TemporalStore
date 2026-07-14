@@ -11,6 +11,8 @@ The open-source build keeps:
 - Feature data model.
 - Single Risk frequency-control data model. CPC/FOL command names are not public first-release APIs.
 
+Audit, replay, ContextPack audit, debug trace, and diagnostic telemetry record models are not part of the first open-source release. Runtime counters and production-gate evidence are allowed, but serving data models for audit/replay/debug stay private or disabled.
+
 The open-source build excludes non-public/internal model families and extension
 modules such as set, IPS, risk-only, temporal aggregate, and time-series model
 registration. It also does not expose Redis server-configuration or broad

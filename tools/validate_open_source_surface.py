@@ -55,6 +55,7 @@ def main() -> int:
     manifest_cxx_commands = manifest.get("cxx_commands", [])
     manifest_allowed_surface_families = set(manifest.get("allowed_surface_families", []))
     manifest_blocked_commands = set(manifest.get("blocked_commands", []))
+    manifest_blocked_data_model_families = set(manifest.get("blocked_data_model_families", []))
     manifest_rust_extra_commands = set(manifest.get("rust_extra_commands", []))
     manifest_rust_normal_helpers = set(manifest.get("rust_normal_helpers", []))
     parity_shared_commands = parity_contract.get("shared_minimal_redis_commands", [])
@@ -138,16 +139,30 @@ def main() -> int:
         "feature_model",
         "frequency_control",
     }
+    expected_blocked_data_model_families = {
+        "audit_log",
+        "context_pack_audit",
+        "replay_log",
+        "debug_trace",
+        "diagnostic_telemetry_records",
+    }
     require(
         manifest_allowed_surface_families == expected_allowed_families,
         "Redis open-source surface manifest must explicitly limit allowed families to minimal string/hash/TTL plus context/feature/single Risk frequency-control data models",
         failures,
     )
     require(
+        manifest_blocked_data_model_families == expected_blocked_data_model_families,
+        "Redis open-source surface manifest must explicitly exclude audit/replay/debug data-model families",
+        failures,
+    )
+    require(
         "context" in manifest.get("purpose", "").lower()
         and "feature" in manifest.get("purpose", "").lower()
         and "single risk frequency-control" in manifest.get("purpose", "").lower()
-        and "minimal string/hash/ttl" in manifest.get("purpose", "").lower(),
+        and "minimal string/hash/ttl" in manifest.get("purpose", "").lower()
+        and "audit" in manifest.get("purpose", "").lower()
+        and "replay" in manifest.get("purpose", "").lower(),
         "Redis open-source surface manifest purpose must describe the minimal first-release data-model families",
         failures,
     )
@@ -554,7 +569,8 @@ def main() -> int:
         failures,
     )
     require(
-        "server-configuration or broad" in open_source_surface
+        "Audit, replay, ContextPack audit, debug trace" in open_source_surface
+        and "server-configuration or broad" in open_source_surface
         and "`CONFIG`" in open_source_surface
         and "`DBSIZE`" in open_source_surface
         and "broad `KEYS`" in open_source_surface
