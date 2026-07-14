@@ -1568,256 +1568,6 @@
       ]
     },
     {
-      "name": "context_event_index_audit_dirty_models",
-      "shard_id": 1,
-      "steps": [
-        {
-          "command": {
-            "event": {
-              "confidence": 0.75,
-              "event_id_hash": 9001,
-              "event_time_ms": 9000,
-              "ingestion_time_ms": 9000,
-              "importance": 0.5,
-              "text": "context event from shared corpus",
-              "type": 4
-            },
-            "first_write_only": false,
-            "kind": "context_write_event",
-            "node_hash": 700,
-            "tenant_hash": 101
-          },
-          "expect": {
-            "kind": "context_object_key",
-            "object_key": "ctx:event:101:700"
-          },
-          "name": "context_write_event_model"
-        },
-        {
-          "command": {
-            "event": {
-              "confidence": 0.8,
-              "event_id_hash": 9002,
-              "event_time_ms": 9000,
-              "ingestion_time_ms": 9000,
-              "importance": 0.6,
-              "text": "second context event in same millisecond",
-              "type": 4
-            },
-            "first_write_only": false,
-            "kind": "context_write_event",
-            "node_hash": 700,
-            "tenant_hash": 101
-          },
-          "expect": {
-            "kind": "context_object_key",
-            "object_key": "ctx:event:101:700"
-          },
-          "name": "context_write_event_same_millisecond_fanout"
-        },
-        {
-          "command": {
-            "as_of_ms": 9200,
-            "current_valid_only": true,
-            "end_time_ms": 9010,
-            "kind": "context_query_events",
-            "kinds": [
-              4
-            ],
-            "limit": 10,
-            "min_confidence": 0.7,
-            "min_importance": 0.4,
-            "node_hash": 700,
-            "start_time_ms": 8990,
-            "statuses": [],
-            "tenant_hash": 101
-          },
-          "expect": {
-            "events": [
-              {
-                "confidence": 0.75,
-                "event_id_hash": 9001,
-                "event_time_ms": 9000,
-                "ingestion_time_ms": 9000,
-                "importance": 0.5,
-                "text": "context event from shared corpus",
-                "type": 4
-              },
-              {
-                "confidence": 0.8,
-                "event_id_hash": 9002,
-                "event_time_ms": 9000,
-                "ingestion_time_ms": 9000,
-                "importance": 0.6,
-                "text": "second context event in same millisecond",
-                "type": 4
-              }
-            ],
-            "kind": "context_events",
-            "object_key": "ctx:event:101:700"
-          },
-          "name": "context_query_event_model"
-        },
-        {
-          "command": {
-            "event_time_ms": 9000,
-            "index_name": "topic",
-            "index_ref": {
-              "event_id_hash": 9001,
-              "primary_event_time_ms": 9000,
-              "primary_node_hash": 700
-            },
-            "index_value_hash": 333,
-            "kind": "context_write_index_ref",
-            "scope_hash": 0,
-            "tenant_hash": 101
-          },
-          "expect": {
-            "kind": "context_object_key",
-            "object_key": "ctxidx:101:topic:333:0"
-          },
-          "name": "context_write_index_ref_model"
-        },
-        {
-          "command": {
-            "end_time_ms": 9010,
-            "index_name": "topic",
-            "index_value_hash": 333,
-            "kind": "context_query_index",
-            "limit": 10,
-            "scope_hash": 0,
-            "start_time_ms": 8990,
-            "tenant_hash": 101
-          },
-          "expect": {
-            "kind": "context_index_refs",
-            "object_key": "ctxidx:101:topic:333:0",
-            "refs": [
-              {
-                "event_id_hash": 9001,
-                "primary_event_time_ms": 9000,
-                "primary_node_hash": 700
-              }
-            ]
-          },
-          "name": "context_query_index_ref_model"
-        },
-        {
-          "command": {
-            "audit": {
-              "blocked_refs": [
-                {
-                  "event_time_ms": 9005,
-                  "node_hash": 701,
-                  "reason": "policy"
-                }
-              ],
-              "max_prompt_tokens": 4096,
-              "query_hash": 88,
-              "query_id": "q-shared",
-              "request_time_ms": 9100,
-              "selected_refs": [
-                {
-                  "event_time_ms": 9000,
-                  "node_hash": 700,
-                  "reason": "matched-topic"
-                }
-              ],
-              "selected_tokens": 123,
-              "session_hash": 77
-            },
-            "kind": "context_write_pack_audit",
-            "tenant_hash": 101
-          },
-          "expect": {
-            "kind": "context_object_key",
-            "object_key": "ctx:audit:101:77"
-          },
-          "name": "context_write_pack_audit_model"
-        },
-        {
-          "command": {
-            "end_time_ms": 9110,
-            "kind": "context_query_pack_audit",
-            "limit": 10,
-            "session_hash": 77,
-            "start_time_ms": 9090,
-            "tenant_hash": 101
-          },
-          "expect": {
-            "audits": [
-              {
-                "blocked_refs": [
-                  {
-                    "event_time_ms": 9005,
-                    "node_hash": 701,
-                    "reason": "policy"
-                  }
-                ],
-                "max_prompt_tokens": 4096,
-                "query_hash": 88,
-                "query_id": "q-shared",
-                "request_time_ms": 9100,
-                "selected_refs": [
-                  {
-                    "event_time_ms": 9000,
-                    "node_hash": 700,
-                    "reason": "matched-topic"
-                  }
-                ],
-                "selected_tokens": 123,
-                "session_hash": 77
-              }
-            ],
-            "kind": "context_pack_audits",
-            "object_key": "ctx:audit:101:77"
-          },
-          "name": "context_query_pack_audit_model"
-        },
-        {
-          "command": {
-            "kind": "context_mark_summary_dirty",
-            "marker": {
-              "event_time_ms": 9200,
-              "node_hash": 700,
-              "propagate_depth": 3,
-              "reason": 2
-            },
-            "tenant_hash": 101
-          },
-          "expect": {
-            "kind": "context_object_key",
-            "object_key": "ctx:dirty:101:700"
-          },
-          "name": "context_mark_summary_dirty_model"
-        },
-        {
-          "command": {
-            "end_time_ms": 9210,
-            "kind": "context_query_summary_dirty",
-            "limit": 10,
-            "node_hash": 700,
-            "start_time_ms": 9190,
-            "tenant_hash": 101
-          },
-          "expect": {
-            "kind": "context_summary_dirty_markers",
-            "markers": [
-              {
-                "event_time_ms": 9200,
-                "node_hash": 700,
-                "propagate_depth": 3,
-                "reason": 2
-              }
-            ],
-            "object_key": "ctx:dirty:101:700"
-          },
-          "name": "context_query_summary_dirty_model",
-          "restart_before": true
-        }
-      ]
-    },
-    {
       "name": "common_restart_persistence",
       "shard_id": 1,
       "steps": [
@@ -6098,26 +5848,6 @@
       ]
     },
     {
-      "name": "context_compression_secondary_index_query_debug_flow",
-      "shard_id": 60,
-      "steps": [
-        {
-          "command": {
-            "description": "Shared Context pipeline case for temporal compression, secondary-index filter groups, query debug flow, retrieved evidence ordering, and audit refs.",
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
-            "required_paths": [
-              "docs/rust_matrixark_query_index_debug_flow.md"
-            ],
-            "rust_runner": "cargo test -p temporalstore-rust context_temporal_compression_builds_replayable_summary_without_deleting_sources context_benchmark_injection_uses_entity_segment_l0_l1_and_secondary_index --lib -- --test-threads=1",
-            "rust_validator": "tools/run_context_workflow_local.sh",
-            "suite": "cpp_context_pipeline_parity"
-          },
-          "name": "context_compression_secondary_index_query_debug_shared"
-        }
-      ]
-    },
-    {
       "name": "control_multi_proxy_convergence_and_quarantine",
       "shard_id": 61,
       "steps": [
@@ -6725,8 +6455,7 @@
                 "ContextIndexRef",
                 "ContextChildRef",
                 "ContextCompressionEvent",
-                "ContextSummaryDirtyMarker",
-                "ContextPackAudit"
+                "ContextSummaryDirtyMarker"
               ],
               "secondary_index_families": [
                 "resource_ref",
@@ -8272,30 +8001,6 @@
             "suite": "cpp_data_node_lifecycle_parity"
           },
           "name": "engine_lifecycle_reload_metadata_readonly_stale_version_shared"
-        }
-      ]
-    },
-    {
-      "description": "Shared C++/Rust Context query-understanding debug case for C++-style filter-group traces, per-group candidate decisions/drop reasons, batched summary traversal evidence, selected refs, and prompt injection ordering.",
-      "family": "context",
-      "name": "context_query_debug_filter_group_cpp_parity",
-      "shard_id": 42,
-      "steps": [
-        {
-          "command": {
-            "description": "Rust runs a mixed relevant/unrelated context retrieval and emits matrixark_context_query_debug_v1 with secondary-index filter groups, per-group candidate_decisions, dropped candidate reasons, batched summary embedding traversal, selected refs, and injection ordering. C++ parity maps to the MatrixArk query/index debug flow and Context model filter-group diagnostics.",
-            "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-query-debug-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
-            "required_paths": [
-              "crates/temporalstore-rust/src/context_workflow/query.rs",
-              "src/model/model_manager.cc"
-            ],
-            "rust_runner": "cargo test -p temporalstore-rust context_query_debug_reports_filter_groups_drops_and_injection_order --lib -- --test-threads=1",
-            "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only && python3 tools/validate_rust_product_test_guard.py",
-            "suite": "cpp_context_query_debug_parity"
-          },
-          "name": "context_query_debug_filter_group_cpp_parity_shared"
         }
       ]
     },
@@ -12372,22 +12077,6 @@
         ]
       },
       {
-        "blocker": "Native C++ context pipeline corpus runner is not wired yet; C++ context source/debug paths remain required while Rust executes the shared cases. native C++ context query debug corpus adapter still needs to emit matrixark_context_query_debug_v1 case results",
-        "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --family context --cpp --require-cpp-native",
-        "family": "context",
-        "status": "temporary_static_surface_gate",
-        "suites": [
-          "cpp_context_pipeline_parity",
-          "cpp_context_query_debug_parity"
-        ],
-        "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
-        "exit_criteria": [
-          "native C++ runner emits temporalstore_unified_case_report_v1 for all selected shared cases in context",
-          "C++ and Rust reports pass tools/compare_unified_cpp_rust_case_reports.py with matching case/step names and required output evidence",
-          "matrix row can move to native_executable only after no static surface gate remains for this family"
-        ]
-      },
-      {
         "blocker": "Native C++ control-plane corpus runner is not wired yet; client/proxy/data-node/metaserver source and harness paths remain required.",
         "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-control-plane-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --family client/proxy/control-plane --cpp --require-cpp-native",
         "family": "client/proxy/control-plane",
@@ -12766,8 +12455,6 @@
       "context_query_events",
       "context_write_index_ref",
       "context_query_index",
-      "context_write_pack_audit",
-      "context_query_pack_audit",
       "context_mark_summary_dirty",
       "context_query_summary_dirty",
       "common_exists",
@@ -12859,7 +12546,6 @@
       "context_object_key",
       "context_events",
       "context_index_refs",
-      "context_pack_audits",
       "context_summary_dirty_markers",
       "feature_point_groups",
       "ips_stats",

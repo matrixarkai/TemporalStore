@@ -58,12 +58,9 @@ def main() -> int:
     feature = contract["rust_public_data_model_commands"]["feature"]
     risk = contract["rust_public_data_model_commands"]["risk_frequency_control"]
     model_commands = feature + risk
-    blocked_aliases = set(contract["private_or_blocked_aliases"])
-    blocked_models = set(contract.get("blocked_data_model_families", []))
 
     manifest_cxx = manifest.get("cxx_commands", [])
     manifest_rust_extra = manifest.get("rust_extra_commands", [])
-    manifest_blocked = set(manifest.get("blocked_commands", []))
     cxx_commands = extract_cxx_open_source_commands(cxx_source)
     rust_allow = extract_rust_allowlist(rust_source)
 
@@ -73,6 +70,10 @@ def main() -> int:
         failures.append("public surface identity must be Risk-specific, not generic frequency-control")
     if "Risk is the only public frequency-cap/risk-control model" not in contract.get("rule", ""):
         failures.append("parity contract must state Risk is the only public frequency-cap/risk-control model")
+    public_contract_text = json.dumps(contract, sort_keys=True).lower() + "\n" + json.dumps(manifest, sort_keys=True).lower()
+    for private_term in ("audit", "replay", "debug", "cpc", "fol", "ips"):
+        if private_term in public_contract_text:
+            failures.append(f"public Redis/data-model contract must not catalog private/internal model family: {private_term}")
 
     if manifest_cxx != shared:
         failures.append("manifest cxx_commands must exactly match shared minimal Redis commands")
@@ -92,19 +93,6 @@ def main() -> int:
         failures.append(f"Rust trimmed allowlist drifted; missing={missing} extra={extra}")
     if contract.get("rust_trimmed_public_command_count") != len(expected_rust):
         failures.append("contract rust_trimmed_public_command_count must match shared plus model commands")
-
-    leaked_manifest = sorted(blocked_aliases & set(manifest_rust_extra))
-    leaked_rust = sorted(blocked_aliases & rust_allow)
-    missing_blocked = sorted(blocked_aliases - manifest_blocked)
-    manifest_blocked_models = set(manifest.get("blocked_data_model_families", []))
-    if leaked_manifest:
-        failures.append(f"CPC/FOL aliases leaked into manifest public Rust extras: {leaked_manifest}")
-    if leaked_rust:
-        failures.append(f"CPC/FOL aliases leaked into Rust trimmed allowlist: {leaked_rust}")
-    if missing_blocked:
-        failures.append(f"CPC/FOL aliases must be explicitly blocked in manifest: {missing_blocked}")
-    if manifest_blocked_models != blocked_models:
-        failures.append("manifest and parity contract must agree on blocked audit/replay/debug data-model families")
 
     if failures:
         print("redis C++/Rust surface consistency validation failed:")

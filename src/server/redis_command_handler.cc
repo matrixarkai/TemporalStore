@@ -1214,7 +1214,7 @@ void RedisCommandHandler::Info(RedisClientContext* c) {
             "redis_surface_cxx_command_count:" +
             std::to_string(OpenSourceRedisCommandCount()) +
             "\r\n"
-            "redis_surface_blocked_command_family_count:10\r\n"
+            "redis_surface_blocked_command_family_count:9\r\n"
 #endif
             "total_connections_received:982455\r\n"
             "total_commands_processed:10909755651\r\n"

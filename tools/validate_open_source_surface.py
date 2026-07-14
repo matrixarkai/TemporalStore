@@ -54,13 +54,10 @@ def main() -> int:
     parity_contract = json.loads(read("compat/redis_cpp_rust_surface_parity_contract.json"))
     manifest_cxx_commands = manifest.get("cxx_commands", [])
     manifest_allowed_surface_families = set(manifest.get("allowed_surface_families", []))
-    manifest_blocked_commands = set(manifest.get("blocked_commands", []))
-    manifest_blocked_data_model_families = set(manifest.get("blocked_data_model_families", []))
     manifest_rust_extra_commands = set(manifest.get("rust_extra_commands", []))
     manifest_rust_normal_helpers = set(manifest.get("rust_normal_helpers", []))
     parity_shared_commands = parity_contract.get("shared_minimal_redis_commands", [])
     parity_model_commands = parity_contract.get("rust_public_data_model_commands", {}).get("feature", []) + parity_contract.get("rust_public_data_model_commands", {}).get("risk_frequency_control", [])
-    manifest_blocked_smoke_samples = manifest.get("blocked_smoke_samples", {})
     manifest_benchmark_commands = manifest.get("benchmark_commands", {})
     manifest_required_benchmarks = manifest_benchmark_commands.get("required", [])
     manifest_opt_in_benchmarks = manifest_benchmark_commands.get("opt_in", [])
@@ -139,30 +136,16 @@ def main() -> int:
         "feature_model",
         "risk_frequency_control",
     }
-    expected_blocked_data_model_families = {
-        "audit_log",
-        "context_pack_audit",
-        "replay_log",
-        "debug_trace",
-        "diagnostic_telemetry_records",
-    }
     require(
         manifest_allowed_surface_families == expected_allowed_families,
         "Redis open-source surface manifest must explicitly limit allowed families to minimal string/hash/TTL plus context/feature/single Risk data models",
         failures,
     )
     require(
-        manifest_blocked_data_model_families == expected_blocked_data_model_families,
-        "Redis open-source surface manifest must explicitly exclude audit/replay/debug data-model families",
-        failures,
-    )
-    require(
         "context" in manifest.get("purpose", "").lower()
         and "feature" in manifest.get("purpose", "").lower()
         and "single risk data model" in manifest.get("purpose", "").lower()
-        and "minimal string/hash/ttl" in manifest.get("purpose", "").lower()
-        and "audit" in manifest.get("purpose", "").lower()
-        and "replay" in manifest.get("purpose", "").lower(),
+        and "minimal string/hash/ttl" in manifest.get("purpose", "").lower(),
         "Redis open-source surface manifest purpose must describe the minimal first-release data-model families",
         failures,
     )
@@ -186,6 +169,13 @@ def main() -> int:
     redis_production_gate = read("tools/run_redis_production_gate_ubuntu22.sh")
     redis_docs = read("docs/redis_compatibility_matrix.md")
     open_source_surface = read("docs/open_source_surface.md")
+    public_contract_text = json.dumps(manifest, sort_keys=True).lower() + "\n" + read("compat/redis_cpp_rust_surface_parity_contract.json").lower() + "\n" + open_source_surface.lower()
+    for private_term in ("audit", "replay", "debug", "cpc", "fol", "ips"):
+        require(
+            private_term not in public_contract_text,
+            f"open-source public surface must not catalog private/internal model family: {private_term}",
+            failures,
+        )
     cpp_api_parity_docs = read("docs/cpp_temporalstore_api_parity.md")
     temporal_adapters = read("tools/matrixark_mcp_temporal_adapters.py")
     raw_storage_contract = read("tools/matrixark_raw_message_storage_contract.py")
@@ -309,38 +299,6 @@ def main() -> int:
         "C++ trimmed Redis descriptor table must match compat/redis_open_source_surface_manifest.json",
         failures,
     )
-    for command in manifest_blocked_commands:
-        require(
-            command not in cxx_advertised_commands,
-            f"Redis surface manifest blocked command {command} must not be advertised by C++",
-            failures,
-        )
-
-    for smoke_name, script in (
-        ("compat", redis_compat_smoke),
-        ("live", redis_live_smoke),
-    ):
-        samples = manifest_blocked_smoke_samples.get(smoke_name, [])
-        require(samples, f"Redis surface manifest must define blocked_smoke_samples.{smoke_name}", failures)
-        for command in samples:
-            require(
-                command in manifest_blocked_commands,
-                f"blocked_smoke_samples.{smoke_name} command {command} must also be in blocked_commands",
-                failures,
-            )
-            literal_unsupported = re.search(rf"expect_error\s+unsupported_[^\s]*\s+{re.escape(command)}\b", script) is not None
-            loop_unsupported = (
-                "for blocked in" in script
-                and command in script
-                and '"${blocked}"' in script
-                and "expect_error" in script
-            )
-            require(
-                literal_unsupported or loop_unsupported,
-                f"Redis {smoke_name} smoke must assert unsupported {command} from the manifest samples",
-                failures,
-            )
-
     cxx_registered_commands = {
         name.upper(): handler
         for name, handler in re.findall(
@@ -451,8 +409,6 @@ def main() -> int:
             f"Rust allowlist must keep manifest extra command {allowed}",
             failures,
         )
-    for denied in sorted(manifest_blocked_commands):
-        require(denied not in rust_allowed_commands, f"Rust allowlist must not include manifest blocked command {denied}", failures)
     for denied in (
         "SADD",
         "SCARD",
@@ -502,9 +458,7 @@ def main() -> int:
         "ZSCAN",
         "ZSCORE",
         "ZUNION",
-        "IPSADD",
         "FADD",
-        "RISKDEBUG",
         "PARTITION",
         "DBSIZE",
         "CONFIG",
@@ -569,7 +523,7 @@ def main() -> int:
         failures,
     )
     require(
-        "Audit, replay, ContextPack audit, debug trace" in open_source_surface
+        "Only the model families listed above are public" in open_source_surface
         and "server-configuration or broad" in open_source_surface
         and "`CONFIG`" in open_source_surface
         and "`DBSIZE`" in open_source_surface
@@ -847,15 +801,6 @@ def main() -> int:
         "Redis live storage smoke COMMAND COUNT must match manifest cxx_command_count",
         failures,
     )
-    require(
-        "HSCAN" in manifest_blocked_commands
-        and "HSCAN" in redis_compat_smoke
-        and "HSCAN" in redis_live_smoke
-        and '"${blocked}"' in redis_compat_smoke
-        and '"${blocked}"' in redis_live_smoke,
-        "Redis smokes must prove HSCAN is outside the first-release trimmed surface",
-        failures,
-    )
     for runtime_metric in (
         "redis_surface:trimmed_open_source_context_feature_risk",
         "redis_surface_schema:temporalstore_open_source_redis_surface_v1",
@@ -875,13 +820,7 @@ def main() -> int:
         "Redis smokes must derive blocked-family INFO assertion from the surface manifest",
         failures,
     )
-    require(
-        "HINCRBYFLOAT" in manifest_blocked_commands
-        and "HINCRBYFLOAT" in redis_compat_smoke
-        and '"${blocked}"' in redis_compat_smoke,
-        "first-release Redis compatibility smoke/docs must keep HINCRBYFLOAT outside the trimmed surface",
-        failures,
-    )
+
 
     for symbol in (
         "OBJECT_STORE_PROVIDER_ALIASES",

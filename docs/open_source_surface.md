@@ -9,13 +9,12 @@ The open-source build keeps:
   string commands, minimal key lifetime commands, and minimal hash commands.
 - MatrixArk context-management data models.
 - Feature data model.
-- Single Risk data model for frequency-cap and risk-control. CPC/FOL command names are not public first-release APIs.
+- Single Risk data model for frequency-cap and risk-control.
 
-Audit, replay, ContextPack audit, debug trace, and diagnostic telemetry record models are not part of the first open-source release. Runtime counters and production-gate evidence are allowed, but serving data models for audit/replay/debug stay private or disabled.
+Only the model families listed above are public in the first open-source release. Other internal model families are intentionally omitted from docs, manifests, and compatibility corpora until they are ready for a future public release.
 
 The open-source build excludes non-public/internal model families and extension
-modules such as set, IPS, risk-only, temporal aggregate, and time-series model
-registration. It also does not expose Redis server-configuration or broad
+modules that are not part of the first-release public contract. It also does not expose Redis server-configuration or broad
 keyspace/collection-clone commands such as `CONFIG`, `DBSIZE`, broad `KEYS` /
 `SCAN`, `SADD`, `LPUSH`, or `ZADD`. `HSCAN` is excluded from the first-release public surface. The set protobuf may still compile as a
 compatibility helper for legacy Redis handler code, but the set module is not
