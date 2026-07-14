@@ -231,7 +231,7 @@ def main() -> int:
     parser.add_argument("--retrieve-count", type=int, default=20)
     parser.add_argument("--report-json", type=Path, default=Path("/tmp/matrixark_mcp_scale_failover_report.json"))
     parser.add_argument("--storage-prefix", default=f"matrixark:mcp:scale:{int(time.time())}")
-    parser.add_argument("--rust-cli", type=Path, default=ROOT / "target" / "debug" / "matrixark_record_log")
+    parser.add_argument("--rust-cli", type=Path, default=ROOT / "target" / "release" / "matrixark_rust_proxy")
     parser.add_argument("--rust-root", type=Path, default=Path(tempfile.gettempdir()) / "matrixark_mcp_scale_rust")
     parser.add_argument("--local-event-log", type=Path, default=Path(tempfile.gettempdir()) / "matrixark_mcp_scale_local.jsonl")
     args = parser.parse_args()

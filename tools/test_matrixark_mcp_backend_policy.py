@@ -173,7 +173,7 @@ class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
             os.environ.pop(key, None)
         try:
             client = mcp.MatrixArkRustCliClient(
-                cli_path="matrixark_record_log",
+                cli_path="matrixark_rust_proxy",
                 metaserver="127.0.0.1:18000",
                 namespace="ns",
                 table="table",
@@ -940,15 +940,16 @@ class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
     def test_rust_scale_allow_isolated_keeps_pack_lanes_explicit(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         source = (repo / "tools" / "run_matrixark_cpp_rust_scale_report.py").read_text()
-        allow_start = source.index("MATRIXARK_RUST_PROXY_ALLOW_ISOLATED_CLIENTS")
-        allow_body = source[allow_start : source.index("else:", allow_start)]
+        adapter_start = source.index('if backend == "rust":')
+        adapter_body = source[adapter_start : source.index("allow_c_api_bridge", adapter_start)]
         pin_start = source.index("rust_proxy_lane_defaults")
-        pin_body = source[pin_start : source.index("if not allow_isolated_rust_clients:", pin_start)]
+        pin_body = source[pin_start : source.index("adapter = make_adapter", pin_start)]
 
-        self.assertIn('os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS", "1")', allow_body)
-        self.assertIn('os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES", "1")', allow_body)
-        self.assertNotIn('os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES", "0")', allow_body)
-        self.assertIn('"MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS": "1" if allow_isolated_rust_clients else "0"', pin_body)
+        self.assertIn('os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS", "1")', adapter_body)
+        self.assertIn('os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES", "1")', adapter_body)
+        self.assertNotIn('os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES", "0")', adapter_body)
+        self.assertIn('"MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS": "1"', pin_body)
+        self.assertIn('"MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES": "1"', pin_body)
 
 
 class _NativeAppendClient:
@@ -4878,8 +4879,8 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
     def test_rust_matrixark_append_uses_native_proxy_path(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         source = (repo / "sdk/rust/temporalstore/src/bin/matrixark_rust_proxy.rs").read_text()
-        implementation = (repo / "sdk/rust/temporalstore/src/bin/matrixark_record_log.rs").read_text()
-        crate_implementation = (repo / "crates/temporalstore-rust/src/bin/matrixark_record_log.rs").read_text()
+        implementation = (repo / "sdk/rust/temporalstore/src/bin/matrixark_rust_proxy_impl.rs").read_text()
+        crate_implementation = (repo / "crates/temporalstore-rust/src/bin/matrixark_rust_proxy_impl.rs").read_text()
 
         self.assertIn("Production-facing alias for the MatrixArk Rust proxy", source)
         self.assertIn('"batch_hset" =>', implementation)
@@ -4912,16 +4913,18 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         repo = Path(__file__).resolve().parents[1]
         cargo = (repo / "sdk/rust/temporalstore/Cargo.toml").read_text()
         direct_source = (repo / "sdk/rust/temporalstore/src/bin/matrixark_rust_direct_sdk.rs").read_text()
-        implementation = (repo / "sdk/rust/temporalstore/src/bin/matrixark_record_log.rs").read_text()
-        server = (repo / "tools/matrixark_mcp_server.py").read_text()
+        implementation = (repo / "sdk/rust/temporalstore/src/bin/matrixark_rust_proxy_impl.rs").read_text()
+        backends = (repo / "tools/matrixark_mcp_backends.py").read_text()
+        adapters = (repo / "tools/matrixark_mcp_temporal_adapters.py").read_text()
 
         self.assertIn('name = "matrixark_rust_direct_sdk"', cargo)
         self.assertIn("Production-facing alias for the MatrixArk Rust direct SDK bridge", direct_source)
         self.assertIn("matrixark_rust_sdk_mode_is_direct", implementation)
         self.assertIn("matrixark_rust_direct_sdk", implementation)
         self.assertIn("rust-direct-sdk-bridge", implementation)
-        self.assertIn("--rust-direct-sdk", server)
-        self.assertIn("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_SDK", server)
+        self.assertIn("rust-direct-sdk-bridge", direct_source)
+        self.assertIn("MatrixArkTemporalStoreRustDirectAdapter", adapters)
+        self.assertIn("rust-direct-sdk-bridge", adapters)
 
     def test_rust_cdylib_direct_binding_exposes_native_matrixark_api(self) -> None:
         repo = Path(__file__).resolve().parents[1]
@@ -5005,7 +5008,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
     def test_cpp_and_rust_native_pack_enforce_cross_session_budget(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         cpp_source = (repo / "src/client/temporalstore_c_client.cc").read_text()
-        rust_source = (repo / "crates/temporalstore-rust/src/bin/matrixark_record_log.rs").read_text()
+        rust_source = (repo / "crates/temporalstore-rust/src/bin/matrixark_rust_proxy_impl.rs").read_text()
 
         for source in [cpp_source, rust_source]:
             self.assertIn("cross_session", source)

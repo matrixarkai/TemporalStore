@@ -15,12 +15,8 @@ class MatrixArkRustServeReadinessTest(unittest.TestCase):
         repo = Path(__file__).resolve().parents[1]
         return Path(os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_CLI", repo / "target/release/matrixark_rust_proxy"))
 
-    def _compat_cli_path(self) -> Path:
-        repo = Path(__file__).resolve().parents[1]
-        return Path(os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_COMPAT_CLI", repo / "target/release/matrixark_record_log"))
-
     def test_single_shot_mode_is_debug_only(self) -> None:
-        cli_path = self._compat_cli_path()
+        cli_path = self._cli_path()
         if not cli_path.exists():
             self.skipTest(f"Rust matrixark_rust_proxy binary is not built: {cli_path}")
         completed = subprocess.run(
@@ -98,9 +94,9 @@ class MatrixArkRustServeReadinessTest(unittest.TestCase):
                 readiness_after_writes = client.readiness()
                 self.assertGreaterEqual(readiness_after_writes.get("cached_clients", 0), 1)
                 metrics = client.metrics_prometheus()
-                self.assertIn("matrixark_rust_record_log_commands_total", metrics)
-                self.assertIn("matrixark_rust_record_log_records_written_total", metrics)
-                self.assertIn("matrixark_rust_record_log_clients_created_total", metrics)
+                self.assertIn("matrixark_rust_proxy_commands_total", metrics)
+                self.assertIn("matrixark_rust_proxy_records_written_total", metrics)
+                self.assertIn("matrixark_rust_proxy_clients_created_total", metrics)
                 self.assertIn('matrixark_backend_cached_clients{backend="rust"}', metrics)
                 self.assertIn('matrixark_backend_qps{backend="rust"}', metrics)
                 self.assertIn('matrixark_backend_errors_total{backend="rust"}', metrics)
@@ -121,7 +117,8 @@ class MatrixArkRustServeReadinessTest(unittest.TestCase):
                     client_metrics.get("read_pool_enabled"),
                     client_metrics.get("read_pool_size", 0) > 1,
                 )
-                self.assertEqual(client_metrics.get("max_inflight"), 1)
+                self.assertGreaterEqual(client_metrics.get("max_inflight", 0), 1)
+                self.assertGreaterEqual(client_metrics.get("max_inflight", 0), client_metrics.get("read_pool_size", 0))
                 self.assertFalse(client_metrics.get("process_per_operation_enabled"))
                 self.assertEqual(client_metrics.get("single_shot_mode"), "debug_only")
                 self.assertFalse(client_metrics.get("direct_sdk_bridge"))

@@ -122,7 +122,7 @@ def add_backend_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--rust-cli",
         default=os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_CLI", ""),
-        help="Path to the Rust matrixark_gateway or matrixark_record_log binary for --backend temporalstore-rust.",
+        help="Path to the Rust matrixark_rust_proxy or direct SDK binary for --backend temporalstore-rust.",
     )
     parser.add_argument(
         "--request-timeout-ms",

@@ -39,7 +39,8 @@ CPP_LIB_CANDIDATES = [
 
 
 RUST_CLI_CANDIDATES = [
-    ROOT / "sdk/rust/temporalstore/target/release/matrixark_record_log",
+    ROOT / "target/release/matrixark_rust_proxy",
+    ROOT / "sdk/rust/temporalstore/target/release/matrixark_rust_proxy",
 ]
 
 

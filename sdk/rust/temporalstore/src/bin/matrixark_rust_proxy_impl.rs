@@ -164,31 +164,31 @@ impl MetricsSnapshot {
         let mut out = String::new();
         metric_header(
             &mut out,
-            "matrixark_rust_record_log_process_start_time_ms",
+            "matrixark_rust_proxy_process_start_time_ms",
             "gauge",
-            "Unix millisecond timestamp when this Rust record-log process started.",
+            "Unix millisecond timestamp when this Rust proxy process started.",
         );
         line(
             &mut out,
-            "matrixark_rust_record_log_process_start_time_ms",
+            "matrixark_rust_proxy_process_start_time_ms",
             "",
             self.started_at_unix_ms,
         );
         metric_header(
             &mut out,
-            "matrixark_rust_record_log_commands_total",
+            "matrixark_rust_proxy_commands_total",
             "counter",
-            "Total MatrixArk Rust record-log commands by op and status.",
+            "Total MatrixArk Rust proxy commands by op and status.",
         );
         metric_header(
             &mut out,
-            "matrixark_rust_record_log_command_latency_ms_sum",
+            "matrixark_rust_proxy_command_latency_ms_sum",
             "counter",
             "Total command latency in milliseconds by op.",
         );
         metric_header(
             &mut out,
-            "matrixark_rust_record_log_command_latency_ms_max",
+            "matrixark_rust_proxy_command_latency_ms_max",
             "gauge",
             "Maximum observed command latency in milliseconds by op.",
         );
@@ -271,123 +271,123 @@ impl MetricsSnapshot {
             let fail_labels = format!("{{op=\"{}\",status=\"error\"}}", escape_label(op));
             line(
                 &mut out,
-                "matrixark_rust_record_log_commands_total",
+                "matrixark_rust_proxy_commands_total",
                 &ok_labels,
                 metrics.ok,
             );
             line(
                 &mut out,
-                "matrixark_rust_record_log_commands_total",
+                "matrixark_rust_proxy_commands_total",
                 &fail_labels,
                 metrics.failed,
             );
             let op_labels = format!("{{op=\"{}\"}}", escape_label(op));
             line(
                 &mut out,
-                "matrixark_rust_record_log_command_latency_ms_sum",
+                "matrixark_rust_proxy_command_latency_ms_sum",
                 &op_labels,
                 metrics.latency_ms_sum,
             );
             line(
                 &mut out,
-                "matrixark_rust_record_log_command_latency_ms_max",
+                "matrixark_rust_proxy_command_latency_ms_max",
                 &op_labels,
                 metrics.latency_ms_max,
             );
         }
         metric_header(
             &mut out,
-            "matrixark_rust_record_log_records_written_total",
+            "matrixark_rust_proxy_records_written_total",
             "counter",
-            "Total MatrixArk records/hash entries written by the Rust record-log bridge.",
+            "Total MatrixArk records/hash entries written by the Rust proxy bridge.",
         );
         line(
             &mut out,
-            "matrixark_rust_record_log_records_written_total",
+            "matrixark_rust_proxy_records_written_total",
             "",
             self.records_written,
         );
         metric_header(
             &mut out,
-            "matrixark_rust_record_log_records_read_total",
+            "matrixark_rust_proxy_records_read_total",
             "counter",
-            "Total MatrixArk records/hash entries read by the Rust record-log bridge.",
+            "Total MatrixArk records/hash entries read by the Rust proxy bridge.",
         );
         line(
             &mut out,
-            "matrixark_rust_record_log_records_read_total",
+            "matrixark_rust_proxy_records_read_total",
             "",
             self.records_read,
         );
         metric_header(
             &mut out,
-            "matrixark_rust_record_log_bytes_written_total",
+            "matrixark_rust_proxy_bytes_written_total",
             "counter",
-            "Approximate payload bytes written by the Rust record-log bridge.",
+            "Approximate payload bytes written by the Rust proxy bridge.",
         );
         line(
             &mut out,
-            "matrixark_rust_record_log_bytes_written_total",
+            "matrixark_rust_proxy_bytes_written_total",
             "",
             self.bytes_written,
         );
         metric_header(
             &mut out,
-            "matrixark_rust_record_log_bytes_read_total",
+            "matrixark_rust_proxy_bytes_read_total",
             "counter",
-            "Approximate payload bytes read by the Rust record-log bridge.",
+            "Approximate payload bytes read by the Rust proxy bridge.",
         );
         line(
             &mut out,
-            "matrixark_rust_record_log_bytes_read_total",
+            "matrixark_rust_proxy_bytes_read_total",
             "",
             self.bytes_read,
         );
         metric_header(
             &mut out,
-            "matrixark_rust_record_log_clients_created_total",
+            "matrixark_rust_proxy_clients_created_total",
             "counter",
             "TemporalStore clients created by the Rust proxy/direct SDK bridge.",
         );
         line(
             &mut out,
-            "matrixark_rust_record_log_clients_created_total",
+            "matrixark_rust_proxy_clients_created_total",
             "",
             self.clients_created,
         );
         metric_header(
             &mut out,
-            "matrixark_rust_record_log_parse_errors_total",
+            "matrixark_rust_proxy_parse_errors_total",
             "counter",
-            "Invalid JSON command lines received by the Rust record-log bridge.",
+            "Invalid JSON command lines received by the Rust proxy bridge.",
         );
         line(
             &mut out,
-            "matrixark_rust_record_log_parse_errors_total",
+            "matrixark_rust_proxy_parse_errors_total",
             "",
             self.parse_errors,
         );
         metric_header(
             &mut out,
-            "matrixark_rust_record_log_client_connect_errors_total",
+            "matrixark_rust_proxy_client_connect_errors_total",
             "counter",
-            "TemporalStore client connection failures in the Rust record-log bridge.",
+            "TemporalStore client connection failures in the Rust proxy bridge.",
         );
         line(
             &mut out,
-            "matrixark_rust_record_log_client_connect_errors_total",
+            "matrixark_rust_proxy_client_connect_errors_total",
             "",
             self.client_connect_errors,
         );
         metric_header(
             &mut out,
-            "matrixark_rust_record_log_commands_failed_total",
+            "matrixark_rust_proxy_commands_failed_total",
             "counter",
-            "Total failed MatrixArk Rust record-log commands.",
+            "Total failed MatrixArk Rust proxy commands.",
         );
         line(
             &mut out,
-            "matrixark_rust_record_log_commands_failed_total",
+            "matrixark_rust_proxy_commands_failed_total",
             "",
             self.commands_failed,
         );
@@ -2988,17 +2988,17 @@ mod tests {
             CommandStats::default(),
         );
         let text = metrics.render_prometheus();
-        assert!(text.contains("matrixark_rust_record_log_commands_total{op=\"write_matrixark_record\",status=\"ok\"} 1"));
-        assert!(text.contains("matrixark_rust_record_log_commands_total{op=\"write_matrixark_record\",status=\"error\"} 1"));
+        assert!(text.contains("matrixark_rust_proxy_commands_total{op=\"write_matrixark_record\",status=\"ok\"} 1"));
+        assert!(text.contains("matrixark_rust_proxy_commands_total{op=\"write_matrixark_record\",status=\"error\"} 1"));
         assert!(text.contains(
-            "matrixark_rust_record_log_command_latency_ms_sum{op=\"write_matrixark_record\"} 42"
+            "matrixark_rust_proxy_command_latency_ms_sum{op=\"write_matrixark_record\"} 42"
         ));
         assert!(text.contains(
-            "matrixark_rust_record_log_command_latency_ms_max{op=\"write_matrixark_record\"} 30"
+            "matrixark_rust_proxy_command_latency_ms_max{op=\"write_matrixark_record\"} 30"
         ));
-        assert!(text.contains("matrixark_rust_record_log_records_written_total 1"));
-        assert!(text.contains("matrixark_rust_record_log_bytes_written_total 128"));
-        assert!(text.contains("matrixark_rust_record_log_commands_failed_total 1"));
+        assert!(text.contains("matrixark_rust_proxy_records_written_total 1"));
+        assert!(text.contains("matrixark_rust_proxy_bytes_written_total 128"));
+        assert!(text.contains("matrixark_rust_proxy_commands_failed_total 1"));
     }
 
 

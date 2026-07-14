@@ -28,8 +28,8 @@ CPP_SERVER = (
 )
 
 REQUIRED_RUST_FILES = [
-    ROOT / "crates" / "temporalstore-rust" / "src" / "bin" / "matrixark_record_log.rs",
-    ROOT / "sdk" / "rust" / "temporalstore" / "src" / "bin" / "matrixark_record_log.rs",
+    ROOT / "crates" / "temporalstore-rust" / "src" / "bin" / "matrixark_rust_proxy_impl.rs",
+    ROOT / "sdk" / "rust" / "temporalstore" / "src" / "bin" / "matrixark_rust_proxy_impl.rs",
     ROOT / "sdk" / "rust" / "temporalstore" / "src" / "lib.rs",
     ROOT / "tools" / "run_matrixark_mcp_server.sh",
     ROOT / "docs" / "rust_cpp_codex_mcp_integration.md",
@@ -113,7 +113,7 @@ def validate_rust_cli_smoke() -> dict[str, object]:
     root = Path(os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_ROOT", "/tmp/temporalstore-mcp-parity-smoke"))
     env = os.environ.copy()
     env["MATRIXARK_TEMPORALSTORE_RUST_ROOT"] = str(root)
-    env["MATRIXARK_RUST_RECORD_LOG_SINGLE_SHOT_DEBUG"] = "1"
+    env["MATRIXARK_RUST_PROXY_SINGLE_SHOT_DEBUG"] = "1"
     env.setdefault("CARGO_TARGET_DIR", "/tmp/temporalstore-mcp-parity-target")
     request = {
         "op": "put_string",
@@ -229,11 +229,11 @@ def main() -> int:
         "scan_hash",
     ]
     require_contains(
-        ROOT / "crates" / "temporalstore-rust" / "src" / "bin" / "matrixark_record_log.rs",
+        ROOT / "crates" / "temporalstore-rust" / "src" / "bin" / "matrixark_rust_proxy_impl.rs",
         rust_engine_tokens + ["TemporalEngine", "HashGetAll"],
     )
     require_contains(
-        ROOT / "sdk" / "rust" / "temporalstore" / "src" / "bin" / "matrixark_record_log.rs",
+        ROOT / "sdk" / "rust" / "temporalstore" / "src" / "bin" / "matrixark_rust_proxy_impl.rs",
         direct_sdk_tokens + ["batch_hget", "matrixark_batch_append_records"],
     )
     require_contains(
