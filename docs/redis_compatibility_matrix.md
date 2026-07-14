@@ -17,16 +17,16 @@ Current bridge status values:
 |---|---|---|---|---|
 | Connection | `PING`, `ECHO`, `QUIT` | required | wired | `PING`, `ECHO`, and `QUIT` are wired for client compatibility. |
 | Auth/client | `AUTH`, `CLIENT SETNAME`, `CLIENT GETNAME`, `CLIENT ID` | required | wired | `CLIENT SETNAME` is accepted, `GETNAME` returns null, and `ID` returns a deterministic compatibility value. |
-| Metadata | `INFO`, `COMMAND`, `TYPE` | required | partial | `INFO` and `TYPE` are wired. In open-source builds, `INFO stats` exposes `redis_surface:trimmed_open_source_context_feature_frequency`, `redis_surface_schema`, command-count, and blocked-family count fields. In open-source C++ builds, plain `COMMAND` advertises only the trimmed 47-command string/hash surface, `COMMAND COUNT` derives from that same table, and `COMMAND INFO` returns minimal metadata for those commands; full Redis command metadata is still future work. |
-| DB selection | `SELECT` | required | wired | `SELECT 0` is accepted. Non-zero DB indexes are rejected because isolation is namespace/table/scope based, not Redis logical DB based. |
-| String | `GET`, `SET`, `SETNX`, `SETEX`, `PSETEX`, `GETSET`, `GETDEL`, `GETEX`, `MGET`, `MSET`, `DEL`, `UNLINK`, `EXISTS`, `APPEND`, `STRLEN` | required | partial | `GET`, `SET key value`, `SET key value NX`, `SET key value XX`, `SET key value EX/PX`, `SET key value GET`, `SETNX`, `SETEX`, `PSETEX`, `GETSET`, `GETDEL`, `GETEX`, `MGET`, `MSET`, `DEL`, `UNLINK`, `EXISTS`, `APPEND`, and `STRLEN` are wired. `SET EX/PX` combined with `NX/XX` is rejected until the native string module exposes an atomic conditional set-with-ttl primitive. |
-| Counter | `INCR`, `INCRBY`, `DECR`, `DECRBY` | required | wired | Wired through native string storage with integer parsing and overflow checks. |
-| TTL | `EXPIRE`, `PEXPIRE`, `TTL`, `PTTL`, `PERSIST`, `GETEX` | required | partial | `EXPIRE`, `PEXPIRE`, `TTL`, `PTTL`, `PERSIST`, `SET EX/PX`, `SETEX`, `PSETEX`, and `GETEX` are wired. Restart/failover TTL durability still belongs to the production gate. |
-| Hash | `HSET`, `HSETNX`, `HMSET`, `HGET`, `HMGET`, `HGETALL`, `HKEYS`, `HVALS`, `HSTRLEN`, `HDEL`, `HEXISTS`, `HLEN`, `HINCRBY`, `HINCRBYFLOAT` | required | partial | `HSET`, `HSETNX`, `HMSET`, `HGET`, `HMGET`, `HGETALL`, `HKEYS`, `HVALS`, `HSTRLEN`, `HDEL`, `HEXISTS`, `HLEN`, and integer `HINCRBY` are wired in both open-source bridges. Rust also wires `HINCRBYFLOAT`; the C++ Redis bridge must not claim it until a native handler is added. Smoke coverage keeps `HINCRBYFLOAT` behind `REDIS_EXPECT_HINCRBYFLOAT=1` for C++ live runs. |
+| Metadata | `INFO`, `COMMAND` | required | partial | `INFO stats` exposes `redis_surface:trimmed_open_source_context_feature_frequency`, `redis_surface_schema`, command-count, and blocked-family count fields. In open-source C++ builds, plain `COMMAND` advertises only the trimmed 16-command string/hash/TTL surface; feature and Risk model commands are Rust bridge APIs. |
+| DB selection | `SELECT` | excluded | unsupported in open-source surface | Isolation is namespace/table/scope based, not Redis logical DB based. |
+| String | `GET`, `SET`, `DEL`, `EXISTS` | required | wired | First release keeps only the minimal string commands needed by context/feature/frequency-control data-model plumbing. |
+| Counter | `INCR`, `INCRBY`, `DECR`, `DECRBY` | excluded | unsupported in open-source surface | Counters are represented by the Risk frequency-control model instead of generic Redis integer keys. |
+| TTL | `EXPIRE`, `TTL` | required | wired | First release keeps only minimal key lifetime support. Restart/failover TTL durability still belongs to the production gate. |
+| Hash | `HSET`, `HGET`, `HGETALL`, `HDEL`, `HEXISTS`, `HLEN` | required | wired | First release keeps only minimal hash commands. Hash counters, hash scans, key/val listing helpers, and float increments are not public APIs. |
 | Feature model | `FAPPEND`, `FAPPENDPOLICY`, `FQUERY`, `FQUERYFILTER`, `FQUERYFILTERSTR`, `FAGG` | required | wired | TemporalStore feature APIs are exposed as explicit data-model commands rather than pretending to be generic Redis collections. These support timestamped feature writes, policy writes, range query, filtered query, and aggregate query. |
-| Frequency-control model | `RISKINCR`, `RISKINCROPT`, `RISKCHANGE`, `RISKCOUNT`, `RISKQUERY`, `RISKDETAIL`, `RISKHSET`, `HCHANGE`, `HQUERY`, `HSETANDGET`, `CPCSET`, `CPCSETANDGET`, `FOLSET`, `FOLQUERY` | required | wired | Frequency-cap/risk-window commands remain data-model specific. Debug-only inspection commands are not part of the open-source surface. |
+| Frequency-control model | `RISKINCR`, `RISKINCROPT`, `RISKCHANGE`, `RISKCOUNT`, `RISKQUERY`, `RISKDETAIL`, `RISKHSET`, `HCHANGE`, `HQUERY`, `HSETANDGET` | required | wired | Frequency-cap and risk-window behavior is exposed through one Risk model. CPC/FOL command names are private/future aliases, not first-release public APIs. |
 | Set/List/ZSet clone APIs | `SADD`, `SREM`, `SMEMBERS`, `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `ZADD`, `ZRANGE`, `ZRANGEBYSCORE`, and related collection commands | deferred | private/unsupported in open-source surface | These compatibility handlers may exist internally, but open-source production builds do not advertise or allow them. Context/feature/frequency use native data-model APIs instead of encoded Redis collection clones. |
-| Narrow hash scan | `HSCAN` | required | wired | `HSCAN` is allowed only as a single-hash/narrow helper. Broad keyspace `SCAN`, `SSCAN`, and `ZSCAN` are not part of the open-source production surface. |
+| Narrow hash scan | `HSCAN` | excluded | unsupported in open-source surface | Use `HGETALL` for the minimal hash read path. Broad keyspace `SCAN`, `SSCAN`, and `ZSCAN` are not part of the open-source production surface. |
 | Transactions | `MULTI`, `EXEC`, `DISCARD`, `WATCH` | planned | unsupported | Start same-partition only or return explicit unsupported errors. |
 | Cluster | `CLUSTER SLOTS`, `CLUSTER NODES`, `MOVED`, `ASK` | planned | unsupported | Required only if exposing Redis Cluster wire compatibility. Proxy-hidden sharding can avoid this initially. |
 | Pub/Sub | `PUBLISH`, `SUBSCRIBE`, `PSUBSCRIBE` | deferred | unsupported | Separate serving plane; not required for KV migration. |
@@ -47,16 +47,9 @@ The TemporalStore native Redis bridge is production-ready only for the documente
 - TTL: `EXPIRE`, `TTL`
 - Hash minimal: `HSET`, `HGET`, `HDEL`, `HEXISTS`, `HLEN`, `HGETALL`
 - Feature model: `FAPPEND`, `FAPPENDPOLICY`, `FQUERY`, `FQUERYFILTER`, `FQUERYFILTERSTR`, `FAGG`
-- Frequency-control model: `RISKINCR`, `RISKINCROPT`, `RISKCHANGE`, `RISKCOUNT`, `RISKQUERY`, `RISKDETAIL`, `RISKHSET`, `HCHANGE`, `HQUERY`, `HSETANDGET`, `CPCSET`, `CPCSETANDGET`, `FOLSET`, `FOLQUERY`
+- Risk frequency-control model: `RISKINCR`, `RISKINCROPT`, `RISKCHANGE`, `RISKCOUNT`, `RISKQUERY`, `RISKDETAIL`, `RISKHSET`, `HCHANGE`, `HQUERY`, `HSETANDGET`
 
-Rust's RESP bridge also advertises additional normal string/TTL helpers in
-the trimmed surface: `MSETNX`, `TOUCH`, `EXPIREAT`, `PEXPIREAT`,
-`EXPIRETIME`, `PEXPIRETIME`, `GETRANGE`, `SETRANGE`, and `INCRBYFLOAT`.
-These are still part of the basic data-model surface; they are not generic
-collection clones, server-admin APIs, scripting, streams, pub/sub, or debug
-commands. The C++ Redis bridge currently exposes a narrower
-basic/string/hash subset in open-source builds and reports `COMMAND COUNT=16`;
-feature and frequency-control commands are Rust bridge APIs.
+The C++ Redis bridge exposes the 16-command minimal string/hash/TTL subset in open-source builds and reports `COMMAND COUNT=16`; feature and Risk frequency-control commands are Rust bridge APIs. CPC/FOL names are intentionally not advertised in the first-release surface.
 
 `HSCAN` is not part of the first-release open-source Redis surface; use `HGETALL` for the minimal hash read path. Broad keyspace scan support remains excluded.
 
@@ -73,7 +66,7 @@ python3 tools/validate_open_source_surface.py
 cargo check -p temporalstore-rust --lib
 ```
 
-Result expectation: the public Rust surface keeps minimal string/hash/TTL commands plus context, feature, and frequency-control data-model commands; `COMMAND` does not advertise `SADD`, `LPUSH`, `ZADD`, broad `SCAN`, `PARTITION`, `CONFIG`, `DBSIZE`, stale feature aliases such as `FADD`, or internal/debug families such as `IPS*`/`RISKDEBUG`.
+Result expectation: the public Rust surface keeps minimal string/hash/TTL commands plus context, feature, and single Risk frequency-control data models; `COMMAND` does not advertise `SADD`, `LPUSH`, `ZADD`, broad `SCAN`, `PARTITION`, `CONFIG`, `DBSIZE`, stale feature aliases such as `FADD`, or internal/debug families such as `IPS*`/`RISKDEBUG`.
 
 ## Production Gate
 
@@ -83,7 +76,7 @@ Run the local production gate with:
 tools/run_redis_production_gate_ubuntu22.sh
 ```
 
-The gate first runs `tools/validate_open_source_surface.py` against the canonical manifest, runs `tools/validate_matrixobjectstore_names.py` to keep retired object-store naming out of the open-source surface, and copies `redis_open_source_surface_manifest.json`, `redis_open_source_surface_validation.txt`, and `matrixobject_name_validation.txt` into `RESULT_ROOT`, then builds the release server, audits no-op success paths, rejects `nullptr` Redis command handlers, runs the live storage smoke twice by default, runs the trimmed compatibility/pipeline/concurrency smoke, and runs a small `redis-benchmark` profile when `redis-benchmark` is installed. The benchmark profile emits the manifest-declared required CSV artifacts for `SET/GET`, `HSET`, `HGET`, `HINCRBY`, `INCR`, and `EXPIRE`, plus the manifest-declared opt-in `HINCRBYFLOAT` artifact only when `REDIS_EXPECT_HINCRBYFLOAT=1`; it then writes `redis-benchmark-summary.json` with Redis surface identity, schema, and manifest hash plus command count, per-command request/sec min/max/avg values, and overall request/sec min/max/avg values across the trimmed benchmark set, plus `min_overall_qps_threshold` when `REDIS_BENCH_MIN_OVERALL_QPS` is configured. This covers the string/common, hash, counter, TTL, `COMMAND COUNT` bounds derived from the manifest C++ command count plus Rust extra data-model/helper commands, and `INFO stats` surface-identity fields used to prove the trimmed API contract for context, feature, and frequency-control data models. C++ live smoke and the shared compatibility benchmark keep `HINCRBYFLOAT` opt-in with `REDIS_EXPECT_HINCRBYFLOAT=1` until the C++ Redis bridge adds a native handler; Rust-focused runs can enable that flag when validating Rust's float hash path. The production gate forces `REDIS_COMPAT_SURFACE=trimmed` and `REDIS_EXPECT_UNSUPPORTED_COLLECTIONS=1`, so it fails if collection-clone commands such as `SADD`, `LPUSH`, or `ZADD` are accepted by an open-source production build. Use `REDIS_COMPAT_SURFACE=full` only outside this gate for private/broad Redis compatibility experiments.
+The gate first runs `tools/validate_open_source_surface.py` against the canonical manifest, runs `tools/validate_matrixobjectstore_names.py` to keep retired object-store naming out of the open-source surface, and copies `redis_open_source_surface_manifest.json`, `redis_open_source_surface_validation.txt`, and `matrixobject_name_validation.txt` into `RESULT_ROOT`, then builds the release server, audits no-op success paths, rejects `nullptr` Redis command handlers, runs the live storage smoke twice by default, runs the trimmed compatibility/pipeline/concurrency smoke, and runs a small `redis-benchmark` profile when `redis-benchmark` is installed. The benchmark profile emits the manifest-declared required CSV artifacts for `SET/GET`, `HSET`, `HGET`, and `EXPIRE`; it then writes `redis-benchmark-summary.json` with Redis surface identity, schema, and manifest hash plus command count, per-command request/sec min/max/avg values, and overall request/sec min/max/avg values across the trimmed benchmark set, plus `min_overall_qps_threshold` when `REDIS_BENCH_MIN_OVERALL_QPS` is configured. This covers the minimal string, hash, TTL, `COMMAND COUNT` bounds derived from the manifest C++ command count plus Rust extra data-model commands, and `INFO stats` surface-identity fields used to prove the trimmed API contract for context, feature, and the single Risk frequency-control data model. The production gate forces `REDIS_COMPAT_SURFACE=trimmed` and `REDIS_EXPECT_UNSUPPORTED_COLLECTIONS=1`, so it fails if collection-clone commands such as `SADD`, `LPUSH`, or `ZADD` are accepted by an open-source production build. Use `REDIS_COMPAT_SURFACE=full` only outside this gate for private/broad Redis compatibility experiments.
 
 Each live storage smoke writes `redis-live-storage-smoke-summary.json`, proving the trimmed `INFO stats` identity, command count, blocked-family count, and unsupported collection-clone checks for that run. The production gate rolls those per-run summaries into `redis-live-storage-smoke-rollup.json`.
 
@@ -91,10 +84,10 @@ The production gate also writes `redis-production-benchmark-rollup.json`, a top-
 
 The production claim for the trimmed Redis-style API requires:
 
-1. All `required` minimal string/hash/TTL commands plus context, feature, and frequency-control data-model commands pass focused smoke coverage.
+1. All `required` minimal string/hash/TTL commands plus context, feature, and single Risk frequency-control data models pass focused smoke coverage.
 2. Redis client compatibility passes with at least `redis-cli` and `redis-py` for the supported subset.
 3. TTL survives restart and replica/failover validation.
 4. Pipelined command tests pass for the supported subset.
-5. Scale smoke passes for STRING, HASH, feature, and frequency-control workloads.
+5. Scale smoke passes for STRING, HASH, feature, and Risk frequency-control workloads.
 6. Unsupported collection-clone and advanced commands return deterministic Redis-style errors.
 7. Prometheus metrics expose command QPS, latency, errors, connection count, rejected commands, and backend routing failures.

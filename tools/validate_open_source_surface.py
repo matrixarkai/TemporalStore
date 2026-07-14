@@ -78,8 +78,7 @@ def main() -> int:
     expected_model_commands = [
         "FAPPEND", "FAPPENDPOLICY", "FQUERY", "FQUERYFILTER", "FQUERYFILTERSTR", "FAGG",
         "RISKINCR", "RISKINCROPT", "RISKCHANGE", "RISKCOUNT", "RISKQUERY", "RISKDETAIL",
-        "RISKHSET", "HCHANGE", "HQUERY", "HSETANDGET", "CPCSET", "CPCSETANDGET",
-        "FOLSET", "FOLQUERY",
+        "RISKHSET", "HCHANGE", "HQUERY", "HSETANDGET",
     ]
     require(
         manifest.get("cxx_command_count") == len(expected_minimal_cxx_commands)
@@ -128,13 +127,13 @@ def main() -> int:
     }
     require(
         manifest_allowed_surface_families == expected_allowed_families,
-        "Redis open-source surface manifest must explicitly limit allowed families to minimal string/hash/TTL plus context/feature/frequency-control data models",
+        "Redis open-source surface manifest must explicitly limit allowed families to minimal string/hash/TTL plus context/feature/single Risk frequency-control data models",
         failures,
     )
     require(
         "context" in manifest.get("purpose", "").lower()
         and "feature" in manifest.get("purpose", "").lower()
-        and "frequency-control" in manifest.get("purpose", "").lower()
+        and "single risk frequency-control" in manifest.get("purpose", "").lower()
         and "minimal string/hash/ttl" in manifest.get("purpose", "").lower(),
         "Redis open-source surface manifest purpose must describe the minimal first-release data-model families",
         failures,
@@ -528,7 +527,7 @@ def main() -> int:
         failures,
     )
     for family_phrase in (
-        "context, feature, and frequency-control data models",
+        "context, feature, and single Risk frequency-control data models",
         "minimal string/hash/TTL commands",
     ):
         require(
