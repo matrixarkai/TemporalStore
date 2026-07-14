@@ -24,7 +24,7 @@ Current bridge status values:
 | TTL | `EXPIRE`, `TTL` | required | wired | First release keeps only minimal key lifetime support. Restart/failover TTL durability still belongs to the production gate. |
 | Hash | `HSET`, `HGET`, `HGETALL`, `HDEL`, `HEXISTS`, `HLEN` | required | wired | First release keeps only minimal hash commands. Hash counters, hash scans, key/val listing helpers, and float increments are not public APIs. |
 | Feature model | `FAPPEND`, `FAPPENDPOLICY`, `FQUERY`, `FQUERYFILTER`, `FQUERYFILTERSTR`, `FAGG` | required | wired | TemporalStore feature APIs are exposed as explicit data-model commands rather than pretending to be generic Redis collections. These support timestamped feature writes, policy writes, range query, filtered query, and aggregate query. |
-| Risk model | `RISKINCR`, `RISKINCROPT`, `RISKCHANGE`, `RISKCOUNT`, `RISKQUERY`, `RISKDETAIL`, `RISKHSET`, `HCHANGE`, `HQUERY`, `HSETANDGET` | required | wired | Frequency-cap and risk-control behavior is exposed through one public Risk model. CPC/FOL command names are private/future aliases, not first-release public APIs. |
+| Risk model | `RISKINCR`, `RISKINCROPT`, `RISKCHANGE`, `RISKCOUNT`, `RISKQUERY`, `RISKDETAIL`, `RISKHSET`, `HCHANGE`, `HQUERY`, `HSETANDGET` | required | wired | Frequency-cap and risk-control behavior is exposed through one public Risk model. |
 | Set/List/ZSet clone APIs | `SADD`, `SREM`, `SMEMBERS`, `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `ZADD`, `ZRANGE`, `ZRANGEBYSCORE`, and related collection commands | deferred | private/unsupported in open-source surface | These compatibility handlers may exist internally, but open-source production builds do not advertise or allow them. Context/feature/frequency use native data-model APIs instead of encoded Redis collection clones. |
 | Narrow hash scan | `HSCAN` | excluded | unsupported in open-source surface | Use `HGETALL` for the minimal hash read path. Broad keyspace `SCAN`, `SSCAN`, and `ZSCAN` are not part of the open-source production surface. |
 | Transactions | `MULTI`, `EXEC`, `DISCARD`, `WATCH` | planned | unsupported | Start same-partition only or return explicit unsupported errors. |
@@ -49,11 +49,11 @@ The TemporalStore native Redis bridge is production-ready only for the documente
 - Feature model: `FAPPEND`, `FAPPENDPOLICY`, `FQUERY`, `FQUERYFILTER`, `FQUERYFILTERSTR`, `FAGG`
 - Risk model: `RISKINCR`, `RISKINCROPT`, `RISKCHANGE`, `RISKCOUNT`, `RISKQUERY`, `RISKDETAIL`, `RISKHSET`, `HCHANGE`, `HQUERY`, `HSETANDGET`
 
-The C++ Redis bridge exposes the 16-command minimal string/hash/TTL subset in open-source builds and reports `COMMAND COUNT=16`; feature and Risk model commands are Rust bridge APIs. CPC/FOL names are intentionally not advertised in the first-release surface.
+The C++ Redis bridge exposes the 16-command minimal string/hash/TTL subset in open-source builds and reports `COMMAND COUNT=16`; feature and Risk model commands are Rust bridge APIs. Only the Risk model command names are advertised for frequency-cap/risk-control in the first-release surface.
 
 `HSCAN` is not part of the first-release open-source Redis surface; use `HGETALL` for the minimal hash read path. Broad keyspace scan support remains excluded.
 
-Open-source production builds do not claim generic Redis SET/LIST/ZSET compatibility or Redis server-configuration APIs. `SADD`, `LPUSH`, `ZADD`, `SCAN`, `PARTITION`, `CONFIG`, `DBSIZE`, `IPS*`, scripting, streams, pub/sub, GEO, HyperLogLog, and bitmap commands must return deterministic unsupported/open-surface errors.
+Open-source production builds do not claim generic Redis SET/LIST/ZSET compatibility or Redis server-configuration APIs. `SADD`, `LPUSH`, `ZADD`, `SCAN`, `PARTITION`, `CONFIG`, `DBSIZE`, scripting, streams, pub/sub, GEO, HyperLogLog, and bitmap commands must return deterministic unsupported/open-surface errors.
 
 The bridge must not claim full Redis compatibility yet. Unsupported command families return deterministic Redis errors rather than fake success. When `TEMPORALSTORE_OPEN_SOURCE_SURFACE=1` or `TS_OPEN_SOURCE_SURFACE=1`, Rust filters both execution and `COMMAND` advertising to the trimmed production data-model surface. C++ open-source builds likewise derive `COMMAND`, `COMMAND COUNT`, and `COMMAND INFO` from one canonical trimmed descriptor table. The current local bridge serializes backend Redis data-command execution while storage concurrency semantics are hardened; this favors correctness over peak Redis QPS.
 
@@ -66,7 +66,7 @@ python3 tools/validate_open_source_surface.py
 cargo check -p temporalstore-rust --lib
 ```
 
-Result expectation: the public Rust surface keeps minimal string/hash/TTL commands plus context, feature, and single Risk data models; `COMMAND` does not advertise `SADD`, `LPUSH`, `ZADD`, broad `SCAN`, `PARTITION`, `CONFIG`, `DBSIZE`, stale feature aliases such as `FADD`, or internal/debug families such as `IPS*`/`RISKDEBUG`.
+Result expectation: the public Rust surface keeps minimal string/hash/TTL commands plus context, feature, and single Risk data models; `COMMAND` does not advertise `SADD`, `LPUSH`, `ZADD`, broad `SCAN`, `PARTITION`, `CONFIG`, `DBSIZE`, stale feature aliases such as `FADD`, or internal/private command families.
 
 ## Production Gate
 
