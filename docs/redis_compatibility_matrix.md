@@ -42,11 +42,10 @@ The native Redis data-command bridge currently requires the Redis service to hav
 
 The TemporalStore native Redis bridge is production-ready only for the documented first storage-backed subset:
 
-- Connection/basic: `PING`, `ECHO`, `QUIT`, `AUTH`, `CLIENT SETNAME`, `CLIENT GETNAME`, `CLIENT ID`, `SELECT 0`, `INFO`, `COMMAND COUNT/DOCS/INFO`, `TYPE`
-- String/common: `GET`, `SET key value`, `SET key value NX`, `SET key value XX`, `SET key value EX/PX`, `SET key value GET`, `SETNX`, `SETEX`, `PSETEX`, `GETSET`, `GETDEL`, `GETEX`, `MGET`, `MSET`, `DEL`, `UNLINK`, `EXISTS`, `APPEND`, `STRLEN`
-- Counters: `INCR`, `INCRBY`, `DECR`, `DECRBY`
-- TTL: `EXPIRE`, `PEXPIRE`, `TTL`, `PTTL`, `PERSIST`
-- Hash: `HSET`, `HSETNX`, `HMSET`, `HGET`, `HMGET`, `HDEL`, `HEXISTS`, `HLEN`, `HGETALL`, `HKEYS`, `HVALS`, `HSTRLEN`, `HINCRBY`, `HSCAN`; `HINCRBYFLOAT` is a Rust-only/opt-in bridge capability until the C++ Redis bridge adds a native handler
+- Connection/basic: `PING`, `AUTH`, `INFO`, `COMMAND COUNT/DOCS/INFO`
+- String minimal: `GET`, `SET key value`, `DEL`, `EXISTS`
+- TTL: `EXPIRE`, `TTL`
+- Hash minimal: `HSET`, `HGET`, `HDEL`, `HEXISTS`, `HLEN`, `HGETALL`
 - Feature model: `FAPPEND`, `FAPPENDPOLICY`, `FQUERY`, `FQUERYFILTER`, `FQUERYFILTERSTR`, `FAGG`
 - Frequency-control model: `RISKINCR`, `RISKINCROPT`, `RISKCHANGE`, `RISKCOUNT`, `RISKQUERY`, `RISKDETAIL`, `RISKHSET`, `HCHANGE`, `HQUERY`, `HSETANDGET`, `CPCSET`, `CPCSETANDGET`, `FOLSET`, `FOLQUERY`
 
@@ -56,13 +55,10 @@ the trimmed surface: `MSETNX`, `TOUCH`, `EXPIREAT`, `PEXPIREAT`,
 These are still part of the basic data-model surface; they are not generic
 collection clones, server-admin APIs, scripting, streams, pub/sub, or debug
 commands. The C++ Redis bridge currently exposes a narrower
-basic/string/hash subset in open-source builds and reports `COMMAND COUNT=47`;
+basic/string/hash subset in open-source builds and reports `COMMAND COUNT=16`;
 feature and frequency-control commands are Rust bridge APIs.
 
-Narrow `HSCAN` is intentionally limited to a single hash key and is implemented by
-fetching that hash's fields through native hash storage, applying optional
-`MATCH`/`COUNT` paging, and returning Redis-style cursor pages. It must not be
-treated as broad keyspace scan support.
+`HSCAN` is not part of the first-release open-source Redis surface; use `HGETALL` for the minimal hash read path. Broad keyspace scan support remains excluded.
 
 Open-source production builds do not claim generic Redis SET/LIST/ZSET compatibility or Redis server-configuration APIs. `SADD`, `LPUSH`, `ZADD`, `SCAN`, `PARTITION`, `CONFIG`, `DBSIZE`, `IPS*`, scripting, streams, pub/sub, GEO, HyperLogLog, and bitmap commands must return deterministic unsupported/open-surface errors.
 
@@ -77,7 +73,7 @@ python3 tools/validate_open_source_surface.py
 cargo check -p temporalstore-rust --lib
 ```
 
-Result expectation: the public Rust surface keeps string/common, hash, feature, and frequency-control commands; `COMMAND` does not advertise `SADD`, `LPUSH`, `ZADD`, broad `SCAN`, `PARTITION`, `CONFIG`, `DBSIZE`, stale feature aliases such as `FADD`, or internal/debug families such as `IPS*`/`RISKDEBUG`.
+Result expectation: the public Rust surface keeps minimal string/hash/TTL commands plus context, feature, and frequency-control data-model commands; `COMMAND` does not advertise `SADD`, `LPUSH`, `ZADD`, broad `SCAN`, `PARTITION`, `CONFIG`, `DBSIZE`, stale feature aliases such as `FADD`, or internal/debug families such as `IPS*`/`RISKDEBUG`.
 
 ## Production Gate
 
@@ -95,7 +91,7 @@ The production gate also writes `redis-production-benchmark-rollup.json`, a top-
 
 The production claim for the trimmed Redis-style API requires:
 
-1. All `required` string/common, hash, feature, and frequency-control commands pass focused smoke coverage.
+1. All `required` minimal string/hash/TTL commands plus context, feature, and frequency-control data-model commands pass focused smoke coverage.
 2. Redis client compatibility passes with at least `redis-cli` and `redis-py` for the supported subset.
 3. TTL survives restart and replica/failover validation.
 4. Pipelined command tests pass for the supported subset.

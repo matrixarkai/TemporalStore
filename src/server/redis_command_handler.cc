@@ -85,54 +85,22 @@ const std::vector<OpenSourceRedisCommandDescriptor>& OpenSourceRedisCommands() {
         {RedisCommand::CmdType::kInfo, "INFO", -1, "admin"},
         {RedisCommand::CmdType::kAuth, "AUTH", 2, "admin"},
         {RedisCommand::CmdType::kPing, "PING", -1, "readonly"},
-        {RedisCommand::CmdType::kEcho, "ECHO", 2, "readonly"},
-        {RedisCommand::CmdType::kQuit, "QUIT", 1, "admin"},
-        {RedisCommand::CmdType::kClient, "CLIENT", -2, "admin"},
         {RedisCommand::CmdType::kCommand, "COMMAND", -1, "admin"},
-        {RedisCommand::CmdType::kSelect, "SELECT", 2, "admin"},
-        {RedisCommand::CmdType::kType, "TYPE", 2, "readonly"},
         {RedisCommand::CmdType::kGet, "GET", 2, "readonly"},
         {RedisCommand::CmdType::kSet, "SET", -3, "write"},
-        {RedisCommand::CmdType::kSetNx, "SETNX", 3, "write"},
-        {RedisCommand::CmdType::kSetEx, "SETEX", 4, "write"},
-        {RedisCommand::CmdType::kPSetEx, "PSETEX", 4, "write"},
-        {RedisCommand::CmdType::kGetSet, "GETSET", 3, "write"},
-        {RedisCommand::CmdType::kGetDel, "GETDEL", 2, "write"},
-        {RedisCommand::CmdType::kGetEx, "GETEX", -2, "write"},
-        {RedisCommand::CmdType::kMGet, "MGET", -2, "readonly"},
-        {RedisCommand::CmdType::kMSet, "MSET", -3, "write"},
         {RedisCommand::CmdType::kDel, "DEL", -2, "write"},
-        {RedisCommand::CmdType::kUnlink, "UNLINK", -2, "write"},
         {RedisCommand::CmdType::kExists, "EXISTS", -2, "readonly"},
         {RedisCommand::CmdType::kExpire, "EXPIRE", 3, "write"},
-        {RedisCommand::CmdType::kPExpire, "PEXPIRE", 3, "write"},
         {RedisCommand::CmdType::kTtl, "TTL", 2, "readonly"},
-        {RedisCommand::CmdType::kPTtl, "PTTL", 2, "readonly"},
-        {RedisCommand::CmdType::kPersist, "PERSIST", 2, "write"},
-        {RedisCommand::CmdType::kAppend, "APPEND", 3, "write"},
-        {RedisCommand::CmdType::kStrlen, "STRLEN", 2, "readonly"},
-        {RedisCommand::CmdType::kIncrBy, "INCR", 2, "write"},
-        {RedisCommand::CmdType::kIncrBy, "INCRBY", 3, "write"},
-        {RedisCommand::CmdType::kIncrBy, "DECR", 2, "write"},
-        {RedisCommand::CmdType::kIncrBy, "DECRBY", 3, "write"},
         {RedisCommand::CmdType::kHSet, "HSET", -4, "write"},
-        {RedisCommand::CmdType::kHSet, "HMSET", -4, "write"},
-        {RedisCommand::CmdType::kHSetNx, "HSETNX", 4, "write"},
         {RedisCommand::CmdType::kHGet, "HGET", 3, "readonly"},
-        {RedisCommand::CmdType::kHMGet, "HMGET", -3, "readonly"},
         {RedisCommand::CmdType::kHDel, "HDEL", -3, "write"},
         {RedisCommand::CmdType::kHExists, "HEXISTS", 3, "readonly"},
         {RedisCommand::CmdType::kHLen, "HLEN", 2, "readonly"},
         {RedisCommand::CmdType::kHGetAll, "HGETALL", 2, "readonly"},
-        {RedisCommand::CmdType::kHKeys, "HKEYS", 2, "readonly"},
-        {RedisCommand::CmdType::kHVals, "HVALS", 2, "readonly"},
-        {RedisCommand::CmdType::kHScan, "HSCAN", -3, "readonly"},
-        {RedisCommand::CmdType::kHStrlen, "HSTRLEN", 3, "readonly"},
-        {RedisCommand::CmdType::kHIncrBy, "HINCRBY", 4, "write"},
     };
     return commands;
 }
-
 bool IsOpenSourceRedisCommandAllowed(RedisCommand::CmdType cmd_type) {
     for (const auto& command : OpenSourceRedisCommands()) {
         if (command.type == cmd_type) {
@@ -153,8 +121,8 @@ const OpenSourceRedisCommandDescriptor* FindOpenSourceRedisCommand(const std::st
 
 int64_t OpenSourceRedisCommandCount() {
     // Keep this aligned with IsOpenSourceRedisCommandAllowed(). C++ currently
-    // exposes the basic/string/hash surface; feature/frequency model commands
-    // are Rust bridge APIs and are not advertised by the C++ Redis bridge.
+    // exposes the first-release minimal string/hash/TTL surface; feature/frequency
+    // model commands are Rust bridge APIs and are not advertised by the C++ Redis bridge.
     return static_cast<int64_t>(OpenSourceRedisCommands().size());
 }
 #endif
