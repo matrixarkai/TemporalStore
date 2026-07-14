@@ -6465,13 +6465,13 @@
                 "summary_ref"
               ]
             },
-            "cpp_runner_contract": "C++ context debug flow must emit equivalent ContextEvent hot fields plus sidecar/index fanout for resource_ref, skill_ref, entity_ref, source_ref, summary_ref, child refs, compression, dirty markers, and selected evidence ordering.",
-            "description": "C++-aligned context hot schema boundary: ContextEvent stores event id/time/type/confidence/importance/text/ingestion time only; source/resource/skill/entity/summary refs, node links, compression payloads, dirty markers, and query-debug selected refs are sidecar/index records.",
+            "cpp_runner_contract": "C++ context parity flow must emit equivalent ContextEvent hot fields plus sidecar/index fanout for resource_ref, skill_ref, entity_ref, source_ref, summary_ref, child refs, compression, dirty markers, and selected evidence ordering.",
+            "description": "C++-aligned context hot schema boundary: ContextEvent stores event id/time/type/confidence/importance/text/ingestion time only; source/resource/skill/entity/summary refs, node links, compression payloads, dirty markers, and selected evidence refs are sidecar/index records.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "required_paths": [
               "crates/temporalstore-rust/src/context_workflow.rs",
-              "docs/rust_context_pipeline_debug_trace.md",
+              "docs/rust_context_pipeline_report.md",
               "src/extension/context/interface.proto",
               "src/extension/context/implement.cc"
             ],

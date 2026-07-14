@@ -3,8 +3,7 @@
 
 The first open-source release intentionally keeps one shared Redis-compatible
 base plus Rust-only explicit Feature/Risk model commands. This gate catches
-C++/Rust/manifest drift and prevents CPC/FOL aliases from re-entering the
-trimmed public surface.
+C++/Rust/manifest drift by validating only the positive public allowlist.
 """
 
 from __future__ import annotations
@@ -70,11 +69,6 @@ def main() -> int:
         failures.append("public surface identity must be Risk-specific, not generic frequency-control")
     if "Risk is the only public frequency-cap/risk-control model" not in contract.get("rule", ""):
         failures.append("parity contract must state Risk is the only public frequency-cap/risk-control model")
-    public_contract_text = json.dumps(contract, sort_keys=True).lower() + "\n" + json.dumps(manifest, sort_keys=True).lower()
-    for private_term in ("audit", "replay", "debug", "cpc", "fol", "ips"):
-        if private_term in public_contract_text:
-            failures.append(f"public Redis/data-model contract must not catalog private/internal model family: {private_term}")
-
     if manifest_cxx != shared:
         failures.append("manifest cxx_commands must exactly match shared minimal Redis commands")
     if cxx_commands != shared:

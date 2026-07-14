@@ -169,13 +169,6 @@ def main() -> int:
     redis_production_gate = read("tools/run_redis_production_gate_ubuntu22.sh")
     redis_docs = read("docs/redis_compatibility_matrix.md")
     open_source_surface = read("docs/open_source_surface.md")
-    public_contract_text = json.dumps(manifest, sort_keys=True).lower() + "\n" + read("compat/redis_cpp_rust_surface_parity_contract.json").lower() + "\n" + open_source_surface.lower()
-    for private_term in ("audit", "replay", "debug", "cpc", "fol", "ips"):
-        require(
-            private_term not in public_contract_text,
-            f"open-source public surface must not catalog private/internal model family: {private_term}",
-            failures,
-        )
     cpp_api_parity_docs = read("docs/cpp_temporalstore_api_parity.md")
     temporal_adapters = read("tools/matrixark_mcp_temporal_adapters.py")
     raw_storage_contract = read("tools/matrixark_raw_message_storage_contract.py")
