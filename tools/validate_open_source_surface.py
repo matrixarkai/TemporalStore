@@ -51,11 +51,14 @@ def main() -> int:
     failures: list[str] = []
 
     manifest = json.loads(read("compat/redis_open_source_surface_manifest.json"))
+    parity_contract = json.loads(read("compat/redis_cpp_rust_surface_parity_contract.json"))
     manifest_cxx_commands = manifest.get("cxx_commands", [])
     manifest_allowed_surface_families = set(manifest.get("allowed_surface_families", []))
     manifest_blocked_commands = set(manifest.get("blocked_commands", []))
     manifest_rust_extra_commands = set(manifest.get("rust_extra_commands", []))
     manifest_rust_normal_helpers = set(manifest.get("rust_normal_helpers", []))
+    parity_shared_commands = parity_contract.get("shared_minimal_redis_commands", [])
+    parity_model_commands = parity_contract.get("rust_public_data_model_commands", {}).get("feature", []) + parity_contract.get("rust_public_data_model_commands", {}).get("risk_frequency_control", [])
     manifest_blocked_smoke_samples = manifest.get("blocked_smoke_samples", {})
     manifest_benchmark_commands = manifest.get("benchmark_commands", {})
     manifest_required_benchmarks = manifest_benchmark_commands.get("required", [])
@@ -93,6 +96,14 @@ def main() -> int:
         failures,
     )
     require(
+        parity_shared_commands == expected_minimal_cxx_commands
+        and sorted(parity_model_commands) == sorted(expected_model_commands)
+        and parity_contract.get("cxx_public_command_count") == len(expected_minimal_cxx_commands)
+        and parity_contract.get("rust_trimmed_public_command_count") == len(expected_minimal_cxx_commands) + len(expected_model_commands),
+        "Redis C++/Rust parity contract must match the manifest command surface",
+        failures,
+    )
+    require(
         manifest_required_benchmarks == ["set_get", "hset", "hget", "expire"]
         and manifest_opt_in_benchmarks == [],
         "Redis open-source surface manifest must declare first-release benchmark command coverage",
@@ -102,6 +113,8 @@ def main() -> int:
         "required": [
             "redis_open_source_surface_manifest.json",
             "redis_open_source_surface_validation.txt",
+            "redis_cpp_rust_surface_parity_contract.json",
+            "redis_cpp_rust_surface_consistency.txt",
             "matrixobject_name_validation.txt",
             "redis-production-gate-summary.json",
         ],
@@ -592,6 +605,13 @@ def main() -> int:
         "validate_matrixobjectstore_names.py" in redis_production_gate
         and "matrixobject_name_validation.txt" in redis_production_gate,
         "Redis production gate must run and persist the MatrixObject naming guard",
+        failures,
+    )
+    require(
+        "validate_redis_cpp_rust_surface_consistency.py" in redis_production_gate
+        and "redis_cpp_rust_surface_consistency.txt" in redis_production_gate
+        and "redis_cpp_rust_surface_parity_contract.json" in redis_production_gate,
+        "Redis production gate must run and persist the C++/Rust surface consistency guard",
         failures,
     )
     require(
