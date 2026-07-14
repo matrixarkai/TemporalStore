@@ -1,7 +1,7 @@
 {
   "schema": "temporalstore_redis_cpp_rust_surface_parity_v1",
-  "surface": "trimmed_open_source_context_feature_frequency",
-  "rule": "C++ and Rust share the same minimal Redis-compatible command base. Rust may additionally expose explicit Feature and single Risk data-model commands in trimmed/open-source mode. CPC/FOL aliases remain private/full-mode only and must not be advertised or accepted by the trimmed surface. Audit, replay, and debug/diagnostic data models are excluded from the first open-source release.",
+  "surface": "trimmed_open_source_context_feature_risk",
+  "rule": "C++ and Rust share the same minimal Redis-compatible command base. Rust may additionally expose explicit Feature and single Risk data-model commands in trimmed/open-source mode. Risk is the only public frequency-cap/risk-control model. CPC/FOL aliases remain private/full-mode only and must not be advertised or accepted by the trimmed surface. Audit, replay, and debug/diagnostic data models are excluded from the first open-source release.",
   "shared_minimal_redis_commands": [
     "INFO",
     "AUTH",

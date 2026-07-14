@@ -153,7 +153,7 @@ expect_contains_line() {
   echo "PASS ${name}" | tee -a "${SUMMARY}"
 }
 
-expect_contains_line info_surface redis_surface:trimmed_open_source_context_feature_frequency INFO stats
+expect_contains_line info_surface redis_surface:trimmed_open_source_context_feature_risk INFO stats
 expect_contains_line info_surface_schema redis_surface_schema:temporalstore_open_source_redis_surface_v1 INFO stats
 expect_contains_line info_surface_blocked_families redis_surface_blocked_command_family_count:${REDIS_SURFACE_BLOCKED_FAMILY_COUNT} INFO stats
 expect_eq command_count "${REDIS_CXX_TRIMMED_COMMAND_COUNT}" COMMAND COUNT
@@ -220,7 +220,7 @@ unsupported_collections_expected = sys.argv[3] == "1"; expected_command_count = 
 manifest_path = Path(sys.argv[5]); manifest_bytes = manifest_path.read_bytes()
 manifest = json.loads(manifest_bytes.decode("utf-8"))
 for name, expected in {
-    "info_surface": "redis_surface:trimmed_open_source_context_feature_frequency",
+    "info_surface": "redis_surface:trimmed_open_source_context_feature_risk",
     "info_surface_schema": "redis_surface_schema:temporalstore_open_source_redis_surface_v1",
     "info_surface_blocked_families": f"redis_surface_blocked_command_family_count:{len(manifest.get('blocked_command_families', []))}",
 }.items():
@@ -400,7 +400,7 @@ manifest_bytes = manifest_path.read_bytes()
 manifest = json.loads(manifest_bytes.decode("utf-8"))
 
 required_outputs = {
-    "info_surface": "redis_surface:trimmed_open_source_context_feature_frequency",
+    "info_surface": "redis_surface:trimmed_open_source_context_feature_risk",
     "info_surface_schema": "redis_surface_schema:temporalstore_open_source_redis_surface_v1",
     "info_surface_blocked_families": f"redis_surface_blocked_command_family_count:{len(manifest.get('blocked_command_families', []))}",
 }
