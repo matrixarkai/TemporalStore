@@ -1,6 +1,6 @@
 {
   "schema": "temporalstore_open_source_redis_surface_v1",
-  "surface": "trimmed_open_source_context_feature_frequency",
+  "surface": "trimmed_open_source_context_feature_risk",
   "benchmark_commands": {
     "required": [
       "set_get",
@@ -35,7 +35,7 @@
     "minimal_hash",
     "context_management",
     "feature_model",
-    "frequency_control"
+    "risk_frequency_control"
   ],
   "blocked_command_families": [
     "broad_keyspace_scan",
@@ -244,7 +244,7 @@
   ],
   "matrixobject_note": "MatrixObject integration sits below TemporalStore storage/backfill. It must not expand the public Redis API into collection-clone commands.",
   "opt_in_commands": {},
-  "purpose": "Keep only first-release Redis commands needed for minimal string/hash/TTL access plus MatrixArk context, feature, and the single Risk frequency-control data model. Audit, replay, and debug/diagnostic data models are excluded from the first open-source release.",
+  "purpose": "Keep only first-release Redis commands needed for minimal string/hash/TTL access plus MatrixArk context, feature, and the single Risk data model for frequency-cap/risk-control. Audit, replay, and debug/diagnostic data models are excluded from the first open-source release.",
   "rust_extra_commands": [
     "FAPPEND",
     "FAPPENDPOLICY",

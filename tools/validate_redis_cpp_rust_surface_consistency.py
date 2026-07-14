@@ -67,6 +67,13 @@ def main() -> int:
     cxx_commands = extract_cxx_open_source_commands(cxx_source)
     rust_allow = extract_rust_allowlist(rust_source)
 
+    if contract.get("surface") != manifest.get("surface"):
+        failures.append("manifest and parity contract must use the same public surface identity")
+    if contract.get("surface") != "trimmed_open_source_context_feature_risk":
+        failures.append("public surface identity must be Risk-specific, not generic frequency-control")
+    if "Risk is the only public frequency-cap/risk-control model" not in contract.get("rule", ""):
+        failures.append("parity contract must state Risk is the only public frequency-cap/risk-control model")
+
     if manifest_cxx != shared:
         failures.append("manifest cxx_commands must exactly match shared minimal Redis commands")
     if cxx_commands != shared:

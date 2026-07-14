@@ -137,7 +137,7 @@ def main() -> int:
         "minimal_hash",
         "context_management",
         "feature_model",
-        "frequency_control",
+        "risk_frequency_control",
     }
     expected_blocked_data_model_families = {
         "audit_log",
@@ -148,7 +148,7 @@ def main() -> int:
     }
     require(
         manifest_allowed_surface_families == expected_allowed_families,
-        "Redis open-source surface manifest must explicitly limit allowed families to minimal string/hash/TTL plus context/feature/single Risk frequency-control data models",
+        "Redis open-source surface manifest must explicitly limit allowed families to minimal string/hash/TTL plus context/feature/single Risk data models",
         failures,
     )
     require(
@@ -159,7 +159,7 @@ def main() -> int:
     require(
         "context" in manifest.get("purpose", "").lower()
         and "feature" in manifest.get("purpose", "").lower()
-        and "single risk frequency-control" in manifest.get("purpose", "").lower()
+        and "single risk data model" in manifest.get("purpose", "").lower()
         and "minimal string/hash/ttl" in manifest.get("purpose", "").lower()
         and "audit" in manifest.get("purpose", "").lower()
         and "replay" in manifest.get("purpose", "").lower(),
@@ -518,7 +518,7 @@ def main() -> int:
         require(f'"{denied}"' not in body, f"Rust allowlist must not include {denied}", failures)
 
     for metric in (
-        "redis_surface:trimmed_open_source_context_feature_frequency",
+        "redis_surface:trimmed_open_source_context_feature_risk",
         "redis_surface_schema:temporalstore_open_source_redis_surface_v1",
         "redis_surface_cxx_command_count:",
         f"redis_surface_blocked_command_family_count:{expected_blocked_family_count}",
@@ -555,7 +555,7 @@ def main() -> int:
         failures,
     )
     for family_phrase in (
-        "context, feature, and single Risk frequency-control data models",
+        "context, feature, and single Risk data models",
         "minimal string/hash/TTL commands",
     ):
         require(
@@ -603,8 +603,8 @@ def main() -> int:
         failures,
     )
     require(
-        manifest.get("surface") == "trimmed_open_source_context_feature_frequency",
-        "Redis open-source surface manifest must declare the trimmed context/feature/frequency surface identity",
+        manifest.get("surface") == "trimmed_open_source_context_feature_risk",
+        "Redis open-source surface manifest must declare the trimmed context/feature/risk surface identity",
         failures,
     )
     require(
@@ -801,7 +801,7 @@ def main() -> int:
         failures,
     )
     for metric in (
-        "redis_surface:trimmed_open_source_context_feature_frequency",
+        "redis_surface:trimmed_open_source_context_feature_risk",
         "redis_surface_schema:temporalstore_open_source_redis_surface_v1",
         "redis_surface_cxx_command_count:",
         f"redis_surface_blocked_command_family_count:{expected_blocked_family_count}",
@@ -857,7 +857,7 @@ def main() -> int:
         failures,
     )
     for runtime_metric in (
-        "redis_surface:trimmed_open_source_context_feature_frequency",
+        "redis_surface:trimmed_open_source_context_feature_risk",
         "redis_surface_schema:temporalstore_open_source_redis_surface_v1",
     ):
         require(

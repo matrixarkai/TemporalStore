@@ -9,7 +9,7 @@ The open-source build keeps:
   string commands, minimal key lifetime commands, and minimal hash commands.
 - MatrixArk context-management data models.
 - Feature data model.
-- Single Risk frequency-control data model. CPC/FOL command names are not public first-release APIs.
+- Single Risk data model for frequency-cap and risk-control. CPC/FOL command names are not public first-release APIs.
 
 Audit, replay, ContextPack audit, debug trace, and diagnostic telemetry record models are not part of the first open-source release. Runtime counters and production-gate evidence are allowed, but serving data models for audit/replay/debug stay private or disabled.
 
