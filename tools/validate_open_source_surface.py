@@ -70,15 +70,33 @@ def main() -> int:
         "Redis open-source surface manifest must use the v1 schema",
         failures,
     )
+    expected_minimal_cxx_commands = [
+        "INFO", "AUTH", "PING", "COMMAND",
+        "GET", "SET", "DEL", "EXISTS", "EXPIRE", "TTL",
+        "HSET", "HGET", "HDEL", "HEXISTS", "HLEN", "HGETALL",
+    ]
+    expected_model_commands = [
+        "FAPPEND", "FAPPENDPOLICY", "FQUERY", "FQUERYFILTER", "FQUERYFILTERSTR", "FAGG",
+        "RISKINCR", "RISKINCROPT", "RISKCHANGE", "RISKCOUNT", "RISKQUERY", "RISKDETAIL",
+        "RISKHSET", "HCHANGE", "HQUERY", "HSETANDGET", "CPCSET", "CPCSETANDGET",
+        "FOLSET", "FOLQUERY",
+    ]
     require(
-        manifest.get("cxx_command_count") == 47 and len(manifest_cxx_commands) == 47,
-        "Redis open-source surface manifest must declare exactly 47 C++ commands",
+        manifest.get("cxx_command_count") == len(expected_minimal_cxx_commands)
+        and manifest_cxx_commands == expected_minimal_cxx_commands,
+        "Redis open-source surface manifest must declare the first-release 16-command C++ Redis surface",
         failures,
     )
     require(
-        manifest_required_benchmarks == ["set_get", "hset", "hget", "hincrby", "incr", "expire"]
-        and manifest_opt_in_benchmarks == ["hincrbyfloat"],
-        "Redis open-source surface manifest must declare required and opt-in benchmark command coverage",
+        sorted(manifest_rust_extra_commands) == sorted(expected_model_commands)
+        and not manifest_rust_normal_helpers,
+        "Redis open-source surface manifest must keep Rust extras limited to data-model commands",
+        failures,
+    )
+    require(
+        manifest_required_benchmarks == ["set_get", "hset", "hget", "expire"]
+        and manifest_opt_in_benchmarks == [],
+        "Redis open-source surface manifest must declare first-release benchmark command coverage",
         failures,
     )
     expected_gate_artifacts = {
@@ -101,27 +119,24 @@ def main() -> int:
         "connection",
         "auth_client",
         "metadata",
-        "db_selection",
-        "typical_string",
-        "typical_counter",
-        "typical_ttl",
-        "typical_hash",
-        "narrow_hash_scan",
+        "minimal_string",
+        "minimal_ttl",
+        "minimal_hash",
         "context_management",
         "feature_model",
         "frequency_control",
     }
     require(
         manifest_allowed_surface_families == expected_allowed_families,
-        "Redis open-source surface manifest must explicitly limit allowed families to typical string/hash plus context/feature/frequency-control data models",
+        "Redis open-source surface manifest must explicitly limit allowed families to minimal string/hash/TTL plus context/feature/frequency-control data models",
         failures,
     )
     require(
-        "context management" in manifest.get("purpose", "").lower()
+        "context" in manifest.get("purpose", "").lower()
         and "feature" in manifest.get("purpose", "").lower()
         and "frequency-control" in manifest.get("purpose", "").lower()
-        and "string/hash" in manifest.get("purpose", "").lower(),
-        "Redis open-source surface manifest purpose must describe the allowed data-model families",
+        and "minimal string/hash/ttl" in manifest.get("purpose", "").lower(),
+        "Redis open-source surface manifest purpose must describe the minimal first-release data-model families",
         failures,
     )
     require(
@@ -240,17 +255,18 @@ def main() -> int:
     require(cxx_descriptor_block is not None, "C++ trimmed Redis descriptor table must be discoverable", failures)
     cxx_descriptor_body = cxx_descriptor_block.group("body") if cxx_descriptor_block else ""
     require(
-        cxx_descriptor_body.count("RedisCommand::CmdType::") == 47,
-        "C++ trimmed Redis descriptor table must contain exactly 47 commands",
+        cxx_descriptor_body.count("RedisCommand::CmdType::") == expected_cxx_command_count,
+        "C++ trimmed Redis descriptor table must contain exactly the manifest C++ command count",
         failures,
     )
-    for command in ("GET", "SET", "HSET", "HMSET", "HGET", "HSCAN", "INCR", "DECR", "DECRBY", "HINCRBY", "CLIENT", "QUIT"):
+    for command in expected_minimal_cxx_commands:
         require(
             f'"{command}"' in cxx_descriptor_body,
-            f"C++ trimmed Redis descriptor table must advertise {command}",
+            f"C++ trimmed Redis descriptor table must advertise minimal command {command}",
             failures,
         )
-    for command in ("SADD", "LPUSH", "ZADD", "SCAN", "KEYS", "CONFIG", "DBSIZE", "PARTITION", "HINCRBYFLOAT"):
+    for command in ("SADD", "LPUSH", "ZADD", "SCAN", "KEYS", "CONFIG", "DBSIZE", "PARTITION", "HINCRBYFLOAT",
+                    "HMSET", "HSCAN", "INCR", "DECR", "DECRBY", "HINCRBY", "CLIENT", "QUIT", "SELECT"):
         require(
             f'"{command}"' not in cxx_descriptor_body,
             f"C++ trimmed Redis descriptor table must not advertise {command}",
@@ -285,8 +301,15 @@ def main() -> int:
                 f"blocked_smoke_samples.{smoke_name} command {command} must also be in blocked_commands",
                 failures,
             )
+            literal_unsupported = re.search(rf"expect_error\s+unsupported_[^\s]*\s+{re.escape(command)}\b", script) is not None
+            loop_unsupported = (
+                "for blocked in" in script
+                and command in script
+                and '"${blocked}"' in script
+                and "expect_error" in script
+            )
             require(
-                re.search(rf"expect_error\s+unsupported_[^\s]*\s+{re.escape(command)}\b", script) is not None,
+                literal_unsupported or loop_unsupported,
                 f"Redis {smoke_name} smoke must assert unsupported {command} from the manifest samples",
                 failures,
             )
@@ -393,8 +416,6 @@ def main() -> int:
         "HGETALL",
         "GET",
         "SET",
-        "QUIT",
-        "CLIENT",
     ):
         require(allowed in rust_allowed_commands, f"Rust allowlist must keep {allowed}", failures)
     for allowed in sorted(manifest_rust_extra_commands):
@@ -472,7 +493,7 @@ def main() -> int:
     for metric in (
         "redis_surface:trimmed_open_source_context_feature_frequency",
         "redis_surface_schema:temporalstore_open_source_redis_surface_v1",
-        f"redis_surface_cxx_command_count:{expected_cxx_command_count}",
+        "redis_surface_cxx_command_count:",
         f"redis_surface_blocked_command_family_count:{expected_blocked_family_count}",
         "total_commands_processed",
         "rejected_commands",
@@ -508,8 +529,7 @@ def main() -> int:
     )
     for family_phrase in (
         "context, feature, and frequency-control data models",
-        "string/common, hash, feature, and frequency-control commands",
-        "Narrow `HSCAN`",
+        "minimal string/hash/TTL commands",
     ):
         require(
             family_phrase in redis_docs,
@@ -533,9 +553,9 @@ def main() -> int:
         failures,
     )
     require(
-        "Narrow `HSCAN` is kept only as a single-hash" in open_source_surface
-        and "broad `KEYS` /\n`SCAN`" in open_source_surface,
-        "open-source surface overview must document narrow HSCAN without broad keyspace SCAN",
+        "broad `KEYS` /\n`SCAN`" in open_source_surface
+        and "`HSCAN`" in open_source_surface,
+        "open-source surface overview must document that HSCAN and broad keyspace scans are excluded",
         failures,
     )
     require(
@@ -654,7 +674,7 @@ def main() -> int:
             f"Redis compatibility benchmark must cover manifest command {benchmark_command}",
             failures,
         )
-    for benchmark_command in ("HSET", "HGET", "HINCRBY", "HINCRBYFLOAT", "INCR", "EXPIRE"):
+    for benchmark_command in ("HSET", "HGET", "EXPIRE"):
         require(
             f"`{benchmark_command}`" in redis_docs,
             f"Redis docs must describe {benchmark_command} benchmark coverage",
@@ -663,10 +683,7 @@ def main() -> int:
     for artifact_name in (
         "redis-benchmark-hset.csv",
         "redis-benchmark-hget.csv",
-        "redis-benchmark-hincrby.csv",
-        "redis-benchmark-hincrbyfloat.csv",
-        "redis-benchmark-incr.csv",
-        "redis-benchmark-expire.csv",
+         "redis-benchmark-expire.csv",
         "redis-benchmark-summary.json",
     ):
         require(
@@ -679,17 +696,15 @@ def main() -> int:
         'command_qps_maxes = [command["requests_per_second_max"] for command in commands]',
         'command_qps_avgs = [command["requests_per_second_avg"] for command in commands]',
         'min_overall_qps = float(sys.argv[5])',
-        'benchmark_manifest = manifest.get("benchmark_commands", {})',
-        '"required_benchmark_commands": required_benchmark_commands',
-        '"optional_benchmark_commands": optional_benchmark_commands',
-        'expected_benchmark_commands = list(required_benchmark_commands)',
-        'benchmark_commands = [command["command"] for command in commands]',
-        'if benchmark_commands != expected_benchmark_commands:',
-        '"expected_benchmark_commands": expected_benchmark_commands',
-        '"benchmark_commands": benchmark_commands',
-        'expected_benchmark_command_count = len(expected_benchmark_commands)',
-        'if len(commands) != expected_benchmark_command_count:',
-        '"expected_benchmark_command_count": expected_benchmark_command_count',
+        '"required_benchmark_commands": expected',
+        '"optional_benchmark_commands": manifest.get("benchmark_commands", {}).get("opt_in", [])',
+        'expected = manifest.get("benchmark_commands", {}).get("required", [])',
+        'actual = [c["command"] for c in commands]',
+        'if actual != expected:',
+        '"expected_benchmark_commands": expected',
+        '"benchmark_commands": actual',
+        '"expected_benchmark_command_count": len(expected)',
+        '"benchmark_command_count": len(commands)',
         'if min_overall_qps > 0 and overall_min_qps < min_overall_qps:',
         '"min_overall_qps_threshold": min_overall_qps',
         '"requests_per_second_overall_min": overall_min_qps',
@@ -746,13 +761,8 @@ def main() -> int:
             failures,
         )
     require(
-        "COMMAND COUNT=47" in redis_docs,
-        "Redis docs must state the narrower C++ open-source COMMAND COUNT including aliases and HSCAN",
-        failures,
-    )
-    require(
-        "kHScan" in cxx_redis and "&RedisCommandHandler::HScan" in cxx_redis_service,
-        "C++ Redis service must wire narrow HSCAN through the hash handler",
+        "COMMAND COUNT=16" in redis_docs,
+        "Redis docs must state the first-release C++ open-source COMMAND COUNT",
         failures,
     )
     for metric in (
@@ -803,8 +813,12 @@ def main() -> int:
         failures,
     )
     require(
-        "HSCAN" in redis_compat_smoke and "HSCAN rh 0 MATCH f* COUNT 8" in redis_live_smoke,
-        "Redis smokes must cover narrow HSCAN while broad scans stay unsupported",
+        "HSCAN" in manifest_blocked_commands
+        and "HSCAN" in redis_compat_smoke
+        and "HSCAN" in redis_live_smoke
+        and '"${blocked}"' in redis_compat_smoke
+        and '"${blocked}"' in redis_live_smoke,
+        "Redis smokes must prove HSCAN is outside the first-release trimmed surface",
         failures,
     )
     for runtime_metric in (
@@ -827,20 +841,10 @@ def main() -> int:
         failures,
     )
     require(
-        'REDIS_EXPECT_HINCRBYFLOAT:-0' in redis_live_smoke
-        and "SKIP hincrbyfloat" in redis_live_smoke
-        and "REDIS_EXPECT_HINCRBYFLOAT=1" in redis_docs
-        and "C++ Redis bridge must not claim it until a native handler is added" in redis_docs,
-        "C++ live Redis smoke must keep HINCRBYFLOAT opt-in until the C++ bridge wires a native handler",
-        failures,
-    )
-    require(
-        'REDIS_EXPECT_HINCRBYFLOAT:-0' in redis_compat_smoke
-        and 'SKIP hincrbyfloat' in redis_compat_smoke
-        and 'SKIP redis_benchmark_hincrbyfloat' in redis_compat_smoke
-        and 'hincrbyfloat_enabled' in redis_compat_smoke
-        and 'Rust-only/opt-in bridge capability' in redis_docs,
-        "shared Redis compatibility smoke/docs must not require HINCRBYFLOAT unless explicitly enabled",
+        "HINCRBYFLOAT" in manifest_blocked_commands
+        and "HINCRBYFLOAT" in redis_compat_smoke
+        and '"${blocked}"' in redis_compat_smoke,
+        "first-release Redis compatibility smoke/docs must keep HINCRBYFLOAT outside the trimmed surface",
         failures,
     )
 

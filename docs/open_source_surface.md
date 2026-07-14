@@ -5,8 +5,8 @@ TemporalStore keeps a smaller public build surface behind
 
 The open-source build keeps:
 
-- Basic Redis-compatible commands: auth/ping/info/command metadata, string
-  commands, key lifetime commands, and hash commands.
+- Basic Redis-compatible commands: auth/ping/info/command metadata, minimal
+  string commands, minimal key lifetime commands, and minimal hash commands.
 - MatrixArk context-management data models.
 - Feature data model.
 - Frequency-control data model.
@@ -15,8 +15,7 @@ The open-source build excludes non-public/internal model families and extension
 modules such as set, IPS, risk-only, temporal aggregate, and time-series model
 registration. It also does not expose Redis server-configuration or broad
 keyspace/collection-clone commands such as `CONFIG`, `DBSIZE`, broad `KEYS` /
-`SCAN`, `SADD`, `LPUSH`, or `ZADD`. Narrow `HSCAN` is kept only as a single-hash
-helper for the hash data model. The set protobuf may still compile as a
+`SCAN`, `SADD`, `LPUSH`, or `ZADD`. `HSCAN` is excluded from the first-release public surface. The set protobuf may still compile as a
 compatibility helper for legacy Redis handler code, but the set module is not
 registered in the public surface. Full internal builds remain unchanged when
 `BCACHE2_OPEN_SOURCE_SURFACE` is off.
