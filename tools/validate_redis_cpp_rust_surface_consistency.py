@@ -59,6 +59,7 @@ def main() -> int:
     risk = contract["rust_public_data_model_commands"]["risk_frequency_control"]
     model_commands = feature + risk
     blocked_aliases = set(contract["private_or_blocked_aliases"])
+    blocked_models = set(contract.get("blocked_data_model_families", []))
 
     manifest_cxx = manifest.get("cxx_commands", [])
     manifest_rust_extra = manifest.get("rust_extra_commands", [])
@@ -88,12 +89,15 @@ def main() -> int:
     leaked_manifest = sorted(blocked_aliases & set(manifest_rust_extra))
     leaked_rust = sorted(blocked_aliases & rust_allow)
     missing_blocked = sorted(blocked_aliases - manifest_blocked)
+    manifest_blocked_models = set(manifest.get("blocked_data_model_families", []))
     if leaked_manifest:
         failures.append(f"CPC/FOL aliases leaked into manifest public Rust extras: {leaked_manifest}")
     if leaked_rust:
         failures.append(f"CPC/FOL aliases leaked into Rust trimmed allowlist: {leaked_rust}")
     if missing_blocked:
         failures.append(f"CPC/FOL aliases must be explicitly blocked in manifest: {missing_blocked}")
+    if manifest_blocked_models != blocked_models:
+        failures.append("manifest and parity contract must agree on blocked audit/replay/debug data-model families")
 
     if failures:
         print("redis C++/Rust surface consistency validation failed:")
