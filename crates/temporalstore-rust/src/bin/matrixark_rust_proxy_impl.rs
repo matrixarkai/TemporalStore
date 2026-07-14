@@ -314,8 +314,8 @@ fn main() {
     }
     if !single_shot_debug_enabled(&args) {
         eprintln!(
-            "matrixark_record_log single-shot mode is debug-only. Use --serve for MatrixArk \
-             production and benchmark workloads, or set MATRIXARK_RUST_RECORD_LOG_SINGLE_SHOT_DEBUG=1 \
+            "matrixark_rust_proxy single-shot mode is debug-only. Use --serve for MatrixArk \
+             production and benchmark workloads, or set MATRIXARK_RUST_PROXY_SINGLE_SHOT_DEBUG=1 \
              / pass --debug-single-shot for diagnostics."
         );
         std::process::exit(64);
@@ -330,7 +330,7 @@ fn main() {
 
 fn single_shot_debug_enabled(args: &[String]) -> bool {
     args.iter().any(|arg| arg == "--debug-single-shot")
-        || env::var("MATRIXARK_RUST_RECORD_LOG_SINGLE_SHOT_DEBUG")
+        || env::var("MATRIXARK_RUST_PROXY_SINGLE_SHOT_DEBUG")
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
             .unwrap_or(false)
 }
@@ -653,24 +653,24 @@ fn render_prometheus_metrics(
     let storage_mode = matrixark_rust_storage_mode();
     let mut output = format!(
         concat!(
-            "# HELP matrixark_rust_record_log_process_start_time_ms Unix millisecond timestamp when this Rust record-log process started.\n",
-            "# TYPE matrixark_rust_record_log_process_start_time_ms gauge\n",
-            "matrixark_rust_record_log_process_start_time_ms {}\n",
-            "# HELP matrixark_rust_record_log_commands_total Total MatrixArk Rust record-log commands.\n",
-            "# TYPE matrixark_rust_record_log_commands_total counter\n",
-            "matrixark_rust_record_log_commands_total {}\n",
-            "# HELP matrixark_rust_record_log_commands_failed_total Total failed MatrixArk Rust record-log commands.\n",
-            "# TYPE matrixark_rust_record_log_commands_failed_total counter\n",
-            "matrixark_rust_record_log_commands_failed_total {}\n",
-            "# HELP matrixark_rust_record_log_records_written_total Total MatrixArk records/hash entries written by the Rust record-log bridge.\n",
-            "# TYPE matrixark_rust_record_log_records_written_total counter\n",
-            "matrixark_rust_record_log_records_written_total {}\n",
-            "# HELP matrixark_rust_record_log_records_read_total Total MatrixArk records/hash entries read by the Rust record-log bridge.\n",
-            "# TYPE matrixark_rust_record_log_records_read_total counter\n",
-            "matrixark_rust_record_log_records_read_total {}\n",
-            "# HELP matrixark_rust_record_log_qps Current process-lifetime average command QPS.\n",
-            "# TYPE matrixark_rust_record_log_qps gauge\n",
-            "matrixark_rust_record_log_qps {:.6}\n",
+            "# HELP matrixark_rust_proxy_process_start_time_ms Unix millisecond timestamp when this Rust proxy process started.\n",
+            "# TYPE matrixark_rust_proxy_process_start_time_ms gauge\n",
+            "matrixark_rust_proxy_process_start_time_ms {}\n",
+            "# HELP matrixark_rust_proxy_commands_total Total MatrixArk Rust proxy commands.\n",
+            "# TYPE matrixark_rust_proxy_commands_total counter\n",
+            "matrixark_rust_proxy_commands_total {}\n",
+            "# HELP matrixark_rust_proxy_commands_failed_total Total failed MatrixArk Rust proxy commands.\n",
+            "# TYPE matrixark_rust_proxy_commands_failed_total counter\n",
+            "matrixark_rust_proxy_commands_failed_total {}\n",
+            "# HELP matrixark_rust_proxy_records_written_total Total MatrixArk records/hash entries written by the Rust proxy bridge.\n",
+            "# TYPE matrixark_rust_proxy_records_written_total counter\n",
+            "matrixark_rust_proxy_records_written_total {}\n",
+            "# HELP matrixark_rust_proxy_records_read_total Total MatrixArk records/hash entries read by the Rust proxy bridge.\n",
+            "# TYPE matrixark_rust_proxy_records_read_total counter\n",
+            "matrixark_rust_proxy_records_read_total {}\n",
+            "# HELP matrixark_rust_proxy_qps Current process-lifetime average command QPS.\n",
+            "# TYPE matrixark_rust_proxy_qps gauge\n",
+            "matrixark_rust_proxy_qps {:.6}\n",
             "# HELP matrixark_backend_qps Backend-normalized process-lifetime average command QPS.\n",
             "# TYPE matrixark_backend_qps gauge\n",
             "matrixark_backend_qps{{backend=\"rust\"}} {:.6}\n",
@@ -704,12 +704,12 @@ fn render_prometheus_metrics(
             "# HELP matrixark_backend_audit_flush_failures_total MatrixArk audit flush failure count.\n",
             "# TYPE matrixark_backend_audit_flush_failures_total counter\n",
             "matrixark_backend_audit_flush_failures_total{{backend=\"rust\"}} 0\n",
-            "# HELP matrixark_rust_record_log_cached_clients Cached TemporalEngine clients in the long-lived Rust gateway.\n",
-            "# TYPE matrixark_rust_record_log_cached_clients gauge\n",
-            "matrixark_rust_record_log_cached_clients {}\n",
-            "# HELP matrixark_rust_record_log_clients_created_total TemporalEngine clients created by the long-lived Rust proxy.\n",
-            "# TYPE matrixark_rust_record_log_clients_created_total counter\n",
-            "matrixark_rust_record_log_clients_created_total {}\n",
+            "# HELP matrixark_rust_proxy_cached_clients Cached TemporalEngine clients in the long-lived Rust gateway.\n",
+            "# TYPE matrixark_rust_proxy_cached_clients gauge\n",
+            "matrixark_rust_proxy_cached_clients {}\n",
+            "# HELP matrixark_rust_proxy_clients_created_total TemporalEngine clients created by the long-lived Rust proxy.\n",
+            "# TYPE matrixark_rust_proxy_clients_created_total counter\n",
+            "matrixark_rust_proxy_clients_created_total {}\n",
             "# HELP matrixark_backend_cached_clients Backend-normalized cached client/connection count.\n",
             "# TYPE matrixark_backend_cached_clients gauge\n",
             "matrixark_backend_cached_clients{{backend=\"rust\"}} {}\n",
@@ -728,8 +728,8 @@ fn render_prometheus_metrics(
             "# HELP matrixark_backend_audit_flush_failures_total Backend-normalized audit flush failures.\n",
             "# TYPE matrixark_backend_audit_flush_failures_total counter\n",
             "matrixark_backend_audit_flush_failures_total{{backend=\"rust\"}} 0\n",
-            "# HELP matrixark_rust_record_log_command_latency_ms Command latency histogram in milliseconds.\n",
-            "# TYPE matrixark_rust_record_log_command_latency_ms histogram\n",
+            "# HELP matrixark_rust_proxy_command_latency_ms Command latency histogram in milliseconds.\n",
+            "# TYPE matrixark_rust_proxy_command_latency_ms histogram\n",
             "# HELP matrixark_backend_command_latency_ms Backend-normalized command latency histogram in milliseconds.\n",
             "# TYPE matrixark_backend_command_latency_ms histogram\n"
         ),
@@ -777,7 +777,7 @@ fn render_prometheus_metrics(
     }
     for (idx, upper_bound) in LATENCY_BUCKETS_MS.iter().enumerate() {
         output.push_str(&format!(
-            "matrixark_rust_record_log_command_latency_ms_bucket{{le=\"{}\"}} {}\n",
+            "matrixark_rust_proxy_command_latency_ms_bucket{{le=\"{}\"}} {}\n",
             upper_bound, latency_buckets[idx]
         ));
         output.push_str(&format!(
@@ -786,7 +786,7 @@ fn render_prometheus_metrics(
         ));
     }
     output.push_str(&format!(
-        "matrixark_rust_record_log_command_latency_ms_bucket{{le=\"+Inf\"}} {}\n",
+        "matrixark_rust_proxy_command_latency_ms_bucket{{le=\"+Inf\"}} {}\n",
         command_count
     ));
     output.push_str(&format!(
@@ -794,7 +794,7 @@ fn render_prometheus_metrics(
         command_count
     ));
     output.push_str(&format!(
-        "matrixark_rust_record_log_command_latency_ms_sum {}\n",
+        "matrixark_rust_proxy_command_latency_ms_sum {}\n",
         latency_sum_ms
     ));
     output.push_str(&format!(
@@ -802,7 +802,7 @@ fn render_prometheus_metrics(
         latency_sum_ms
     ));
     output.push_str(&format!(
-        "matrixark_rust_record_log_command_latency_ms_count {}\n",
+        "matrixark_rust_proxy_command_latency_ms_count {}\n",
         command_count
     ));
     output.push_str(&format!(
@@ -810,9 +810,9 @@ fn render_prometheus_metrics(
         command_count
     ));
     output.push_str(&format!(
-        "# HELP matrixark_rust_record_log_command_latency_max_ms Max observed command latency in milliseconds.\n\
-         # TYPE matrixark_rust_record_log_command_latency_max_ms gauge\n\
-         matrixark_rust_record_log_command_latency_max_ms {}\n\
+        "# HELP matrixark_rust_proxy_command_latency_max_ms Max observed command latency in milliseconds.\n\
+         # TYPE matrixark_rust_proxy_command_latency_max_ms gauge\n\
+         matrixark_rust_proxy_command_latency_max_ms {}\n\
          # HELP matrixark_backend_command_latency_max_ms Backend-normalized max observed command latency in milliseconds.\n\
          # TYPE matrixark_backend_command_latency_max_ms gauge\n\
          matrixark_backend_command_latency_max_ms{{backend=\"rust\"}} {}\n",
