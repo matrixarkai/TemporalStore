@@ -18,8 +18,12 @@ mkdir -p "${RESULT_ROOT}"
 echo "== Redis production gate: open-source surface manifest == "
 cp "${ROOT}/compat/redis_open_source_surface_manifest.json" \
   "${RESULT_ROOT}/redis_open_source_surface_manifest.json"
+cp "${ROOT}/compat/redis_cpp_rust_surface_parity_contract.json" \
+  "${RESULT_ROOT}/redis_cpp_rust_surface_parity_contract.json"
 python3 "${ROOT}/tools/validate_open_source_surface.py" \
   | tee "${RESULT_ROOT}/redis_open_source_surface_validation.txt"
+python3 "${ROOT}/tools/validate_redis_cpp_rust_surface_consistency.py" \
+  | tee "${RESULT_ROOT}/redis_cpp_rust_surface_consistency.txt"
 python3 "${ROOT}/tools/validate_matrixobjectstore_names.py" \
   | tee "${RESULT_ROOT}/matrixobject_name_validation.txt"
 

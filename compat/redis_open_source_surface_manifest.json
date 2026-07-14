@@ -14,6 +14,8 @@
     "required": [
       "redis_open_source_surface_manifest.json",
       "redis_open_source_surface_validation.txt",
+      "redis_cpp_rust_surface_parity_contract.json",
+      "redis_cpp_rust_surface_consistency.txt",
       "matrixobject_name_validation.txt",
       "redis-production-gate-summary.json"
     ],
