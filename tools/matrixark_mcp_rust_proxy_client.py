@@ -9,11 +9,21 @@ import queue
 import subprocess
 import threading
 import time
-from collections import defaultdict, deque
 from typing import Any
 
 try:
     from tools.matrixark_mcp_core import Json, MatrixArkError
+    from tools.matrixark_mcp_rust_proxy_coalesce import (
+        append_options_signature,
+        assign_coalesced_batch_hget_by_key,
+        coalesced_batch_hget,
+        coalesced_batch_hset,
+        coalesced_matrixark_batch_append_records,
+        drain_append_coalescer,
+        drain_batch_hget_coalescer,
+        drain_batch_hset_coalescer,
+        max_count_value,
+    )
     from tools.matrixark_mcp_rust_proxy_cache import (
         context_pack_response_cache_clear,
         context_pack_response_cache_get,
@@ -43,6 +53,17 @@ try:
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import Json, MatrixArkError
+    from matrixark_mcp_rust_proxy_coalesce import (
+        append_options_signature,
+        assign_coalesced_batch_hget_by_key,
+        coalesced_batch_hget,
+        coalesced_batch_hset,
+        coalesced_matrixark_batch_append_records,
+        drain_append_coalescer,
+        drain_batch_hget_coalescer,
+        drain_batch_hset_coalescer,
+        max_count_value,
+    )
     from matrixark_mcp_rust_proxy_cache import (
         context_pack_response_cache_clear,
         context_pack_response_cache_get,
@@ -839,83 +860,10 @@ class MatrixArkRustProxyClient:
         self._context_pack_response_cache_clear()
 
     def _coalesced_batch_hset(self, compact_entries: list[list[str]]) -> None:
-        event = threading.Event()
-        request: Json = {
-            "entries_compact": compact_entries,
-            "event": event,
-            "error": None,
-        }
-        became_leader = False
-        queued_at = time.perf_counter()
-        with self._batch_hset_coalesce_lock:
-            self._batch_hset_coalesce_queue.append(request)
-            if not self._batch_hset_coalesce_active:
-                self._batch_hset_coalesce_active = True
-                became_leader = True
-        if became_leader:
-            self._drain_batch_hset_coalescer()
-        else:
-            timeout_s = max(self._backpressure_timeout_s, self.request_timeout_ms / 1000.0 + 2.0)
-            if not event.wait(timeout=timeout_s):
-                raise MatrixArkError(f"Rust TemporalStore batch_hset coalescer timed out after {timeout_s:.1f}s")
-        wait_ms = (time.perf_counter() - queued_at) * 1000.0
-        with self._metrics_lock:
-            self._batch_hset_coalesced_wait_ms_total += wait_ms
-            self._batch_hset_coalesced_wait_ms_max = max(self._batch_hset_coalesced_wait_ms_max, wait_ms)
-        error = request.get("error")
-        if error:
-            raise error
+        coalesced_batch_hset(self, compact_entries)
 
     def _drain_batch_hset_coalescer(self) -> None:
-        try:
-            if self._batch_hset_coalesce_wait_s > 0:
-                time.sleep(self._batch_hset_coalesce_wait_s)
-            while True:
-                with self._batch_hset_coalesce_lock:
-                    pending = self._batch_hset_coalesce_queue[: self._batch_hset_coalesce_max_batches]
-                    del self._batch_hset_coalesce_queue[: len(pending)]
-                if not pending:
-                    with self._batch_hset_coalesce_lock:
-                        if not self._batch_hset_coalesce_queue:
-                            self._batch_hset_coalesce_active = False
-                            return
-                    continue
-                merged: list[list[str]] = []
-                for item in pending:
-                    merged.extend(item.get("entries_compact") or [])
-                error: BaseException | None = None
-                try:
-                    self._call_hash_batch_json("batch_hset", merged)
-                except BaseException as exc:
-                    error = exc
-                if error is None:
-                    self._scan_hash_cache_invalidate_keys(entry[0] for entry in merged)
-                    self._context_pack_response_cache_clear()
-                with self._metrics_lock:
-                    self._batch_hset_coalesced_batches_total += 1
-                    self._batch_hset_coalesced_calls_total += len(pending)
-                    self._batch_hset_coalesced_records_total += len(merged)
-                for item in pending:
-                    item["error"] = error
-                    item["event"].set()
-                if error is not None:
-                    with self._batch_hset_coalesce_lock:
-                        remaining = self._batch_hset_coalesce_queue
-                        self._batch_hset_coalesce_queue = []
-                        self._batch_hset_coalesce_active = False
-                    for item in remaining:
-                        item["error"] = error
-                        item["event"].set()
-                    return
-        except BaseException as exc:
-            with self._batch_hset_coalesce_lock:
-                remaining = self._batch_hset_coalesce_queue
-                self._batch_hset_coalesce_queue = []
-                self._batch_hset_coalesce_active = False
-            for item in remaining:
-                item["error"] = exc
-                item["event"].set()
-            raise
+        drain_batch_hset_coalescer(self)
 
     def matrixark_batch_append_records(
         self,
@@ -959,22 +907,11 @@ class MatrixArkRustProxyClient:
 
     @staticmethod
     def _append_options_signature(append_options: Json) -> str:
-        try:
-            return json.dumps(append_options or {}, sort_keys=True, separators=(",", ":"), default=str)
-        except Exception:
-            return str(sorted((append_options or {}).items())) if isinstance(append_options, dict) else str(append_options)
+        return append_options_signature(append_options)
 
     @staticmethod
     def _max_count_value(values: list[str]) -> str:
-        numeric: list[int] = []
-        for value in values:
-            try:
-                numeric.append(int(str(value)))
-            except (TypeError, ValueError):
-                continue
-        if numeric:
-            return str(max(numeric))
-        return values[-1] if values else ""
+        return max_count_value(values)
 
     def _coalesced_matrixark_batch_append_records(
         self,
@@ -984,107 +921,16 @@ class MatrixArkRustProxyClient:
         count_value: str,
         append_options: Json,
     ) -> None:
-        event = threading.Event()
-        request: Json = {
-            "entries_compact": compact_entries,
-            "count_key": count_key,
-            "count_value": count_value,
-            "append_options": append_options,
-            "append_options_signature": self._append_options_signature(append_options),
-            "event": event,
-            "error": None,
-        }
-        became_leader = False
-        queued_at = time.perf_counter()
-        with self._append_coalesce_lock:
-            self._append_coalesce_queue.append(request)
-            if not self._append_coalesce_active:
-                self._append_coalesce_active = True
-                became_leader = True
-        if became_leader:
-            self._drain_append_coalescer()
-        else:
-            timeout_s = max(self._backpressure_timeout_s, self.request_timeout_ms / 1000.0 + 2.0)
-            if not event.wait(timeout=timeout_s):
-                raise MatrixArkError(f"Rust TemporalStore matrixark append coalescer timed out after {timeout_s:.1f}s")
-        wait_ms = (time.perf_counter() - queued_at) * 1000.0
-        with self._metrics_lock:
-            self._append_coalesced_wait_ms_total += wait_ms
-            self._append_coalesced_wait_ms_max = max(self._append_coalesced_wait_ms_max, wait_ms)
-        error = request.get("error")
-        if error:
-            raise error
+        coalesced_matrixark_batch_append_records(
+            self,
+            compact_entries,
+            count_key=count_key,
+            count_value=count_value,
+            append_options=append_options,
+        )
 
     def _drain_append_coalescer(self) -> None:
-        try:
-            if self._append_coalesce_wait_s > 0:
-                time.sleep(self._append_coalesce_wait_s)
-            while True:
-                with self._append_coalesce_lock:
-                    pending = self._append_coalesce_queue[: self._append_coalesce_max_batches]
-                    del self._append_coalesce_queue[: len(pending)]
-                if not pending:
-                    with self._append_coalesce_lock:
-                        if not self._append_coalesce_queue:
-                            self._append_coalesce_active = False
-                            return
-                    continue
-                grouped: dict[tuple[str, str], list[Json]] = {}
-                for item in pending:
-                    signature = (str(item.get("count_key") or ""), str(item.get("append_options_signature") or ""))
-                    grouped.setdefault(signature, []).append(item)
-                for items in grouped.values():
-                    merged: list[list[str]] = []
-                    count_values: list[str] = []
-                    append_options = items[0].get("append_options") or {}
-                    count_key = str(items[0].get("count_key") or "")
-                    for item in items:
-                        merged.extend(item.get("entries_compact") or [])
-                        value = str(item.get("count_value") or "")
-                        if value:
-                            count_values.append(value)
-                    count_value = self._max_count_value(count_values)
-                    error: BaseException | None = None
-                    try:
-                        self._call_json(
-                            "matrixark_batch_append_records",
-                            entries_compact=merged,
-                            key=count_key,
-                            value=count_value,
-                            append_options=append_options,
-                        )
-                    except BaseException as exc:
-                        error = exc
-                    if error is None and count_key:
-                        self._string_cache_put(count_key, count_value)
-                    if error is None:
-                        self._scan_hash_cache_invalidate_keys(entry[0] for entry in merged)
-                        self._context_pack_response_cache_clear()
-                    with self._metrics_lock:
-                        self._append_coalesced_batches_total += 1
-                        self._append_coalesced_calls_total += len(items)
-                        self._append_coalesced_records_total += len(merged)
-                    for item in items:
-                        item["error"] = error
-                        item["event"].set()
-                    if error is not None:
-                        with self._append_coalesce_lock:
-                            remaining = self._append_coalesce_queue
-                            self._append_coalesce_queue = []
-                            self._append_coalesce_active = False
-                        for item in remaining:
-                            item["error"] = error
-                            item["event"].set()
-                        return
-        except BaseException as exc:
-            with self._append_coalesce_lock:
-                remaining = self._append_coalesce_queue
-                self._append_coalesce_queue = []
-                self._append_coalesce_active = False
-            for item in remaining:
-                item["error"] = exc
-                item["event"].set()
-            raise
+        drain_append_coalescer(self)
 
     def matrixark_append_records(
         self,
@@ -1180,130 +1026,14 @@ class MatrixArkRustProxyClient:
         return self._batch_hget_records_from_response(compact_entries, response)
 
     def _coalesced_batch_hget(self, compact_entries: list[list[str]]) -> list[Json]:
-        event = threading.Event()
-        request: Json = {
-            "entries_compact": compact_entries,
-            "event": event,
-            "error": None,
-            "records": None,
-        }
-        became_leader = False
-        queued_at = time.perf_counter()
-        with self._batch_hget_coalesce_lock:
-            self._batch_hget_coalesce_queue.append(request)
-            if not self._batch_hget_coalesce_active:
-                self._batch_hget_coalesce_active = True
-                became_leader = True
-        if became_leader:
-            self._drain_batch_hget_coalescer()
-        else:
-            timeout_s = max(self._backpressure_timeout_s, self.request_timeout_ms / 1000.0 + 2.0)
-            if not event.wait(timeout=timeout_s):
-                raise MatrixArkError(f"Rust TemporalStore batch_hget coalescer timed out after {timeout_s:.1f}s")
-        wait_ms = (time.perf_counter() - queued_at) * 1000.0
-        with self._metrics_lock:
-            self._batch_hget_coalesced_wait_ms_total += wait_ms
-            self._batch_hget_coalesced_wait_ms_max = max(self._batch_hget_coalesced_wait_ms_max, wait_ms)
-        error = request.get("error")
-        if error:
-            raise error
-        records = request.get("records")
-        return records if isinstance(records, list) else []
+        return coalesced_batch_hget(self, compact_entries)
 
     def _drain_batch_hget_coalescer(self) -> None:
-        try:
-            if self._batch_hget_coalesce_wait_s > 0:
-                time.sleep(self._batch_hget_coalesce_wait_s)
-            while True:
-                with self._batch_hget_coalesce_lock:
-                    pending = self._batch_hget_coalesce_queue[: self._batch_hget_coalesce_max_batches]
-                    del self._batch_hget_coalesce_queue[: len(pending)]
-                if not pending:
-                    with self._batch_hget_coalesce_lock:
-                        if not self._batch_hget_coalesce_queue:
-                            self._batch_hget_coalesce_active = False
-                            return
-                    continue
-                merged: list[list[str]] = []
-                for item in pending:
-                    merged.extend(item.get("entries_compact") or [])
-                error: BaseException | None = None
-                rows: list[Json] = []
-                try:
-                    response = self._call_hash_batch_json(
-                        "batch_hget",
-                        merged,
-                        compact_read_response=True,
-                    )
-                    rows = self._batch_hget_records_from_response(merged, response)
-                except BaseException as exc:
-                    error = exc
-                if error is None:
-                    if len(rows) == len(merged):
-                        cursor = 0
-                        ordered = True
-                        for item in pending:
-                            item_records: list[Json] = []
-                            for key, field, _ in item.get("entries_compact") or []:
-                                row = rows[cursor] if cursor < len(rows) else {}
-                                cursor += 1
-                                if (
-                                    not isinstance(row, dict)
-                                    or str(row.get("key") or "") != key
-                                    or str(row.get("field") or "") != field
-                                ):
-                                    ordered = False
-                                    break
-                                item_records.append(row)
-                            if not ordered:
-                                break
-                            item["records"] = item_records
-                        if not ordered:
-                            self._assign_coalesced_batch_hget_by_key(pending, rows)
-                    else:
-                        self._assign_coalesced_batch_hget_by_key(pending, rows)
-                with self._metrics_lock:
-                    self._batch_hget_coalesced_batches_total += 1
-                    self._batch_hget_coalesced_calls_total += len(pending)
-                    self._batch_hget_coalesced_records_total += len(merged)
-                for item in pending:
-                    item["error"] = error
-                    item["event"].set()
-                if error is not None:
-                    with self._batch_hget_coalesce_lock:
-                        remaining = self._batch_hget_coalesce_queue
-                        self._batch_hget_coalesce_queue = []
-                        self._batch_hget_coalesce_active = False
-                    for item in remaining:
-                        item["error"] = error
-                        item["event"].set()
-                    return
-        except BaseException as exc:
-            with self._batch_hget_coalesce_lock:
-                remaining = self._batch_hget_coalesce_queue
-                self._batch_hget_coalesce_queue = []
-                self._batch_hget_coalesce_active = False
-            for item in remaining:
-                item["error"] = exc
-                item["event"].set()
-            raise
+        drain_batch_hget_coalescer(self)
 
     @staticmethod
     def _assign_coalesced_batch_hget_by_key(pending: list[Json], rows: list[Json]) -> None:
-        records_by_entry: dict[tuple[str, str], deque[Json]] = defaultdict(deque)
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            records_by_entry[(str(row.get("key") or ""), str(row.get("field") or ""))].append(row)
-        for item in pending:
-            item_records: list[Json] = []
-            for key, field, _ in item.get("entries_compact") or []:
-                bucket = records_by_entry.get((key, field))
-                if bucket:
-                    item_records.append(bucket.popleft())
-                else:
-                    item_records.append({"key": key, "field": field, "value": ""})
-            item["records"] = item_records
+        assign_coalesced_batch_hget_by_key(pending, rows)
 
     def scan_hash(self, key: str) -> Json:
         cached = self._scan_hash_cache_get(key)
