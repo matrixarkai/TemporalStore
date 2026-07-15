@@ -39,6 +39,8 @@ mod direct_ffi_types;
 #[cfg(feature = "direct")]
 mod direct_helpers;
 #[cfg(feature = "direct")]
+mod direct_ips;
+#[cfg(feature = "direct")]
 mod direct_key_value;
 #[cfg(feature = "direct")]
 pub use direct_client::Client;
