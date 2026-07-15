@@ -65,6 +65,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         storage_options_mod = importlib.import_module("tools.matrixark_mcp_storage_options")
         native_helpers_mod = importlib.import_module("tools.matrixark_mcp_native_helpers")
         scoring_mod = importlib.import_module("tools.matrixark_mcp_scoring")
+        text_mod = importlib.import_module("tools.matrixark_mcp_text")
         embeddings_mod = importlib.import_module("tools.matrixark_mcp_embeddings")
         extraction_provider_mod = importlib.import_module("tools.matrixark_mcp_extraction_provider")
         latest_values_mod = importlib.import_module("tools.matrixark_mcp_latest_values")
@@ -119,6 +120,10 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIs(core_mod.numeric_field, scoring_mod.numeric_field)
         self.assertIs(core_mod.apply_statistical_operator, scoring_mod.apply_statistical_operator)
         self.assertIs(core_mod.latest_record, scoring_mod.latest_record)
+        self.assertIs(core_mod.text_from_messages, text_mod.text_from_messages)
+        self.assertIs(core_mod.token_count, text_mod.token_count)
+        self.assertIs(core_mod.clip_context_text, text_mod.clip_context_text)
+        self.assertIs(core_mod.MAX_CONTEXT_REF_CHARS, text_mod.MAX_CONTEXT_REF_CHARS)
         self.assertIs(core_mod.embedding_for_text, embeddings_mod.embedding_for_text)
         self.assertIs(core_mod.embeddings_for_texts, embeddings_mod.embeddings_for_texts)
         self.assertIs(core_mod.embedding_model_name, embeddings_mod.embedding_model_name)
@@ -220,6 +225,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "matrixark_mcp_storage_options.py",
             "matrixark_mcp_native_helpers.py",
             "matrixark_mcp_scoring.py",
+            "matrixark_mcp_text.py",
             "matrixark_mcp_latest_values.py",
             "matrixark_mcp_event_keys.py",
             "matrixark_mcp_serving_records.py",
