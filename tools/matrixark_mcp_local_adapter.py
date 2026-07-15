@@ -51,6 +51,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_local_cache as local_cache_helpers
 
 try:
+    from tools import matrixark_mcp_local_backend as local_backend_helpers
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_local_backend as local_backend_helpers
+
+try:
     from tools import matrixark_mcp_local_idempotency as local_idempotency_helpers
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_local_idempotency as local_idempotency_helpers
@@ -122,38 +127,14 @@ class MatrixArkLocalAdapter:
     def write_batch(self, label: str = "hot_path"):
         return local_runtime_helpers.write_batch(self, label)
 
-    def ensure_backend_ready(self, *, reason: str = "manual", probe: bool = True, timeout_ms: int | None = None) -> Json:
-        return {
-            "status": "ready",
-            "backend": "local",
-            "reason": reason,
-            "probe": bool(probe),
-            "attempts": 1,
-            "topology": {"mode": "local-jsonl", "event_log": str(self.event_log)},
-            "checks": {
-                "mcp_process_started": True,
-                "namespace_table_opened": True,
-                "slot_coverage_verified_by_warmup_hset_hget": True,
-            },
-        }
+    def ensure_backend_ready(self, *, reason: str = "matrixark") -> Json:
+        return local_backend_helpers.ensure_backend_ready(self, reason=reason)
 
     def backend_metrics(self) -> Json:
-        return {
-            "backend": getattr(self, "_backend_label", lambda: "local")(),
-            "metrics_format": "json",
-            "metrics": {
-                "mode": "local-jsonl",
-                "event_log": str(self.event_log),
-            },
-        }
+        return local_backend_helpers.backend_metrics(self)
 
     def _observe_model_latency(self, stage: str, elapsed_ms: float) -> None:
-        metrics = getattr(self, "_matrixark_service_metrics", None)
-        if metrics is not None:
-            try:
-                metrics.observe_model_latency(stage, elapsed_ms)
-            except Exception:
-                pass
+        local_backend_helpers.observe_model_latency(self, stage, elapsed_ms)
 
     def _update_read_cache_after_append(self, records: list[Json]) -> None:
         local_cache_helpers.update_read_cache_after_append(self, records)
@@ -248,9 +229,6 @@ class MatrixArkLocalAdapter:
             identity=identity,
             response=response,
         )
-
-    def ensure_backend_ready(self, *, reason: str = "matrixark") -> Json:
-        return {"status": "ready", "backend": "local", "reason": reason}
 
     def recent_records(self, limit: int = 128) -> list[Json]:
         return local_read_helpers.recent_records(self, limit, copy_slice=LOCAL_READ_CACHE_COPY)
