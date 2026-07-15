@@ -41,9 +41,13 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_retrieval_records as retrieval_record_helpers
 
+try:
+    from tools import matrixark_mcp_resource_import_runtime as resource_import_runtime
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_resource_import_runtime as resource_import_runtime
+
 RETRIEVAL_HOT_RECORD_TYPES = retrieval_record_helpers.RETRIEVAL_HOT_RECORD_TYPES
 
-RESOURCE_IMPORT_IGNORE_DIRS = {".git", "node_modules", "target", "build", "dist", ".venv", "__pycache__"}
 LOCAL_READ_CACHE_COPY = os.environ.get("MATRIXARK_LOCAL_READ_CACHE_COPY", "1").strip().lower() not in {"0", "false", "no"}
 DEFAULT_SESSION_IDLE_COMMIT_TIMEOUT_MS = 5 * 60 * 1000
 
@@ -1783,149 +1787,26 @@ class MatrixArkLocalAdapter:
         return {"status": "updated", **update}
 
     def _resource_import_pool_status(self) -> Json:
-        return {
-            "worker_count": self._resource_import_worker_count,
-            "queue_max": self._resource_import_queue_max,
-            "queue_depth": self._resource_import_queue.qsize(),
-            "queue_remaining_capacity": max(0, self._resource_import_queue_max - self._resource_import_queue.qsize()),
-            "bounded": True,
-        }
+        return resource_import_runtime.resource_import_pool_status(self)
 
     def _ensure_resource_import_workers(self) -> None:
-        with self._resource_import_worker_lock:
-            if self._resource_import_workers_started:
-                return
-            self._resource_import_stop.clear()
-            for worker_index in range(self._resource_import_worker_count):
-                thread = threading.Thread(
-                    target=self._resource_import_worker_loop,
-                    name=f"matrixark-resource-import-{worker_index}",
-                    daemon=True,
-                )
-                thread.start()
-                self._resource_import_threads.append(thread)
-            self._resource_import_workers_started = True
+        resource_import_runtime.ensure_resource_import_workers(self)
 
     def _resource_import_worker_loop(self) -> None:
-        while True:
-            item = self._resource_import_queue.get()
-            try:
-                if item.get("_stop"):
-                    return
-                args = item.get("args", {})
-                hook = item.get("hook")
-                self._run_background_resource_import(args, hook if isinstance(hook, dict) else None)
-            finally:
-                self._resource_import_queue.task_done()
+        resource_import_runtime.resource_import_worker_loop(self)
 
     def close(self, *, timeout_s: float = 5.0) -> None:
         """Drain async import work and stop background workers."""
-        deadline = time.monotonic() + max(0.0, timeout_s)
-        while getattr(self._resource_import_queue, "unfinished_tasks", 0) and time.monotonic() < deadline:
-            time.sleep(0.01)
-        self._resource_import_stop.set()
-        with self._resource_import_worker_lock:
-            if self._resource_import_workers_started:
-                for _thread in self._resource_import_threads:
-                    remaining = max(0.0, deadline - time.monotonic())
-                    try:
-                        self._resource_import_queue.put({"_stop": True}, timeout=remaining if remaining > 0 else 0.01)
-                    except thread_queue.Full:
-                        pass
-                for thread in list(self._resource_import_threads):
-                    thread.join(timeout=max(0.0, deadline - time.monotonic()))
-                self._resource_import_threads = [thread for thread in self._resource_import_threads if thread.is_alive()]
-                self._resource_import_workers_started = bool(self._resource_import_threads)
+        resource_import_runtime.close_resource_import_runtime(self, timeout_s=timeout_s)
 
     def _enqueue_resource_import(self, *, args: Json, hook: Json | None, task_hash: int) -> Json:
-        self._ensure_resource_import_workers()
-        queue_before = self._resource_import_queue.qsize()
-        try:
-            self._resource_import_queue.put_nowait(
-                {
-                    "args": args,
-                    "hook": hook,
-                    "task_hash": task_hash,
-                    "queued_at_ms": now_ms(),
-                }
-            )
-        except thread_queue.Full:
-            raise MatrixArkError(
-                f"resource import queue is full; workers={self._resource_import_worker_count} max_queue={self._resource_import_queue_max}"
-            )
-        status = self._resource_import_pool_status()
-        status["queue_depth_before_enqueue"] = queue_before
-        self._observe_model_latency("resource_import_queue_wait", 0.0)
-        metrics = getattr(self, "_matrixark_service_metrics", None)
-        if metrics is not None:
-            metrics.observe_resource_queue_depth(int(status.get("queue_depth") or 0))
-        return status
+        return resource_import_runtime.enqueue_resource_import(self, args=args, hook=hook, task_hash=task_hash)
 
     def _run_background_resource_import(self, args: Json, hook: Json | None) -> None:
-        task_hash = args.get("_resource_import_task_hash", 0)
-        try:
-            self.ingest(args, hook=hook)
-        except Exception as exc:  # pragma: no cover - background failure path is validated via records.
-            scope = optional_object(args, "scope")
-            metadata = optional_object(args, "metadata")
-            envelope = normalize_envelope(args, default_kind="resource")
-            deployment_scope = deployment_scope_from_args(args, envelope)
-            sharing_scope = self.resource_sharing_scope(args, envelope, deployment_scope)
-            node_hint = self.default_resource_node_path(args, envelope, deployment_scope=deployment_scope, sharing_scope=sharing_scope)
-            node_path = [str(part) for part in node_hint if str(part)]
-            try:
-                self.append(
-                    {
-                        "record_type": "resource_import_task",
-                        "task_hash": task_hash,
-                        "status": "failed",
-                        "kind": str(args.get("kind") or "resource"),
-                        "raw_uri": str(args.get("raw_uri") or metadata.get("raw_uri") or "inline-resource"),
-                        "resource_type": str(args.get("resource_type") or metadata.get("resource_type") or ""),
-                        "error": str(exc),
-                        "node_hash": stable_hash("/".join(node_path)),
-                        "node_path": node_path,
-                        "scope": dict(scope),
-                        "updated_at_ms": now_ms(),
-                    }
-                )
-            except Exception:
-                _mcp_debug_log(f"resource import background failure could not be recorded: {exc}")
+        resource_import_runtime.run_background_resource_import(self, args, hook)
 
     def _resource_import_async_default_reason(self, args: Json, envelope: Json, raw_uri: str) -> str:
-        if "wait" in args:
-            return ""
-        inline_text = "\n\n".join(str(message.get("content", "")) for message in envelope.get("messages", []))
-        if len(inline_text) >= RESOURCE_ASYNC_DEFAULT_TEXT_CHARS:
-            return f"inline_text_chars>={RESOURCE_ASYNC_DEFAULT_TEXT_CHARS}"
-        try:
-            path = Path(raw_uri)
-            if not path.exists():
-                return ""
-            if path.is_file():
-                size = path.stat().st_size
-                if size >= RESOURCE_ASYNC_DEFAULT_BYTES:
-                    return f"file_bytes>={RESOURCE_ASYNC_DEFAULT_BYTES}"
-            elif path.is_dir():
-                file_count = 0
-                total_size = 0
-                for child in path.rglob("*"):
-                    if not child.is_file():
-                        continue
-                    if any(part in RESOURCE_IMPORT_IGNORE_DIRS for part in child.parts):
-                        continue
-                    file_count += 1
-                    try:
-                        total_size += child.stat().st_size
-                    except OSError:
-                        pass
-                    if file_count >= RESOURCE_ASYNC_DEFAULT_PATH_COUNT:
-                        return f"path_count>={RESOURCE_ASYNC_DEFAULT_PATH_COUNT}"
-                    if total_size >= RESOURCE_ASYNC_DEFAULT_BYTES:
-                        return f"directory_bytes>={RESOURCE_ASYNC_DEFAULT_BYTES}"
-        except (OSError, ValueError):
-            return ""
-        return ""
+        return resource_import_runtime.resource_import_async_default_reason(args, envelope, raw_uri)
 
     def ingest(self, args: Json, *, hook: Json | None = None) -> Json:
         envelope = normalize_envelope(args, default_kind="message")
