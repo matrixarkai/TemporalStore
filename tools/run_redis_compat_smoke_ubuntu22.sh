@@ -25,7 +25,7 @@ PY
 REDIS_TEST_MODEL_COMMANDS="${REDIS_TEST_MODEL_COMMANDS:-0}"
 REDIS_EXPECT_UNSUPPORTED_COLLECTIONS="${REDIS_EXPECT_UNSUPPORTED_COLLECTIONS:-0}"
 REDIS_TRIMMED_COMMAND_COUNT_MIN="${REDIS_TRIMMED_COMMAND_COUNT_MIN:-16}"
-REDIS_TRIMMED_COMMAND_COUNT_MAX="${REDIS_TRIMMED_COMMAND_COUNT_MAX:-32}"
+REDIS_TRIMMED_COMMAND_COUNT_MAX="${REDIS_TRIMMED_COMMAND_COUNT_MAX:-39}"
 
 mkdir -p "${RESULT_DIR}"
 SUMMARY="${RESULT_DIR}/summary.txt"
@@ -119,7 +119,7 @@ if [[ "${REDIS_COMPAT_SURFACE}" == "trimmed" ]] && \
   exit 1
 fi
 echo "PASS command_count" | tee -a "${SUMMARY}"
-expect_contains_line info_surface redis_surface:trimmed_open_source_context_feature_risk INFO stats
+expect_contains_line info_surface redis_surface:trimmed_open_source_context_feature_control INFO stats
 expect_contains_line info_surface_schema redis_surface_schema:temporalstore_open_source_redis_surface_v1 INFO stats
 expect_contains_line info_surface_blocked_families redis_surface_blocked_command_family_count:${REDIS_SURFACE_BLOCKED_FAMILY_COUNT} INFO stats
 

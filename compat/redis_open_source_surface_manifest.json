@@ -1,6 +1,6 @@
 {
   "schema": "temporalstore_open_source_redis_surface_v1",
-  "surface": "trimmed_open_source_context_feature_risk",
+  "surface": "trimmed_open_source_context_feature_control",
   "benchmark_commands": {
     "required": [
       "set_get",
@@ -34,8 +34,8 @@
     "minimal_ttl",
     "minimal_hash",
     "context_management",
-    "feature_model",
-    "risk_frequency_control"
+    "feature_capability",
+    "control_state"
   ],
   "blocked_command_families": [
     "broad_keyspace_scan",
@@ -69,7 +69,7 @@
   ],
   "matrixobject_note": "MatrixObject integration sits below TemporalStore storage/backfill. It must not expand the public Redis API into collection-clone commands.",
   "opt_in_commands": {},
-  "purpose": "Keep only first-release Redis commands needed for minimal string/hash/TTL access plus MatrixArk context, Feature observations with FeatureAggregate exact serving aggregates, and the single Risk data model for frequency-cap/risk-control.",
+  "purpose": "Keep only first-release Redis commands needed for minimal string/hash/TTL access plus MatrixArk Context capability, Feature observations with FeatureAggregate exact serving aggregates, and Control State for fast-changing serving signals such as counters, caps, quotas, pacing, eligibility, suppression, and risk-control state.",
   "feature_aggregate": {
     "capability": "FeatureAggregate",
     "parent_capability": "Feature",
@@ -100,6 +100,31 @@
     ],
     "policy": "FeatureAggregate remains inside the Feature capability; public v1 exposes exact serving aggregates only and rejects sketch/high-cardinality aggregate names until mature."
   },
+  "control_state": {
+    "capability": "Control State",
+    "public_commands": [
+      "CONTROLINCR",
+      "CONTROLINCROPT",
+      "CONTROLCHANGE",
+      "CONTROLCOUNT",
+      "CONTROLQUERY",
+      "CONTROLDETAIL",
+      "CONTROLHSET"
+    ],
+    "compatibility_aliases": [
+      "RISKINCR",
+      "RISKINCROPT",
+      "RISKCHANGE",
+      "RISKCOUNT",
+      "RISKQUERY",
+      "RISKDETAIL",
+      "RISKHSET",
+      "HCHANGE",
+      "HQUERY",
+      "HSETANDGET"
+    ],
+    "description": "Control State stores fast-changing serving signals such as counters, caps, quotas, pacing, eligibility, suppression, and risk-control state."
+  },
   "rust_extra_commands": [
     "FAPPEND",
     "FAPPENDPOLICY",
@@ -107,6 +132,13 @@
     "FQUERYFILTER",
     "FQUERYFILTERSTR",
     "FAGG",
+    "CONTROLINCR",
+    "CONTROLINCROPT",
+    "CONTROLCHANGE",
+    "CONTROLCOUNT",
+    "CONTROLQUERY",
+    "CONTROLDETAIL",
+    "CONTROLHSET",
     "RISKINCR",
     "RISKINCROPT",
     "RISKCHANGE",
@@ -119,5 +151,5 @@
     "HSETANDGET"
   ],
   "rust_normal_helpers": [],
-  "unsupported_policy": "Only commands listed in cxx_commands and rust_extra_commands are public in the first open-source release; all other Redis-style commands and model families fail closed without being part of the public contract."
+  "unsupported_policy": "Only commands listed in cxx_commands and rust_extra_commands are public in the first open-source release; all other Redis-style commands and capabilities fail closed without being part of the public contract. CONTROL* is the preferred Control State spelling; RISK* remains a compatibility alias during migration."
 }

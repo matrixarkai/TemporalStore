@@ -36,7 +36,7 @@ REGISTER_MODEL(RawModel, 6);
 #ifndef BCACHE2_OPEN_SOURCE_SURFACE
 REGISTER_MODEL(RiskHashModel, 7);
 #endif
-REGISTER_MODEL(CPCModel, 8);
+REGISTER_MODEL(ControlStateModel, 8);
 REGISTER_MODEL(ContextNodeModel, 9);
 REGISTER_MODEL(ContextEventModel, 10);
 REGISTER_MODEL(ContextIndexModel, 11);

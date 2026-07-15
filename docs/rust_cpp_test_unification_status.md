@@ -145,7 +145,7 @@ rust_evidence_snippets: 35
 ```
 
 The four checked areas are common/Redis string-hash-set behavior, Feature/Sequence timestamped
-pages including policy/filter/aggregate/batch behavior, IPS/Risk models, and Context/SDK
+pages including policy/filter/aggregate/batch behavior, IPS/Control State behavior, and Context/SDK
 wire-model behavior.
 
 Ingestion/ops parity evidence status:
@@ -222,7 +222,7 @@ remain local.
 | Ops/scale/fault behavior | 22 | `readiness.rs`, `bin/readiness_gate.rs`, `bin/external_chaos_gate.rs`, `replica_replay.rs` |
 | Feature model behavior | 13 | `engine.rs`, `temporalstore_compat.rs` |
 | Ingestion behavior | 10 | `ingestion.rs`, server ingestion routes |
-| Risk model behavior | 9 | `engine.rs`, `temporalstore_compat.rs` |
+| Control State behavior | 9 | `engine.rs`, `temporalstore_compat.rs` |
 | Context model and pipeline behavior | 7 | `context_workflow.rs`, Context model tests |
 | Sequence model behavior | 5 | `engine.rs`, `temporalstore_compat.rs` |
 | IPS model behavior | 5 | `engine.rs`, `temporalstore_compat.rs` |
