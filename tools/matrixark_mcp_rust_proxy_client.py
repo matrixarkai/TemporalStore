@@ -15,9 +15,11 @@ from typing import Any
 
 try:
     from tools.matrixark_mcp_core import Json, MatrixArkError
+    from tools.matrixark_mcp_rust_proxy_config import initialize_rust_proxy_config
     from tools.matrixark_mcp_rust_proxy_lanes import build_lane_pools
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import Json, MatrixArkError
+    from matrixark_mcp_rust_proxy_config import initialize_rust_proxy_config
     from matrixark_mcp_rust_proxy_lanes import build_lane_pools
 
 
@@ -53,88 +55,7 @@ class MatrixArkRustProxyClient:
         self.io_timeout_ms = io_timeout_ms
         self._legacy_lock = threading.Lock()
         self._legacy_semaphore = threading.BoundedSemaphore(1)
-        self._backpressure_timeout_s = max(
-            0.05,
-            int(
-                os.environ.get(
-                    "MATRIXARK_RUST_PROXY_BACKPRESSURE_TIMEOUT_MS",
-                    os.environ.get("MATRIXARK_RUST_GATEWAY_BACKPRESSURE_TIMEOUT_MS", str(request_timeout_ms)),
-                )
-            )
-            / 1000.0,
-        )
-        self._write_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_WRITE_LANES", "4")))
-        self._read_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_READ_LANES", "4")))
-        # Native ContextPack assembly should not over-provision proxy processes
-        # by default: cold process startup used to leak into p95/p99 on small
-        # retrieve runs. Match read lanes unless operators explicitly widen it.
-        self._pack_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_PACK_LANES", str(self._read_lane_count))))
-        self._control_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_CONTROL_LANES", "1")))
-        self._shared_process_mode = os.environ.get("MATRIXARK_RUST_PROXY_SHARED_PROCESS", "1").strip().lower() not in {"0", "false", "no"}
-        self._dedicated_pack_lanes_enabled = (
-            os.environ.get("MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES", "1").strip().lower()
-            not in {"0", "false", "no"}
-        )
-        self._batch_hset_coalesce_enabled = (
-            os.environ.get("MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE", "1").strip().lower()
-            not in {"0", "false", "no"}
-        )
-        self._batch_hset_coalesce_max_batches = max(
-            1, int(os.environ.get("MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE_MAX_BATCHES", "32"))
-        )
-        self._batch_hset_coalesce_min_records = max(
-            1, int(os.environ.get("MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE_MIN_RECORDS", "16"))
-        )
-        self._batch_hset_coalesce_wait_s = max(
-            0.0,
-            float(os.environ.get("MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE_WAIT_MS", "0")) / 1000.0,
-        )
-        self._batch_hget_coalesce_enabled = (
-            os.environ.get("MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE", "1").strip().lower()
-            not in {"0", "false", "no"}
-        )
-        self._batch_hget_coalesce_max_batches = max(
-            1, int(os.environ.get("MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_MAX_BATCHES", "32"))
-        )
-        self._batch_hget_coalesce_min_records = max(
-            1, int(os.environ.get("MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_MIN_RECORDS", "16"))
-        )
-        self._batch_hget_coalesce_wait_s = max(
-            0.0,
-            float(os.environ.get("MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_WAIT_MS", "1.0")) / 1000.0,
-        )
-        self._append_coalesce_enabled = (
-            os.environ.get("MATRIXARK_RUST_PROXY_APPEND_COALESCE", "1").strip().lower()
-            not in {"0", "false", "no"}
-        )
-        self._append_coalesce_max_batches = max(
-            1, int(os.environ.get("MATRIXARK_RUST_PROXY_APPEND_COALESCE_MAX_BATCHES", "32"))
-        )
-        self._append_coalesce_min_records = max(
-            1, int(os.environ.get("MATRIXARK_RUST_PROXY_APPEND_COALESCE_MIN_RECORDS", "16"))
-        )
-        self._append_coalesce_wait_s = max(
-            0.0,
-            float(os.environ.get("MATRIXARK_RUST_PROXY_APPEND_COALESCE_WAIT_MS", "0.0")) / 1000.0,
-        )
-        self._string_cache_enabled = (
-            os.environ.get("MATRIXARK_RUST_PROXY_STRING_CACHE", "1").strip().lower()
-            not in {"0", "false", "no"}
-        )
-        self._scan_hash_cache_enabled = (
-            os.environ.get("MATRIXARK_RUST_PROXY_SCAN_HASH_CACHE", "1").strip().lower()
-            not in {"0", "false", "no"}
-        )
-        self._scan_hash_cache_max_entries = max(
-            1, int(os.environ.get("MATRIXARK_RUST_PROXY_SCAN_HASH_CACHE_MAX_ENTRIES", "1024"))
-        )
-        self._context_pack_response_cache_enabled = (
-            os.environ.get("MATRIXARK_RUST_PROXY_CONTEXT_PACK_CLIENT_CACHE", "1").strip().lower()
-            not in {"0", "false", "no"}
-        )
-        self._context_pack_response_cache_max_entries = max(
-            1, int(os.environ.get("MATRIXARK_RUST_PROXY_CONTEXT_PACK_CLIENT_CACHE_MAX_ENTRIES", "256"))
-        )
+        initialize_rust_proxy_config(self, request_timeout_ms=request_timeout_ms)
         self._lanes = build_lane_pools(
             shared_process_mode=self._shared_process_mode,
             dedicated_pack_lanes_enabled=self._dedicated_pack_lanes_enabled,
