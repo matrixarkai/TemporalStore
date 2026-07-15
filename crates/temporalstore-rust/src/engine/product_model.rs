@@ -81,6 +81,22 @@ pub(super) fn sequence_rows_in_range(
         .collect()
 }
 
+pub(super) fn is_supported_feature_aggregate(aggregator: &str) -> bool {
+    matches!(
+        aggregator.trim().to_ascii_lowercase().as_str(),
+        "" | "count"
+            | "events"
+            | "sum"
+            | "avg"
+            | "average"
+            | "min"
+            | "max"
+            | "first"
+            | "last"
+            | "latest"
+    )
+}
+
 pub(super) fn aggregate_feature_values(values: &[Vec<u8>], aggregator: &str) -> i64 {
     match aggregator.to_ascii_lowercase().as_str() {
         "sum" => values.iter().filter_map(parse_i64).sum(),
@@ -103,9 +119,9 @@ pub(super) fn aggregate_feature_values(values: &[Vec<u8>], aggregator: &str) -> 
             .max()
             .unwrap_or_default(),
         "first" => values.first().and_then(parse_i64).unwrap_or_default(),
-        "last" => values.last().and_then(parse_i64).unwrap_or_default(),
+        "last" | "latest" => values.last().and_then(parse_i64).unwrap_or_default(),
         "count" | "events" | "" => values.len() as i64,
-        _ => values.len() as i64,
+        _ => 0,
     }
 }
 

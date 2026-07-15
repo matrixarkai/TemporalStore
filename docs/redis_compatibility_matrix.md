@@ -23,7 +23,7 @@ Current bridge status values:
 | Counter | `INCR`, `INCRBY`, `DECR`, `DECRBY` | excluded | unsupported in open-source surface | Counters are represented by the Risk model instead of generic Redis integer keys. |
 | TTL | `EXPIRE`, `TTL` | required | wired | First release keeps only minimal key lifetime support. Restart/failover TTL durability still belongs to the production gate. |
 | Hash | `HSET`, `HGET`, `HGETALL`, `HDEL`, `HEXISTS`, `HLEN` | required | wired | First release keeps only minimal hash commands. Hash counters, hash scans, key/val listing helpers, and float increments are not public APIs. |
-| Feature model | `FAPPEND`, `FAPPENDPOLICY`, `FQUERY`, `FQUERYFILTER`, `FQUERYFILTERSTR`, `FAGG` | required | wired | TemporalStore feature APIs are exposed as explicit data-model commands rather than pretending to be generic Redis collections. These support timestamped feature writes, policy writes, range query, filtered query, and aggregate query. |
+| Feature + FeatureAggregate | `FAPPEND`, `FAPPENDPOLICY`, `FQUERY`, `FQUERYFILTER`, `FQUERYFILTERSTR`, `FAGG` | required | wired | TemporalStore feature APIs are exposed as explicit commands rather than pretending to be generic Redis collections. Feature stores timestamped observations; FeatureAggregate computes mature exact serving aggregates over those observations: `count`, `sum`, `min`, `max`, `avg`, `first`, and `latest`. High-cardinality sketches such as `distinct_count`, `top_k`, `heavy_hitters`, `hll`, histograms, and percentiles are intentionally gated. |
 | Risk model | `RISKINCR`, `RISKINCROPT`, `RISKCHANGE`, `RISKCOUNT`, `RISKQUERY`, `RISKDETAIL`, `RISKHSET`, `HCHANGE`, `HQUERY`, `HSETANDGET` | required | wired | Frequency-cap and risk-control behavior is exposed through one public Risk model. |
 | Set/List/ZSet clone APIs | `SADD`, `SREM`, `SMEMBERS`, `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `ZADD`, `ZRANGE`, `ZRANGEBYSCORE`, and related collection commands | deferred | private/unsupported in open-source surface | These compatibility handlers may exist internally, but open-source production builds do not advertise or allow them. Context/feature/frequency use native data-model APIs instead of encoded Redis collection clones. |
 | Narrow hash scan | `HSCAN` | excluded | unsupported in open-source surface | Use `HGETALL` for the minimal hash read path. Broad keyspace `SCAN`, `SSCAN`, and `ZSCAN` are not part of the open-source production surface. |
@@ -46,7 +46,7 @@ The TemporalStore native Redis bridge is production-ready only for the documente
 - String minimal: `GET`, `SET key value`, `DEL`, `EXISTS`
 - TTL: `EXPIRE`, `TTL`
 - Hash minimal: `HSET`, `HGET`, `HDEL`, `HEXISTS`, `HLEN`, `HGETALL`
-- Feature model: `FAPPEND`, `FAPPENDPOLICY`, `FQUERY`, `FQUERYFILTER`, `FQUERYFILTERSTR`, `FAGG`
+- Feature + FeatureAggregate: `FAPPEND`, `FAPPENDPOLICY`, `FQUERY`, `FQUERYFILTER`, `FQUERYFILTERSTR`, `FAGG`
 - Risk model: `RISKINCR`, `RISKINCROPT`, `RISKCHANGE`, `RISKCOUNT`, `RISKQUERY`, `RISKDETAIL`, `RISKHSET`, `HCHANGE`, `HQUERY`, `HSETANDGET`
 
 The C++ Redis bridge exposes the 16-command minimal string/hash/TTL subset in open-source builds and reports `COMMAND COUNT=16`; feature and Risk model commands are Rust bridge APIs. Only the Risk model command names are advertised for frequency-cap/risk-control in the first-release surface.
@@ -66,7 +66,7 @@ python3 tools/validate_open_source_surface.py
 cargo check -p temporalstore-rust --lib
 ```
 
-Result expectation: the public Rust surface keeps minimal string/hash/TTL commands plus context, feature, and single Risk data models; `COMMAND` does not advertise `SADD`, `LPUSH`, `ZADD`, broad `SCAN`, `PARTITION`, `CONFIG`, `DBSIZE`, stale feature aliases such as `FADD`, or internal/private command families.
+Result expectation: the public Rust surface keeps minimal string/hash/TTL commands plus context, Feature/FeatureAggregate, and single Risk data models; `COMMAND` does not advertise `SADD`, `LPUSH`, `ZADD`, broad `SCAN`, `PARTITION`, `CONFIG`, `DBSIZE`, stale feature aliases such as `FADD`, gated feature sketches such as `distinct_count`/`hll`/`top_k`, or internal/private command families.
 
 ## Production Gate
 

@@ -1403,11 +1403,17 @@ pub fn execute_redis_command_with_state(
                 },
                 None => None,
             };
+            let aggregator = string_arg(&args[4]);
+            if !feature_aggregate_allowed(&aggregator) {
+                return RespValue::Error(format!(
+                    "ERR unsupported FeatureAggregate '{aggregator}'; public aggregates are count,sum,min,max,avg,first,latest"
+                ));
+            }
             match execute(Command::FeatureAggQuery {
                 key: string_arg(&args[1]),
                 start_ms,
                 end_ms,
-                aggregator: string_arg(&args[4]),
+                aggregator,
                 count,
             }) {
                 Ok(CommandResponse::Aggregate { value }) => RespValue::Integer(value),
@@ -1632,6 +1638,22 @@ fn open_source_redis_surface_enabled() -> bool {
         .unwrap_or(false)
 }
 
+fn feature_aggregate_allowed(aggregator: &str) -> bool {
+    matches!(
+        aggregator.trim().to_ascii_lowercase().as_str(),
+        "" | "count"
+            | "events"
+            | "sum"
+            | "avg"
+            | "average"
+            | "min"
+            | "max"
+            | "first"
+            | "last"
+            | "latest"
+    )
+}
+
 fn open_source_redis_command_allowed(command: &str) -> bool {
     matches!(
         command,
@@ -1678,7 +1700,6 @@ fn redis_client_response(args: &[Vec<u8>]) -> RespValue {
         _ => RespValue::Error("ERR unsupported CLIENT subcommand".to_string()),
     }
 }
-
 
 fn risk_family_key_for_resp(family: RiskFamily, key: &str) -> String {
     let family_name = match family {
@@ -5163,6 +5184,14 @@ mod tests {
             run(vec!["FAGG", "feature", "0", "30", "max"]),
             RespValue::Integer(9)
         );
+        assert_eq!(
+            run(vec!["FAGG", "feature", "0", "30", "latest"]),
+            RespValue::Integer(9)
+        );
+        match run(vec!["FAGG", "feature", "0", "30", "distinct_count"]) {
+            RespValue::Error(err) => assert!(err.contains("unsupported FeatureAggregate")),
+            value => panic!("expected unsupported FeatureAggregate error, got {value:?}"),
+        }
         assert_eq!(
             run(vec!["RISKINCR", "risk", "10", "5"]),
             RespValue::SimpleString("OK".to_string())

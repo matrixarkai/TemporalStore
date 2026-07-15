@@ -16855,6 +16855,9 @@ fn read_feature_aggregate(
     count: Option<usize>,
 ) -> i64 {
     let limit = count.unwrap_or(5000);
+    if !is_supported_feature_aggregate(aggregator) {
+        return 0;
+    }
     if is_feature_count_aggregator(aggregator) {
         return read_feature_points_in_range(
             cache, page_store, shard_id, shard, "feature", key, start_ms, end_ms, limit,
