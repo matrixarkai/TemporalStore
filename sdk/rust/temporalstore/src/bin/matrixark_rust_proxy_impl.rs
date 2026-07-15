@@ -1,14 +1,21 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, Read, Write};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
 use std::time::Instant;
 
 use serde::Deserialize;
 use serde_json::{json, Value};
 use temporalstore::{Client, Options};
 
+#[path = "../matrixark_rust_proxy_cache.rs"]
+mod matrixark_rust_proxy_cache;
 #[path = "../matrixark_rust_proxy_metrics.rs"]
 mod matrixark_rust_proxy_metrics;
+use matrixark_rust_proxy_cache::{
+    filtered_scan_cache_key, get_filtered_scan_cache, get_scan_record_cache,
+    put_filtered_scan_cache, put_scan_record_cache, scan_record_cache_key,
+    FilteredScanCacheEntry, ScanRecordCacheEntry,
+};
 use matrixark_rust_proxy_metrics::{
     matrixark_rust_service_mode, unix_ms, CommandStats, MetricsSnapshot,
 };
@@ -54,118 +61,6 @@ struct HashEntryRef<'a> {
     key: &'a str,
     field: &'a str,
     value: &'a str,
-}
-
-#[derive(Clone, Debug)]
-struct ScanRecordCacheEntry {
-    records: Arc<Vec<Value>>,
-    scanned_records: u64,
-}
-
-#[derive(Clone, Debug)]
-struct FilteredScanCacheEntry {
-    records: Vec<Value>,
-    scanned_records: u64,
-    dropped_by_type: u64,
-    dropped_by_scope: u64,
-    selected_node_dropped: u64,
-    secondary_dropped: u64,
-    secondary_matched: u64,
-    node_path_filter_count: usize,
-}
-
-static SCAN_RECORD_CACHE: OnceLock<Mutex<HashMap<String, ScanRecordCacheEntry>>> = OnceLock::new();
-static FILTERED_SCAN_CACHE: OnceLock<Mutex<HashMap<String, FilteredScanCacheEntry>>> =
-    OnceLock::new();
-
-fn scan_record_cache() -> &'static Mutex<HashMap<String, ScanRecordCacheEntry>> {
-    SCAN_RECORD_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn filtered_scan_cache() -> &'static Mutex<HashMap<String, FilteredScanCacheEntry>> {
-    FILTERED_SCAN_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn max_scan_record_cache_entries() -> usize {
-    std::env::var("MATRIXARK_RUST_SCAN_RECORD_CACHE_ENTRIES")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(8)
-}
-
-fn max_filtered_scan_cache_entries() -> usize {
-    std::env::var("MATRIXARK_RUST_FILTERED_SCAN_CACHE_ENTRIES")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(32)
-}
-
-fn scan_record_cache_key(record_hash_key: &str, shard_size: u64, count: u64) -> String {
-    format!("{record_hash_key}\u{1f}{shard_size}\u{1f}{count}")
-}
-
-fn filtered_scan_cache_key(
-    raw_cache_key: &str,
-    allowed_types: &HashSet<String>,
-    selected_nodes: &HashSet<u64>,
-    secondary_groups: &[Vec<String>],
-    scope: Option<&Value>,
-) -> String {
-    let mut types: Vec<&str> = allowed_types.iter().map(String::as_str).collect();
-    types.sort_unstable();
-    let mut nodes: Vec<u64> = selected_nodes.iter().copied().collect();
-    nodes.sort_unstable();
-    let scope_text = scope
-        .and_then(|value| serde_json::to_string(value).ok())
-        .unwrap_or_default();
-    let secondary_text = serde_json::to_string(secondary_groups).unwrap_or_default();
-    format!(
-        "{raw_cache_key}\u{1e}types={}\u{1e}nodes={:?}\u{1e}scope={scope_text}\u{1e}secondary={secondary_text}",
-        types.join(","),
-        nodes
-    )
-}
-
-fn get_scan_record_cache(key: &str) -> Option<ScanRecordCacheEntry> {
-    scan_record_cache()
-        .lock()
-        .ok()
-        .and_then(|cache| cache.get(key).cloned())
-}
-
-fn put_scan_record_cache(key: String, entry: ScanRecordCacheEntry) {
-    let Ok(mut cache) = scan_record_cache().lock() else {
-        return;
-    };
-    let max_entries = max_scan_record_cache_entries();
-    if cache.len() >= max_entries && !cache.contains_key(&key) {
-        if let Some(first_key) = cache.keys().next().cloned() {
-            cache.remove(&first_key);
-        }
-    }
-    cache.insert(key, entry);
-}
-
-fn get_filtered_scan_cache(key: &str) -> Option<FilteredScanCacheEntry> {
-    filtered_scan_cache()
-        .lock()
-        .ok()
-        .and_then(|cache| cache.get(key).cloned())
-}
-
-fn put_filtered_scan_cache(key: String, entry: FilteredScanCacheEntry) {
-    let Ok(mut cache) = filtered_scan_cache().lock() else {
-        return;
-    };
-    let max_entries = max_filtered_scan_cache_entries();
-    if cache.len() >= max_entries && !cache.contains_key(&key) {
-        if let Some(first_key) = cache.keys().next().cloned() {
-            cache.remove(&first_key);
-        }
-    }
-    cache.insert(key, entry);
 }
 
 fn command_stats(command: &Command, result: &Value) -> CommandStats {
