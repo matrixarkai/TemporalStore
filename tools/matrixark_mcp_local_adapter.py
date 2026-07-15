@@ -26,6 +26,11 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_session_policy as session_policy
 
+try:
+    from tools import matrixark_mcp_dashboard as dashboard_helpers
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_dashboard as dashboard_helpers
+
 RETRIEVAL_HOT_RECORD_TYPES = {
     "context_compression_event",
     "context_embedding",
@@ -1684,177 +1689,13 @@ class MatrixArkLocalAdapter:
         return controls
 
     def _dashboard_record_scope(self, record: Json) -> Json:
-        scope = candidate_access_scope(record)
-        access_scope = candidate_access_scope(record)
-        if isinstance(scope, dict) and isinstance(access_scope, dict):
-            merged = {**scope, **access_scope}
-            if scope.get("agent_name") and not merged.get("agent_name"):
-                merged["agent_name"] = scope["agent_name"]
-            explicit = scope.get("_explicit_scope_keys")
-            if isinstance(explicit, list):
-                merged["_explicit_scope_keys"] = explicit
-            return merged
-        return access_scope
+        return dashboard_helpers.dashboard_record_scope(record)
 
     def _dashboard_message_rows(self, records: list[Json], scope: Json) -> list[Json]:
-        rows: list[Json] = []
-        debug_by_ref: dict[Any, Json] = {}
-        for record in records:
-            if record.get("record_type") != "context_debug_record" or record.get("ref_type") != "event":
-                continue
-            debug_by_ref[record.get("ref_hash")] = record.get("debug_payload", {}) if isinstance(record.get("debug_payload"), dict) else {}
-        for record in records:
-            if record.get("record_type") != "context_event":
-                continue
-            if not scope_matches(self._dashboard_record_scope(record), scope):
-                continue
-            debug_payload = debug_by_ref.get(record.get("event_id_hash"), {})
-            envelope = record.get("envelope", {}) if isinstance(record.get("envelope"), dict) else debug_payload.get("envelope", {})
-            if not isinstance(envelope, dict):
-                envelope = {}
-            kind = str(envelope.get("kind") or record.get("source_kind") or "")
-            if kind not in {"message", "feedback", "business_data"}:
-                continue
-            messages = envelope.get("messages", []) if isinstance(envelope.get("messages"), list) else []
-            if not messages and kind == "message":
-                messages = [{"role": "unknown", "content": record.get("text", "")}]
-            extraction = debug_payload.get("internal_extraction", {}) if isinstance(debug_payload.get("internal_extraction"), dict) else {}
-            for message in messages:
-                if not isinstance(message, dict):
-                    continue
-                rows.append(
-                    {
-                        "row_type": "message",
-                        "event_id_hash": record.get("event_id_hash", 0),
-                        "kind": kind,
-                        "role": message.get("role", ""),
-                        "name": message.get("name", ""),
-                        "content": message.get("content", ""),
-                        "summary_text": record.get("summary_text", ""),
-                        "classification": non_default_classification(extraction.get("classification", "")),
-                        "event_type": extraction.get("event_type", ""),
-                        "node_hash": record.get("node_hash", 0),
-                        "node_path": record.get("node_path", []),
-                        "scope": envelope.get("scope", scope_from_serving_record(record)),
-                        "agent_name": envelope.get("scope", {}).get("agent_name", "") if isinstance(envelope.get("scope"), dict) else "",
-                        "created_at_ms": message.get("created_at_ms") or envelope.get("ingestion_time_ms") or record.get("updated_at_ms", 0),
-                    }
-                )
-        return rows
+        return dashboard_helpers.dashboard_message_rows(records, scope)
 
     def _dashboard_rows_for_table(self, records: list[Json], table: str, scope: Json) -> list[Json]:
-        rows: list[Json] = []
-        if table == "messages":
-            return self._dashboard_message_rows(records, scope)
-        for record in records:
-            record_type = str(record.get("record_type") or "")
-            if not scope_matches(self._dashboard_record_scope(record), scope):
-                continue
-            if table == "resources" and record_type in {"resource_import_task", "resource_manifest", "resource_chunk"}:
-                rows.append(
-                    {
-                        "row_type": record_type,
-                        "task_hash": record.get("task_hash", record.get("import_task_hash", 0)),
-                        "resource_hash": record.get("resource_hash", 0),
-                        "chunk_hash": record.get("chunk_hash", 0),
-                        "status": record.get("status", ""),
-                        "raw_uri": record.get("raw_uri", ""),
-                        "requested_raw_uri": record.get("requested_raw_uri", ""),
-                        "resource_type": record.get("resource_type", ""),
-                        "resource_version": record.get("resource_version", ""),
-                        "raw_uri_hash": record.get("raw_uri_hash", 0),
-                        "source_locator": record.get("source_locator", record.get("metadata", {}).get("source_locator", "")),
-                        "unit_kind": record.get("unit_kind", record.get("metadata", {}).get("unit_kind", "")),
-                        "token_estimate": record.get("token_estimate", 0),
-                        "chunk_count": record.get("chunk_count", 0),
-                        "parse_warnings": record.get("parse_warnings", []),
-                        "node_hash": record.get("node_hash", 0),
-                        "node_path": record.get("node_path", []),
-                        "scope": candidate_access_scope(record),
-                        "updated_at_ms": record.get("updated_at_ms", record.get("created_at_ms", 0)),
-                    }
-                )
-            elif table == "skills" and record_type in {"skill_manifest", "skill_registry", "skill_section"}:
-                rows.append(
-                    {
-                        "row_type": record_type,
-                        "skill_hash": record.get("skill_hash", 0),
-                        "section_hash": record.get("section_hash", 0),
-                        "name": record.get("name", record.get("skill_name", "")),
-                        "heading": record.get("heading", ""),
-                        "status": record.get("status", ""),
-                        "version": record.get("version", ""),
-                        "triggers": record.get("triggers", []),
-                        "allowed_tools": record.get("allowed_tools", []),
-                        "node_hash": record.get("node_hash", 0),
-                        "node_path": record.get("node_path", []),
-                        "scope": candidate_access_scope(record),
-                        "updated_at_ms": record.get("updated_at_ms", 0),
-                    }
-                )
-            elif table == "events" and record_type == "context_event":
-                rows.append(
-                    {
-                        "row_type": record_type,
-                        "event_id_hash": record.get("event_id_hash", 0),
-                        "text": record.get("text", ""),
-                        "summary_text": record.get("summary_text", ""),
-                        "classification": non_default_classification(record.get("internal_extraction", {}).get("classification", "")),
-                        "event_type": record.get("event_type", record.get("internal_extraction", {}).get("event_type", "")),
-                        "source_chunk_hash": record.get("source_chunk_hash", 0),
-                        "resource_hash": record.get("resource_hash", 0),
-                        "source_locator": record.get("source_locator", ""),
-                        "node_hash": record.get("node_hash", 0),
-                        "node_path": record.get("node_path", []),
-                        "scope": record.get("envelope", {}).get("scope", record.get("scope", {})),
-                        "updated_at_ms": record.get("envelope", {}).get("ingestion_time_ms", record.get("updated_at_ms", 0)),
-                    }
-                )
-            elif table == "entities" and record_type == "context_entity":
-                rows.append(
-                    {
-                        "row_type": record_type,
-                        "entity_hash": record.get("entity_hash", 0),
-                        "entity_type": record.get("entity_type", ""),
-                        "entity_name": record.get("entity_name", ""),
-                        "value": record.get("value", record.get("text", "")),
-                        "status": record.get("status", ""),
-                        "source_event_hash": record.get("source_event_hash", 0),
-                        "source_chunk_hash": record.get("source_chunk_hash", 0),
-                        "resource_hash": record.get("resource_hash", 0),
-                        "source_locator": record.get("source_locator", ""),
-                        "node_hash": record.get("node_hash", 0),
-                        "node_path": record.get("node_path", []),
-                        "scope": candidate_access_scope(record),
-                        "updated_at_ms": record.get("updated_at_ms", 0),
-                    }
-                )
-            elif table == "context_packs" and record_type in {"context_pack_audit", "context_pack_telemetry"}:
-                dropped_refs = record.get("dropped_refs", {})
-                rows.append(
-                    {
-                        "row_type": record_type,
-                        "context_pack_id": record.get("context_pack_id", ""),
-                        "query": record.get("query", "") if record_type == "context_pack_audit" else f"hash:{record.get('query_hash', '')}",
-                        "used_context_tokens": record.get("used_context_tokens", record.get("used_remote_context_tokens", 0)),
-                        "selected_ref_count": len(record.get("selected_refs", [])) if record_type == "context_pack_audit" else record.get("selected_ref_count", 0),
-                        "dropped_ref_count": len(dropped_refs.get("refs", [])) if record_type == "context_pack_audit" and isinstance(dropped_refs, dict) else record.get("dropped_ref_count", 0),
-                        "quality_warnings": record.get("quality_warnings", []) if record_type == "context_pack_audit" else {"count": record.get("quality_warning_count", 0)},
-                        "scope": candidate_access_scope(record),
-                        "created_at_ms": record.get("created_at_ms", 0),
-                    }
-                )
-        if table == "resources":
-            priority = {"resource_manifest": 0, "resource_chunk": 1, "resource_import_task": 2}
-            rows.sort(
-                key=lambda row: (
-                    priority.get(str(row.get("row_type") or ""), 9),
-                    -int(row.get("updated_at_ms") or row.get("created_at_ms") or 0),
-                )
-            )
-        else:
-            rows.sort(key=lambda row: int(row.get("updated_at_ms") or row.get("created_at_ms") or 0), reverse=True)
-        return rows
+        return dashboard_helpers.dashboard_rows_for_table(records, table, scope)
 
     def ingestion_dashboard(self, args: Json) -> Json:
         scope = optional_object(args, "scope")
