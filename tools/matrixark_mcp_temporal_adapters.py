@@ -74,6 +74,7 @@ try:
         normalize_raw_storage_backend,
         raw_ingestion_append_options,
         raw_ingestion_append_path_for_backend,
+        raw_record_location,
         raw_record_scope_value,
         raw_record_session_ids,
         raw_session_index_entries,
@@ -115,6 +116,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         normalize_raw_storage_backend,
         raw_ingestion_append_options,
         raw_ingestion_append_path_for_backend,
+        raw_record_location,
         raw_record_scope_value,
         raw_record_session_ids,
         raw_session_index_entries,
@@ -711,9 +713,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
 
     def _raw_record_location(self, sequence: int) -> tuple[str, str]:
         self._ensure_raw_ingestion_fields()
-        shard = sequence // self._shard_size
-        offset = sequence % self._shard_size
-        return f"{self._raw_record_hash_key}:{shard:06d}", f"{offset:020d}"
+        return raw_record_location(self._raw_record_hash_key, self._shard_size, sequence)
 
     def _raw_session_index_key(self, session_id: str) -> str:
         self._ensure_raw_ingestion_fields()

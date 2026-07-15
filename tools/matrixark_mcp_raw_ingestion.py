@@ -90,6 +90,12 @@ def ensure_raw_ingestion_fields(target: Any) -> None:
         target._raw_entry_count_cache = None
 
 
+def raw_record_location(raw_record_hash_key: str, shard_size: int, sequence: int) -> tuple[str, str]:
+    shard = sequence // shard_size
+    offset = sequence % shard_size
+    return f"{raw_record_hash_key}:{shard:06d}", f"{offset:020d}"
+
+
 def raw_session_index_key(raw_ingestion_prefix: str, session_id: str) -> str:
     return f"{raw_ingestion_prefix}:session_index:{stable_hash(str(session_id))}"
 
