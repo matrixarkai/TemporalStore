@@ -58,6 +58,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         session_policy_mod = importlib.import_module("tools.matrixark_mcp_session_policy")
         dashboard_mod = importlib.import_module("tools.matrixark_mcp_dashboard")
         visibility_mod = importlib.import_module("tools.matrixark_mcp_visibility")
+        deadline_pack_mod = importlib.import_module("tools.matrixark_mcp_deadline_pack")
         retrieval_records_mod = importlib.import_module("tools.matrixark_mcp_retrieval_records")
         local_backend_mod = importlib.import_module("tools.matrixark_mcp_local_backend")
         local_idempotency_mod = importlib.import_module("tools.matrixark_mcp_local_idempotency")
@@ -183,6 +184,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         )
         self.assertEqual(adapter_telemetry["query_hash"], helper_telemetry["query_hash"])
         self.assertTrue(callable(visibility_mod.append_context_pack_visibility))
+        self.assertTrue(callable(deadline_pack_mod.deadline_fallback_pack))
         self.assertIs(local_mod.RETRIEVAL_HOT_RECORD_TYPES, retrieval_records_mod.RETRIEVAL_HOT_RECORD_TYPES)
         self.assertEqual(adapter.ensure_backend_ready()["backend"], local_backend_mod.ensure_backend_ready(adapter)["backend"])
         self.assertEqual(adapter.backend_metrics()["metrics_format"], local_backend_mod.backend_metrics(adapter)["metrics_format"])
@@ -239,6 +241,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "matrixark_mcp_session_runtime.py",
             "matrixark_mcp_dashboard.py",
             "matrixark_mcp_visibility.py",
+            "matrixark_mcp_deadline_pack.py",
             "matrixark_mcp_retrieval_records.py",
             "matrixark_mcp_resource_import_runtime.py",
             "matrixark_mcp_local_cache.py",
