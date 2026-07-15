@@ -74,6 +74,8 @@ mod proxy_key_value;
 #[cfg(feature = "proxy")]
 mod proxy_sequence_features;
 #[cfg(feature = "proxy")]
+mod proxy_set;
+#[cfg(feature = "proxy")]
 mod proxy_transport;
 #[cfg(feature = "proxy")]
 pub use proxy_client::{ProxyClient, ProxyOptions};
