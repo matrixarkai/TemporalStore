@@ -67,6 +67,8 @@ mod matrixark_rust_proxy_scan_response;
 mod matrixark_rust_proxy_scan_secondary;
 #[path = "../matrixark_rust_proxy_scope.rs"]
 mod matrixark_rust_proxy_scope;
+#[path = "../matrixark_rust_proxy_scope_boost.rs"]
+mod matrixark_rust_proxy_scope_boost;
 use matrixark_rust_proxy_command_stats::command_stats;
 use matrixark_rust_proxy_io::{export_metrics_if_configured, print_result};
 use matrixark_rust_proxy_metrics::{matrixark_rust_service_mode, CommandStats, MetricsSnapshot};
