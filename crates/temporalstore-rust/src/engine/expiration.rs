@@ -2,9 +2,10 @@ use rustmtcache::MultiLayerCache;
 
 use crate::types::ShardId;
 
+use super::records::visit_associated_record_keys;
 use super::{
     invalidate_record_all, mark_slot_index_object_deleted, record_exists, record_exists_exact,
-    visit_associated_record_keys, ShardState,
+    ShardState,
 };
 
 pub(super) fn now_ms() -> u64 {
