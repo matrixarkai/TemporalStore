@@ -44,6 +44,14 @@ try:
     from tools.matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from tools.matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
     from tools.matrixark_mcp_metrics import MatrixArkServiceMetrics
+    from tools.matrixark_mcp_native_side_index import (
+        context_index_lookup_key,
+        context_placement_lookup_key,
+        context_ref_locator_key,
+        merge_ref_hashes,
+        merge_ref_locations,
+        merge_resource_versions,
+    )
     from tools.matrixark_mcp_raw_ingestion import (
         normalize_raw_storage_backend,
         raw_ingestion_append_options,
@@ -59,6 +67,14 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
     from matrixark_mcp_metrics import MatrixArkServiceMetrics
+    from matrixark_mcp_native_side_index import (
+        context_index_lookup_key,
+        context_placement_lookup_key,
+        context_ref_locator_key,
+        merge_ref_hashes,
+        merge_ref_locations,
+        merge_resource_versions,
+    )
     from matrixark_mcp_raw_ingestion import (
         normalize_raw_storage_backend,
         raw_ingestion_append_options,
@@ -841,79 +857,22 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             self._observe_backend_command(elapsed_ms, records_written=len(records))
 
     def _context_index_lookup_key(self, scope_key: str) -> str:
-        scope_hash = stable_hash(scope_key) if scope_key else 0
-        return f"{self._storage_prefix}:context_index_lookup:{scope_hash}"
+        return context_index_lookup_key(self._storage_prefix, scope_key)
 
     def _context_ref_locator_key(self) -> str:
-        return f"{self._storage_prefix}:context_ref_locator"
+        return context_ref_locator_key(self._storage_prefix)
 
     def _context_placement_lookup_key(self, scope_key: str) -> str:
-        scope_hash = stable_hash(scope_key) if scope_key else 0
-        return f"{self._storage_prefix}:context_placement_lookup:{scope_hash}"
+        return context_placement_lookup_key(self._storage_prefix, scope_key)
 
     def _merge_ref_hashes(self, existing_value: str, new_refs: list[int]) -> list[int]:
-        refs: list[int] = []
-        seen: set[int] = set()
-        if existing_value:
-            try:
-                decoded = json.loads(existing_value)
-            except Exception:
-                decoded = {}
-            raw_refs = decoded.get("ref_hashes", []) if isinstance(decoded, dict) else []
-            for value in raw_refs if isinstance(raw_refs, list) else []:
-                try:
-                    ref_hash = int(value)
-                except (TypeError, ValueError):
-                    continue
-                if ref_hash and ref_hash not in seen:
-                    refs.append(ref_hash)
-                    seen.add(ref_hash)
-        for ref_hash in new_refs:
-            if ref_hash and ref_hash not in seen:
-                refs.append(ref_hash)
-                seen.add(ref_hash)
-        return refs
+        return merge_ref_hashes(existing_value, new_refs)
 
     def _merge_ref_locations(self, existing_value: str, new_locations: list[Json]) -> list[Json]:
-        locations: list[Json] = []
-        resource_versions: set[str] = set()
-        seen: set[tuple[str, str]] = set()
-        if existing_value:
-            try:
-                decoded = json.loads(existing_value)
-            except Exception:
-                decoded = {}
-            raw_locations = decoded.get("locations", []) if isinstance(decoded, dict) else []
-            for location in raw_locations if isinstance(raw_locations, list) else []:
-                if not isinstance(location, dict):
-                    continue
-                key = str(location.get("key") or "")
-                field = str(location.get("field") or "")
-                if not key or not field or (key, field) in seen:
-                    continue
-                locations.append({"key": key, "field": field})
-                seen.add((key, field))
-        for location in new_locations:
-            key = str(location.get("key") or "")
-            field = str(location.get("field") or "")
-            if not key or not field or (key, field) in seen:
-                continue
-            locations.append({"key": key, "field": field})
-            seen.add((key, field))
-        return locations
+        return merge_ref_locations(existing_value, new_locations)
 
     def _merge_resource_versions(self, existing_value: str, new_versions: set[str]) -> list[str]:
-        versions: set[str] = set()
-        if existing_value:
-            try:
-                decoded = json.loads(existing_value)
-            except Exception:
-                decoded = {}
-            raw_versions = decoded.get("resource_versions", []) if isinstance(decoded, dict) else []
-            if isinstance(raw_versions, list):
-                versions.update(str(value) for value in raw_versions if str(value))
-        versions.update(str(value) for value in new_versions if str(value))
-        return sorted(versions)
+        return merge_resource_versions(existing_value, new_versions)
 
     def _read_hash_value_best_effort(self, key: str, field: str) -> str:
         if bool(getattr(self, "_native_side_index_assume_fresh", False)):
