@@ -15,10 +15,12 @@ pub mod reports;
 mod admin_report;
 mod constants;
 mod context;
+mod control_state;
 mod lifecycle;
 mod object_manager;
 mod packed_pages;
 mod product_model;
+mod routing;
 mod set_index_serde;
 mod slot_store;
 mod state;
@@ -30,9 +32,11 @@ mod state;
 use self::admin_report::*;
 use self::constants::*;
 use self::context::*;
+use self::control_state::{control_state_bucket_ms, control_state_manager_entries};
 use self::packed_pages::*;
 use self::product_model::*;
 use self::reports::*;
+use self::routing::*;
 use self::slot_store::{
     read_component_page_address_values, read_slot_index_component_values, read_slot_index_value,
     slot_index_component_page_addresses,
@@ -52,11 +56,11 @@ use crate::page_store::{LocalPageStore, PageAddress, PageStoreError, PageStoreOp
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextEmbedding,
     ContextEntity, ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit,
-    ContextSummaryDirtyMarker, EventReplicationMode, EventReplicationSelectionReport,
-    ExecuteRequest, ExecuteResponse, FeatureFilter, FeaturePoint, FeatureWritePolicy,
-    InternalContextIndex, IpsStats, ReplicatedBatchExecuteRequest, ReplicatedBatchExecuteResponse,
-    ReplicatedExecuteRequest, ControlStateFamily, ControlStateFolType, SequenceFeatureRow, SequenceQuerySpec,
-    ShardId, Status, StringSetCondition,
+    ContextSummaryDirtyMarker, ControlStateFamily, ControlStateFolType, EventReplicationMode,
+    EventReplicationSelectionReport, ExecuteRequest, ExecuteResponse, FeatureFilter, FeaturePoint,
+    FeatureWritePolicy, InternalContextIndex, IpsStats, ReplicatedBatchExecuteRequest,
+    ReplicatedBatchExecuteResponse, ReplicatedExecuteRequest, SequenceFeatureRow,
+    SequenceQuerySpec, ShardId, Status, StringSetCondition,
 };
 use crate::wal::LocalWriteAheadLogStore;
 use context::{
@@ -84,165 +88,6 @@ struct TimestampedPageBatchWrite {
     timestamp_ms: u64,
     value: Vec<u8>,
     routing_slot: u32,
-}
-
-fn control_state_manager_entries(
-    shard: &ShardState,
-    key: &str,
-    op_type: Option<&str>,
-    field_list: &[(String, String)],
-    start_offset: &str,
-    end_offset: &str,
-    is_cpc: bool,
-) -> Vec<(String, Vec<u8>)> {
-    match control_state_manager_op_code(op_type) {
-        Some(2) => control_state_manager_query_entries(shard, key, field_list, is_cpc),
-        Some(5) => control_state_manager_field_list_entries(shard, key, start_offset, end_offset, is_cpc),
-        Some(6) => control_state_manager_field_count_entries(shard, key, is_cpc),
-        Some(7) => control_state_manager_all_data_entries(shard, key, is_cpc),
-        _ => control_state_manager_summary_entries(shard, key),
-    }
-}
-
-fn control_state_manager_op_code(op_type: Option<&str>) -> Option<i64> {
-    let value = op_type?.trim();
-    value.parse::<i64>().ok().or_else(|| match value {
-        "QUERY" | "query" => Some(2),
-        "FIELD_LIST" | "field_list" => Some(5),
-        "FIELD_COUNT" | "field_count" => Some(6),
-        "ALL_DATA_VALUE" | "all_data_value" => Some(7),
-        _ => None,
-    })
-}
-
-fn control_state_manager_series_key(key: &str, is_cpc: bool) -> String {
-    control_state_family_key(
-        if is_cpc {
-            ControlStateFamily::Cpc
-        } else {
-            ControlStateFamily::H
-        },
-        key,
-    )
-}
-
-fn control_state_manager_series<'a>(
-    shard: &'a ShardState,
-    key: &str,
-    is_cpc: bool,
-) -> Option<&'a BTreeMap<u64, i64>> {
-    shard.control_state.get(&control_state_manager_series_key(key, is_cpc))
-}
-
-fn control_state_manager_query_entries(
-    shard: &ShardState,
-    key: &str,
-    field_list: &[(String, String)],
-    is_cpc: bool,
-) -> Vec<(String, Vec<u8>)> {
-    let Some(series) = control_state_manager_series(shard, key, is_cpc) else {
-        return Vec::new();
-    };
-    field_list
-        .iter()
-        .filter_map(|(field, _)| {
-            field
-                .parse::<u64>()
-                .ok()
-                .and_then(|timestamp_ms| series.get(&timestamp_ms))
-                .map(|value| (field.clone(), value.to_string().into_bytes()))
-        })
-        .collect()
-}
-
-fn control_state_manager_field_list_entries(
-    shard: &ShardState,
-    key: &str,
-    start_offset: &str,
-    end_offset: &str,
-    is_cpc: bool,
-) -> Vec<(String, Vec<u8>)> {
-    let Some(series) = control_state_manager_series(shard, key, is_cpc) else {
-        return vec![("key_list".to_string(), Vec::new())];
-    };
-    let start = start_offset.parse::<u64>().unwrap_or(0);
-    let end = end_offset.parse::<u64>().unwrap_or(u64::MAX);
-    let value = series
-        .range(start..=end)
-        .map(|(timestamp_ms, _)| timestamp_ms.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-    vec![("key_list".to_string(), value.into_bytes())]
-}
-
-fn control_state_manager_field_count_entries(
-    shard: &ShardState,
-    key: &str,
-    is_cpc: bool,
-) -> Vec<(String, Vec<u8>)> {
-    let size = control_state_manager_series(shard, key, is_cpc)
-        .map(BTreeMap::len)
-        .unwrap_or_default();
-    vec![("size".to_string(), size.to_string().into_bytes())]
-}
-
-fn control_state_manager_all_data_entries(
-    shard: &ShardState,
-    key: &str,
-    is_cpc: bool,
-) -> Vec<(String, Vec<u8>)> {
-    control_state_manager_series(shard, key, is_cpc)
-        .map(|series| {
-            series
-                .iter()
-                .map(|(timestamp_ms, value)| {
-                    (timestamp_ms.to_string(), value.to_string().into_bytes())
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn control_state_manager_summary_entries(shard: &ShardState, key: &str) -> Vec<(String, Vec<u8>)> {
-    let mut entries = Vec::new();
-    for family in [ControlStateFamily::H, ControlStateFamily::Cpc, ControlStateFamily::Fol] {
-        let family_key = control_state_family_key(family, key);
-        let values = shard
-            .control_state
-            .get(&family_key)
-            .map(|series| series.values().copied().collect::<Vec<_>>())
-            .unwrap_or_default();
-        entries.push((
-            format!("{}_events", control_state_family_name(family)),
-            values.len().to_string().into_bytes(),
-        ));
-        entries.push((
-            format!("{}_sum", control_state_family_name(family)),
-            values.iter().sum::<i64>().to_string().into_bytes(),
-        ));
-    }
-    if let Some(fol) = shard.control_state_fol.get(key) {
-        entries.push(("fol_value".to_string(), fol.value.clone()));
-        entries.push((
-            "fol_occur_time_ms".to_string(),
-            fol.occur_time_ms.to_string().into_bytes(),
-        ));
-        entries.push((
-            "fol_type".to_string(),
-            match fol.fol_type {
-                ControlStateFolType::First => b"first".to_vec(),
-                ControlStateFolType::Last => b"last".to_vec(),
-            },
-        ));
-    }
-    entries
-}
-
-fn control_state_bucket_ms(timestamp_ms: u64, precision_ms: Option<u64>) -> u64 {
-    precision_ms
-        .filter(|precision_ms| *precision_ms > 0)
-        .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
-        .unwrap_or(timestamp_ms)
 }
 
 impl TemporalEngine {
@@ -7565,7 +7410,8 @@ impl TemporalEngine {
             let feature_records = state.features.len();
             let sequence_records = state.sequences.len();
             let ips_records = state.ips.len();
-            let control_state_records = state.control_state.len() + state.control_state_changes.len();
+            let control_state_records =
+                state.control_state.len() + state.control_state_changes.len();
             let loaded = info.as_ref().map(|info| info.loaded).unwrap_or(true);
             let readonly = info.as_ref().map(|info| info.readonly).unwrap_or(false);
             let load_version = info
@@ -10202,7 +10048,10 @@ fn execute_on_shard(
                 };
             }
             CommandResponse::Bytes {
-                value: shard.control_state_fol.get(&key).map(|stored| stored.value.clone()),
+                value: shard
+                    .control_state_fol
+                    .get(&key)
+                    .map(|stored| stored.value.clone()),
             }
         }
         Command::ControlStateManager {
@@ -10252,7 +10101,11 @@ fn execute_on_shard(
             entries.push(("key".to_string(), key.as_bytes().to_vec()));
             entries.push(("start_ms".to_string(), start_ms.to_string().into_bytes()));
             entries.push(("end_ms".to_string(), end_ms.to_string().into_bytes()));
-            for family in [ControlStateFamily::H, ControlStateFamily::Cpc, ControlStateFamily::Fol] {
+            for family in [
+                ControlStateFamily::H,
+                ControlStateFamily::Cpc,
+                ControlStateFamily::Fol,
+            ] {
                 let family_key = control_state_family_key(family, &key);
                 let name = control_state_family_name(family);
                 let series = shard.control_state.get(&family_key);
@@ -11886,7 +11739,11 @@ fn associated_record_keys(key: &str) -> Vec<String> {
     }
     let mut keys = Vec::with_capacity(4);
     keys.push(key.to_string());
-    for family in [ControlStateFamily::H, ControlStateFamily::Cpc, ControlStateFamily::Fol] {
+    for family in [
+        ControlStateFamily::H,
+        ControlStateFamily::Cpc,
+        ControlStateFamily::Fol,
+    ] {
         keys.push(control_state_family_key(family, key));
     }
     keys
@@ -11897,7 +11754,11 @@ fn visit_associated_record_keys(key: &str, mut visit: impl FnMut(&str)) {
     if key.starts_with("control_state:") {
         return;
     }
-    for family in [ControlStateFamily::H, ControlStateFamily::Cpc, ControlStateFamily::Fol] {
+    for family in [
+        ControlStateFamily::H,
+        ControlStateFamily::Cpc,
+        ControlStateFamily::Fol,
+    ] {
         let family_key = control_state_family_key(family, key);
         visit(&family_key);
     }
@@ -11910,7 +11771,11 @@ fn any_associated_record_key(key: &str, mut predicate: impl FnMut(&str) -> bool)
     if key.starts_with("control_state:") {
         return false;
     }
-    for family in [ControlStateFamily::H, ControlStateFamily::Cpc, ControlStateFamily::Fol] {
+    for family in [
+        ControlStateFamily::H,
+        ControlStateFamily::Cpc,
+        ControlStateFamily::Fol,
+    ] {
         let family_key = control_state_family_key(family, key);
         if predicate(&family_key) {
             return true;
@@ -13059,12 +12924,9 @@ fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
                 .map(|address| live_page_entry(key.clone(), "ips", None, address)),
         );
     }
-    entries.extend(
-        shard
-            .control_state_pages
-            .iter()
-            .map(|(key, address)| live_page_entry(key.clone(), "control_state", None, address.clone())),
-    );
+    entries.extend(shard.control_state_pages.iter().map(|(key, address)| {
+        live_page_entry(key.clone(), "control_state", None, address.clone())
+    }));
     entries.extend(
         shard.context_nodes.iter().map(|(key, address)| {
             live_page_entry(key.clone(), "context_node", None, address.clone())
@@ -13199,7 +13061,12 @@ fn collect_model_live_page_entries_for_keys(
             );
         }
         if let Some(address) = shard.control_state_pages.get(key) {
-            entries.push(live_page_entry(key.clone(), "control_state", None, address.clone()));
+            entries.push(live_page_entry(
+                key.clone(),
+                "control_state",
+                None,
+                address.clone(),
+            ));
         }
         if let Some(address) = shard.context_nodes.get(key) {
             entries.push(live_page_entry(
@@ -17300,88 +17167,6 @@ fn object_manager_stats(
     }
 }
 
-fn routing_slot_count(start_routing_slot: u32, end_routing_slot: u32) -> u32 {
-    if end_routing_slot < start_routing_slot {
-        return 0;
-    }
-    end_routing_slot
-        .saturating_sub(start_routing_slot)
-        .saturating_add(1)
-}
-
-fn slot_for_object(key: &str, start_routing_slot: u32, routing_slot_count: u32) -> u32 {
-    if routing_slot_count == 0 {
-        return start_routing_slot;
-    }
-    start_routing_slot + (stable_object_hash(key) % routing_slot_count as u64) as u32
-}
-
-const FNV1A64_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV1A64_PRIME: u64 = 0x0000_0100_0000_01b3;
-
-fn stable_object_hash(key: &str) -> u64 {
-    stable_object_hash_bytes(key.as_bytes())
-}
-
-fn stable_object_hash_bytes(bytes: &[u8]) -> u64 {
-    let mut hash = FNV1A64_OFFSET_BASIS;
-    stable_object_hash_update(&mut hash, bytes);
-    hash
-}
-
-fn stable_object_hash_update(hash: &mut u64, bytes: &[u8]) {
-    for byte in bytes {
-        *hash ^= *byte as u64;
-        *hash = hash.wrapping_mul(FNV1A64_PRIME);
-    }
-}
-
-fn stable_object_hash_update_u64_decimal(hash: &mut u64, mut value: u64) {
-    let mut buf = [0_u8; 20];
-    let mut pos = buf.len();
-    if value == 0 {
-        pos -= 1;
-        buf[pos] = b'0';
-    } else {
-        while value > 0 {
-            pos -= 1;
-            buf[pos] = b'0' + (value % 10) as u8;
-            value /= 10;
-        }
-    }
-    stable_object_hash_update(hash, &buf[pos..]);
-}
-
-fn stable_page_object_id(shard_id: ShardId, kind: &str, key: &str, component: Option<&str>) -> u64 {
-    stable_page_object_id_from_prefix(stable_page_object_id_prefix(shard_id, kind, key), component)
-}
-
-fn stable_page_object_id_prefix(shard_id: ShardId, kind: &str, key: &str) -> u64 {
-    let mut hash = FNV1A64_OFFSET_BASIS;
-    stable_object_hash_update_u64_decimal(&mut hash, shard_id as u64);
-    stable_object_hash_update(&mut hash, b":");
-    stable_object_hash_update(&mut hash, kind.as_bytes());
-    stable_object_hash_update(&mut hash, b":");
-    stable_object_hash_update(&mut hash, key.as_bytes());
-    hash
-}
-
-fn stable_page_object_id_from_prefix(mut hash: u64, component: Option<&str>) -> u64 {
-    if let Some(component) = component {
-        stable_object_hash_update(&mut hash, b":");
-        stable_object_hash_update(&mut hash, component.as_bytes());
-    }
-    hash
-}
-
-fn page_routing_slot(key: &str, start_routing_slot: u32, end_routing_slot: u32) -> u32 {
-    slot_for_object(
-        key,
-        start_routing_slot,
-        routing_slot_count(start_routing_slot, end_routing_slot),
-    )
-}
-
 fn command_object_keys(command: &Command) -> Vec<String> {
     match command {
         Command::CommonDelete { key } => associated_record_keys(key),
@@ -17411,7 +17196,8 @@ fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::ControlStateIncrementWithOptions { key, .. }
         | Command::ControlStateChangeAdd { key, .. }
         | Command::ControlStateFolSet { key, .. } => vec![key.clone()],
-        Command::ControlStateSet { family, key, .. } | Command::ControlStateSetAndGet { family, key, .. } => {
+        Command::ControlStateSet { family, key, .. }
+        | Command::ControlStateSetAndGet { family, key, .. } => {
             vec![control_state_family_key(*family, key)]
         }
         Command::ContextUpsertNode { tenant_hash, node } => {
