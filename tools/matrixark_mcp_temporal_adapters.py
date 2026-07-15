@@ -44,12 +44,30 @@ try:
     from tools.matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from tools.matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
     from tools.matrixark_mcp_metrics import MatrixArkServiceMetrics
+    from tools.matrixark_mcp_raw_ingestion import (
+        normalize_raw_storage_backend,
+        raw_ingestion_append_options,
+        raw_ingestion_append_path_for_backend,
+        raw_record_scope_value,
+        raw_record_session_ids,
+        raw_session_index_entries,
+        raw_session_index_key,
+    )
     from tools.matrixark_mcp_retrieval import native_retrieve_fallback_allowed
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_env import env_bool, env_int, env_lower
     from matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
     from matrixark_mcp_metrics import MatrixArkServiceMetrics
+    from matrixark_mcp_raw_ingestion import (
+        normalize_raw_storage_backend,
+        raw_ingestion_append_options,
+        raw_ingestion_append_path_for_backend,
+        raw_record_scope_value,
+        raw_record_session_ids,
+        raw_session_index_entries,
+        raw_session_index_key,
+    )
     from matrixark_mcp_retrieval import native_retrieve_fallback_allowed
 
 
@@ -705,56 +723,17 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         }
 
     def _normalize_raw_storage_backend(self, value: Any) -> str:
-        backend = str(value or "temporalstore").strip().lower().replace("-", "_")
-        if backend in {"", "temporal", "temporal_store", "ts"}:
-            backend = "temporalstore"
-        if backend in {"matrix_kv", "kv"}:
-            backend = "matrixkv"
-        if backend in {
-            "matrix_object",
-            "matrixobjectstore",
-            "matrix_object_store",
-            "objectstore",
-            "object_store",
-            "object",
-            "blob",
-            "blobstore",
-            "blob_store",
-        }:
-            backend = "matrixobject"
-        if backend in {"aws_s3", "s3_object", "s3_objectstore"}:
-            backend = "s3"
-        if backend not in {"temporalstore", "matrixkv", "s3", "matrixobject"}:
-            raise MatrixArkError("MATRIXARK_RAW_INGESTION_BACKEND must be temporalstore, matrixkv, s3, or matrixobject")
-        return backend
+        return normalize_raw_storage_backend(value)
 
     def _raw_ingestion_append_path(self) -> str:
-        backend = self._normalize_raw_storage_backend(
+        return raw_ingestion_append_path_for_backend(
             getattr(self, "_raw_storage_backend", "temporalstore")
         )
-        if backend == "temporalstore":
-            return "matrixark_raw_ingestion_temporalstore_log"
-        if backend == "matrixkv":
-            return "matrixark_raw_ingestion_matrixkv_log"
-        if backend == "s3":
-            return "matrixark_raw_ingestion_s3_object_ref"
-        return "matrixark_raw_ingestion_matrixobject_ref"
 
     def _raw_ingestion_append_options(self) -> Json:
-        backend = self._normalize_raw_storage_backend(
+        return raw_ingestion_append_options(
             getattr(self, "_raw_storage_backend", "temporalstore")
         )
-        return {
-            "append_path": self._raw_ingestion_append_path(),
-            "raw_storage_backend": backend,
-            "raw_message_store": backend,
-            "coalesce_writes": True,
-            "route_by": "raw_ingestion_prefix",
-            "persist_from_storage_options": True,
-            "hset_lowering": "forbidden_for_parity",
-            "count_update": "same_batch",
-            "source": "matrixark_live_ingestion_dual_write",
-        }
 
     def _ensure_raw_ingestion_fields(self) -> None:
         if not hasattr(self, "_raw_storage_backend"):
@@ -782,59 +761,22 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
 
     def _raw_session_index_key(self, session_id: str) -> str:
         self._ensure_raw_ingestion_fields()
-        return f"{self._raw_ingestion_prefix}:session_index:{stable_hash(str(session_id))}"
+        return raw_session_index_key(self._raw_ingestion_prefix, session_id)
 
     def _raw_record_scope_value(self, record: Json, name: str) -> str:
-        scope = record.get("scope") if isinstance(record.get("scope"), dict) else {}
-        envelope = record.get("envelope") if isinstance(record.get("envelope"), dict) else {}
-        envelope_scope = envelope.get("scope") if isinstance(envelope.get("scope"), dict) else {}
-        for key in (name, name.replace("_id", "")):
-            for container in (record, scope, envelope_scope, envelope):
-                if not isinstance(container, dict):
-                    continue
-                value = container.get(key)
-                if value not in (None, ""):
-                    return str(value)
-        return ""
+        return raw_record_scope_value(record, name)
 
     def _raw_record_session_ids(self, record: Json) -> set[str]:
-        candidates = {
-            self._raw_record_scope_value(record, "session_id"),
-            self._raw_record_scope_value(record, "conversation_id"),
-        }
-        scope = record.get("scope") if isinstance(record.get("scope"), dict) else {}
-        envelope = record.get("envelope") if isinstance(record.get("envelope"), dict) else {}
-        envelope_scope = envelope.get("scope") if isinstance(envelope.get("scope"), dict) else {}
-        metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
-        for container in (scope, envelope_scope, metadata, envelope, record):
-            if not isinstance(container, dict):
-                continue
-            for key in ("session_id", "session", "conversation_id", "conversation"):
-                value = container.get(key)
-                if value not in (None, ""):
-                    candidates.add(str(value))
-        return {item for item in candidates if item}
+        return raw_record_session_ids(record)
 
     def _raw_session_index_entries(self, *, sequence: int, record: Json) -> list[Json]:
-        shard = sequence // self._shard_size
-        offset = sequence % self._shard_size
-        ref = json.dumps(
-            {
-                "sequence": sequence,
-                "shard": shard,
-                "field": f"{offset:020d}",
-            },
-            sort_keys=True,
-            separators=(",", ":"),
+        self._ensure_raw_ingestion_fields()
+        return raw_session_index_entries(
+            raw_ingestion_prefix=self._raw_ingestion_prefix,
+            shard_size=self._shard_size,
+            sequence=sequence,
+            record=record,
         )
-        return [
-            {
-                "key": self._raw_session_index_key(session_id),
-                "field": f"{sequence:020d}",
-                "value": ref,
-            }
-            for session_id in sorted(self._raw_record_session_ids(record))
-        ]
 
     def _get_raw_count(self) -> int:
         self._ensure_raw_ingestion_fields()
