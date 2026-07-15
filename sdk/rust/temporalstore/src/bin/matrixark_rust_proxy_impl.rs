@@ -61,6 +61,8 @@ mod matrixark_rust_proxy_runtime;
 mod matrixark_rust_proxy_scan;
 #[path = "../matrixark_rust_proxy_scan_records.rs"]
 mod matrixark_rust_proxy_scan_records;
+#[path = "../matrixark_rust_proxy_scan_response.rs"]
+mod matrixark_rust_proxy_scan_response;
 #[path = "../matrixark_rust_proxy_scan_secondary.rs"]
 mod matrixark_rust_proxy_scan_secondary;
 #[path = "../matrixark_rust_proxy_scope.rs"]

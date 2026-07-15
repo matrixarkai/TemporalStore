@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use serde_json::{json, Value};
+use serde_json::Value;
 use temporalstore::Client;
 
 use crate::matrixark_rust_proxy_cache::{
@@ -13,6 +13,9 @@ use crate::matrixark_rust_proxy_candidates::{
 use crate::matrixark_rust_proxy_protocol::Command;
 use crate::matrixark_rust_proxy_scan_records::{
     load_scan_records, required, serving_count_key,
+};
+use crate::matrixark_rust_proxy_scan_response::{
+    build_filtered_cache_hit_response, build_scan_response, ScanResponseInput,
 };
 use crate::matrixark_rust_proxy_scope::scope_matches_record;
 use crate::matrixark_rust_proxy_scan_secondary::apply_secondary_prefilter;
@@ -54,46 +57,12 @@ pub(crate) fn scan_matrixark_candidates(
         command.scope.as_ref(),
     );
     if let Some(entry) = get_filtered_scan_cache(&filtered_cache_key) {
-        let returned_records = entry.records.len();
-        let dropped_ref_count = entry.dropped_by_type
-            + entry.dropped_by_scope
-            + entry.selected_node_dropped
-            + entry.secondary_dropped;
-        return Ok(json!({
-            "ok": true,
-            "count": returned_records,
-            "records": entry.records,
-            "native_candidate_prefilter": true,
-            "scan_count": entry.scanned_records,
-            "cache_hit": true,
-            "cache_hit_used": true,
-            "selected_ref_count": 0,
-            "dropped_ref_count": dropped_ref_count,
-            "scan_stats": {
-                "execution_mode": "rust_proxy_native_candidate_prefilter",
-                "native_prefix_scan": true,
-                "native_scan_record_cache_hit": true,
-                "native_filtered_scan_cache_hit": true,
-                "native_scan_record_cache_keyed_by_count": true,
-                "native_scan_record_cache_key_kind": "serving_count",
-                "native_secondary_index_prefilter": !secondary_groups.is_empty(),
-                "native_node_path_scope_prefilter": entry.node_path_filter_count > 0,
-                "native_node_path_scope_filter_count": entry.node_path_filter_count,
-                "scanned_records": entry.scanned_records,
-                "total_record_count": count,
-                "serving_record_watermark": serving_count,
-                "returned_records": returned_records,
-                "dropped_by_type": entry.dropped_by_type,
-                "dropped_by_scope": entry.dropped_by_scope,
-                "selected_node_dropped_candidate_count": entry.selected_node_dropped,
-                "secondary_index_groups_supplied": secondary_groups.len(),
-                "secondary_index_matched_candidate_count": entry.secondary_matched,
-                "secondary_index_dropped_candidate_count": entry.secondary_dropped,
-                "native_pack_assembly": false,
-                "pack_assembly_location": "python_reference_packer",
-                "next_native_gap": "C++/Rust ContextPack scoring and budget assembly APIs"
-            }
-        }));
+        return Ok(build_filtered_cache_hit_response(
+            entry,
+            count,
+            serving_count,
+            secondary_groups.len(),
+        ));
     }
     let (records_source, scanned_records, cache_hit) =
         load_scan_records(client, &record_hash_key, shard_size, count, cache_key)?;
@@ -159,8 +128,6 @@ pub(crate) fn scan_matrixark_candidates(
     let secondary_dropped = secondary_filter.secondary_dropped;
     let secondary_matched = secondary_filter.secondary_matched;
 
-    let dropped_ref_count =
-        dropped_by_type + dropped_by_scope + selected_node_dropped + secondary_dropped;
     put_filtered_scan_cache(
         filtered_cache_key,
         FilteredScanCacheEntry {
@@ -174,39 +141,18 @@ pub(crate) fn scan_matrixark_candidates(
             node_path_filter_count: node_path_filters.len(),
         },
     );
-    Ok(json!({
-        "ok": true,
-        "count": filtered.len(),
-        "records": filtered,
-        "native_candidate_prefilter": true,
-        "scan_count": scanned_records,
-        "cache_hit": cache_hit,
-        "cache_hit_used": cache_hit,
-        "selected_ref_count": 0,
-        "dropped_ref_count": dropped_ref_count,
-        "scan_stats": {
-            "execution_mode": "rust_proxy_native_candidate_prefilter",
-            "native_prefix_scan": true,
-            "native_scan_record_cache_hit": cache_hit,
-            "native_filtered_scan_cache_hit": false,
-            "native_scan_record_cache_keyed_by_count": true,
-            "native_scan_record_cache_key_kind": "serving_count",
-            "native_secondary_index_prefilter": !secondary_groups.is_empty(),
-            "native_node_path_scope_prefilter": !node_path_filters.is_empty(),
-            "native_node_path_scope_filter_count": node_path_filters.len(),
-            "scanned_records": scanned_records,
-            "total_record_count": count,
-            "serving_record_watermark": serving_count,
-            "returned_records": filtered.len(),
-            "dropped_by_type": dropped_by_type,
-            "dropped_by_scope": dropped_by_scope,
-            "selected_node_dropped_candidate_count": selected_node_dropped,
-            "secondary_index_groups_supplied": secondary_groups.len(),
-            "secondary_index_matched_candidate_count": secondary_matched,
-            "secondary_index_dropped_candidate_count": secondary_dropped,
-            "native_pack_assembly": false,
-            "pack_assembly_location": "python_reference_packer",
-            "next_native_gap": "C++/Rust ContextPack scoring and budget assembly APIs"
-        }
+    Ok(build_scan_response(ScanResponseInput {
+        filtered,
+        scanned_records,
+        cache_hit,
+        count,
+        serving_count,
+        dropped_by_type,
+        dropped_by_scope,
+        selected_node_dropped,
+        secondary_groups_len: secondary_groups.len(),
+        secondary_matched,
+        secondary_dropped,
+        node_path_filter_count: node_path_filters.len(),
     }))
 }
