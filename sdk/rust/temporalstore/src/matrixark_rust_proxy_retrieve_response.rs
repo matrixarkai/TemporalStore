@@ -4,6 +4,9 @@ use serde_json::{json, Value};
 
 use crate::matrixark_rust_proxy_cross_session::CrossSessionPolicy;
 use crate::matrixark_rust_proxy_metrics::unix_ms;
+use crate::matrixark_rust_proxy_retrieve_policy::{
+    build_recall_policy, RetrieveRecallPolicyInput,
+};
 use crate::matrixark_rust_proxy_retrieve_telemetry::{
     mark_native_pack_scan_stats, same_session_selected_ref_count, total_dropped_ref_count,
     RetrieveDropCounts,
@@ -72,6 +75,24 @@ pub(crate) fn build_retrieve_pack_response(input: RetrievePackResponseInput) -> 
         .get("question_type")
         .cloned()
         .unwrap_or_else(|| json!("fact"));
+    let recall_policy = build_recall_policy(RetrieveRecallPolicyInput {
+        scan_stats: &scan_stats,
+        cross_policy: &input.cross_policy,
+        remote_budget: input.remote_budget,
+        max_refs: input.max_refs,
+        max_global_candidates: input.max_global_candidates,
+        min_similarity_score: input.min_similarity_score,
+        budget_fill_policy: &input.budget_fill_policy,
+        session_scope_mode: &input.session_scope_mode,
+        same_session_selected_ref_count,
+        cross_selected_refs: input.cross_selected_refs,
+        entity_bridge_selected_refs: input.entity_bridge_selected_refs,
+        selected_cross_session_count: input.selected_cross_sessions.len() as u64,
+        cross_used_tokens: input.cross_used_tokens,
+        selected_node_count: input.selected_nodes.len() as u64,
+        secondary_index_matched_candidate_count,
+        secondary_index_dropped_candidate_count,
+    });
     let selected = input.selected;
     let pack = json!({
         "context_pack_id": context_pack_id,
@@ -105,76 +126,7 @@ pub(crate) fn build_retrieve_pack_response(input: RetrievePackResponseInput) -> 
         "packing_policy": "native_rust_proxy_question_type_aware",
         "context_pack_assembly": "native_rust_proxy",
         "context_sources_order": ["entities", "events", "segments", "resources", "skills", "summaries"],
-        "recall_policy": {
-            "native_context_pack": {
-                "enabled": true,
-                "backend": "rust_proxy",
-                "scan_filter_score_pack": true
-            },
-            "native_response_contract": {
-                "raw_records_returned_to_python": false,
-                "python_hot_path_records": 0,
-                "python_role": "dispatch_request_receive_context_pack",
-                "backend_role": "scan_filter_score_pack"
-            },
-            "scan_stats": scan_stats,
-            "rerank": {
-                "enabled": true,
-                "mode": "native_weighted_recall_plus_cross_session_rerank",
-                "cross_session_rerank_enabled": true,
-                "cross_session_signals": ["entity_state", "resource_fact_citation", "answer_event", "compression", "summary_demotion"],
-                "heavy_rerank_enabled": false
-            },
-            "ranking": {
-                "min_similarity_score": input.min_similarity_score,
-                "max_global_candidates": input.max_global_candidates,
-                "max_selected_refs": input.max_refs,
-                "budget_fill_policy": input.budget_fill_policy,
-                "quality_first_budget_underfill_allowed": input.budget_fill_policy == "quality_first"
-            },
-            "session_continuity": {
-                "mode": input.session_scope_mode,
-                "policy": "same-session continuity first; entity state bridges cross-session memory; cross-session evidence remains eligible under account/tenant/user scope",
-                "same_session_selected_ref_count": same_session_selected_ref_count,
-                "cross_session_selected_ref_count": input.cross_selected_refs,
-                "entity_bridge_selected_ref_count": input.entity_bridge_selected_refs
-            },
-            "cross_session": {
-                "enabled": input.cross_policy.enabled,
-                "mode": if input.cross_policy.enabled { "prefer" } else { "disabled" },
-                "budget_ratio": input.cross_policy.budget_ratio,
-                "max_budget_ratio": input.cross_policy.max_budget_ratio,
-                "budget_tokens": input.cross_policy.budget_tokens,
-                "remote_budget_tokens": input.remote_budget,
-                "max_budget_tokens": input.cross_policy.max_budget_tokens,
-                "max_sessions": input.cross_policy.max_sessions,
-                "max_candidates": input.cross_policy.max_candidates,
-                "min_score": input.cross_policy.min_score,
-                "raw_evidence_min_score": input.cross_policy.raw_evidence_min_score,
-                "parallelism": input.cross_policy.parallelism,
-                "selected_tokens": input.cross_used_tokens,
-                "selected_ref_count": input.cross_selected_refs,
-                "selected_session_count": input.selected_cross_sessions.len() as u64,
-                "entity_bridge_selected_ref_count": input.entity_bridge_selected_refs,
-                "strategy": "same_session_first_entity_bridge_then_bounded_cross_session",
-                "budget_guidance": "cross-session budget is a maximum cap, not a quota: 12% normally, 15% for broad/evidence, 20% for current-state/latest/multi-hop/date; spend it only on high-quality refs, prefer entities/summaries/compressions, and require high-confidence raw events"
-            },
-            "tree_traversal": {
-                "enabled": true,
-                "native_backend": true,
-                "fallback_to_flat": false,
-                "selected_node_count": input.selected_nodes.len() as u64,
-                "selected_leaf_count": input.selected_nodes.len() as u64,
-                "summary_embeddings": ["node_l0", "node_l1"]
-            },
-            "secondary_index_filter": {
-                "enabled": true,
-                "native_backend": true,
-                "applied_before_embedding_scoring": true,
-                "matched_candidate_count": secondary_index_matched_candidate_count,
-                "dropped_candidate_count": secondary_index_dropped_candidate_count
-            }
-        },
+        "recall_policy": recall_policy,
         "quality_warnings": []
     });
     json!({
