@@ -116,8 +116,34 @@ STORAGE_OPTIONS_SCHEMA: Json = {
             "enum": ["default", "eventual", "read_your_writes", "linearizable"],
             "description": "Requested read/write consistency profile for benchmark and production policy.",
         },
+        "read_preference": {
+            "type": "string",
+            "enum": ["default", "primary", "replica", "replica_preferred"],
+            "description": "Requested serving read preference. Async context ingest defaults to replica_preferred so read-heavy paths can use replicas.",
+        },
     },
     "additionalProperties": True,
+}
+
+PART_STORAGE_OPTIONS_SCHEMA: Json = {
+    "type": "object",
+    "description": "Optional per-part TemporalStore storage policy overrides. Each part inherits storage_options, and unspecified parts default to async write/backfill-friendly durability with replica-preferred reads.",
+    "properties": {
+        "raw_ingestion": STORAGE_OPTIONS_SCHEMA,
+        "context_event": STORAGE_OPTIONS_SCHEMA,
+        "session_buffer": STORAGE_OPTIONS_SCHEMA,
+        "entity": STORAGE_OPTIONS_SCHEMA,
+        "summary": STORAGE_OPTIONS_SCHEMA,
+        "embedding": STORAGE_OPTIONS_SCHEMA,
+        "index": STORAGE_OPTIONS_SCHEMA,
+        "resource": STORAGE_OPTIONS_SCHEMA,
+        "resource_chunk": STORAGE_OPTIONS_SCHEMA,
+        "skill": STORAGE_OPTIONS_SCHEMA,
+        "compression": STORAGE_OPTIONS_SCHEMA,
+        "feedback": STORAGE_OPTIONS_SCHEMA,
+        "debug": STORAGE_OPTIONS_SCHEMA,
+    },
+    "additionalProperties": STORAGE_OPTIONS_SCHEMA,
 }
 
 AGENT_HOOK_SCHEMA: Json = {
@@ -190,6 +216,7 @@ TOOLS: list[Json] = [
                 "scope": SCOPE_SCHEMA,
                 "metadata": METADATA_SCHEMA,
                 "storage_options": STORAGE_OPTIONS_SCHEMA,
+                "part_storage_options": PART_STORAGE_OPTIONS_SCHEMA,
                 "temporalstore_storage_mode": {"type": "string", "description": "Convenience alias for storage_options.storage_mode."},
                 "temporalstore_oplog_mode": {"type": "string", "description": "Convenience alias for storage_options.oplog_mode."},
                 "temporalstore_replication_mode": {"type": "string", "description": "Convenience alias for storage_options.replication_mode."},
@@ -198,6 +225,7 @@ TOOLS: list[Json] = [
                 "temporalstore_storage_family": {"type": "string", "description": "Convenience alias for storage_options.storage_family, e.g. shared_store or raft."},
                 "temporalstore_write_mode": {"type": "string", "description": "Convenience alias for storage_options.write_mode, e.g. async or sync."},
                 "temporalstore_background_write": {"type": "boolean", "description": "Convenience alias for storage_options.background_write."},
+                "temporalstore_read_preference": {"type": "string", "description": "Convenience alias for storage_options.read_preference, e.g. replica_preferred."},
                 "agent_hook": AGENT_HOOK_SCHEMA,
                 "api_key": API_KEY_SCHEMA,
                 "idempotency_key": IDEMPOTENCY_KEY_SCHEMA,
