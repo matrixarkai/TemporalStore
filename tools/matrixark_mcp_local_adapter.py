@@ -54,6 +54,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_local_cache as local_cache_helpers
 
 try:
+    from tools import matrixark_mcp_local_idempotency as local_idempotency_helpers
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_local_idempotency as local_idempotency_helpers
+
+try:
     from tools import matrixark_mcp_session_runtime as session_runtime
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_session_runtime as session_runtime
@@ -274,26 +279,16 @@ class MatrixArkLocalAdapter:
         return
 
     def find_idempotency_record(self, key_hash: int) -> Json | None:
-        for record in reversed(self.read_all()):
-            if record.get("record_type") == "matrixark_idempotency" and record.get("key_hash") == key_hash:
-                return record
-        return None
+        return local_idempotency_helpers.find_idempotency_record(self, key_hash)
 
     def append_idempotency_record(self, *, key_hash: int, tool_name: str, raw_key: str, identity: Json, response: Json) -> None:
-        self.append(
-            {
-                "record_type": "matrixark_idempotency",
-                "key_hash": key_hash,
-                "tool_name": tool_name,
-                "raw_key_hash": stable_hash(raw_key),
-                "scope_key": identity.get("scope_key", ""),
-                "account_id": identity.get("account_id", ""),
-                "tenant_id": identity.get("tenant_id", ""),
-                "user_id": identity.get("user_id", ""),
-                "session_id": identity.get("session_id", ""),
-                "response": response,
-                "created_at_ms": now_ms(),
-            }
+        local_idempotency_helpers.append_idempotency_record(
+            self,
+            key_hash=key_hash,
+            tool_name=tool_name,
+            raw_key=raw_key,
+            identity=identity,
+            response=response,
         )
 
     def ensure_backend_ready(self, *, reason: str = "matrixark") -> Json:
