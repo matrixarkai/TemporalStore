@@ -12,6 +12,7 @@ mod response_cache;
 
 mod admin_report;
 mod admission;
+mod cache;
 mod commands;
 mod constants;
 mod context;
@@ -40,6 +41,7 @@ mod storage_io;
 
 use self::admin_report::*;
 use self::admission::*;
+use self::cache::*;
 use self::commands::*;
 use self::constants::*;
 use self::context::*;
@@ -12441,28 +12443,6 @@ fn page_index_ref_key(entry: &LivePageEntry) -> String {
     )
 }
 
-type PagePhysicalIdentityKey = (
-    u64,
-    u64,
-    u64,
-    Option<u64>,
-    Option<u64>,
-    Option<u32>,
-    Option<u64>,
-);
-
-fn page_physical_identity_key(address: &PageAddress) -> PagePhysicalIdentityKey {
-    (
-        address.page_segment_id,
-        address.offset,
-        address.length,
-        address.page_id,
-        address.object_id,
-        address.routing_slot,
-        address.generation,
-    )
-}
-
 fn remove_slot_index_pages_from_slots(
     shard: &mut ShardState,
     routing_slots: BTreeSet<u32>,
@@ -14711,21 +14691,6 @@ impl CompactionRewriteStats {
     }
 }
 
-fn page_memory_resident(cache: &MultiLayerCache, shard_id: ShardId, address: &PageAddress) -> bool {
-    cache.peek(&CacheKey::page_with_slot_generation(
-        shard_id,
-        address.page_segment_id,
-        address.offset,
-        address.length,
-        address.routing_slot,
-        address.generation,
-    ))
-}
-
-fn page_address_is_memory_only(address: &PageAddress) -> bool {
-    address.page_segment_id == HOT_PAGE_SEGMENT_ID
-}
-
 fn compaction_model_layout_reports(
     page_store: &LocalPageStore,
     shard: &ShardState,
@@ -15289,51 +15254,6 @@ fn persist_control_state_page(
         true
     } else {
         false
-    }
-}
-
-fn invalidate_cache_key(cache: &MultiLayerCache, key: CacheKey, memory_only: bool) {
-    if memory_only {
-        cache.invalidate_memory_only(&key);
-    } else {
-        let _ = cache.invalidate(&key);
-    }
-}
-
-fn invalidate_page_addresses(
-    cache: &MultiLayerCache,
-    shard_id: ShardId,
-    addresses: Vec<PageAddress>,
-) {
-    invalidate_page_addresses_except(cache, shard_id, addresses, BTreeSet::new());
-}
-
-fn invalidate_page_addresses_except(
-    cache: &MultiLayerCache,
-    shard_id: ShardId,
-    addresses: Vec<PageAddress>,
-    live_address_keys: BTreeSet<PagePhysicalIdentityKey>,
-) {
-    if addresses.is_empty() {
-        return;
-    }
-    let keys = addresses
-        .into_iter()
-        .filter(|address| !live_address_keys.contains(&page_physical_identity_key(address)))
-        .map(|address| page_address_cache_key(shard_id, &address))
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    if keys.is_empty() {
-        return;
-    }
-    let _ = cache.invalidate_batch(&keys);
-}
-
-fn invalidate_record_all(cache: &MultiLayerCache, shard_id: ShardId, key: &str) {
-    let _ = cache.invalidate(&CacheKey::string(shard_id, key));
-    for namespace in storage_model_kinds() {
-        let _ = cache.invalidate_record(shard_id, namespace, key);
     }
 }
 
