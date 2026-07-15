@@ -52,6 +52,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         errors_mod = importlib.import_module("tools.matrixark_mcp_errors")
         models_mod = importlib.import_module("tools.matrixark_mcp_models")
         indexing_mod = importlib.import_module("tools.matrixark_mcp_indexing")
+        storage_options_mod = importlib.import_module("tools.matrixark_mcp_storage_options")
         core_mod = importlib.import_module("tools.matrixark_mcp_core")
 
         self.assertIs(server_mod.MatrixArkServiceMetrics, metrics_mod.MatrixArkServiceMetrics)
@@ -75,6 +76,9 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIs(core_mod.limited_index_terms, indexing_mod.limited_index_terms)
         self.assertIs(core_mod.compact_context_index_postings, indexing_mod.compact_context_index_postings)
         self.assertIs(core_mod.context_index_posting_record, indexing_mod.context_index_posting_record)
+        self.assertIs(core_mod.normalize_storage_options, storage_options_mod.normalize_storage_options)
+        self.assertIs(core_mod.storage_options_for_record, storage_options_mod.storage_options_for_record)
+        self.assertIs(core_mod.canonical_storage_route, storage_options_mod.canonical_storage_route)
 
     def test_mcp_entrypoint_stays_small(self) -> None:
         server_lines = (TOOLS_DIR / "matrixark_mcp_server.py").read_text(encoding="utf-8").splitlines()
@@ -94,6 +98,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "matrixark_mcp_errors.py",
             "matrixark_mcp_models.py",
             "matrixark_mcp_indexing.py",
+            "matrixark_mcp_storage_options.py",
         ]
         offenders: list[str] = []
         for module_name in module_names:
