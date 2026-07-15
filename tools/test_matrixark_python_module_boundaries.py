@@ -59,6 +59,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         dashboard_mod = importlib.import_module("tools.matrixark_mcp_dashboard")
         visibility_mod = importlib.import_module("tools.matrixark_mcp_visibility")
         retrieval_records_mod = importlib.import_module("tools.matrixark_mcp_retrieval_records")
+        local_backend_mod = importlib.import_module("tools.matrixark_mcp_local_backend")
         local_idempotency_mod = importlib.import_module("tools.matrixark_mcp_local_idempotency")
         local_read_mod = importlib.import_module("tools.matrixark_mcp_local_read")
         local_replay_mod = importlib.import_module("tools.matrixark_mcp_local_replay")
@@ -182,6 +183,9 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         )
         self.assertEqual(adapter_telemetry["query_hash"], helper_telemetry["query_hash"])
         self.assertIs(local_mod.RETRIEVAL_HOT_RECORD_TYPES, retrieval_records_mod.RETRIEVAL_HOT_RECORD_TYPES)
+        self.assertEqual(adapter.ensure_backend_ready()["backend"], local_backend_mod.ensure_backend_ready(adapter)["backend"])
+        self.assertEqual(adapter.backend_metrics()["metrics_format"], local_backend_mod.backend_metrics(adapter)["metrics_format"])
+        self.assertTrue(callable(local_backend_mod.observe_model_latency))
         self.assertTrue(callable(local_idempotency_mod.find_idempotency_record))
         self.assertTrue(callable(local_idempotency_mod.append_idempotency_record))
         self.assertTrue(callable(local_read_mod.read_all))
@@ -235,6 +239,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "matrixark_mcp_retrieval_records.py",
             "matrixark_mcp_resource_import_runtime.py",
             "matrixark_mcp_local_cache.py",
+            "matrixark_mcp_local_backend.py",
             "matrixark_mcp_local_idempotency.py",
             "matrixark_mcp_local_read.py",
             "matrixark_mcp_local_replay.py",
