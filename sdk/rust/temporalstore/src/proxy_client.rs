@@ -1,13 +1,9 @@
-use std::io::{Read, Write};
-use std::net::TcpStream;
-
 use crate::proxy_helpers::{
-    control_state_precision_ms, control_state_window_ms, io_error, json_byte_array_to_string,
-    json_error, parse_http_endpoint, proxy_timestamp_ms, response_feature_points,
-    response_hash_entries_to_strings,
+    control_state_precision_ms, control_state_window_ms, json_byte_array_to_string, json_error,
+    proxy_timestamp_ms, response_feature_points, response_hash_entries_to_strings,
 };
 use crate::{
-    ControlStateFolType, ControlStateHType, ControlStatePrecision, ControlStateWindow, Error,
+    ControlStateFolType, ControlStateHType, ControlStatePrecision, ControlStateWindow,
     FeatureFilter, FeaturePoint, FeatureWritePolicy, IpsFeatureStat, IpsInstance, IpsLastQuery,
     Result, SequenceFeatureRow,
 };
@@ -39,8 +35,8 @@ impl ProxyOptions {
 
 #[cfg(feature = "proxy")]
 pub struct ProxyClient {
-    endpoint: String,
-    options: ProxyOptions,
+    pub(crate) endpoint: String,
+    pub(crate) options: ProxyOptions,
 }
 
 #[cfg(feature = "proxy")]
@@ -825,113 +821,4 @@ impl ProxyClient {
             != 0)
     }
 
-    fn proxy_service_body(
-        &self,
-        key: &str,
-        extra: &[(&str, serde_json::Value)],
-    ) -> serde_json::Value {
-        let mut body = serde_json::json!({
-            "namespace": self.options.namespace_name,
-            "table_name": self.options.table_name,
-            "key": key,
-        });
-        let object = body.as_object_mut().expect("object body");
-        for (name, value) in extra {
-            object.insert((*name).to_string(), value.clone());
-        }
-        body
-    }
-
-    fn proxy_service_execute(
-        &self,
-        path: &str,
-        body: serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        let response = self.proxy_service_request(path, body)?;
-        Ok(response
-            .get("response")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({})))
-    }
-
-    fn proxy_service_request(
-        &self,
-        path: &str,
-        body: serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        let response = self.post_raw(path, body)?;
-        let status_ok = response
-            .get("status")
-            .and_then(|status| status.get("ok"))
-            .and_then(|ok| ok.as_bool())
-            .unwrap_or(false);
-        if !status_ok {
-            return Err(Error {
-                code: 0,
-                message: response
-                    .get("status")
-                    .and_then(|status| status.get("message"))
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("proxy service request failed")
-                    .to_string(),
-            });
-        }
-        Ok(response)
-    }
-
-    fn get_raw(&self, path: &str) -> Result<serde_json::Value> {
-        self.http_json("GET", path, None)
-    }
-
-    fn post_raw(&self, path: &str, body: serde_json::Value) -> Result<serde_json::Value> {
-        self.http_json("POST", path, Some(body))
-    }
-
-    fn http_json(
-        &self,
-        method: &str,
-        path: &str,
-        body: Option<serde_json::Value>,
-    ) -> Result<serde_json::Value> {
-        let (host, port, base_path) = parse_http_endpoint(&self.endpoint)?;
-        let request_path = format!("{base_path}{path}");
-        let payload = match body {
-            Some(body) => serde_json::to_string(&body).map_err(json_error)?,
-            None => String::new(),
-        };
-        let mut headers = format!(
-            "{method} {request_path} HTTP/1.1\r\nHost: {host}:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
-            payload.len()
-        );
-        if !self.options.api_key.is_empty() {
-            headers.push_str(&format!(
-                "Authorization: Bearer {}\r\n",
-                self.options.api_key
-            ));
-        }
-
-        headers.push_str("\r\n");
-        let mut stream = TcpStream::connect(format!("{host}:{port}")).map_err(io_error)?;
-        stream.write_all(headers.as_bytes()).map_err(io_error)?;
-        stream.write_all(payload.as_bytes()).map_err(io_error)?;
-        stream.flush().map_err(io_error)?;
-
-        let mut response = String::new();
-        stream.read_to_string(&mut response).map_err(io_error)?;
-        let (head, body) = response.split_once("\r\n\r\n").ok_or_else(|| Error {
-            code: 0,
-            message: "invalid proxy HTTP response".to_string(),
-        })?;
-        if !head.starts_with("HTTP/1.1 2") && !head.starts_with("HTTP/1.0 2") {
-            return Err(Error {
-                code: 0,
-                message: head
-                    .lines()
-                    .next()
-                    .unwrap_or("proxy HTTP request failed")
-                    .to_string(),
-            });
-        }
-        serde_json::from_str(body).map_err(json_error)
-    }
 }
