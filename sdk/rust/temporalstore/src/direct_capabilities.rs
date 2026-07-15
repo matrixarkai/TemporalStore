@@ -8,8 +8,8 @@ use crate::direct_helpers::{
     check, cstring, feature_points_from_c_array, ips_features_from_c_array,
 };
 use crate::{
-    ControlStatePrecision, ControlStateWindow, FeatureFilter, FeaturePoint, FeatureWritePolicy,
-    IpsFeatureStat, IpsInstance, IpsLastQuery, Result, SequenceFeatureRow,
+    FeatureFilter, FeaturePoint, FeatureWritePolicy, IpsFeatureStat, IpsInstance, IpsLastQuery,
+    Result, SequenceFeatureRow,
 };
 
 impl Client {
@@ -287,57 +287,5 @@ impl Client {
         let features = ips_features_from_c_array(&out);
         unsafe { temporalstore_ips_feature_array_free(&mut out) };
         Ok(features)
-    }
-
-    pub fn control_state_increment(
-        &self,
-        key: &str,
-        amount: i64,
-        ttl_seconds: u64,
-        precision: ControlStatePrecision,
-        uuid: &str,
-        occur_time_seconds: u64,
-    ) -> Result<()> {
-        let key = cstring(key)?;
-        let uuid = cstring(uuid)?;
-        let mut error: *mut c_char = ptr::null_mut();
-        let code = unsafe {
-            temporalstore_control_state_increment(
-                self.raw,
-                key.as_ptr(),
-                amount,
-                ttl_seconds,
-                precision as i32,
-                uuid.as_ptr(),
-                occur_time_seconds,
-                &mut error,
-            )
-        };
-        check(code, error)
-    }
-
-    pub fn control_state_count(
-        &self,
-        key: &str,
-        precision: ControlStatePrecision,
-        window: ControlStateWindow,
-    ) -> Result<i64> {
-        let key = cstring(key)?;
-        let mut count = 0_i64;
-        let mut error: *mut c_char = ptr::null_mut();
-        let code = unsafe {
-            temporalstore_control_state_count(
-                self.raw,
-                key.as_ptr(),
-                precision as i32,
-                window.start,
-                window.end,
-                window.unit as i32,
-                &mut count,
-                &mut error,
-            )
-        };
-        check(code, error)?;
-        Ok(count)
     }
 }
