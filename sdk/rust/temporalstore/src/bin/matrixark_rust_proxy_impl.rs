@@ -71,6 +71,8 @@ mod matrixark_rust_proxy_retrieve_telemetry;
 mod matrixark_rust_proxy_runtime;
 #[path = "../matrixark_rust_proxy_scan.rs"]
 mod matrixark_rust_proxy_scan;
+#[path = "../matrixark_rust_proxy_scan_node_paths.rs"]
+mod matrixark_rust_proxy_scan_node_paths;
 #[path = "../matrixark_rust_proxy_scan_records.rs"]
 mod matrixark_rust_proxy_scan_records;
 #[path = "../matrixark_rust_proxy_scan_response.rs"]
