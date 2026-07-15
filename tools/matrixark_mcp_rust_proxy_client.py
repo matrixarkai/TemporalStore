@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import queue
 import subprocess
 import threading
@@ -13,6 +14,22 @@ from typing import Any
 
 try:
     from tools.matrixark_mcp_core import Json, MatrixArkError
+    from tools.matrixark_mcp_rust_proxy_cache import (
+        context_pack_response_cache_clear,
+        context_pack_response_cache_get,
+        context_pack_response_cache_key,
+        context_pack_response_cache_put,
+        context_pack_response_singleflight_enter,
+        context_pack_response_singleflight_finish,
+        context_pack_response_singleflight_wait,
+        mark_context_pack_response_cache_hit,
+        scan_hash_cache_get,
+        scan_hash_cache_invalidate_keys,
+        scan_hash_cache_put,
+        string_cache_get,
+        string_cache_key_allowed,
+        string_cache_put,
+    )
     from tools.matrixark_mcp_rust_proxy_config import initialize_rust_proxy_config
     from tools.matrixark_mcp_rust_proxy_lanes import build_lane_pools
     from tools.matrixark_mcp_rust_proxy_metrics_state import (
@@ -26,6 +43,22 @@ try:
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import Json, MatrixArkError
+    from matrixark_mcp_rust_proxy_cache import (
+        context_pack_response_cache_clear,
+        context_pack_response_cache_get,
+        context_pack_response_cache_key,
+        context_pack_response_cache_put,
+        context_pack_response_singleflight_enter,
+        context_pack_response_singleflight_finish,
+        context_pack_response_singleflight_wait,
+        mark_context_pack_response_cache_hit,
+        scan_hash_cache_get,
+        scan_hash_cache_invalidate_keys,
+        scan_hash_cache_put,
+        string_cache_get,
+        string_cache_key_allowed,
+        string_cache_put,
+    )
     from matrixark_mcp_rust_proxy_config import initialize_rust_proxy_config
     from matrixark_mcp_rust_proxy_lanes import build_lane_pools
     from matrixark_mcp_rust_proxy_metrics_state import (
@@ -655,67 +688,22 @@ class MatrixArkRustProxyClient:
         return str(response.get("value", ""))
 
     def _string_cache_key_allowed(self, key: str) -> bool:
-        return self._string_cache_enabled and str(key).endswith((":record_count", ":record_index"))
+        return string_cache_key_allowed(self, key)
 
     def _string_cache_get(self, key: str) -> str | None:
-        if not self._string_cache_key_allowed(key):
-            return None
-        with self._string_cache_lock:
-            value = self._string_cache.get(key)
-        with self._metrics_lock:
-            if value is None:
-                self._string_cache_misses_total += 1
-            else:
-                self._string_cache_hits_total += 1
-        return value
+        return string_cache_get(self, key)
 
     def _string_cache_put(self, key: str, value: str) -> None:
-        if not self._string_cache_key_allowed(key):
-            return
-        with self._string_cache_lock:
-            self._string_cache[key] = str(value)
-        with self._metrics_lock:
-            self._string_cache_updates_total += 1
+        string_cache_put(self, key, value)
 
     def _scan_hash_cache_get(self, key: str) -> Json | None:
-        if not self._scan_hash_cache_enabled:
-            return None
-        with self._scan_hash_cache_lock:
-            cached = self._scan_hash_cache.get(key)
-            if cached is None:
-                value = None
-            else:
-                self._scan_hash_cache.move_to_end(key)
-                value = copy.deepcopy(cached)
-        with self._metrics_lock:
-            if value is None:
-                self._scan_hash_cache_misses_total += 1
-            else:
-                self._scan_hash_cache_hits_total += 1
-        return value
+        return scan_hash_cache_get(self, key)
 
     def _scan_hash_cache_put(self, key: str, response: Json) -> None:
-        if not self._scan_hash_cache_enabled:
-            return
-        with self._scan_hash_cache_lock:
-            self._scan_hash_cache[key] = copy.deepcopy(response)
-            self._scan_hash_cache.move_to_end(key)
-            while len(self._scan_hash_cache) > self._scan_hash_cache_max_entries:
-                self._scan_hash_cache.popitem(last=False)
-        with self._metrics_lock:
-            self._scan_hash_cache_updates_total += 1
+        scan_hash_cache_put(self, key, response)
 
-    def _scan_hash_cache_invalidate_keys(self, keys: Iterable[str]) -> None:
-        if not self._scan_hash_cache_enabled:
-            return
-        removed = 0
-        with self._scan_hash_cache_lock:
-            for key in set(str(item) for item in keys if str(item)):
-                if self._scan_hash_cache.pop(key, None) is not None:
-                    removed += 1
-        if removed:
-            with self._metrics_lock:
-                self._scan_hash_cache_invalidations_total += removed
+    def _scan_hash_cache_invalidate_keys(self, keys: Any) -> None:
+        scan_hash_cache_invalidate_keys(self, keys)
 
     def _context_pack_response_cache_key(
         self,
@@ -725,90 +713,27 @@ class MatrixArkRustProxyClient:
         shard_size: int,
         request: Json,
     ) -> str:
-        ranking = request.get("ranking") if isinstance(request, dict) else {}
-        payload = {
-            "count_key": count_key,
-            "record_hash_key": record_hash_key,
-            "shard_size": int(shard_size),
-            "scope": request.get("scope", {}) if isinstance(request, dict) else {},
-            "secondary_index_groups": request.get("secondary_index_groups", []) if isinstance(request, dict) else [],
-            "query": request.get("query", "") if isinstance(request, dict) else "",
-            "max_selected_refs": ranking.get("max_selected_refs") if isinstance(ranking, dict) else None,
-        }
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()
-        return hashlib.blake2b(encoded, digest_size=16).hexdigest()
+        return context_pack_response_cache_key(
+            count_key=count_key,
+            record_hash_key=record_hash_key,
+            shard_size=shard_size,
+            request=request,
+        )
 
     def _mark_context_pack_response_cache_hit(self, response: Json) -> Json:
-        cached = dict(response)
-        cached["cache_hit"] = True
-        cached["context_pack_response_cache_hit"] = True
-        metrics = cached.get("retrieval_metrics")
-        if isinstance(metrics, dict):
-            metrics = dict(metrics)
-            cached["retrieval_metrics"] = metrics
-            metrics["cache_hit"] = True
-            metrics["candidate_cache_hit"] = True
-            metrics["context_pack_response_cache_hit"] = True
-        pack = cached.get("context_pack")
-        if isinstance(pack, dict):
-            pack = dict(pack)
-            cached["context_pack"] = pack
-            pack_metrics = pack.get("retrieval_metrics")
-            if isinstance(pack_metrics, dict):
-                pack_metrics = dict(pack_metrics)
-                pack["retrieval_metrics"] = pack_metrics
-                pack_metrics["cache_hit"] = True
-                pack_metrics["candidate_cache_hit"] = True
-                pack_metrics["context_pack_response_cache_hit"] = True
-        return cached
+        return mark_context_pack_response_cache_hit(response)
 
     def _context_pack_response_cache_get(self, cache_key: str) -> Json | None:
-        if not self._context_pack_response_cache_enabled:
-            return None
-        with self._context_pack_response_cache_lock:
-            cached = self._context_pack_response_cache.get(cache_key)
-            if cached is not None:
-                self._context_pack_response_cache.move_to_end(cache_key)
-        with self._metrics_lock:
-            if cached is None:
-                self._context_pack_response_cache_misses_total += 1
-            else:
-                self._context_pack_response_cache_hits_total += 1
-        if cached is None:
-            return None
-        return self._mark_context_pack_response_cache_hit(cached)
+        return context_pack_response_cache_get(self, cache_key)
 
     def _context_pack_response_cache_put(self, cache_key: str, response: Json) -> None:
-        if not self._context_pack_response_cache_enabled:
-            return
-        with self._context_pack_response_cache_lock:
-            self._context_pack_response_cache[cache_key] = copy.deepcopy(response)
-            self._context_pack_response_cache.move_to_end(cache_key)
-            while len(self._context_pack_response_cache) > self._context_pack_response_cache_max_entries:
-                self._context_pack_response_cache.popitem(last=False)
-        with self._metrics_lock:
-            self._context_pack_response_cache_updates_total += 1
+        context_pack_response_cache_put(self, cache_key, response)
 
     def _context_pack_response_cache_clear(self) -> None:
-        if not self._context_pack_response_cache_enabled:
-            return
-        with self._context_pack_response_cache_lock:
-            removed = len(self._context_pack_response_cache)
-            self._context_pack_response_cache.clear()
-        if removed:
-            with self._metrics_lock:
-                self._context_pack_response_cache_invalidations_total += removed
+        context_pack_response_cache_clear(self)
 
     def _context_pack_response_singleflight_enter(self, cache_key: str) -> tuple[Json, bool]:
-        if not self._context_pack_response_cache_enabled:
-            return {"event": threading.Event(), "error": None}, True
-        with self._context_pack_response_cache_lock:
-            inflight = self._context_pack_response_inflight.get(cache_key)
-            if inflight is not None:
-                return inflight, False
-            inflight = {"event": threading.Event(), "error": None}
-            self._context_pack_response_inflight[cache_key] = inflight
-            return inflight, True
+        return context_pack_response_singleflight_enter(self, cache_key)
 
     def _context_pack_response_singleflight_finish(
         self,
@@ -816,40 +741,10 @@ class MatrixArkRustProxyClient:
         inflight: Json,
         error: BaseException | None,
     ) -> None:
-        if not self._context_pack_response_cache_enabled:
-            return
-        with self._context_pack_response_cache_lock:
-            current = self._context_pack_response_inflight.get(cache_key)
-            if current is inflight:
-                self._context_pack_response_inflight.pop(cache_key, None)
-            inflight["error"] = error
-            event = inflight.get("event")
-            if isinstance(event, threading.Event):
-                event.set()
+        context_pack_response_singleflight_finish(self, cache_key, inflight, error)
 
     def _context_pack_response_singleflight_wait(self, cache_key: str, inflight: Json) -> Json:
-        event = inflight.get("event")
-        if not isinstance(event, threading.Event):
-            raise MatrixArkError("invalid ContextPack singleflight state")
-        started = time.perf_counter()
-        timeout_s = max(self._backpressure_timeout_s, self.request_timeout_ms / 1000.0 + 2.0)
-        if not event.wait(timeout=timeout_s):
-            raise MatrixArkError(f"Rust TemporalStore ContextPack singleflight timed out after {timeout_s:.1f}s")
-        wait_ms = (time.perf_counter() - started) * 1000.0
-        with self._metrics_lock:
-            self._context_pack_response_singleflight_waits_total += 1
-            self._context_pack_response_singleflight_wait_ms_total += wait_ms
-            self._context_pack_response_singleflight_wait_ms_max = max(
-                self._context_pack_response_singleflight_wait_ms_max,
-                wait_ms,
-            )
-        error = inflight.get("error")
-        if error:
-            raise error
-        cached = self._context_pack_response_cache_get(cache_key)
-        if cached is not None:
-            return cached
-        raise MatrixArkError("ContextPack singleflight completed without cached response")
+        return context_pack_response_singleflight_wait(self, cache_key, inflight)
 
     def put_string(self, key: str, value: str) -> None:
         self._call("put_string", key=key, value=value)
