@@ -48,6 +48,12 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 
 try:
+    from tools.matrixark_mcp_models import compact_model_slug, embedding_model_ref_for_name
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_models import compact_model_slug, embedding_model_ref_for_name
+
+
+try:
     from tools.matrixark_mcp_identity import (
         MATRIXARK_ADMIN_SCOPES,
         MATRIXARK_ALL_SCOPES,
@@ -395,22 +401,6 @@ def optional_string_list(data: Json, field: str, default: list[str] | None = Non
         raise MatrixArkError(f"{field} must be a list of strings")
     return list(value)
 
-
-
-def compact_model_slug(model_name: str) -> str:
-    cleaned = str(model_name or "").replace("\\", "/").strip().strip("/")
-    if not cleaned:
-        return "model"
-    parts = [part for part in cleaned.split("/") if part]
-    tail = "/".join(parts[-2:]) if len(parts) >= 2 else parts[0]
-    slug = re.sub(r"[^a-zA-Z0-9]+", "_", tail).strip("_").lower()
-    return (slug or "model")[:40]
-
-
-def embedding_model_ref_for_name(model_name: str) -> str:
-    slug = compact_model_slug(model_name)
-    suffix = stable_hash(f"embedding_model:{model_name}") % 10000
-    return f"emb:{slug}:{suffix:04d}"
 
 
 def context_model_registry_record(model_name: str, *, model_kind: str = "embedding", updated_at_ms: int | None = None) -> Json:
