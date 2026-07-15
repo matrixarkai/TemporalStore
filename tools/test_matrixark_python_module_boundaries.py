@@ -47,6 +47,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         ingestion_mod = importlib.import_module("tools.matrixark_mcp_ingestion")
         retrieval_mod = importlib.import_module("tools.matrixark_mcp_retrieval")
         requests_mod = importlib.import_module("tools.matrixark_mcp_requests")
+        identity_mod = importlib.import_module("tools.matrixark_mcp_identity")
+        core_mod = importlib.import_module("tools.matrixark_mcp_core")
 
         self.assertIs(server_mod.MatrixArkServiceMetrics, metrics_mod.MatrixArkServiceMetrics)
         self.assertIs(server_mod.MatrixArkLocalAdapter, local_mod.MatrixArkLocalAdapter)
@@ -58,6 +60,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(callable(backends_mod.build_mcp_adapter))
         self.assertTrue(callable(dispatch_mod.dispatch_matrixark_tool))
         self.assertTrue(callable(requests_mod.normalize_mcp_tool_request))
+        self.assertIs(server_mod.stable_hash, identity_mod.stable_hash)
+        self.assertIs(core_mod.canonical_scope_key, identity_mod.canonical_scope_key)
 
     def test_mcp_entrypoint_stays_small(self) -> None:
         server_lines = (TOOLS_DIR / "matrixark_mcp_server.py").read_text(encoding="utf-8").splitlines()
