@@ -16,6 +16,9 @@ impl std::error::Error for Error {}
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+mod control_state_types;
+mod feature_types;
+mod ips_types;
 mod types;
 pub use types::{
     ControlStateFolType, ControlStateHType, ControlStatePrecision, ControlStateWindow,
