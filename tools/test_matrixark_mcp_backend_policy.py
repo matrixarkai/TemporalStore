@@ -3192,7 +3192,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             self.assertEqual(route.get("colocation_group"), "matrixark_context")
             self.assertEqual(route.get("placement_hash"), record.get("placement_hash"))
 
-    def test_context_ingest_defaults_to_async_replica_read_per_part(self) -> None:
+    def test_context_ingest_defaults_to_async_replica_read_per_record(self) -> None:
         envelope = mcp_core.normalize_envelope(
             {
                 "messages": [{"role": "user", "content": "Codex captured one message."}],
@@ -3205,6 +3205,18 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(envelope["storage_options"]["durability"], "async")
         self.assertEqual(envelope["storage_options"]["read_preference"], "replica_preferred")
         self.assertTrue(envelope["storage_route"]["replica_read"])
+
+        sync_override = mcp_core.normalize_envelope(
+            {
+                "messages": [{"role": "user", "content": "Codex captured one message."}],
+                "scope": {"tenant_hash": 11, "user_hash": 22, "session_hash": 33},
+                "record_storage_options": {"context_event": {"durability": "sync"}},
+            },
+            default_kind="message",
+        )
+        self.assertEqual(sync_override["record_storage_options"]["context_event"]["durability"], "sync")
+        self.assertEqual(sync_override["record_storage_options"]["context_event"]["write_mode"], "sync")
+        self.assertFalse(sync_override["record_storage_options"]["context_event"]["background_write"])
 
         materialized = mcp_core.materialize_serving_record_batch(
             [
@@ -3237,14 +3249,14 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             self.assertEqual(route.get("read_preference"), "replica_preferred")
             self.assertTrue(route.get("replica_read"))
 
-    def test_context_ingest_part_storage_options_override_inherited_policy(self) -> None:
+    def test_context_ingest_record_storage_options_override_inherited_policy(self) -> None:
         scope = {"tenant_hash": 11, "user_hash": 22, "session_hash": 33}
         envelope = mcp_core.normalize_envelope(
             {
                 "messages": [{"role": "user", "content": "Codex captured one message."}],
                 "scope": scope,
                 "storage_options": {"route": "raft_sync"},
-                "part_storage_options": {
+                "record_storage_options": {
                     "context_event": {"route": "shared_store_async"},
                     "index": {"route": "raft_async"},
                 },
@@ -3264,17 +3276,17 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         ]
         by_type = {record["record_type"]: record for record in materialized}
 
-        self.assertEqual(by_type["context_event"]["storage_part"], "context_event")
+        self.assertEqual(by_type["context_event"]["storage_record_kind"], "context_event")
         self.assertEqual(by_type["context_event"]["storage_route"]["route"], "shared_store_async")
         self.assertEqual(by_type["context_event"]["storage_route"]["write_mode"], "async")
         self.assertEqual(by_type["context_event"]["storage_route"]["durability"], "async")
         self.assertTrue(by_type["context_event"]["storage_route"]["replica_read"])
 
-        self.assertEqual(by_type["context_index"]["storage_part"], "index")
+        self.assertEqual(by_type["context_index"]["storage_record_kind"], "index")
         self.assertEqual(by_type["context_index"]["storage_route"]["route"], "raft_async")
         self.assertEqual(by_type["context_index"]["storage_route"]["storage_family"], "raft")
 
-        self.assertEqual(by_type["context_entity"]["storage_part"], "entity")
+        self.assertEqual(by_type["context_entity"]["storage_record_kind"], "entity")
         self.assertEqual(by_type["context_entity"]["storage_route"]["route"], "raft_sync")
         self.assertEqual(by_type["context_entity"]["storage_route"]["write_mode"], "sync")
         self.assertEqual(by_type["context_entity"]["storage_route"]["durability"], "sync")
