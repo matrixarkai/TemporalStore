@@ -8,14 +8,14 @@ use crate::matrixark_rust_proxy_cache::{
     scan_record_cache_key, FilteredScanCacheEntry,
 };
 use crate::matrixark_rust_proxy_candidates::{
-    node_path_matches_filters, passes_secondary_groups, query_node_path_filters,
-    record_index_terms, record_node_hash, record_ref_hash,
+    node_path_matches_filters, query_node_path_filters, record_node_hash,
 };
 use crate::matrixark_rust_proxy_protocol::Command;
 use crate::matrixark_rust_proxy_scan_records::{
     load_scan_records, required, serving_count_key,
 };
 use crate::matrixark_rust_proxy_scope::scope_matches_record;
+use crate::matrixark_rust_proxy_scan_secondary::apply_secondary_prefilter;
 
 pub(crate) fn scan_matrixark_candidates(
     client: &Client,
@@ -154,64 +154,10 @@ pub(crate) fn scan_matrixark_candidates(
         })
         .collect::<Vec<_>>();
 
-    let mut index_terms_by_batch: HashMap<String, HashSet<String>> = HashMap::new();
-    let mut index_terms_by_node: HashMap<u64, HashSet<String>> = HashMap::new();
-    let mut index_terms_by_ref: HashMap<String, HashSet<String>> = HashMap::new();
-    for record in &records {
-        if record.get("record_type").and_then(Value::as_str) != Some("context_index") {
-            continue;
-        }
-        let Some(index_name) = record
-            .get("index_name")
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-        else {
-            continue;
-        };
-        if let Some(batch) = record.get("batch_id_hash").and_then(Value::as_u64) {
-            index_terms_by_batch
-                .entry(batch.to_string())
-                .or_default()
-                .insert(index_name.to_string());
-        }
-        if let Some(ref_hash) = record_ref_hash(record) {
-            index_terms_by_ref
-                .entry(ref_hash)
-                .or_default()
-                .insert(index_name.to_string());
-        } else if let Some(node_hash) = record_node_hash(record) {
-            index_terms_by_node
-                .entry(node_hash)
-                .or_default()
-                .insert(index_name.to_string());
-        }
-    }
-
-    let mut secondary_dropped = 0_u64;
-    let mut secondary_matched = 0_u64;
-    let filtered = if secondary_groups.is_empty() {
-        records
-    } else {
-        records
-            .into_iter()
-            .filter(|record| {
-                let terms = record_index_terms(
-                    record,
-                    &index_terms_by_batch,
-                    &index_terms_by_node,
-                    &index_terms_by_ref,
-                );
-                if !terms.is_empty() && !passes_secondary_groups(&terms, &secondary_groups) {
-                    secondary_dropped += 1;
-                    return false;
-                }
-                if !terms.is_empty() {
-                    secondary_matched += 1;
-                }
-                true
-            })
-            .collect::<Vec<_>>()
-    };
+    let secondary_filter = apply_secondary_prefilter(records, &secondary_groups);
+    let filtered = secondary_filter.records;
+    let secondary_dropped = secondary_filter.secondary_dropped;
+    let secondary_matched = secondary_filter.secondary_matched;
 
     let dropped_ref_count =
         dropped_by_type + dropped_by_scope + selected_node_dropped + secondary_dropped;
