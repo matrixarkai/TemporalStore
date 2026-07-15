@@ -62,6 +62,8 @@ mod proxy_control_state_hash;
 #[cfg(feature = "proxy")]
 mod proxy_control_state_manager;
 #[cfg(feature = "proxy")]
+mod proxy_feature_aggregate;
+#[cfg(feature = "proxy")]
 mod proxy_features;
 #[cfg(feature = "proxy")]
 mod proxy_helpers;

@@ -73,6 +73,8 @@ fn proxy_client_exposes_cpp_proxy_parity_methods() {
         Option<usize>,
         &[crate::FeatureFilter],
     ) -> crate::Result<Vec<crate::FeaturePoint>> = ProxyClient::feature_query_filtered;
+    let _: fn(&ProxyClient, &str, u64, u64, &str, Option<usize>) -> crate::Result<i64> =
+        ProxyClient::feature_aggregate;
     let _: fn(&ProxyClient, &crate::IpsInstance) -> crate::Result<()> =
         ProxyClient::add_ips_instance;
     let _: fn(&ProxyClient, &crate::IpsLastQuery) -> crate::Result<Vec<crate::IpsFeatureStat>> =
