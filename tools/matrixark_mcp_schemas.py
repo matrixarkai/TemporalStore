@@ -88,6 +88,11 @@ STORAGE_OPTIONS_SCHEMA: Json = {
             "enum": ["default", "async", "sync"],
             "description": "Per-message write behavior. async lets the native backend acknowledge after memory append/background oplog work; sync waits for the durable route.",
         },
+        "durability": {
+            "type": "string",
+            "enum": ["default", "async", "sync"],
+            "description": "Durability shorthand. Defaults to async for highest write/read QPS; set sync only for records that must be durable before ack.",
+        },
         "background_write": {
             "type": "boolean",
             "description": "Optional explicit background-write hint for native backends. Defaults to true for async write_mode and false for sync write_mode.",
@@ -224,6 +229,7 @@ TOOLS: list[Json] = [
                 "temporalstore_route": {"type": "string", "description": "Convenience alias for storage_options.route, e.g. shared_store_async, shared_store_sync, raft_async, raft_sync."},
                 "temporalstore_storage_family": {"type": "string", "description": "Convenience alias for storage_options.storage_family, e.g. shared_store or raft."},
                 "temporalstore_write_mode": {"type": "string", "description": "Convenience alias for storage_options.write_mode, e.g. async or sync."},
+                "temporalstore_durability": {"type": "string", "description": "Convenience alias for storage_options.durability, e.g. async or sync."},
                 "temporalstore_background_write": {"type": "boolean", "description": "Convenience alias for storage_options.background_write."},
                 "temporalstore_read_preference": {"type": "string", "description": "Convenience alias for storage_options.read_preference, e.g. replica_preferred."},
                 "agent_hook": AGENT_HOOK_SCHEMA,
