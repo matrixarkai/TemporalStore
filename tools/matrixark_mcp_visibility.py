@@ -3,10 +3,26 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 try:
-    from tools.matrixark_mcp_core import Json, now_ms, stable_hash
+    from tools.matrixark_mcp_core import (
+        CONTEXT_TELEMETRY_WRITE_MODE,
+        Json,
+        MatrixArkError,
+        compact_context_pack_audit_record,
+        now_ms,
+        stable_hash,
+    )
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_core import Json, now_ms, stable_hash
+    from matrixark_mcp_core import (
+        CONTEXT_TELEMETRY_WRITE_MODE,
+        Json,
+        MatrixArkError,
+        compact_context_pack_audit_record,
+        now_ms,
+        stable_hash,
+    )
 
 
 def telemetry_record_for_context_pack(pack: Json, *, query: str, scope: Json, audit_mode: str) -> Json:
@@ -89,3 +105,37 @@ def context_pack_visibility_decision(
         "serving_blocked_on_full_audit": False,
         "full_replay_audit_requires_full_mode": True,
     }
+
+
+def append_context_pack_visibility(
+    adapter: Any,
+    *,
+    pack: Json,
+    audit_record: Json,
+    query: str,
+    scope: Json,
+    audit_mode: str,
+    audit_sample_rate: float = 1.0,
+) -> Json:
+    telemetry_write_mode = CONTEXT_TELEMETRY_WRITE_MODE
+    if telemetry_write_mode not in {"inline", "async", "sync", "off"}:
+        raise MatrixArkError("MATRIXARK_CONTEXT_TELEMETRY_WRITE_MODE must be inline, async, sync, or off")
+    visibility_decision = context_pack_visibility_decision(
+        pack=pack,
+        query=query,
+        audit_mode=audit_mode,
+        audit_sample_rate=audit_sample_rate,
+        telemetry_write_mode=telemetry_write_mode,
+    )
+    telemetry_enabled = bool(visibility_decision.get("telemetry_record"))
+    rich_audit_sampled = bool(visibility_decision.get("rich_replay_audit"))
+    telemetry = telemetry_record_for_context_pack(pack, query=query, scope=scope, audit_mode=audit_mode)
+    telemetry["visibility_decision"] = visibility_decision
+    if telemetry_enabled and telemetry_write_mode == "sync":
+        adapter.append(telemetry)
+    elif telemetry_enabled and telemetry_write_mode == "async":
+        adapter.append_audit(telemetry)
+    if rich_audit_sampled:
+        audit_record["operational_visibility_policy"] = visibility_decision
+        adapter.append_audit(compact_context_pack_audit_record(audit_record))
+    return visibility_decision

@@ -182,6 +182,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             audit_mode="async",
         )
         self.assertEqual(adapter_telemetry["query_hash"], helper_telemetry["query_hash"])
+        self.assertTrue(callable(visibility_mod.append_context_pack_visibility))
         self.assertIs(local_mod.RETRIEVAL_HOT_RECORD_TYPES, retrieval_records_mod.RETRIEVAL_HOT_RECORD_TYPES)
         self.assertEqual(adapter.ensure_backend_ready()["backend"], local_backend_mod.ensure_backend_ready(adapter)["backend"])
         self.assertEqual(adapter.backend_metrics()["metrics_format"], local_backend_mod.backend_metrics(adapter)["metrics_format"])

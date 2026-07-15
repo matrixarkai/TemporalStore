@@ -175,28 +175,15 @@ class MatrixArkLocalAdapter:
         audit_mode: str,
         audit_sample_rate: float = 1.0,
     ) -> Json:
-        telemetry_write_mode = CONTEXT_TELEMETRY_WRITE_MODE
-        if telemetry_write_mode not in {"inline", "async", "sync", "off"}:
-            raise MatrixArkError("MATRIXARK_CONTEXT_TELEMETRY_WRITE_MODE must be inline, async, sync, or off")
-        visibility_decision = visibility_helpers.context_pack_visibility_decision(
+        return visibility_helpers.append_context_pack_visibility(
+            self,
             pack=pack,
+            audit_record=audit_record,
             query=query,
+            scope=scope,
             audit_mode=audit_mode,
             audit_sample_rate=audit_sample_rate,
-            telemetry_write_mode=telemetry_write_mode,
         )
-        telemetry_enabled = bool(visibility_decision.get("telemetry_record"))
-        rich_audit_sampled = bool(visibility_decision.get("rich_replay_audit"))
-        telemetry = self.telemetry_record_for_context_pack(pack, query=query, scope=scope, audit_mode=audit_mode)
-        telemetry["visibility_decision"] = visibility_decision
-        if telemetry_enabled and telemetry_write_mode == "sync":
-            self.append(telemetry)
-        elif telemetry_enabled and telemetry_write_mode == "async":
-            self.append_audit(telemetry)
-        if rich_audit_sampled:
-            audit_record["operational_visibility_policy"] = visibility_decision
-            self.append_audit(compact_context_pack_audit_record(audit_record))
-        return visibility_decision
 
     def flush_audits(self) -> None:
         return
