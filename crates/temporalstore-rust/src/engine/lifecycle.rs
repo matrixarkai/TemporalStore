@@ -1,5 +1,107 @@
 use super::*;
 
+pub(super) fn storage_segment_integrity_report(
+    shard_id: ShardId,
+    recovery: &StorageRecoveryReport,
+    boundary: &StorageRecoveryBoundaryReport,
+) -> StorageSegmentIntegrityReport {
+    let indexed_page_segment_count = recovery.active_page_segment_ids.len();
+    let discovered_page_segment_count = recovery.page_segment_reports.len();
+    let live_page_segment_count = recovery.live_page_segment_ids.len();
+    let orphan_page_segment_count = boundary.orphan_page_segment_ids.len();
+    let stale_page_ref_count = boundary.stale_index_page_refs.len();
+    let corrupt_page_segment_count = boundary.corrupt_page_segment_ids.len();
+    let unreadable_page_ref_count = recovery.unreadable_page_refs.len();
+    let unreadable_page_bytes = boundary.unreadable_page_bytes;
+    let owner_mismatch_page_ref_count = boundary.owner_mismatch_page_refs.len();
+    let missing_owner_page_ref_count = boundary.missing_owner_page_refs;
+    let reclaim_required = orphan_page_segment_count > 0
+        || recovery
+            .page_segment_live_reports
+            .iter()
+            .any(|report| report.stale_page_estimate > 0);
+    let integrity_ok = stale_page_ref_count == 0
+        && corrupt_page_segment_count == 0
+        && unreadable_page_ref_count == 0
+        && unreadable_page_bytes == 0
+        && owner_mismatch_page_ref_count == 0
+        && missing_owner_page_ref_count == 0
+        && recovery.all_live_pages_readable;
+
+    StorageSegmentIntegrityReport {
+        shard_id,
+        indexed_page_segment_count,
+        discovered_page_segment_count,
+        live_page_segment_count,
+        orphan_page_segment_count,
+        stale_page_ref_count,
+        corrupt_page_segment_count,
+        unreadable_page_ref_count,
+        unreadable_page_bytes,
+        owner_mismatch_page_ref_count,
+        missing_owner_page_ref_count,
+        reclaim_required,
+        integrity_ok,
+    }
+}
+
+pub(super) fn storage_reclaim_candidates_from_recovery(
+    recovery: &StorageRecoveryReport,
+    fully_stale_segment_ids: &BTreeSet<u64>,
+) -> Vec<StorageReclaimCandidate> {
+    let mut candidates = recovery
+        .page_segment_live_reports
+        .iter()
+        .filter_map(|report| {
+            let fully_stale = fully_stale_segment_ids.contains(&report.page_segment_id);
+            let stale_page_estimate = if fully_stale {
+                report.page_count
+            } else {
+                report.stale_page_estimate
+            };
+            let stale_physical_bytes = if fully_stale {
+                report.physical_bytes
+            } else {
+                report
+                    .physical_bytes
+                    .saturating_sub(report.live_physical_bytes)
+            };
+            if stale_page_estimate == 0 && stale_physical_bytes == 0 {
+                return None;
+            }
+            let reclaim_score = stale_physical_bytes
+                .saturating_mul(10_000_u64.saturating_sub(report.live_ref_density_basis_points))
+                .saturating_div(10_000)
+                .saturating_add(stale_page_estimate);
+            Some(StorageReclaimCandidate {
+                page_segment_id: report.page_segment_id,
+                physical_bytes: report.physical_bytes,
+                live_physical_bytes: report.live_physical_bytes,
+                stale_physical_bytes,
+                page_count: report.page_count,
+                live_page_refs: report.live_page_refs,
+                stale_page_estimate,
+                live_ref_density_basis_points: report.live_ref_density_basis_points,
+                reclaim_score,
+                reason: if fully_stale {
+                    "orphan_segment".to_string()
+                } else {
+                    "low_live_density".to_string()
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        right
+            .reclaim_score
+            .cmp(&left.reclaim_score)
+            .then_with(|| right.stale_physical_bytes.cmp(&left.stale_physical_bytes))
+            .then_with(|| left.page_segment_id.cmp(&right.page_segment_id))
+    });
+    candidates
+}
+
+
 pub(super) fn annotate_storage_manager_admin_stage_fields(
     stages: &mut [StorageManagerStageReport],
     last_run_unix_ms: u64,
