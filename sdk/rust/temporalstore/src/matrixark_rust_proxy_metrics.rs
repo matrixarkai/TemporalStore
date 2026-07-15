@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 
+use crate::matrixark_rust_proxy_clock::unix_ms;
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct OpMetrics {
     pub(crate) ok: u64,
@@ -121,17 +123,6 @@ pub(crate) struct CommandStats {
     pub bytes_written: u64,
     pub bytes_read: u64,
 }
-
-pub(crate) fn unix_ms() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or(0)
-}
-
-
-
-
 
 pub(crate) fn matrixark_rust_service_mode() -> &'static str {
     "rust_proxy_stdio"

@@ -1,4 +1,5 @@
-use crate::matrixark_rust_proxy_metrics::{unix_ms, MetricsSnapshot};
+use crate::matrixark_rust_proxy_clock::unix_ms;
+use crate::matrixark_rust_proxy_metrics::MetricsSnapshot;
 
 use crate::matrixark_rust_proxy_metrics_format::{
     line, matrixark_rust_storage_mode, metric_header,

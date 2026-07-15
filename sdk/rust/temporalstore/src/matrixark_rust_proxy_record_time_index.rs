@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use crate::matrixark_rust_proxy_metrics::unix_ms;
+use crate::matrixark_rust_proxy_clock::unix_ms;
 
 fn matrixark_event_ingestion_time_ms(record: &Value) -> u64 {
     for field in ["ingestion_time_ms", "updated_at_ms", "created_at_ms"] {
