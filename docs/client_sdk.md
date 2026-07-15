@@ -175,7 +175,7 @@ tests.
 
 ## Proxy SDK API
 
-The proxy SDKs use the same logical data model as the direct SDKs:
+The proxy SDKs use the same logical capability as the direct SDKs:
 
 - STRING: put/get with optional TTL.
 - COMMON: delete, expire, TTL.

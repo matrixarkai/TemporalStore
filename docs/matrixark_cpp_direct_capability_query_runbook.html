@@ -1,4 +1,4 @@
-# MatrixArk C++ TemporalStore Direct Data Model Query Runbook
+<!doctype html><meta charset='utf-8'><title>MatrixArk C++ TemporalStore Direct Runbook</title><style>body{font-family:Inter,Segoe UI,Arial,sans-serif;max-width:1180px;margin:32px auto;padding:0 24px;line-height:1.45;color:#172033}pre{background:#f6f8fb;border:1px solid #dde5f0;padding:14px;overflow:auto;border-radius:8px}code{background:#edf2f7;padding:2px 4px;border-radius:4px}h1,h2,h3{color:#0f172a}</style><pre># MatrixArk C++ TemporalStore Direct Capability Query Runbook
 
 This run stores the MatrixArk ingestion, extraction, retrieval, L0/L1 summary, segment, entity, index, embedding, and ContextPack audit records in real C++ TemporalStore through the native Python SDK binding.
 
@@ -42,11 +42,11 @@ MatrixArk direct mode stores an append-only logical record log:
 
 Each hash field is a zero-padded sequence id. The field value is one JSON MatrixArk record.
 
-## Query All Records By Data Model
+## Query All Records By Capability
 
 ```bash
 cd <repo>
-PYTHONPATH=sdk/python python3 - <<'PY'
+PYTHONPATH=sdk/python python3 - &lt;&lt;'PY'
 import json
 from collections import Counter
 from temporalstore import Client, Options
@@ -84,7 +84,7 @@ PY
 ## Query Only Secondary Indexes
 
 ```bash
-PYTHONPATH=sdk/python python3 - <<'PY'
+PYTHONPATH=sdk/python python3 - &lt;&lt;'PY'
 import json
 from temporalstore import Client, Options
 prefix = 'matrixark:cpp:query:index:debug:1782231394422'
@@ -106,7 +106,7 @@ PY
 ## Query Embedding Metadata
 
 ```bash
-PYTHONPATH=sdk/python python3 - <<'PY'
+PYTHONPATH=sdk/python python3 - &lt;&lt;'PY'
 import json
 from temporalstore import Client, Options
 prefix='matrixark:cpp:query:index:debug:1782231394422'
@@ -128,3 +128,4 @@ PY
 - `docs/matrixark_query_index_cpp_direct_debug_flow.md`
 - `docs/matrixark_query_index_cpp_direct_debug_flow.html`
 - `docs/matrixark_query_index_cpp_direct_debug_flow.json`
+</pre>

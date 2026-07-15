@@ -4,7 +4,7 @@ Event log: `.local/context-debug/locomo-oss-docker-debug/matrixark_locomo_debug_
 Embedding provider: `oss`
 Embedding model: `/models/sentence-transformers/all-MiniLM-L6-v2`
 
-## Data Model Counts
+## Capability Counts
 
 - `context_batch_commit`: 3
 - `context_embedding`: 90

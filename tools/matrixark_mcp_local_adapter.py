@@ -55,7 +55,7 @@ def latest_value_record_key(record: Json) -> tuple[Any, ...] | None:
             record.get("index_name"),
             record.get("scope_key") or canonical_scope_key(record.get("scope", {})) if isinstance(record.get("scope", {}), dict) else record.get("scope_key"),
             record.get("node_hash") or record.get("node_id"),
-            record.get("data_model") or record.get("ref_type"),
+            record.get("capability") or record.get("ref_type"),
             record.get("timestamp_key_ms") or record.get("updated_at_ms"),
         )
     if record_type == "context_entity":
@@ -2888,7 +2888,7 @@ class MatrixArkLocalAdapter:
                 self.append(
                     context_index_posting_record(
                         index_name=index_name,
-                        data_model=f"{resource_kind}_summary",
+                        capability=f"{resource_kind}_summary",
                         ref_type="summary",
                         ref_hashes=[resource_summary_hash],
                         node_hash=node_hash,
@@ -3382,7 +3382,7 @@ class MatrixArkLocalAdapter:
                     {
                         "record_type": "context_index",
                         "index_name": index_name,
-                        "data_model": "context_event",
+                        "capability": "context_event",
                         "ref_type": "event",
                         "ref_hashes": [event_id_hash],
                         "node_hash": node_hash,
@@ -3768,7 +3768,7 @@ class MatrixArkLocalAdapter:
             records_to_append.append(
                 context_index_posting_record(
                     index_name=index_name,
-                    data_model="context_batch_commit",
+                    capability="context_batch_commit",
                     batch_id_hash=batch_id_hash,
                     node_hash=node_hash,
                     scope=envelope["scope"],

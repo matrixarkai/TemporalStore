@@ -56,7 +56,7 @@ flowchart LR
     Events --> Offline
 ```
 
-The offline path remains, but the online serving path becomes one cluster with multiple data models.
+The offline path remains, but the online serving path becomes one cluster with multiple capabilities.
 
 ## Cluster Shape
 
@@ -95,7 +95,7 @@ A production cluster can expose both direct SDK and proxy SDK paths:
 
 For early cloud service testing, one metaserver node plus two data nodes is enough to validate data paths. For production, the metaserver should be replicated and the data node count should scale by partition count, memory pressure, and write throughput.
 
-## Data Models In One Cluster
+## Capabilities In One Cluster
 
 TemporalStore should support multiple online-serving models in the same cluster.
 
@@ -157,7 +157,7 @@ model + tenant + route -> rolling p95 latency / error / cost counters
 
 These fit TemporalStore because they are high-cardinality, frequently updated, time-sensitive, and often queried by bounded windows or exact keys.
 
-Possible AI-oriented data models:
+Possible AI-oriented capabilities:
 
 | Model | What It Stores | First Use |
 |---|---|---|

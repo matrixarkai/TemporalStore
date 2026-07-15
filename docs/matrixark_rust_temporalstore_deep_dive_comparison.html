@@ -175,7 +175,7 @@
         Rust TemporalStore is no longer just a client or proxy shell. The core runtime has a real storage engine made of
         <code>TemporalEngine</code>, slot-first indexes, page/block address aliases, packed timestamp pages, a write-ahead
         log, a multi-layer cache, storage lifecycle reports, and data-node schedulers. MatrixArk context records are stored
-        on the same engine primitives as other data models: model maps point to <code>PageAddress</code> values, timestamped
+        on the same engine primitives as other capabilities: model maps point to <code>PageAddress</code> values, timestamped
         maps point to packed pages, and context-specific retrieval uses engine commands plus workflow code.
       </p>
       <div class="note">
@@ -242,7 +242,7 @@
           <tr>
             <td>MatrixArk context</td>
             <td><code>types.rs</code>, <code>engine/context.rs</code>, <code>context_workflow.rs</code>, <code>proxy.rs</code></td>
-            <td>Context data models, timestamp key fanout, child refs, secondary indexes, native retrieval workflow, resource/skill fanout.</td>
+            <td>Context capabilities, timestamp key fanout, child refs, secondary indexes, native retrieval workflow, resource/skill fanout.</td>
           </tr>
           <tr>
             <td>Raft integration</td>

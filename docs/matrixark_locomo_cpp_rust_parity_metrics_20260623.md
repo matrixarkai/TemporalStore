@@ -43,9 +43,9 @@ Per-query selected node counts were identical:
 [2, 2, 2, 2, 2, 2, 2, 2, 2]
 ```
 
-## Data Models Validated
+## Capabilities Validated
 
-Both backends wrote and read the same data-model families:
+Both backends wrote and read the same capability families:
 
 - `context_node`: materialized filesystem-like user/session nodes.
 - `context_child_ref`: parent -> child edges for traversal.

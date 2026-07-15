@@ -117,7 +117,7 @@ The public API shape remains simple:
 }
 ```
 
-The caller does not need to know MatrixArk internal data models.  MatrixArk owns
+The caller does not need to know MatrixArk internal capabilities.  MatrixArk owns
 extraction into `ContextNode`, `ContextEvent`, `ContextEntity`,
 `ContextSummary`, `ContextIndex`, `ResourceChunk`, and `ContextPackAudit`.
 

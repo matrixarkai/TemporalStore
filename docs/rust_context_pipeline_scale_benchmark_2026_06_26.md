@@ -102,7 +102,7 @@ The OSS attempt timed out after 604 seconds and was stopped. No live OSS-model p
 
 ## Context Model Fanout
 
-| Data model / index | Count |
+| Capability / index | Count |
 | --- | ---: |
 | Context nodes | `13` |
 | Context events | `13` |

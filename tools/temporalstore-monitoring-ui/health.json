@@ -356,7 +356,7 @@
       "notes": "plain KV baseline; proxy STRING passed"
     }
   ],
-  "data_models": [
+  "capabilities": [
     {
       "name": "TemporalAggregate",
       "status": "passed",
@@ -1316,7 +1316,7 @@
       {
         "label": "Model isolation",
         "value": "config driven",
-        "detail": "tenant can pin OSS model family and runtime class"
+        "detail": "tenant can pin OSS capability and runtime class"
       }
     ],
     "runbook": [

@@ -1082,7 +1082,7 @@ fn context_temporal_compression_and_raw_backfill_use_cold_storage_without_cache_
 }
 
 #[test]
-fn live_page_segment_ids_scan_all_index_backed_data_models() {
+fn live_page_segment_ids_scan_all_index_backed_capabilities() {
     let mut shard = ShardState::default();
     shard.strings.insert(
         "string".to_string(),

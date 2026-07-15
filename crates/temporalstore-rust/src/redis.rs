@@ -4242,7 +4242,7 @@ mod tests {
     }
 
     #[test]
-    fn redis_open_source_surface_is_trimmed_to_production_data_models() {
+    fn redis_open_source_surface_is_trimmed_to_production_capabilities() {
         let _guard = OPEN_SOURCE_ENV_LOCK.lock().unwrap();
         std::env::set_var("TEMPORALSTORE_OPEN_SOURCE_SURFACE", "1");
 

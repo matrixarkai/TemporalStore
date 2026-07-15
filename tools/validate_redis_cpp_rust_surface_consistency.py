@@ -56,7 +56,7 @@ def main() -> int:
     shared = contract["shared_minimal_redis_commands"]
     public_capabilities = contract.get(
         "rust_public_capability_commands",
-        contract.get("rust_public_data_model_commands", {}),
+        contract.get("rust_public_capability_commands", {}),
     )
     feature = public_capabilities["feature"]
     control_state = public_capabilities["control_state"]

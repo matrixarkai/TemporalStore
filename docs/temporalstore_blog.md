@@ -37,7 +37,7 @@ The hard part is not the formula. The hard part is the shape:
 
 If each feature is precomputed by a separate batch or streaming job, feature development becomes slow. If every online query scans raw events, latency becomes unpredictable. TemporalStore sits between those extremes.
 
-## TemporalAggregate Data Model
+## TemporalAggregate Capability
 
 TemporalStore's `TemporalAggregate` model stores per-key, per-metric, per-dimension, per-time-bucket aggregate values.
 
@@ -133,7 +133,7 @@ This state has the same shape as the feature-serving workloads TemporalStore is 
 - hot/cold serving tiers
 - persistence beyond process memory
 
-That suggests several future AI-specific data models:
+That suggests several future AI-specific capabilities:
 
 | Model | What It Stores | Example |
 |---|---|---|
@@ -379,7 +379,7 @@ With plain KV, the application usually has to choose between:
 - precompute every possible window/filter
 - keep many derived counters with custom application logic
 
-TemporalStore makes this a storage-side data model. The application sends feature semantics directly to the store, and the store handles bucket update, range scan, and fold.
+TemporalStore makes this a storage-side capability. The application sends feature semantics directly to the store, and the store handles bucket update, range scan, and fold.
 
 ## Current Implementation Notes
 

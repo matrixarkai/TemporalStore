@@ -82,7 +82,7 @@ Interpretation:
 
 - The one-hour TemporalStore soak did not report operation errors or client loop crashes.
 - Read/query latency was higher than the earlier focused scale tests because three workloads ran at the same time on the same small meta/client node.
-- Earlier TemporalStore focused scale results are still the better source for per-data-model latency under controlled load.
+- Earlier TemporalStore focused scale results are still the better source for per-capability latency under controlled load.
 
 ## TemporalStore Focused Scale Results
 

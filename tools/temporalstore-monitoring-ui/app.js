@@ -143,7 +143,7 @@ const fallbackHealth = {
       notes: "plain KV baseline",
     },
   ],
-  data_models: [
+  capabilities: [
     {
       name: "TemporalAggregate",
       status: "passed",
@@ -1041,7 +1041,7 @@ const fallbackHealth = {
       { label: "Serving threshold", value: "bounded", detail: "depth, children, candidates, and token budget capped" },
       { label: "Historical data", value: "queryable", detail: "old events can remain raw or compressed by time window" },
       { label: "Model choice", value: "pluggable", detail: "OSS local default, provider hook for hosted models" },
-      { label: "Model isolation", value: "config driven", detail: "tenant can pin OSS model family and runtime class" },
+      { label: "Model isolation", value: "config driven", detail: "tenant can pin OSS capability and runtime class" },
     ],
     readiness_gates: [
       {
@@ -1342,8 +1342,8 @@ function renderModules(modules) {
     .join("");
 }
 
-function renderDataModels(models) {
-  const el = byId("data-models");
+function renderCapabilities(models) {
+  const el = byId("capabilities");
   if (!el) {
     return;
   }
@@ -2872,7 +2872,7 @@ function renderModelConfigControls(model) {
     <div class="model-config-controls">
       <label for="model-${escapeHtml(role)}">
         Model
-        <select id="model-${escapeHtml(role)}" data-model-role="${escapeHtml(model.role)}">
+        <select id="model-${escapeHtml(role)}" data-capability-role="${escapeHtml(model.role)}">
           ${options.map((option) => `<option${option === model.default_model ? " selected" : ""}>${escapeHtml(option)}</option>`).join("")}
         </select>
       </label>
@@ -3153,7 +3153,7 @@ function render(data) {
   renderContextOps(data.context_ops);
   renderScaleTests(data.scale_tests);
   renderModules(data.module_tests);
-  renderDataModels(data.data_models);
+  renderCapabilities(data.capabilities || data.capabilities);
   renderTableRows("scale-matrix-body", scaleMatrix, [
     "workload",
     "threads",

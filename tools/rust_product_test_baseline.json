@@ -131,7 +131,7 @@
     "crates/temporalstore-rust/src/e2e.rs::e2e_async_storage_queues_and_flushes_without_blocking_response",
     "crates/temporalstore-rust/src/e2e.rs::e2e_kill_switches_block_proxy_writes_reads_replication_and_scale",
     "crates/temporalstore-rust/src/e2e.rs::e2e_scale_up_and_scale_down_keep_workflow_available",
-    "crates/temporalstore-rust/src/engine/tests.rs::live_page_segment_ids_scan_all_index_backed_data_models",
+    "crates/temporalstore-rust/src/engine/tests.rs::live_page_segment_ids_scan_all_index_backed_capabilities",
     "crates/temporalstore-rust/src/engine/tests.rs::page_compaction_rewrites_live_addresses_and_allows_old_segment_gc",
     "crates/temporalstore-rust/src/engine/tests.rs::recovery_reports_owner_mismatch_and_compaction_refuses_it",
     "crates/temporalstore-rust/src/engine/tests.rs::recovery_reports_reused_object_id_conflicts",

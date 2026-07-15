@@ -290,7 +290,7 @@ The native C++ executor must:
 - execute each command against C++ TemporalStore
 - compare the actual logical response to `expect`
 - restart or reload the local C++ engine when `restart_before=true`
-- fail closed on unknown command fields, missing expected fields, unsupported data models, or
+- fail closed on unknown command fields, missing expected fields, unsupported capabilities, or
   response mismatches
 
 ## Running Both Codebases

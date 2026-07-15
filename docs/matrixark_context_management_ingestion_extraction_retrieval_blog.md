@@ -403,7 +403,7 @@ Secondary indexes are not meant to be one tiny row per event forever. Current di
 ```json
 {
   "record_type": "context_index",
-  "data_model": "context_event",
+  "capability": "context_event",
   "index_name": "event_type:confirmation",
   "timestamp_key_ms": 1782681900000,
   "node_hash": 2100209595829882121,

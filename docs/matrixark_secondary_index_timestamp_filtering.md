@@ -25,7 +25,7 @@ emit several records like this:
 
 ```json
 {
-  "data_model": "context_event",
+  "capability": "context_event",
   "index_name": "event_type:confirmation",
   "timestamp_key_ms": 1782681920550,
   "ref_type": "event",
@@ -51,7 +51,7 @@ That is the wrong serving model at scale.
 ### Current Shape: TemporalStore-Style Posting Lists
 
 The current target is the older TemporalStore/feature-store style: one primary
-time-ordered series for the data model, plus compact secondary posting lists that
+time-ordered series for the capability, plus compact secondary posting lists that
 point into that primary series.
 
 Primary event series:
@@ -63,7 +63,7 @@ context_event/{scope_key}/{node_hash}/{timestamp_key_ms}:{event_id_hash}
 Secondary posting series:
 
 ```text
-secondary_index/{scope_key}/{data_model}/{index_name}/{posting_time}:{posting_id}
+secondary_index/{scope_key}/{capability}/{index_name}/{posting_time}:{posting_id}
 ```
 
 Compact posting value:
@@ -100,7 +100,7 @@ rendered view of posting lists, not as one heavyweight object per event.
 Example rendered rows:
 
 ```text
-data_model            index_name                  timestamp_key_ms  refs  node_hash
+capability            index_name                  timestamp_key_ms  refs  node_hash
 context_event         event_type:confirmation     1782681920550     12    -
 resource_chunk        resource_type:pdf           1782681920550     8     -
 context_batch_commit  event_type:confirmation     1782681920550     0     2100209595829882121
@@ -159,7 +159,7 @@ A secondary index posting is a compact pointer from an index term to one or more
 The debug table may show fields like:
 
 ```text
-data_model            index_name                  timestamp_key_ms  ref_type  ref_hashes  node_hash
+capability            index_name                  timestamp_key_ms  ref_type  ref_hashes  node_hash
 context_batch_commit  event_type:confirmation     1782681920550              []          2100209595829882121
 context_batch_commit  classification:batch_memory 1782681920550              []          2100209595829882121
 ```
@@ -170,7 +170,7 @@ This compact posting shape means:
 - `timestamp_key_ms` is the time ordering for that posting bucket.
 - `ref_hashes=[]` means this posting is a node or batch hint, not a direct event/chunk/entity ref.
 - `node_hash=2100209595829882121` tells retrieval which node to enter after the index lookup.
-- `data_model` tells retrieval which candidate family the posting points at.
+- `capability` tells retrieval which candidate family the posting points at.
 
 In other words, the first row says:
 
@@ -378,7 +378,7 @@ lists, not verbose context-object records.
 Recommended logical layout:
 
 ```text
-secondary_index/{scope_key}/{data_model}/{index_name}/{posting_time}:{posting_id}
+secondary_index/{scope_key}/{capability}/{index_name}/{posting_time}:{posting_id}
 ```
 
 For node or batch hints:
@@ -406,8 +406,8 @@ Node hints can stay separate:
 If a posting bucket grows too large, split it:
 
 ```text
-secondary_index/{scope_key}/{data_model}/{index_name}/{posting_time}:part0001
-secondary_index/{scope_key}/{data_model}/{index_name}/{posting_time}:part0002
+secondary_index/{scope_key}/{capability}/{index_name}/{posting_time}:part0001
+secondary_index/{scope_key}/{capability}/{index_name}/{posting_time}:part0002
 ```
 
 The serving ContextPack should not include these index implementation fields. They belong in debug/audit when enabled.
@@ -417,7 +417,7 @@ The serving ContextPack should not include these index implementation fields. Th
 1. Keep `timestamp_key_ms` as the primary order key for `ContextEvent`.
 2. Keep `timestamp_key_ms` in secondary postings only as the ordered index key.
 3. Do not include index timestamps, hashes, and node hints in ContextPack by default.
-4. Group debug rows by `(data_model, index_name, timestamp_key_ms, node_hash)` and show counts instead of every posting when possible.
+4. Group debug rows by `(capability, index_name, timestamp_key_ms, node_hash)` and show counts instead of every posting when possible.
 5. Cap secondary index terms per object with dynamic config.
 6. Remove low-signal index terms from default extraction/indexing.
 7. Push filtering into C++/Rust TemporalStore native APIs so Python does not materialize large posting lists.

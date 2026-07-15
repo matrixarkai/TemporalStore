@@ -1,7 +1,7 @@
 {
   "schema": "temporalstore_redis_cpp_rust_surface_parity_v1",
   "surface": "trimmed_open_source_context_feature_control",
-  "rule": "C++ and Rust share the same minimal Redis-compatible command base. Rust may additionally expose explicit Feature and Control State capability commands in trimmed/open-source mode. Control State is the only public fast-changing serving-signal capability for counters, caps, quotas, pacing, eligibility, suppression, and risk-control state. RISK* commands remain compatibility aliases during migration. No additional model families are part of the first open-source release.",
+  "rule": "C++ and Rust share the same minimal Redis-compatible command base. Rust may additionally expose explicit Feature and Control State capability commands in trimmed/open-source mode. Control State is the only public fast-changing serving-signal capability for counters, caps, quotas, pacing, eligibility, suppression, and risk-control state. RISK* commands remain compatibility aliases during migration. No additional capabilities are part of the first open-source release.",
   "shared_minimal_redis_commands": [
     "INFO",
     "AUTH",

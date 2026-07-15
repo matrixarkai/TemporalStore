@@ -192,7 +192,7 @@ flowchart TD
   H --> I
 ```
 
-Data models written during resource ingestion:
+Capabilities written during resource ingestion:
 
 - `resource_import_task`: lifecycle state, progress, parse warnings, chunk counts, failure details, and timing metrics.
 - `resource_manifest`: one logical imported resource version, including `raw_uri`, `resource_hash`, `resource_version`, parser info, scope, and summary ref.
