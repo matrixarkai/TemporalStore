@@ -7,11 +7,13 @@ The open-source build keeps:
 
 - Basic Redis-compatible commands: auth/ping/info/command metadata, minimal
   string commands, minimal key lifetime commands, and minimal hash commands.
-- MatrixArk context-management data models.
+- MatrixArk context-management serving data models: nodes, events, child
+  indexes, secondary indexes, entities, summaries, embeddings, dirty markers,
+  and compression events.
 - Feature data model.
 - Single Risk data model for frequency-cap and risk-control.
 
-Only the model families listed above are public in the first open-source release. Other internal model families are intentionally omitted from docs, manifests, and compatibility corpora until they are ready for a future public release.
+Only the model families listed above are public in the first open-source release. Context audit/replay/debug data models are not part of the first-release open-source surface. Other internal model families are intentionally omitted from docs, manifests, and compatibility corpora until they are ready for a future public release.
 
 The open-source build excludes non-public/internal model families and extension
 modules that are not part of the first-release public contract. It also does not expose Redis server-configuration or broad

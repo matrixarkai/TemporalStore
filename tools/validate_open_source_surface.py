@@ -161,9 +161,12 @@ def main() -> int:
     set_cmake = read("src/extension/set/CMakeLists.txt")
     model_cmake = read("src/model/CMakeLists.txt")
     model_manager = read("src/model/model_manager.cc")
+    context_model = read("src/model/context_model.h")
     cxx_redis = read("src/server/redis_command_handler.cc")
     cxx_redis_service = read("src/server/redis_service.cc")
     rust_redis = read("crates/temporalstore-rust/src/redis.rs")
+    rust_manifest = read("crates/temporalstore-rust/Cargo.toml")
+    rust_types = read("crates/temporalstore-rust/src/types.rs")
     redis_compat_smoke = read("tools/run_redis_compat_smoke_ubuntu22.sh")
     redis_live_smoke = read("tools/run_redis_live_storage_smoke_ubuntu22.sh")
     redis_production_gate = read("tools/run_redis_production_gate_ubuntu22.sh")
@@ -233,6 +236,12 @@ def main() -> int:
             f"{symbol} must be disabled under BCACHE2_OPEN_SOURCE_SURFACE",
             failures,
         )
+    require(
+        cxx_guarded_symbol(model_manager, "REGISTER_MODEL(ContextAuditModel")
+        and cxx_guarded_symbol(context_model, "ContextAuditModel"),
+        "ContextAuditModel must be disabled under BCACHE2_OPEN_SOURCE_SURFACE",
+        failures,
+    )
     for symbol in ("REGISTER_MODEL(FeatureModel", "REGISTER_MODEL(HashModel", "REGISTER_MODEL(CPCModel"):
         require(symbol in model_manager, f"{symbol} must remain available", failures)
 
@@ -525,6 +534,19 @@ def main() -> int:
         and "`LPUSH`" in open_source_surface
         and "`ZADD`" in open_source_surface,
         "open-source surface overview must explicitly exclude config, broad keyspace scans, and collection clones",
+        failures,
+    )
+    require(
+        "Context audit/replay/debug data models are not part of the first-release open-source surface" in open_source_surface,
+        "open-source surface overview must exclude context audit/replay/debug data models",
+        failures,
+    )
+    require(
+        "open-source-surface = []" in rust_manifest
+        and '#[cfg(not(feature = "open-source-surface"))]\npub type ContextAuditModel' in rust_types
+        and '#[cfg(not(feature = "open-source-surface"))]\npub const CONTEXT_AUDIT_MODEL_ID' in rust_types
+        and '#[cfg(not(feature = "open-source-surface"))]\n        context_model_descriptor_entry(\n            CONTEXT_AUDIT_MODEL_ID' in rust_types,
+        "Rust open-source feature must omit ContextAuditModel from the public model descriptor surface",
         failures,
     )
     require(

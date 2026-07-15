@@ -620,6 +620,7 @@ pub type ContextNodeModel = ContextNode;
 pub type ContextEventModel = ContextEvent;
 pub type ContextSegment = ContextEvent;
 pub type ContextIndexModel = ContextIndexRef;
+#[cfg(not(feature = "open-source-surface"))]
 pub type ContextAuditModel = ContextPackAudit;
 pub type ContextDirtyModel = ContextSummaryDirtyMarker;
 pub type ContextChildModel = ContextChildRef;
@@ -640,6 +641,7 @@ pub struct ContextModelDescriptor {
 pub const CONTEXT_NODE_MODEL_ID: u8 = 9;
 pub const CONTEXT_EVENT_MODEL_ID: u8 = 10;
 pub const CONTEXT_INDEX_MODEL_ID: u8 = 11;
+#[cfg(not(feature = "open-source-surface"))]
 pub const CONTEXT_AUDIT_MODEL_ID: u8 = 12;
 pub const CONTEXT_DIRTY_MODEL_ID: u8 = 13;
 pub const CONTEXT_CHILD_MODEL_ID: u8 = 14;
@@ -687,6 +689,7 @@ pub fn context_model_descriptors() -> Vec<ContextModelDescriptor> {
             "FeatureOrSet",
             &["ContextIndex", "ContextIndexRef", "ctx:index"],
         ),
+        #[cfg(not(feature = "open-source-surface"))]
         context_model_descriptor_entry(
             CONTEXT_AUDIT_MODEL_ID,
             "ContextAuditModel",

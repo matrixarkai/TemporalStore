@@ -233,9 +233,11 @@ pub use shared_store::{
     SharedStoreReplicationError, SharedStoreReplicator, SharedStoreRetryPolicy,
     SharedStoreStorageMode, SharedStoreStorageWriter, SharedStoreWriteReport,
 };
+#[cfg(not(feature = "open-source-surface"))]
+pub use types::ContextAuditModel;
 pub use types::{
-    BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextAuditModel,
-    ContextAuditRef, ContextChildModel, ContextChildRef, ContextCompressionEvent,
+    BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextAuditRef,
+    ContextChildModel, ContextChildRef, ContextCompressionEvent,
     ContextCompressionModel, ContextDirtyModel, ContextEmbedding, ContextEmbeddingModel,
     ContextEntity, ContextEvent, ContextEventModel, ContextExtractedEventIndexes,
     ContextIndexModel, ContextIndexRef, ContextNode, ContextNodeModel, ContextPackAudit,

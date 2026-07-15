@@ -40,7 +40,9 @@ REGISTER_MODEL(CPCModel, 8);
 REGISTER_MODEL(ContextNodeModel, 9);
 REGISTER_MODEL(ContextEventModel, 10);
 REGISTER_MODEL(ContextIndexModel, 11);
+#ifndef BCACHE2_OPEN_SOURCE_SURFACE
 REGISTER_MODEL(ContextAuditModel, 12);
+#endif
 REGISTER_MODEL(ContextDirtyModel, 13);
 REGISTER_MODEL(ContextChildModel, 14);
 REGISTER_MODEL(ContextEmbeddingModel, 15);

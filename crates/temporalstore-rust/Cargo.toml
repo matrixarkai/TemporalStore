@@ -30,6 +30,7 @@ tonic-build = "0.12"
 [features]
 default = ["temporal-raft-engine"]
 temporal-raft-engine = []
+open-source-surface = []
 
 [[bin]]
 name = "matrixark_rust_proxy"
