@@ -35,6 +35,8 @@ mod direct_control_state;
 #[cfg(feature = "direct")]
 mod direct_ffi;
 #[cfg(feature = "direct")]
+mod direct_ffi_types;
+#[cfg(feature = "direct")]
 mod direct_helpers;
 #[cfg(feature = "direct")]
 mod direct_key_value;
