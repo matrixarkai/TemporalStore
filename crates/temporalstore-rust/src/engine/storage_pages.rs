@@ -1,0 +1,58 @@
+use std::collections::BTreeMap;
+
+use super::cache::{page_physical_identity_key, PagePhysicalIdentityKey};
+use super::state::ShardState;
+use crate::page_store::PageAddress;
+
+pub(super) fn unique_timestamped_kv_page_addresses(
+    series: &BTreeMap<u64, PageAddress>,
+) -> Vec<PageAddress> {
+    let mut addresses = BTreeMap::<PagePhysicalIdentityKey, PageAddress>::new();
+    for address in series.values() {
+        addresses.insert(page_physical_identity_key(address), address.clone());
+    }
+    addresses.into_values().collect()
+}
+
+pub(super) fn unique_feature_page_addresses(
+    series: &BTreeMap<u64, PageAddress>,
+) -> Vec<PageAddress> {
+    unique_timestamped_kv_page_addresses(series)
+}
+
+pub(super) fn timestamped_kv_series<'a>(
+    shard: &'a ShardState,
+) -> Vec<(&'static str, &'a str, &'a BTreeMap<u64, PageAddress>)> {
+    let mut series = Vec::new();
+    for (key, timeline) in &shard.features {
+        series.push(("feature", key.as_str(), timeline));
+    }
+    for (key, timeline) in &shard.sequences {
+        series.push(("sequence", key.as_str(), timeline));
+    }
+    for (key, timeline) in &shard.ips {
+        series.push(("ips", key.as_str(), timeline));
+    }
+    for (key, timeline) in &shard.context_events {
+        series.push(("context_event", key.as_str(), timeline));
+    }
+    for (key, timeline) in &shard.context_indexes {
+        series.push(("context_index", key.as_str(), timeline));
+    }
+    for (key, timeline) in &shard.context_audits {
+        series.push(("context_audit", key.as_str(), timeline));
+    }
+    for (key, timeline) in &shard.context_dirty {
+        series.push(("context_dirty", key.as_str(), timeline));
+    }
+    for (key, timeline) in &shard.context_children {
+        series.push(("context_child", key.as_str(), timeline));
+    }
+    for (key, timeline) in &shard.context_summaries {
+        series.push(("context_summary", key.as_str(), timeline));
+    }
+    for (key, timeline) in &shard.context_compressions {
+        series.push(("context_compression", key.as_str(), timeline));
+    }
+    series
+}

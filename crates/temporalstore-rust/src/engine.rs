@@ -32,6 +32,7 @@ mod slot_dump;
 mod slot_store;
 mod state;
 mod storage_model;
+mod storage_pages;
 mod storage_physical;
 mod storage_io;
 
@@ -67,6 +68,7 @@ use self::storage_io::{atomic_write_bytes, serialize_index, unique_temp_path};
 use self::storage_model::{
     compaction_layout_policy_for_model, compaction_object_page_packing_enabled,
 };
+use self::storage_pages::*;
 use self::storage_physical::{
     cpp_packed_page_index_bytes, cpp_packed_slot_node_bytes, CPP_PACKED_PAGE_INDEX_SIZE,
     storage_block_address_sample, storage_page_address_sample, CPP_PACKED_SLOT_NODE_SIZE,
@@ -14142,55 +14144,6 @@ fn collect_live_page_addresses(shard: &ShardState) -> Vec<PageAddress> {
         .into_iter()
         .map(|entry| entry.address)
         .collect()
-}
-
-fn unique_timestamped_kv_page_addresses(series: &BTreeMap<u64, PageAddress>) -> Vec<PageAddress> {
-    let mut addresses = BTreeMap::<PagePhysicalIdentityKey, PageAddress>::new();
-    for address in series.values() {
-        addresses.insert(page_physical_identity_key(address), address.clone());
-    }
-    addresses.into_values().collect()
-}
-
-fn unique_feature_page_addresses(series: &BTreeMap<u64, PageAddress>) -> Vec<PageAddress> {
-    unique_timestamped_kv_page_addresses(series)
-}
-
-fn timestamped_kv_series<'a>(
-    shard: &'a ShardState,
-) -> Vec<(&'static str, &'a str, &'a BTreeMap<u64, PageAddress>)> {
-    let mut series = Vec::new();
-    for (key, timeline) in &shard.features {
-        series.push(("feature", key.as_str(), timeline));
-    }
-    for (key, timeline) in &shard.sequences {
-        series.push(("sequence", key.as_str(), timeline));
-    }
-    for (key, timeline) in &shard.ips {
-        series.push(("ips", key.as_str(), timeline));
-    }
-    for (key, timeline) in &shard.context_events {
-        series.push(("context_event", key.as_str(), timeline));
-    }
-    for (key, timeline) in &shard.context_indexes {
-        series.push(("context_index", key.as_str(), timeline));
-    }
-    for (key, timeline) in &shard.context_audits {
-        series.push(("context_audit", key.as_str(), timeline));
-    }
-    for (key, timeline) in &shard.context_dirty {
-        series.push(("context_dirty", key.as_str(), timeline));
-    }
-    for (key, timeline) in &shard.context_children {
-        series.push(("context_child", key.as_str(), timeline));
-    }
-    for (key, timeline) in &shard.context_summaries {
-        series.push(("context_summary", key.as_str(), timeline));
-    }
-    for (key, timeline) in &shard.context_compressions {
-        series.push(("context_compression", key.as_str(), timeline));
-    }
-    series
 }
 
 fn storage_feature_page_layout_report(
