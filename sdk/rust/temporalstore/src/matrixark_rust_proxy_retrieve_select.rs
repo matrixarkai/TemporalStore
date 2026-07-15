@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
-use crate::matrixark_rust_proxy_candidates::{record_node_hash, record_ref_hash};
+use crate::matrixark_rust_proxy_candidates::record_node_hash;
 use crate::matrixark_rust_proxy_cross_session::{cross_session_key, CrossSessionPolicy};
 use crate::matrixark_rust_proxy_pack::{
     candidate_text, context_class_name, is_serving_selected_ref_class, pack_ref_from_record,
@@ -10,6 +10,7 @@ use crate::matrixark_rust_proxy_pack::{
 };
 use crate::matrixark_rust_proxy_retrieve_result::RetrieveSelection;
 use crate::matrixark_rust_proxy_retrieve_scoring::ScoredCandidate;
+use crate::matrixark_rust_proxy_retrieve_signature::selected_ref_signature;
 
 pub(crate) fn select_retrieve_refs(
     scored: Vec<ScoredCandidate<'_>>,
@@ -101,17 +102,7 @@ pub(crate) fn select_retrieve_refs(
             dropped_cross_budget += 1;
             continue;
         }
-        let ref_signature = format!(
-            "{}:{}",
-            context_class,
-            record_ref_hash(record).unwrap_or_else(|| {
-                record
-                    .get("record_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string()
-            })
-        );
+        let ref_signature = selected_ref_signature(record, &context_class);
         if !selected_signatures.insert(ref_signature) {
             dropped_duplicate_ref += 1;
             continue;
