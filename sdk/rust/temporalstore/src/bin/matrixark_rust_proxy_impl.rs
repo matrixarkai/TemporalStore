@@ -47,6 +47,8 @@ mod matrixark_rust_proxy_retrieve_scoring;
 mod matrixark_rust_proxy_runtime;
 #[path = "../matrixark_rust_proxy_scan.rs"]
 mod matrixark_rust_proxy_scan;
+#[path = "../matrixark_rust_proxy_scan_records.rs"]
+mod matrixark_rust_proxy_scan_records;
 #[path = "../matrixark_rust_proxy_scope.rs"]
 mod matrixark_rust_proxy_scope;
 use matrixark_rust_proxy_command_stats::command_stats;
