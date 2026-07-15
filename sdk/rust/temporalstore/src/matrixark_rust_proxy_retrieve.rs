@@ -4,27 +4,20 @@ use serde_json::{json, Value};
 use temporalstore::Client;
 
 use crate::matrixark_rust_proxy_candidates::{record_node_hash, record_ref_hash};
-use crate::matrixark_rust_proxy_cross_session::parse_cross_session_policy;
+use crate::matrixark_rust_proxy_cross_session::{cross_session_key, parse_cross_session_policy};
 use crate::matrixark_rust_proxy_metrics::unix_ms;
 use crate::matrixark_rust_proxy_pack::{
     candidate_text, context_class_name, is_serving_selected_ref_class, pack_ref_from_record,
     token_estimate,
 };
 use crate::matrixark_rust_proxy_protocol::Command;
+use crate::matrixark_rust_proxy_retrieve_request::parse_retrieve_pack_request;
 use crate::matrixark_rust_proxy_retrieve_result::{
     scan_cache_hit, scan_dropped_count, try_sdk_native_pack, SdkNativePackAttempt,
 };
-use crate::matrixark_rust_proxy_retrieve_request::parse_retrieve_pack_request;
 use crate::matrixark_rust_proxy_retrieve_scoring::score_retrieve_candidates;
 use crate::matrixark_rust_proxy_scan::scan_matrixark_candidates;
-use crate::matrixark_rust_proxy_scope::{record_scope_string, session_scope_mode};
-
-fn cross_session_key(record: &Value) -> String {
-    record_scope_string(record, "session_id")
-        .or_else(|| record_scope_string(record, "scope_key"))
-        .or_else(|| record_node_hash(record).map(|node| format!("node:{node}")))
-        .unwrap_or_else(|| "unknown_cross_session".to_string())
-}
+use crate::matrixark_rust_proxy_scope::session_scope_mode;
 
 pub(crate) fn retrieve_context_pack_native(
     client: &Client,
