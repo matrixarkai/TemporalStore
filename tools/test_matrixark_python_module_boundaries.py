@@ -79,6 +79,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         event_keys_mod = importlib.import_module("tools.matrixark_mcp_event_keys")
         serving_records_mod = importlib.import_module("tools.matrixark_mcp_serving_records")
         resources_mod = importlib.import_module("tools.matrixark_mcp_resources")
+        raw_ingestion_mod = importlib.import_module("tools.matrixark_mcp_raw_ingestion")
         summaries_mod = importlib.import_module("tools.matrixark_mcp_summaries")
         summary_runtime_mod = importlib.import_module("tools.matrixark_mcp_summary_runtime")
         time_compression_runtime_mod = importlib.import_module("tools.matrixark_mcp_time_compression_runtime")
@@ -213,6 +214,11 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIs(core_mod.rewrite_chunk_uris, resources_mod.rewrite_chunk_uris)
         self.assertIs(core_mod.should_extract_resource_fact, resources_mod.should_extract_resource_fact)
         self.assertIs(core_mod.resource_fact_entity_name, resources_mod.resource_fact_entity_name)
+        self.assertEqual(raw_ingestion_mod.normalize_raw_storage_backend("matrix_object_store"), "matrixobject")
+        self.assertEqual(
+            raw_ingestion_mod.raw_ingestion_append_path_for_backend("s3"),
+            "matrixark_raw_ingestion_s3_object_ref",
+        )
         self.assertIs(core_mod.summarize_text, summaries_mod.summarize_text)
         self.assertIs(core_mod.generate_time_compression_summary, summaries_mod.generate_time_compression_summary)
         self.assertIs(core_mod.node_l1_generation_policy, summaries_mod.node_l1_generation_policy)
