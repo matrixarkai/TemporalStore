@@ -15,8 +15,10 @@ from typing import Any
 
 try:
     from tools.matrixark_mcp_core import Json, MatrixArkError
+    from tools.matrixark_mcp_rust_proxy_lanes import build_lane_pools
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import Json, MatrixArkError
+    from matrixark_mcp_rust_proxy_lanes import build_lane_pools
 
 
 class MatrixArkRustProxyClient:
@@ -133,28 +135,14 @@ class MatrixArkRustProxyClient:
         self._context_pack_response_cache_max_entries = max(
             1, int(os.environ.get("MATRIXARK_RUST_PROXY_CONTEXT_PACK_CLIENT_CACHE_MAX_ENTRIES", "256"))
         )
-        if self._shared_process_mode:
-            # The local Rust TemporalEngine is embedded in the proxy process. A
-            # multi-process write lane pool can hide writes from reads until
-            # there is a real shared server/proxy behind it, so writes/control
-            # stay on one process. Retrieve-pack is read-mostly after ingest
-            # and may use a warm process pool to avoid stdin/stdout head-of-line
-            # blocking in scale tests and production proxy mode.
-            shared_lanes = self._make_lanes(1)
-            pack_lanes = self._make_lanes(self._pack_lane_count) if self._dedicated_pack_lanes_enabled else shared_lanes
-            self._lanes = {
-                "write": shared_lanes,
-                "read": shared_lanes,
-                "pack": pack_lanes,
-                "control": shared_lanes,
-            }
-        else:
-            self._lanes = {
-                "write": self._make_lanes(self._write_lane_count),
-                "read": self._make_lanes(self._read_lane_count),
-                "pack": self._make_lanes(self._pack_lane_count),
-                "control": self._make_lanes(self._control_lane_count),
-            }
+        self._lanes = build_lane_pools(
+            shared_process_mode=self._shared_process_mode,
+            dedicated_pack_lanes_enabled=self._dedicated_pack_lanes_enabled,
+            write_lane_count=self._write_lane_count,
+            read_lane_count=self._read_lane_count,
+            pack_lane_count=self._pack_lane_count,
+            control_lane_count=self._control_lane_count,
+        )
         self._lane_worker_counts = {name: len(lanes) for name, lanes in self._lanes.items()}
         self._lane_worker_counts["retrieve"] = self._lane_worker_counts.get("pack", 0)
         self._lane_cursors = {name: 0 for name in self._lanes}
@@ -239,17 +227,6 @@ class MatrixArkRustProxyClient:
         self._context_pack_response_singleflight_wait_ms_max = 0.0
         self._started_at = time.time()
         self._proc: subprocess.Popen[str] | None = None
-
-    @staticmethod
-    def _make_lanes(count: int) -> list[Json]:
-        return [
-            {
-                "proc": None,
-                "lock": threading.Lock(),
-                "semaphore": threading.BoundedSemaphore(1),
-            }
-            for _ in range(count)
-        ]
 
     def close(self) -> None:
         seen: set[int] = set()
