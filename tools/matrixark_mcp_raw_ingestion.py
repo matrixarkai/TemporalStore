@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 try:
@@ -68,6 +69,25 @@ def raw_ingestion_append_options(backend: Any) -> Json:
         "count_update": "same_batch",
         "source": "matrixark_live_ingestion_dual_write",
     }
+
+
+def ensure_raw_ingestion_fields(target: Any) -> None:
+    if not hasattr(target, "_raw_storage_backend"):
+        target._raw_storage_backend = normalize_raw_storage_backend(
+            os.environ.get("MATRIXARK_RAW_INGESTION_BACKEND", "temporalstore")
+        )
+    else:
+        target._raw_storage_backend = normalize_raw_storage_backend(target._raw_storage_backend)
+    if not hasattr(target, "_raw_ingestion_prefix"):
+        storage_prefix = str(getattr(target, "_storage_prefix", "matrixark:mcp")).rstrip(":")
+        configured_raw_prefix = os.environ.get("MATRIXARK_DIRECT_RAW_STORAGE_PREFIX", "").strip().rstrip(":")
+        target._raw_ingestion_prefix = configured_raw_prefix or f"{storage_prefix}:raw_ingestion"
+    if not hasattr(target, "_raw_record_hash_key"):
+        target._raw_record_hash_key = f"{target._raw_ingestion_prefix}:records"
+    if not hasattr(target, "_raw_count_key"):
+        target._raw_count_key = f"{target._raw_ingestion_prefix}:record_count"
+    if not hasattr(target, "_raw_entry_count_cache"):
+        target._raw_entry_count_cache = None
 
 
 def raw_session_index_key(raw_ingestion_prefix: str, session_id: str) -> str:
