@@ -970,28 +970,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         return context_event_time_index_payload(record)
 
     def _context_event_time_index_entries(self, records: list[Json]) -> list[Json]:
-        entries: list[Json] = []
-        full_payload = os.environ.get("MATRIXARK_CONTEXT_EVENT_TIME_INDEX_FULL_PAYLOAD", "0").strip().lower() in {"1", "true", "yes"}
-        for record in records:
-            if record.get("record_type") != "context_event":
-                continue
-            if record.get("event_id_hash") is None:
-                continue
-            enriched = attach_context_event_time_key(record)
-            payload = (
-                json.dumps(enriched, sort_keys=True, separators=(",", ":"))
-                if full_payload
-                else self._context_event_time_index_payload(enriched)
-            )
-            entries.append(
-                {
-                    "key": self._context_event_time_index_key(enriched),
-                    "field": self._context_event_time_index_field(enriched),
-                    "value": payload,
-                    "storage_route": record.get("storage_route") if isinstance(record.get("storage_route"), dict) else {},
-                }
-            )
-        return entries
+        return context_event_time_index_entries(self._storage_prefix, records)
 
     def _latest_context_state_key(self) -> str:
         return latest_context_state_storage_key(self._storage_prefix)
