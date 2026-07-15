@@ -21,6 +21,11 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_latest_values import compact_latest_value_records, latest_value_record_key
 
+try:
+    from tools import matrixark_mcp_session_policy as session_policy
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_session_policy as session_policy
+
 RETRIEVAL_HOT_RECORD_TYPES = {
     "context_compression_event",
     "context_embedding",
@@ -643,80 +648,30 @@ class MatrixArkLocalAdapter:
         )
 
     def session_buffer_enabled(self, args: Json, *, kind: str = "message") -> bool:
-        if kind not in {"message", "business_data", "feedback"}:
-            return bool(args.get("session_buffer_enabled", False) or args.get("auto_batch_extract", False))
-        if args.get("session_buffer_enabled") is False or args.get("auto_batch_extract") is False:
-            return False
-        return True
+        return session_policy.session_buffer_enabled(args, kind=kind)
 
     def auto_batch_extract_enabled(self, args: Json, *, kind: str = "message") -> bool:
-        if kind not in {"message", "business_data", "feedback"}:
-            return bool(args.get("auto_batch_extract", False))
-        if args.get("auto_batch_extract") is False or args.get("session_buffer_enabled") is False:
-            return False
-        return True
+        return session_policy.auto_batch_extract_enabled(args, kind=kind)
 
     def session_boundary_commit_requested(self, args: Json, *, hook: Json | None = None) -> bool:
-        boundary_fields = ["flush_session_buffer", "conversation_done", "session_done", "task_complete"]
-        if any(bool(args.get(field, False)) for field in boundary_fields):
-            return True
-        metadata = optional_object(args, "metadata")
-        lifecycle_event = (
-            args.get("lifecycle_event_type")
-            or args.get("event_type")
-            or args.get("event")
-            or metadata.get("lifecycle_event_type")
-            or metadata.get("event_type")
-            or (hook or {}).get("event")
-            or (hook or {}).get("event_type")
-            or ""
-        )
-        normalized_event = "".join(ch for ch in str(lifecycle_event).lower() if ch.isalnum())
-        return normalized_event in {
-            "stop",
-            "subagentstop",
-            "postcompact",
-            "precompact",
-            "compact",
-            "sessionend",
-            "conversationend",
-            "conversationdone",
-            "sessiondone",
-            "taskcomplete",
-        }
+        return session_policy.session_boundary_commit_requested(args, hook=hook)
 
     def default_session_node_path(self, scope: Json) -> list[str]:
-        tenant_id = str(scope.get("tenant_id") or "tenant_local_agent")
-        user_id = str(scope.get("user_id") or local_account_user_id())
-        session_id = str(scope.get("session_id") or user_id or "default_session")
-        return [f"tenant:{tenant_id}", f"user:{user_id}", f"session:{session_id}"]
+        return session_policy.default_session_node_path(scope)
 
     def default_shared_context_node_path(self, scope: Json, *, kind: str, sharing_scope: str) -> list[str]:
-        collection = "skills" if kind == "skill" else "resources"
-        if sharing_scope == "global_shared":
-            return ["global", "shared", collection]
-        tenant_id = str(scope.get("tenant_id") or "tenant_local_agent")
-        return [f"tenant:{tenant_id}", "shared", collection]
+        return session_policy.default_shared_context_node_path(scope, kind=kind, sharing_scope=sharing_scope)
 
     def resource_sharing_scope(self, args: Json, envelope: Json, deployment_scope: str) -> str:
-        metadata = envelope.get("metadata", {}) if isinstance(envelope.get("metadata"), dict) else {}
-        explicit = str(args.get("sharing_scope") or metadata.get("sharing_scope") or "").strip().lower()
-        if explicit in {"tenant_shared", "global_shared", "private_user"}:
-            return explicit
-        if deployment_scope == "global":
-            return "global_shared"
-        scope = envelope.get("scope", {}) if isinstance(envelope.get("scope"), dict) else {}
-        if not scope.get("user_id") and not scope.get("session_id"):
-            return "tenant_shared" if scope.get("tenant_id") else "global_shared"
-        return "private_user"
+        return session_policy.resource_sharing_scope(args, envelope, deployment_scope)
 
     def default_resource_node_path(self, args: Json, envelope: Json, *, deployment_scope: str, sharing_scope: str) -> list[str]:
-        metadata = envelope.get("metadata", {}) if isinstance(envelope.get("metadata"), dict) else {}
-        if metadata.get("node_path"):
-            return [str(part) for part in metadata.get("node_path", []) if str(part)]
-        if sharing_scope in {"tenant_shared", "global_shared"}:
-            return self.default_shared_context_node_path(envelope.get("scope", {}), kind=str(envelope.get("kind") or "resource"), sharing_scope=sharing_scope)
-        return self.default_session_node_path(envelope.get("scope", {}))
+        return session_policy.default_resource_node_path(
+            args,
+            envelope,
+            deployment_scope=deployment_scope,
+            sharing_scope=sharing_scope,
+        )
 
     def ensure_context_node_path(self, *, node_path: list[str], scope: Json, updated_at_ms: int) -> Json:
         prefixes = node_prefixes(node_path)
