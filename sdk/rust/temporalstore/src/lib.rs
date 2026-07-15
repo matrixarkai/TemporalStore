@@ -35,6 +35,12 @@ mod direct_features;
 #[cfg(feature = "direct")]
 mod direct_ffi;
 #[cfg(feature = "direct")]
+mod direct_ffi_capabilities;
+#[cfg(feature = "direct")]
+mod direct_ffi_core;
+#[cfg(feature = "direct")]
+mod direct_ffi_kv;
+#[cfg(feature = "direct")]
 mod direct_ffi_matrixark;
 #[cfg(feature = "direct")]
 mod direct_ffi_types;
