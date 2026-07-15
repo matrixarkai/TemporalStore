@@ -31,6 +31,8 @@ mod direct_client;
 #[cfg(feature = "direct")]
 mod direct_capabilities;
 #[cfg(feature = "direct")]
+mod direct_control_state;
+#[cfg(feature = "direct")]
 mod direct_ffi;
 #[cfg(feature = "direct")]
 mod direct_helpers;
