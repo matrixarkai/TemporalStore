@@ -29,6 +29,8 @@ pub use options::Options;
 #[cfg(feature = "direct")]
 mod direct_client;
 #[cfg(feature = "direct")]
+mod direct_capabilities;
+#[cfg(feature = "direct")]
 mod direct_ffi;
 #[cfg(feature = "direct")]
 mod direct_helpers;

@@ -1,0 +1,343 @@
+use std::ffi::CString;
+use std::os::raw::{c_char, c_int};
+use std::ptr;
+
+use crate::direct_client::Client;
+use crate::direct_ffi::*;
+use crate::direct_helpers::{
+    check, cstring, feature_points_from_c_array, ips_features_from_c_array,
+};
+use crate::{
+    ControlStatePrecision, ControlStateWindow, FeatureFilter, FeaturePoint, FeatureWritePolicy,
+    IpsFeatureStat, IpsInstance, IpsLastQuery, Result, SequenceFeatureRow,
+};
+
+impl Client {
+    pub fn add_feature_points(&self, key: &str, points: &[FeaturePoint]) -> Result<()> {
+        self.add_feature_points_with_policy(key, points, FeatureWritePolicy::Upsert)
+    }
+
+    pub fn add_feature_points_with_policy(
+        &self,
+        key: &str,
+        points: &[FeaturePoint],
+        policy: FeatureWritePolicy,
+    ) -> Result<()> {
+        let key = cstring(key)?;
+        let values = points
+            .iter()
+            .map(|point| cstring(&String::from_utf8_lossy(&point.value)))
+            .collect::<Result<Vec<_>>>()?;
+        let c_points = points
+            .iter()
+            .zip(values.iter())
+            .map(|(point, value)| CFeaturePoint {
+                timestamp: point.timestamp_ms,
+                value: value.as_ptr(),
+            })
+            .collect::<Vec<_>>();
+        let mut error: *mut c_char = ptr::null_mut();
+        let points_ptr = if c_points.is_empty() {
+            ptr::null()
+        } else {
+            c_points.as_ptr()
+        };
+        let code = unsafe {
+            temporalstore_add_feature_points_with_policy(
+                self.raw,
+                key.as_ptr(),
+                points_ptr,
+                c_points.len(),
+                policy as c_int,
+                &mut error,
+            )
+        };
+        check(code, error)
+    }
+
+    pub fn query_feature_points(
+        &self,
+        key: &str,
+        start_ts: u64,
+        end_ts: u64,
+        count: u64,
+    ) -> Result<Vec<FeaturePoint>> {
+        let key = cstring(key)?;
+        let mut out = CFeaturePointArray {
+            count: 0,
+            points: ptr::null_mut(),
+        };
+        let mut error: *mut c_char = ptr::null_mut();
+        let code = unsafe {
+            temporalstore_query_feature_points(
+                self.raw,
+                key.as_ptr(),
+                start_ts,
+                end_ts,
+                count,
+                &mut out,
+                &mut error,
+            )
+        };
+        check(code, error)?;
+        let points = feature_points_from_c_array(&out);
+        unsafe { temporalstore_feature_point_array_free(&mut out) };
+        Ok(points)
+    }
+
+    pub fn query_feature_points_filtered(
+        &self,
+        key: &str,
+        start_ts: u64,
+        end_ts: u64,
+        count: u64,
+        filters: &[FeatureFilter],
+    ) -> Result<Vec<FeaturePoint>> {
+        let key = cstring(key)?;
+        let c_fields: Vec<CString> = filters
+            .iter()
+            .map(|filter| cstring(&filter.field))
+            .collect::<Result<Vec<_>>>()?;
+        let c_filters: Vec<CFeatureFilter> = filters
+            .iter()
+            .zip(c_fields.iter())
+            .map(|(filter, field)| CFeatureFilter {
+                field: field.as_ptr(),
+                op: filter.op as c_int,
+                value: filter.value,
+            })
+            .collect();
+        let mut out = CFeaturePointArray {
+            count: 0,
+            points: ptr::null_mut(),
+        };
+        let mut error: *mut c_char = ptr::null_mut();
+        let code = unsafe {
+            temporalstore_query_feature_points_with_filters(
+                self.raw,
+                key.as_ptr(),
+                start_ts,
+                end_ts,
+                count,
+                c_filters.as_ptr(),
+                c_filters.len(),
+                &mut out,
+                &mut error,
+            )
+        };
+        check(code, error)?;
+        let points = feature_points_from_c_array(&out);
+        unsafe { temporalstore_feature_point_array_free(&mut out) };
+        Ok(points)
+    }
+
+    pub fn add_sequence_feature_rows(&self, key: &str, rows: &[SequenceFeatureRow]) -> Result<()> {
+        self.add_sequence_feature_rows_with_policy(key, rows, FeatureWritePolicy::Upsert)
+    }
+
+    pub fn add_sequence_feature_rows_with_policy(
+        &self,
+        key: &str,
+        rows: &[SequenceFeatureRow],
+        policy: FeatureWritePolicy,
+    ) -> Result<()> {
+        let key = cstring(key)?;
+        let c_rows: Vec<CSequenceFeatureRow> = rows
+            .iter()
+            .map(|row| CSequenceFeatureRow {
+                timestamp: row.timestamp,
+                gid: row.gid,
+                action_type: row.action_type,
+                duration: row.duration,
+                author_id: row.author_id,
+            })
+            .collect();
+        let mut error: *mut c_char = ptr::null_mut();
+        let code = unsafe {
+            temporalstore_add_sequence_feature_rows_with_policy(
+                self.raw,
+                key.as_ptr(),
+                c_rows.as_ptr(),
+                c_rows.len(),
+                policy as c_int,
+                &mut error,
+            )
+        };
+        check(code, error)
+    }
+
+    pub fn query_sequence_feature_rows(
+        &self,
+        key: &str,
+        start_ts: u64,
+        end_ts: u64,
+        count: u64,
+        filters: &[FeatureFilter],
+    ) -> Result<Vec<SequenceFeatureRow>> {
+        let key = cstring(key)?;
+        let c_fields: Vec<CString> = filters
+            .iter()
+            .map(|filter| cstring(&filter.field))
+            .collect::<Result<Vec<_>>>()?;
+        let c_filters: Vec<CFeatureFilter> = filters
+            .iter()
+            .zip(c_fields.iter())
+            .map(|(filter, field)| CFeatureFilter {
+                field: field.as_ptr(),
+                op: filter.op as c_int,
+                value: filter.value,
+            })
+            .collect();
+        let mut out = CSequenceFeatureRowArray {
+            count: 0,
+            rows: ptr::null_mut(),
+        };
+        let mut error: *mut c_char = ptr::null_mut();
+        let code = unsafe {
+            temporalstore_query_sequence_feature_rows(
+                self.raw,
+                key.as_ptr(),
+                start_ts,
+                end_ts,
+                count,
+                c_filters.as_ptr(),
+                c_filters.len(),
+                &mut out,
+                &mut error,
+            )
+        };
+        check(code, error)?;
+        let slice = if out.rows.is_null() {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(out.rows, out.count) }
+        };
+        let rows = slice
+            .iter()
+            .map(|row| SequenceFeatureRow {
+                timestamp: row.timestamp,
+                gid: row.gid,
+                action_type: row.action_type,
+                duration: row.duration,
+                author_id: row.author_id,
+            })
+            .collect();
+        unsafe { temporalstore_sequence_feature_row_array_free(&mut out) };
+        Ok(rows)
+    }
+
+    pub fn add_ips_instance(&self, instance: &IpsInstance) -> Result<()> {
+        let table = cstring(&instance.table)?;
+        let features = instance
+            .features
+            .iter()
+            .map(|feature| CIpsFeatureStat {
+                id: feature.id,
+                slot: feature.slot,
+                has_slot: if feature.has_slot { 1 } else { 0 },
+                kind: feature.kind,
+                v1: feature.v1,
+                v2: feature.v2,
+            })
+            .collect::<Vec<_>>();
+        let features_ptr = if features.is_empty() {
+            ptr::null()
+        } else {
+            features.as_ptr()
+        };
+        let mut error: *mut c_char = ptr::null_mut();
+        let code = unsafe {
+            temporalstore_add_ips_instance(
+                self.raw,
+                table.as_ptr(),
+                instance.uid,
+                instance.timestamp_us,
+                instance.action_type,
+                instance.logical_table,
+                features_ptr,
+                features.len(),
+                &mut error,
+            )
+        };
+        check(code, error)
+    }
+
+    pub fn query_ips_last_instances(&self, query: &IpsLastQuery) -> Result<Vec<IpsFeatureStat>> {
+        let table = cstring(&query.table)?;
+        let mut out = CIpsFeatureArray {
+            count: 0,
+            features: ptr::null_mut(),
+        };
+        let mut error: *mut c_char = ptr::null_mut();
+        let code = unsafe {
+            temporalstore_query_ips_last_instances(
+                self.raw,
+                table.as_ptr(),
+                query.uid,
+                query.action_type,
+                query.logical_table,
+                query.slot,
+                query.top_k,
+                query.last_instances,
+                &mut out,
+                &mut error,
+            )
+        };
+        check(code, error)?;
+        let features = ips_features_from_c_array(&out);
+        unsafe { temporalstore_ips_feature_array_free(&mut out) };
+        Ok(features)
+    }
+
+    pub fn control_state_increment(
+        &self,
+        key: &str,
+        amount: i64,
+        ttl_seconds: u64,
+        precision: ControlStatePrecision,
+        uuid: &str,
+        occur_time_seconds: u64,
+    ) -> Result<()> {
+        let key = cstring(key)?;
+        let uuid = cstring(uuid)?;
+        let mut error: *mut c_char = ptr::null_mut();
+        let code = unsafe {
+            temporalstore_control_state_increment(
+                self.raw,
+                key.as_ptr(),
+                amount,
+                ttl_seconds,
+                precision as i32,
+                uuid.as_ptr(),
+                occur_time_seconds,
+                &mut error,
+            )
+        };
+        check(code, error)
+    }
+
+    pub fn control_state_count(
+        &self,
+        key: &str,
+        precision: ControlStatePrecision,
+        window: ControlStateWindow,
+    ) -> Result<i64> {
+        let key = cstring(key)?;
+        let mut count = 0_i64;
+        let mut error: *mut c_char = ptr::null_mut();
+        let code = unsafe {
+            temporalstore_control_state_count(
+                self.raw,
+                key.as_ptr(),
+                precision as i32,
+                window.start,
+                window.end,
+                window.unit as i32,
+                &mut count,
+                &mut error,
+            )
+        };
+        check(code, error)?;
+        Ok(count)
+    }
+}
