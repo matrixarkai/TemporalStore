@@ -46,13 +46,15 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_resource_import_runtime as resource_import_runtime
 
+try:
+    from tools import matrixark_mcp_local_cache as local_cache_helpers
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_local_cache as local_cache_helpers
+
 RETRIEVAL_HOT_RECORD_TYPES = retrieval_record_helpers.RETRIEVAL_HOT_RECORD_TYPES
 
 LOCAL_READ_CACHE_COPY = os.environ.get("MATRIXARK_LOCAL_READ_CACHE_COPY", "1").strip().lower() not in {"0", "false", "no"}
 DEFAULT_SESSION_IDLE_COMMIT_TIMEOUT_MS = 5 * 60 * 1000
-
-_LOCAL_READ_CACHE_LOCK = threading.RLock()
-_LOCAL_READ_CACHE: dict[str, tuple[int, int, list[Json]]] = {}
 
 @dataclass
 class MatrixArkLocalAdapter:
@@ -164,35 +166,7 @@ class MatrixArkLocalAdapter:
                 pass
 
     def _update_read_cache_after_append(self, records: list[Json]) -> None:
-        if not records:
-            return
-        cache_key = str(self.event_log.resolve())
-        with self._read_cache_lock:
-            if self._read_cache_records is not None:
-                self._read_cache_records.extend(records)
-                self._read_cache_records = compact_latest_context_state_records(self._read_cache_records)
-            try:
-                stat = self.event_log.stat()
-                self._read_cache_size = int(stat.st_size)
-                self._read_cache_mtime_ns = int(stat.st_mtime_ns)
-            except FileNotFoundError:
-                self._read_cache_records = None
-                self._read_cache_size = -1
-                self._read_cache_mtime_ns = -1
-        with _LOCAL_READ_CACHE_LOCK:
-            cached = _LOCAL_READ_CACHE.get(cache_key)
-            if cached is not None:
-                _, _, cached_records = cached
-                cached_records = compact_latest_context_state_records(list(cached_records) + list(records))
-                _LOCAL_READ_CACHE[cache_key] = (self._read_cache_size, self._read_cache_mtime_ns, cached_records)
-            elif self._read_cache_records is not None:
-                _LOCAL_READ_CACHE[cache_key] = (self._read_cache_size, self._read_cache_mtime_ns, compact_latest_context_state_records(list(self._read_cache_records)))
-        if any(str(record.get("record_type") or "") in RETRIEVAL_HOT_RECORD_TYPES for record in records):
-            with self._retrieval_records_cache_lock:
-                self._retrieval_records_cache_generation += 1
-                self._retrieval_records_cache.clear()
-                with self._context_pack_cache_lock:
-                    self._context_pack_cache.clear()
+        local_cache_helpers.update_read_cache_after_append(self, records)
 
     def append(self, record: Json) -> None:
         records = materialize_serving_record_batch([record])
@@ -217,114 +191,13 @@ class MatrixArkLocalAdapter:
         self._update_latest_entity_cache(records)
 
     def _update_latest_entity_cache(self, records: list[Json]) -> None:
-        if not hasattr(self, "_session_buffer_cache_lock"):
-            self._session_buffer_cache_lock = threading.RLock()
-        if not hasattr(self, "_context_event_by_hash"):
-            self._context_event_by_hash = {}
-        if not hasattr(self, "_session_pending_event_ids_by_key"):
-            self._session_pending_event_ids_by_key = {}
-        if not hasattr(self, "_session_committed_event_ids_by_key"):
-            self._session_committed_event_ids_by_key = {}
-        for record in records:
-            record_type = record.get("record_type")
-            if record_type == "context_event":
-                try:
-                    event_hash = int(record.get("event_id_hash", 0))
-                except (TypeError, ValueError):
-                    event_hash = 0
-                if event_hash:
-                    with self._session_buffer_cache_lock:
-                        self._context_event_by_hash[event_hash] = record
-                continue
-            if record_type == "session_buffer_event":
-                try:
-                    event_hash = int(record.get("event_id_hash", 0))
-                except (TypeError, ValueError):
-                    event_hash = 0
-                raw_key = record.get("buffer_key", [])
-                if event_hash and isinstance(raw_key, list) and len(raw_key) == 4:
-                    key = tuple(str(item) for item in raw_key)
-                    with self._session_buffer_cache_lock:
-                        committed = self._session_committed_event_ids_by_key.setdefault(key, set())
-                        pending = self._session_pending_event_ids_by_key.setdefault(key, [])
-                        if event_hash not in committed and event_hash not in pending:
-                            pending.append(event_hash)
-                continue
-            if record_type == "context_batch_commit":
-                key = session_buffer_key_from_scope(record.get("scope", {}))
-                source_ids: list[int] = []
-                for ref in record.get("source_event_ids", []):
-                    try:
-                        source_ids.append(int(ref))
-                    except (TypeError, ValueError):
-                        continue
-                if source_ids:
-                    with self._session_buffer_cache_lock:
-                        committed = self._session_committed_event_ids_by_key.setdefault(key, set())
-                        committed.update(source_ids)
-                        pending = self._session_pending_event_ids_by_key.setdefault(key, [])
-                        if pending:
-                            source_set = set(source_ids)
-                            self._session_pending_event_ids_by_key[key] = [event_id for event_id in pending if event_id not in source_set]
-                continue
-            if record_type == "context_node":
-                try:
-                    node_hash = int(record.get("node_hash", 0))
-                except (TypeError, ValueError):
-                    node_hash = 0
-                if node_hash:
-                    self._context_node_hashes.add(node_hash)
-                continue
-            if record_type == "context_child_ref":
-                try:
-                    child_ref_hash = int(record.get("child_ref_hash", 0))
-                except (TypeError, ValueError):
-                    child_ref_hash = 0
-                if child_ref_hash:
-                    self._context_child_ref_hashes.add(child_ref_hash)
-                continue
-            if record_type != "context_entity":
-                continue
-            try:
-                entity_hash = int(record.get("entity_hash", 0))
-            except (TypeError, ValueError):
-                continue
-            if entity_hash:
-                self._latest_entity_by_hash[entity_hash] = record
+        local_cache_helpers.update_latest_entity_cache(self, records)
 
     def _ensure_context_node_cache_loaded(self) -> None:
-        if self._context_node_cache_loaded:
-            return
-        self._context_node_hashes = set()
-        self._context_child_ref_hashes = set()
-        for record in self.read_all():
-            if record.get("record_type") == "context_node" and record.get("node_hash") is not None:
-                try:
-                    self._context_node_hashes.add(int(record.get("node_hash")))
-                except (TypeError, ValueError):
-                    pass
-            elif record.get("record_type") == "context_child_ref" and record.get("child_ref_hash") is not None:
-                try:
-                    self._context_child_ref_hashes.add(int(record.get("child_ref_hash")))
-                except (TypeError, ValueError):
-                    pass
-        self._context_node_cache_loaded = True
+        local_cache_helpers.ensure_context_node_cache_loaded(self)
 
     def _ensure_latest_entity_cache_loaded(self) -> None:
-        if self._entity_cache_loaded:
-            return
-        records = self.read_all()
-        self._latest_entity_by_hash = {}
-        for record in records:
-            if record.get("record_type") != "context_entity":
-                continue
-            try:
-                entity_hash = int(record.get("entity_hash", 0))
-            except (TypeError, ValueError):
-                continue
-            if entity_hash:
-                self._latest_entity_by_hash[entity_hash] = record
-        self._entity_cache_loaded = True
+        local_cache_helpers.ensure_latest_entity_cache_loaded(self)
 
     def append_audit(self, record: Json) -> None:
         self.append(record)
@@ -411,12 +284,7 @@ class MatrixArkLocalAdapter:
         try:
             stat = self.event_log.stat()
         except FileNotFoundError:
-            with self._read_cache_lock:
-                self._read_cache_records = []
-                self._read_cache_size = -1
-                self._read_cache_mtime_ns = -1
-            with _LOCAL_READ_CACHE_LOCK:
-                _LOCAL_READ_CACHE.pop(cache_key, None)
+            local_cache_helpers.clear_read_cache_for_missing_log(self)
             return []
         records = []
         with self._event_log_lock:
@@ -490,67 +358,7 @@ class MatrixArkLocalAdapter:
         return self._latest_entity_by_hash.get(entity_hash)
 
     def pending_session_events(self, scope: Json, *, limit: int | None = None) -> list[Json]:
-        key = session_buffer_key_from_scope(scope)
-        if not hasattr(self, "_session_buffer_cache_lock"):
-            self._session_buffer_cache_lock = threading.RLock()
-        if not hasattr(self, "_context_event_by_hash"):
-            self._context_event_by_hash = {}
-        if not hasattr(self, "_session_pending_event_ids_by_key"):
-            self._session_pending_event_ids_by_key = {}
-        if not hasattr(self, "_session_committed_event_ids_by_key"):
-            self._session_committed_event_ids_by_key = {}
-        with self._session_buffer_cache_lock:
-            if key in self._session_pending_event_ids_by_key:
-                pending_ids = list(self._session_pending_event_ids_by_key.get(key, []))
-                events = [self._context_event_by_hash[event_hash] for event_hash in pending_ids if event_hash in self._context_event_by_hash]
-                return events[:limit] if limit is not None else events
-        committed: set[int] = set()
-        records = self.read_all()
-        for record in records:
-            if record.get("record_type") == "context_batch_commit" and session_buffer_key_from_scope(record.get("scope", {})) == key:
-                for ref in record.get("source_event_ids", []):
-                    try:
-                        committed.add(int(ref))
-                    except (TypeError, ValueError):
-                        continue
-        pending_ids: list[int] = []
-        for record in records:
-            if record.get("record_type") != "session_buffer_event" or tuple(record.get("buffer_key", [])) != key:
-                continue
-            try:
-                event_hash = int(record.get("event_id_hash"))
-            except (TypeError, ValueError):
-                continue
-            if event_hash not in committed:
-                pending_ids.append(event_hash)
-        event_by_id: dict[int, Json] = {}
-        fallback_events: list[Json] = []
-        for record in records:
-            if record.get("record_type") != "context_event":
-                continue
-            try:
-                event_hash = int(record.get("event_id_hash"))
-            except (TypeError, ValueError):
-                continue
-            event_by_id[event_hash] = record
-            if not pending_ids and session_buffer_key(record.get("envelope", {})) == key and event_hash not in committed:
-                fallback_events.append(record)
-        events = [event_by_id[event_hash] for event_hash in pending_ids if event_hash in event_by_id]
-        if not events:
-            events = fallback_events
-        with self._session_buffer_cache_lock:
-            self._context_event_by_hash.update(event_by_id)
-            self._session_committed_event_ids_by_key[key] = set(committed)
-            cached_pending_ids: list[int] = []
-            for record in events:
-                try:
-                    cached_pending_ids.append(int(record.get("event_id_hash")))
-                except (TypeError, ValueError):
-                    continue
-            self._session_pending_event_ids_by_key[key] = cached_pending_ids
-        if limit is not None:
-            return events[:limit]
-        return events
+        return local_cache_helpers.pending_session_events(self, scope, limit=limit)
 
     def append_session_buffer_event(self, *, envelope: Json, event_id_hash: int, node_hash: int, node_path: list[str], hook: Json | None) -> None:
         key = session_buffer_key(envelope)
