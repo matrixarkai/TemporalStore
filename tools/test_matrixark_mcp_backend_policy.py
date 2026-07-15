@@ -937,7 +937,7 @@ class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
         self.assertTrue(snapshot["read_pool_enabled"])
         self.assertTrue(snapshot["pack_pool_enabled"])
 
-    def test_rust_scale_allow_isolated_keeps_pack_lanes_explicit(self) -> None:
+    def test_rust_scale_keeps_shared_writer_and_enables_pack_lanes(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         source = (repo / "tools" / "run_matrixark_cpp_rust_scale_report.py").read_text()
         adapter_start = source.index('if backend == "rust":')
@@ -950,6 +950,7 @@ class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
         self.assertNotIn('os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES", "0")', adapter_body)
         self.assertIn('"MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS": "1"', pin_body)
         self.assertIn('"MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES": "1"', pin_body)
+        self.assertIn('"MATRIXARK_RUST_PROXY_PACK_LANES"', source)
 
 
 class _NativeAppendClient:

@@ -2230,6 +2230,10 @@ def make_adapter(backend: str, args: argparse.Namespace, storage_prefix: str):
         # MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS=0.
         os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS", "1")
         os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES", "1")
+        os.environ.setdefault(
+            "MATRIXARK_RUST_PROXY_PACK_LANES",
+            str(max(1, int(getattr(args, "retrieve_workers", 1) or 1))),
+        )
         allow_c_api_bridge = bool(getattr(args, "allow_rust_cpp_c_api_bridge", False))
         direct_lib_raw = os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_LIB", "").strip()
         direct_lib = Path(direct_lib_raw) if direct_lib_raw else Path("/__matrixark_missing_rust_direct_lib__")
@@ -2640,6 +2644,7 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
         rust_proxy_lane_defaults = {
             "MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS": "1",
             "MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES": "1",
+            "MATRIXARK_RUST_PROXY_PACK_LANES": str(max(1, int(getattr(args, "retrieve_workers", 1) or 1))),
         }
         for key, value in rust_proxy_lane_defaults.items():
             previous_queue_env[key] = os.environ.get(key)
@@ -3927,6 +3932,27 @@ def main() -> int:
     }
     run_id = parsed.run_id or str(int(time.time() * 1000))
     if parsed.backend_worker:
+        topology_bootstrap = ensure_local_topology(parsed)
+        if topology_bootstrap.get("status") == "failed":
+            result = {
+                "backend": parsed.backend_worker,
+                "status": "topology_not_ready",
+                "topology_bootstrap": topology_bootstrap,
+                "readiness": {
+                    "status": "topology_not_ready",
+                    "reason": topology_bootstrap.get("reason", "local_topology_start_failed"),
+                    "metaserver": parsed.metaserver,
+                },
+                "retrieve": {"stage_metrics": summarize_retrieval_metrics([])},
+            }
+            if parsed.backend_worker_output:
+                Path(parsed.backend_worker_output).write_text(
+                    json.dumps(result, indent=2, sort_keys=True),
+                    encoding="utf-8",
+                )
+            else:
+                print(json.dumps(result, indent=2, sort_keys=True))
+            return 1
         try:
             result = run_backend(parsed.backend_worker, parsed, run_id)
         except Exception as exc:
@@ -3936,6 +3962,8 @@ def main() -> int:
                 "error": str(exc),
                 "retrieve": {"stage_metrics": summarize_retrieval_metrics([])},
             }
+        if isinstance(result, dict):
+            result.setdefault("topology_bootstrap", topology_bootstrap)
         if parsed.backend_worker_output:
             Path(parsed.backend_worker_output).write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
         else:
