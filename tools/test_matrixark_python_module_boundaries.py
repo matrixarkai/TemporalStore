@@ -166,6 +166,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             adapter._dashboard_message_rows([sample_event], sample_scope),
             dashboard_mod.dashboard_message_rows([sample_event], sample_scope),
         )
+        self.assertTrue(callable(dashboard_mod.ingestion_dashboard))
         sample_pack = {"context_pack_id": "pack-1", "selected_refs": [], "recall_policy": {}}
         adapter_telemetry = adapter.telemetry_record_for_context_pack(
             sample_pack,
