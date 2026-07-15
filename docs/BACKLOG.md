@@ -217,7 +217,7 @@ This backlog tracks the missing work found by comparing the local C++ TemporalSt
     - audit every cross-user candidate selection and replay request;
     - never let a user query enumerate another user's private sessions through timing, counts, or dropped-ref metadata;
     - portal should show "shared with me", "shared by me", policy source, expiry, and revoke controls.
-  - Data model candidates:
+  - Capability candidates:
     - `ContextShareGrant`: source scope, target scope, role/group/user selectors, allowed ref types, expiry, policy id;
     - `ContextPublishedRef`: shared ref hash, source ref hash, sanitized text/summary, citation, sensitivity label, owner, version;
     - `ContextAccessDecision`: request id, candidate ref, allow/deny reason, policy id, audit classification.
@@ -253,7 +253,7 @@ This backlog tracks the missing work found by comparing the local C++ TemporalSt
     - use a small fixed index-family set: `source_type`, `event_type`, `entity_type`, `resource_type`, `unit_kind`, `skill_trigger`, `skill_tool`, `keyword_id`, `relative_path_hash`, and `visibility_scope`;
     - store field/value ids or hashes in native structures instead of repeated `index_name` strings in serving records.
   - C++/Rust work:
-    - add `matrixark_scan_candidates` that accepts scope, node ids, data model set, time range, compact secondary filters, and a candidate limit;
+    - add `matrixark_scan_candidates` that accepts scope, node ids, capability set, time range, compact secondary filters, and a candidate limit;
     - make `matrixark_retrieve_context_pack` call this native scan before scoring and packing;
     - C++ native retrieve now caches parsed placement-event candidates by `scope_key + node_hash + record_type + append_watermark + resource_version_watermark + skill_status_watermark + index_posting_watermark`;
     - C++ SDK now exposes a `temporalstore_matrixark_batch_append_records_v2` native append boundary that accepts append policy JSON, coalesces by key/field, groups writes by placement/storage route, and keeps full audit/debug out of the synchronous hot path;
@@ -872,7 +872,7 @@ Completed since the last backlog update:
   - Concurrent writes and reads.
   - Secondary lag under load.
 
-## P1 Data Models
+## P1 Capabilities
 
 - Finish TemporalAggregate product shape.
   - Counters: count/sum/min/max.
@@ -912,7 +912,7 @@ Completed since the last backlog update:
   - Error count.
   - Secondary lag.
 
-- Add data-model panel. Status: first UI copy exists, live module metrics remain.
+- Add capability panel. Status: first UI copy exists, live module metrics remain.
   - STRING.
   - HASH.
   - Feature/sequence.
@@ -1436,7 +1436,7 @@ Completed since the last backlog update:
           `matrixark_gc_expired_context_events` plus resource/audit retention
           workers decide which logical records are eligible for deletion;
         - a general TemporalStore storage lifecycle worker reclaims old
-          pages/blocks for all data models, not only MatrixArk context records.
+          pages/blocks for all capabilities, not only MatrixArk context records.
       - Recommended production behavior:
         - TemporalStore keeps only hot serving records in the online path;
         - MatrixArk compresses old events into `context_compression_event`
@@ -1522,5 +1522,5 @@ Completed since the last backlog update:
           reclaim are measured identically.
 
 - GPU-specific models.
-  - Most TemporalStore data models do not need GPU compute.
+  - Most TemporalStore capabilities do not need GPU compute.
   - GPU work may matter only for vector/tensor transformations or embedding/reranking pipelines, not the core temporal storage engine.

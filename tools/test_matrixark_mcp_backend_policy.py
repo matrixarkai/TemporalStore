@@ -2229,7 +2229,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             event_indexes = [
                 record
                 for record in records
-                if record.get("record_type") == "context_index" and record.get("data_model") == "context_event"
+                if record.get("record_type") == "context_index" and record.get("capability") == "context_event"
             ]
             self.assertEqual([], event_indexes)
 
@@ -2248,7 +2248,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         records = [
             mcp.context_index_posting_record(
                 index_name="resource_type:pdf",
-                data_model="resource_chunk",
+                capability="resource_chunk",
                 ref_type="resource_chunk",
                 ref_hashes=[100 + index],
                 node_hash=77,
@@ -2262,7 +2262,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         indexes = [record for record in materialized if record.get("record_type") == "context_index"]
 
         self.assertEqual(1, len(indexes))
-        self.assertEqual("resource_chunk", indexes[0].get("data_model"))
+        self.assertEqual("resource_chunk", indexes[0].get("capability"))
         self.assertEqual("resource_type:pdf", indexes[0].get("index_name"))
         self.assertEqual(8, indexes[0].get("posting_count"))
         self.assertEqual(list(range(100, 108)), indexes[0].get("ref_hashes"))
@@ -2274,7 +2274,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         records = [
             mcp.context_index_posting_record(
                 index_name="keyword:gpu",
-                data_model="resource_chunk",
+                capability="resource_chunk",
                 ref_type="resource_chunk",
                 ref_hashes=[index],
                 node_hash=88,

@@ -70,7 +70,7 @@ Expected behavior:
 - every segment/entity keeps `source_event_ids`
 - retrieval uses tree traversal and does not fall back to flat scan
 
-## Data Model Flow
+## Capability Flow
 
 ### Raw online ingestion
 

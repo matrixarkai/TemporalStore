@@ -59,7 +59,7 @@ def main() -> int:
     parity_shared_commands = parity_contract.get("shared_minimal_redis_commands", [])
     parity_public_capabilities = parity_contract.get(
         "rust_public_capability_commands",
-        parity_contract.get("rust_public_data_model_commands", {}),
+        parity_contract.get("rust_public_capability_commands", {}),
     )
     parity_model_commands = (
         parity_public_capabilities.get("feature", [])
@@ -577,8 +577,8 @@ def main() -> int:
         failures,
     )
     require(
-        "Context audit/replay/debug data models are not part of the first-release open-source surface" in open_source_surface,
-        "open-source surface overview must exclude context audit/replay/debug data models",
+        "Context audit/replay/debug capabilities are not part of the first-release open-source surface" in open_source_surface,
+        "open-source surface overview must exclude context audit/replay/debug capabilities",
         failures,
     )
     require(

@@ -10739,9 +10739,9 @@
       ]
     },
     {
-      "name": "all_data_model_cpp_rust_parity_sweep",
-      "family": "all data models",
-      "description": "Executable shared C++/Rust sweep across TemporalStore product data models: common TTL/existence, string, hash, set, Feature, Sequence, IPS, Risk, and Context node/event/entity/child/embedding/summary/compression/index sidecars.",
+      "name": "all_capability_cpp_rust_parity_sweep",
+      "family": "all capabilities",
+      "description": "Executable shared C++/Rust sweep across TemporalStore product capabilities: common TTL/existence, string, hash, set, Feature, Sequence, IPS, Risk, and Context node/event/entity/child/embedding/summary/compression/index sidecars.",
       "shard_id": 7,
       "steps": [
         {

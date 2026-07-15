@@ -172,7 +172,7 @@ Run on every PR:
 - page-store tests
 - oplog tests
 - command executor tests
-- data model tests: STRING, HASH, SET, FEATURE, IPS, RISK,
+- capability tests: STRING, HASH, SET, FEATURE, IPS, RISK,
   TemporalAggregate
 - client router tests
 - metaserver metadata tests

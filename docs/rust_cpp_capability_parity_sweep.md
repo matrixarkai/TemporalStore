@@ -1,12 +1,12 @@
-# Rust/C++ Data Model Parity Sweep
+# Rust/C++ Capability Parity Sweep
 
 ## Scope
 
 This pass treats Rust TemporalStore parity as behavioral parity through the shared C++/Rust corpus, not brpc/thrift wire compatibility or byte-for-byte C++ storage layout.
 
-The executable sweep case is `all_data_model_cpp_rust_parity_sweep` in `compat/unified_temporalstore_cases.json`.
+The executable sweep case is `all_capability_cpp_rust_parity_sweep` in `compat/unified_temporalstore_cases.json`.
 
-## Covered Model Families
+## Covered Capabilities
 
 | Family | Rust surface exercised | C++ parity target |
 | --- | --- | --- |

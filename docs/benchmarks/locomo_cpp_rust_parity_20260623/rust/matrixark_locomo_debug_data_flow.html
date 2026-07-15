@@ -6,7 +6,7 @@ Storage prefix: `matrixark:locomo:parity:rust:20260623c`
 Embedding provider: `hash`
 Embedding model: `matrixark-local-token-hash-v1`
 
-## Data Model Counts
+## Capability Counts
 
 - `context_batch_commit`: 3
 - `context_child_ref`: 3

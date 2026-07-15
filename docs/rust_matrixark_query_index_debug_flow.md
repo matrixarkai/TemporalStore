@@ -61,7 +61,7 @@ Persisted files used by the run:
 /tmp/temporalstore-context-workflow-1782250404432/shared-store-async/...
 ```
 
-## Data Model Counts
+## Capability Counts
 
 Counts below are from the persisted Rust shard index after the run.
 

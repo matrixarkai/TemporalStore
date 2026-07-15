@@ -296,7 +296,7 @@ Result:
 
 Enterprise apps can keep sending their own user ids first. SSO mapping lets
 larger deployments later connect Okta, Google Workspace, or Azure AD without
-changing TemporalStore data models.
+changing TemporalStore capabilities.
 
 ## OpenViking And VikingMem Alignment
 

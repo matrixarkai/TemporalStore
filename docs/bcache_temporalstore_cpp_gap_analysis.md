@@ -29,7 +29,7 @@ The PDF describes a distributed cache/storage system with these major concepts:
 
 - Logical model: namespace, table, object, key, model.
 - Deployment model: region, IDC/AZ, rack, host/server, group.
-- Data model: hash number, hash range, partition, piece, stream.
+- Capability: hash number, hash range, partition, piece, stream.
 - Architecture: SDK, cache proxy, cache core/server, memory store, shared storage.
 - Storage hierarchy: memory, PMEM, NVMe SSD, HDD/shared storage.
 - Partitioning: cluster -> namespace -> table -> partition -> piece -> object.

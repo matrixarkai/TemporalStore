@@ -84763,7 +84763,7 @@
     "context_index": [
       {
         "batch_id_hash": 756107540690738165,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 1272919782497296959,
         "index_name": "event_type:confirmation",
         "node_hash": 2100209595829882121,
@@ -84775,7 +84775,7 @@
       },
       {
         "batch_id_hash": 756107540690738165,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 7440518412243698753,
         "index_name": "classification:batch_memory",
         "node_hash": 2100209595829882121,
@@ -84787,7 +84787,7 @@
       },
       {
         "batch_id_hash": 756107540690738165,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 3084793848403352551,
         "index_name": "status:observed",
         "node_hash": 2100209595829882121,
@@ -84799,7 +84799,7 @@
       },
       {
         "batch_id_hash": 756107540690738165,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 7362962696578693934,
         "index_name": "source_type:message",
         "node_hash": 2100209595829882121,
@@ -84811,7 +84811,7 @@
       },
       {
         "batch_id_hash": 756107540690738165,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 2061287975044857396,
         "index_name": "entity_type:approval_state",
         "node_hash": 2100209595829882121,
@@ -84823,7 +84823,7 @@
       },
       {
         "batch_id_hash": 756107540690738165,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 4755356201035365614,
         "index_name": "segment_topic:plan_status",
         "node_hash": 2100209595829882121,
@@ -84835,7 +84835,7 @@
       },
       {
         "batch_id_hash": 756107540690738165,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 6094196994636143670,
         "index_name": "segment_topic:approval_budget",
         "node_hash": 2100209595829882121,
@@ -84847,7 +84847,7 @@
       },
       {
         "batch_id_hash": 756107540690738165,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 5378459730355046607,
         "index_name": "segment_topic:codex",
         "node_hash": 2100209595829882121,
@@ -84859,7 +84859,7 @@
       },
       {
         "batch_id_hash": 4990188740186053405,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 6373941210383132232,
         "index_name": "event_type:confirmation",
         "node_hash": 2100209595829882121,
@@ -84871,7 +84871,7 @@
       },
       {
         "batch_id_hash": 4990188740186053405,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 9144629879508952012,
         "index_name": "classification:batch_memory",
         "node_hash": 2100209595829882121,
@@ -84883,7 +84883,7 @@
       },
       {
         "batch_id_hash": 4990188740186053405,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 6613452027803925368,
         "index_name": "status:observed",
         "node_hash": 2100209595829882121,
@@ -84895,7 +84895,7 @@
       },
       {
         "batch_id_hash": 4990188740186053405,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 4927590219912481635,
         "index_name": "source_type:message",
         "node_hash": 2100209595829882121,
@@ -84907,7 +84907,7 @@
       },
       {
         "batch_id_hash": 4990188740186053405,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 4654467290163507997,
         "index_name": "entity_type:approval_state",
         "node_hash": 2100209595829882121,
@@ -84919,7 +84919,7 @@
       },
       {
         "batch_id_hash": 4990188740186053405,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 7820430535582685850,
         "index_name": "segment_topic:plan_status",
         "node_hash": 2100209595829882121,
@@ -84931,7 +84931,7 @@
       },
       {
         "batch_id_hash": 4990188740186053405,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 7880295965306406366,
         "index_name": "segment_topic:approval_budget",
         "node_hash": 2100209595829882121,
@@ -84943,7 +84943,7 @@
       },
       {
         "batch_id_hash": 4990188740186053405,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 4726258959019481649,
         "index_name": "segment_topic:codex",
         "node_hash": 2100209595829882121,
@@ -84955,7 +84955,7 @@
       },
       {
         "batch_id_hash": 4253138973468525877,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 730082125990946132,
         "index_name": "event_type:confirmation",
         "node_hash": 2100209595829882121,
@@ -84967,7 +84967,7 @@
       },
       {
         "batch_id_hash": 4253138973468525877,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 4967977027118489423,
         "index_name": "classification:batch_memory",
         "node_hash": 2100209595829882121,
@@ -84979,7 +84979,7 @@
       },
       {
         "batch_id_hash": 4253138973468525877,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 2204574001085065392,
         "index_name": "status:observed",
         "node_hash": 2100209595829882121,
@@ -84991,7 +84991,7 @@
       },
       {
         "batch_id_hash": 4253138973468525877,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 4010858531145069010,
         "index_name": "source_type:message",
         "node_hash": 2100209595829882121,
@@ -85003,7 +85003,7 @@
       },
       {
         "batch_id_hash": 4253138973468525877,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 4465299602384676501,
         "index_name": "entity_type:approval_state",
         "node_hash": 2100209595829882121,
@@ -85015,7 +85015,7 @@
       },
       {
         "batch_id_hash": 4253138973468525877,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 5898238556655620958,
         "index_name": "segment_topic:plan_status",
         "node_hash": 2100209595829882121,
@@ -85027,7 +85027,7 @@
       },
       {
         "batch_id_hash": 4253138973468525877,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 7194563089286729451,
         "index_name": "segment_topic:approval_budget",
         "node_hash": 2100209595829882121,
@@ -85039,7 +85039,7 @@
       },
       {
         "batch_id_hash": 4253138973468525877,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 4939016581520989172,
         "index_name": "segment_topic:codex",
         "node_hash": 2100209595829882121,
@@ -85051,7 +85051,7 @@
       },
       {
         "batch_id_hash": 8935476644852659640,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 5673154320307318495,
         "index_name": "event_type:confirmation",
         "node_hash": 2100209595829882121,
@@ -85063,7 +85063,7 @@
       },
       {
         "batch_id_hash": 8935476644852659640,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 1530124930645157203,
         "index_name": "classification:batch_memory",
         "node_hash": 2100209595829882121,
@@ -85075,7 +85075,7 @@
       },
       {
         "batch_id_hash": 8935476644852659640,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 7316183062774290797,
         "index_name": "status:observed",
         "node_hash": 2100209595829882121,
@@ -85087,7 +85087,7 @@
       },
       {
         "batch_id_hash": 8935476644852659640,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 6131013733581210114,
         "index_name": "source_type:message",
         "node_hash": 2100209595829882121,
@@ -85099,7 +85099,7 @@
       },
       {
         "batch_id_hash": 8935476644852659640,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 6746339959254318211,
         "index_name": "entity_type:approval_state",
         "node_hash": 2100209595829882121,
@@ -85111,7 +85111,7 @@
       },
       {
         "batch_id_hash": 8935476644852659640,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 6351977768921254877,
         "index_name": "segment_topic:plan_status",
         "node_hash": 2100209595829882121,
@@ -85123,7 +85123,7 @@
       },
       {
         "batch_id_hash": 8935476644852659640,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 657770770893642511,
         "index_name": "segment_topic:approval_budget",
         "node_hash": 2100209595829882121,
@@ -85135,7 +85135,7 @@
       },
       {
         "batch_id_hash": 8935476644852659640,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 6183298973298513882,
         "index_name": "segment_topic:codex",
         "node_hash": 2100209595829882121,
@@ -85147,7 +85147,7 @@
       },
       {
         "batch_id_hash": 6298524031394999086,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 8103784709816013182,
         "index_name": "event_type:confirmation",
         "node_hash": 2100209595829882121,
@@ -85159,7 +85159,7 @@
       },
       {
         "batch_id_hash": 6298524031394999086,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 6816087938394097251,
         "index_name": "classification:batch_memory",
         "node_hash": 2100209595829882121,
@@ -85171,7 +85171,7 @@
       },
       {
         "batch_id_hash": 6298524031394999086,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 2610332227524110809,
         "index_name": "status:observed",
         "node_hash": 2100209595829882121,
@@ -85183,7 +85183,7 @@
       },
       {
         "batch_id_hash": 6298524031394999086,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 2164516592405504226,
         "index_name": "source_type:message",
         "node_hash": 2100209595829882121,
@@ -85195,7 +85195,7 @@
       },
       {
         "batch_id_hash": 6298524031394999086,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 5000482033771242171,
         "index_name": "entity_type:approval_state",
         "node_hash": 2100209595829882121,
@@ -85207,7 +85207,7 @@
       },
       {
         "batch_id_hash": 6298524031394999086,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 1474366466582493875,
         "index_name": "segment_topic:plan_status",
         "node_hash": 2100209595829882121,
@@ -85219,7 +85219,7 @@
       },
       {
         "batch_id_hash": 6298524031394999086,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 1239208639423206874,
         "index_name": "segment_topic:approval_budget",
         "node_hash": 2100209595829882121,
@@ -85231,7 +85231,7 @@
       },
       {
         "batch_id_hash": 6298524031394999086,
-        "data_model": "context_batch_commit",
+        "capability": "context_batch_commit",
         "index_hash": 2458659852506072431,
         "index_name": "segment_topic:codex",
         "node_hash": 2100209595829882121,
@@ -85242,7 +85242,7 @@
         "updated_at_ms": 1782681920738
       },
       {
-        "data_model": "resource_summary",
+        "capability": "resource_summary",
         "index_hash": 5551459001002455736,
         "index_name": "source_type:resource",
         "node_hash": 1737304210274426578,
@@ -85257,7 +85257,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_summary",
+        "capability": "resource_summary",
         "index_hash": 1755499157119180006,
         "index_name": "resource_type:pdf",
         "node_hash": 1737304210274426578,
@@ -85272,7 +85272,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 7639807834483261785,
         "index_name": "source_type:resource",
         "node_hash": 1737304210274426578,
@@ -85288,7 +85288,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 8864541044504001096,
         "index_name": "resource_type:pdf",
         "node_hash": 1737304210274426578,
@@ -85304,7 +85304,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 8528066539524386783,
         "index_name": "unit_kind:pdf_page",
         "node_hash": 1737304210274426578,
@@ -85320,7 +85320,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 767050126081066814,
         "index_name": "keyword:project",
         "node_hash": 1737304210274426578,
@@ -85336,7 +85336,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 5693071384107035481,
         "index_name": "keyword:aurora",
         "node_hash": 1737304210274426578,
@@ -85352,7 +85352,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 4869839392579374832,
         "index_name": "keyword:gpu",
         "node_hash": 1737304210274426578,
@@ -85368,7 +85368,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 4877178959682936060,
         "index_name": "keyword:approval",
         "node_hash": 1737304210274426578,
@@ -85384,7 +85384,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 727619796030325397,
         "index_name": "keyword:packet",
         "node_hash": 1737304210274426578,
@@ -85400,7 +85400,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 2726749488825547754,
         "index_name": "keyword:multi",
         "node_hash": 1737304210274426578,
@@ -85416,7 +85416,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 4677310454750614894,
         "index_name": "source_type:resource",
         "node_hash": 1737304210274426578,
@@ -85432,7 +85432,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 6443439651087250408,
         "index_name": "resource_type:pdf",
         "node_hash": 1737304210274426578,
@@ -85448,7 +85448,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 4344442303298322038,
         "index_name": "unit_kind:pdf_page",
         "node_hash": 1737304210274426578,
@@ -85464,7 +85464,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 5421144850825868809,
         "index_name": "keyword:gpu",
         "node_hash": 1737304210274426578,
@@ -85480,7 +85480,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 49842331037047338,
         "index_name": "keyword:purchase",
         "node_hash": 1737304210274426578,
@@ -85496,7 +85496,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 4070057075835614766,
         "index_name": "keyword:finance",
         "node_hash": 1737304210274426578,
@@ -85512,7 +85512,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 5090061197820629316,
         "index_name": "keyword:review",
         "node_hash": 1737304210274426578,
@@ -85528,7 +85528,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 4976075821731961971,
         "index_name": "keyword:owner",
         "node_hash": 1737304210274426578,
@@ -85544,7 +85544,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 1649940040462284440,
         "index_name": "keyword:bob",
         "node_hash": 1737304210274426578,
@@ -85560,7 +85560,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 2144790269748726841,
         "index_name": "source_type:resource",
         "node_hash": 1737304210274426578,
@@ -85576,7 +85576,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 4116256082694544818,
         "index_name": "resource_type:pdf",
         "node_hash": 1737304210274426578,
@@ -85592,7 +85592,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 598566208475687144,
         "index_name": "unit_kind:pdf_page",
         "node_hash": 1737304210274426578,
@@ -85608,7 +85608,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 3730614231671570050,
         "index_name": "keyword:purchase",
         "node_hash": 1737304210274426578,
@@ -85624,7 +85624,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 8813482562135468084,
         "index_name": "keyword:order",
         "node_hash": 1737304210274426578,
@@ -85640,7 +85640,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 8430024617381329532,
         "index_name": "keyword:must",
         "node_hash": 1737304210274426578,
@@ -85656,7 +85656,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 4382260841969212990,
         "index_name": "keyword:ready",
         "node_hash": 1737304210274426578,
@@ -85672,7 +85672,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 7661685539939878444,
         "index_name": "keyword:july",
         "node_hash": 1737304210274426578,
@@ -85688,7 +85688,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 2122355987385686068,
         "index_name": "keyword:risk",
         "node_hash": 1737304210274426578,
@@ -85704,7 +85704,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 3532283654261426172,
         "index_name": "source_type:resource",
         "node_hash": 1737304210274426578,
@@ -85720,7 +85720,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 2008871825701528353,
         "index_name": "resource_type:pdf",
         "node_hash": 1737304210274426578,
@@ -85736,7 +85736,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 5264292025542835257,
         "index_name": "unit_kind:pdf_page",
         "node_hash": 1737304210274426578,
@@ -85752,7 +85752,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 758369572219483151,
         "index_name": "keyword:section",
         "node_hash": 1737304210274426578,
@@ -85768,7 +85768,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 7948639722375991869,
         "index_name": "keyword:project",
         "node_hash": 1737304210274426578,
@@ -85784,7 +85784,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 8031435022689008464,
         "index_name": "keyword:aurora",
         "node_hash": 1737304210274426578,
@@ -85800,7 +85800,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 3618020232262775701,
         "index_name": "keyword:gpu",
         "node_hash": 1737304210274426578,
@@ -85816,7 +85816,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 4338594804734565571,
         "index_name": "keyword:approval",
         "node_hash": 1737304210274426578,
@@ -85832,7 +85832,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 922088014064488462,
         "index_name": "keyword:packet",
         "node_hash": 1737304210274426578,
@@ -85848,7 +85848,7 @@
         "updated_at_ms": 1782681920850
       },
       {
-        "data_model": "resource_summary",
+        "capability": "resource_summary",
         "index_hash": 4956279797768592398,
         "index_name": "source_type:resource",
         "node_hash": 1737304210274426578,
@@ -85863,7 +85863,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_summary",
+        "capability": "resource_summary",
         "index_hash": 8269448977685878107,
         "index_name": "resource_type:pdf",
         "node_hash": 1737304210274426578,
@@ -85878,7 +85878,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 7360764360296284672,
         "index_name": "source_type:resource",
         "node_hash": 1737304210274426578,
@@ -85894,7 +85894,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 3231296262999646967,
         "index_name": "resource_type:pdf",
         "node_hash": 1737304210274426578,
@@ -85910,7 +85910,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 4511277761405714288,
         "index_name": "unit_kind:pdf_page",
         "node_hash": 1737304210274426578,
@@ -85926,7 +85926,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 3972766506441270765,
         "index_name": "keyword:gpu",
         "node_hash": 1737304210274426578,
@@ -85942,7 +85942,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 2553877168181378150,
         "index_name": "keyword:procurement",
         "node_hash": 1737304210274426578,
@@ -85958,7 +85958,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 1886013407181212166,
         "index_name": "keyword:runbook",
         "node_hash": 1737304210274426578,
@@ -85974,7 +85974,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 693509778302061910,
         "index_name": "keyword:multi",
         "node_hash": 1737304210274426578,
@@ -85990,7 +85990,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 5646291692022944924,
         "index_name": "keyword:chunk",
         "node_hash": 1737304210274426578,
@@ -86006,7 +86006,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 9184710682542991546,
         "index_name": "keyword:section",
         "node_hash": 1737304210274426578,
@@ -86022,7 +86022,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 4778042561854537514,
         "index_name": "source_type:resource",
         "node_hash": 1737304210274426578,
@@ -86038,7 +86038,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 8400187917007814129,
         "index_name": "resource_type:pdf",
         "node_hash": 1737304210274426578,
@@ -86054,7 +86054,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 3867716050583717532,
         "index_name": "unit_kind:pdf_page",
         "node_hash": 1737304210274426578,
@@ -86070,7 +86070,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 5480075462551510991,
         "index_name": "keyword:approval",
         "node_hash": 1737304210274426578,
@@ -86086,7 +86086,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 4486899782359291050,
         "index_name": "keyword:attachment",
         "node_hash": 1737304210274426578,
@@ -86102,7 +86102,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 2694168834898338844,
         "index_name": "keyword:missing",
         "node_hash": 1737304210274426578,
@@ -86118,7 +86118,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 3050529755649125617,
         "index_name": "keyword:notify",
         "node_hash": 1737304210274426578,
@@ -86134,7 +86134,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 8824890374051036874,
         "index_name": "keyword:alice",
         "node_hash": 1737304210274426578,
@@ -86150,7 +86150,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 1199585130108329357,
         "index_name": "keyword:stop",
         "node_hash": 1737304210274426578,
@@ -86166,7 +86166,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 8945898432535397516,
         "index_name": "source_type:resource",
         "node_hash": 1737304210274426578,
@@ -86182,7 +86182,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 7440031887120506213,
         "index_name": "resource_type:pdf",
         "node_hash": 1737304210274426578,
@@ -86198,7 +86198,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 5129364317101935072,
         "index_name": "unit_kind:pdf_page",
         "node_hash": 1737304210274426578,
@@ -86214,7 +86214,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 3572596580374892869,
         "index_name": "keyword:finance",
         "node_hash": 1737304210274426578,
@@ -86230,7 +86230,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 5536998610363632689,
         "index_name": "keyword:approval",
         "node_hash": 1737304210274426578,
@@ -86246,7 +86246,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 8154749005704139518,
         "index_name": "keyword:section",
         "node_hash": 1737304210274426578,
@@ -86262,7 +86262,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 3714798660105322848,
         "index_name": "keyword:gpu",
         "node_hash": 1737304210274426578,
@@ -86278,7 +86278,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 2555184772089466899,
         "index_name": "keyword:procurement",
         "node_hash": 1737304210274426578,
@@ -86294,7 +86294,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 4864054056133787658,
         "index_name": "keyword:runbook",
         "node_hash": 1737304210274426578,
@@ -86310,7 +86310,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 7119399121645604408,
         "index_name": "source_type:resource",
         "node_hash": 1737304210274426578,
@@ -86326,7 +86326,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 6276199020241544302,
         "index_name": "resource_type:pdf",
         "node_hash": 1737304210274426578,
@@ -86342,7 +86342,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 8653460968342718492,
         "index_name": "unit_kind:pdf_page",
         "node_hash": 1737304210274426578,
@@ -86358,7 +86358,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 8608495973815361691,
         "index_name": "keyword:evidence",
         "node_hash": 1737304210274426578,
@@ -86374,7 +86374,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 4004079492650635436,
         "index_name": "keyword:project",
         "node_hash": 1737304210274426578,
@@ -86390,7 +86390,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 1105747665434793530,
         "index_name": "keyword:aurora",
         "node_hash": 1737304210274426578,
@@ -86406,7 +86406,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 8003576426852348430,
         "index_name": "keyword:gpu",
         "node_hash": 1737304210274426578,
@@ -86422,7 +86422,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 6714039770057306317,
         "index_name": "keyword:approval",
         "node_hash": 1737304210274426578,
@@ -86438,7 +86438,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 4736223976943840014,
         "index_name": "keyword:bob",
         "node_hash": 1737304210274426578,
@@ -86454,7 +86454,7 @@
         "updated_at_ms": 1782681921034
       },
       {
-        "data_model": "resource_summary",
+        "capability": "resource_summary",
         "index_hash": 7471640957844525156,
         "index_name": "source_type:resource",
         "node_hash": 1737304210274426578,
@@ -86469,7 +86469,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_summary",
+        "capability": "resource_summary",
         "index_hash": 4458908933052327429,
         "index_name": "resource_type:pdf",
         "node_hash": 1737304210274426578,
@@ -86484,7 +86484,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 1834197912856821119,
         "index_name": "source_type:resource",
         "node_hash": 1737304210274426578,
@@ -86500,7 +86500,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 5782597736443909137,
         "index_name": "resource_type:pdf",
         "node_hash": 1737304210274426578,
@@ -86516,7 +86516,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 3156839542130746098,
         "index_name": "unit_kind:pdf_page",
         "node_hash": 1737304210274426578,
@@ -86532,7 +86532,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 6376160169235185103,
         "index_name": "keyword:budget",
         "node_hash": 1737304210274426578,
@@ -86548,7 +86548,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 1822354346664485605,
         "index_name": "keyword:update",
         "node_hash": 1737304210274426578,
@@ -86564,7 +86564,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 5917869943690956282,
         "index_name": "keyword:memo",
         "node_hash": 1737304210274426578,
@@ -86580,7 +86580,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 1179604824278233679,
         "index_name": "keyword:multi",
         "node_hash": 1737304210274426578,
@@ -86596,7 +86596,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 4301236782311234328,
         "index_name": "keyword:chunk",
         "node_hash": 1737304210274426578,
@@ -86612,7 +86612,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 3023916468464366185,
         "index_name": "keyword:section",
         "node_hash": 1737304210274426578,
@@ -86628,7 +86628,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 3082706999295031600,
         "index_name": "source_type:resource",
         "node_hash": 1737304210274426578,
@@ -86644,7 +86644,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 6719805093826732704,
         "index_name": "resource_type:pdf",
         "node_hash": 1737304210274426578,
@@ -86660,7 +86660,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 1958090227423875006,
         "index_name": "unit_kind:pdf_page",
         "node_hash": 1737304210274426578,
@@ -86676,7 +86676,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 5054131037168864149,
         "index_name": "keyword:valid",
         "node_hash": 1737304210274426578,
@@ -86692,7 +86692,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 218000346845948389,
         "index_name": "keyword:active",
         "node_hash": 1737304210274426578,
@@ -86708,7 +86708,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 7496084651228729329,
         "index_name": "keyword:budget",
         "node_hash": 1737304210274426578,
@@ -86724,7 +86724,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 5951228078227612429,
         "index_name": "keyword:cap",
         "node_hash": 1737304210274426578,
@@ -86740,7 +86740,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 4752261012795854883,
         "index_name": "keyword:stale",
         "node_hash": 1737304210274426578,
@@ -86756,7 +86756,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 896971918479717547,
         "index_name": "keyword:blocker",
         "node_hash": 1737304210274426578,
@@ -86772,7 +86772,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 3373618566832197772,
         "index_name": "source_type:resource",
         "node_hash": 1737304210274426578,
@@ -86788,7 +86788,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 2750167915682599216,
         "index_name": "resource_type:pdf",
         "node_hash": 1737304210274426578,
@@ -86804,7 +86804,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 6767561449356132169,
         "index_name": "unit_kind:pdf_page",
         "node_hash": 1737304210274426578,
@@ -86820,7 +86820,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 5824773446693080109,
         "index_name": "keyword:owner",
         "node_hash": 1737304210274426578,
@@ -86836,7 +86836,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 591407350766158029,
         "index_name": "keyword:dollar",
         "node_hash": 1737304210274426578,
@@ -86852,7 +86852,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 8777485718803756328,
         "index_name": "keyword:cap",
         "node_hash": 1737304210274426578,
@@ -86868,7 +86868,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 3114201941656694271,
         "index_name": "keyword:july",
         "node_hash": 1737304210274426578,
@@ -86884,7 +86884,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 7583273186222169218,
         "index_name": "keyword:deadline",
         "node_hash": 1737304210274426578,
@@ -86900,7 +86900,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 5479687953478158670,
         "index_name": "keyword:finance",
         "node_hash": 1737304210274426578,
@@ -86916,7 +86916,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 8155906610405969096,
         "index_name": "source_type:resource",
         "node_hash": 1737304210274426578,
@@ -86932,7 +86932,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 7375327569634159266,
         "index_name": "resource_type:pdf",
         "node_hash": 1737304210274426578,
@@ -86948,7 +86948,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 2498835465085151370,
         "index_name": "unit_kind:pdf_page",
         "node_hash": 1737304210274426578,
@@ -86964,7 +86964,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 3979990513423788463,
         "index_name": "keyword:evidence",
         "node_hash": 1737304210274426578,
@@ -86980,7 +86980,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 787861893280432551,
         "index_name": "keyword:project",
         "node_hash": 1737304210274426578,
@@ -86996,7 +86996,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 5643361145200166032,
         "index_name": "keyword:aurora",
         "node_hash": 1737304210274426578,
@@ -87012,7 +87012,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 2020066062999479918,
         "index_name": "keyword:gpu",
         "node_hash": 1737304210274426578,
@@ -87028,7 +87028,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 2824672634234792110,
         "index_name": "keyword:approval",
         "node_hash": 1737304210274426578,
@@ -87044,7 +87044,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 2253210053473054550,
         "index_name": "keyword:bob",
         "node_hash": 1737304210274426578,
@@ -87060,7 +87060,7 @@
         "updated_at_ms": 1782681921067
       },
       {
-        "data_model": "resource_summary",
+        "capability": "resource_summary",
         "index_hash": 101788898471332639,
         "index_name": "source_type:resource",
         "node_hash": 1737304210274426578,
@@ -87075,7 +87075,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_summary",
+        "capability": "resource_summary",
         "index_hash": 6017625168673062919,
         "index_name": "resource_type:md",
         "node_hash": 1737304210274426578,
@@ -87090,7 +87090,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 9091380420731674233,
         "index_name": "source_type:resource",
         "node_hash": 1737304210274426578,
@@ -87106,7 +87106,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 8924731851735153806,
         "index_name": "resource_type:md",
         "node_hash": 1737304210274426578,
@@ -87122,7 +87122,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 8963726112663377878,
         "index_name": "unit_kind:markdown_section",
         "node_hash": 1737304210274426578,
@@ -87138,7 +87138,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 3219469971149774676,
         "index_name": "heading_slug:document",
         "node_hash": 1737304210274426578,
@@ -87154,7 +87154,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 7990650322246224586,
         "index_name": "keyword:section",
         "node_hash": 1737304210274426578,
@@ -87170,7 +87170,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 6073850937584885555,
         "index_name": "keyword:project",
         "node_hash": 1737304210274426578,
@@ -87186,7 +87186,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 2980896562997691696,
         "index_name": "keyword:aurora",
         "node_hash": 1737304210274426578,
@@ -87202,7 +87202,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 4021759710752380627,
         "index_name": "keyword:gpu",
         "node_hash": 1737304210274426578,
@@ -87218,7 +87218,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 2796329109025803500,
         "index_name": "keyword:policy",
         "node_hash": 1737304210274426578,
@@ -87234,7 +87234,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 7598203088541944143,
         "index_name": "keyword:detail",
         "node_hash": 1737304210274426578,
@@ -87250,7 +87250,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 4879029458767777724,
         "index_name": "source_type:resource",
         "node_hash": 1737304210274426578,
@@ -87266,7 +87266,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 4710478552292511122,
         "index_name": "resource_type:md",
         "node_hash": 1737304210274426578,
@@ -87282,7 +87282,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 4563754746808396568,
         "index_name": "unit_kind:markdown_section",
         "node_hash": 1737304210274426578,
@@ -87298,7 +87298,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 6500140663240974084,
         "index_name": "heading_slug:project-aurora-gpu-policy",
         "node_hash": 1737304210274426578,
@@ -87314,7 +87314,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 4711742307658488277,
         "index_name": "keyword:project",
         "node_hash": 1737304210274426578,
@@ -87330,7 +87330,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 8125458541061062392,
         "index_name": "keyword:aurora",
         "node_hash": 1737304210274426578,
@@ -87346,7 +87346,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 3402458531441237031,
         "index_name": "keyword:gpu",
         "node_hash": 1737304210274426578,
@@ -87362,7 +87362,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 1410866500128548863,
         "index_name": "keyword:policy",
         "node_hash": 1737304210274426578,
@@ -87378,7 +87378,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 7839359722271107150,
         "index_name": "keyword:decision",
         "node_hash": 1737304210274426578,
@@ -87394,7 +87394,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 6377057777182444121,
         "index_name": "keyword:alice",
         "node_hash": 1737304210274426578,
@@ -87410,7 +87410,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 6014587176426531818,
         "index_name": "source_type:resource",
         "node_hash": 1737304210274426578,
@@ -87426,7 +87426,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 6957200508155982253,
         "index_name": "resource_type:md",
         "node_hash": 1737304210274426578,
@@ -87442,7 +87442,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 8997094292006124344,
         "index_name": "unit_kind:markdown_section",
         "node_hash": 1737304210274426578,
@@ -87458,7 +87458,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 4999751672597495927,
         "index_name": "heading_slug:project-aurora-gpu-policy",
         "node_hash": 1737304210274426578,
@@ -87474,7 +87474,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 5069681225557589926,
         "index_name": "keyword:project",
         "node_hash": 1737304210274426578,
@@ -87490,7 +87490,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 7414536589627836698,
         "index_name": "keyword:aurora",
         "node_hash": 1737304210274426578,
@@ -87506,7 +87506,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 7133213544007567487,
         "index_name": "keyword:gpu",
         "node_hash": 1737304210274426578,
@@ -87522,7 +87522,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 3453850542811814904,
         "index_name": "keyword:policy",
         "node_hash": 1737304210274426578,
@@ -87538,7 +87538,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 4448580561167241206,
         "index_name": "keyword:decision",
         "node_hash": 1737304210274426578,
@@ -87554,7 +87554,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 6687471759837162381,
         "index_name": "keyword:alice",
         "node_hash": 1737304210274426578,
@@ -87570,7 +87570,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 5572467152756476169,
         "index_name": "source_type:resource",
         "node_hash": 1737304210274426578,
@@ -87586,7 +87586,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 6475116272684520232,
         "index_name": "resource_type:md",
         "node_hash": 1737304210274426578,
@@ -87602,7 +87602,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 879294968377258310,
         "index_name": "unit_kind:markdown_section",
         "node_hash": 1737304210274426578,
@@ -87618,7 +87618,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 3401296678568454678,
         "index_name": "heading_slug:project-aurora-gpu-policy",
         "node_hash": 1737304210274426578,
@@ -87634,7 +87634,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 7183277869751899822,
         "index_name": "keyword:project",
         "node_hash": 1737304210274426578,
@@ -87650,7 +87650,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 5536653630424905972,
         "index_name": "keyword:aurora",
         "node_hash": 1737304210274426578,
@@ -87666,7 +87666,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 4157353836703177506,
         "index_name": "keyword:gpu",
         "node_hash": 1737304210274426578,
@@ -87682,7 +87682,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 8794814359327453372,
         "index_name": "keyword:policy",
         "node_hash": 1737304210274426578,
@@ -87698,7 +87698,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 2077991649567389349,
         "index_name": "keyword:decision",
         "node_hash": 1737304210274426578,
@@ -87714,7 +87714,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 8212901512371936890,
         "index_name": "keyword:alice",
         "node_hash": 1737304210274426578,
@@ -87730,7 +87730,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 481748745053913919,
         "index_name": "source_type:resource",
         "node_hash": 1737304210274426578,
@@ -87746,7 +87746,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 5165817520593485121,
         "index_name": "resource_type:md",
         "node_hash": 1737304210274426578,
@@ -87762,7 +87762,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 2557516827865248313,
         "index_name": "unit_kind:markdown_section",
         "node_hash": 1737304210274426578,
@@ -87778,7 +87778,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 3688782399432977826,
         "index_name": "heading_slug:project-aurora-gpu-policy",
         "node_hash": 1737304210274426578,
@@ -87794,7 +87794,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 2919691649012894001,
         "index_name": "keyword:project",
         "node_hash": 1737304210274426578,
@@ -87810,7 +87810,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 4748182048990708678,
         "index_name": "keyword:aurora",
         "node_hash": 1737304210274426578,
@@ -87826,7 +87826,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 740870763031866306,
         "index_name": "keyword:gpu",
         "node_hash": 1737304210274426578,
@@ -87842,7 +87842,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 2198523972234507526,
         "index_name": "keyword:policy",
         "node_hash": 1737304210274426578,
@@ -87858,7 +87858,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 7544116636849812905,
         "index_name": "keyword:decision",
         "node_hash": 1737304210274426578,
@@ -87874,7 +87874,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 5435501867955626909,
         "index_name": "keyword:alice",
         "node_hash": 1737304210274426578,
@@ -87890,7 +87890,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 1833004501411468674,
         "index_name": "source_type:resource",
         "node_hash": 1737304210274426578,
@@ -87906,7 +87906,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 3365010504041924195,
         "index_name": "resource_type:md",
         "node_hash": 1737304210274426578,
@@ -87922,7 +87922,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 8671700789304996645,
         "index_name": "unit_kind:markdown_section",
         "node_hash": 1737304210274426578,
@@ -87938,7 +87938,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 535349535482282214,
         "index_name": "heading_slug:project-aurora-gpu-policy",
         "node_hash": 1737304210274426578,
@@ -87954,7 +87954,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 1674375597806820227,
         "index_name": "keyword:project",
         "node_hash": 1737304210274426578,
@@ -87970,7 +87970,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 6602223289144840599,
         "index_name": "keyword:aurora",
         "node_hash": 1737304210274426578,
@@ -87986,7 +87986,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 8229925544828491469,
         "index_name": "keyword:gpu",
         "node_hash": 1737304210274426578,
@@ -88002,7 +88002,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 1587646527913935101,
         "index_name": "keyword:policy",
         "node_hash": 1737304210274426578,
@@ -88018,7 +88018,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 5429131555005102235,
         "index_name": "keyword:decision",
         "node_hash": 1737304210274426578,
@@ -88034,7 +88034,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 3723704037295788540,
         "index_name": "keyword:alice",
         "node_hash": 1737304210274426578,
@@ -88050,7 +88050,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 2868296480467985468,
         "index_name": "source_type:resource",
         "node_hash": 1737304210274426578,
@@ -88066,7 +88066,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 7028265015261644130,
         "index_name": "resource_type:md",
         "node_hash": 1737304210274426578,
@@ -88082,7 +88082,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 678770487006194779,
         "index_name": "unit_kind:markdown_section",
         "node_hash": 1737304210274426578,
@@ -88098,7 +88098,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 4578236403899821867,
         "index_name": "heading_slug:project-aurora-gpu-policy",
         "node_hash": 1737304210274426578,
@@ -88114,7 +88114,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 4573081422806930898,
         "index_name": "keyword:project",
         "node_hash": 1737304210274426578,
@@ -88130,7 +88130,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 3303332626291468211,
         "index_name": "keyword:aurora",
         "node_hash": 1737304210274426578,
@@ -88146,7 +88146,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 1102326365632701453,
         "index_name": "keyword:gpu",
         "node_hash": 1737304210274426578,
@@ -88162,7 +88162,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 2784157154023682849,
         "index_name": "keyword:policy",
         "node_hash": 1737304210274426578,
@@ -88178,7 +88178,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 6676258438519950391,
         "index_name": "keyword:decision",
         "node_hash": 1737304210274426578,
@@ -88194,7 +88194,7 @@
         "updated_at_ms": 1782681921099
       },
       {
-        "data_model": "resource_chunk",
+        "capability": "resource_chunk",
         "index_hash": 6162657357951245573,
         "index_name": "keyword:alice",
         "node_hash": 1737304210274426578,

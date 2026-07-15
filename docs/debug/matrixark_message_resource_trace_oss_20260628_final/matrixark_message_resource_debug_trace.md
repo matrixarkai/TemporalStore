@@ -50,7 +50,7 @@ MATRIXARK_EMBEDDING_PROVIDER=oss MATRIXARK_EMBEDDING_MODEL=sentence-transformers
 - Node L1 policy: generate when child summaries, >=3 source events, or >=180 estimated source tokens
 - Embedding note: OSS embedding provider completed for this run.
 
-## Data Model Field Guide
+## Capability Field Guide
 
 |model|purpose|important_fields|
 |---|---|---|

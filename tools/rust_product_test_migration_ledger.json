@@ -1222,9 +1222,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::live_page_segment_ids_scan_all_index_backed_data_models",
+      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::live_page_segment_ids_scan_all_index_backed_capabilities",
       "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "live_page_segment_ids_scan_all_index_backed_data_models",
+      "test_name": "live_page_segment_ids_scan_all_index_backed_capabilities",
       "family": "storage/cache",
       "classification": "move_to_shared",
       "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",

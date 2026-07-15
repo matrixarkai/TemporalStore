@@ -81,7 +81,7 @@ The common request path is:
 6. Reads use index state first, then cache/block-store/shared-store refill paths.
 7. Admin/readiness endpoints expose the current evidence and blockers.
 
-## Command And Data Model Core
+## Command And Capability Core
 
 `types.rs` is the product contract center. It defines:
 

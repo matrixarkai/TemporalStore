@@ -170,7 +170,7 @@ For large resources, this becomes `chunks x index_terms_per_chunk`. A 500-chunk 
 MatrixArk should use the old TemporalStore style for hot serving:
 
 ```text
-Context data model = timestamped series
+Context capability = timestamped series
 Secondary filters = declared compact fields or native posting families
 Query = time range + scope + filter predicates + top-k/candidate cap
 ```
@@ -181,7 +181,7 @@ The serving API should look like:
 matrixark_scan_candidates(
   scope_key,
   node_hashes,
-  data_models=["event", "entity", "resource_chunk", "skill_section"],
+  capabilities=["event", "entity", "resource_chunk", "skill_section"],
   time_range,
   filters={
     "source_type": ["message", "resource"],
@@ -278,7 +278,7 @@ ctx:event:{tenant}:{node}
 ## What To Change From Today
 
 1. Keep `ContextEvent` timestamp-keyed by ingestion time.
-2. Keep `ContextIndexRef` as a native internal posting/ref mechanism, not a verbose serving data model.
+2. Keep `ContextIndexRef` as a native internal posting/ref mechanism, not a verbose serving capability.
 3. Stop exporting every index ref into ContextPack/debug pages by default.
 4. Cap index fanout per object and per resource import.
 5. Add a native C++/Rust candidate scan API that applies scope and filter predicates before returning rows.
@@ -305,4 +305,4 @@ Do not break existing context tests immediately. Migrate in phases:
 
 ## Decision
 
-Use TemporalStore-native secondary filtering for MatrixArk context management. `ContextIndexRef` should remain an internal compact lookup surface or be replaced by feature-style field predicates where possible. It should not become a large user-visible data model, and it should not scale with arbitrary resource keywords or PDF text.
+Use TemporalStore-native secondary filtering for MatrixArk context management. `ContextIndexRef` should remain an internal compact lookup surface or be replaced by feature-style field predicates where possible. It should not become a large user-visible capability, and it should not scale with arbitrary resource keywords or PDF text.

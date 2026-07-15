@@ -1010,8 +1010,8 @@ def context_index_posting_bucket(timestamp_ms: int) -> int:
     return int(timestamp_ms) - (int(timestamp_ms) % bucket_ms)
 
 
-def context_index_data_model(record: Json) -> str:
-    explicit = str(record.get("data_model") or "").strip()
+def context_index_capability(record: Json) -> str:
+    explicit = str(record.get("capability") or "").strip()
     if explicit:
         return explicit
     ref_type = str(record.get("ref_type") or "").strip()
@@ -1075,13 +1075,13 @@ def compact_context_index_postings(records: list[Json]) -> list[Json]:
             scope = record.get("scope") if isinstance(record.get("scope"), dict) else {}
             scope_key = canonical_scope_key(scope) if scope else ""
         node_hash = record.get("node_hash") or record.get("node_id") or 0
-        data_model = context_index_data_model(record)
-        key = (index_name, scope_key, node_hash, data_model, timestamp_key_ms)
+        capability = context_index_capability(record)
+        key = (index_name, scope_key, node_hash, capability, timestamp_key_ms)
         ref_hashes = context_index_ref_hashes(record)
         if key not in postings:
             posting: Json = {
                 "record_type": "context_index",
-                "data_model": data_model,
+                "capability": capability,
                 "index_name": index_name,
                 "timestamp_key_ms": timestamp_key_ms,
                 "node_hash": node_hash,
@@ -3170,7 +3170,7 @@ def secondary_index_budget_summary(budget: Json) -> Json:
 def context_index_posting_record(
     *,
     index_name: str,
-    data_model: str,
+    capability: str | None = None,
     ref_type: str | None = None,
     ref_hashes: list[Any] | None = None,
     batch_id_hash: Any = None,
@@ -3182,10 +3182,13 @@ def context_index_posting_record(
 ) -> Json:
     """Build a compact TemporalStore-style secondary-index posting row.
 
-    ContextIndex is an index data model, not an event/chunk/entity clone. New
-    writes store the indexed data model and a timestamp key plus a compact
+    ContextIndex is an index capability, not an event/chunk/entity clone. New
+    writes store the indexed capability and a timestamp key plus a compact
     posting list of referenced hashes. Readers still accept older ref_hash rows.
     """
+    indexed_capability = str(capability or "").strip()
+    if not indexed_capability:
+        indexed_capability = "context"
     refs: list[Any] = []
     seen_refs: set[str] = set()
     for ref in ref_hashes or []:
@@ -3199,7 +3202,7 @@ def context_index_posting_record(
     timestamp_key_ms = int(updated_at_ms or now_ms())
     identity = {
         "index_name": index_name,
-        "data_model": data_model,
+        "capability": indexed_capability,
         "timestamp_key_ms": timestamp_key_ms,
         "batch_id_hash": batch_id_hash,
         "node_hash": node_hash,
@@ -3209,7 +3212,7 @@ def context_index_posting_record(
         "record_type": "context_index",
         "index_name": index_name,
         "index_hash": stable_hash(json.dumps(identity, sort_keys=True, separators=(",", ":"))),
-        "data_model": data_model,
+        "capability": indexed_capability,
         "timestamp_key_ms": timestamp_key_ms,
         "ref_hashes": refs,
         "updated_at_ms": timestamp_key_ms,
@@ -3279,8 +3282,8 @@ def _chunked_refs(refs: list[Any], *, limit: int) -> list[list[Any]]:
 def compact_context_index_postings(records: list[Json]) -> list[Json]:
     """Group ContextIndex writes into Feature-style timestamped posting rows.
 
-    ContextIndex is an index data model. It should not produce one row per
-    indexed object when many objects share the same term, model, scope, node, and
+    ContextIndex is an index capability. It should not produce one row per
+    indexed object when many objects share the same term, capability, scope, node, and
     timestamp bucket. Grouping keeps index rows bounded by terms and buckets,
     while ref_hashes carries the posting list.
     """
@@ -3292,14 +3295,14 @@ def compact_context_index_postings(records: list[Json]) -> list[Json]:
             passthrough.append(record)
             continue
         index_name = str(record.get("index_name") or "")
-        data_model = str(record.get("data_model") or "")
-        if not index_name or not data_model:
+        capability = context_index_capability(record)
+        if not index_name or not capability:
             passthrough.append(record)
             continue
         bucket_ms = context_index_time_bucket(record.get("timestamp_key_ms") or record.get("updated_at_ms"))
         key = (
             str(record.get("scope_key") or ""),
-            data_model,
+            capability,
             index_name,
             str(record.get("ref_type") or ""),
             bucket_ms,
@@ -3308,14 +3311,14 @@ def compact_context_index_postings(records: list[Json]) -> list[Json]:
             grouped[key] = {
                 "record_type": "context_index",
                 "index_name": index_name,
-                "data_model": data_model,
+                "capability": capability,
                 "timestamp_key_ms": bucket_ms,
                 "updated_at_ms": bucket_ms,
                 "ref_hashes": [],
                 "node_hashes": [],
                 "batch_id_hashes": [],
                 "posting_count": 0,
-                "posting_policy": "bucketed_by_scope_data_model_index_time",
+                "posting_policy": "bucketed_by_scope_capability_index_time",
             }
             for field in ("scope_key", "ref_type", "storage_route"):
                 value = record.get(field)
@@ -3375,7 +3378,7 @@ def compact_context_index_postings(records: list[Json]) -> list[Json]:
             identity = {
                 "scope_key": record.get("scope_key"),
                 "index_name": record.get("index_name"),
-                "data_model": record.get("data_model"),
+                "capability": record.get("capability"),
                 "timestamp_key_ms": record.get("timestamp_key_ms"),
                 "node_hashes": record.get("node_hashes") or ([record.get("node_hash")] if record.get("node_hash") is not None else []),
                 "batch_id_hashes": record.get("batch_id_hashes") or ([record.get("batch_id_hash")] if record.get("batch_id_hash") is not None else []),

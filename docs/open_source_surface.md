@@ -14,7 +14,7 @@ The open-source build keeps:
 - Control State for fast-changing serving signals such as counters, caps,
   quotas, pacing, eligibility, suppression, and risk-control state.
 
-Only the capabilities listed above are public in the first open-source release. Context audit/replay/debug data models are not part of the first-release open-source surface. Other internal model families are intentionally omitted from docs, manifests, and compatibility corpora until they are ready for a future public release.
+Only the capabilities listed above are public in the first open-source release. Context audit/replay/debug capabilities are not part of the first-release open-source surface. Other internal capabilities are intentionally omitted from docs, manifests, and compatibility corpora until they are ready for a future public release.
 
 FeatureAggregate stays inside the Feature capability. The public first-release
 aggregate set is exact and mature: `count`, `sum`, `min`, `max`, `avg`,
@@ -26,7 +26,7 @@ Control State is the preferred public name for the former Risk/frequency-cap
 surface. `CONTROL*` commands are the public spelling; legacy `RISK*` commands
 remain compatibility aliases during migration.
 
-The open-source build excludes non-public/internal model families and extension
+The open-source build excludes non-public/internal capabilities and extension
 modules that are not part of the first-release public contract. It also does not expose Redis server-configuration or broad
 keyspace/collection-clone commands such as `CONFIG`, `DBSIZE`, broad `KEYS` /
 `SCAN`, `SADD`, `LPUSH`, or `ZADD`. `HSCAN` is excluded from the first-release public surface. The set protobuf may still compile as a

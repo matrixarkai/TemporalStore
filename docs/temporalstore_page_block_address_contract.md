@@ -1186,7 +1186,7 @@ General storage-level page/block reclaim is not MatrixArk-context-specific.
 MatrixArk context GC may mark raw context events as logically eligible for
 eviction or compression, but TemporalStore's storage lifecycle owns physical
 page/block tombstone handling, compaction, delayed destroy, and reclaimed-byte
-accounting for every data model.
+accounting for every capability.
 
 Shared proof requirements:
 
