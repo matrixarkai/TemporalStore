@@ -58,6 +58,8 @@ mod proxy_control_state_cpc;
 #[cfg(feature = "proxy")]
 mod proxy_control_state_fol;
 #[cfg(feature = "proxy")]
+mod proxy_control_state_manager;
+#[cfg(feature = "proxy")]
 mod proxy_features;
 #[cfg(feature = "proxy")]
 mod proxy_helpers;
