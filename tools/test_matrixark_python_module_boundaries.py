@@ -48,6 +48,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         retrieval_mod = importlib.import_module("tools.matrixark_mcp_retrieval")
         requests_mod = importlib.import_module("tools.matrixark_mcp_requests")
         validation_mod = importlib.import_module("tools.matrixark_mcp_validation")
+        query_mod = importlib.import_module("tools.matrixark_mcp_query")
         identity_mod = importlib.import_module("tools.matrixark_mcp_identity")
         context_pack_mod = importlib.import_module("tools.matrixark_mcp_context_pack")
         errors_mod = importlib.import_module("tools.matrixark_mcp_errors")
@@ -78,6 +79,12 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIs(core_mod.optional_object, validation_mod.optional_object)
         self.assertIs(core_mod.optional_string, validation_mod.optional_string)
         self.assertIs(core_mod.optional_string_list, validation_mod.optional_string_list)
+        self.assertIs(core_mod.slug_candidates_from_query, query_mod.slug_candidates_from_query)
+        self.assertIs(core_mod.path_candidates_from_query, query_mod.path_candidates_from_query)
+        self.assertIs(core_mod.keyword_candidates_from_query, query_mod.keyword_candidates_from_query)
+        self.assertIs(core_mod.secondary_filter_terms_to_fields, query_mod.secondary_filter_terms_to_fields)
+        self.assertIs(core_mod.infer_temporal_window, query_mod.infer_temporal_window)
+        self.assertIs(core_mod.build_structured_query_plan, query_mod.build_structured_query_plan)
         self.assertIs(server_mod.stable_hash, identity_mod.stable_hash)
         self.assertIs(core_mod.canonical_scope_key, identity_mod.canonical_scope_key)
         self.assertIs(core_mod.compact_context_pack_refs, context_pack_mod.compact_context_pack_refs)
@@ -123,6 +130,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "matrixark_mcp_dispatch.py",
             "matrixark_mcp_requests.py",
             "matrixark_mcp_validation.py",
+            "matrixark_mcp_query.py",
             "matrixark_mcp_ingestion.py",
             "matrixark_mcp_retrieval.py",
             "matrixark_mcp_admin.py",
