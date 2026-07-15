@@ -70,6 +70,7 @@ try:
         merge_resource_versions,
     )
     from tools.matrixark_mcp_raw_ingestion import (
+        ensure_raw_ingestion_fields,
         normalize_raw_storage_backend,
         raw_ingestion_append_options,
         raw_ingestion_append_path_for_backend,
@@ -110,6 +111,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         merge_resource_versions,
     )
     from matrixark_mcp_raw_ingestion import (
+        ensure_raw_ingestion_fields,
         normalize_raw_storage_backend,
         raw_ingestion_append_options,
         raw_ingestion_append_path_for_backend,
@@ -705,22 +707,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         )
 
     def _ensure_raw_ingestion_fields(self) -> None:
-        if not hasattr(self, "_raw_storage_backend"):
-            self._raw_storage_backend = self._normalize_raw_storage_backend(
-                os.environ.get("MATRIXARK_RAW_INGESTION_BACKEND", "temporalstore")
-            )
-        else:
-            self._raw_storage_backend = self._normalize_raw_storage_backend(self._raw_storage_backend)
-        if not hasattr(self, "_raw_ingestion_prefix"):
-            storage_prefix = str(getattr(self, "_storage_prefix", "matrixark:mcp")).rstrip(":")
-            configured_raw_prefix = os.environ.get("MATRIXARK_DIRECT_RAW_STORAGE_PREFIX", "").strip().rstrip(":")
-            self._raw_ingestion_prefix = configured_raw_prefix or f"{storage_prefix}:raw_ingestion"
-        if not hasattr(self, "_raw_record_hash_key"):
-            self._raw_record_hash_key = f"{self._raw_ingestion_prefix}:records"
-        if not hasattr(self, "_raw_count_key"):
-            self._raw_count_key = f"{self._raw_ingestion_prefix}:record_count"
-        if not hasattr(self, "_raw_entry_count_cache"):
-            self._raw_entry_count_cache = None
+        ensure_raw_ingestion_fields(self)
 
     def _raw_record_location(self, sequence: int) -> tuple[str, str]:
         self._ensure_raw_ingestion_fields()
