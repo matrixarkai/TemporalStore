@@ -17,10 +17,18 @@ try:
     from tools.matrixark_mcp_core import Json, MatrixArkError
     from tools.matrixark_mcp_rust_proxy_config import initialize_rust_proxy_config
     from tools.matrixark_mcp_rust_proxy_lanes import build_lane_pools
+    from tools.matrixark_mcp_rust_proxy_metrics_state import (
+        initialize_rust_proxy_cache_state,
+        initialize_rust_proxy_metrics_state,
+    )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import Json, MatrixArkError
     from matrixark_mcp_rust_proxy_config import initialize_rust_proxy_config
     from matrixark_mcp_rust_proxy_lanes import build_lane_pools
+    from matrixark_mcp_rust_proxy_metrics_state import (
+        initialize_rust_proxy_cache_state,
+        initialize_rust_proxy_metrics_state,
+    )
 
 
 class MatrixArkRustProxyClient:
@@ -68,84 +76,8 @@ class MatrixArkRustProxyClient:
         self._lane_worker_counts["retrieve"] = self._lane_worker_counts.get("pack", 0)
         self._lane_cursors = {name: 0 for name in self._lanes}
         self._lane_select_lock = threading.Lock()
-        self._metrics_lock = threading.Lock()
-        self._commands_total = 0
-        self._commands_failed_total = 0
-        self._records_written_total = 0
-        self._records_read_total = 0
-        self._backpressure_rejections_total = 0
-        self._timeouts_total = 0
-        self._last_latency_ms = 0.0
-        self._max_observed_latency_ms = 0.0
-        self._latency_samples_ms: list[float] = []
-        self._lane_latency_samples_ms: dict[str, list[float]] = {lane: [] for lane in self._lane_worker_counts}
-        self._lane_commands_total: dict[str, int] = {lane: 0 for lane in self._lane_worker_counts}
-        self._lane_wait_ms_total: dict[str, float] = {lane: 0.0 for lane in self._lane_worker_counts}
-        self._lane_wait_ms_max: dict[str, float] = {lane: 0.0 for lane in self._lane_worker_counts}
-        self._op_commands_total: dict[str, int] = {}
-        self._op_latency_ms_total: dict[str, float] = {}
-        self._op_latency_ms_max: dict[str, float] = {}
-        self._serialization_ms_total = 0.0
-        self._serialization_ms_max = 0.0
-        self._rust_engine_ms_total = 0.0
-        self._rust_engine_ms_max = 0.0
-        self._scan_count_total = 0
-        self._cache_hits_total = 0
-        self._cache_misses_total = 0
-        self._selected_refs_total = 0
-        self._dropped_refs_total = 0
-        self._context_record_counts: dict[str, int] = {}
-        self._publish_visibility_calls_total = 0
-        self._publish_visibility_keys_total = 0
-        self._publish_visibility_full_shard_total = 0
-        self._publish_visibility_index_bytes_total = 0
-        self._publish_visibility_last_key_count = 0
-        self._publish_visibility_last_index_bytes = 0
-        self._batch_hset_coalesce_lock = threading.Lock()
-        self._batch_hset_coalesce_queue: list[Json] = []
-        self._batch_hset_coalesce_active = False
-        self._batch_hset_coalesced_batches_total = 0
-        self._batch_hset_coalesced_calls_total = 0
-        self._batch_hset_coalesced_records_total = 0
-        self._batch_hset_coalesced_wait_ms_total = 0.0
-        self._batch_hset_coalesced_wait_ms_max = 0.0
-        self._batch_hget_coalesce_lock = threading.Lock()
-        self._batch_hget_coalesce_queue: list[Json] = []
-        self._batch_hget_coalesce_active = False
-        self._batch_hget_coalesced_batches_total = 0
-        self._batch_hget_coalesced_calls_total = 0
-        self._batch_hget_coalesced_records_total = 0
-        self._batch_hget_coalesced_wait_ms_total = 0.0
-        self._batch_hget_coalesced_wait_ms_max = 0.0
-        self._append_coalesce_lock = threading.Lock()
-        self._append_coalesce_queue: list[Json] = []
-        self._append_coalesce_active = False
-        self._append_coalesced_batches_total = 0
-        self._append_coalesced_calls_total = 0
-        self._append_coalesced_records_total = 0
-        self._append_coalesced_wait_ms_total = 0.0
-        self._append_coalesced_wait_ms_max = 0.0
-        self._string_cache_lock = threading.Lock()
-        self._string_cache: dict[str, str] = {}
-        self._string_cache_hits_total = 0
-        self._string_cache_misses_total = 0
-        self._string_cache_updates_total = 0
-        self._scan_hash_cache_lock = threading.Lock()
-        self._scan_hash_cache: OrderedDict[str, Json] = OrderedDict()
-        self._scan_hash_cache_hits_total = 0
-        self._scan_hash_cache_misses_total = 0
-        self._scan_hash_cache_updates_total = 0
-        self._scan_hash_cache_invalidations_total = 0
-        self._context_pack_response_cache_lock = threading.Lock()
-        self._context_pack_response_cache: OrderedDict[str, Json] = OrderedDict()
-        self._context_pack_response_inflight: dict[str, Json] = {}
-        self._context_pack_response_cache_hits_total = 0
-        self._context_pack_response_cache_misses_total = 0
-        self._context_pack_response_cache_updates_total = 0
-        self._context_pack_response_cache_invalidations_total = 0
-        self._context_pack_response_singleflight_waits_total = 0
-        self._context_pack_response_singleflight_wait_ms_total = 0.0
-        self._context_pack_response_singleflight_wait_ms_max = 0.0
+        initialize_rust_proxy_metrics_state(self)
+        initialize_rust_proxy_cache_state(self)
         self._started_at = time.time()
         self._proc: subprocess.Popen[str] | None = None
 
