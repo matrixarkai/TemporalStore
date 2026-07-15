@@ -3,19 +3,16 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-import queue as thread_queue
-
 try:
     from tools.matrixark_mcp_core import *
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import *
 
 try:
-    from tools.matrixark_mcp_env import env_bool, env_float, env_int
+    from tools.matrixark_mcp_env import env_bool
     from tools.matrixark_mcp_metrics import MatrixArkServiceMetrics
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_env import env_bool, env_float, env_int
+    from matrixark_mcp_env import env_bool
     from matrixark_mcp_metrics import MatrixArkServiceMetrics
 
 try:
@@ -64,6 +61,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_local_replay as local_replay_helpers
 
 try:
+    from tools import matrixark_mcp_local_runtime as local_runtime_helpers
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_local_runtime as local_runtime_helpers
+
+try:
     from tools import matrixark_mcp_session_runtime as session_runtime
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_session_runtime as session_runtime
@@ -101,73 +103,19 @@ class MatrixArkLocalAdapter:
         self._init_local_runtime_state()
 
     def _init_local_runtime_state(self) -> None:
-        self.event_log.parent.mkdir(parents=True, exist_ok=True)
-        self._write_batch_local = threading.local()
-        self._event_log_lock = threading.RLock()
-        self._resource_import_worker_count = max(1, env_int("MATRIXARK_RESOURCE_IMPORT_WORKERS", 2))
-        self._resource_import_queue_max = max(1, env_int("MATRIXARK_RESOURCE_IMPORT_QUEUE_MAX", 64))
-        self._resource_import_queue: thread_queue.Queue[Json] = thread_queue.Queue(maxsize=self._resource_import_queue_max)
-        self._resource_import_workers_started = False
-        self._resource_import_worker_lock = threading.RLock()
-        self._resource_import_stop = threading.Event()
-        self._resource_import_threads: list[threading.Thread] = []
-        self._latest_entity_by_hash: dict[int, Json] = {}
-        self._entity_cache_loaded = False
-        self._session_buffer_cache_lock = threading.RLock()
-        self._context_event_by_hash: dict[int, Json] = {}
-        self._session_pending_event_ids_by_key: dict[tuple[str, str, str, str], list[int]] = {}
-        self._session_committed_event_ids_by_key: dict[tuple[str, str, str, str], set[int]] = {}
-        self._context_node_hashes: set[int] = set()
-        self._context_child_ref_hashes: set[int] = set()
-        self._context_node_cache_loaded = False
-        self._read_cache_lock = threading.RLock()
-        self._read_cache_records: list[Json] | None = None
-        self._read_cache_size = -1
-        self._read_cache_mtime_ns = -1
-        self._retrieval_records_cache_lock = threading.RLock()
-        self._retrieval_records_cache_generation = 0
-        self._retrieval_records_cache: dict[tuple[Any, ...], Json] = {}
-        self._context_pack_cache_lock = threading.RLock()
-        self._context_pack_cache: dict[tuple[Any, ...], tuple[float, Json]] = {}
-        self._context_pack_cache_max_entries = max(0, env_int("MATRIXARK_CONTEXT_PACK_CACHE_MAX_ENTRIES", 256))
-        self._context_pack_cache_ttl_s = max(0.0, env_float("MATRIXARK_CONTEXT_PACK_CACHE_TTL_S", 30.0))
+        local_runtime_helpers.init_local_runtime_state(self)
 
     def _write_batch_stack(self) -> list[list[Json]]:
-        local = getattr(self, "_write_batch_local", None)
-        if local is None:
-            self._write_batch_local = threading.local()
-            local = self._write_batch_local
-        stack = getattr(local, "stack", None)
-        if stack is None:
-            stack = []
-            local.stack = stack
-        return stack
+        return local_runtime_helpers.write_batch_stack(self)
 
     def _current_write_batch(self) -> list[Json] | None:
-        stack = self._write_batch_stack()
-        return stack[-1] if stack else None
+        return local_runtime_helpers.current_write_batch(self)
 
     def _queue_batched_records(self, records: list[Json]) -> bool:
-        batch = self._current_write_batch()
-        if batch is None:
-            return False
-        batch.extend(records)
-        return True
+        return local_runtime_helpers.queue_batched_records(self, records)
 
-    @contextmanager
     def write_batch(self, label: str = "hot_path"):
-        stack = self._write_batch_stack()
-        batch: list[Json] = []
-        stack.append(batch)
-        try:
-            yield batch
-        except Exception:
-            stack.pop()
-            raise
-        else:
-            stack.pop()
-            if batch:
-                self.append_many(batch)
+        return local_runtime_helpers.write_batch(self, label)
 
     def ensure_backend_ready(self, *, reason: str = "manual", probe: bool = True, timeout_ms: int | None = None) -> Json:
         return {
