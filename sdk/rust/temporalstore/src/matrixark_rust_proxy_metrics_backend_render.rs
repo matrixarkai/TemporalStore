@@ -1,6 +1,8 @@
-use crate::matrixark_rust_proxy_clock::unix_ms;
 use crate::matrixark_rust_proxy_metrics::MetricsSnapshot;
 
+use crate::matrixark_rust_proxy_metrics_backend_stats::{
+    elapsed_seconds, latency_le_100_count, max_command_latency_ms,
+};
 use crate::matrixark_rust_proxy_metrics_format::{
     line, matrixark_rust_storage_mode, metric_header,
 };
@@ -27,13 +29,14 @@ pub(crate) fn append_backend_metrics(out: &mut String, snapshot: &MetricsSnapsho
         "gauge",
         "MatrixArk storage backend command QPS.",
     );
-    let elapsed_seconds =
-        ((unix_ms().saturating_sub(snapshot.started_at_unix_ms)) as f64 / 1000.0).max(0.001);
     line(
         out,
         "matrixark_backend_qps",
         "{backend=\"rust\"}",
-        format!("{:.6}", snapshot.commands_total as f64 / elapsed_seconds),
+        format!(
+            "{:.6}",
+            snapshot.commands_total as f64 / elapsed_seconds(snapshot)
+        ),
     );
     metric_header(
         out,
@@ -108,22 +111,11 @@ pub(crate) fn append_backend_metrics(out: &mut String, snapshot: &MetricsSnapsho
         "counter",
         "MatrixArk storage backend command latency buckets.",
     );
-    let le_100 = snapshot
-        .op
-        .values()
-        .map(|metrics| {
-            if metrics.latency_ms_max <= 100 {
-                metrics.ok + metrics.failed
-            } else {
-                0
-            }
-        })
-        .sum::<u64>();
     line(
         out,
         "matrixark_backend_command_latency_ms_bucket",
         "{backend=\"rust\",le=\"100\"}",
-        le_100,
+        latency_le_100_count(snapshot),
     );
     metric_header(
         out,
@@ -131,16 +123,10 @@ pub(crate) fn append_backend_metrics(out: &mut String, snapshot: &MetricsSnapsho
         "gauge",
         "MatrixArk storage backend maximum command latency in milliseconds.",
     );
-    let max_latency = snapshot
-        .op
-        .values()
-        .map(|metrics| metrics.latency_ms_max)
-        .max()
-        .unwrap_or(0);
     line(
         out,
         "matrixark_backend_command_latency_max_ms",
         "{backend=\"rust\"}",
-        max_latency,
+        max_command_latency_ms(snapshot),
     );
 }
