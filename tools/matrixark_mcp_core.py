@@ -517,6 +517,21 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         tokens,
     )
 
+try:
+    from tools.matrixark_mcp_text import (
+        MAX_CONTEXT_REF_CHARS,
+        clip_context_text,
+        text_from_messages,
+        token_count,
+    )
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_text import (
+        MAX_CONTEXT_REF_CHARS,
+        clip_context_text,
+        text_from_messages,
+        token_count,
+    )
+
 
 try:
     from tools.matrixark_mcp_query import (
@@ -600,7 +615,6 @@ HARD_MAX_CHILDREN_SCORED_PER_PARENT = int(os.environ.get("MATRIXARK_HARD_MAX_CHI
 RESOURCE_ASYNC_DEFAULT_BYTES = int(os.environ.get("MATRIXARK_RESOURCE_ASYNC_DEFAULT_BYTES", str(2 * 1024 * 1024)))
 RESOURCE_ASYNC_DEFAULT_TEXT_CHARS = int(os.environ.get("MATRIXARK_RESOURCE_ASYNC_DEFAULT_TEXT_CHARS", "200000"))
 RESOURCE_ASYNC_DEFAULT_PATH_COUNT = int(os.environ.get("MATRIXARK_RESOURCE_ASYNC_DEFAULT_PATH_COUNT", "32"))
-MAX_CONTEXT_REF_CHARS = 4096
 DEFAULT_TIME_DECAY_TOLERANCE_MS = 24 * 60 * 60 * 1000
 DEFAULT_TIME_DECAY_HALFLIFE_MS = 7 * 24 * 60 * 60 * 1000
 DEFAULT_TIME_WEIGHT = 0.18
@@ -2197,20 +2211,6 @@ def normalize_envelope(args: Json, *, default_kind: str) -> Json:
         if field in args:
             envelope[field] = args[field]
     return envelope
-
-
-def text_from_messages(messages: list[Json]) -> str:
-    return "\n".join(f"{item['role']}: {item['content']}" for item in messages)
-
-
-def token_count(text: str) -> int:
-    return len(tokens(text))
-
-
-def clip_context_text(text: str, *, max_chars: int = MAX_CONTEXT_REF_CHARS) -> str:
-    if len(text) <= max_chars:
-        return text
-    return text[:max_chars].rstrip() + " ...[truncated]"
 
 
 def infer_query_type(query: str) -> str:
