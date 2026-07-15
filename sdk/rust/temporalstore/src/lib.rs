@@ -45,6 +45,8 @@ mod direct_key_value;
 #[cfg(feature = "direct")]
 mod direct_sequence_features;
 #[cfg(feature = "direct")]
+mod direct_set;
+#[cfg(feature = "direct")]
 pub use direct_client::Client;
 #[cfg(feature = "direct")]
 pub(crate) use direct_ffi::*;
