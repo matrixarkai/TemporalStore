@@ -4909,22 +4909,29 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertIn("matrixark_batch_uses_forced_sync_durable_writes", crate_append_body)
         self.assertNotIn("execute_empty(&engine", crate_append_body)
 
-    def test_rust_direct_sdk_bridge_has_production_binary(self) -> None:
+    def test_rust_direct_sdk_binary_is_not_proxy_impl(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         cargo = (repo / "sdk/rust/temporalstore/Cargo.toml").read_text()
+        proxy_source = (repo / "sdk/rust/temporalstore/src/bin/matrixark_rust_proxy.rs").read_text()
         direct_source = (repo / "sdk/rust/temporalstore/src/bin/matrixark_rust_direct_sdk.rs").read_text()
         implementation = (repo / "sdk/rust/temporalstore/src/bin/matrixark_rust_proxy_impl.rs").read_text()
-        backends = (repo / "tools/matrixark_mcp_backends.py").read_text()
         adapters = (repo / "tools/matrixark_mcp_temporal_adapters.py").read_text()
 
         self.assertIn('name = "matrixark_rust_direct_sdk"', cargo)
-        self.assertIn("Production-facing alias for the MatrixArk Rust direct SDK bridge", direct_source)
-        self.assertIn("matrixark_rust_sdk_mode_is_direct", implementation)
-        self.assertIn("matrixark_rust_direct_sdk", implementation)
-        self.assertIn("rust-direct-sdk-bridge", implementation)
-        self.assertIn("rust-direct-sdk-bridge", direct_source)
+        self.assertIn('name = "matrixark_rust_proxy"', cargo)
+        self.assertIn('include!("matrixark_rust_proxy_impl.rs")', proxy_source)
+        self.assertNotIn('include!("matrixark_rust_proxy_impl.rs")', direct_source)
+        self.assertIn("MatrixArk Rust direct SDK binding descriptor", direct_source)
+        self.assertIn("libtemporalstore_rust.so", direct_source)
+        self.assertIn("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_LIB", direct_source)
+        self.assertIn('"proxy_impl": false', direct_source)
+        self.assertIn('"stdio_proxy": false', direct_source)
+        self.assertNotIn("matrixark_rust_sdk_mode_is_direct", implementation)
+        self.assertNotIn("matrixark_rust_direct_sdk", implementation)
+        self.assertNotIn("rust-direct-sdk-bridge", implementation)
+        self.assertIn("class MatrixArkRustCdylibClient", adapters)
         self.assertIn("MatrixArkTemporalStoreRustDirectAdapter", adapters)
-        self.assertIn("rust-direct-sdk-bridge", adapters)
+        self.assertIn("rust-direct-cdylib", adapters)
 
     def test_rust_cdylib_direct_binding_exposes_native_matrixark_api(self) -> None:
         repo = Path(__file__).resolve().parents[1]
@@ -4932,6 +4939,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         rust_lib = (repo / "sdk/rust/temporalstore/src/lib.rs").read_text()
         adapter = (repo / "tools/matrixark_mcp_temporal_adapters.py").read_text()
         server = (repo / "tools/matrixark_mcp_server.py").read_text()
+        backends = (repo / "tools/matrixark_mcp_backends.py").read_text()
 
         self.assertIn('crate-type = ["rlib", "cdylib"]', cargo)
         for symbol in [
@@ -4949,7 +4957,9 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertIn("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_LIB", adapter)
         self.assertIn("rust_direct_cdylib_matrixark_batch_append_records", adapter)
         self.assertIn("rust_direct_cdylib_matrixark_retrieve_context_pack", adapter)
-        self.assertIn("--rust-direct-lib", server)
+        self.assertIn("--rust-direct-lib", backends)
+        self.assertIn("temporalstore-rust-direct", backends)
+        self.assertIn("rust_direct_lib", server)
         self.assertIn("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_LIB", server)
 
     def test_cpp_python_sdk_exposes_native_hash_scan(self) -> None:
