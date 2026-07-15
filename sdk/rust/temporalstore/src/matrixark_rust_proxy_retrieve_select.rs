@@ -8,25 +8,8 @@ use crate::matrixark_rust_proxy_pack::{
     candidate_text, context_class_name, is_serving_selected_ref_class, pack_ref_from_record,
     token_estimate,
 };
+use crate::matrixark_rust_proxy_retrieve_result::RetrieveSelection;
 use crate::matrixark_rust_proxy_retrieve_scoring::ScoredCandidate;
-
-pub(crate) struct RetrieveSelection {
-    pub(crate) selected: Vec<Value>,
-    pub(crate) selected_counts: HashMap<String, u64>,
-    pub(crate) selected_nodes: HashSet<u64>,
-    pub(crate) used_tokens: u64,
-    pub(crate) cross_used_tokens: u64,
-    pub(crate) cross_selected_refs: u64,
-    pub(crate) entity_bridge_selected_refs: u64,
-    pub(crate) selected_cross_sessions: HashSet<String>,
-    pub(crate) dropped_over_budget: u64,
-    pub(crate) dropped_cross_budget: u64,
-    pub(crate) dropped_cross_session_cap: u64,
-    pub(crate) dropped_cross_candidate_cap: u64,
-    pub(crate) dropped_low_score: u64,
-    pub(crate) dropped_policy_ref: u64,
-    pub(crate) dropped_duplicate_ref: u64,
-}
 
 pub(crate) fn select_retrieve_refs(
     scored: Vec<ScoredCandidate<'_>>,

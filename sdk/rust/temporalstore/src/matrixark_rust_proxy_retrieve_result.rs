@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use serde_json::Value;
 use temporalstore::Client;
 
@@ -8,6 +10,24 @@ pub(crate) enum SdkNativePackAttempt {
     Response(Value),
     FallbackAllowed,
     Error(String),
+}
+
+pub(crate) struct RetrieveSelection {
+    pub(crate) selected: Vec<Value>,
+    pub(crate) selected_counts: HashMap<String, u64>,
+    pub(crate) selected_nodes: HashSet<u64>,
+    pub(crate) used_tokens: u64,
+    pub(crate) cross_used_tokens: u64,
+    pub(crate) cross_selected_refs: u64,
+    pub(crate) entity_bridge_selected_refs: u64,
+    pub(crate) selected_cross_sessions: HashSet<String>,
+    pub(crate) dropped_over_budget: u64,
+    pub(crate) dropped_cross_budget: u64,
+    pub(crate) dropped_cross_session_cap: u64,
+    pub(crate) dropped_cross_candidate_cap: u64,
+    pub(crate) dropped_low_score: u64,
+    pub(crate) dropped_policy_ref: u64,
+    pub(crate) dropped_duplicate_ref: u64,
 }
 
 pub(crate) fn try_sdk_native_pack(
