@@ -55,7 +55,8 @@ use self::response_cache::*;
 use self::routing::*;
 use self::slot_dump::*;
 use self::slot_store::{
-    read_component_page_address_values, read_slot_index_component_values, read_slot_index_value,
+    classify_slot_layout, read_component_page_address_values, read_slot_index_component_values,
+    read_slot_index_value, refresh_slot_runtime_flags, slot_layout_name, update_slot_layout,
 };
 use self::state::*;
 use self::storage_io::{atomic_write_bytes, serialize_index, unique_temp_path};
@@ -356,7 +357,7 @@ impl TemporalEngine {
                     end_routing_slot,
                 );
             }
-            refresh_slot_runtime_flags(shard);
+            refresh_slot_runtime_flags(shard, now_ms());
             if command_is_write && !config.async_storage {
                 let sync_canonical_log = !config.async_storage
                     || config.canonical_log_ack_policy == CanonicalLogAckPolicy::Durable;
@@ -2615,7 +2616,7 @@ impl TemporalEngine {
             end_routing_slot,
         );
         reconcile_secondary_views_from_slot_index(&self.page_store, &mut restored);
-        refresh_slot_runtime_flags(&mut restored);
+        refresh_slot_runtime_flags(&mut restored, now_ms());
         let restored_index_bytes = serialize_index(&restored);
         self.persist_slot_dump_install_marker(manifest, "prepare")
             .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
@@ -6280,7 +6281,7 @@ impl TemporalEngine {
                     end_routing_slot,
                 );
             }
-            refresh_slot_runtime_flags(shard);
+            refresh_slot_runtime_flags(shard, now_ms());
             let sync_canonical_log = !config.async_storage
                 || config.canonical_log_ack_policy == CanonicalLogAckPolicy::Durable;
             if let Err(error) = self.wal_store.append_batch_with_sync(
@@ -6636,7 +6637,7 @@ impl TemporalEngine {
                     end_routing_slot,
                 );
             }
-            refresh_slot_runtime_flags(shard);
+            refresh_slot_runtime_flags(shard, now_ms());
             serialize_index(shard)
         };
         self.index_log_store
@@ -7150,11 +7151,11 @@ impl TemporalEngine {
         }
 
         rebuild_slot_first_index(shard_id, shard, start_routing_slot, end_routing_slot);
-        refresh_slot_runtime_flags(shard);
+        refresh_slot_runtime_flags(shard, now_ms());
         let after_segments = collect_live_page_segment_ids(shard);
         let after = compaction_utility_report(&self.page_store, shard);
         rebuild_slot_page_ownership(shard_id, shard, start_routing_slot, end_routing_slot);
-        refresh_slot_runtime_flags(shard);
+        refresh_slot_runtime_flags(shard, now_ms());
         let tombstoned_object_ids_after =
             storage_object_lifecycle_report(shard_id, shard).tombstoned_object_ids;
         let object_manager_after =
@@ -7366,7 +7367,7 @@ impl TemporalEngine {
         let bytes = fs::read(self.index_path(shard_id)).ok()?;
         let mut shard = serde_json::from_slice::<ShardState>(&bytes).ok()?;
         reconcile_secondary_views_from_slot_index(&self.page_store, &mut shard);
-        refresh_slot_runtime_flags(&mut shard);
+        refresh_slot_runtime_flags(&mut shard, now_ms());
         Some(shard)
     }
 
@@ -12113,7 +12114,7 @@ fn promote_model_maps_to_slot_index_authority(
         return false;
     }
     rebuild_slot_page_ownership(shard_id, shard, start_routing_slot, end_routing_slot);
-    refresh_slot_runtime_flags(shard);
+    refresh_slot_runtime_flags(shard, now_ms());
     true
 }
 
@@ -13031,64 +13032,6 @@ fn sync_slot_index_live_page_entries(
             start_routing_slot,
             end_routing_slot,
         );
-    }
-}
-
-fn classify_slot_layout(object_count: usize, page_ref_count: usize) -> SlotLayoutState {
-    match (object_count, page_ref_count) {
-        (0, _) => SlotLayoutState::Empty,
-        (1, 0) => SlotLayoutState::SingleObject,
-        (_, 0) => SlotLayoutState::Empty,
-        (1, 1) => SlotLayoutState::SinglePageObject,
-        (1, _) => SlotLayoutState::MultiPageObject,
-        _ => SlotLayoutState::MultiObject,
-    }
-}
-
-fn slot_layout_name(layout: SlotLayoutState) -> &'static str {
-    match layout {
-        SlotLayoutState::Empty => "empty",
-        SlotLayoutState::SingleObject => "single_object",
-        SlotLayoutState::SinglePageObject => "single_page_object",
-        SlotLayoutState::MultiPageObject => "multi_page_object",
-        SlotLayoutState::MultiObject => "multi_object",
-    }
-}
-
-fn update_slot_layout(slot: &mut SlotNode) {
-    let live_object_ids: BTreeSet<u64> = slot
-        .page_index
-        .values()
-        .filter(|page| !page.deleted)
-        .map(|page| page.object_id)
-        .collect();
-    if !live_object_ids.is_empty() {
-        slot.object_index = live_object_ids;
-    } else {
-        slot.object_index.clear();
-    }
-    slot.layout = classify_slot_layout(slot.object_index.len(), slot.page_index.len());
-}
-
-fn refresh_slot_runtime_flags(shard: &mut ShardState) {
-    let now = now_ms();
-    for slot in shard.slot_index.slot_map.values_mut() {
-        slot.meta_loaded = true;
-        slot.loading = false;
-        slot.in_memory = !slot.page_index.is_empty();
-        slot.deleted =
-            !slot.page_index.is_empty() && slot.page_index.values().all(|page| page.deleted);
-        slot.dirty |= slot
-            .page_index
-            .values()
-            .any(|page| page.dirty || shard.dirty_objects.contains(&page.object_key));
-        slot.ttl_ms = slot
-            .page_index
-            .values()
-            .filter_map(|page| shard.expires_at_ms.get(&page.object_key).copied())
-            .map(|expires_at| expires_at.saturating_sub(now))
-            .min();
-        update_slot_layout(slot);
     }
 }
 
