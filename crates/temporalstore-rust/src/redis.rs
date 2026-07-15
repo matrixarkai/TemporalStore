@@ -13,7 +13,7 @@ pub use state::RedisCommandState;
 use crate::client::{slot_id_for_key, stable_key_hash};
 use crate::types::{
     parse_cpp_feature_filters, Command, CommandResponse, FeatureFilter, FeatureFilterOp,
-    FeaturePoint, FeatureWritePolicy, RiskFamily, ShardId, StringSetCondition,
+    FeaturePoint, FeatureWritePolicy, ControlStateFamily, ShardId, StringSetCondition,
 };
 
 use encoding::{REDIS_LIST_ENCODING_PREFIX, REDIS_ZSET_ENCODING_PREFIX};
@@ -1421,7 +1421,7 @@ pub fn execute_redis_command_with_state(
                 Err(err) => RespValue::Error(format!("ERR {err}")),
             }
         }
-        "CONTROLINCR" | "RISKINCR" if args.len() == 4 => {
+        "CONTROLINCR" | "CONTROL_STATEINCR" if args.len() == 4 => {
             let timestamp_ms = match parse_u64(&args[2], "timestamp_ms") {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
@@ -1430,13 +1430,13 @@ pub fn execute_redis_command_with_state(
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
             };
-            status_ok(execute(Command::RiskIncrement {
+            status_ok(execute(Command::ControlStateIncrement {
                 key: string_arg(&args[1]),
                 timestamp_ms,
                 amount,
             }))
         }
-        "CONTROLINCROPT" | "RISKINCROPT" if args.len() == 6 => {
+        "CONTROLINCROPT" | "CONTROL_STATEINCROPT" if args.len() == 6 => {
             let timestamp_ms = match parse_u64(&args[2], "timestamp_ms") {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
@@ -1453,7 +1453,7 @@ pub fn execute_redis_command_with_state(
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
             };
-            status_ok(execute(Command::RiskIncrementWithOptions {
+            status_ok(execute(Command::ControlStateIncrementWithOptions {
                 key: string_arg(&args[1]),
                 timestamp_ms,
                 amount,
@@ -1461,7 +1461,7 @@ pub fn execute_redis_command_with_state(
                 ttl_ms: Some(ttl_ms),
             }))
         }
-        "CONTROLCHANGE" | "RISKCHANGE" | "HCHANGE" if args.len() == 4 || args.len() == 6 => {
+        "CONTROLCHANGE" | "CONTROL_STATECHANGE" | "HCHANGE" if args.len() == 4 || args.len() == 6 => {
             let timestamp_ms = match parse_u64(&args[2], "timestamp_ms") {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
@@ -1480,11 +1480,11 @@ pub fn execute_redis_command_with_state(
                 (None, None)
             };
             let key = if command == "HCHANGE" {
-                risk_family_key_for_resp(RiskFamily::H, &string_arg(&args[1]))
+                control_state_family_key_for_resp(ControlStateFamily::H, &string_arg(&args[1]))
             } else {
                 string_arg(&args[1])
             };
-            status_ok(execute(Command::RiskChangeAdd {
+            status_ok(execute(Command::ControlStateChangeAdd {
                 key,
                 timestamp_ms,
                 value: args[3].clone(),
@@ -1492,7 +1492,7 @@ pub fn execute_redis_command_with_state(
                 ttl_ms,
             }))
         }
-        "CONTROLCOUNT" | "RISKCOUNT" if args.len() == 4 => {
+        "CONTROLCOUNT" | "CONTROL_STATECOUNT" if args.len() == 4 => {
             let start_ms = match parse_u64(&args[2], "start_ms") {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
@@ -1501,13 +1501,13 @@ pub fn execute_redis_command_with_state(
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
             };
-            integer_response(execute(Command::RiskCount {
+            integer_response(execute(Command::ControlStateCount {
                 key: string_arg(&args[1]),
                 start_ms,
                 end_ms,
             }))
         }
-        "CONTROLQUERY" | "RISKQUERY" if args.len() == 5 => {
+        "CONTROLQUERY" | "CONTROL_STATEQUERY" if args.len() == 5 => {
             let start_ms = match parse_u64(&args[2], "start_ms") {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
@@ -1516,14 +1516,14 @@ pub fn execute_redis_command_with_state(
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
             };
-            integer_response(execute(Command::RiskQuery {
+            integer_response(execute(Command::ControlStateQuery {
                 key: string_arg(&args[1]),
                 start_ms,
                 end_ms,
                 aggregator: string_arg(&args[4]),
             }))
         }
-        "CONTROLDETAIL" | "RISKDETAIL" if args.len() == 4 || args.len() == 5 => {
+        "CONTROLDETAIL" | "CONTROL_STATEDETAIL" if args.len() == 4 || args.len() == 5 => {
             let start_ms = match parse_u64(&args[2], "start_ms") {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
@@ -1539,14 +1539,14 @@ pub fn execute_redis_command_with_state(
                 },
                 None => None,
             };
-            feature_points_response(execute(Command::RiskDetail {
+            feature_points_response(execute(Command::ControlStateDetail {
                 key: string_arg(&args[1]),
                 start_ms,
                 end_ms,
                 count,
             }))
         }
-        "CONTROLHSET" | "RISKHSET" if args.len() == 4 => {
+        "CONTROLHSET" | "CONTROL_STATEHSET" if args.len() == 4 => {
             let timestamp_ms = match parse_u64(&args[2], "timestamp_ms") {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
@@ -1555,8 +1555,8 @@ pub fn execute_redis_command_with_state(
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
             };
-            status_ok(execute(Command::RiskSet {
-                family: RiskFamily::H,
+            status_ok(execute(Command::ControlStateSet {
+                family: ControlStateFamily::H,
                 key: string_arg(&args[1]),
                 timestamp_ms,
                 amount,
@@ -1573,8 +1573,8 @@ pub fn execute_redis_command_with_state(
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
             };
-            integer_response(execute(Command::RiskFamilyQuery {
-                family: RiskFamily::H,
+            integer_response(execute(Command::ControlStateFamilyQuery {
+                family: ControlStateFamily::H,
                 key: string_arg(&args[1]),
                 start_ms,
                 end_ms,
@@ -1598,8 +1598,8 @@ pub fn execute_redis_command_with_state(
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
             };
-            integer_response(execute(Command::RiskSetAndGet {
-                family: RiskFamily::H,
+            integer_response(execute(Command::ControlStateSetAndGet {
+                family: ControlStateFamily::H,
                 key: string_arg(&args[1]),
                 timestamp_ms,
                 amount,
@@ -1610,7 +1610,7 @@ pub fn execute_redis_command_with_state(
                 ttl_ms: None,
             }))
         }
-        "RISKMANAGER" if args.len() == 2 => hash_entries_response(execute(Command::RiskManager {
+        "CONTROL_STATEMANAGER" if args.len() == 2 => hash_entries_response(execute(Command::ControlStateManager {
             key: string_arg(&args[1]),
             op_type: None,
             field_list: Vec::new(),
@@ -1686,13 +1686,13 @@ fn open_source_redis_command_allowed(command: &str) -> bool {
             | "CONTROLQUERY"
             | "CONTROLDETAIL"
             | "CONTROLHSET"
-            | "RISKINCR"
-            | "RISKINCROPT"
-            | "RISKCHANGE"
-            | "RISKCOUNT"
-            | "RISKQUERY"
-            | "RISKDETAIL"
-            | "RISKHSET"
+            | "CONTROL_STATEINCR"
+            | "CONTROL_STATEINCROPT"
+            | "CONTROL_STATECHANGE"
+            | "CONTROL_STATECOUNT"
+            | "CONTROL_STATEQUERY"
+            | "CONTROL_STATEDETAIL"
+            | "CONTROL_STATEHSET"
             | "HCHANGE"
             | "HQUERY"
             | "HSETANDGET"
@@ -1708,13 +1708,13 @@ fn redis_client_response(args: &[Vec<u8>]) -> RespValue {
     }
 }
 
-fn risk_family_key_for_resp(family: RiskFamily, key: &str) -> String {
+fn control_state_family_key_for_resp(family: ControlStateFamily, key: &str) -> String {
     let family_name = match family {
-        RiskFamily::H => "h",
-        RiskFamily::Cpc => "cpc",
-        RiskFamily::Fol => "fol",
+        ControlStateFamily::H => "h",
+        ControlStateFamily::Cpc => "cpc",
+        ControlStateFamily::Fol => "fol",
     };
-    format!("risk:{family_name}:{key}")
+    format!("control_state:{family_name}:{key}")
 }
 
 fn redis_config_response(args: &[Vec<u8>], state: &mut RedisCommandState) -> RespValue {
@@ -2212,37 +2212,37 @@ fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             flags: WRITE,
         },
         RedisCommandDescriptor {
-            name: "RISKINCR",
+            name: "CONTROL_STATEINCR",
             arity: 4,
             flags: WRITE,
         },
         RedisCommandDescriptor {
-            name: "RISKINCROPT",
+            name: "CONTROL_STATEINCROPT",
             arity: 6,
             flags: WRITE,
         },
         RedisCommandDescriptor {
-            name: "RISKCHANGE",
+            name: "CONTROL_STATECHANGE",
             arity: -4,
             flags: WRITE,
         },
         RedisCommandDescriptor {
-            name: "RISKCOUNT",
+            name: "CONTROL_STATECOUNT",
             arity: 4,
             flags: READ,
         },
         RedisCommandDescriptor {
-            name: "RISKQUERY",
+            name: "CONTROL_STATEQUERY",
             arity: 5,
             flags: READ,
         },
         RedisCommandDescriptor {
-            name: "RISKDETAIL",
+            name: "CONTROL_STATEDETAIL",
             arity: -4,
             flags: READ,
         },
         RedisCommandDescriptor {
-            name: "RISKHSET",
+            name: "CONTROL_STATEHSET",
             arity: 4,
             flags: WRITE,
         },
@@ -4296,7 +4296,7 @@ mod tests {
             "FAPPEND",
             "FQUERY",
             "CONTROLINCR",
-            "RISKINCR",
+            "CONTROL_STATEINCR",
         ] {
             assert!(
                 command_names.contains(&allowed.to_string()),
@@ -4337,7 +4337,7 @@ mod tests {
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
-            run(&mut state, vec!["RISKINCR", "risk", "10", "5"]),
+            run(&mut state, vec!["CONTROL_STATEINCR", "control_state", "10", "5"]),
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
@@ -5248,19 +5248,19 @@ mod tests {
             value => panic!("expected unsupported FeatureAggregate error, got {value:?}"),
         }
         assert_eq!(
-            run(vec!["RISKINCR", "risk", "10", "5"]),
+            run(vec!["CONTROL_STATEINCR", "control_state", "10", "5"]),
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
-            run(vec!["RISKINCR", "risk", "20", "-2"]),
+            run(vec!["CONTROL_STATEINCR", "control_state", "20", "-2"]),
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
-            run(vec!["RISKINCR", "risk", "30", "7"]),
+            run(vec!["CONTROL_STATEINCR", "control_state", "30", "7"]),
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
-            run(vec!["RISKCOUNT", "risk", "0", "40"]),
+            run(vec!["CONTROL_STATECOUNT", "control_state", "0", "40"]),
             RespValue::Integer(10)
         );
         assert_eq!(
@@ -5272,15 +5272,15 @@ mod tests {
             RespValue::Integer(5)
         );
         assert_eq!(
-            run(vec!["RISKQUERY", "risk", "0", "40", "events"]),
+            run(vec!["CONTROL_STATEQUERY", "control_state", "0", "40", "events"]),
             RespValue::Integer(3)
         );
         assert_eq!(
-            run(vec!["RISKQUERY", "risk", "0", "40", "last"]),
+            run(vec!["CONTROL_STATEQUERY", "control_state", "0", "40", "last"]),
             RespValue::Integer(7)
         );
         assert_eq!(
-            run(vec!["RISKDETAIL", "risk", "15", "40", "2"]),
+            run(vec!["CONTROL_STATEDETAIL", "control_state", "15", "40", "2"]),
             RespValue::Array(vec![
                 RespValue::Array(vec![
                     RespValue::Integer(20),
@@ -5294,8 +5294,8 @@ mod tests {
         );
         assert_eq!(
             run(vec![
-                "RISKINCROPT",
-                "risk-bucket",
+                "CONTROL_STATEINCROPT",
+                "control_state-bucket",
                 "1234",
                 "3",
                 "1000",
@@ -5305,8 +5305,8 @@ mod tests {
         );
         assert_eq!(
             run(vec![
-                "RISKINCROPT",
-                "risk-bucket",
+                "CONTROL_STATEINCROPT",
+                "control_state-bucket",
                 "1999",
                 "4",
                 "1000",
@@ -5315,24 +5315,24 @@ mod tests {
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
-            run(vec!["RISKDETAIL", "risk-bucket", "0", "2000", "10"]),
+            run(vec!["CONTROL_STATEDETAIL", "control_state-bucket", "0", "2000", "10"]),
             RespValue::Array(vec![RespValue::Array(vec![
                 RespValue::Integer(1000),
                 RespValue::Bulk(Some(b"7".to_vec())),
             ])])
         );
         assert_eq!(
-            run(vec!["RISKCHANGE", "risk-change", "10", "device-a"]),
+            run(vec!["CONTROL_STATECHANGE", "control_state-change", "10", "device-a"]),
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
-            run(vec!["RISKCHANGE", "risk-change", "20", "device-a"]),
+            run(vec!["CONTROL_STATECHANGE", "control_state-change", "20", "device-a"]),
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
             run(vec![
-                "RISKCHANGE",
-                "risk-change",
+                "CONTROL_STATECHANGE",
+                "control_state-change",
                 "30",
                 "device-b",
                 "10",
@@ -5341,31 +5341,31 @@ mod tests {
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
-            run(vec!["RISKQUERY", "risk-change", "0", "40", "change"]),
+            run(vec!["CONTROL_STATEQUERY", "control_state-change", "0", "40", "change"]),
             RespValue::Integer(2)
         );
         assert_eq!(
-            run(vec!["RISKHSET", "risk-cpp", "10", "5"]),
+            run(vec!["CONTROL_STATEHSET", "control_state-cpp", "10", "5"]),
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
-            run(vec!["HCHANGE", "risk-cpp", "10", "buyer-a"]),
+            run(vec!["HCHANGE", "control_state-cpp", "10", "buyer-a"]),
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
-            run(vec!["HCHANGE", "risk-cpp", "20", "buyer-a"]),
+            run(vec!["HCHANGE", "control_state-cpp", "20", "buyer-a"]),
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
-            run(vec!["HCHANGE", "risk-cpp", "30", "buyer-b"]),
+            run(vec!["HCHANGE", "control_state-cpp", "30", "buyer-b"]),
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
-            run(vec!["HQUERY", "risk-cpp", "0", "40", "change"]),
+            run(vec!["HQUERY", "control_state-cpp", "0", "40", "change"]),
             RespValue::Integer(2)
         );
         assert_eq!(
-            run(vec!["HSETANDGET", "risk-cpp", "20", "7", "0", "30", "sum"]),
+            run(vec!["HSETANDGET", "control_state-cpp", "20", "7", "0", "30", "sum"]),
             RespValue::Integer(12)
         );
     }

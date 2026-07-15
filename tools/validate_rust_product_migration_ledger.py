@@ -33,7 +33,7 @@ VALID_FAMILIES = {
     "Feature",
     "Sequence",
     "IPS",
-    "Risk",
+    "ControlState",
     "control plane",
     "ingestion",
     "benchmarks",

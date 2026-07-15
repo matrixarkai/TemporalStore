@@ -8,7 +8,7 @@ metaserver, ingestion, Context benchmarks, and ops/scale readiness, see
 
 The Rust code now covers the local correctness skeleton for TemporalStore-style serving:
 
-- command API for common, string, hash, set, feature, sequence, and the implemented IPS/Risk subset
+- command API for common, string, hash, set, feature, sequence, and the implemented IPS/ControlState subset
 - local shard engine with page-address indexes
 - local page segment files
 - memory plus disk read-through cache
@@ -590,7 +590,7 @@ practical local testing gap:
 1. The Rust `client` binary now exposes direct commands for more implemented C++/Redis-style
    families: `exists`, `sdel`, `setnx`, `setxx`, `hmset`, `hmget`, `hincrby`, `hgetall`,
    `hlen`, `hdel`, `fappendnx`, `fappendxx`, `ipsrange`, `ipsremove`, `ipsdel`, `ipscount`,
-   `riskquery`, `riskdetail`, `riskhset`, `cpcset`, `folset`, `folquery`, and `riskmanager`.
+   `control_statequery`, `control_statedetail`, `control_statehset`, `cpcset`, `folset`, `folquery`, and `control_statemanager`.
 2. The Rust `client` binary now also supports `json '<command-json>'`, so local parity and scale
    tests can drive every implemented `Command` enum variant without waiting for a dedicated CLI
    subcommand.
@@ -757,12 +757,12 @@ This pass closed one of the hard readiness blockers instead of leaving it as a n
     stale-local-state guards, install the snapshot into the target replica engine state, record
     the external snapshot ref, and catch up from the leader log. Route tests cover both binaries,
     and the distributed harness now validates HTTP publish -> HTTP bootstrap -> follower read.
-41. A direct scan of the C++ risk module closed a concrete FOL gap: Rust now has explicit
-    `RiskFolSet` / `RiskFolQuery` commands and typed client methods for the C++ `FolSet` /
+41. A direct scan of the C++ control_state module closed a concrete FOL gap: Rust now has explicit
+    `ControlStateFolSet` / `ControlStateFolQuery` commands and typed client methods for the C++ `FolSet` /
     `FolQuery` string semantics. `FIRST` keeps the value with the smallest event timestamp,
     `LAST` keeps the value with the largest event timestamp, TTL/delete/index persistence are wired
     through the shard state, and RESP now supports `FOLSET key value occur_time_ms ttl_ms
-    FIRST|LAST` plus `FOLQUERY key`. The older numeric `RiskFamily::Fol` shim remains for local
+    FIRST|LAST` plus `FOLQUERY key`. The older numeric `ControlStateFamily::Fol` shim remains for local
     compatibility tests.
 
 This pass compared the Rust RESP layer against the local C++ server Redis command handler in
@@ -868,8 +868,8 @@ This pass repeated the C++ vs Rust audit and closed eight smaller, test-backed p
 
 1. IPS range query: `IpsQueryRange` returns timestamp-ordered instances within a time window.
 2. IPS batch query: `IpsBatchQueryLast` returns last-N instance groups for multiple keys.
-3. Risk first/last aggregation: `RiskQuery` now accepts `first` and `last`.
-4. Risk detail list: `RiskDetail` returns timestamped risk events for a time window.
+3. ControlState first/last aggregation: `ControlStateQuery` now accepts `first` and `last`.
+4. ControlState detail list: `ControlStateDetail` returns timestamped control_state events for a time window.
 5. Storage admission control: shard `maxmemory_bytes` now rejects new writes after the local storage budget is reached.
 6. C++-style partition stats shape: `ShardStats` now includes loaded state, readonly flag, load version, total records, and storage bytes.
 7. Client backend failure pool shape: `ClientStats` now tracks backend error streaks and successful retry recovery.
@@ -984,14 +984,14 @@ This pass closed several behavior gaps without carrying legacy C++ wire forward:
 - atomic string conditional write command: `StringSetConditional` with `always`, `if_exists`, and `if_not_exists`
 - Redis `SET` options: `NX`, `XX`, `GET`, `EX`, and `PX`
 - IPS operations beyond append/query-last: remove by timestamp, delete key, and count by time range
-- Risk aggregation query: sum/count, min, max, and event count over a time window
+- ControlState aggregation query: sum/count, min, max, and event count over a time window
 - Prometheus `/metrics` on the data-node server for shard records, cache, page-store, oplog, and runtime queue/job/dirty-object stats
 
 Tests added for these behaviors:
 
 - `string_set_conditional_supports_nx_xx_and_get`
 - `ips_remove_delete_and_count_are_supported`
-- `risk_query_supports_sum_min_max_and_event_count`
+- `control_state_query_supports_sum_min_max_and_event_count`
 - `prometheus_metrics_include_records_cache_page_and_oplog`
 - Redis adapter assertions for `SET NX`, `SET XX GET`, and `SET NX PX`
 
@@ -1049,18 +1049,18 @@ pieces such as full RustRaft/byte integration, object-manager/page-layout
 internals, production model internals, legacy C++ wire SDKs, dashboards, and
 deployment automation.
 
-This pass closed one concrete Risk module gap from the C++ `HSET`/`HQUERY`
+This pass closed one concrete ControlState module gap from the C++ `HSET`/`HQUERY`
 `CHANGE` path. C++ stores a caller-supplied value as a distinct field and query
-counts unique fields over a window. Rust now has `RiskChangeAdd`, typed client
-support, RESP `RISKCHANGE`/`HCHANGE`, and `RiskQuery`/`RiskFamilyQuery` with
+counts unique fields over a window. Rust now has `ControlStateChangeAdd`, typed client
+support, RESP `CONTROL_STATECHANGE`/`HCHANGE`, and `ControlStateQuery`/`ControlStateFamilyQuery` with
 aggregator `change` counting unique values across the requested window.
 
 The follow-up pass closed a generic object-lifecycle mismatch caused by Rust's
-internal risk-family keys. C++ common `DEL_OBJECT`, `EXPIRE`, `TTL`, and Redis
+internal control_state-family keys. C++ common `DEL_OBJECT`, `EXPIRE`, `TTL`, and Redis
 `DEL`/`EXPIRE`/`TTL` operate on the user-visible object key. Rust now expands a
-logical user key to the associated H/CPC/FOL risk-family records for existence,
+logical user key to the associated H/CPC/FOL control_state-family records for existence,
 delete, expire, and TTL handling, so lifecycle operations do not leave hidden
-`risk:h:<key>`, `risk:cpc:<key>`, or `risk:fol:<key>` records behind.
+`control_state:h:<key>`, `control_state:cpc:<key>`, or `control_state:fol:<key>` records behind.
 
 The storage pass compared C++ `src/partition/storage`, `src/partition/index`,
 `src/stream`, and `src/blockcache` with the Rust page/oplog/index/shared-store
@@ -2191,7 +2191,7 @@ it reports readiness, per-model layouts, packed timestamped page preservation,
 rewritten object/page counts, stale-page density, slot layout transitions, and
 tombstone object preservation. Per-model policy rows identify stale-density
 triggers, tombstone-compaction triggers, and layout-aware rewrite requirements
-for string/hash/set/timestamped/Risk/Context sidecar pages. The report includes
+for string/hash/set/timestamped/ControlState/Context sidecar pages. The report includes
 aggregate policy-family counts and reclaimable stale-segment counts, and the
 shared test verifies index summaries move to the compacted segment while old
 segments become reclaimable. Rust now also has a StorageManager-style loop
@@ -2265,7 +2265,7 @@ reports as complete byte-for-byte runtime parity.
 | Feature | richer feature proto semantics | append/query/replace/delete/agg, write-policy append, 5k long-sequence coverage, shared nested/proto-shaped payload roundtrip, C++ row filtering, and sum/avg/min/max/count aggregate semantics | deeper production proto edge cases beyond the shared executable corpus |
 | Sequence | C++ feature/data-module behavior | typed rows, timestamp ordering, inclusive/equality/inequality filters, count, batch query | exact C++ options and remaining edge-case policy |
 | IPS | rich IPS add/query/remove/load/delete/stat/filter/snap | add, idempotent/dimensional add, query-last, query range, dimension-filtered range, batch query-last, remove timestamp, delete key, count range, load, range snapshot, stats, and named filter; typed client and RESP coverage | production snap metadata and server aggregation |
-| Risk | H/CPC/FOL query/update/manager semantics | increment/count plus precision/TTL increment, sum/min/max/first/last/event aggregation, C++-style `CHANGE` distinct-field counting, detail list, H/CPC family set/query/set-and-get command shape, logical-key lifecycle handling for H/CPC/FOL records, explicit C++-style FOL first/last string selection, and local manager summary; typed client and RESP coverage | production CPC/list internals and full manager/debug APIs |
+| ControlState | H/CPC/FOL query/update/manager semantics | increment/count plus precision/TTL increment, sum/min/max/first/last/event aggregation, C++-style `CHANGE` distinct-field counting, detail list, H/CPC family set/query/set-and-get command shape, logical-key lifecycle handling for H/CPC/FOL records, explicit C++-style FOL first/last string selection, and local manager summary; typed client and RESP coverage | production CPC/list internals and full manager/debug APIs |
 | Redis | not the main C++ wire API; C++ server also exposes admin commands such as `INFO`, `CONFIG`, `SLAVEOF`, and `PARTITION` | useful RESP compatibility, including `SET NX/XX GET EX/PX`, hash/set commands, feature commands, C++-style `INFO`/`CONFIG`/`SLAVEOF`/`AUTH`/`BGSAVE`/`PARTITION` smoke commands, and CRC64 slot/hash helpers | sorted sets/lists if needed; real partition-manager backing for admin commands |
 | Metrics | production metrics/logging | Prometheus `/metrics` for shard/cache/page/oplog/runtime/object-manager/partition plus page-store zone lifecycle count/byte gauges, per-slot page-ref/byte/dirty gauges, and snapshot metric names; local raft metrics renderer | dashboards and alerts |
 | Deployment | internal production environment | Docker and existing-EKS Terraform skeleton | service discovery, autoscale controller, rolling upgrade, runbooks, auth/TLS |
@@ -2287,7 +2287,7 @@ These cannot be honestly marked done yet:
 
 - deeper C++ Feature proto edge cases beyond the shared nested/proto aggregate corpus
 - remaining IPS module details: production snap metadata and server aggregation
-- remaining Risk module details: production CPC/list internals and full manager/debug APIs
+- remaining ControlState module details: production CPC/list internals and full manager/debug APIs
 - binary/protobuf-compatible oplog and index-log semantics where needed by the Rust migration API
 - deeper object/page/slot layout and C++-style page rewrite garbage collection
 - production cache backend
@@ -2304,4 +2304,4 @@ The next best implementation chunks are:
 2. Broaden durable WAL/recovery tests around oplog + index-log + page stream + zone manifest into disk-fault and multi-process cluster crash cases.
 3. Replace the local Raft model with OpenRaft or raft-rs.
 4. Connect metaserver table topology and data-node heartbeat reports to real placement/rebalance workflows.
-5. Port IPS and Risk semantics from the C++ protos as separate modules.
+5. Port IPS and ControlState semantics from the C++ protos as separate modules.

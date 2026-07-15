@@ -43,10 +43,10 @@ Recovery checks:
 - `temporalstore_production_readiness_service_ready{service="data_node"}` is
   not newly degraded by the incident.
 
-## Split-Brain Risk
+## Split-Brain ControlState
 
 Symptoms:
-- `TemporalStoreRaftSplitBrainRisk` fires because more than one leader is
+- `TemporalStoreRaftSplitBrainControlState` fires because more than one leader is
   visible for the same `kind`.
 - Majority state disagrees across process views.
 - Clients see conflicting leader or stale-read errors.

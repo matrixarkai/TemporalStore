@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package bcache2.risk;
+package bcache2.control_state;
 
 
 enum Function {
@@ -34,7 +34,7 @@ message HsetResponse {
 }
 
 // 需要保证按照精度从小到大排序, 枚举值必须使用两位数字
-enum RiskPrecision {
+enum ControlStatePrecision {
     DISABLE = 0; // 枚举值必须从 0 开始
 
     OneSecond   = 10;
@@ -48,14 +48,14 @@ enum RiskPrecision {
     OneMonth    = 80;
 }
 
-// 底层采用riskhashmodel，实现算子count/min/max/sum/change
+// 底层采用control_statehashmodel，实现算子count/min/max/sum/change
 message HsetRequest {
     string key = 1; 
     string value = 2; // 对于change 传入对应的field；对于普通的计数，传入具体的数字，比如1，2等
     uint64 ttl = 3; // 过期时间
     HType htype = 4; // 写入的类型，区分DC，COUNT， MIN，MAX
     uint64 occur_time = 5; // 发生时间
-    RiskPrecision precision = 6; // 写入的精度
+    ControlStatePrecision precision = 6; // 写入的精度
     string uuid = 7;
 }
 message CPCSetRequest {
@@ -63,7 +63,7 @@ message CPCSetRequest {
     repeated string values = 2;
     uint64 ttl = 3; // 过期时间
     uint64 occur_time = 4; // 发生时间
-    RiskPrecision precision = 5; // 写入的精度
+    ControlStatePrecision precision = 5; // 写入的精度
     bool dont_upgrade_cpc = 6; // 强制使用hash，不提升到cpc实现,用于兼容老的接口，用于dc list的场景
     string uuid = 7;
 }
@@ -89,14 +89,14 @@ message Window {
 // 1-3d 的窗口, start 传 -3, end 传 -1
 message HqueryRequest {
     string key = 1;
-    RiskPrecision precision = 2;// 精度，对于0-0d这种，不需要
+    ControlStatePrecision precision = 2;// 精度，对于0-0d这种，不需要
     HType htype = 3;
     repeated Window windows = 4;
 }
 
 message CPCQueryRequest {
     string key = 1;
-    RiskPrecision precision = 2;// 精度，对于0-0d这种，不需要
+    ControlStatePrecision precision = 2;// 精度，对于0-0d这种，不需要
     repeated Window windows = 3;
     bool with_detail = 4; // 是否返回详情，默认为false
 }
@@ -128,7 +128,7 @@ message HsetAndGetRequest {
     string value = 2;
     uint64 ttl = 3; // 过期时间
     HType htype = 4; // 写入的类型，区分DC，COUNT， MIN，MAX，LIST,如果是DC写入并且获取详情，需要传递LIST
-    RiskPrecision precision = 5;// 精度，对于0-0d这种，不需要
+    ControlStatePrecision precision = 5;// 精度，对于0-0d这种，不需要
     repeated Window windows = 6;
     string uuid = 7;
 }
@@ -144,7 +144,7 @@ message CPCSetAndGetRequest {
     repeated string values = 2;
     uint64 ttl = 3; // 过期时间
     bool with_detail = 4; // 是否返回详情，默认为false
-    RiskPrecision precision = 5;// 精度，对于0-0d这种，不需要
+    ControlStatePrecision precision = 5;// 精度，对于0-0d这种，不需要
     repeated Window windows = 6;
     string uuid = 7;
 }

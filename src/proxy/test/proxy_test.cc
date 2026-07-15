@@ -172,9 +172,9 @@ TEST_F(ProxyTest, GetSet) {
     }
 }
 
-TEST_F(ProxyTest, RiskHset) {
-    thrift::RiskHsetRequest request;
-    thrift::RiskCommonResponse response;
+TEST_F(ProxyTest, ControlStateHset) {
+    thrift::ControlStateHsetRequest request;
+    thrift::ControlStateCommonResponse response;
     request.__set_namespace_name("ns");
     request.__set_table_name("table");
     request.__set_key("key");
@@ -183,105 +183,105 @@ TEST_F(ProxyTest, RiskHset) {
 
     brpc::ThriftStub stub(&channel_);
     brpc::Controller ctrl;
-    stub.CallMethod("RiskHset", &ctrl, &request, &response, NULL);
+    stub.CallMethod("ControlStateHset", &ctrl, &request, &response, NULL);
     ASSERT_FALSE(ctrl.Failed());
     ASSERT_EQ(response.status.code, kOK) << response.status.message;
 }
 
-TEST_F(ProxyTest, RiskHquery) {
-    thrift::RiskHqueryRequest request;
-    thrift::RiskHqueryResponse response;
+TEST_F(ProxyTest, ControlStateHquery) {
+    thrift::ControlStateHqueryRequest request;
+    thrift::ControlStateHqueryResponse response;
     request.__set_namespace_name("ns");
     request.__set_table_name("table");
     request.__set_key("key");
 
     brpc::ThriftStub stub(&channel_);
     brpc::Controller ctrl;
-    stub.CallMethod("RiskHquery", &ctrl, &request, &response, NULL);
+    stub.CallMethod("ControlStateHquery", &ctrl, &request, &response, NULL);
     ASSERT_FALSE(ctrl.Failed());
     ASSERT_TRUE(response.status.code == kOK || response.status.code == kNotFound)
         << response.status.message;
 }
 
-TEST_F(ProxyTest, RiskCPCSet) {
-    thrift::RiskCPCSetRequest request;
-    thrift::RiskCommonResponse response;
+TEST_F(ProxyTest, ControlStateCPCSet) {
+    thrift::ControlStateCPCSetRequest request;
+    thrift::ControlStateCommonResponse response;
     request.__set_namespace_name("ns");
     request.__set_table_name("table");
     request.__set_key("cpckey");
     request.__set_occur_time(123);
-    request.__set_precision(thrift::RiskPrecision::FiveSeconds);
+    request.__set_precision(thrift::ControlStatePrecision::FiveSeconds);
     std::vector<std::string> values;
     values.emplace_back("test");
     request.__set_values(values);
 
     brpc::ThriftStub stub(&channel_);
     brpc::Controller ctrl;
-    stub.CallMethod("RiskCPCSet", &ctrl, &request, &response, NULL);
+    stub.CallMethod("ControlStateCPCSet", &ctrl, &request, &response, NULL);
     ASSERT_FALSE(ctrl.Failed());
     ASSERT_EQ(response.status.code, kOK) << response.status.message;
 }
 
-TEST_F(ProxyTest, RiskCPCQuery) {
-    thrift::RiskCPCQueryRequest request;
-    thrift::RiskCPCQueryResponse response;
+TEST_F(ProxyTest, ControlStateCPCQuery) {
+    thrift::ControlStateCPCQueryRequest request;
+    thrift::ControlStateCPCQueryResponse response;
     request.__set_namespace_name("ns");
     request.__set_table_name("table");
     request.__set_key("cpckey");
-    std::vector<thrift::RiskWindow> windows;
-    thrift::RiskWindow window;
+    std::vector<thrift::ControlStateWindow> windows;
+    thrift::ControlStateWindow window;
     window.__set_end_offset(1);
     window.__set_end_offset(2);
-    window.__set_unit(thrift::RiskWindowUnit::Day);
+    window.__set_unit(thrift::ControlStateWindowUnit::Day);
     windows.emplace_back(window);
     request.__set_windows(windows);
 
     brpc::ThriftStub stub(&channel_);
     brpc::Controller ctrl;
-    stub.CallMethod("RiskCPCQuery", &ctrl, &request, &response, NULL);
+    stub.CallMethod("ControlStateCPCQuery", &ctrl, &request, &response, NULL);
     ASSERT_FALSE(ctrl.Failed());
     ASSERT_TRUE(response.status.code == kOK || response.status.code == kNotFound)
         << response.status.message;
 }
 
-TEST_F(ProxyTest, RiskFolSet) {
-    thrift::RiskFolSetRequest request;
-    thrift::RiskCommonResponse response;
+TEST_F(ProxyTest, ControlStateFolSet) {
+    thrift::ControlStateFolSetRequest request;
+    thrift::ControlStateCommonResponse response;
     request.__set_namespace_name("ns");
     request.__set_table_name("table");
     request.__set_key("key");
 
     brpc::ThriftStub stub(&channel_);
     brpc::Controller ctrl;
-    stub.CallMethod("RiskFolSet", &ctrl, &request, &response, NULL);
+    stub.CallMethod("ControlStateFolSet", &ctrl, &request, &response, NULL);
     ASSERT_FALSE(ctrl.Failed());
     ASSERT_TRUE(response.status.code == kOK || response.status.code == kNotFound)
         << response.status.message;
 }
 
-TEST_F(ProxyTest, RiskFolQuery) {
-    thrift::RiskFolQueryRequest request;
-    thrift::RiskFolQueryResponse response;
+TEST_F(ProxyTest, ControlStateFolQuery) {
+    thrift::ControlStateFolQueryRequest request;
+    thrift::ControlStateFolQueryResponse response;
     request.__set_namespace_name("ns");
     request.__set_table_name("table");
     request.__set_key("key");
 
     brpc::ThriftStub stub(&channel_);
     brpc::Controller ctrl;
-    stub.CallMethod("RiskFolQuery", &ctrl, &request, &response, NULL);
+    stub.CallMethod("ControlStateFolQuery", &ctrl, &request, &response, NULL);
     ASSERT_FALSE(ctrl.Failed());
     ASSERT_TRUE(response.status.code == kOK || response.status.code == kNotFound)
         << response.status.message;
 }
 
-TEST_F(ProxyTest, RiskManager) {
-    thrift::RiskManagerRequest request;
-    thrift::RiskManagerResponse response;
+TEST_F(ProxyTest, ControlStateManager) {
+    thrift::ControlStateManagerRequest request;
+    thrift::ControlStateManagerResponse response;
     request.__set_namespace_name("ns");
     request.__set_table_name("table");
     request.__set_key("key");
-    std::vector<thrift::RiskKvPair> field_values;
-    thrift::RiskKvPair pair;
+    std::vector<thrift::ControlStateKvPair> field_values;
+    thrift::ControlStateKvPair pair;
     pair.__set_key("111");
     pair.__set_value("222");
     field_values.emplace_back(pair);
@@ -289,7 +289,7 @@ TEST_F(ProxyTest, RiskManager) {
 
     brpc::ThriftStub stub(&channel_);
     brpc::Controller ctrl;
-    stub.CallMethod("RiskManager", &ctrl, &request, &response, NULL);
+    stub.CallMethod("ControlStateManager", &ctrl, &request, &response, NULL);
     ASSERT_FALSE(ctrl.Failed());
     ASSERT_TRUE(response.status.code == kOK || response.status.code == kNotFound)
         << response.status.message;

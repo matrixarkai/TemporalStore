@@ -9,6 +9,6 @@ add_subdirectory(common)
 
 if (NOT BCACHE2_OPEN_SOURCE_SURFACE)
     add_subdirectory(ips)
-    add_subdirectory(risk)
+    add_subdirectory(control_state)
     add_subdirectory(temporal_aggregate)
 endif()

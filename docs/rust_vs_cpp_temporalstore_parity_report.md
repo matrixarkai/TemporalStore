@@ -174,7 +174,7 @@ Current migration focus:
 1. Promote remaining Rust-local product tests into shared corpus cases or mark them as Rust-only
    internals when they only validate local helpers.
 2. Convert C++ static parity gates into executable shared cases family by family:
-   storage/Raft, control plane, ingestion, Context, Redis/admin, Feature, IPS, and Risk.
+   storage/Raft, control plane, ingestion, Context, Redis/admin, Feature, IPS, and ControlState.
 3. Keep C++ local tests for C++ transport, fixture, allocator, build, and RustRaft integration
    mechanics that are not cross-language product contracts.
 4. Keep Rust local tests for parser/helper/provider mock mechanics that are not TemporalStore

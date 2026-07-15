@@ -97,7 +97,7 @@ This backlog tracks the missing work found by comparing the local C++ TemporalSt
   - Design doc: `docs/matrixark_temporalstore_cold_archive_matrixdb_matrixkv.md`.
   - Product decision: TemporalStore remains the hot serving store for active events, entities, summaries, embeddings, indexes, resources, skills, and compact telemetry. MatrixKV is the authoritative cold/archive store for cold refs, retention policies, watermarks, idempotency state, compliance-critical audit pointers, replay/debug manifests, and SQL-visible cold records that need strong consistency. MatrixDB is optional for append-heavy analytics: benchmark traces, token/quality metrics, dashboard aggregates, and high-volume sampled observability streams.
   - Hot-path rule: write once to TemporalStore; an async archiver tails the TemporalStore oplog or scans cold candidates, writes MatrixKV idempotently, optionally mirrors analytics rows to MatrixDB, verifies checksums, then writes compact `context_archive_marker` / `context_cold_ref` pointers.
-  - Avoid default synchronous dual-write. Allow it only as an explicit compliance mode because it increases latency and creates cross-store partial-failure risk.
+  - Avoid default synchronous dual-write. Allow it only as an explicit compliance mode because it increases latency and creates cross-store partial-failure control_state.
   - If raw agent ingestion messages are stored in TemporalStore instead of MatrixKV/MatrixDB, treat them as a cold durable log, not hot context:
     - write raw envelopes to a disk-first/cold placement class such as `raw_agent_ingest_log`, separate from serving `ContextEvent`, `ContextEntity`, `ContextSummary`, `ContextEmbedding`, `ResourceChunk`, `SkillSection`, and compact index paths;
     - default read policy must be `no_cache_fill` / `no_promote` / `no_hot_lru_touch`; raw ingestion messages are expected to be read only for backfill, audit-light replay, export, or explicit debug;
@@ -210,7 +210,7 @@ This backlog tracks the missing work found by comparing the local C++ TemporalSt
     - cross-user candidates must pass the normal similarity threshold first;
     - rerank should favor curated shared resources, skill sections, approved decisions, and high-confidence project facts;
     - demote raw cross-user conversation snippets unless they are explicitly published, cited, and high-confidence;
-    - prefer summaries/entities over raw dialogue for cross-user context to reduce privacy risk and token cost.
+    - prefer summaries/entities over raw dialogue for cross-user context to reduce privacy control_state and token cost.
   - Governance and security:
     - require explicit sharing grants, RBAC scopes, and tenant policy before any cross-user memory is eligible;
     - support expiry, revocation, legal hold, and data-retention class per shared ref;
@@ -654,7 +654,7 @@ Completed since the last backlog update:
   - Runtime archives, binaries, dependency trees, logs, presigned URL files, release/debug outputs, and generated artifacts were intentionally excluded.
 
 - AWS testing state:
-  - Latest 30-minute TemporalStore service smoke kept STRING, COMMON, HASH, SET, FEATURE, IPS, and RISK stable for 1,525 iterations.
+  - Latest 30-minute TemporalStore service smoke kept STRING, COMMON, HASH, SET, FEATURE, IPS, and CONTROL_STATE stable for 1,525 iterations.
   - TemporalAggregate failed in the deployed artifact with `Request server resp size check failed`; this is still open and must not be presented as a successful aggregate scale result.
   - Two-replica table creation/recovery still has a `Missing condition info` path in the deployed runtime; secondary aggregate reads remain untrusted until fixed.
 
@@ -728,7 +728,7 @@ Completed since the last backlog update:
   - Primary reads are the default for freshest and safest read-after-write semantics.
   - Secondary reads are allowed only for replica-eligible, stale-tolerant reads.
   - Secondary responses must expose or be gated by freshness/lag metadata.
-  - Do not route correctness-critical risk/fraud aggregate reads to secondary until replay and lag tests pass.
+  - Do not route correctness-critical control_state/fraud aggregate reads to secondary until replay and lag tests pass.
 
 ## P0 EFS And Shared Storage Cleanup
 
@@ -883,7 +883,7 @@ Completed since the last backlog update:
 
 - Clarify IPS vs TemporalAggregate.
   - IPS: profile/event history with richer per-event state.
-  - TemporalAggregate: compact bucketed aggregate state for risk/fraud/frequency cap.
+  - TemporalAggregate: compact bucketed aggregate state for control_state/fraud/frequency cap.
   - Document when to use each.
 
 - Add long sequence feature benchmarks.
@@ -998,7 +998,7 @@ Completed since the last backlog update:
 
 - Update the blog/product docs. Status: TemporalStore deep-dive blog done; keep product pages current.
   - High-cardinality temporal features.
-  - Fraud/risk/frequency cap examples.
+  - Fraud/control_state/frequency cap examples.
   - Why not plain Redis/ordinary KV for arbitrary windows and filtered aggregates.
   - Storage cleanup story for durable online serving.
   - Add a shorter executive version for non-technical buyers.

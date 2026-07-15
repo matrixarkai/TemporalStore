@@ -940,150 +940,150 @@
       ]
     },
     {
-      "name": "risk_counter_window",
+      "name": "control_state_counter_window",
       "shard_id": 1,
       "steps": [
         {
           "command": {
             "amount": 3,
-            "key": "unified:risk",
-            "kind": "risk_increment",
+            "key": "unified:control_state",
+            "kind": "control_state_increment",
             "timestamp_ms": 4000
           },
           "expect": {
             "kind": "empty"
           },
-          "name": "risk_increment"
+          "name": "control_state_increment"
         },
         {
           "command": {
             "end_ms": 4010,
-            "key": "unified:risk",
-            "kind": "risk_count",
+            "key": "unified:control_state",
+            "kind": "control_state_count",
             "start_ms": 3990
           },
           "expect": {
             "kind": "integer",
             "value": 3
           },
-          "name": "risk_count"
+          "name": "control_state_count"
         }
       ]
     },
     {
-      "name": "risk_family_query_and_delete",
+      "name": "control_state_family_query_and_delete",
       "shard_id": 1,
       "steps": [
         {
           "command": {
             "amount": 7,
             "family": "cpc",
-            "key": "unified:risk:family",
-            "kind": "risk_set",
+            "key": "unified:control_state:family",
+            "kind": "control_state_set",
             "timestamp_ms": 4100
           },
           "expect": {
             "kind": "empty"
           },
-          "name": "risk_set_cpc_family"
+          "name": "control_state_set_cpc_family"
         },
         {
           "command": {
             "aggregator": "sum",
             "end_ms": 4110,
             "family": "cpc",
-            "key": "unified:risk:family",
-            "kind": "risk_family_query",
+            "key": "unified:control_state:family",
+            "kind": "control_state_family_query",
             "start_ms": 4090
           },
           "expect": {
             "kind": "integer",
             "value": 7
           },
-          "name": "risk_family_query_sum"
+          "name": "control_state_family_query_sum"
         },
         {
           "command": {
-            "key": "unified:risk:family",
+            "key": "unified:control_state:family",
             "kind": "common_delete"
           },
           "expect": {
             "kind": "empty"
           },
-          "name": "risk_family_common_delete"
+          "name": "control_state_family_common_delete"
         },
         {
           "command": {
             "aggregator": "sum",
             "end_ms": 4111,
             "family": "cpc",
-            "key": "unified:risk:family",
-            "kind": "risk_family_query",
+            "key": "unified:control_state:family",
+            "kind": "control_state_family_query",
             "start_ms": 4091
           },
           "expect": {
             "kind": "integer",
             "value": 0
           },
-          "name": "risk_family_query_after_delete"
+          "name": "control_state_family_query_after_delete"
         }
       ]
     },
     {
-      "name": "risk_manager_debug_fol",
+      "name": "control_state_manager_debug_fol",
       "shard_id": 1,
       "steps": [
         {
           "command": {
             "amount": 5,
             "family": "h",
-            "key": "unified:risk:deep",
-            "kind": "risk_set",
+            "key": "unified:control_state:deep",
+            "kind": "control_state_set",
             "timestamp_ms": 6100
           },
           "expect": {
             "kind": "empty"
           },
-          "name": "risk_set_h_10"
+          "name": "control_state_set_h_10"
         },
         {
           "command": {
             "amount": 7,
             "family": "h",
-            "key": "unified:risk:deep",
-            "kind": "risk_set",
+            "key": "unified:control_state:deep",
+            "kind": "control_state_set",
             "timestamp_ms": 6200
           },
           "expect": {
             "kind": "empty"
           },
-          "name": "risk_set_h_20"
+          "name": "control_state_set_h_20"
         },
         {
           "command": {
             "amount": 3,
             "family": "cpc",
-            "key": "unified:risk:deep",
-            "kind": "risk_set",
+            "key": "unified:control_state:deep",
+            "kind": "control_state_set",
             "timestamp_ms": 6100
           },
           "expect": {
             "kind": "empty"
           },
-          "name": "risk_set_cpc_10"
+          "name": "control_state_set_cpc_10"
         },
         {
           "command": {
             "amount": 11,
             "family": "fol",
-            "key": "unified:risk:deep",
-            "kind": "risk_set",
+            "key": "unified:control_state:deep",
+            "kind": "control_state_set",
             "timestamp_ms": 6100
           },
           "expect": {
             "kind": "empty"
           },
-          "name": "risk_set_fol_counter_10"
+          "name": "control_state_set_fol_counter_10"
         },
         {
           "command": {
@@ -1091,8 +1091,8 @@
             "amount": 4,
             "end_ms": 6300,
             "family": "cpc",
-            "key": "unified:risk:deep",
-            "kind": "risk_set_and_get",
+            "key": "unified:control_state:deep",
+            "kind": "control_state_set_and_get",
             "start_ms": 6000,
             "timestamp_ms": 6200
           },
@@ -1100,13 +1100,13 @@
             "kind": "integer",
             "value": 7
           },
-          "name": "risk_set_and_get_cpc_sum"
+          "name": "control_state_set_and_get_cpc_sum"
         },
         {
           "command": {
             "fol_type": "first",
-            "key": "unified:risk:fol:first",
-            "kind": "risk_fol_set",
+            "key": "unified:control_state:fol:first",
+            "kind": "control_state_fol_set",
             "occur_time_ms": 6200,
             "ttl_ms": 60000,
             "value": [
@@ -1121,13 +1121,13 @@
           "expect": {
             "kind": "empty"
           },
-          "name": "risk_fol_first_middle"
+          "name": "control_state_fol_first_middle"
         },
         {
           "command": {
             "fol_type": "first",
-            "key": "unified:risk:fol:first",
-            "kind": "risk_fol_set",
+            "key": "unified:control_state:fol:first",
+            "kind": "control_state_fol_set",
             "occur_time_ms": 6100,
             "ttl_ms": 60000,
             "value": [
@@ -1141,13 +1141,13 @@
           "expect": {
             "kind": "empty"
           },
-          "name": "risk_fol_first_wins_earlier"
+          "name": "control_state_fol_first_wins_earlier"
         },
         {
           "command": {
             "fol_type": "last",
-            "key": "unified:risk:fol:last",
-            "kind": "risk_fol_set",
+            "key": "unified:control_state:fol:last",
+            "kind": "control_state_fol_set",
             "occur_time_ms": 6200,
             "ttl_ms": 60000,
             "value": [
@@ -1162,13 +1162,13 @@
           "expect": {
             "kind": "empty"
           },
-          "name": "risk_fol_last_middle"
+          "name": "control_state_fol_last_middle"
         },
         {
           "command": {
             "fol_type": "last",
-            "key": "unified:risk:fol:last",
-            "kind": "risk_fol_set",
+            "key": "unified:control_state:fol:last",
+            "kind": "control_state_fol_set",
             "occur_time_ms": 6300,
             "ttl_ms": 60000,
             "value": [
@@ -1181,12 +1181,12 @@
           "expect": {
             "kind": "empty"
           },
-          "name": "risk_fol_last_wins_later"
+          "name": "control_state_fol_last_wins_later"
         },
         {
           "command": {
-            "key": "unified:risk:fol:first",
-            "kind": "risk_fol_query"
+            "key": "unified:control_state:fol:first",
+            "kind": "control_state_fol_query"
           },
           "expect": {
             "kind": "bytes",
@@ -1198,12 +1198,12 @@
               116
             ]
           },
-          "name": "risk_fol_query_first"
+          "name": "control_state_fol_query_first"
         },
         {
           "command": {
-            "key": "unified:risk:fol:last",
-            "kind": "risk_fol_query"
+            "key": "unified:control_state:fol:last",
+            "kind": "control_state_fol_query"
           },
           "expect": {
             "kind": "bytes",
@@ -1214,12 +1214,12 @@
               116
             ]
           },
-          "name": "risk_fol_query_last"
+          "name": "control_state_fol_query_last"
         },
         {
           "command": {
-            "key": "unified:risk:deep",
-            "kind": "risk_manager"
+            "key": "unified:control_state:deep",
+            "kind": "control_state_manager"
           },
           "expect": {
             "entries": [
@@ -1264,13 +1264,13 @@
             ],
             "kind": "hash_entries"
           },
-          "name": "risk_manager_counts_all_families"
+          "name": "control_state_manager_counts_all_families"
         },
         {
           "command": {
             "end_ms": 6150,
-            "key": "unified:risk:deep",
-            "kind": "risk_debug",
+            "key": "unified:control_state:deep",
+            "kind": "control_state_debug",
             "start_ms": 6000
           },
           "expect": {
@@ -1447,7 +1447,7 @@
             ],
             "kind": "hash_entries"
           },
-          "name": "risk_debug_reports_window_and_totals"
+          "name": "control_state_debug_reports_window_and_totals"
         }
       ]
     },
@@ -2807,7 +2807,7 @@
         {
           "command": {
             "cpp_runner_contract": "C++ compaction runner emits before/after stale density, tombstone preservation, rewritten page/object counts, and per-model layout policy evidence.",
-            "description": "Shared compaction case for model-layout-aware rewrites, tombstone preservation, stale-page density improvement, packed timestamped pages, context/Risk page-backed layouts, and slot layout transition evidence.",
+            "description": "Shared compaction case for model-layout-aware rewrites, tombstone preservation, stale-page density improvement, packed timestamped pages, context/ControlState page-backed layouts, and slot layout transition evidence.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "rust_runner": "cargo test -p temporalstore-rust page_compaction_reports_model_layouts_tombstones_object_pages_and_density --lib -- --test-threads=1",
@@ -4185,7 +4185,7 @@
       "steps": [
         {
           "command": {
-            "description": "Shared C++/Rust Context retrieval case for QA-style synonym and adjacent-phrase ranking, covering payment/fraud wording against checkout/risk memories.",
+            "description": "Shared C++/Rust Context retrieval case for QA-style synonym and adjacent-phrase ranking, covering payment/fraud wording against checkout/control_state memories.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "required_paths": [
@@ -6616,7 +6616,7 @@
       ]
     },
     {
-      "description": "Shared C++/Rust Redis product command flow covering string, hash, set, Feature, IPS, and Risk commands through the engine-backed Redis command path.",
+      "description": "Shared C++/Rust Redis product command flow covering string, hash, set, Feature, IPS, and ControlState commands through the engine-backed Redis command path.",
       "family": "Redis/admin",
       "name": "redis_engine_product_command_flow",
       "shard_id": 1,
@@ -8293,7 +8293,7 @@
                 "status_codes",
                 "typed_errors"
               ],
-              "risk": [
+              "control_state": [
                 "cpc",
                 "fol",
                 "manager",
@@ -8305,17 +8305,17 @@
                 "missing_series"
               ]
             },
-            "cpp_runner_contract": "C++ product modules execute the same command/response corpus for Redis/admin/Feature/Sequence/IPS/Risk behavior.",
-            "description": "Unified API case covering Redis/admin aliases plus Feature nested point semantics, Sequence edge cases, IPS snap/stat/filter metadata, and Risk CPC/list/manager/debug behavior.",
+            "cpp_runner_contract": "C++ product modules execute the same command/response corpus for Redis/admin/Feature/Sequence/IPS/ControlState behavior.",
+            "description": "Unified API case covering Redis/admin aliases plus Feature nested point semantics, Sequence edge cases, IPS snap/stat/filter metadata, and ControlState CPC/list/manager/debug behavior.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "required_paths": [
               "docs/product_api_cpp_rust_parity.md"
             ],
-            "rust_runner": "cargo test -p temporalstore-rust redis_ feature_ sequence_ ips_ risk_ -- --test-threads=1",
+            "rust_runner": "cargo test -p temporalstore-rust redis_ feature_ sequence_ ips_ control_state_ -- --test-threads=1",
             "suite": "cpp_product_api_parity"
           },
-          "name": "redis_admin_feature_sequence_ips_risk_shared_contract",
+          "name": "redis_admin_feature_sequence_ips_control_state_shared_contract",
           "skip_client": true
         }
       ]
@@ -9787,7 +9787,7 @@
             "report_schema": "temporalstore_unified_case_report_v1",
             "cpp_runner_contract": "C++ runner emits the same case id, status, observed fields, latency, and mismatch list; until native execution is wired this remains a static C++ surface gate.",
             "kind": "storage_model_aware_block_compaction",
-            "description": "Compacts string/hash/set/timestamped/context/Risk layouts with tombstone and stale-block-density thresholds, then verifies indexes point to new blocks and stale blocks are reclaimable.",
+            "description": "Compacts string/hash/set/timestamped/context/ControlState layouts with tombstone and stale-block-density thresholds, then verifies indexes point to new blocks and stale blocks are reclaimable.",
             "rust_test": "model_layout_compaction_rewrites_live_refs_and_marks_stale_blocks_reclaimable",
             "required_paths": [
               "src/partition/storage/compaction*",
@@ -9799,7 +9799,7 @@
               "set",
               "timestamped",
               "context",
-              "risk"
+              "control_state"
             ],
             "expect_triggers": [
               "tombstone_density",
@@ -10741,7 +10741,7 @@
     {
       "name": "all_capability_cpp_rust_parity_sweep",
       "family": "all capabilities",
-      "description": "Executable shared C++/Rust sweep across TemporalStore product capabilities: common TTL/existence, string, hash, set, Feature, Sequence, IPS, Risk, and Context node/event/entity/child/embedding/summary/compression/index sidecars.",
+      "description": "Executable shared C++/Rust sweep across TemporalStore product capabilities: common TTL/existence, string, hash, set, Feature, Sequence, IPS, ControlState, and Context node/event/entity/child/embedding/summary/compression/index sidecars.",
       "shard_id": 7,
       "steps": [
         {
@@ -11091,11 +11091,11 @@
           }
         },
         {
-          "name": "risk_h_set",
+          "name": "control_state_h_set",
           "command": {
-            "kind": "risk_set",
+            "kind": "control_state_set",
             "family": "h",
-            "key": "parity:risk",
+            "key": "parity:control_state",
             "timestamp_ms": 400,
             "amount": 5
           },
@@ -11104,11 +11104,11 @@
           }
         },
         {
-          "name": "risk_cpc_set",
+          "name": "control_state_cpc_set",
           "command": {
-            "kind": "risk_set",
+            "kind": "control_state_set",
             "family": "cpc",
-            "key": "parity:risk",
+            "key": "parity:control_state",
             "timestamp_ms": 410,
             "amount": 3
           },
@@ -11117,11 +11117,11 @@
           }
         },
         {
-          "name": "risk_query_h_sum",
+          "name": "control_state_query_h_sum",
           "command": {
-            "kind": "risk_family_query",
+            "kind": "control_state_family_query",
             "family": "h",
-            "key": "parity:risk",
+            "key": "parity:control_state",
             "start_ms": 390,
             "end_ms": 420,
             "aggregator": "sum"
@@ -11132,10 +11132,10 @@
           }
         },
         {
-          "name": "risk_fol_first",
+          "name": "control_state_fol_first",
           "command": {
-            "kind": "risk_fol_set",
-            "key": "parity:risk:fol",
+            "kind": "control_state_fol_set",
+            "key": "parity:control_state:fol",
             "value": [
               102,
               105,
@@ -11152,10 +11152,10 @@
           }
         },
         {
-          "name": "risk_fol_query",
+          "name": "control_state_fol_query",
           "command": {
-            "kind": "risk_fol_query",
-            "key": "parity:risk:fol"
+            "kind": "control_state_fol_query",
+            "key": "parity:control_state:fol"
           },
           "expect": {
             "kind": "bytes",
@@ -11881,16 +11881,16 @@
       ]
     },
     {
-      "name": "storage_risk_context_page_backed_parity",
+      "name": "storage_control_state_context_page_backed_parity",
       "shard_id": 1,
       "steps": [
         {
-          "name": "storage_risk_context_page_backed_parity_coverage",
+          "name": "storage_control_state_context_page_backed_parity_coverage",
           "command": {
             "kind": "existing_test",
             "suite": "storage_proxy_client_parity",
             "mode": "static",
-            "description": "Shared C++/Rust parity coverage for Risk/Context page-backed parity.",
+            "description": "Shared C++/Rust parity coverage for ControlState/Context page-backed parity.",
             "required_paths": [
               "crates/temporalstore-rust/src/engine.rs",
               "crates/temporalstore-rust/src/engine/object_manager.rs",
@@ -12189,7 +12189,7 @@
         ]
       },
       {
-        "blocker": "C++ executable shared adapter for Redis/admin/Feature/Sequence/IPS/Risk command corpus is still pending.",
+        "blocker": "C++ executable shared adapter for Redis/admin/Feature/Sequence/IPS/ControlState command corpus is still pending.",
         "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-product-api-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --family product_api_models --cpp --require-cpp-native",
         "family": "product_api_models",
         "status": "temporary_static_surface_gate",
@@ -12213,8 +12213,8 @@
       "feature_packed_timestamped_pages",
       "sequence_cpp_feature_rows",
       "ips_options_range",
-      "risk_counter_window",
-      "risk_family_query_and_delete",
+      "control_state_counter_window",
+      "control_state_family_query_and_delete",
       "context_node_roundtrip",
       "context_event_index_audit_dirty_models",
       "common_restart_persistence",
@@ -12255,7 +12255,7 @@
       "cpp_metaserver_scheduler_repair_parity_surfaces",
       "cpp_data_node_lifecycle_server_parity_surfaces",
       "ips_snapshot_stat_filter_batch",
-      "risk_manager_debug_fol",
+      "control_state_manager_debug_fol",
       "storage_dump_load_recovery",
       "storage_fault_matrix",
       "storage_follower_safe_gc",
@@ -12416,7 +12416,7 @@
       "storage_manager_active_eviction_runtime",
       "storage_manager_page_gc_dependency_refusal",
       "storage_manager_index_gc_thresholds_recovery",
-      "storage_risk_context_page_backed_parity"
+      "storage_control_state_context_page_backed_parity"
     ],
     "required_command_kinds": [
       "string_set",
@@ -12445,10 +12445,10 @@
       "sequence_batch_query",
       "ips_add_with_options",
       "ips_query_range",
-      "risk_increment",
-      "risk_count",
-      "risk_set",
-      "risk_family_query",
+      "control_state_increment",
+      "control_state_count",
+      "control_state_set",
+      "control_state_family_query",
       "context_upsert_node",
       "context_get_node",
       "context_write_event",
@@ -12466,11 +12466,11 @@
       "ips_filter",
       "ips_stat",
       "ips_snapshot_report",
-      "risk_set_and_get",
-      "risk_fol_set",
-      "risk_fol_query",
-      "risk_manager",
-      "risk_debug",
+      "control_state_set_and_get",
+      "control_state_fol_set",
+      "control_state_fol_query",
+      "control_state_manager",
+      "control_state_debug",
       "storage_dump_load_recovery",
       "storage_fault_matrix",
       "storage_follower_safe_gc",

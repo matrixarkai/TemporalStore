@@ -353,7 +353,7 @@ pub struct IpsSnapshotReport {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum RiskFamily {
+pub enum ControlStateFamily {
     H,
     Cpc,
     Fol,
@@ -361,12 +361,12 @@ pub enum RiskFamily {
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum RiskFolType {
+pub enum ControlStateFolType {
     First,
     Last,
 }
 
-impl<'de> Deserialize<'de> for RiskFolType {
+impl<'de> Deserialize<'de> for ControlStateFolType {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -376,15 +376,15 @@ impl<'de> Deserialize<'de> for RiskFolType {
             serde_json::Value::Number(number) => match number.as_i64() {
                 Some(0) => Ok(Self::First),
                 Some(1) => Ok(Self::Last),
-                _ => Err(serde::de::Error::custom("unknown RiskFolType value")),
+                _ => Err(serde::de::Error::custom("unknown ControlStateFolType value")),
             },
             serde_json::Value::String(value) => match value.as_str() {
                 "FIRST" | "first" | "First" | "0" => Ok(Self::First),
                 "LAST" | "last" | "Last" | "1" => Ok(Self::Last),
-                _ => Err(serde::de::Error::custom("unknown RiskFolType value")),
+                _ => Err(serde::de::Error::custom("unknown ControlStateFolType value")),
             },
             _ => Err(serde::de::Error::custom(
-                "RiskFolType must be a string or integer",
+                "ControlStateFolType must be a string or integer",
             )),
         }
     }
@@ -1507,12 +1507,12 @@ pub enum Command {
         #[serde(default)]
         table_id: Option<u64>,
     },
-    RiskIncrement {
+    ControlStateIncrement {
         key: String,
         timestamp_ms: u64,
         amount: i64,
     },
-    RiskIncrementWithOptions {
+    ControlStateIncrementWithOptions {
         key: String,
         timestamp_ms: u64,
         amount: i64,
@@ -1521,7 +1521,7 @@ pub enum Command {
         #[serde(default)]
         ttl_ms: Option<u64>,
     },
-    RiskChangeAdd {
+    ControlStateChangeAdd {
         key: String,
         timestamp_ms: u64,
         value: Vec<u8>,
@@ -1530,26 +1530,26 @@ pub enum Command {
         #[serde(default)]
         ttl_ms: Option<u64>,
     },
-    RiskCount {
+    ControlStateCount {
         key: String,
         start_ms: u64,
         end_ms: u64,
     },
-    RiskQuery {
+    ControlStateQuery {
         key: String,
         start_ms: u64,
         end_ms: u64,
         aggregator: String,
     },
-    RiskDetail {
+    ControlStateDetail {
         key: String,
         start_ms: u64,
         end_ms: u64,
         #[serde(default)]
         count: Option<usize>,
     },
-    RiskSet {
-        family: RiskFamily,
+    ControlStateSet {
+        family: ControlStateFamily,
         key: String,
         timestamp_ms: u64,
         amount: i64,
@@ -1558,8 +1558,8 @@ pub enum Command {
         #[serde(default)]
         ttl_ms: Option<u64>,
     },
-    RiskSetAndGet {
-        family: RiskFamily,
+    ControlStateSetAndGet {
+        family: ControlStateFamily,
         key: String,
         timestamp_ms: u64,
         amount: i64,
@@ -1571,24 +1571,24 @@ pub enum Command {
         #[serde(default)]
         ttl_ms: Option<u64>,
     },
-    RiskFamilyQuery {
-        family: RiskFamily,
+    ControlStateFamilyQuery {
+        family: ControlStateFamily,
         key: String,
         start_ms: u64,
         end_ms: u64,
         aggregator: String,
     },
-    RiskFolSet {
+    ControlStateFolSet {
         key: String,
         value: Vec<u8>,
         occur_time_ms: u64,
         ttl_ms: u64,
-        fol_type: RiskFolType,
+        fol_type: ControlStateFolType,
     },
-    RiskFolQuery {
+    ControlStateFolQuery {
         key: String,
     },
-    RiskManager {
+    ControlStateManager {
         key: String,
         #[serde(default)]
         op_type: Option<String>,
@@ -1601,7 +1601,7 @@ pub enum Command {
         #[serde(default)]
         is_cpc: Option<bool>,
     },
-    RiskDebug {
+    ControlStateDebug {
         key: String,
         start_ms: u64,
         end_ms: u64,

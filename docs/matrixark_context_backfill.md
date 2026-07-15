@@ -618,7 +618,7 @@ Every summary includes `source_range`, which records `scan_mode`, requested star
 | Small repair | `128` to `256` | Better control and easier debugging |
 | Normal production backfill | `1024` | Good default for throughput and memory |
 | Large rebuild with stable target latency | `2048` to `4096` | Increase only after watching write latency and memory |
-| Unstable target or high dead-letter risk | `128` to `512` | Keeps retry windows smaller |
+| Unstable target or high dead-letter control_state | `128` to `512` | Keeps retry windows smaller |
 
 A larger batch improves throughput only when target append latency remains stable. If target writes slow down, increase in-flight timeouts or reduce `--batch-size` before rerunning.
 

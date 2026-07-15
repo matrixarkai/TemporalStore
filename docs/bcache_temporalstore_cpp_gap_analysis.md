@@ -140,7 +140,7 @@ TemporalStore has several modules:
 - set extension;
 - feature;
 - IPS;
-- risk;
+- control_state;
 - temporal aggregate;
 - context.
 
@@ -151,7 +151,7 @@ Relevant code:
 - `src/extension/set`
 - `src/extension/feature`
 - `src/extension/ips`
-- `src/extension/risk`
+- `src/extension/control_state`
 - `src/extension/temporal_aggregate`
 - `src/extension/context`
 
@@ -390,7 +390,7 @@ PDF expectation:
 
 Current C++ status:
 
-- String/hash/custom feature/risk/IPS/temporal modules exist.
+- String/hash/custom feature/control_state/IPS/temporal modules exist.
 - Full Redis protocol and complete List/ZSet/Json/TimeSeries parity are not obvious in the current C++ tree.
 
 Gap:

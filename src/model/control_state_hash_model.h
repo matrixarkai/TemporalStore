@@ -9,7 +9,7 @@
 
 #include "model/orset_model.h"
 #include "model/persistent_map.h"
-#include "extension/risk/metrics_log.h"
+#include "extension/control_state/metrics_log.h"
 
 // n 次之后触发 gc
 const int kGCPerWrite = 100;
@@ -23,7 +23,7 @@ const int kMaxMapSize = 2000000;
 const int kMaxFiledSize = 200;
 
 
-#ifdef __RISK_HASH_FOR_UNIT_TEST__
+#ifdef __CONTROL_STATE_HASH_FOR_UNIT_TEST__
 const int32_t kUUIDExpiredTime = 3;
 #else
 const int32_t kUUIDExpiredTime = 300;  // uuid 过期时间 300 秒
@@ -43,8 +43,8 @@ const int kFieldValueStart = kFieldTimestampStart + kFieldTimestampSize;
 namespace bcache2 {
 namespace model {
 
-using RiskComputeFunc = std::function<void(const std::string& filed, const std::string& value)>;
-using RiskUpsertFunc = std::function<int64_t(int64_t cur_val, int64_t pre_val)>;
+using ControlStateComputeFunc = std::function<void(const std::string& filed, const std::string& value)>;
+using ControlStateUpsertFunc = std::function<int64_t(int64_t cur_val, int64_t pre_val)>;
 /*
 结构为：
 key：              12346_255&#@shopOrder_dc（对应这BCache2中的Object_id）
@@ -53,17 +53,17 @@ fieldAndValues:    {$precison}{$timestamp}{$filed}  {$value}
 $value为int64_t整形，对于dc $value = $filed，字符串类型
 ttl:(过期时间)，存在一个特殊的field中，ttl_field_8864中
 */
-class RiskHashOrSet {
+class ControlStateHashOrSet {
  public:
-    // RiskHashModel(){}
-    explicit RiskHashOrSet(model::PersistentMap<std::string, std::string>* data) : data_(data) {}
-    RiskHashOrSet(RiskHashOrSet&& rmodel)
+    // ControlStateHashModel(){}
+    explicit ControlStateHashOrSet(model::PersistentMap<std::string, std::string>* data) : data_(data) {}
+    ControlStateHashOrSet(ControlStateHashOrSet&& rmodel)
         : gc_write_cnt_(rmodel.gc_write_cnt_),
           ttl_(rmodel.ttl_),
           last_gc_timestamp_(rmodel.last_gc_timestamp_),
           data_(rmodel.data_),
           change_value_(rmodel.change_value_) {}
-    RiskHashOrSet& operator=(RiskHashOrSet&& rmodel) {
+    ControlStateHashOrSet& operator=(ControlStateHashOrSet&& rmodel) {
         if (this == &rmodel) {
             return *this;
         }
@@ -74,19 +74,19 @@ class RiskHashOrSet {
         change_value_ = rmodel.change_value_;
         return *this;
     }
-    RiskHashOrSet(const RiskHashOrSet&) = delete;
-    RiskHashOrSet& operator=(const RiskHashOrSet&) = delete;
-    // RiskHashOrSet& operator=(RiskHashOrSet&&) = delete;
+    ControlStateHashOrSet(const ControlStateHashOrSet&) = delete;
+    ControlStateHashOrSet& operator=(const ControlStateHashOrSet&) = delete;
+    // ControlStateHashOrSet& operator=(ControlStateHashOrSet&&) = delete;
 
     Status OnLoaded() { return Status::OK(); }
 
-    Status CompareAndIncrBy(partition::CmdContext* ctx, risk::RiskTimerLogger *timer,
+    Status CompareAndIncrBy(partition::CmdContext* ctx, control_state::ControlStateTimerLogger *timer,
                             const std::string change_value, std::string key, uint64_t ttl,
                             const std::string& uuid = "") {
         // 前置判断请求是否重复
         std::time_t now = std::time(0);
         if (!InsertUUID(ctx, uuid, now)) {
-            return Status::RiskAlreadyHandled("");
+            return Status::ControlStateAlreadyHandled("");
         }
         SetTTL(ctx, ttl);
         if (change_value_ == "") {
@@ -105,14 +105,14 @@ class RiskHashOrSet {
         return Status::OK();
     }
 
-    Status BatchUpsert(partition::CmdContext* ctx, risk::RiskTimerLogger *timer,
+    Status BatchUpsert(partition::CmdContext* ctx, control_state::ControlStateTimerLogger *timer,
                        const std::vector<std::string>& keys, const std::vector<int64_t>& vals,
-                       uint64_t ttl, const RiskUpsertFunc& riskUpsertFunc,
+                       uint64_t ttl, const ControlStateUpsertFunc& control_stateUpsertFunc,
                        const std::string& uuid) {
         // 前置判断请求是否重复
         std::time_t now = std::time(0);
         if (!InsertUUID(ctx, uuid, now)) {
-            return Status::RiskAlreadyHandled("");
+            return Status::ControlStateAlreadyHandled("");
         }
         SetTTL(ctx, ttl);
         std::vector<std::string> cur_vals;
@@ -121,7 +121,7 @@ class RiskHashOrSet {
             auto it = data_->Find(key);
             int64_t cur_val = vals[index];
             if (it != data_->End()) {
-                cur_val = riskUpsertFunc(cur_val, std::strtoll(it.Second().c_str(), nullptr, 10));
+                cur_val = control_stateUpsertFunc(cur_val, std::strtoll(it.Second().c_str(), nullptr, 10));
             }
 
             cur_vals.push_back(std::to_string(cur_val));
@@ -131,7 +131,7 @@ class RiskHashOrSet {
         return InnerBatchSet(ctx, timer, keys, cur_vals, now);
     }
 
-    Status BatchOverWrite(partition::CmdContext* ctx, risk::RiskTimerLogger *timer,
+    Status BatchOverWrite(partition::CmdContext* ctx, control_state::ControlStateTimerLogger *timer,
                           const std::vector<std::string>& keys,
                           const std::vector<std::string>& vals, uint64_t ttl) {
         SetTTL(ctx, ttl);
@@ -140,14 +140,14 @@ class RiskHashOrSet {
 
     //  查询范围为[startPrefix, endPrefix)
     Status Scan(partition::CmdContext* ctx, const std::string& startPrefix,
-                const std::string& endPrefix, const RiskComputeFunc& riskComputeFunc) {
+                const std::string& endPrefix, const ControlStateComputeFunc& control_stateComputeFunc) {
         // 增加过期机制
         // 定位开始点和结束点, 获取最小的大于等于这个时间戳的key, 事实上由于key有后缀,
         // 所有key都应当大于prefix
         auto startIter = data_->LowerBound(startPrefix);
         auto endIter = data_->LowerBound(endPrefix);
         for (; startIter != endIter; ++startIter) {
-            riskComputeFunc(startIter.First(), startIter.Second());
+            control_stateComputeFunc(startIter.First(), startIter.Second());
         }
         return Status::OK();
     }
@@ -215,14 +215,14 @@ class RiskHashOrSet {
     uint64_t GetTTL(partition::CmdContext* ctx);
     uint64_t GetEndTimestamp(std::time_t now);
     uint64_t GetOldestTimestamp(const std::string& prefix);
-    Status InnerBatchSet(partition::CmdContext* ctx, risk::RiskTimerLogger *timer,
+    Status InnerBatchSet(partition::CmdContext* ctx, control_state::ControlStateTimerLogger *timer,
                          const std::vector<std::string>& keys,
                          const std::vector<std::string>& vals,
                          std::time_t now);
     Status CheckMinPrecisonFiledSize(partition::CmdContext* ctx,
                                      const std::vector<std::string>& keys);
 
-    Status InnerIncrByAndSetValue(partition::CmdContext* ctx, risk::RiskTimerLogger *timer,
+    Status InnerIncrByAndSetValue(partition::CmdContext* ctx, control_state::ControlStateTimerLogger *timer,
                                   const std::string change_value, std::string key,
                                   std::time_t now);
 
@@ -234,6 +234,6 @@ class RiskHashOrSet {
     // 用于change命令，保持其中的最终值
     std::string change_value_ = "";
 };
-using RiskHashModel = bcache2::model::OrSetModel<std::string, std::string, RiskHashOrSet>;
+using ControlStateHashModel = bcache2::model::OrSetModel<std::string, std::string, ControlStateHashOrSet>;
 }  // namespace model
 }  // namespace bcache2

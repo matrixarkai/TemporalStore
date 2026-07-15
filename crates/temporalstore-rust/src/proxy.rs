@@ -32,7 +32,7 @@ use crate::meta::{
 };
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
-    ExecuteResponse, FeatureFilter, FeaturePoint, FeatureWritePolicy, RiskFamily, RiskFolType,
+    ExecuteResponse, FeatureFilter, FeaturePoint, FeatureWritePolicy, ControlStateFamily, ControlStateFolType,
     SequenceFeatureRow, SequenceQuerySpec, ShardId, Status, StringSetCondition,
 };
 
@@ -895,7 +895,7 @@ pub struct ProxyIpsRemoveCommandRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyRiskIncrementCommandRequest {
+pub struct ProxyControlStateIncrementCommandRequest {
     #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
@@ -915,7 +915,7 @@ pub struct ProxyRiskIncrementCommandRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyRiskCountCommandRequest {
+pub struct ProxyControlStateCountCommandRequest {
     #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
@@ -927,7 +927,7 @@ pub struct ProxyRiskCountCommandRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyRiskQueryCommandRequest {
+pub struct ProxyControlStateQueryCommandRequest {
     #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
@@ -942,7 +942,7 @@ pub struct ProxyRiskQueryCommandRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyRiskChangeAddCommandRequest {
+pub struct ProxyControlStateChangeAddCommandRequest {
     #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
@@ -962,11 +962,11 @@ pub struct ProxyRiskChangeAddCommandRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyRiskFamilySetCommandRequest {
+pub struct ProxyControlStateFamilySetCommandRequest {
     #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
-    pub family: RiskFamily,
+    pub family: ControlStateFamily,
     pub key: String,
     #[serde(alias = "ts", alias = "occur_time")]
     pub timestamp_ms: u64,
@@ -975,11 +975,11 @@ pub struct ProxyRiskFamilySetCommandRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyRiskFamilyQueryCommandRequest {
+pub struct ProxyControlStateFamilyQueryCommandRequest {
     #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
-    pub family: RiskFamily,
+    pub family: ControlStateFamily,
     pub key: String,
     #[serde(alias = "start_ts")]
     pub start_ms: u64,
@@ -989,11 +989,11 @@ pub struct ProxyRiskFamilyQueryCommandRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyRiskFamilySetAndGetCommandRequest {
+pub struct ProxyControlStateFamilySetAndGetCommandRequest {
     #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
-    pub family: RiskFamily,
+    pub family: ControlStateFamily,
     pub key: String,
     #[serde(alias = "ts", alias = "occur_time")]
     pub timestamp_ms: u64,
@@ -1318,7 +1318,7 @@ pub struct ProxyContextQueryNodeContextCommandRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyRiskHsetCommandRequest {
+pub struct ProxyControlStateHsetCommandRequest {
     #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
@@ -1338,11 +1338,11 @@ pub struct ProxyRiskHsetCommandRequest {
     #[serde(default)]
     pub precision_ms: Option<u64>,
     #[serde(default)]
-    pub htype: ProxyRiskHType,
+    pub htype: ProxyControlStateHType,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyRiskHqueryCommandRequest {
+pub struct ProxyControlStateHqueryCommandRequest {
     #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
@@ -1352,9 +1352,9 @@ pub struct ProxyRiskHqueryCommandRequest {
     #[serde(default)]
     pub end_ms: Option<u64>,
     #[serde(default)]
-    pub windows: Vec<ProxyRiskWindow>,
+    pub windows: Vec<ProxyControlStateWindow>,
     #[serde(default)]
-    pub htype: ProxyRiskHType,
+    pub htype: ProxyControlStateHType,
     #[serde(default)]
     pub aggregator: Option<String>,
     #[serde(default)]
@@ -1363,7 +1363,7 @@ pub struct ProxyRiskHqueryCommandRequest {
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum ProxyRiskHType {
+pub enum ProxyControlStateHType {
     #[default]
     Count,
     Min,
@@ -1371,7 +1371,7 @@ pub enum ProxyRiskHType {
     Change,
 }
 
-impl<'de> Deserialize<'de> for ProxyRiskHType {
+impl<'de> Deserialize<'de> for ProxyControlStateHType {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -1383,23 +1383,23 @@ impl<'de> Deserialize<'de> for ProxyRiskHType {
                 Some(1) => Ok(Self::Min),
                 Some(2) => Ok(Self::Max),
                 Some(3) => Ok(Self::Change),
-                _ => Err(serde::de::Error::custom("unknown RiskHType value")),
+                _ => Err(serde::de::Error::custom("unknown ControlStateHType value")),
             },
             serde_json::Value::String(value) => match value.as_str() {
                 "COUNT" | "count" | "Count" | "0" => Ok(Self::Count),
                 "MIN" | "min" | "Min" | "1" => Ok(Self::Min),
                 "MAX" | "max" | "Max" | "2" => Ok(Self::Max),
                 "CHANGE" | "change" | "Change" | "3" => Ok(Self::Change),
-                _ => Err(serde::de::Error::custom("unknown RiskHType value")),
+                _ => Err(serde::de::Error::custom("unknown ControlStateHType value")),
             },
             _ => Err(serde::de::Error::custom(
-                "RiskHType must be a string or integer",
+                "ControlStateHType must be a string or integer",
             )),
         }
     }
 }
 
-impl ProxyRiskHType {
+impl ProxyControlStateHType {
     fn aggregator(self) -> &'static str {
         match self {
             Self::Count => "sum",
@@ -1411,7 +1411,7 @@ impl ProxyRiskHType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyRiskFolSetCommandRequest {
+pub struct ProxyControlStateFolSetCommandRequest {
     #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
@@ -1426,12 +1426,12 @@ pub struct ProxyRiskFolSetCommandRequest {
     pub ttl_ms: u64,
     #[serde(default, alias = "ttl")]
     pub ttl_seconds: u64,
-    #[serde(default = "default_risk_fol_type")]
-    pub fol_type: RiskFolType,
+    #[serde(default = "default_control_state_fol_type")]
+    pub fol_type: ControlStateFolType,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyRiskCpcSetCommandRequest {
+pub struct ProxyControlStateCpcSetCommandRequest {
     #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
@@ -1457,7 +1457,7 @@ pub struct ProxyRiskCpcSetCommandRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyRiskCpcQueryCommandRequest {
+pub struct ProxyControlStateCpcQueryCommandRequest {
     #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
@@ -1466,10 +1466,10 @@ pub struct ProxyRiskCpcQueryCommandRequest {
     pub start_ms: Option<u64>,
     #[serde(default)]
     pub end_ms: Option<u64>,
-    #[serde(default = "default_risk_cpc_aggregator")]
+    #[serde(default = "default_control_state_cpc_aggregator")]
     pub aggregator: String,
     #[serde(default)]
-    pub windows: Vec<ProxyRiskWindow>,
+    pub windows: Vec<ProxyControlStateWindow>,
     #[serde(default)]
     pub with_detail: bool,
     #[serde(
@@ -1481,7 +1481,7 @@ pub struct ProxyRiskCpcQueryCommandRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyRiskManagerCommandRequest {
+pub struct ProxyControlStateManagerCommandRequest {
     #[serde(alias = "namespace_name")]
     pub namespace: String,
     pub table_name: String,
@@ -1489,7 +1489,7 @@ pub struct ProxyRiskManagerCommandRequest {
     #[serde(default)]
     pub op_type: Option<serde_json::Value>,
     #[serde(default)]
-    pub field_list: Vec<ProxyRiskManagerKvPair>,
+    pub field_list: Vec<ProxyControlStateManagerKvPair>,
     #[serde(default)]
     pub start_offset: String,
     #[serde(default)]
@@ -1499,24 +1499,24 @@ pub struct ProxyRiskManagerCommandRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyRiskManagerKvPair {
+pub struct ProxyControlStateManagerKvPair {
     pub key: String,
     pub value: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProxyRiskWindow {
+pub struct ProxyControlStateWindow {
     #[serde(default)]
     pub start_offset: i64,
     #[serde(default)]
     pub end_offset: i64,
     #[serde(default)]
-    pub unit: ProxyRiskWindowUnit,
+    pub unit: ProxyControlStateWindowUnit,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum ProxyRiskWindowUnit {
+pub enum ProxyControlStateWindowUnit {
     Second,
     Minute,
     #[default]
@@ -1524,7 +1524,7 @@ pub enum ProxyRiskWindowUnit {
     Day,
 }
 
-impl<'de> Deserialize<'de> for ProxyRiskWindowUnit {
+impl<'de> Deserialize<'de> for ProxyControlStateWindowUnit {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -1536,23 +1536,23 @@ impl<'de> Deserialize<'de> for ProxyRiskWindowUnit {
                 Some(1) => Ok(Self::Minute),
                 Some(2) => Ok(Self::Hour),
                 Some(3) => Ok(Self::Day),
-                _ => Err(serde::de::Error::custom("unknown RiskWindowUnit value")),
+                _ => Err(serde::de::Error::custom("unknown ControlStateWindowUnit value")),
             },
             serde_json::Value::String(value) => match value.as_str() {
                 "Second" | "SECOND" | "second" | "0" => Ok(Self::Second),
                 "Minute" | "MINUTE" | "minute" | "1" => Ok(Self::Minute),
                 "Hour" | "HOUR" | "hour" | "2" => Ok(Self::Hour),
                 "Day" | "DAY" | "day" | "3" => Ok(Self::Day),
-                _ => Err(serde::de::Error::custom("unknown RiskWindowUnit value")),
+                _ => Err(serde::de::Error::custom("unknown ControlStateWindowUnit value")),
             },
             _ => Err(serde::de::Error::custom(
-                "RiskWindowUnit must be a string or integer",
+                "ControlStateWindowUnit must be a string or integer",
             )),
         }
     }
 }
 
-impl ProxyRiskWindowUnit {
+impl ProxyControlStateWindowUnit {
     fn duration_ms(self) -> i64 {
         match self {
             Self::Second => 1_000,
@@ -1563,12 +1563,12 @@ impl ProxyRiskWindowUnit {
     }
 }
 
-fn default_risk_cpc_aggregator() -> String {
+fn default_control_state_cpc_aggregator() -> String {
     "sum".to_string()
 }
 
-fn default_risk_fol_type() -> RiskFolType {
-    RiskFolType::First
+fn default_control_state_fol_type() -> ControlStateFolType {
+    ControlStateFolType::First
 }
 
 fn proxy_optional_precision_ms_from_json<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
@@ -1587,11 +1587,11 @@ fn proxy_precision_ms_value(value: serde_json::Value) -> Result<u64, String> {
         serde_json::Value::Null => Ok(0),
         serde_json::Value::Number(number) => number
             .as_u64()
-            .map(cpp_risk_precision_to_ms)
+            .map(cpp_control_state_precision_to_ms)
             .ok_or_else(|| "precision must be a non-negative integer".to_string()),
         serde_json::Value::String(value) => {
             if let Ok(number) = value.parse::<u64>() {
-                return Ok(cpp_risk_precision_to_ms(number));
+                return Ok(cpp_control_state_precision_to_ms(number));
             }
             match value.as_str() {
                 "DISABLE" | "disable" => Ok(0),
@@ -1604,14 +1604,14 @@ fn proxy_precision_ms_value(value: serde_json::Value) -> Result<u64, String> {
                 "OneHour" | "one_hour" => Ok(60 * 60_000),
                 "OneDay" | "one_day" => Ok(24 * 60 * 60_000),
                 "OneMonth" | "one_month" => Ok(30 * 24 * 60 * 60_000),
-                _ => Err("unknown RiskPrecision value".to_string()),
+                _ => Err("unknown ControlStatePrecision value".to_string()),
             }
         }
         _ => Err("precision must be a string or integer".to_string()),
     }
 }
 
-fn cpp_risk_precision_to_ms(value: u64) -> u64 {
+fn cpp_control_state_precision_to_ms(value: u64) -> u64 {
     match value {
         10 => 1_000,
         14 => 5_000,
@@ -2425,12 +2425,12 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/RiskIncrement")
-            | ("POST", "/ProxyService/RiskIncrementWithOptions") => {
-                match parse_json::<ProxyRiskIncrementCommandRequest>(&request.body) {
+            ("POST", "/ProxyService/ControlStateIncrement")
+            | ("POST", "/ProxyService/ControlStateIncrementWithOptions") => {
+                match parse_json::<ProxyControlStateIncrementCommandRequest>(&request.body) {
                     Ok(req) => {
                         let command = if req.precision_ms.is_some() || req.ttl_ms.is_some() {
-                            Command::RiskIncrementWithOptions {
+                            Command::ControlStateIncrementWithOptions {
                                 key: req.key,
                                 timestamp_ms: req.timestamp_ms,
                                 amount: req.amount,
@@ -2438,7 +2438,7 @@ impl ProxyService {
                                 ttl_ms: req.ttl_ms,
                             }
                         } else {
-                            Command::RiskIncrement {
+                            Command::ControlStateIncrement {
                                 key: req.key,
                                 timestamp_ms: req.timestamp_ms,
                                 amount: req.amount,
@@ -2456,10 +2456,10 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/RiskCount") => {
-                match parse_json::<ProxyRiskCountCommandRequest>(&request.body) {
+            ("POST", "/ProxyService/ControlStateCount") => {
+                match parse_json::<ProxyControlStateCountCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let command = Command::RiskCount {
+                        let command = Command::ControlStateCount {
                             key: req.key,
                             start_ms: req.start_ms,
                             end_ms: req.end_ms,
@@ -2476,10 +2476,10 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/RiskQuery") => {
-                match parse_json::<ProxyRiskQueryCommandRequest>(&request.body) {
+            ("POST", "/ProxyService/ControlStateQuery") => {
+                match parse_json::<ProxyControlStateQueryCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let command = Command::RiskQuery {
+                        let command = Command::ControlStateQuery {
                             key: req.key,
                             start_ms: req.start_ms,
                             end_ms: req.end_ms,
@@ -2497,10 +2497,10 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/RiskDetail") => {
-                match parse_json::<ProxyRiskQueryCommandRequest>(&request.body) {
+            ("POST", "/ProxyService/ControlStateDetail") => {
+                match parse_json::<ProxyControlStateQueryCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let command = Command::RiskDetail {
+                        let command = Command::ControlStateDetail {
                             key: req.key,
                             start_ms: req.start_ms,
                             end_ms: req.end_ms,
@@ -2518,10 +2518,10 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/RiskChangeAdd") => {
-                match parse_json::<ProxyRiskChangeAddCommandRequest>(&request.body) {
+            ("POST", "/ProxyService/ControlStateChangeAdd") => {
+                match parse_json::<ProxyControlStateChangeAddCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let command = Command::RiskChangeAdd {
+                        let command = Command::ControlStateChangeAdd {
                             key: req.key,
                             timestamp_ms: req.timestamp_ms,
                             value: req.value,
@@ -2540,10 +2540,10 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/RiskFamilySet") => {
-                match parse_json::<ProxyRiskFamilySetCommandRequest>(&request.body) {
+            ("POST", "/ProxyService/ControlStateFamilySet") => {
+                match parse_json::<ProxyControlStateFamilySetCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let command = Command::RiskSet {
+                        let command = Command::ControlStateSet {
                             family: req.family,
                             key: req.key,
                             timestamp_ms: req.timestamp_ms,
@@ -2563,10 +2563,10 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/RiskFamilyQuery") => {
-                match parse_json::<ProxyRiskFamilyQueryCommandRequest>(&request.body) {
+            ("POST", "/ProxyService/ControlStateFamilyQuery") => {
+                match parse_json::<ProxyControlStateFamilyQueryCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let command = Command::RiskFamilyQuery {
+                        let command = Command::ControlStateFamilyQuery {
                             family: req.family,
                             key: req.key,
                             start_ms: req.start_ms,
@@ -2585,10 +2585,10 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/RiskFamilySetAndGet") => {
-                match parse_json::<ProxyRiskFamilySetAndGetCommandRequest>(&request.body) {
+            ("POST", "/ProxyService/ControlStateFamilySetAndGet") => {
+                match parse_json::<ProxyControlStateFamilySetAndGetCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let command = Command::RiskSetAndGet {
+                        let command = Command::ControlStateSetAndGet {
                             family: req.family,
                             key: req.key,
                             timestamp_ms: req.timestamp_ms,
@@ -2611,15 +2611,15 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/RiskHset") | ("POST", "/RiskHset") => {
-                match parse_json::<ProxyRiskHsetCommandRequest>(&request.body) {
+            ("POST", "/ProxyService/ControlStateHset") | ("POST", "/ControlStateHset") => {
+                match parse_json::<ProxyControlStateHsetCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let ttl_ms = risk_hset_request_ttl_ms(&req);
-                        let command = Command::RiskSet {
-                            family: crate::types::RiskFamily::H,
+                        let ttl_ms = control_state_hset_request_ttl_ms(&req);
+                        let command = Command::ControlStateSet {
+                            family: crate::types::ControlStateFamily::H,
                             key: req.key.clone(),
-                            timestamp_ms: risk_hset_timestamp_ms(&req),
-                            amount: risk_hset_amount(&req),
+                            timestamp_ms: control_state_hset_timestamp_ms(&req),
+                            amount: control_state_hset_amount(&req),
                             precision_ms: req.precision_ms,
                             ttl_ms,
                         };
@@ -2635,19 +2635,19 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/RiskHquery") | ("POST", "/RiskHquery") => {
-                match parse_json::<ProxyRiskHqueryCommandRequest>(&request.body) {
-                    Ok(req) => json_response(200, &self.risk_hquery(req)),
+            ("POST", "/ProxyService/ControlStateHquery") | ("POST", "/ControlStateHquery") => {
+                match parse_json::<ProxyControlStateHqueryCommandRequest>(&request.body) {
+                    Ok(req) => json_response(200, &self.control_state_hquery(req)),
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/RiskCPCSet") | ("POST", "/RiskCPCSet") => {
-                match parse_json::<ProxyRiskCpcSetCommandRequest>(&request.body) {
+            ("POST", "/ProxyService/ControlStateCPCSet") | ("POST", "/ControlStateCPCSet") => {
+                match parse_json::<ProxyControlStateCpcSetCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let timestamp_ms = risk_cpc_set_timestamp_ms(&req);
-                        let ttl_ms = risk_cpc_set_ttl_ms(&req);
-                        let command = Command::RiskSet {
-                            family: RiskFamily::Cpc,
+                        let timestamp_ms = control_state_cpc_set_timestamp_ms(&req);
+                        let ttl_ms = control_state_cpc_set_ttl_ms(&req);
+                        let command = Command::ControlStateSet {
+                            family: ControlStateFamily::Cpc,
                             key: req.key,
                             timestamp_ms,
                             amount: req.values.len() as i64,
@@ -2666,23 +2666,23 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/RiskCPCQuery") | ("POST", "/RiskCPCQuery") => {
-                match parse_json::<ProxyRiskCpcQueryCommandRequest>(&request.body) {
-                    Ok(req) => json_response(200, &self.risk_cpc_query(req)),
+            ("POST", "/ProxyService/ControlStateCPCQuery") | ("POST", "/ControlStateCPCQuery") => {
+                match parse_json::<ProxyControlStateCpcQueryCommandRequest>(&request.body) {
+                    Ok(req) => json_response(200, &self.control_state_cpc_query(req)),
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/RiskFolSet") | ("POST", "/RiskFolSet") => {
-                match parse_json::<ProxyRiskFolSetCommandRequest>(&request.body) {
+            ("POST", "/ProxyService/ControlStateFolSet") | ("POST", "/ControlStateFolSet") => {
+                match parse_json::<ProxyControlStateFolSetCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let command = Command::RiskFolSet {
+                        let command = Command::ControlStateFolSet {
                             key: req.key,
-                            value: risk_fol_value_bytes(&req.value),
-                            occur_time_ms: risk_fol_time_ms(
+                            value: control_state_fol_value_bytes(&req.value),
+                            occur_time_ms: control_state_fol_time_ms(
                                 req.occur_time_ms,
                                 req.occur_time_seconds,
                             ),
-                            ttl_ms: risk_fol_ttl_ms(req.ttl_ms, req.ttl_seconds),
+                            ttl_ms: control_state_fol_ttl_ms(req.ttl_ms, req.ttl_seconds),
                             fol_type: req.fol_type,
                         };
                         json_response(
@@ -2697,24 +2697,24 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/RiskFolQuery") | ("POST", "/RiskFolQuery") => {
+            ("POST", "/ProxyService/ControlStateFolQuery") | ("POST", "/ControlStateFolQuery") => {
                 match parse_json::<ProxyKeyCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let response = self.table_command(req, |key| Command::RiskFolQuery { key });
-                        json_response(200, &risk_fol_query_response_json(response))
+                        let response = self.table_command(req, |key| Command::ControlStateFolQuery { key });
+                        json_response(200, &control_state_fol_query_response_json(response))
                     }
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/RiskManager") | ("POST", "/RiskManager") => {
-                match parse_json::<ProxyRiskManagerCommandRequest>(&request.body) {
+            ("POST", "/ProxyService/ControlStateManager") | ("POST", "/ControlStateManager") => {
+                match parse_json::<ProxyControlStateManagerCommandRequest>(&request.body) {
                     Ok(req) => {
                         let response = self.table_execute(ProxyTableExecuteRequest {
                             namespace: req.namespace,
                             table_name: req.table_name,
-                            command: Command::RiskManager {
+                            command: Command::ControlStateManager {
                                 key: req.key,
-                                op_type: risk_manager_op_type(req.op_type.as_ref()),
+                                op_type: control_state_manager_op_type(req.op_type.as_ref()),
                                 field_list: req
                                     .field_list
                                     .into_iter()
@@ -2730,10 +2730,10 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/RiskDebug") => {
-                match parse_json::<ProxyRiskCountCommandRequest>(&request.body) {
+            ("POST", "/ProxyService/ControlStateDebug") => {
+                match parse_json::<ProxyControlStateCountCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let command = Command::RiskDebug {
+                        let command = Command::ControlStateDebug {
                             key: req.key,
                             start_ms: req.start_ms,
                             end_ms: req.end_ms,
@@ -3514,16 +3514,16 @@ impl ProxyService {
         })
     }
 
-    fn risk_hquery(&self, request: ProxyRiskHqueryCommandRequest) -> serde_json::Value {
-        let bounds = risk_hquery_bounds(&request);
+    fn control_state_hquery(&self, request: ProxyControlStateHqueryCommandRequest) -> serde_json::Value {
+        let bounds = control_state_hquery_bounds(&request);
         let aggregator = request
             .aggregator
             .clone()
             .unwrap_or_else(|| request.htype.aggregator().to_string());
         let mut commands = Vec::with_capacity(bounds.len());
         for (start_ms, end_ms) in bounds {
-            commands.push(Command::RiskFamilyQuery {
-                family: RiskFamily::H,
+            commands.push(Command::ControlStateFamilyQuery {
+                family: ControlStateFamily::H,
                 key: request.key.clone(),
                 start_ms,
                 end_ms,
@@ -3531,7 +3531,7 @@ impl ProxyService {
             });
         }
         let expected_len = commands.len();
-        let (mut status, responses) = match self.execute_risk_query_batch(
+        let (mut status, responses) = match self.execute_control_state_query_batch(
             &request.namespace,
             &request.table_name,
             commands,
@@ -3566,12 +3566,12 @@ impl ProxyService {
         })
     }
 
-    fn risk_cpc_query(&self, request: ProxyRiskCpcQueryCommandRequest) -> serde_json::Value {
-        let bounds = risk_cpc_query_bounds(&request);
+    fn control_state_cpc_query(&self, request: ProxyControlStateCpcQueryCommandRequest) -> serde_json::Value {
+        let bounds = control_state_cpc_query_bounds(&request);
         let mut commands = Vec::with_capacity(bounds.len());
         for (start_ms, end_ms) in bounds {
-            commands.push(Command::RiskFamilyQuery {
-                family: RiskFamily::Cpc,
+            commands.push(Command::ControlStateFamilyQuery {
+                family: ControlStateFamily::Cpc,
                 key: request.key.clone(),
                 start_ms,
                 end_ms,
@@ -3579,7 +3579,7 @@ impl ProxyService {
             });
         }
         let expected_len = commands.len();
-        let (mut status, responses) = match self.execute_risk_query_batch(
+        let (mut status, responses) = match self.execute_control_state_query_batch(
             &request.namespace,
             &request.table_name,
             commands,
@@ -3620,7 +3620,7 @@ impl ProxyService {
         })
     }
 
-    fn execute_risk_query_batch(
+    fn execute_control_state_query_batch(
         &self,
         namespace: &str,
         table_name: &str,
@@ -4692,7 +4692,7 @@ impl ProxyService {
     }
 }
 
-fn risk_cpc_timestamp_ms(timestamp_ms: u64) -> u64 {
+fn control_state_cpc_timestamp_ms(timestamp_ms: u64) -> u64 {
     if timestamp_ms == 0 {
         now_ms()
     } else if timestamp_ms < 10_000_000_000 {
@@ -4890,7 +4890,7 @@ fn integer_response_json(response: ExecuteResponse, alias: &str) -> serde_json::
     value
 }
 
-fn risk_fol_query_response_json(response: ExecuteResponse) -> serde_json::Value {
+fn control_state_fol_query_response_json(response: ExecuteResponse) -> serde_json::Value {
     let result = match &response.response {
         CommandResponse::Bytes { value } => value
             .as_ref()
@@ -4904,39 +4904,39 @@ fn risk_fol_query_response_json(response: ExecuteResponse) -> serde_json::Value 
     value
 }
 
-fn risk_hset_timestamp_ms(request: &ProxyRiskHsetCommandRequest) -> u64 {
+fn control_state_hset_timestamp_ms(request: &ProxyControlStateHsetCommandRequest) -> u64 {
     if request.timestamp_ms != 0 {
-        return risk_cpc_timestamp_ms(request.timestamp_ms);
+        return control_state_cpc_timestamp_ms(request.timestamp_ms);
     }
-    risk_cpc_timestamp_ms(request.occur_time_seconds)
+    control_state_cpc_timestamp_ms(request.occur_time_seconds)
 }
 
-fn risk_cpc_set_timestamp_ms(request: &ProxyRiskCpcSetCommandRequest) -> u64 {
+fn control_state_cpc_set_timestamp_ms(request: &ProxyControlStateCpcSetCommandRequest) -> u64 {
     if request.timestamp_ms != 0 {
-        return risk_cpc_timestamp_ms(request.timestamp_ms);
+        return control_state_cpc_timestamp_ms(request.timestamp_ms);
     }
-    risk_cpc_timestamp_ms(request.occur_time_seconds)
+    control_state_cpc_timestamp_ms(request.occur_time_seconds)
 }
 
-fn risk_hset_ttl_ms(ttl_seconds: u64) -> Option<u64> {
+fn control_state_hset_ttl_ms(ttl_seconds: u64) -> Option<u64> {
     (ttl_seconds > 0).then(|| ttl_seconds.saturating_mul(1_000))
 }
 
-fn risk_hset_request_ttl_ms(request: &ProxyRiskHsetCommandRequest) -> Option<u64> {
+fn control_state_hset_request_ttl_ms(request: &ProxyControlStateHsetCommandRequest) -> Option<u64> {
     if request.ttl_ms != 0 {
         return Some(request.ttl_ms);
     }
-    risk_hset_ttl_ms(request.ttl_seconds)
+    control_state_hset_ttl_ms(request.ttl_seconds)
 }
 
-fn risk_cpc_set_ttl_ms(request: &ProxyRiskCpcSetCommandRequest) -> Option<u64> {
+fn control_state_cpc_set_ttl_ms(request: &ProxyControlStateCpcSetCommandRequest) -> Option<u64> {
     if request.ttl_ms != 0 {
         return Some(request.ttl_ms);
     }
-    risk_hset_ttl_ms(request.ttl_seconds)
+    control_state_hset_ttl_ms(request.ttl_seconds)
 }
 
-fn risk_hset_amount(request: &ProxyRiskHsetCommandRequest) -> i64 {
+fn control_state_hset_amount(request: &ProxyControlStateHsetCommandRequest) -> i64 {
     if request.amount != 0 {
         return request.amount;
     }
@@ -4948,14 +4948,14 @@ fn risk_hset_amount(request: &ProxyRiskHsetCommandRequest) -> i64 {
             .as_str()
             .and_then(|text| text.trim().parse::<i64>().ok())
             .unwrap_or_else(|| {
-                if matches!(request.htype, ProxyRiskHType::Count) {
+                if matches!(request.htype, ProxyControlStateHType::Count) {
                     1
                 } else {
                     0
                 }
             }),
         None => {
-            if matches!(request.htype, ProxyRiskHType::Count) {
+            if matches!(request.htype, ProxyControlStateHType::Count) {
                 1
             } else {
                 0
@@ -4964,7 +4964,7 @@ fn risk_hset_amount(request: &ProxyRiskHsetCommandRequest) -> i64 {
     }
 }
 
-fn risk_fol_value_bytes(value: &serde_json::Value) -> Vec<u8> {
+fn control_state_fol_value_bytes(value: &serde_json::Value) -> Vec<u8> {
     if let Some(text) = value.as_str() {
         return text.as_bytes().to_vec();
     }
@@ -4981,14 +4981,14 @@ fn risk_fol_value_bytes(value: &serde_json::Value) -> Vec<u8> {
     }
 }
 
-fn risk_fol_time_ms(occur_time_ms: u64, occur_time_seconds: u64) -> u64 {
+fn control_state_fol_time_ms(occur_time_ms: u64, occur_time_seconds: u64) -> u64 {
     if occur_time_ms != 0 {
-        return risk_cpc_timestamp_ms(occur_time_ms);
+        return control_state_cpc_timestamp_ms(occur_time_ms);
     }
-    risk_cpc_timestamp_ms(occur_time_seconds)
+    control_state_cpc_timestamp_ms(occur_time_seconds)
 }
 
-fn risk_fol_ttl_ms(ttl_ms: u64, ttl_seconds: u64) -> u64 {
+fn control_state_fol_ttl_ms(ttl_ms: u64, ttl_seconds: u64) -> u64 {
     if ttl_ms != 0 {
         ttl_ms
     } else {
@@ -4996,7 +4996,7 @@ fn risk_fol_ttl_ms(ttl_ms: u64, ttl_seconds: u64) -> u64 {
     }
 }
 
-fn risk_manager_op_type(value: Option<&serde_json::Value>) -> Option<String> {
+fn control_state_manager_op_type(value: Option<&serde_json::Value>) -> Option<String> {
     match value {
         Some(serde_json::Value::Number(number)) => number.as_i64().map(|value| value.to_string()),
         Some(serde_json::Value::String(value)) if !value.trim().is_empty() => {
@@ -5006,21 +5006,21 @@ fn risk_manager_op_type(value: Option<&serde_json::Value>) -> Option<String> {
     }
 }
 
-fn risk_cpc_query_bounds(request: &ProxyRiskCpcQueryCommandRequest) -> Vec<(u64, u64)> {
+fn control_state_cpc_query_bounds(request: &ProxyControlStateCpcQueryCommandRequest) -> Vec<(u64, u64)> {
     if let (Some(start_ms), Some(end_ms)) = (request.start_ms, request.end_ms) {
         return vec![(start_ms, end_ms)];
     }
-    risk_window_bounds(&request.windows)
+    control_state_window_bounds(&request.windows)
 }
 
-fn risk_hquery_bounds(request: &ProxyRiskHqueryCommandRequest) -> Vec<(u64, u64)> {
+fn control_state_hquery_bounds(request: &ProxyControlStateHqueryCommandRequest) -> Vec<(u64, u64)> {
     if let (Some(start_ms), Some(end_ms)) = (request.start_ms, request.end_ms) {
         return vec![(start_ms, end_ms)];
     }
-    risk_window_bounds(&request.windows)
+    control_state_window_bounds(&request.windows)
 }
 
-fn risk_window_bounds(windows: &[ProxyRiskWindow]) -> Vec<(u64, u64)> {
+fn control_state_window_bounds(windows: &[ProxyControlStateWindow]) -> Vec<(u64, u64)> {
     if windows.is_empty() {
         return vec![(0, u64::MAX)];
     }
@@ -6368,11 +6368,11 @@ mod tests {
         );
         assert!(
             command_alias(
-                "/ProxyService/RiskHset",
-                serde_json::to_vec(&ProxyRiskHsetCommandRequest {
+                "/ProxyService/ControlStateHset",
+                serde_json::to_vec(&ProxyControlStateHsetCommandRequest {
                     namespace: "ns".to_string(),
                     table_name: "tbl".to_string(),
-                    key: "cpp-proxy-risk".to_string(),
+                    key: "cpp-proxy-control_state".to_string(),
                     timestamp_ms: 10,
                     amount: 5,
                     value: None,
@@ -6380,7 +6380,7 @@ mod tests {
                     ttl_ms: 0,
                     ttl_seconds: 0,
                     precision_ms: None,
-                    htype: ProxyRiskHType::Count,
+                    htype: ProxyControlStateHType::Count,
                 })
                 .unwrap(),
             )

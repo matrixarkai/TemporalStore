@@ -53,8 +53,8 @@ Status Bcache2ThriftService::CheckAccountScope(const std::string& namespace_name
 
 bool Bcache2ThriftService::IsWriteMethod(const std::string& method_name) const {
     return method_name == "Set" || method_name == "HMSet" || method_name == "FeatureAdd" ||
-           method_name == "RiskHset" || method_name == "RiskFolSet" ||
-           method_name == "RiskCPCSet" || method_name == "RiskManager";
+           method_name == "ControlStateHset" || method_name == "ControlStateFolSet" ||
+           method_name == "ControlStateCPCSet" || method_name == "ControlStateManager";
 }
 
 namespace {
@@ -120,13 +120,13 @@ bool Bcache2ThriftService::ParseBaseThrift(butil::IOBuf* source, const std::stri
             }
             PARSE_AND_CONTINUE(thrift::GetRequest, "Get");
             PARSE_AND_CONTINUE(thrift::SetRequest, "Set");
-            PARSE_AND_CONTINUE(thrift::RiskHsetRequest, "RiskHset");
-            PARSE_AND_CONTINUE(thrift::RiskHqueryRequest, "RiskHquery");
-            PARSE_AND_CONTINUE(thrift::RiskFolSetRequest, "RiskFolSet");
-            PARSE_AND_CONTINUE(thrift::RiskCPCQueryRequest, "RiskCPCQuery");
-            PARSE_AND_CONTINUE(thrift::RiskCPCSetRequest, "RiskCPCSet");
-            PARSE_AND_CONTINUE(thrift::RiskFolQueryRequest, "RiskFolQuery");
-            PARSE_AND_CONTINUE(thrift::RiskManagerRequest, "RiskManager");
+            PARSE_AND_CONTINUE(thrift::ControlStateHsetRequest, "ControlStateHset");
+            PARSE_AND_CONTINUE(thrift::ControlStateHqueryRequest, "ControlStateHquery");
+            PARSE_AND_CONTINUE(thrift::ControlStateFolSetRequest, "ControlStateFolSet");
+            PARSE_AND_CONTINUE(thrift::ControlStateCPCQueryRequest, "ControlStateCPCQuery");
+            PARSE_AND_CONTINUE(thrift::ControlStateCPCSetRequest, "ControlStateCPCSet");
+            PARSE_AND_CONTINUE(thrift::ControlStateFolQueryRequest, "ControlStateFolQuery");
+            PARSE_AND_CONTINUE(thrift::ControlStateManagerRequest, "ControlStateManager");
             PARSE_AND_CONTINUE(thrift::HMGetRequest, "HMGet");
             PARSE_AND_CONTINUE(thrift::HMSetRequest, "HMSet");
             PARSE_AND_CONTINUE(thrift::HGetAllRequest, "HGetAll");
@@ -159,13 +159,13 @@ void Bcache2ThriftService::ProcessThriftFramedRequest(brpc::Controller* ctrl,
         REGISTER_HANDLER("Set", thrift::SetRequest, thrift::SetResponse);
         REGISTER_HANDLER("FeatureAdd", thrift::FeatureAddRequest, thrift::FeatureAddResponse);
         REGISTER_HANDLER("FeatureQuery", thrift::FeatureQueryRequest, thrift::FeatureQueryResponse);
-        REGISTER_HANDLER("RiskHset", thrift::RiskHsetRequest, thrift::RiskCommonResponse);
-        REGISTER_HANDLER("RiskHquery", thrift::RiskHqueryRequest, thrift::RiskHqueryResponse);
-        REGISTER_HANDLER("RiskFolSet", thrift::RiskFolSetRequest, thrift::RiskCommonResponse);
-        REGISTER_HANDLER("RiskFolQuery", thrift::RiskFolQueryRequest, thrift::RiskFolQueryResponse);
-        REGISTER_HANDLER("RiskCPCSet", thrift::RiskCPCSetRequest, thrift::RiskCommonResponse);
-        REGISTER_HANDLER("RiskCPCQuery", thrift::RiskCPCQueryRequest, thrift::RiskCPCQueryResponse);
-        REGISTER_HANDLER("RiskManager", thrift::RiskManagerRequest, thrift::RiskManagerResponse);
+        REGISTER_HANDLER("ControlStateHset", thrift::ControlStateHsetRequest, thrift::ControlStateCommonResponse);
+        REGISTER_HANDLER("ControlStateHquery", thrift::ControlStateHqueryRequest, thrift::ControlStateHqueryResponse);
+        REGISTER_HANDLER("ControlStateFolSet", thrift::ControlStateFolSetRequest, thrift::ControlStateCommonResponse);
+        REGISTER_HANDLER("ControlStateFolQuery", thrift::ControlStateFolQueryRequest, thrift::ControlStateFolQueryResponse);
+        REGISTER_HANDLER("ControlStateCPCSet", thrift::ControlStateCPCSetRequest, thrift::ControlStateCommonResponse);
+        REGISTER_HANDLER("ControlStateCPCQuery", thrift::ControlStateCPCQueryRequest, thrift::ControlStateCPCQueryResponse);
+        REGISTER_HANDLER("ControlStateManager", thrift::ControlStateManagerRequest, thrift::ControlStateManagerResponse);
         REGISTER_HANDLER("HMGet", thrift::HMGetRequest, thrift::HMGetResponse);
         REGISTER_HANDLER("HMSet", thrift::HMSetRequest, thrift::HMSetResponse);
         REGISTER_HANDLER("HGetAll", thrift::HGetAllRequest, thrift::HGetAllResponse);

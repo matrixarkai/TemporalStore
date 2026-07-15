@@ -211,11 +211,11 @@ public final class TemporalStoreProxyClient implements AutoCloseable {
         return features;
     }
 
-    public void riskIncrement(
+    public void control_stateIncrement(
             String key,
             long amount,
             long ttlSeconds,
-            TemporalStoreClient.RiskPrecision precision,
+            TemporalStoreClient.ControlStatePrecision precision,
             String uuid,
             long occurTimeSeconds) {
         Map<String, Object> body = keyBody(key);
@@ -224,12 +224,12 @@ public final class TemporalStoreProxyClient implements AutoCloseable {
         body.put("precision", precision.ordinal());
         body.put("uuid", uuid == null ? "" : uuid);
         body.put("occur_time_seconds", occurTimeSeconds);
-        post("/ProxyService/RiskIncrement", body);
+        post("/ProxyService/ControlStateIncrement", body);
     }
 
-    public long riskCount(
+    public long control_stateCount(
             String key,
-            TemporalStoreClient.RiskPrecision precision,
+            TemporalStoreClient.ControlStatePrecision precision,
             long windowStart,
             long windowEnd,
             TemporalStoreClient.WindowUnit windowUnit) {
@@ -238,7 +238,7 @@ public final class TemporalStoreProxyClient implements AutoCloseable {
         body.put("window_start", windowStart);
         body.put("window_end", windowEnd);
         body.put("window_unit", windowUnit.ordinal());
-        JsonNode data = post("/ProxyService/RiskCount", body);
+        JsonNode data = post("/ProxyService/ControlStateCount", body);
         return data.path("count").asLong();
     }
 

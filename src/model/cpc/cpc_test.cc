@@ -17,9 +17,9 @@
 namespace bcache2 {
 namespace swig {
 
-class RiskCPCModuleTest : public ::testing::Test {};
+class ControlStateCPCModuleTest : public ::testing::Test {};
 
-TEST_F(RiskCPCModuleTest, RiskCPCTest) {
+TEST_F(ControlStateCPCModuleTest, ControlStateCPCTest) {
     // 该值越大，耗时越大，越精确,占用的内存也越大，2的1g_k次方字节
     const int lg_k = 12;
     datasketches::cpc_sketch sketch1(lg_k);

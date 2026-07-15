@@ -59,5 +59,5 @@ The benchmark retries until success, so final errors remain zero, but the retry 
 2. Add lag-aware routing: avoid routing replica-eligible reads to secondaries whose replay gap is non-zero or whose slot is not visible yet.
 3. Add optional primary fallback for strict online reads: if a secondary returns `slot not found` or is behind the requested consistency point, retry primary immediately instead of waiting in 20 ms retry sleeps.
 4. Split benchmark metrics: report first-attempt success, retry count, fallback count, and final latency separately.
-5. For sequence/risk workloads, run a secondary warm-up/catch-up barrier before measuring steady-state secondary query latency.
+5. For sequence/control_state workloads, run a secondary warm-up/catch-up barrier before measuring steady-state secondary query latency.
 

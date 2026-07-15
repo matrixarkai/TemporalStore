@@ -38,7 +38,7 @@ App -> proxy SDK -> TemporalStore HTTP proxy -> direct native client -> data ser
 Use proxy SDKs when:
 
 - customers want zero native dependencies;
-- Python/Java runtime loading of the native library is risky;
+- Python/Java runtime loading of the native library is control_statey;
 - multi-tenant auth, quotas, request logging, and policy enforcement should be centralized;
 - an edge/sidecar proxy is operationally easier than shipping native clients everywhere;
 - minor extra network hop latency is acceptable.
@@ -116,12 +116,12 @@ Endpoints:
 | `POST /ProxyService/SequenceQuery` | query typed sequence rows |
 | `POST /ProxyService/IpsAdd` | add IPS instance |
 | `POST /ProxyService/IpsQueryLast` | query IPS last instances |
-| `POST /ProxyService/RiskIncrement` | increment risk counter |
-| `POST /ProxyService/RiskCount` | query risk window counter |
-| `POST /ProxyService/RiskHset` | set timestamped risk value |
-| `POST /ProxyService/RiskFolSet` | set first-or-last risk value |
-| `POST /ProxyService/RiskFolQuery` | query first-or-last risk value |
-| `POST /ProxyService/RiskManager` | query risk manager entries |
+| `POST /ProxyService/ControlStateIncrement` | increment control_state counter |
+| `POST /ProxyService/ControlStateCount` | query control_state window counter |
+| `POST /ProxyService/ControlStateHset` | set timestamped control_state value |
+| `POST /ProxyService/ControlStateFolSet` | set first-or-last control_state value |
+| `POST /ProxyService/ControlStateFolQuery` | query first-or-last control_state value |
+| `POST /ProxyService/ControlStateManager` | query control_state manager entries |
 
 ## Direct vs Proxy Tradeoff
 

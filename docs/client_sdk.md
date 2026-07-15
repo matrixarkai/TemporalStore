@@ -184,7 +184,7 @@ The proxy SDKs use the same logical capability as the direct SDKs:
 - FEATURE: raw timestamped feature points with filters.
 - SEQUENCE FEATURE: typed long-sequence rows with filters.
 - IPS: add/query recent instances.
-- RISK: increment and count over a time window.
+- CONTROL_STATE: increment and count over a time window.
 
 Current proxy SDK entry points:
 

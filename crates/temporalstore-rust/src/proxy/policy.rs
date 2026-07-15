@@ -88,9 +88,9 @@ mod tests {
             },
         ];
         assert_eq!(proxy_policy_rejection(&options, &commands), None);
-        commands.push(Command::RiskFamilyQuery {
-            family: crate::types::RiskFamily::H,
-            key: "risk".to_string(),
+        commands.push(Command::ControlStateFamilyQuery {
+            family: crate::types::ControlStateFamily::H,
+            key: "control_state".to_string(),
             start_ms: 1,
             end_ms: 2,
             aggregator: "avg".to_string(),

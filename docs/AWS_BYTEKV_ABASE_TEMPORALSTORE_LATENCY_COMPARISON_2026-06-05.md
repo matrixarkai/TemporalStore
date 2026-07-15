@@ -83,7 +83,7 @@ For plain KV on this cluster:
 For TemporalStore's target use case:
 
 - TemporalAggregate queries are fast after data is ingested: p99 around `4-6 ms` in baseline primary/secondary tests.
-- TemporalStore gives one online serving engine for raw temporal events, long sequence features, frequency/risk windows, and aggregate queries. ABase and ByteKV do not expose this same native temporal aggregate/query model in the measured tests.
+- TemporalStore gives one online serving engine for raw temporal events, long sequence features, frequency/control_state windows, and aggregate queries. ABase and ByteKV do not expose this same native temporal aggregate/query model in the measured tests.
 - Write-side latency is currently dominated by durable shared storage. If we want TemporalStore to compete on plain KV write latency, we need to test local primary-pull mode, async storage, larger instances, or NVMe-backed durability separately.
 
 ## Current Ranking From These Numbers

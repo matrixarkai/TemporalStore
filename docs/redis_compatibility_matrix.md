@@ -24,14 +24,14 @@ Current bridge status values:
 | TTL | `EXPIRE`, `TTL` | required | wired | First release keeps only minimal key lifetime support. Restart/failover TTL durability still belongs to the production gate. |
 | Hash | `HSET`, `HGET`, `HGETALL`, `HDEL`, `HEXISTS`, `HLEN` | required | wired | First release keeps only minimal hash commands. Hash counters, hash scans, key/val listing helpers, and float increments are not public APIs. |
 | Feature + FeatureAggregate | `FAPPEND`, `FAPPENDPOLICY`, `FQUERY`, `FQUERYFILTER`, `FQUERYFILTERSTR`, `FAGG` | required | wired | TemporalStore feature APIs are exposed as explicit commands rather than pretending to be generic Redis collections. Feature stores timestamped observations; FeatureAggregate computes mature exact serving aggregates over those observations: `count`, `sum`, `min`, `max`, `avg`, `first`, and `latest`. High-cardinality sketches such as `distinct_count`, `top_k`, `heavy_hitters`, `hll`, histograms, and percentiles are intentionally gated. |
-| Control State | `CONTROLINCR`, `CONTROLINCROPT`, `CONTROLCHANGE`, `CONTROLCOUNT`, `CONTROLQUERY`, `CONTROLDETAIL`, `CONTROLHSET` | required | wired | Control State stores fast-changing serving signals such as counters, caps, quotas, pacing, eligibility, suppression, and risk-control state. Legacy `RISKINCR`, `RISKINCROPT`, `RISKCHANGE`, `RISKCOUNT`, `RISKQUERY`, `RISKDETAIL`, `RISKHSET`, `HCHANGE`, `HQUERY`, and `HSETANDGET` remain compatibility aliases during migration. |
+| Control State | `CONTROLINCR`, `CONTROLINCROPT`, `CONTROLCHANGE`, `CONTROLCOUNT`, `CONTROLQUERY`, `CONTROLDETAIL`, `CONTROLHSET` | required | wired | Control State stores fast-changing serving signals such as counters, caps, quotas, pacing, eligibility, suppression, and control state. Legacy `CONTROL_STATEINCR`, `CONTROL_STATEINCROPT`, `CONTROL_STATECHANGE`, `CONTROL_STATECOUNT`, `CONTROL_STATEQUERY`, `CONTROL_STATEDETAIL`, `CONTROL_STATEHSET`, `HCHANGE`, `HQUERY`, and `HSETANDGET` remain compatibility aliases during migration. |
 | Set/List/ZSet clone APIs | `SADD`, `SREM`, `SMEMBERS`, `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `ZADD`, `ZRANGE`, `ZRANGEBYSCORE`, and related collection commands | deferred | private/unsupported in open-source surface | These compatibility handlers may exist internally, but open-source production builds do not advertise or allow them. Context/feature/frequency use native capability APIs instead of encoded Redis collection clones. |
 | Narrow hash scan | `HSCAN` | excluded | unsupported in open-source surface | Use `HGETALL` for the minimal hash read path. Broad keyspace `SCAN`, `SSCAN`, and `ZSCAN` are not part of the open-source production surface. |
 | Transactions | `MULTI`, `EXEC`, `DISCARD`, `WATCH` | planned | unsupported | Start same-partition only or return explicit unsupported errors. |
 | Cluster | `CLUSTER SLOTS`, `CLUSTER NODES`, `MOVED`, `ASK` | planned | unsupported | Required only if exposing Redis Cluster wire compatibility. Proxy-hidden sharding can avoid this initially. |
 | Pub/Sub | `PUBLISH`, `SUBSCRIBE`, `PSUBSCRIBE` | deferred | unsupported | Separate serving plane; not required for KV migration. |
 | Streams | `XADD`, `XREAD`, `XGROUP`, `XACK` | deferred | unsupported | Separate from TemporalStore ingestion queues. |
-| Scripting | `EVAL`, `EVALSHA`, functions | deferred | unsupported | High risk; defer until transaction semantics are stable. |
+| Scripting | `EVAL`, `EVALSHA`, functions | deferred | unsupported | High control_state; defer until transaction semantics are stable. |
 | Modules/advanced | GEO, HyperLogLog, bitmaps, module commands | deferred | unsupported | Do not claim full Redis for these until implemented and tested. Common GEO/HyperLogLog/bitmap probes are registered to return deterministic unsupported errors. |
 
 ## Current Bridge Caveat
@@ -47,9 +47,9 @@ The TemporalStore native Redis bridge is production-ready only for the documente
 - TTL: `EXPIRE`, `TTL`
 - Hash minimal: `HSET`, `HGET`, `HDEL`, `HEXISTS`, `HLEN`, `HGETALL`
 - Feature + FeatureAggregate: `FAPPEND`, `FAPPENDPOLICY`, `FQUERY`, `FQUERYFILTER`, `FQUERYFILTERSTR`, `FAGG`
-- Control State: `CONTROLINCR`, `CONTROLINCROPT`, `CONTROLCHANGE`, `CONTROLCOUNT`, `CONTROLQUERY`, `CONTROLDETAIL`, `CONTROLHSET`; legacy aliases `RISKINCR`, `RISKINCROPT`, `RISKCHANGE`, `RISKCOUNT`, `RISKQUERY`, `RISKDETAIL`, `RISKHSET`, `HCHANGE`, `HQUERY`, `HSETANDGET`
+- Control State: `CONTROLINCR`, `CONTROLINCROPT`, `CONTROLCHANGE`, `CONTROLCOUNT`, `CONTROLQUERY`, `CONTROLDETAIL`, `CONTROLHSET`; legacy aliases `CONTROL_STATEINCR`, `CONTROL_STATEINCROPT`, `CONTROL_STATECHANGE`, `CONTROL_STATECOUNT`, `CONTROL_STATEQUERY`, `CONTROL_STATEDETAIL`, `CONTROL_STATEHSET`, `HCHANGE`, `HQUERY`, `HSETANDGET`
 
-The C++ Redis bridge exposes the 16-command minimal string/hash/TTL subset in open-source builds and reports `COMMAND COUNT=16`; Feature and Control State commands are Rust bridge APIs. `CONTROL*` is the preferred spelling for the first-release serving-signal surface; `RISK*` command names remain compatibility aliases.
+The C++ Redis bridge exposes the 16-command minimal string/hash/TTL subset in open-source builds and reports `COMMAND COUNT=16`; Feature and Control State commands are Rust bridge APIs. `CONTROL*` is the preferred spelling for the first-release serving-signal surface; `CONTROL_STATE*` command names remain compatibility aliases.
 
 `HSCAN` is not part of the first-release open-source Redis surface; use `HGETALL` for the minimal hash read path. Broad keyspace scan support remains excluded.
 

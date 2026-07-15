@@ -183,7 +183,7 @@ evidence gate for ops and scale. It validates:
   data-node process roles
 - distributed Raft load coverage for lag, catch-up, election, membership, and
   secondary reads
-- unified C++/Rust workload replay corpus coverage for Feature, IPS, Risk,
+- unified C++/Rust workload replay corpus coverage for Feature, IPS, ControlState,
   Redis, Context, and admin APIs
 - a Docker/AWS SLO report contract covering metaserver, proxy, client,
   data-node, Raft failover, storage pressure, cache pressure, proxy convergence,

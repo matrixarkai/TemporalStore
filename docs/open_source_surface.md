@@ -12,7 +12,7 @@ The open-source build keeps:
   and compression events.
 - Feature observations and FeatureAggregate serving-time aggregates.
 - Control State for fast-changing serving signals such as counters, caps,
-  quotas, pacing, eligibility, suppression, and risk-control state.
+  quotas, pacing, eligibility, suppression, and control state.
 
 Only the capabilities listed above are public in the first open-source release. Context audit/replay/debug capabilities are not part of the first-release open-source surface. Other internal capabilities are intentionally omitted from docs, manifests, and compatibility corpora until they are ready for a future public release.
 
@@ -22,8 +22,8 @@ aggregate set is exact and mature: `count`, `sum`, `min`, `max`, `avg`,
 `distinct_count`, `top_k`, `heavy_hitters`, `hll`, histograms, and percentiles
 are gated until they are production-ready.
 
-Control State is the preferred public name for the former Risk/frequency-cap
-surface. `CONTROL*` commands are the public spelling; legacy `RISK*` commands
+Control State is the preferred public name for the former ControlState/frequency-cap
+surface. `CONTROL*` commands are the public spelling; legacy `CONTROL_STATE*` commands
 remain compatibility aliases during migration.
 
 The open-source build excludes non-public/internal capabilities and extension

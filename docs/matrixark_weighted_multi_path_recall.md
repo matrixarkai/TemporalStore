@@ -188,7 +188,7 @@ fallback.
 
 ```json
 {
-  "query": "GPU approval risk ledger",
+  "query": "GPU approval control_state ledger",
   "scope": {"user_id": "u1", "session_id": "s1"},
   "max_context_tokens": 6,
   "ranking": {

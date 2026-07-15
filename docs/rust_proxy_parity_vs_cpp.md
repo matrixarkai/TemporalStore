@@ -25,7 +25,7 @@ The Rust proxy accepts the C++-style `ProxyService` routes below and maps them t
 | `/ProxyService/SAdd` | `SetAdd` |
 | `/ProxyService/SMembers` | `SetMembers` |
 | `/ProxyService/FeatureAdd` | `FeatureAppend` |
-| `/ProxyService/RiskHset` | `RiskSet` |
+| `/ProxyService/ControlStateHset` | `ControlStateSet` |
 
 Generic table command routes remain available:
 

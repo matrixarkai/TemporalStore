@@ -251,7 +251,7 @@ Verbose query-understanding debug object emitted by Rust for the main retrieval:
         "status:1"
       ],
       "passes_secondary_index_prefilter": true,
-      "text": "Customer checkout failed. Payment risk score spiked. The proxy retried safely and support asked for root cause."
+      "text": "Customer checkout failed. Payment control_state score spiked. The proxy retried safely and support asked for root cause."
     }
   ],
   "selected_refs": [

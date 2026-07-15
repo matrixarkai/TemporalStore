@@ -140,14 +140,14 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    snprintf(key, sizeof(key), "%s:risk", prefix);
+    snprintf(key, sizeof(key), "%s:control_state", prefix);
     for (int i = 0; i < 3; ++i) {
         char uuid[256];
-        snprintf(uuid, sizeof(uuid), "%s:risk_uuid:%d", prefix, i);
-        if (!check(temporalstore_risk_increment(client, key, 1, 24 * 3600,
-                                                TEMPORALSTORE_RISK_ONE_MINUTE, uuid, 0,
+        snprintf(uuid, sizeof(uuid), "%s:control_state_uuid:%d", prefix, i);
+        if (!check(temporalstore_control_state_increment(client, key, 1, 24 * 3600,
+                                                TEMPORALSTORE_CONTROL_STATE_ONE_MINUTE, uuid, 0,
                                                 &error_message),
-                   &error_message, "risk increment")) {
+                   &error_message, "control_state increment")) {
             temporalstore_ips_feature_array_free(&ips_features);
             temporalstore_sequence_feature_row_array_free(&queried_rows);
             temporalstore_string_array_free(&campaigns);
@@ -158,10 +158,10 @@ int main(int argc, char** argv) {
         }
     }
 
-    int64_t risk_count = 0;
-    if (!check(temporalstore_risk_count(client, key, TEMPORALSTORE_RISK_ONE_MINUTE, -1, 0,
-                                        TEMPORALSTORE_WINDOW_HOUR, &risk_count, &error_message),
-               &error_message, "risk count")) {
+    int64_t control_state_count = 0;
+    if (!check(temporalstore_control_state_count(client, key, TEMPORALSTORE_CONTROL_STATE_ONE_MINUTE, -1, 0,
+                                        TEMPORALSTORE_WINDOW_HOUR, &control_state_count, &error_message),
+               &error_message, "control_state count")) {
         temporalstore_ips_feature_array_free(&ips_features);
         temporalstore_sequence_feature_row_array_free(&queried_rows);
         temporalstore_string_array_free(&campaigns);
@@ -176,7 +176,7 @@ int main(int argc, char** argv) {
     printf("campaigns=%zu\n", campaigns.count);
     printf("sequence_rows=%zu\n", queried_rows.count);
     printf("ips_features=%zu\n", ips_features.count);
-    printf("risk_count=%lld\n", (long long)risk_count);
+    printf("control_state_count=%lld\n", (long long)control_state_count);
     printf("PASS customer C client example\n");
 
     temporalstore_ips_feature_array_free(&ips_features);

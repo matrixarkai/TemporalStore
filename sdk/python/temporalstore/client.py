@@ -31,7 +31,7 @@ class FeatureWritePolicy(IntEnum):
     UPDATE = 3
 
 
-class RiskPrecision(IntEnum):
+class ControlStatePrecision(IntEnum):
     ONE_SECOND = 0
     FIVE_SECONDS = 1
     TEN_SECONDS = 2
@@ -511,7 +511,7 @@ class _Native:
             ctypes.POINTER(ctypes.c_void_p),
         ]
         lib.temporalstore_query_ips_last_instances.restype = ctypes.c_int
-        lib.temporalstore_risk_increment.argtypes = [
+        lib.temporalstore_control_state_increment.argtypes = [
             ctypes.c_void_p,
             ctypes.c_char_p,
             ctypes.c_int64,
@@ -521,8 +521,8 @@ class _Native:
             ctypes.c_uint64,
             ctypes.POINTER(ctypes.c_void_p),
         ]
-        lib.temporalstore_risk_increment.restype = ctypes.c_int
-        lib.temporalstore_risk_count.argtypes = [
+        lib.temporalstore_control_state_increment.restype = ctypes.c_int
+        lib.temporalstore_control_state_count.argtypes = [
             ctypes.c_void_p,
             ctypes.c_char_p,
             ctypes.c_int,
@@ -532,7 +532,7 @@ class _Native:
             ctypes.POINTER(ctypes.c_int64),
             ctypes.POINTER(ctypes.c_void_p),
         ]
-        lib.temporalstore_risk_count.restype = ctypes.c_int
+        lib.temporalstore_control_state_count.restype = ctypes.c_int
 
     def check(self, code: int, error: ctypes.c_void_p) -> None:
         if code == 0:
@@ -1151,17 +1151,17 @@ class Client:
         finally:
             self._native.lib.temporalstore_ips_feature_array_free(ctypes.byref(out))
 
-    def risk_increment(
+    def control_state_increment(
         self,
         key: str,
         amount: int = 1,
         ttl_seconds: int = 24 * 3600,
-        precision: RiskPrecision = RiskPrecision.ONE_MINUTE,
+        precision: ControlStatePrecision = ControlStatePrecision.ONE_MINUTE,
         uuid: str = "",
         occur_time_seconds: int = 0,
     ) -> None:
         error = ctypes.c_void_p()
-        code = self._native.lib.temporalstore_risk_increment(
+        code = self._native.lib.temporalstore_control_state_increment(
             self._handle,
             _encode(key),
             amount,
@@ -1173,17 +1173,17 @@ class Client:
         )
         self._native.check(code, error)
 
-    def risk_count(
+    def control_state_count(
         self,
         key: str,
-        precision: RiskPrecision = RiskPrecision.ONE_MINUTE,
+        precision: ControlStatePrecision = ControlStatePrecision.ONE_MINUTE,
         window_start: int = -1,
         window_end: int = 0,
         window_unit: WindowUnit = WindowUnit.HOUR,
     ) -> int:
         value = ctypes.c_int64()
         error = ctypes.c_void_p()
-        code = self._native.lib.temporalstore_risk_count(
+        code = self._native.lib.temporalstore_control_state_count(
             self._handle,
             _encode(key),
             int(precision),

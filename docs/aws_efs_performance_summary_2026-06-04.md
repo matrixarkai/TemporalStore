@@ -144,7 +144,7 @@ Interpretation:
 
 1. **Write path bottleneck:** EFS-backed durable writes are the limiting side on this small cluster, around `10-14 ms` avg and `20-30 ms` p99.
 2. **Read/query path strength:** In-memory/indexed aggregate queries are much faster, with low-thread p99 mostly sub-millisecond to a few milliseconds.
-3. **Temporal features:** Sequence windows and TemporalAggregate queries show the strongest product fit: high-cardinality online feature serving, risk/fraud windows, frequency caps, and filtered temporal state.
+3. **Temporal features:** Sequence windows and TemporalAggregate queries show the strongest product fit: high-cardinality online feature serving, control_state/fraud windows, frequency caps, and filtered temporal state.
 4. **Secondary reads:** Secondary reads worked in these runs, but should still be treated as eventually consistent until continuous-lag testing under concurrent writes is stronger.
 5. **Next benchmark:** Run a true mixed benchmark process that writes and polls secondary at the same time, plus a restart/cold-read test to isolate SSD cache versus EFS.
 

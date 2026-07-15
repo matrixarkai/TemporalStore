@@ -12,11 +12,11 @@
 #include "common/time.h"
 
 namespace bcache2 {
-namespace risk {
+namespace control_state {
 
 const int64_t NeedLogLongCostNs = 100 * 1000;  // 100us
 
-class RiskTimerLogger {
+class ControlStateTimerLogger {
  public:
     struct CheckPoint {
         absl::string_view name;
@@ -25,12 +25,12 @@ class RiskTimerLogger {
         CheckPoint(const absl::string_view& name, uint64_t time_point_ns)
             : name(name), time_point_ns(time_point_ns) {}
     };
-    RiskTimerLogger(const absl::string_view& method, const absl::string_view& key, int operType)
+    ControlStateTimerLogger(const absl::string_view& method, const absl::string_view& key, int operType)
         : method_(method), key_(key), oper_type_(operType) {
         logThresholdNs_ = NeedLogLongCostNs;
         AddCheckPoint("start");
     }
-    RiskTimerLogger(const absl::string_view& method, const absl::string_view& key,
+    ControlStateTimerLogger(const absl::string_view& method, const absl::string_view& key,
         int operType, int64_t logThresholdNs)
         : method_(method), key_(key), oper_type_(operType), logThresholdNs_(logThresholdNs) {
         AddCheckPoint("start");
@@ -39,11 +39,11 @@ class RiskTimerLogger {
         events_.emplace_back(CheckPoint(name, bcache2::GetCurrentTimeInNs()));
         return events_.size() - 1;;
     }
-    ~RiskTimerLogger() {
+    ~ControlStateTimerLogger() {
         int64_t end = bcache2::GetCurrentTimeInNs();
         if (end - static_cast<int64_t>(events_[0].time_point_ns) > logThresholdNs_) {
             events_.emplace_back(CheckPoint("end", end));
-            LOG(WARNING) << "[risk]long operate found, method=" << method_ << " key=" << key_
+            LOG(WARNING) << "[control_state]long operate found, method=" << method_ << " key=" << key_
             << " opType=" << oper_type_ <<  " cost=" << costToString() << std::endl;
         }
     }
@@ -68,8 +68,8 @@ class RiskTimerLogger {
     int oper_type_;
     int64_t logThresholdNs_;
 
-    DISALLOW_COPY_AND_ASSIGN(RiskTimerLogger);
+    DISALLOW_COPY_AND_ASSIGN(ControlStateTimerLogger);
 };
 
-}  // namespace risk
+}  // namespace control_state
 }  // namespace bcache2

@@ -126,7 +126,7 @@ const fallbackHealth = {
     },
     {
       module: "IPS",
-      test: "risk/frequency cap sample",
+      test: "control_state/frequency cap sample",
       status: "pending",
       write_path: "direct SDK",
       read_path: "primary",

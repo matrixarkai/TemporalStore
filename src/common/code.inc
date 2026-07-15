@@ -41,5 +41,5 @@ DEFINE_CODE(StreamAbort, 29)
 // for model
 DEFINE_CODE(NoAction, 30)
 
-// for risk model
-DEFINE_CODE(RiskAlreadyHandled, 31)
+// for control_state model
+DEFINE_CODE(ControlStateAlreadyHandled, 31)

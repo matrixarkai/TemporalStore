@@ -13,7 +13,7 @@ from .client import (
     FeaturePoint,
     FeatureWritePolicy,
     IpsFeatureStat,
-    RiskPrecision,
+    ControlStatePrecision,
     SequenceFeatureRow,
     TemporalStoreError,
     WindowUnit,
@@ -382,12 +382,12 @@ class ProxyClient:
             for row in data.get("features", [])
         ]
 
-    def risk_increment(
+    def control_state_increment(
         self,
         key: str,
         amount: int = 1,
         ttl_seconds: int = 24 * 3600,
-        precision: RiskPrecision = RiskPrecision.ONE_MINUTE,
+        precision: ControlStatePrecision = ControlStatePrecision.ONE_MINUTE,
         uuid: str = "",
         occur_time_seconds: int = 0,
     ) -> None:
@@ -398,18 +398,18 @@ class ProxyClient:
                 "ttl_seconds": ttl_seconds,
                 "ttl_ms": ttl_seconds * 1000,
                 "precision": int(precision),
-                "precision_ms": _risk_precision_ms(precision),
+                "precision_ms": _control_state_precision_ms(precision),
                 "uuid": uuid,
                 "occur_time_seconds": occur_time_seconds,
                 "timestamp_ms": _proxy_timestamp_ms(occur_time_seconds),
             }
         )
-        self._post("/ProxyService/RiskIncrement", body)
+        self._post("/ProxyService/ControlStateIncrement", body)
 
-    def risk_count(
+    def control_state_count(
         self,
         key: str,
-        precision: RiskPrecision = RiskPrecision.ONE_MINUTE,
+        precision: ControlStatePrecision = ControlStatePrecision.ONE_MINUTE,
         window_start: int = -1,
         window_end: int = 0,
         window_unit: WindowUnit = WindowUnit.HOUR,
@@ -423,25 +423,25 @@ class ProxyClient:
                 "window_unit": int(window_unit),
             }
         )
-        start_ms, end_ms = _risk_window_ms(window_start, window_end, window_unit)
+        start_ms, end_ms = _control_state_window_ms(window_start, window_end, window_unit)
         body["start_ms"] = start_ms
         body["end_ms"] = end_ms
-        data = self._post("/ProxyService/RiskCount", body)
+        data = self._post("/ProxyService/ControlStateCount", body)
         return int(data.get("count", 0))
 
-    def risk_hset(self, key: str, timestamp_ms: int, amount: int) -> None:
+    def control_state_hset(self, key: str, timestamp_ms: int, amount: int) -> None:
         body = self._key_body(key)
         body.update({"timestamp_ms": timestamp_ms, "amount": amount})
-        self._post("/ProxyService/RiskHset", body)
+        self._post("/ProxyService/ControlStateHset", body)
 
-    def risk_hset_with_options(
+    def control_state_hset_with_options(
         self,
         key: str,
         value: str,
         ttl_seconds: int,
         htype: str = "count",
         occur_time_seconds: int = 0,
-        precision: RiskPrecision = RiskPrecision.ONE_MINUTE,
+        precision: ControlStatePrecision = ControlStatePrecision.ONE_MINUTE,
     ) -> None:
         body = self._key_body(key)
         body.update(
@@ -452,40 +452,40 @@ class ProxyClient:
                 "htype": htype,
                 "occur_time": int(occur_time_seconds),
                 "timestamp_ms": _proxy_timestamp_ms(occur_time_seconds),
-                "precision_ms": _risk_precision_ms(precision),
+                "precision_ms": _control_state_precision_ms(precision),
             }
         )
-        self._post("/ProxyService/RiskHset", body)
+        self._post("/ProxyService/ControlStateHset", body)
 
-    def risk_hquery(
+    def control_state_hquery(
         self,
         key: str,
-        precision: RiskPrecision = RiskPrecision.ONE_MINUTE,
+        precision: ControlStatePrecision = ControlStatePrecision.ONE_MINUTE,
         window_start: int = -1,
         window_end: int = 0,
         window_unit: WindowUnit = WindowUnit.HOUR,
         aggregator: str = "sum",
     ) -> List[int]:
         body = self._key_body(key)
-        start_ms, end_ms = _risk_window_ms(window_start, window_end, window_unit)
+        start_ms, end_ms = _control_state_window_ms(window_start, window_end, window_unit)
         body.update(
             {
                 "start_ms": start_ms,
                 "end_ms": end_ms,
-                "precision_ms": _risk_precision_ms(precision),
+                "precision_ms": _control_state_precision_ms(precision),
                 "aggregator": aggregator,
             }
         )
-        data = self._post("/ProxyService/RiskHquery", body)
+        data = self._post("/ProxyService/ControlStateHquery", body)
         return [int(item.get("result", 0)) for item in data.get("result_list", [])]
 
-    def risk_cpc_set(
+    def control_state_cpc_set(
         self,
         key: str,
         values: Iterable[str],
         timestamp_ms: Optional[int] = None,
         ttl_ms: int = 0,
-        precision: RiskPrecision = RiskPrecision.ONE_MINUTE,
+        precision: ControlStatePrecision = ControlStatePrecision.ONE_MINUTE,
         dont_upgrade_cpc: bool = False,
     ) -> None:
         body = self._key_body(key)
@@ -494,33 +494,33 @@ class ProxyClient:
                 "values": list(values),
                 "timestamp_ms": int(timestamp_ms if timestamp_ms is not None else time.time() * 1000),
                 "ttl_ms": ttl_ms,
-                "precision_ms": _risk_precision_ms(precision),
+                "precision_ms": _control_state_precision_ms(precision),
                 "dont_upgrade_cpc": dont_upgrade_cpc,
             }
         )
-        self._post("/ProxyService/RiskCPCSet", body)
+        self._post("/ProxyService/ControlStateCPCSet", body)
 
-    def risk_cpc_query(
+    def control_state_cpc_query(
         self,
         key: str,
-        precision: RiskPrecision = RiskPrecision.ONE_MINUTE,
+        precision: ControlStatePrecision = ControlStatePrecision.ONE_MINUTE,
         window_start: int = -1,
         window_end: int = 0,
         window_unit: WindowUnit = WindowUnit.HOUR,
     ) -> List[int]:
         body = self._key_body(key)
-        start_ms, end_ms = _risk_window_ms(window_start, window_end, window_unit)
+        start_ms, end_ms = _control_state_window_ms(window_start, window_end, window_unit)
         body.update(
             {
                 "start_ms": start_ms,
                 "end_ms": end_ms,
-                "precision_ms": _risk_precision_ms(precision),
+                "precision_ms": _control_state_precision_ms(precision),
             }
         )
-        data = self._post("/ProxyService/RiskCPCQuery", body)
+        data = self._post("/ProxyService/ControlStateCPCQuery", body)
         return [int(value) for value in data.get("count_list", [])]
 
-    def risk_fol_set(
+    def control_state_fol_set(
         self,
         key: str,
         value: str,
@@ -540,17 +540,17 @@ class ProxyClient:
                 "fol_type": fol_type,
             }
         )
-        self._post("/ProxyService/RiskFolSet", body)
+        self._post("/ProxyService/ControlStateFolSet", body)
 
-    def risk_fol_query(self, key: str) -> str:
-        data = self._post("/ProxyService/RiskFolQuery", self._key_body(key))
+    def control_state_fol_query(self, key: str) -> str:
+        data = self._post("/ProxyService/ControlStateFolQuery", self._key_body(key))
         return str(data.get("result", _string_value(data.get("value", ""))))
 
-    def risk_manager(self, key: str) -> Dict[str, str]:
-        data = self._post("/ProxyService/RiskManager", self._key_body(key))
+    def control_state_manager(self, key: str) -> Dict[str, str]:
+        data = self._post("/ProxyService/ControlStateManager", self._key_body(key))
         return dict(data.get("entries", {}))
 
-    def risk_manager_with_options(
+    def control_state_manager_with_options(
         self,
         key: str,
         op_type: str,
@@ -569,7 +569,7 @@ class ProxyClient:
                 "is_cpc": is_cpc,
             }
         )
-        data = self._post("/ProxyService/RiskManager", body)
+        data = self._post("/ProxyService/ControlStateManager", body)
         return dict(data.get("entries", {}))
 
     def _key_body(self, key: str) -> Dict[str, Any]:
@@ -742,22 +742,22 @@ def _proxy_timestamp_ms(occur_time_seconds: int) -> int:
     return int(time.time() * 1000)
 
 
-def _risk_precision_ms(precision: RiskPrecision) -> int:
+def _control_state_precision_ms(precision: ControlStatePrecision) -> int:
     values = {
-        RiskPrecision.ONE_SECOND: 1000,
-        RiskPrecision.FIVE_SECONDS: 5000,
-        RiskPrecision.TEN_SECONDS: 10000,
-        RiskPrecision.ONE_MINUTE: 60000,
-        RiskPrecision.FIVE_MINUTES: 5 * 60000,
-        RiskPrecision.TEN_MINUTES: 10 * 60000,
-        RiskPrecision.ONE_HOUR: 60 * 60000,
-        RiskPrecision.ONE_DAY: 24 * 60 * 60000,
-        RiskPrecision.ONE_MONTH: 30 * 24 * 60 * 60000,
+        ControlStatePrecision.ONE_SECOND: 1000,
+        ControlStatePrecision.FIVE_SECONDS: 5000,
+        ControlStatePrecision.TEN_SECONDS: 10000,
+        ControlStatePrecision.ONE_MINUTE: 60000,
+        ControlStatePrecision.FIVE_MINUTES: 5 * 60000,
+        ControlStatePrecision.TEN_MINUTES: 10 * 60000,
+        ControlStatePrecision.ONE_HOUR: 60 * 60000,
+        ControlStatePrecision.ONE_DAY: 24 * 60 * 60000,
+        ControlStatePrecision.ONE_MONTH: 30 * 24 * 60 * 60000,
     }
     return values.get(precision, 60000)
 
 
-def _risk_window_ms(window_start: int, window_end: int, unit: WindowUnit) -> tuple[int, int]:
+def _control_state_window_ms(window_start: int, window_end: int, unit: WindowUnit) -> tuple[int, int]:
     end = int(window_end) if window_end > 0 else int(time.time() * 1000)
     start = int(window_start)
     if start < 0:

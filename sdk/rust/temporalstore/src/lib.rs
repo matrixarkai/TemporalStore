@@ -90,7 +90,7 @@ pub struct FeaturePoint {
 
 #[derive(Clone, Copy, Debug)]
 #[repr(i32)]
-pub enum RiskPrecision {
+pub enum ControlStatePrecision {
     OneSecond = 0,
     FiveSeconds = 1,
     TenSeconds = 2,
@@ -104,7 +104,7 @@ pub enum RiskPrecision {
 
 #[derive(Clone, Copy, Debug)]
 #[repr(i32)]
-pub enum RiskWindowUnit {
+pub enum ControlStateWindowUnit {
     Second = 0,
     Minute = 1,
     Hour = 2,
@@ -112,18 +112,18 @@ pub enum RiskWindowUnit {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct RiskWindow {
+pub struct ControlStateWindow {
     pub start: i64,
     pub end: i64,
-    pub unit: RiskWindowUnit,
+    pub unit: ControlStateWindowUnit,
 }
 
-impl Default for RiskWindow {
+impl Default for ControlStateWindow {
     fn default() -> Self {
         Self {
             start: -1,
             end: 0,
-            unit: RiskWindowUnit::Hour,
+            unit: ControlStateWindowUnit::Hour,
         }
     }
 }
@@ -131,7 +131,7 @@ impl Default for RiskWindow {
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "proxy", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "proxy", serde(rename_all = "snake_case"))]
-pub enum RiskHType {
+pub enum ControlStateHType {
     Count,
     Min,
     Max,
@@ -141,7 +141,7 @@ pub enum RiskHType {
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "proxy", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "proxy", serde(rename_all = "snake_case"))]
-pub enum RiskFolType {
+pub enum ControlStateFolType {
     First,
     Last,
 }
@@ -529,7 +529,7 @@ extern "C" {
         error_message: *mut *mut c_char,
     ) -> c_int;
     fn temporalstore_ips_feature_array_free(features: *mut CIpsFeatureArray);
-    fn temporalstore_risk_increment(
+    fn temporalstore_control_state_increment(
         client: *mut TemporalStoreClientOpaque,
         key: *const c_char,
         amount: i64,
@@ -539,7 +539,7 @@ extern "C" {
         occur_time_seconds: u64,
         error_message: *mut *mut c_char,
     ) -> c_int;
-    fn temporalstore_risk_count(
+    fn temporalstore_control_state_count(
         client: *mut TemporalStoreClientOpaque,
         key: *const c_char,
         precision: i32,
@@ -1232,12 +1232,12 @@ impl Client {
         Ok(features)
     }
 
-    pub fn risk_increment(
+    pub fn control_state_increment(
         &self,
         key: &str,
         amount: i64,
         ttl_seconds: u64,
-        precision: RiskPrecision,
+        precision: ControlStatePrecision,
         uuid: &str,
         occur_time_seconds: u64,
     ) -> Result<()> {
@@ -1245,7 +1245,7 @@ impl Client {
         let uuid = cstring(uuid)?;
         let mut error: *mut c_char = ptr::null_mut();
         let code = unsafe {
-            temporalstore_risk_increment(
+            temporalstore_control_state_increment(
                 self.raw,
                 key.as_ptr(),
                 amount,
@@ -1259,17 +1259,17 @@ impl Client {
         check(code, error)
     }
 
-    pub fn risk_count(
+    pub fn control_state_count(
         &self,
         key: &str,
-        precision: RiskPrecision,
-        window: RiskWindow,
+        precision: ControlStatePrecision,
+        window: ControlStateWindow,
     ) -> Result<i64> {
         let key = cstring(key)?;
         let mut count = 0_i64;
         let mut error: *mut c_char = ptr::null_mut();
         let code = unsafe {
-            temporalstore_risk_count(
+            temporalstore_control_state_count(
                 self.raw,
                 key.as_ptr(),
                 precision as i32,
@@ -1625,12 +1625,12 @@ impl ProxyClient {
         Ok(features)
     }
 
-    pub fn risk_increment(
+    pub fn control_state_increment(
         &self,
         key: &str,
         amount: i64,
         ttl_seconds: u64,
-        precision: RiskPrecision,
+        precision: ControlStatePrecision,
         _uuid: &str,
         occur_time_seconds: u64,
     ) -> Result<()> {
@@ -1642,7 +1642,7 @@ impl ProxyClient {
                 ("amount", serde_json::json!(amount)),
                 (
                     "precision_ms",
-                    serde_json::json!(risk_precision_ms(precision)),
+                    serde_json::json!(control_state_precision_ms(precision)),
                 ),
                 (
                     "ttl_ms",
@@ -1650,17 +1650,17 @@ impl ProxyClient {
                 ),
             ],
         );
-        self.proxy_service_execute("/ProxyService/RiskIncrement", body)
+        self.proxy_service_execute("/ProxyService/ControlStateIncrement", body)
             .map(|_| ())
     }
 
-    pub fn risk_count(
+    pub fn control_state_count(
         &self,
         key: &str,
-        _precision: RiskPrecision,
-        window: RiskWindow,
+        _precision: ControlStatePrecision,
+        window: ControlStateWindow,
     ) -> Result<i64> {
-        let (start_ms, end_ms) = risk_window_ms(window);
+        let (start_ms, end_ms) = control_state_window_ms(window);
         let body = self.proxy_service_body(
             key,
             &[
@@ -1668,7 +1668,7 @@ impl ProxyClient {
                 ("end_ms", serde_json::json!(end_ms)),
             ],
         );
-        let response = self.proxy_service_execute("/ProxyService/RiskCount", body)?;
+        let response = self.proxy_service_execute("/ProxyService/ControlStateCount", body)?;
         Ok(response
             .get("value")
             .or_else(|| response.get("count"))
@@ -1844,7 +1844,7 @@ impl ProxyClient {
             .map(json_byte_array_to_string))
     }
 
-    pub fn risk_hset(&self, key: &str, timestamp_ms: u64, amount: i64) -> Result<()> {
+    pub fn control_state_hset(&self, key: &str, timestamp_ms: u64, amount: i64) -> Result<()> {
         let body = self.proxy_service_body(
             key,
             &[
@@ -1852,18 +1852,18 @@ impl ProxyClient {
                 ("amount", serde_json::json!(amount)),
             ],
         );
-        self.proxy_service_execute("/ProxyService/RiskHset", body)
+        self.proxy_service_execute("/ProxyService/ControlStateHset", body)
             .map(|_| ())
     }
 
-    pub fn risk_hset_with_options(
+    pub fn control_state_hset_with_options(
         &self,
         key: &str,
         value: &str,
         ttl_seconds: u64,
-        htype: RiskHType,
+        htype: ControlStateHType,
         occur_time_seconds: u64,
-        precision: RiskPrecision,
+        precision: ControlStatePrecision,
     ) -> Result<()> {
         let body = self.proxy_service_body(
             key,
@@ -1882,22 +1882,22 @@ impl ProxyClient {
                 ),
                 (
                     "precision_ms",
-                    serde_json::json!(risk_precision_ms(precision)),
+                    serde_json::json!(control_state_precision_ms(precision)),
                 ),
             ],
         );
-        self.proxy_service_execute("/ProxyService/RiskHset", body)
+        self.proxy_service_execute("/ProxyService/ControlStateHset", body)
             .map(|_| ())
     }
 
-    pub fn risk_hquery(
+    pub fn control_state_hquery(
         &self,
         key: &str,
-        precision: RiskPrecision,
-        window: RiskWindow,
+        precision: ControlStatePrecision,
+        window: ControlStateWindow,
         aggregator: &str,
     ) -> Result<Vec<i64>> {
-        let (start_ms, end_ms) = risk_window_ms(window);
+        let (start_ms, end_ms) = control_state_window_ms(window);
         let body = self.proxy_service_body(
             key,
             &[
@@ -1905,12 +1905,12 @@ impl ProxyClient {
                 ("end_ms", serde_json::json!(end_ms)),
                 (
                     "precision_ms",
-                    serde_json::json!(risk_precision_ms(precision)),
+                    serde_json::json!(control_state_precision_ms(precision)),
                 ),
                 ("aggregator", serde_json::json!(aggregator)),
             ],
         );
-        let response = self.proxy_service_execute("/ProxyService/RiskHquery", body)?;
+        let response = self.proxy_service_execute("/ProxyService/ControlStateHquery", body)?;
         Ok(response
             .get("result_list")
             .and_then(|value| value.as_array())
@@ -1925,13 +1925,13 @@ impl ProxyClient {
             .collect())
     }
 
-    pub fn risk_cpc_set(
+    pub fn control_state_cpc_set(
         &self,
         key: &str,
         values: &[&str],
         timestamp_ms: u64,
         ttl_ms: u64,
-        precision: RiskPrecision,
+        precision: ControlStatePrecision,
         dont_upgrade_cpc: bool,
     ) -> Result<()> {
         let body = self.proxy_service_body(
@@ -1942,22 +1942,22 @@ impl ProxyClient {
                 ("ttl_ms", serde_json::json!(ttl_ms)),
                 (
                     "precision_ms",
-                    serde_json::json!(risk_precision_ms(precision)),
+                    serde_json::json!(control_state_precision_ms(precision)),
                 ),
                 ("dont_upgrade_cpc", serde_json::json!(dont_upgrade_cpc)),
             ],
         );
-        self.proxy_service_execute("/ProxyService/RiskCPCSet", body)
+        self.proxy_service_execute("/ProxyService/ControlStateCPCSet", body)
             .map(|_| ())
     }
 
-    pub fn risk_cpc_query(
+    pub fn control_state_cpc_query(
         &self,
         key: &str,
-        precision: RiskPrecision,
-        window: RiskWindow,
+        precision: ControlStatePrecision,
+        window: ControlStateWindow,
     ) -> Result<Vec<i64>> {
-        let (start_ms, end_ms) = risk_window_ms(window);
+        let (start_ms, end_ms) = control_state_window_ms(window);
         let body = self.proxy_service_body(
             key,
             &[
@@ -1965,11 +1965,11 @@ impl ProxyClient {
                 ("end_ms", serde_json::json!(end_ms)),
                 (
                     "precision_ms",
-                    serde_json::json!(risk_precision_ms(precision)),
+                    serde_json::json!(control_state_precision_ms(precision)),
                 ),
             ],
         );
-        let response = self.proxy_service_execute("/ProxyService/RiskCPCQuery", body)?;
+        let response = self.proxy_service_execute("/ProxyService/ControlStateCPCQuery", body)?;
         Ok(response
             .get("count_list")
             .and_then(|value| value.as_array())
@@ -1980,13 +1980,13 @@ impl ProxyClient {
             .collect())
     }
 
-    pub fn risk_fol_set(
+    pub fn control_state_fol_set(
         &self,
         key: &str,
         value: &str,
         occur_time_ms: u64,
         ttl_ms: u64,
-        fol_type: RiskFolType,
+        fol_type: ControlStateFolType,
     ) -> Result<()> {
         let body = self.proxy_service_body(
             key,
@@ -2003,13 +2003,13 @@ impl ProxyClient {
                 ),
             ],
         );
-        self.proxy_service_execute("/ProxyService/RiskFolSet", body)
+        self.proxy_service_execute("/ProxyService/ControlStateFolSet", body)
             .map(|_| ())
     }
 
-    pub fn risk_fol_query(&self, key: &str) -> Result<Option<String>> {
+    pub fn control_state_fol_query(&self, key: &str) -> Result<Option<String>> {
         let body = self.proxy_service_body(key, &[]);
-        let response = self.proxy_service_execute("/ProxyService/RiskFolQuery", body)?;
+        let response = self.proxy_service_execute("/ProxyService/ControlStateFolQuery", body)?;
         Ok(response
             .get("value")
             .cloned()
@@ -2017,13 +2017,13 @@ impl ProxyClient {
             .map(json_byte_array_to_string))
     }
 
-    pub fn risk_manager(&self, key: &str) -> Result<Vec<(String, String)>> {
+    pub fn control_state_manager(&self, key: &str) -> Result<Vec<(String, String)>> {
         let body = self.proxy_service_body(key, &[]);
-        let response = self.proxy_service_execute("/ProxyService/RiskManager", body)?;
+        let response = self.proxy_service_execute("/ProxyService/ControlStateManager", body)?;
         Ok(response_hash_entries_to_strings(response))
     }
 
-    pub fn risk_manager_with_options(
+    pub fn control_state_manager_with_options(
         &self,
         key: &str,
         op_type: &str,
@@ -2046,7 +2046,7 @@ impl ProxyClient {
                 ("is_cpc", serde_json::json!(is_cpc)),
             ],
         );
-        let response = self.proxy_service_execute("/ProxyService/RiskManager", body)?;
+        let response = self.proxy_service_execute("/ProxyService/ControlStateManager", body)?;
         Ok(response_hash_entries_to_strings(response))
     }
 
@@ -2391,22 +2391,22 @@ fn proxy_timestamp_ms(occur_time_seconds: u64) -> u64 {
 }
 
 #[cfg(feature = "proxy")]
-fn risk_precision_ms(precision: RiskPrecision) -> u64 {
+fn control_state_precision_ms(precision: ControlStatePrecision) -> u64 {
     match precision {
-        RiskPrecision::OneSecond => 1000,
-        RiskPrecision::FiveSeconds => 5000,
-        RiskPrecision::TenSeconds => 10000,
-        RiskPrecision::OneMinute => 60_000,
-        RiskPrecision::FiveMinutes => 5 * 60_000,
-        RiskPrecision::TenMinutes => 10 * 60_000,
-        RiskPrecision::OneHour => 60 * 60_000,
-        RiskPrecision::OneDay => 24 * 60 * 60_000,
-        RiskPrecision::OneMonth => 30 * 24 * 60 * 60_000,
+        ControlStatePrecision::OneSecond => 1000,
+        ControlStatePrecision::FiveSeconds => 5000,
+        ControlStatePrecision::TenSeconds => 10000,
+        ControlStatePrecision::OneMinute => 60_000,
+        ControlStatePrecision::FiveMinutes => 5 * 60_000,
+        ControlStatePrecision::TenMinutes => 10 * 60_000,
+        ControlStatePrecision::OneHour => 60 * 60_000,
+        ControlStatePrecision::OneDay => 24 * 60 * 60_000,
+        ControlStatePrecision::OneMonth => 30 * 24 * 60 * 60_000,
     }
 }
 
 #[cfg(feature = "proxy")]
-fn risk_window_ms(window: RiskWindow) -> (u64, u64) {
+fn control_state_window_ms(window: ControlStateWindow) -> (u64, u64) {
     let end = if window.end > 0 {
         window.end as u64
     } else {
@@ -2415,18 +2415,18 @@ fn risk_window_ms(window: RiskWindow) -> (u64, u64) {
     let start = if window.start >= 0 {
         window.start as u64
     } else {
-        end.saturating_sub(risk_window_unit_ms(window.unit))
+        end.saturating_sub(control_state_window_unit_ms(window.unit))
     };
     (start, end)
 }
 
 #[cfg(feature = "proxy")]
-fn risk_window_unit_ms(unit: RiskWindowUnit) -> u64 {
+fn control_state_window_unit_ms(unit: ControlStateWindowUnit) -> u64 {
     match unit {
-        RiskWindowUnit::Second => 1000,
-        RiskWindowUnit::Minute => 60_000,
-        RiskWindowUnit::Hour => 60 * 60_000,
-        RiskWindowUnit::Day => 24 * 60 * 60_000,
+        ControlStateWindowUnit::Second => 1000,
+        ControlStateWindowUnit::Minute => 60_000,
+        ControlStateWindowUnit::Hour => 60 * 60_000,
+        ControlStateWindowUnit::Day => 24 * 60 * 60_000,
     }
 }
 
@@ -2835,10 +2835,10 @@ mod tests {
         let _: fn(&Client, &super::IpsInstance) -> super::Result<()> = Client::add_ips_instance;
         let _: fn(&Client, &super::IpsLastQuery) -> super::Result<Vec<super::IpsFeatureStat>> =
             Client::query_ips_last_instances;
-        let _: fn(&Client, &str, i64, u64, super::RiskPrecision, &str, u64) -> super::Result<()> =
-            Client::risk_increment;
-        let _: fn(&Client, &str, super::RiskPrecision, super::RiskWindow) -> super::Result<i64> =
-            Client::risk_count;
+        let _: fn(&Client, &str, i64, u64, super::ControlStatePrecision, &str, u64) -> super::Result<()> =
+            Client::control_state_increment;
+        let _: fn(&Client, &str, super::ControlStatePrecision, super::ControlStateWindow) -> super::Result<i64> =
+            Client::control_state_count;
         let _: fn(&Client, &[(&str, &str, &str)], Option<&str>, Option<&str>) -> super::Result<()> =
             Client::matrixark_batch_append_records;
     }
@@ -2872,56 +2872,56 @@ mod tests {
             &str,
             i64,
             u64,
-            super::RiskPrecision,
+            super::ControlStatePrecision,
             &str,
             u64,
-        ) -> super::Result<()> = ProxyClient::risk_increment;
+        ) -> super::Result<()> = ProxyClient::control_state_increment;
         let _: fn(
             &ProxyClient,
             &str,
-            super::RiskPrecision,
-            super::RiskWindow,
-        ) -> super::Result<i64> = ProxyClient::risk_count;
+            super::ControlStatePrecision,
+            super::ControlStateWindow,
+        ) -> super::Result<i64> = ProxyClient::control_state_count;
         let _: fn(&ProxyClient, &str, &str) -> super::Result<()> = ProxyClient::set;
         let _: fn(&ProxyClient, &str) -> super::Result<Option<String>> = ProxyClient::get;
-        let _: fn(&ProxyClient, &str, u64, i64) -> super::Result<()> = ProxyClient::risk_hset;
+        let _: fn(&ProxyClient, &str, u64, i64) -> super::Result<()> = ProxyClient::control_state_hset;
         let _: fn(
             &ProxyClient,
             &str,
             &str,
             u64,
-            super::RiskHType,
+            super::ControlStateHType,
             u64,
-            super::RiskPrecision,
-        ) -> super::Result<()> = ProxyClient::risk_hset_with_options;
+            super::ControlStatePrecision,
+        ) -> super::Result<()> = ProxyClient::control_state_hset_with_options;
         let _: fn(
             &ProxyClient,
             &str,
-            super::RiskPrecision,
-            super::RiskWindow,
+            super::ControlStatePrecision,
+            super::ControlStateWindow,
             &str,
-        ) -> super::Result<Vec<i64>> = ProxyClient::risk_hquery;
+        ) -> super::Result<Vec<i64>> = ProxyClient::control_state_hquery;
         let _: fn(
             &ProxyClient,
             &str,
             &[&str],
             u64,
             u64,
-            super::RiskPrecision,
+            super::ControlStatePrecision,
             bool,
-        ) -> super::Result<()> = ProxyClient::risk_cpc_set;
+        ) -> super::Result<()> = ProxyClient::control_state_cpc_set;
         let _: fn(
             &ProxyClient,
             &str,
-            super::RiskPrecision,
-            super::RiskWindow,
-        ) -> super::Result<Vec<i64>> = ProxyClient::risk_cpc_query;
-        let _: fn(&ProxyClient, &str, &str, u64, u64, super::RiskFolType) -> super::Result<()> =
-            ProxyClient::risk_fol_set;
+            super::ControlStatePrecision,
+            super::ControlStateWindow,
+        ) -> super::Result<Vec<i64>> = ProxyClient::control_state_cpc_query;
+        let _: fn(&ProxyClient, &str, &str, u64, u64, super::ControlStateFolType) -> super::Result<()> =
+            ProxyClient::control_state_fol_set;
         let _: fn(&ProxyClient, &str) -> super::Result<Option<String>> =
-            ProxyClient::risk_fol_query;
+            ProxyClient::control_state_fol_query;
         let _: fn(&ProxyClient, &str) -> super::Result<Vec<(String, String)>> =
-            ProxyClient::risk_manager;
+            ProxyClient::control_state_manager;
         let _: fn(
             &ProxyClient,
             &str,
@@ -2930,7 +2930,7 @@ mod tests {
             &str,
             &str,
             bool,
-        ) -> super::Result<Vec<(String, String)>> = ProxyClient::risk_manager_with_options;
+        ) -> super::Result<Vec<(String, String)>> = ProxyClient::control_state_manager_with_options;
         let _: fn(&ProxyClient, &str, &str, &str) -> super::Result<()> = ProxyClient::hset;
         let _: fn(&ProxyClient, &str, &str) -> super::Result<String> = ProxyClient::hget;
         let _: fn(&ProxyClient, &str, &[(&str, &str)]) -> super::Result<()> = ProxyClient::hmset;

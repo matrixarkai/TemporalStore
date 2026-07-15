@@ -499,7 +499,7 @@ rolling window          -> commit next 20 pending messages, not the whole sessio
 
 ```json
 {
-  "query": "What GPU approvals are current, and what budget risks were mentioned?",
+  "query": "What GPU approvals are current, and what budget control_states were mentioned?",
   "scope": {
     "account_id": "acct_local",
     "tenant_id": "tenant_codex",

@@ -1,6 +1,6 @@
 // Copyright (c) 2022-present, ByteDance Inc. All rights reserved.
-#define __RISK_HASH_FOR_UNIT_TEST__
-#include "model/risk_hash_model.h"
+#define __CONTROL_STATE_HASH_FOR_UNIT_TEST__
+#include "model/control_state_hash_model.h"
 
 #include <gtest/gtest.h>
 
@@ -66,15 +66,15 @@ class DummyOplogger5 : public partition::OpLogger {
 
 static Allocator allocator;
 
-TEST(RiskHashModelTest, RiskHashUUIDCheck) {
+TEST(ControlStateHashModelTest, ControlStateHashUUIDCheck) {
     // Pass WriteKvLog in PersistentMap::Put
     std::string object_key = "test_key";
     std::unique_ptr<uint8_t[]> buf(new uint8_t[partition::Object::ComputeRawObjectSize(
-        object_key.size(), model::ModelManager::GetModelId<RiskHashModel>())]);
+        object_key.size(), model::ModelManager::GetModelId<ControlStateHashModel>())]);
     std::unique_ptr<DummyOplogger5> op_logger(new DummyOplogger5());
     partition::Object obj(0, buf.get());
     obj.ConstructWithValues(
-        buf.get(), model::ModelManager::GetModelId<RiskHashModel>(), object_key);
+        buf.get(), model::ModelManager::GetModelId<ControlStateHashModel>(), object_key);
     partition::CmdContext ctx;
     ctx.object = obj;
     ctx.op_logger = op_logger.get();
@@ -84,8 +84,8 @@ TEST(RiskHashModelTest, RiskHashUUIDCheck) {
                                       Allocator::DefaultAllocator()));
     uint64_t max_timestamp = 0;
     auto map = PersistentMap<std::string, std::string>(&btree, &max_timestamp);
-    auto orset = RiskHashOrSet(&map);
-    risk::RiskTimerLogger timer("", "", 0, 1000000000000);
+    auto orset = ControlStateHashOrSet(&map);
+    control_state::ControlStateTimerLogger timer("", "", 0, 1000000000000);
 
     std::string field = "field";
     std::string uuid = "repeat_uuid";
@@ -123,7 +123,7 @@ TEST(RiskHashModelTest, RiskHashUUIDCheck) {
             return cur_val;
         }, uuid);
 
-    ASSERT_TRUE(st.IsRiskAlreadyHandled());
+    ASSERT_TRUE(st.IsControlStateAlreadyHandled());
     resMap.clear();
     orset.Query({field}, &resMap);
     ASSERT_TRUE(resMap.contains(field));

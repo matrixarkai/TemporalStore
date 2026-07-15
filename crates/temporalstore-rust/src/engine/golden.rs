@@ -2,7 +2,7 @@ use super::reports::{CppGoldenCaseReport, CppGoldenCorpusReport};
 use crate::engine::TemporalEngine;
 use crate::types::{
     parse_cpp_feature_filters, Command, CommandResponse, ExecuteRequest, FeatureFilterOp,
-    FeaturePoint, RiskFamily, RiskFolType, SequenceFeatureRow,
+    FeaturePoint, ControlStateFamily, ControlStateFolType, SequenceFeatureRow,
 };
 
 pub fn cpp_feature_sequence_golden_corpus_report() -> CppGoldenCorpusReport {
@@ -341,15 +341,15 @@ pub fn cpp_api_golden_corpus_report() -> CppGoldenCorpusReport {
     );
 
     for (family, timestamp_ms, amount) in [
-        (RiskFamily::H, 10, 5),
-        (RiskFamily::H, 20, 7),
-        (RiskFamily::Cpc, 10, 3),
+        (ControlStateFamily::H, 10, 5),
+        (ControlStateFamily::H, 20, 7),
+        (ControlStateFamily::Cpc, 10, 3),
     ] {
         let _ = engine.execute(ExecuteRequest {
             shard_id: 1,
-            command: Command::RiskSet {
+            command: Command::ControlStateSet {
                 family,
-                key: "risk-golden".to_string(),
+                key: "control_state-golden".to_string(),
                 timestamp_ms,
                 amount,
                 precision_ms: None,
@@ -357,21 +357,21 @@ pub fn cpp_api_golden_corpus_report() -> CppGoldenCorpusReport {
             },
         });
     }
-    let risk_sum = engine.execute(ExecuteRequest {
+    let control_state_sum = engine.execute(ExecuteRequest {
         shard_id: 1,
-        command: Command::RiskFamilyQuery {
-            family: RiskFamily::H,
-            key: "risk-golden".to_string(),
+        command: Command::ControlStateFamilyQuery {
+            family: ControlStateFamily::H,
+            key: "control_state-golden".to_string(),
             start_ms: 0,
             end_ms: 100,
             aggregator: "sum".to_string(),
         },
     });
-    let risk_cpc = engine.execute(ExecuteRequest {
+    let control_state_cpc = engine.execute(ExecuteRequest {
         shard_id: 1,
-        command: Command::RiskSetAndGet {
-            family: RiskFamily::Cpc,
-            key: "risk-golden".to_string(),
+        command: Command::ControlStateSetAndGet {
+            family: ControlStateFamily::Cpc,
+            key: "control_state-golden".to_string(),
             timestamp_ms: 20,
             amount: 4,
             start_ms: 0,
@@ -383,57 +383,57 @@ pub fn cpp_api_golden_corpus_report() -> CppGoldenCorpusReport {
     });
     record_golden_case(
         &mut cases,
-        "cpp_risk_family_aggregates",
-        risk_sum.response == CommandResponse::Integer { value: 12 }
-            && risk_cpc.response == CommandResponse::Integer { value: 7 },
-        "Risk H/CPC/FOL family aggregate command shapes preserve C++ local semantics",
+        "cpp_control_state_family_aggregates",
+        control_state_sum.response == CommandResponse::Integer { value: 12 }
+            && control_state_cpc.response == CommandResponse::Integer { value: 7 },
+        "ControlState H/CPC/FOL family aggregate command shapes preserve C++ local semantics",
     );
 
     let _ = engine.execute(ExecuteRequest {
         shard_id: 1,
-        command: Command::RiskFolSet {
-            key: "risk-golden".to_string(),
+        command: Command::ControlStateFolSet {
+            key: "control_state-golden".to_string(),
             value: b"late-first".to_vec(),
             occur_time_ms: 200,
             ttl_ms: 0,
-            fol_type: RiskFolType::First,
+            fol_type: ControlStateFolType::First,
         },
     });
     let _ = engine.execute(ExecuteRequest {
         shard_id: 1,
-        command: Command::RiskFolSet {
-            key: "risk-golden".to_string(),
+        command: Command::ControlStateFolSet {
+            key: "control_state-golden".to_string(),
             value: b"early-first".to_vec(),
             occur_time_ms: 100,
             ttl_ms: 0,
-            fol_type: RiskFolType::First,
+            fol_type: ControlStateFolType::First,
         },
     });
     let first = engine.execute(ExecuteRequest {
         shard_id: 1,
-        command: Command::RiskFolQuery {
-            key: "risk-golden".to_string(),
+        command: Command::ControlStateFolQuery {
+            key: "control_state-golden".to_string(),
         },
     });
     let _ = engine.execute(ExecuteRequest {
         shard_id: 1,
-        command: Command::RiskFolSet {
-            key: "risk-golden".to_string(),
+        command: Command::ControlStateFolSet {
+            key: "control_state-golden".to_string(),
             value: b"latest".to_vec(),
             occur_time_ms: 300,
             ttl_ms: 0,
-            fol_type: RiskFolType::Last,
+            fol_type: ControlStateFolType::Last,
         },
     });
     let last = engine.execute(ExecuteRequest {
         shard_id: 1,
-        command: Command::RiskFolQuery {
-            key: "risk-golden".to_string(),
+        command: Command::ControlStateFolQuery {
+            key: "control_state-golden".to_string(),
         },
     });
     record_golden_case(
         &mut cases,
-        "cpp_risk_fol_first_last",
+        "cpp_control_state_fol_first_last",
         first.response
             == CommandResponse::Bytes {
                 value: Some(b"early-first".to_vec()),
@@ -442,13 +442,13 @@ pub fn cpp_api_golden_corpus_report() -> CppGoldenCorpusReport {
                 == CommandResponse::Bytes {
                     value: Some(b"latest".to_vec()),
                 },
-        "Risk FOL first/last selection follows occur-time ordering",
+        "ControlState FOL first/last selection follows occur-time ordering",
     );
 
     let manager = engine.execute(ExecuteRequest {
         shard_id: 1,
-        command: Command::RiskManager {
-            key: "risk-golden".to_string(),
+        command: Command::ControlStateManager {
+            key: "control_state-golden".to_string(),
             op_type: None,
             field_list: Vec::new(),
             start_offset: String::new(),
@@ -458,12 +458,12 @@ pub fn cpp_api_golden_corpus_report() -> CppGoldenCorpusReport {
     });
     record_golden_case(
         &mut cases,
-        "cpp_risk_manager_summary",
+        "cpp_control_state_manager_summary",
         matches!(manager.response, CommandResponse::HashEntries { ref entries }
             if entries.iter().any(|(field, value)| field == "h_sum" && value.as_slice() == b"12")
                 && entries.iter().any(|(field, value)| field == "cpc_sum" && value.as_slice() == b"7")
                 && entries.iter().any(|(field, value)| field == "fol_value" && value.as_slice() == b"latest")),
-        "Risk manager summary exposes family counts/sums and FOL metadata",
+        "ControlState manager summary exposes family counts/sums and FOL metadata",
     );
 
     let _ = engine.execute(ExecuteRequest {

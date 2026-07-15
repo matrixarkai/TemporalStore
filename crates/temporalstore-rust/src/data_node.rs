@@ -4424,10 +4424,10 @@ fn command_key(command: &Command) -> Option<&str> {
         | Command::SequenceAddWithPolicy { key, .. }
         | Command::IpsAdd { key, .. }
         | Command::IpsAddWithOptions { key, .. }
-        | Command::RiskIncrement { key, .. }
-        | Command::RiskIncrementWithOptions { key, .. }
-        | Command::RiskSet { key, .. }
-        | Command::RiskSetAndGet { key, .. } => Some(key),
+        | Command::ControlStateIncrement { key, .. }
+        | Command::ControlStateIncrementWithOptions { key, .. }
+        | Command::ControlStateSet { key, .. }
+        | Command::ControlStateSetAndGet { key, .. } => Some(key),
         _ => None,
     }
 }
@@ -4454,10 +4454,10 @@ fn is_write_command(command: &Command) -> bool {
             | Command::SequenceAddWithPolicy { .. }
             | Command::IpsAdd { .. }
             | Command::IpsAddWithOptions { .. }
-            | Command::RiskIncrement { .. }
-            | Command::RiskIncrementWithOptions { .. }
-            | Command::RiskSet { .. }
-            | Command::RiskSetAndGet { .. }
+            | Command::ControlStateIncrement { .. }
+            | Command::ControlStateIncrementWithOptions { .. }
+            | Command::ControlStateSet { .. }
+            | Command::ControlStateSetAndGet { .. }
     )
 }
 

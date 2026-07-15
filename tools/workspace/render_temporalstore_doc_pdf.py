@@ -110,7 +110,7 @@ def save(img, name):
 
 def diagram_overall():
     img, d = canvas(1700, 1050)
-    box(d, (650, 40, 1050, 130), "Applications\nRisk / Fraud / Ads / Feature Serving", "#fff7ed", "#f97316", FONT_B)
+    box(d, (650, 40, 1050, 130), "Applications\nControlState / Fraud / Ads / Feature Serving", "#fff7ed", "#f97316", FONT_B)
     box(d, (330, 190, 650, 290), "Direct SDK\nC++ / Go / Java / Python / Rust", "#f0fdf4", "#16a34a")
     box(d, (1050, 190, 1370, 290), "Proxy\nRedis path / Routing", "#f0fdf4", "#16a34a")
     box(d, (680, 330, 1020, 430), "Metaserver\nMetadata / Routing / Placement", "#eef6ff", "#2563eb", FONT_B)
@@ -202,7 +202,7 @@ def diagram_before_after():
         "Flink Job\nper feature family",
         "Redis / KV\ncounters, buckets, blobs",
         "Custom Serving Logic\nTTL, windows, filters, merge",
-        "Risk / Ads / Model",
+        "ControlState / Ads / Model",
     ]
     y = 170
     for i, text in enumerate(left):
@@ -218,7 +218,7 @@ def diagram_before_after():
         "Raw or Bucketed Events",
         "TemporalStore\nTemporal Models",
         "Direct Online Query\ncount, sum, distinct, sequence, top-K",
-        "Risk / Ads / Model",
+        "ControlState / Ads / Model",
     ]
     y = 210
     for i, text in enumerate(right):
@@ -235,9 +235,9 @@ def diagram_models():
     box(d, (620, 210, 980, 300), "TemporalStore", "#eef6ff", "#2563eb", FONT_B)
     arrow(d, (800, 120), (800, 210))
     models = [
-        ((80, 430, 360, 530), "TemporalCounter\nrolling count or sum", "Risk / Fraud"),
-        ((390, 430, 670, 530), "TemporalAggregate\nfiltered window aggregation", "Risk / Fraud"),
-        ((700, 430, 980, 530), "TemporalDistinct\nunique count", "Risk / Fraud"),
+        ((80, 430, 360, 530), "TemporalCounter\nrolling count or sum", "ControlState / Fraud"),
+        ((390, 430, 670, 530), "TemporalAggregate\nfiltered window aggregation", "ControlState / Fraud"),
+        ((700, 430, 980, 530), "TemporalDistinct\nunique count", "ControlState / Fraud"),
         ((1010, 430, 1290, 530), "SequenceModel\nrecent behavior history", "Recommendation / Ranking"),
         ((1320, 430, 1580, 530), "Hash / KV\nlatest profile", "Online Feature Serving"),
     ]

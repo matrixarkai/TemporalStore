@@ -10,9 +10,9 @@
 #include "model/ips_model.h"
 #endif
 #include "model/raw_model.h"
-#include "model/risk_cpc_model.h"
+#include "model/control_state_cpc_model.h"
 #ifndef BCACHE2_OPEN_SOURCE_SURFACE
-#include "model/risk_hash_model.h"
+#include "model/control_state_hash_model.h"
 #endif
 #include "model/string_model.h"
 #ifndef BCACHE2_OPEN_SOURCE_SURFACE
@@ -34,7 +34,7 @@ REGISTER_MODEL(IpsModel, 5);
 #endif
 REGISTER_MODEL(RawModel, 6);
 #ifndef BCACHE2_OPEN_SOURCE_SURFACE
-REGISTER_MODEL(RiskHashModel, 7);
+REGISTER_MODEL(ControlStateHashModel, 7);
 #endif
 REGISTER_MODEL(ControlStateModel, 8);
 REGISTER_MODEL(ContextNodeModel, 9);

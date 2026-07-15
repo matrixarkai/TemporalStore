@@ -165,7 +165,7 @@ For plain `STRING SET/GET`, Redis should win and customers should use Redis.
 TemporalStore should be benchmarked where Redis is not a direct engine match:
 
 - time-window aggregation
-- risk/frequency cap
+- control_state/frequency cap
 - long sequence feature serving
 - large objects with cold/hot page behavior
 - queryable persisted state after memory eviction
@@ -174,8 +174,8 @@ TemporalStore should be benchmarked where Redis is not a direct engine match:
 ## Next Benchmark Work
 
 1. Fix Release/O3 build blockers in bundled dependencies or add a benchmark build profile that suppresses third-party `unused-result` warnings.
-2. Add TemporalStore feature/risk/sequence concurrent benchmarks, not only string KV.
+2. Add TemporalStore feature/control_state/sequence concurrent benchmarks, not only string KV.
 3. Add cold-read test: write data, restart data nodes, measure first-read latency from file storage.
 4. Add primary failure test: write load, stop primary, observe metaserver behavior and replica freshness.
 5. Add disk/device metrics: iostat, process CPU, RSS, and storage bytes per op.
-6. Add Redis application-side time-window implementation for an apples-to-apples risk-feature comparison.
+6. Add Redis application-side time-window implementation for an apples-to-apples control_state-feature comparison.

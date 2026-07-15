@@ -20,7 +20,7 @@ AWS resources were intentionally left running for later testing.
 
 The run covered these data paths:
 
-- Direct SDK module smoke: STRING, COMMON TTL/delete, HASH, SET, FEATURE time sequence, IPS, RISK window count, TemporalAggregate count/sum/min/max
+- Direct SDK module smoke: STRING, COMMON TTL/delete, HASH, SET, FEATURE time sequence, IPS, CONTROL_STATE window count, TemporalAggregate count/sum/min/max
 - Proxy path smoke: STRING and HASH passed; proxy FeatureQuery returned 0 points and is a known issue to debug
 - Replication smoke: secondary read matched after 1 attempt, 0 ms
 - STRING scale: primary and secondary read paths

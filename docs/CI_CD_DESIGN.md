@@ -16,7 +16,7 @@ The goals are:
 
 ## 1. CI/CD Principles
 
-TemporalStore has several risky surfaces: custom storage, replica replay,
+TemporalStore has several control_statey surfaces: custom storage, replica replay,
 shared-file/object storage, block cache, native client SDKs, and cloud
 deployment scripts. CI/CD should therefore separate fast correctness checks from
 heavier integration and scale tests.
@@ -172,7 +172,7 @@ Run on every PR:
 - page-store tests
 - oplog tests
 - command executor tests
-- capability tests: STRING, HASH, SET, FEATURE, IPS, RISK,
+- capability tests: STRING, HASH, SET, FEATURE, IPS, CONTROL_STATE,
   TemporalAggregate
 - client router tests
 - metaserver metadata tests
@@ -228,7 +228,7 @@ Required workloads:
 - HASH read/write baseline
 - FEATURE sequence query
 - IPS query
-- RISK window count
+- CONTROL_STATE window count
 - TemporalAggregate single-key smoke
 - TemporalAggregate high-cardinality workload
 - concurrent write/read workload

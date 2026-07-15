@@ -4,7 +4,7 @@ TemporalStore's product direction is an online serving feature store: one online
 
 - latest profile lookup
 - high-cardinality temporal aggregation
-- risk and fraud counters
+- control_state and fraud counters
 - frequency caps
 - long sequence features
 - persisted online state with hot/cold serving
@@ -48,7 +48,7 @@ TemporalStore aims for this online shape:
 flowchart LR
     Events["Events"]
     TS["TemporalStore cluster"]
-    Service["Risk / ranking / ads / personalization service"]
+    Service["ControlState / ranking / ads / personalization service"]
     Offline["Offline archive / training store"]
 
     Events --> TS
@@ -103,12 +103,12 @@ TemporalStore should support multiple online-serving models in the same cluster.
 |---|---|---|
 | Latest KV / Hash | latest profile fields | `user_id -> age, city, device_type` |
 | TemporalAggregate | bucketed counters/sums/min/max | `device_id -> failed logins in last 30 min` |
-| Risk / Frequency Cap | bounded counters by entity and dimension | `campaign_id:user_id -> impressions in last hour` |
+| ControlState / Frequency Cap | bounded counters by entity and dimension | `campaign_id:user_id -> impressions in last hour` |
 | Sequence Feature | timestamped behavior rows | `user_id -> recent clicked item ids` |
 | Large Object / Page-backed State | objects that may outgrow memory | long profile blobs or cold sequence pages |
 | AI Context / GPU Metadata | session memory, prefix/cache refs, retrieval state | `tenant:model:prefix_hash -> cache location and reuse stats` |
 
-This is the key product claim: the user should not need a different online store for every feature shape. TemporalStore should be usable as the default online serving feature store, while temporal windows, filtered aggregates, distinct state, sequences, and risk/frequency features are the product wedge that makes it different from a plain online KV/cache.
+This is the key product claim: the user should not need a different online store for every feature shape. TemporalStore should be usable as the default online serving feature store, while temporal windows, filtered aggregates, distinct state, sequences, and control_state/frequency features are the product wedge that makes it different from a plain online KV/cache.
 
 ## Choosing Aggregate vs Sequence
 
@@ -247,7 +247,7 @@ Offline aggregation works well for stable daily features:
 feature definition -> batch job -> materialized table -> online lookup
 ```
 
-But risk, fraud, ads, and recommendation features change quickly:
+But control_state, fraud, ads, and recommendation features change quickly:
 
 - change the serving window from 30 minutes to 10 minutes
 - add a filter such as `country=US`
@@ -260,7 +260,7 @@ With an offline-only pipeline, many of these changes require a new job and a new
 
 TemporalStore still should export or mirror events to offline storage for training and audit. The difference is that offline no longer has to be the only place where the feature is computed.
 
-## Example: One Cluster For Risk And Feature Serving
+## Example: One Cluster For ControlState And Feature Serving
 
 ```mermaid
 sequenceDiagram
@@ -280,7 +280,7 @@ sequenceDiagram
 
 One cluster can serve:
 
-- risk counters for login abuse
+- control_state counters for login abuse
 - frequency caps for ads
 - latest profile features for ranking
 - long behavior sequences for inference
@@ -344,7 +344,7 @@ The pitch:
 
 ```text
 One online cluster for high-cardinality temporal features,
-risk counters, frequency caps, long sequence features,
+control_state counters, frequency caps, long sequence features,
 and persisted feature serving.
 ```
 

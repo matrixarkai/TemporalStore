@@ -81,7 +81,7 @@ PDF_FIXTURES = [
             "Owner: Bob owns procurement and vendor coordination.",
             "Budget: Current approved cap is 45000 dollars.",
             "Deadline: Purchase order must be ready by July 15, 2026.",
-            "Risk: Vendor selection is blocked if finance approval is not attached.",
+            "ControlState: Vendor selection is blocked if finance approval is not attached.",
         ],
     },
     {

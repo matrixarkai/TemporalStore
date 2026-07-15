@@ -1903,12 +1903,12 @@ fn is_raft_read_command(command: &Command) -> bool {
             | Command::IpsSnapshot { .. }
             | Command::IpsStat { .. }
             | Command::IpsFilter { .. }
-            | Command::RiskCount { .. }
-            | Command::RiskQuery { .. }
-            | Command::RiskDetail { .. }
-            | Command::RiskSetAndGet { .. }
-            | Command::RiskFamilyQuery { .. }
-            | Command::RiskManager { .. }
+            | Command::ControlStateCount { .. }
+            | Command::ControlStateQuery { .. }
+            | Command::ControlStateDetail { .. }
+            | Command::ControlStateSetAndGet { .. }
+            | Command::ControlStateFamilyQuery { .. }
+            | Command::ControlStateManager { .. }
     )
 }
 
@@ -2678,7 +2678,7 @@ fn send_heartbeat(
                 + stats.feature_records
                 + stats.sequence_records
                 + stats.ips_records
-                + stats.risk_records) as u64,
+                + stats.control_state_records) as u64,
             memory_bytes: stats.cache.memory_bytes as u64,
         })
         .collect();

@@ -429,10 +429,10 @@ fn is_write(command: &Command) -> bool {
             | Command::IpsLoad { .. }
             | Command::IpsRemove { .. }
             | Command::IpsDelete { .. }
-            | Command::RiskIncrement { .. }
-            | Command::RiskIncrementWithOptions { .. }
-            | Command::RiskSet { .. }
-            | Command::RiskSetAndGet { .. }
+            | Command::ControlStateIncrement { .. }
+            | Command::ControlStateIncrementWithOptions { .. }
+            | Command::ControlStateSet { .. }
+            | Command::ControlStateSetAndGet { .. }
     )
 }
 
