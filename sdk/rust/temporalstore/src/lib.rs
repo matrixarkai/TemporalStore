@@ -49,6 +49,8 @@ mod direct_key_value;
 #[cfg(feature = "direct")]
 mod direct_lifecycle;
 #[cfg(feature = "direct")]
+mod direct_matrixark_guard;
+#[cfg(feature = "direct")]
 mod direct_sequence_features;
 #[cfg(feature = "direct")]
 mod direct_set;
