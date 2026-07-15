@@ -61,6 +61,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_local_replay as local_replay_helpers
 
 try:
+    from tools import matrixark_mcp_local_read as local_read_helpers
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_local_read as local_read_helpers
+
+try:
     from tools import matrixark_mcp_local_runtime as local_runtime_helpers
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_local_runtime as local_runtime_helpers
@@ -248,27 +253,10 @@ class MatrixArkLocalAdapter:
         return {"status": "ready", "backend": "local", "reason": reason}
 
     def recent_records(self, limit: int = 128) -> list[Json]:
-        limit = max(1, int(limit or 1))
-        records = self.read_all()
-        if len(records) <= limit:
-            return records
-        return records[-limit:] if LOCAL_READ_CACHE_COPY else list(records[-limit:])
+        return local_read_helpers.recent_records(self, limit, copy_slice=LOCAL_READ_CACHE_COPY)
 
     def read_all(self) -> list[Json]:
-        cache_key = str(self.event_log.resolve())
-        try:
-            stat = self.event_log.stat()
-        except FileNotFoundError:
-            local_cache_helpers.clear_read_cache_for_missing_log(self)
-            return []
-        records = []
-        with self._event_log_lock:
-            with self.event_log.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    line = line.strip()
-                    if line:
-                        records.append(json.loads(line))
-        return compact_latest_value_records(records)
+        return local_read_helpers.read_all(self)
 
     def retrieval_records(
         self,
@@ -286,44 +274,15 @@ class MatrixArkLocalAdapter:
         behavior by filtering the JSONL record log before Python scoring.
         """
 
-        allowed_types = record_types or RETRIEVAL_HOT_RECORD_TYPES
-        cache_key = retrieval_record_helpers.retrieval_records_cache_key(
-            generation=self._retrieval_records_cache_generation,
+        return local_read_helpers.retrieval_records(
+            self,
             scope=scope,
-            allowed_types=allowed_types,
+            record_types=record_types,
             secondary_index_groups=secondary_index_groups,
             selected_node_hashes=selected_node_hashes,
+            allow_broad_scan_fallback=allow_broad_scan_fallback,
+            hot_record_types=RETRIEVAL_HOT_RECORD_TYPES,
         )
-        with self._retrieval_records_cache_lock:
-            cached = self._retrieval_records_cache.get(cache_key)
-            if cached is not None:
-                scan_stats = dict(cached.get("scan_stats", {}))
-                scan_stats["cache_hit"] = True
-                return {"records": cached.get("records", []), "scan_stats": scan_stats}
-        filtered, filter_stats = retrieval_record_helpers.filter_retrieval_records(
-            self.read_all(),
-            scope=scope,
-            allowed_types=allowed_types,
-            selected_node_hashes=selected_node_hashes,
-        )
-        result = {
-            "records": filtered,
-            "scan_stats": {
-                "backend": getattr(self, "_backend_label", lambda: "local")(),
-                "execution_mode": "adapter_prefilter_cached",
-                "native_pushdown": False,
-                "broad_scan_fallback_allowed": True if allow_broad_scan_fallback is None else bool(allow_broad_scan_fallback),
-                "broad_scan_used": True,
-                "broad_scan_reason": "local_reference_adapter",
-                "record_types": sorted(allowed_types),
-                **filter_stats,
-                "secondary_index_groups_supplied": len(secondary_index_groups or []),
-                "selected_node_hashes_supplied": len(selected_node_hashes or set()),
-            },
-        }
-        with self._retrieval_records_cache_lock:
-            self._retrieval_records_cache[cache_key] = result
-        return result
 
     def find_latest_entity(self, *, node_hash: int, entity_type: str, entity_name: str) -> Json | None:
         entity_hash = stable_hash(f"{node_hash}:{entity_type}:{entity_name}")
