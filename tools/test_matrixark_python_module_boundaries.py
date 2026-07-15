@@ -73,6 +73,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIs(core_mod.compact_model_slug, models_mod.compact_model_slug)
         self.assertIs(core_mod.context_index_name, indexing_mod.context_index_name)
         self.assertIs(core_mod.limited_index_terms, indexing_mod.limited_index_terms)
+        self.assertIs(core_mod.compact_context_index_postings, indexing_mod.compact_context_index_postings)
+        self.assertIs(core_mod.context_index_posting_record, indexing_mod.context_index_posting_record)
 
     def test_mcp_entrypoint_stays_small(self) -> None:
         server_lines = (TOOLS_DIR / "matrixark_mcp_server.py").read_text(encoding="utf-8").splitlines()
