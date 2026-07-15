@@ -5,8 +5,9 @@ use serde_json::Value;
 use crate::matrixark_rust_proxy_pack::{
     candidate_text, context_class_name, sparse_query_score,
 };
-use crate::matrixark_rust_proxy_scope::{
-    continuity_boost, cross_session_rerank_boost, session_continuity_status,
+use crate::matrixark_rust_proxy_scope::session_continuity_status;
+use crate::matrixark_rust_proxy_scope_boost::{
+    continuity_boost, cross_session_rerank_boost,
 };
 
 pub(crate) struct ScoredCandidate<'a> {
