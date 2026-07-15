@@ -1,0 +1,569 @@
+use std::collections::{HashMap, HashSet};
+
+use serde_json::{json, Value};
+use temporalstore::Client;
+
+use crate::matrixark_rust_proxy_candidates::{record_node_hash, record_ref_hash};
+use crate::matrixark_rust_proxy_metrics::unix_ms;
+use crate::matrixark_rust_proxy_pack::{
+    candidate_text, context_class_name, is_serving_selected_ref_class, pack_ref_from_record,
+    sparse_query_score, token_estimate,
+};
+use crate::matrixark_rust_proxy_protocol::Command;
+use crate::matrixark_rust_proxy_scan::scan_matrixark_candidates;
+use crate::matrixark_rust_proxy_scope::{
+    continuity_boost, cross_session_rerank_boost, json_field, parse_cross_session_policy,
+    record_scope_string, session_continuity_status, session_scope_mode,
+};
+
+fn required(value: Option<String>, name: &str) -> Result<String, String> {
+    value
+        .filter(|item| !item.is_empty())
+        .ok_or_else(|| format!("missing {name}"))
+}
+
+fn cross_session_key(record: &Value) -> String {
+    record_scope_string(record, "session_id")
+        .or_else(|| record_scope_string(record, "scope_key"))
+        .or_else(|| record_node_hash(record).map(|node| format!("node:{node}")))
+        .unwrap_or_else(|| "unknown_cross_session".to_string())
+}
+
+fn retrieve_context_pack_via_sdk_native(
+    client: &Client,
+    command: &Command,
+) -> Result<Value, String> {
+    let count_key = required(command.count_key.clone(), "count_key")?;
+    let record_hash_key = required(command.record_hash_key.clone(), "record_hash_key")?;
+    let shard_size = command.shard_size.unwrap_or(1024).max(1) as usize;
+    let request = command.record.clone().unwrap_or_else(|| json!({}));
+    let raw = client
+        .matrixark_retrieve_context_pack(
+            &count_key,
+            &record_hash_key,
+            shard_size,
+            &request.to_string(),
+        )
+        .map_err(|err| err.to_string())?;
+    let mut response: Value = serde_json::from_str(&raw)
+        .map_err(|err| format!("native retrieve context pack returned invalid JSON: {err}"))?;
+    if response.get("context_pack").is_none() {
+        response = json!({
+            "context_pack": response,
+        });
+    }
+    if let Some(obj) = response.as_object_mut() {
+        obj.insert("ok".to_string(), Value::Bool(true));
+        obj.insert("native_pack_assembly".to_string(), Value::Bool(true));
+        obj.insert(
+            "rust_proxy_native_sdk_path".to_string(),
+            Value::String("temporalstore_matrixark_retrieve_context_pack".to_string()),
+        );
+        obj.insert("cache_hit".to_string(), Value::Bool(true));
+    }
+    if let Some(pack) = response
+        .get_mut("context_pack")
+        .and_then(Value::as_object_mut)
+    {
+        pack.entry("context_pack_assembly".to_string())
+            .or_insert_with(|| Value::String("native_cpp_direct_via_rust_proxy".to_string()));
+        let selected_count = pack
+            .get("selected_ref_count")
+            .and_then(Value::as_u64)
+            .or_else(|| {
+                pack.get("selected_refs")
+                    .and_then(Value::as_array)
+                    .map(|refs| refs.len() as u64)
+            })
+            .unwrap_or(0);
+        pack.insert("selected_ref_count".to_string(), json!(selected_count));
+        let recall_policy = pack
+            .entry("recall_policy".to_string())
+            .or_insert_with(|| json!({}));
+        if let Some(recall_obj) = recall_policy.as_object_mut() {
+            recall_obj.insert(
+                "rust_proxy_native_sdk_path".to_string(),
+                Value::String("temporalstore_matrixark_retrieve_context_pack".to_string()),
+            );
+            recall_obj.insert("python_hot_path_records".to_string(), json!(0));
+        }
+    }
+    Ok(response)
+}
+
+pub(crate) fn retrieve_context_pack_native(
+    client: &Client,
+    command: &Command,
+) -> Result<Value, String> {
+    let use_sdk_native = std::env::var("MATRIXARK_RUST_PROXY_DISABLE_SDK_NATIVE_PACK")
+        .map(|value| {
+            !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes"
+            )
+        })
+        .unwrap_or(true);
+    if use_sdk_native {
+        match retrieve_context_pack_via_sdk_native(client, command) {
+            Ok(response) => return Ok(response),
+            Err(err) => {
+                if std::env::var("MATRIXARK_RUST_PROXY_DISABLE_LEGACY_PACK_FALLBACK")
+                    .map(|value| {
+                        matches!(
+                            value.trim().to_ascii_lowercase().as_str(),
+                            "1" | "true" | "yes"
+                        )
+                    })
+                    .unwrap_or(false)
+                {
+                    return Err(err);
+                }
+            }
+        }
+    }
+    let request = command.record.clone().unwrap_or_else(|| json!({}));
+    let query = request
+        .get("query")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let query_terms: HashSet<String> = query
+        .to_ascii_lowercase()
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|part| part.len() > 2)
+        .map(str::to_string)
+        .collect();
+    let remote_budget = json_field(&request, &["local_budget", "remote_budget_tokens"])
+        .and_then(Value::as_u64)
+        .or_else(|| request.get("max_context_tokens").and_then(Value::as_u64))
+        .unwrap_or(4000);
+    let max_refs = json_field(&request, &["ranking", "max_selected_refs"])
+        .and_then(Value::as_u64)
+        .unwrap_or(24)
+        .max(1);
+    let max_global_candidates = json_field(&request, &["ranking", "max_global_candidates"])
+        .and_then(Value::as_u64)
+        .unwrap_or(512)
+        .max(1);
+    let min_similarity_score = json_field(&request, &["ranking", "min_similarity_score"])
+        .and_then(Value::as_f64)
+        .unwrap_or(0.20)
+        .clamp(0.0, 1.0);
+    let budget_fill_policy = json_field(&request, &["ranking", "budget_fill_policy"])
+        .and_then(Value::as_str)
+        .filter(|policy| *policy == "quality_first" || *policy == "force_fill")
+        .unwrap_or("quality_first")
+        .to_string();
+    let question_type = request
+        .get("question_type")
+        .and_then(Value::as_str)
+        .unwrap_or("fact")
+        .to_string();
+    let mut scan_command = command.clone();
+    scan_command.scope = request
+        .get("scope")
+        .cloned()
+        .or_else(|| command.scope.clone());
+    scan_command.secondary_index_groups = request
+        .get("secondary_index_groups")
+        .and_then(Value::as_array)
+        .map(|groups| {
+            groups
+                .iter()
+                .map(|group| {
+                    group
+                        .as_array()
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_string)
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                })
+                .collect()
+        })
+        .or_else(|| command.secondary_index_groups.clone());
+    if scan_command
+        .record_types
+        .as_ref()
+        .map(Vec::is_empty)
+        .unwrap_or(true)
+    {
+        scan_command.record_types = Some(vec![
+            "context_compression_event".to_string(),
+            "context_entity".to_string(),
+            "context_event".to_string(),
+            "context_segment".to_string(),
+            "context_summary".to_string(),
+            "resource_chunk".to_string(),
+            "skill_section".to_string(),
+            "context_index".to_string(),
+        ]);
+    }
+    let scan = scan_matrixark_candidates(client, &scan_command)?;
+    let empty_records = Vec::new();
+    let records = scan
+        .get("records")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty_records);
+    let scope_for_continuity = scan_command.scope.clone();
+    let cross_policy = parse_cross_session_policy(
+        &request,
+        scope_for_continuity.as_ref(),
+        remote_budget,
+        &question_type,
+    );
+    let mut scored: Vec<(f64, &Value, String, f64, f64)> = records
+        .iter()
+        .filter(|record| {
+            matches!(
+                record
+                    .get("record_type")
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
+                "context_compression_event"
+                    | "context_entity"
+                    | "context_event"
+                    | "context_segment"
+                    | "context_summary"
+                    | "resource_chunk"
+                    | "skill_section"
+            ) && !candidate_text(record).is_empty()
+        })
+        .map(|record| {
+            let text = candidate_text(record);
+            let mut score = sparse_query_score(&query_terms, &text);
+            if matches!(
+                record.get("record_type").and_then(Value::as_str),
+                Some("context_entity")
+            ) {
+                score += 0.08;
+            }
+            if matches!(
+                record.get("record_type").and_then(Value::as_str),
+                Some("context_compression_event")
+            ) {
+                score += 0.06;
+            }
+            let context_class = context_class_name(record);
+            let session_continuity =
+                session_continuity_status(record, scope_for_continuity.as_ref());
+            let continuity_boost_value =
+                continuity_boost(record, &context_class, &session_continuity);
+            score += continuity_boost_value;
+            let cross_session_rerank_boost_value = cross_session_rerank_boost(
+                record,
+                &context_class,
+                &session_continuity,
+                &question_type,
+            );
+            score += cross_session_rerank_boost_value;
+            (
+                score,
+                record,
+                session_continuity,
+                continuity_boost_value,
+                cross_session_rerank_boost_value,
+            )
+        })
+        .filter(|(score, _, _, _, _)| *score >= min_similarity_score)
+        .collect();
+    scored.sort_by(|left, right| {
+        right
+            .0
+            .partial_cmp(&left.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    if scored.len() > max_global_candidates as usize {
+        scored.truncate(max_global_candidates as usize);
+    }
+    let mut selected = Vec::new();
+    let mut selected_signatures: HashSet<String> = HashSet::new();
+    let mut dropped_duplicate_ref = 0_u64;
+    let mut selected_counts: HashMap<String, u64> = HashMap::new();
+    let mut selected_nodes: HashSet<u64> = HashSet::new();
+    let mut dropped_over_budget = 0_u64;
+    let mut dropped_cross_budget = 0_u64;
+    let mut dropped_cross_session_cap = 0_u64;
+    let mut dropped_cross_candidate_cap = 0_u64;
+    let mut dropped_low_score = 0_u64;
+    let mut dropped_policy_ref = 0_u64;
+    let mut used_tokens = 0_u64;
+    let mut cross_used_tokens = 0_u64;
+    let mut cross_selected_refs = 0_u64;
+    let mut entity_bridge_selected_refs = 0_u64;
+    let mut selected_cross_sessions: HashSet<String> = HashSet::new();
+    for (
+        score,
+        record,
+        session_continuity,
+        continuity_boost_value,
+        cross_session_rerank_boost_value,
+    ) in scored
+    {
+        if selected.len() as u64 >= max_refs {
+            break;
+        }
+        let text = candidate_text(record);
+        let tokens = token_estimate(&text);
+        let context_class = context_class_name(record);
+        if !is_serving_selected_ref_class(&context_class) {
+            dropped_policy_ref += 1;
+            continue;
+        }
+        let is_cross_session = session_continuity == "cross_session";
+        let record_type = record
+            .get("record_type")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let is_entity_bridge = is_cross_session && context_class == "entity";
+        let is_cross_session_raw_evidence =
+            is_cross_session && matches!(record_type, "context_event" | "context_segment");
+        let cross_key = if is_cross_session {
+            cross_session_key(record)
+        } else {
+            String::new()
+        };
+        if is_cross_session && !cross_policy.enabled {
+            dropped_cross_budget += 1;
+            continue;
+        }
+        if is_cross_session && cross_policy.min_score > 0.0 && score < cross_policy.min_score {
+            dropped_low_score += 1;
+            continue;
+        }
+        if is_cross_session_raw_evidence
+            && cross_policy.raw_evidence_min_score > 0.0
+            && score < cross_policy.raw_evidence_min_score
+        {
+            dropped_low_score += 1;
+            continue;
+        }
+        if is_cross_session
+            && cross_policy.max_candidates > 0
+            && cross_selected_refs >= cross_policy.max_candidates
+        {
+            dropped_cross_candidate_cap += 1;
+            continue;
+        }
+        if is_cross_session
+            && cross_policy.max_sessions > 0
+            && !selected_cross_sessions.contains(&cross_key)
+            && selected_cross_sessions.len() as u64 >= cross_policy.max_sessions
+        {
+            dropped_cross_session_cap += 1;
+            continue;
+        }
+        if is_cross_session
+            && cross_policy.budget_tokens > 0
+            && cross_used_tokens + tokens > cross_policy.budget_tokens
+            && !(is_entity_bridge
+                && entity_bridge_selected_refs < cross_policy.min_entity_bridge_refs)
+        {
+            dropped_cross_budget += 1;
+            continue;
+        }
+        let ref_signature = format!(
+            "{}:{}",
+            context_class,
+            record_ref_hash(record).unwrap_or_else(|| {
+                record
+                    .get("record_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string()
+            })
+        );
+        if !selected_signatures.insert(ref_signature) {
+            dropped_duplicate_ref += 1;
+            continue;
+        }
+        if used_tokens + tokens > remote_budget {
+            dropped_over_budget += 1;
+            continue;
+        }
+        used_tokens += tokens;
+        if is_cross_session {
+            cross_used_tokens += tokens;
+            cross_selected_refs += 1;
+            selected_cross_sessions.insert(cross_key);
+            if is_entity_bridge {
+                entity_bridge_selected_refs += 1;
+            }
+        }
+        *selected_counts.entry(context_class).or_default() += 1;
+        if let Some(node_hash) = record_node_hash(record) {
+            selected_nodes.insert(node_hash);
+        }
+        selected.push(pack_ref_from_record(
+            record,
+            score,
+            "native_rust_proxy_score_pack",
+            &session_continuity,
+            continuity_boost_value,
+            cross_session_rerank_boost_value,
+        ));
+    }
+    let context_pack_id = format!("rust-native-{}-{}", unix_ms(), selected.len());
+    let mut scan_stats = scan.get("scan_stats").cloned().unwrap_or_else(|| json!({}));
+    if let Some(stats) = scan_stats.as_object_mut() {
+        stats.insert("native_pack_assembly".to_string(), json!(true));
+        stats.insert(
+            "pack_assembly_location".to_string(),
+            json!("rust_proxy_native"),
+        );
+        stats.insert("next_native_gap".to_string(), json!(""));
+    }
+    let pack = json!({
+        "context_pack_id": context_pack_id,
+        "query": query,
+        "question_type": request.get("question_type").cloned().unwrap_or_else(|| json!("fact")),
+        "selected_ref_counts": selected_counts,
+        "remote_context_refs": selected,
+        "selected_refs": selected,
+        "dropped_refs": {
+            "over_budget": dropped_over_budget,
+            "cross_session_budget": dropped_cross_budget,
+            "cross_session_session_cap": dropped_cross_session_cap,
+            "cross_session_candidate_cap": dropped_cross_candidate_cap,
+            "low_score": dropped_low_score,
+            "duplicate_ref": dropped_duplicate_ref,
+            "policy_ref": dropped_policy_ref,
+            "reason_counts": {
+                "over_budget": dropped_over_budget,
+                "cross_session_budget": dropped_cross_budget,
+                "cross_session_session_cap": dropped_cross_session_cap,
+                "cross_session_candidate_cap": dropped_cross_candidate_cap,
+                "low_score": dropped_low_score,
+                "duplicate_ref": dropped_duplicate_ref,
+                "policy_ref": dropped_policy_ref
+            }
+        },
+        "used_context_tokens": used_tokens,
+        "used_remote_context_tokens": used_tokens,
+        "remote_context_budget_tokens": remote_budget,
+        "requested_max_context_tokens": request.get("max_context_tokens").cloned().unwrap_or_else(|| json!(remote_budget)),
+        "packing_policy": "native_rust_proxy_question_type_aware",
+        "context_pack_assembly": "native_rust_proxy",
+        "context_sources_order": ["entities", "events", "segments", "resources", "skills", "summaries"],
+        "recall_policy": {
+            "native_context_pack": {
+                "enabled": true,
+                "backend": "rust_proxy",
+                "scan_filter_score_pack": true
+            },
+            "native_response_contract": {
+                "raw_records_returned_to_python": false,
+                "python_hot_path_records": 0,
+                "python_role": "dispatch_request_receive_context_pack",
+                "backend_role": "scan_filter_score_pack"
+            },
+            "scan_stats": scan_stats,
+            "rerank": {
+                "enabled": true,
+                "mode": "native_weighted_recall_plus_cross_session_rerank",
+                "cross_session_rerank_enabled": true,
+                "cross_session_signals": ["entity_state", "resource_fact_citation", "answer_event", "compression", "summary_demotion"],
+                "heavy_rerank_enabled": false
+            },
+            "ranking": {
+                "min_similarity_score": min_similarity_score,
+                "max_global_candidates": max_global_candidates,
+                "max_selected_refs": max_refs,
+                "budget_fill_policy": budget_fill_policy,
+                "quality_first_budget_underfill_allowed": budget_fill_policy == "quality_first"
+            },
+            "session_continuity": {
+                "mode": scan_command.scope.as_ref().map(session_scope_mode).unwrap_or("only"),
+                "policy": "same-session continuity first; entity state bridges cross-session memory; cross-session evidence remains eligible under account/tenant/user scope",
+                "same_session_selected_ref_count": selected.iter().filter(|item| item.get("session_continuity").and_then(Value::as_str) == Some("same_session")).count(),
+                "cross_session_selected_ref_count": cross_selected_refs,
+                "entity_bridge_selected_ref_count": entity_bridge_selected_refs
+            },
+            "cross_session": {
+                "enabled": cross_policy.enabled,
+                "mode": if cross_policy.enabled { "prefer" } else { "disabled" },
+                "budget_ratio": cross_policy.budget_ratio,
+                "max_budget_ratio": cross_policy.max_budget_ratio,
+                "budget_tokens": cross_policy.budget_tokens,
+                "remote_budget_tokens": remote_budget,
+                "max_budget_tokens": cross_policy.max_budget_tokens,
+                "max_sessions": cross_policy.max_sessions,
+                "max_candidates": cross_policy.max_candidates,
+                "min_score": cross_policy.min_score,
+                "raw_evidence_min_score": cross_policy.raw_evidence_min_score,
+                "parallelism": cross_policy.parallelism,
+                "selected_tokens": cross_used_tokens,
+                "selected_ref_count": cross_selected_refs,
+                "selected_session_count": selected_cross_sessions.len() as u64,
+                "entity_bridge_selected_ref_count": entity_bridge_selected_refs,
+                "strategy": "same_session_first_entity_bridge_then_bounded_cross_session",
+                "budget_guidance": "cross-session budget is a maximum cap, not a quota: 12% normally, 15% for broad/evidence, 20% for current-state/latest/multi-hop/date; spend it only on high-quality refs, prefer entities/summaries/compressions, and require high-confidence raw events"
+            },
+            "tree_traversal": {
+                "enabled": true,
+                "native_backend": true,
+                "fallback_to_flat": false,
+                "selected_node_count": selected_nodes.len() as u64,
+                "selected_leaf_count": selected_nodes.len() as u64,
+                "summary_embeddings": ["node_l0", "node_l1"]
+            },
+            "secondary_index_filter": {
+                "enabled": true,
+                "native_backend": true,
+                "applied_before_embedding_scoring": true,
+                "matched_candidate_count": scan.get("scan_stats").and_then(|v| v.get("secondary_index_matched_candidate_count")).cloned().unwrap_or_else(|| json!(0)),
+                "dropped_candidate_count": scan.get("scan_stats").and_then(|v| v.get("secondary_index_dropped_candidate_count")).cloned().unwrap_or_else(|| json!(0))
+            }
+        },
+        "quality_warnings": []
+    });
+    let scan_dropped_count = scan_stats
+        .get("dropped_by_type")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        + scan_stats
+            .get("dropped_by_scope")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+        + scan_stats
+            .get("selected_node_dropped_candidate_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+        + scan_stats
+            .get("secondary_index_dropped_candidate_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+    let dropped_ref_count = dropped_over_budget
+        + dropped_cross_budget
+        + dropped_cross_session_cap
+        + dropped_cross_candidate_cap
+        + dropped_policy_ref
+        + dropped_duplicate_ref
+        + scan_dropped_count;
+    let scan_cache_hit = scan_stats
+        .get("native_filtered_scan_cache_hit")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || scan_stats
+            .get("native_scan_record_cache_hit")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    Ok(json!({
+        "ok": true,
+        "count": selected.len(),
+        "native_pack_assembly": true,
+        "raw_records_returned": false,
+        "python_hot_path_records": 0,
+        "scan_count": scan_stats.get("scanned_records").and_then(Value::as_u64).unwrap_or(0),
+        "cache_hit": scan_cache_hit,
+        "cache_hit_used": scan_cache_hit,
+        "selected_ref_count": selected.len(),
+        "dropped_ref_count": dropped_ref_count,
+        "dropped_duplicate_ref_count": dropped_duplicate_ref,
+        "context_pack": pack,
+        "scan_stats": scan_stats
+    }))
+}
