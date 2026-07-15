@@ -1,6 +1,7 @@
 use serde_json::Value;
 
 use crate::matrixark_rust_proxy_candidates::record_node_hash;
+use crate::matrixark_rust_proxy_cross_session_budget::default_cross_session_budget_ratio;
 use crate::matrixark_rust_proxy_scope::record_scope_string;
 use crate::matrixark_rust_proxy_scope::session_scope_mode;
 
@@ -36,16 +37,7 @@ pub(crate) fn parse_cross_session_policy(
     let config = request
         .get("cross_session")
         .filter(|value| value.is_object());
-    let mut budget_ratio = if matches!(
-        question_type,
-        "current_state" | "latest" | "multi_hop" | "date"
-    ) {
-        0.20
-    } else if matches!(question_type, "broad_exploration" | "evidence") {
-        0.15
-    } else {
-        0.12
-    };
+    let mut budget_ratio = default_cross_session_budget_ratio(question_type);
     let max_budget_ratio = config
         .and_then(|cfg| cfg.get("max_budget_ratio"))
         .and_then(Value::as_f64)
