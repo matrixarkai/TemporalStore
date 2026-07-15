@@ -17,6 +17,8 @@ mod matrixark_rust_proxy_cross_session;
 mod matrixark_rust_proxy_metrics;
 #[path = "../matrixark_rust_proxy_metrics_backend_render.rs"]
 mod matrixark_rust_proxy_metrics_backend_render;
+#[path = "../matrixark_rust_proxy_metrics_core_render.rs"]
+mod matrixark_rust_proxy_metrics_core_render;
 #[path = "../matrixark_rust_proxy_metrics_format.rs"]
 mod matrixark_rust_proxy_metrics_format;
 #[path = "../matrixark_rust_proxy_metrics_render.rs"]
