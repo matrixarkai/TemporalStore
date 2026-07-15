@@ -49,6 +49,12 @@ try:
     from tools.matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from tools.matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
     from tools.matrixark_mcp_metrics import MatrixArkServiceMetrics
+    from tools.matrixark_mcp_latest_context_state import (
+        append_log_records_without_latest_state,
+        latest_context_state_entries,
+        latest_context_state_field,
+        latest_context_state_storage_key,
+    )
     from tools.matrixark_mcp_native_side_index import (
         context_index_lookup_key,
         context_placement_lookup_key,
@@ -77,6 +83,12 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
     from matrixark_mcp_metrics import MatrixArkServiceMetrics
+    from matrixark_mcp_latest_context_state import (
+        append_log_records_without_latest_state,
+        latest_context_state_entries,
+        latest_context_state_field,
+        latest_context_state_storage_key,
+    )
     from matrixark_mcp_native_side_index import (
         context_index_lookup_key,
         context_placement_lookup_key,
@@ -1064,55 +1076,24 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         return entries
 
     def _latest_context_state_key(self) -> str:
-        return f"{self._storage_prefix}:context_latest_state"
+        return latest_context_state_storage_key(self._storage_prefix)
 
     def _latest_context_state_field(self, record: Json) -> str | None:
-        key = latest_context_state_key(record)
-        if key is None:
-            return None
-        return ":".join(str(part) for part in key)
-
-    def _latest_context_state_entries(self, records: list[Json]) -> list[Json]:
-        entries: list[Json] = []
-        for record in compact_latest_context_state_records(records):
-            field = self._latest_context_state_field(record)
-            if not field:
-                continue
-            payload_record = dict(record)
-            payload_record.pop("summary_version_hash", None)
-            entries.append(
-                {
-                    "key": self._latest_context_state_key(),
-                    "field": field,
-                    "value": json.dumps(payload_record, sort_keys=True, separators=(",", ":")),
-                    "storage_route": record.get("storage_route") if isinstance(record.get("storage_route"), dict) else {},
-                }
-            )
-        return entries
+        return latest_context_state_field(record)
 
     def _append_log_records(self, records: list[Json]) -> list[Json]:
-        return [record for record in records if latest_context_state_key(record) is None]
+        return append_log_records_without_latest_state(records)
 
     def _split_compacted_latest_context_state(self, records: list[Json]) -> tuple[list[Json], list[Json]]:
         """Split an already-compacted batch into latest-state writes and append-log rows."""
         latest_state_entries: list[Json] = []
         append_records_for_log: list[Json] = []
-        latest_state_key = self._latest_context_state_key()
         for record in records:
             field = self._latest_context_state_field(record)
             if not field:
                 append_records_for_log.append(record)
                 continue
-            payload_record = dict(record)
-            payload_record.pop("summary_version_hash", None)
-            latest_state_entries.append(
-                {
-                    "key": latest_state_key,
-                    "field": field,
-                    "value": json.dumps(payload_record, sort_keys=True, separators=(",", ":")),
-                    "storage_route": record.get("storage_route") if isinstance(record.get("storage_route"), dict) else {},
-                }
-            )
+            latest_state_entries.extend(latest_context_state_entries(self._storage_prefix, [record]))
         return latest_state_entries, append_records_for_log
 
     def _load_latest_context_state_records(self) -> list[Json]:
