@@ -47,6 +47,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         ingestion_mod = importlib.import_module("tools.matrixark_mcp_ingestion")
         retrieval_mod = importlib.import_module("tools.matrixark_mcp_retrieval")
         requests_mod = importlib.import_module("tools.matrixark_mcp_requests")
+        validation_mod = importlib.import_module("tools.matrixark_mcp_validation")
         identity_mod = importlib.import_module("tools.matrixark_mcp_identity")
         context_pack_mod = importlib.import_module("tools.matrixark_mcp_context_pack")
         errors_mod = importlib.import_module("tools.matrixark_mcp_errors")
@@ -72,6 +73,11 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(callable(backends_mod.build_mcp_adapter))
         self.assertTrue(callable(dispatch_mod.dispatch_matrixark_tool))
         self.assertTrue(callable(requests_mod.normalize_mcp_tool_request))
+        self.assertIs(core_mod.require_string, validation_mod.require_string)
+        self.assertIs(core_mod.require_messages, validation_mod.require_messages)
+        self.assertIs(core_mod.optional_object, validation_mod.optional_object)
+        self.assertIs(core_mod.optional_string, validation_mod.optional_string)
+        self.assertIs(core_mod.optional_string_list, validation_mod.optional_string_list)
         self.assertIs(server_mod.stable_hash, identity_mod.stable_hash)
         self.assertIs(core_mod.canonical_scope_key, identity_mod.canonical_scope_key)
         self.assertIs(core_mod.compact_context_pack_refs, context_pack_mod.compact_context_pack_refs)
@@ -116,6 +122,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "matrixark_mcp_backends.py",
             "matrixark_mcp_dispatch.py",
             "matrixark_mcp_requests.py",
+            "matrixark_mcp_validation.py",
             "matrixark_mcp_ingestion.py",
             "matrixark_mcp_retrieval.py",
             "matrixark_mcp_admin.py",

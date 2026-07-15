@@ -14,7 +14,6 @@ try:
         local_identity_defaults,
         normalize_storage_options,
         now_ms,
-        optional_object,
         stable_hash,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
@@ -25,9 +24,14 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         local_identity_defaults,
         normalize_storage_options,
         now_ms,
-        optional_object,
         stable_hash,
     )
+
+try:
+    from tools.matrixark_mcp_validation import optional_object
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_validation import optional_object
+
 
 
 __all__ = [
