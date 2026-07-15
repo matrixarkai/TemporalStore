@@ -58,6 +58,8 @@ mod proxy_control_state;
 #[cfg(feature = "proxy")]
 mod proxy_helpers;
 #[cfg(feature = "proxy")]
+mod proxy_ips;
+#[cfg(feature = "proxy")]
 mod proxy_key_value;
 #[cfg(feature = "proxy")]
 mod proxy_sequence_features;
