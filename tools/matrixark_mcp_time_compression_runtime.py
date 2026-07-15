@@ -331,3 +331,62 @@ def auto_time_compress_node_events(
             for item in created
         ],
     }
+
+
+def append_recall_reinforcement_markers(
+    *,
+    append_many: AppendManyRecords,
+    context_pack_id: str,
+    selected_refs: list[Json],
+    reinforced_at_ms: int,
+    protect_ms: int,
+) -> Json:
+    protect_ms = max(0, int(protect_ms))
+    protected_until_ms = reinforced_at_ms + protect_ms if protect_ms else 0
+    records: list[Json] = []
+    seen: set[tuple[int, int]] = set()
+    for ref in selected_refs:
+        source_ids: list[int] = []
+        if ref.get("ref_type") == "event" and ref.get("ref_hash") is not None:
+            try:
+                source_ids.append(int(ref.get("ref_hash")))
+            except (TypeError, ValueError):
+                pass
+        for event_id in ref.get("source_event_ids", []) or []:
+            try:
+                source_ids.append(int(event_id))
+            except (TypeError, ValueError):
+                pass
+        for event_id in source_ids:
+            try:
+                node_hash = int(ref.get("node_hash") or 0)
+            except (TypeError, ValueError):
+                node_hash = 0
+            key = (event_id, node_hash)
+            if key in seen:
+                continue
+            seen.add(key)
+            records.append(
+                {
+                    "record_type": "context_recall_reinforcement",
+                    "event_id_hash": event_id,
+                    "node_hash": node_hash,
+                    "node_path": ref.get("node_path", []),
+                    "context_pack_id": context_pack_id,
+                    "source_ref_type": ref.get("ref_type"),
+                    "source_ref_hash": ref.get("ref_hash"),
+                    "scope": ref.get("scope", {}),
+                    "reinforced_at_ms": reinforced_at_ms,
+                    "protected_until_ms": protected_until_ms,
+                    "reason": "selected_in_context_pack",
+                    "created_at_ms": reinforced_at_ms,
+                    "updated_at_ms": reinforced_at_ms,
+                }
+            )
+    if records:
+        append_many(records)
+    return {
+        "reinforced_event_count": len(records),
+        "protect_ms": protect_ms,
+        "protected_until_ms": protected_until_ms,
+    }
