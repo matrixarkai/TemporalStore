@@ -96,6 +96,8 @@ pub use proxy_client::{ProxyClient, ProxyOptions};
 mod rust_c_abi_exports;
 #[cfg(feature = "direct")]
 mod rust_c_abi_helpers;
+#[cfg(feature = "direct")]
+mod rust_c_abi_matrixark_exports;
 
 #[cfg(test)]
 mod client_api_tests;
