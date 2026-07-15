@@ -9,6 +9,8 @@ use temporalstore::Client;
 mod matrixark_rust_proxy_cache;
 #[path = "../matrixark_rust_proxy_candidates.rs"]
 mod matrixark_rust_proxy_candidates;
+#[path = "../matrixark_rust_proxy_command_entries.rs"]
+mod matrixark_rust_proxy_command_entries;
 #[path = "../matrixark_rust_proxy_command_stats.rs"]
 mod matrixark_rust_proxy_command_stats;
 #[path = "../matrixark_rust_proxy_cross_session.rs"]

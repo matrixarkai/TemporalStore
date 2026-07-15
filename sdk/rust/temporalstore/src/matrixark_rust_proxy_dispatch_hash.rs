@@ -1,7 +1,7 @@
 use serde_json::{json, Value};
 use temporalstore::Client;
 
-use crate::matrixark_rust_proxy_command_stats::command_entries;
+use crate::matrixark_rust_proxy_command_entries::command_entries;
 use crate::matrixark_rust_proxy_protocol::Command;
 use crate::matrixark_rust_proxy_runtime::required;
 
