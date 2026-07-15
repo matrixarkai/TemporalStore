@@ -10,6 +10,11 @@ from typing import Any
 
 Json = dict[str, Any]
 
+try:
+    from tools.matrixark_mcp_errors import MatrixArkError
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_errors import MatrixArkError
+
 
 def tokens(text: str) -> list[str]:
     return re.findall(r"[a-z0-9_]+", text.lower())
@@ -104,3 +109,36 @@ def business_score_for_candidate(candidate: Json, type_weights: Json) -> float:
         or ""
     )
     return business_type_score(type_name, type_weights)
+
+
+def numeric_field(record: Json, field: str = "value") -> float | None:
+    for source in [record, record.get("metadata", {}), record.get("envelope", {}).get("metadata", {})]:
+        if not isinstance(source, dict) or field not in source:
+            continue
+        try:
+            return float(source[field])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def apply_statistical_operator(operator: str, records: list[Json], *, field: str = "value") -> float | int | None:
+    values = [value for record in records if (value := numeric_field(record, field)) is not None]
+    op = operator.upper()
+    if op == "COUNT":
+        return len(records)
+    if not values:
+        return None
+    if op == "SUM":
+        return round(sum(values), 6)
+    if op == "AVG":
+        return round(sum(values) / len(values), 6)
+    if op == "MAX":
+        return max(values)
+    raise MatrixArkError(f"unsupported statistical operator: {operator}")
+
+
+def latest_record(records: list[Json], *, time_field: str = "updated_at_ms") -> Json | None:
+    if not records:
+        return None
+    return max(records, key=lambda record: int(record.get(time_field) or 0))

@@ -422,7 +422,10 @@ try:
         clamp01,
         cosine,
         hybrid_origin_score,
+        apply_statistical_operator,
+        latest_record,
         normalized_dense_score,
+        numeric_field,
         sparse_lexical_score,
         time_decay_score,
         tokens,
@@ -435,7 +438,10 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         clamp01,
         cosine,
         hybrid_origin_score,
+        apply_statistical_operator,
+        latest_record,
         normalized_dense_score,
+        numeric_field,
         sparse_lexical_score,
         time_decay_score,
         tokens,
@@ -2821,39 +2827,6 @@ def score_recall_candidate(candidate: Json, ranking: Json, *, reference_time_ms:
         "score": final_score,
         "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi+continuity_boost+cross_session_rerank_boost",
     }
-
-
-def numeric_field(record: Json, field: str = "value") -> float | None:
-    for source in [record, record.get("metadata", {}), record.get("envelope", {}).get("metadata", {})]:
-        if not isinstance(source, dict) or field not in source:
-            continue
-        try:
-            return float(source[field])
-        except (TypeError, ValueError):
-            return None
-    return None
-
-
-def apply_statistical_operator(operator: str, records: list[Json], *, field: str = "value") -> float | int | None:
-    values = [value for record in records if (value := numeric_field(record, field)) is not None]
-    op = operator.upper()
-    if op == "COUNT":
-        return len(records)
-    if not values:
-        return None
-    if op == "SUM":
-        return round(sum(values), 6)
-    if op == "AVG":
-        return round(sum(values) / len(values), 6)
-    if op == "MAX":
-        return max(values)
-    raise MatrixArkError(f"unsupported statistical operator: {operator}")
-
-
-def latest_record(records: list[Json], *, time_field: str = "updated_at_ms") -> Json | None:
-    if not records:
-        return None
-    return max(records, key=lambda record: int(record.get(time_field) or 0))
 
 
 def merge_ranked_paths(primary: list[Json], auxiliary: list[Json], *, total_limit: int, auxiliary_quota: int) -> list[Json]:
