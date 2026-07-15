@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from typing import Callable
+
 try:
     from tools.matrixark_mcp_core import Json, candidate_access_scope, scope_matches, stable_hash
 except ModuleNotFoundError:  # Direct script execution from tools/.
@@ -162,3 +164,34 @@ def node_summary_dirty_records(
             }
         )
     return dirty_hashes, records
+
+
+MarkNodeSummaryDirty = Callable[..., list[int]]
+
+
+def append_node_summary_embeddings(
+    *,
+    mark_node_summary_dirty: MarkNodeSummaryDirty,
+    node_path: list[str],
+    source_text: str,
+    scope: Json,
+    updated_at_ms: int,
+    source_hash_field: str,
+    source_hash: int,
+) -> Json:
+    del source_text
+    dirty_hashes = mark_node_summary_dirty(
+        node_path=node_path,
+        scope=scope,
+        updated_at_ms=updated_at_ms,
+        source_ref_type=source_hash_field.removeprefix("source_").removesuffix("_hash"),
+        source_hash_field=source_hash_field,
+        source_hash=source_hash,
+        dirty_reason="new_event",
+    )
+    return {
+        "status": "dirty_marked",
+        "dirty_hashes": dirty_hashes,
+        "refresh_result": None,
+        "async_required": True,
+    }
