@@ -41,6 +41,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 try:
     from tools.matrixark_mcp_env import env_bool, env_int, env_lower
+    from tools.matrixark_mcp_backend_metric_state import (
+        ensure_backend_metric_state,
+        initialize_backend_metric_state,
+        metric_average,
+    )
     from tools.matrixark_mcp_direct_write_queue import (
         direct_write_durable_field,
         direct_write_durable_payload,
@@ -75,6 +80,11 @@ try:
     from tools.matrixark_mcp_retrieval import native_retrieve_fallback_allowed
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_env import env_bool, env_int, env_lower
+    from matrixark_mcp_backend_metric_state import (
+        ensure_backend_metric_state,
+        initialize_backend_metric_state,
+        metric_average,
+    )
     from matrixark_mcp_direct_write_queue import (
         direct_write_durable_field,
         direct_write_durable_payload,
@@ -277,20 +287,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         self._backend_ready = False
         self._backend_ready_result: Json | None = None
         self._backend_readiness_lock = threading.RLock()
-        self._metrics_lock = threading.RLock()
-        self._metrics_started_at_ms = now_ms()
-        self._commands_total = 0
-        self._errors_total = 0
-        self._timeouts_total = 0
-        self._latency_sum_ms = 0.0
-        self._latency_max_ms = 0.0
-        self._latency_buckets = [0 for _ in MatrixArkServiceMetrics.LATENCY_BUCKETS_MS]
-        self._records_written_total = 0
-        self._records_read_total = 0
-        self._append_queue_wait_ms_total = 0.0
-        self._append_queue_wait_count = 0
-        self._append_engine_ms_total = 0.0
-        self._append_engine_count = 0
+        initialize_backend_metric_state(self, MatrixArkServiceMetrics.LATENCY_BUCKETS_MS)
 
     def __post_init__(self) -> None:
         # Direct adapter does not use the inherited JSONL path.
@@ -326,34 +323,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         return python_hot_cache_allowed(backend_label=self._backend_label())
 
     def _ensure_backend_metric_fields(self) -> None:
-        if not hasattr(self, "_metrics_lock"):
-            self._metrics_lock = threading.RLock()
-        if not hasattr(self, "_metrics_started_at_ms"):
-            self._metrics_started_at_ms = now_ms()
-        if not hasattr(self, "_commands_total"):
-            self._commands_total = 0
-        if not hasattr(self, "_errors_total"):
-            self._errors_total = 0
-        if not hasattr(self, "_timeouts_total"):
-            self._timeouts_total = 0
-        if not hasattr(self, "_latency_sum_ms"):
-            self._latency_sum_ms = 0.0
-        if not hasattr(self, "_latency_max_ms"):
-            self._latency_max_ms = 0.0
-        if not hasattr(self, "_latency_buckets"):
-            self._latency_buckets = [0 for _ in MatrixArkServiceMetrics.LATENCY_BUCKETS_MS]
-        if not hasattr(self, "_records_written_total"):
-            self._records_written_total = 0
-        if not hasattr(self, "_records_read_total"):
-            self._records_read_total = 0
-        if not hasattr(self, "_append_queue_wait_ms_total"):
-            self._append_queue_wait_ms_total = 0.0
-        if not hasattr(self, "_append_queue_wait_count"):
-            self._append_queue_wait_count = 0
-        if not hasattr(self, "_append_engine_ms_total"):
-            self._append_engine_ms_total = 0.0
-        if not hasattr(self, "_append_engine_count"):
-            self._append_engine_count = 0
+        ensure_backend_metric_state(self, MatrixArkServiceMetrics.LATENCY_BUCKETS_MS)
         if not hasattr(self, "_backend_ready"):
             self._backend_ready = False
         if not hasattr(self, "_records_cache"):
@@ -429,12 +399,16 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             self._append_engine_count += 1
 
     def _append_queue_wait_ms_avg(self) -> float:
-        count = int(getattr(self, "_append_queue_wait_count", 0) or 0)
-        return float(getattr(self, "_append_queue_wait_ms_total", 0.0) or 0.0) / count if count else 0.0
+        return metric_average(
+            getattr(self, "_append_queue_wait_ms_total", 0.0),
+            getattr(self, "_append_queue_wait_count", 0),
+        )
 
     def _append_engine_ms_avg(self) -> float:
-        count = int(getattr(self, "_append_engine_count", 0) or 0)
-        return float(getattr(self, "_append_engine_ms_total", 0.0) or 0.0) / count if count else 0.0
+        return metric_average(
+            getattr(self, "_append_engine_ms_total", 0.0),
+            getattr(self, "_append_engine_count", 0),
+        )
 
     def _observe_backend_command(self, elapsed_ms: float, *, records_written: int = 0, records_read: int = 0, failed: bool = False) -> None:
         self._ensure_backend_metric_fields()
