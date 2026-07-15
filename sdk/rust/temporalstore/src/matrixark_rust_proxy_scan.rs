@@ -7,9 +7,10 @@ use crate::matrixark_rust_proxy_cache::{
     filtered_scan_cache_key, get_filtered_scan_cache, put_filtered_scan_cache,
     scan_record_cache_key, FilteredScanCacheEntry,
 };
-use crate::matrixark_rust_proxy_candidates::{
-    node_path_matches_filters, query_node_path_filters, record_node_hash,
+use crate::matrixark_rust_proxy_candidate_node_path::{
+    node_path_matches_filters, query_node_path_filters,
 };
+use crate::matrixark_rust_proxy_candidates::record_node_hash;
 use crate::matrixark_rust_proxy_protocol::Command;
 use crate::matrixark_rust_proxy_scan_records::{
     load_scan_records, required, serving_count_key,
