@@ -747,21 +747,15 @@ class MatrixArkLocalAdapter:
         source_hash_field: str,
         source_hash: int,
     ) -> Json:
-        dirty_hashes = self.mark_node_summary_dirty(
+        return summary_runtime.append_node_summary_embeddings(
+            mark_node_summary_dirty=self.mark_node_summary_dirty,
             node_path=node_path,
+            source_text=source_text,
             scope=scope,
             updated_at_ms=updated_at_ms,
-            source_ref_type=source_hash_field.removeprefix("source_").removesuffix("_hash"),
             source_hash_field=source_hash_field,
             source_hash=source_hash,
-            dirty_reason="new_event",
         )
-        return {
-            "status": "dirty_marked",
-            "dirty_hashes": dirty_hashes,
-            "refresh_result": None,
-            "async_required": True,
-        }
 
     def refresh_summaries(self, args: Json) -> Json:
         scope = optional_object(args, "scope")

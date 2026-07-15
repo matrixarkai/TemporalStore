@@ -80,6 +80,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         serving_records_mod = importlib.import_module("tools.matrixark_mcp_serving_records")
         resources_mod = importlib.import_module("tools.matrixark_mcp_resources")
         summaries_mod = importlib.import_module("tools.matrixark_mcp_summaries")
+        summary_runtime_mod = importlib.import_module("tools.matrixark_mcp_summary_runtime")
         time_compression_runtime_mod = importlib.import_module("tools.matrixark_mcp_time_compression_runtime")
         core_mod = importlib.import_module("tools.matrixark_mcp_core")
 
@@ -215,6 +216,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIs(core_mod.summarize_text, summaries_mod.summarize_text)
         self.assertIs(core_mod.generate_time_compression_summary, summaries_mod.generate_time_compression_summary)
         self.assertIs(core_mod.node_l1_generation_policy, summaries_mod.node_l1_generation_policy)
+        self.assertTrue(callable(summary_runtime_mod.append_node_summary_embeddings))
         self.assertTrue(callable(time_compression_runtime_mod.write_time_compression))
         self.assertTrue(callable(time_compression_runtime_mod.append_recall_reinforcement_markers))
         self.assertTrue(callable(time_compression_runtime_mod.query_time_compressions))
