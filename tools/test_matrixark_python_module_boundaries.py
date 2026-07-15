@@ -198,6 +198,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "matrixark_mcp_rust_direct_client.py",
             "matrixark_mcp_rust_proxy_client.py",
             "matrixark_mcp_session_policy.py",
+            "matrixark_mcp_session_runtime.py",
             "matrixark_mcp_dashboard.py",
             "matrixark_mcp_visibility.py",
             "matrixark_mcp_retrieval_records.py",
