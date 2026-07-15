@@ -20,6 +20,7 @@ try:
         embedding_model_name,
         generate_time_compression_summary,
         scope_matches,
+        scope_from_serving_record,
         stable_hash,
         summarize_text,
     )
@@ -38,6 +39,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         embedding_model_name,
         generate_time_compression_summary,
         scope_matches,
+        scope_from_serving_record,
         stable_hash,
         summarize_text,
     )
@@ -331,6 +333,109 @@ def auto_time_compress_node_events(
             for item in created
         ],
     }
+
+
+def write_time_compression(
+    *,
+    append: AppendRecord,
+    records: list[Json],
+    scope: Json,
+    node_hash: int,
+    node_path: list[str],
+    source_start_ms: int,
+    source_end_ms: int,
+    compressed_time_ms: int,
+    max_source_events: int = 32,
+    min_confidence: float = 0.0,
+    min_importance: float = 0.0,
+    summary: str = "",
+) -> Json:
+    if source_start_ms > source_end_ms:
+        raise MatrixArkError("source_start_ms must be <= source_end_ms")
+    if max_source_events <= 0:
+        raise MatrixArkError("max_source_events must be positive")
+    debug_by_ref = {
+        record.get("ref_hash"): record.get("debug_payload", {})
+        for record in records
+        if record.get("record_type") == "context_debug_record" and record.get("ref_type") == "event"
+    }
+    source_events = []
+    event_times: dict[int, int] = {}
+    event_scopes: dict[int, Json] = {}
+    for record in records:
+        if record.get("record_type") != "context_event":
+            continue
+        if int(record.get("node_hash") or 0) != node_hash:
+            continue
+        event_hash = int(record.get("event_id_hash") or 0)
+        debug_payload = debug_by_ref.get(event_hash, {}) if event_hash else {}
+        envelope = record.get("envelope", {}) if isinstance(record.get("envelope"), dict) else debug_payload.get("envelope", {})
+        if not isinstance(envelope, dict):
+            envelope = {}
+        event_scope = envelope.get("scope", scope_from_serving_record(record))
+        if not scope_matches(event_scope, scope):
+            continue
+        event_time = int(envelope.get("ingestion_time_ms") or record.get("updated_at_ms") or 0)
+        if event_time < source_start_ms or event_time > source_end_ms:
+            continue
+        extraction = debug_payload.get("internal_extraction", {}) if isinstance(debug_payload.get("internal_extraction"), dict) else {}
+        confidence = float(extraction.get("confidence", record.get("confidence", 1.0)) or 1.0)
+        metadata = envelope.get("metadata", {}) if isinstance(envelope.get("metadata"), dict) else {}
+        importance = float(metadata.get("importance", record.get("importance", 1.0)) or 1.0)
+        if confidence < min_confidence or importance < min_importance:
+            continue
+        source_events.append(record)
+        event_times[event_hash] = event_time
+        event_scopes[event_hash] = event_scope
+    source_events.sort(key=lambda record: event_times.get(int(record.get("event_id_hash") or 0), 0))
+    selected = source_events[:max_source_events]
+    if not selected:
+        raise MatrixArkError("no source events matched compression window")
+    truncated = len(source_events) > len(selected)
+    source_event_ids = [int(record["event_id_hash"]) for record in selected]
+    compression_scope = event_scopes.get(int(selected[0].get("event_id_hash") or 0), scope)
+    if not summary:
+        snippets = [summarize_text(str(record.get("text", "")), limit=180) for record in selected[:5]]
+        suffix = " plus additional source events" if truncated else ""
+        summary = (
+            f"Temporal compression window [{source_start_ms}, {source_end_ms}] contains "
+            f"{len(selected)} selected events{suffix}. " + " | ".join(snippets)
+        )
+    compression_id_hash = stable_hash(f"compress:{scope}:{node_hash}:{source_start_ms}:{source_end_ms}:{source_event_ids}")
+    record = {
+        "record_type": "context_compression_event",
+        "compression_id_hash": compression_id_hash,
+        "node_hash": node_hash,
+        "node_path": node_path,
+        "scope": compression_scope,
+        "source_start_ms": source_start_ms,
+        "source_end_ms": source_end_ms,
+        "compressed_time_ms": compressed_time_ms,
+        "summary_text": summarize_text(summary, limit=1200),
+        "source_event_ids": source_event_ids,
+        "source_event_count": len(selected),
+        "truncated_source_events": truncated,
+        "operator": "TIME_COMPRESS",
+        "updated_at_ms": compressed_time_ms,
+    }
+    append(record)
+    summary_vector = embedding_for_text(record["summary_text"])
+    append(
+        {
+            "record_type": "context_embedding",
+            "embedding_type": "compression_summary",
+            "ref_type": "compression",
+            "ref_hash": compression_id_hash,
+            "node_hash": node_hash,
+            "node_path": node_path,
+            "dim": len(summary_vector),
+            "model": embedding_model_name(),
+            "vector": summary_vector,
+            "scope": compression_scope,
+            "updated_at_ms": compressed_time_ms,
+        }
+    )
+    return record
 
 
 def append_recall_reinforcement_markers(
