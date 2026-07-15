@@ -15,6 +15,10 @@ mod matrixark_rust_proxy_candidates;
 mod matrixark_rust_proxy_command_stats;
 #[path = "../matrixark_rust_proxy_metrics.rs"]
 mod matrixark_rust_proxy_metrics;
+#[path = "../matrixark_rust_proxy_metrics_backend_render.rs"]
+mod matrixark_rust_proxy_metrics_backend_render;
+#[path = "../matrixark_rust_proxy_metrics_format.rs"]
+mod matrixark_rust_proxy_metrics_format;
 #[path = "../matrixark_rust_proxy_metrics_render.rs"]
 mod matrixark_rust_proxy_metrics_render;
 #[path = "../matrixark_rust_proxy_native_pack.rs"]
