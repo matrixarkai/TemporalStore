@@ -13,6 +13,7 @@ from typing import Any
 
 
 Json = dict[str, Any]
+DEFAULT_ADDITIONAL_CONTEXT_CHAR_LIMIT = 12000
 
 RESOURCE_TYPE_BY_SUFFIX = {
     ".md": "md",
@@ -97,6 +98,222 @@ def used_context_tokens_from_retrieve(pack: Json | None) -> int:
 
 def normalized_event_name(event: str) -> str:
     return "".join(ch for ch in event.lower() if ch.isalnum() or ch == "_")
+
+
+def _first_string_value(payload: Json, keys: list[str]) -> str:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _compact_one_line(value: str, *, max_chars: int = 220) -> str:
+    compact = " ".join(str(value).split())
+    if len(compact) <= max_chars:
+        return compact
+    return compact[: max(0, max_chars - 3)].rstrip() + "..."
+
+
+def _selected_refs_from_retrieve(pack: Json | None) -> list[Json]:
+    if not isinstance(pack, dict):
+        return []
+    refs = pack.get("selected_refs")
+    if isinstance(refs, list):
+        return [ref for ref in refs if isinstance(ref, dict)]
+    flattened: list[Json] = []
+    for group_key, ref_key in (("selected_ref_groups", "refs"), ("groups", "items")):
+        groups = pack.get(group_key)
+        if not isinstance(groups, list):
+            continue
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            refs_in_group = group.get(ref_key)
+            if isinstance(refs_in_group, list):
+                flattened.extend(ref for ref in refs_in_group if isinstance(ref, dict))
+    return flattened
+
+
+def _ref_text(ref: Json) -> str:
+    return _first_string_value(
+        ref,
+        [
+            "text",
+            "body",
+            "content",
+            "summary_text",
+            "summary",
+            "snippet",
+            "chunk_text",
+            "event_text",
+            "entity_state",
+        ],
+    )
+
+
+def _ref_citation(ref: Json) -> str:
+    return _first_string_value(
+        ref,
+        [
+            "citation",
+            "source_ref",
+            "source_locator",
+            "raw_uri",
+            "resource_uri",
+            "node_path_text",
+        ],
+    )
+
+
+def additional_context_from_retrieve(
+    pack: Json | None,
+    *,
+    query: str,
+    local_context_count: int,
+    char_limit: int = DEFAULT_ADDITIONAL_CONTEXT_CHAR_LIMIT,
+) -> str:
+    """Build Codex hook additionalContext from a MatrixArk ContextPack."""
+    if not isinstance(pack, dict):
+        return ""
+    refs = _selected_refs_from_retrieve(pack)
+    context_text = _first_string_value(pack, ["context", "text", "compiled_context", "rendered_context"])
+    quality_warnings = pack.get("quality_warnings")
+    retrieval_metrics = pack.get("retrieval_metrics")
+    lines = [
+        "MatrixArk/TemporalStore retrieved context for Codex.",
+        f"Query: {_compact_one_line(query, max_chars=360)}",
+        (
+            "Merge this remote memory with the visible local Codex context. "
+            "Prefer current local files when they conflict with retrieved memory."
+        ),
+        (
+            "Retrieval summary: "
+            f"context_pack_id={pack.get('context_pack_id') or pack.get('pack_id') or ''}, "
+            f"selected_refs={len(refs)}, "
+            f"used_context_tokens={used_context_tokens_from_retrieve(pack)}, "
+            f"local_context_refs_seen={local_context_count}."
+        ),
+    ]
+    if isinstance(quality_warnings, list) and quality_warnings:
+        warnings = []
+        for warning in quality_warnings[:4]:
+            if isinstance(warning, dict):
+                warnings.append(_compact_one_line(str(warning.get("message") or warning.get("code") or warning)))
+            else:
+                warnings.append(_compact_one_line(str(warning)))
+        lines.append("Quality warnings: " + " | ".join(warnings))
+    if isinstance(retrieval_metrics, dict):
+        fallback = retrieval_metrics.get("fallback_reason")
+        if fallback:
+            lines.append("Retrieval fallback: " + _compact_one_line(str(fallback), max_chars=400))
+
+    if context_text:
+        lines.append("")
+        lines.append("Retrieved context:")
+        lines.append(context_text.strip())
+    elif refs:
+        lines.append("")
+        lines.append("Retrieved refs:")
+        for index, ref in enumerate(refs[:24], start=1):
+            ref_type = str(ref.get("ref_type") or ref.get("type") or "ref")
+            citation = _ref_citation(ref)
+            score = ref.get("score", ref.get("packing_score", ""))
+            token_cost = ref.get("token_cost", ref.get("token_estimate", ""))
+            header_bits = [f"[{index}] {ref_type}"]
+            if citation:
+                header_bits.append(_compact_one_line(citation, max_chars=260))
+            if score != "":
+                header_bits.append(f"score={score}")
+            if token_cost != "":
+                header_bits.append(f"tokens={token_cost}")
+            lines.append(" - " + " | ".join(header_bits))
+            text = _ref_text(ref)
+            if text:
+                lines.append("   " + _compact_one_line(text, max_chars=700))
+    else:
+        lines.append("")
+        lines.append("No remote refs were selected for this prompt.")
+
+    output = "\n".join(lines).strip()
+    if len(output) <= char_limit:
+        return output
+    return output[: max(0, char_limit - 80)].rstrip() + "\n[MatrixArk context truncated by hook char limit]"
+
+
+def codex_hook_output(
+    *,
+    args: argparse.Namespace,
+    status: str,
+    event: str,
+    session_id_source: str,
+    agent_context: Json,
+    ingest: Json | None = None,
+    retrieve: Json | None = None,
+    commit: Json | None = None,
+    raw_uri: str = "",
+    resource_type: str = "",
+    query: str = "",
+    error: str = "",
+) -> Json:
+    ingest = ingest or {}
+    retrieve = retrieve or {}
+    commit = commit or {}
+    output: Json = {
+        "status": status,
+        "event": event,
+        "session_id": args.session_id,
+        "session_id_source": session_id_source,
+        "agent_context_refs": len(agent_context.get("local_context", [])),
+        "workspace_root": agent_context.get("workspace_root", ""),
+        "lifecycle_stage": {
+            "before_llm_retrieve": event == "UserPromptSubmit",
+            "after_llm_ingest_only": event in {"PostToolUse", "PreToolUse", "PermissionRequest"},
+            "hook_boundary_commit": event in {"Stop", "PostCompact", "SubagentStop"},
+            "idle_timeout_commit": event in {"IdleTimeout", "SessionIdle"},
+            "auto_threshold_commit": bool(ingest.get("auto_batch_extract_result")) if ingest else False,
+        },
+        "ingest": ingest,
+        "resource_uri": raw_uri,
+        "resource_type": resource_type,
+        "retrieve": {
+            "context_pack_id": retrieve.get("context_pack_id") or retrieve.get("pack_id"),
+            "selected_ref_count": selected_ref_count_from_retrieve(retrieve),
+            "used_context_tokens": used_context_tokens_from_retrieve(retrieve),
+            "additional_context_emitted": False,
+        },
+        "session_commit": {
+            "status": commit.get("status"),
+            "commit_id_hash": commit.get("commit_id_hash"),
+            "commit_reason": commit.get("commit_reason"),
+            "trigger_policy": commit.get("trigger_policy"),
+            "source_event_count": commit.get("committed_event_count", len(commit.get("source_event_ids", []))),
+            "segments_written": commit.get("segments_written", 0),
+            "entities_written": commit.get("entities_written", 0),
+            "raw_events_duplicated": commit.get("raw_events_duplicated"),
+        } if commit else {},
+    }
+    if error:
+        output["error"] = error
+    if event == "UserPromptSubmit":
+        additional_context = additional_context_from_retrieve(
+            retrieve,
+            query=query,
+            local_context_count=len(agent_context.get("local_context", [])),
+        )
+        if not additional_context and error:
+            additional_context = (
+                "MatrixArk/TemporalStore retrieval was attempted for this prompt but failed. "
+                "Use visible local Codex context as authoritative for this turn. "
+                f"Failure: {_compact_one_line(error, max_chars=700)}"
+            )
+        if additional_context:
+            output["hookSpecificOutput"] = {
+                "hookEventName": "UserPromptSubmit",
+                "additionalContext": additional_context,
+            }
+            output["retrieve"]["additional_context_emitted"] = True
+    return output
 
 
 def is_resource_event(event: str) -> bool:
@@ -744,44 +961,65 @@ def main() -> int:
 
     print(
         json.dumps(
-            {
-                "status": "ok",
-                "event": args.event,
-                "session_id": args.session_id,
-                "session_id_source": session_id_source,
-                "agent_context_refs": len(agent_context.get("local_context", [])),
-                "workspace_root": agent_context.get("workspace_root", ""),
-                "lifecycle_stage": {
-                    "before_llm_retrieve": args.event == "UserPromptSubmit",
-                    "after_llm_ingest_only": args.event in {"PostToolUse", "PreToolUse", "PermissionRequest"},
-                    "hook_boundary_commit": args.event in {"Stop", "PostCompact", "SubagentStop"},
-                    "idle_timeout_commit": args.event in {"IdleTimeout", "SessionIdle"},
-                    "auto_threshold_commit": bool(ingest.get("auto_batch_extract_result")) if ingest else False,
-                },
-                "ingest": ingest,
-                "resource_uri": raw_uri,
-                "resource_type": resource_type,
-                "retrieve": {
-                    "context_pack_id": retrieve.get("context_pack_id"),
-                    "selected_ref_count": selected_ref_count_from_retrieve(retrieve),
-                    "used_context_tokens": used_context_tokens_from_retrieve(retrieve),
-                },
-                "session_commit": {
-                    "status": commit.get("status"),
-                    "commit_id_hash": commit.get("commit_id_hash"),
-                    "commit_reason": commit.get("commit_reason"),
-                    "trigger_policy": commit.get("trigger_policy"),
-                    "source_event_count": commit.get("committed_event_count", len(commit.get("source_event_ids", []))),
-                    "segments_written": commit.get("segments_written", 0),
-                    "entities_written": commit.get("entities_written", 0),
-                    "raw_events_duplicated": commit.get("raw_events_duplicated"),
-                } if commit else {},
-            },
+            codex_hook_output(
+                args=args,
+                status="ok",
+                event=args.event,
+                session_id_source=session_id_source,
+                agent_context=agent_context,
+                ingest=ingest,
+                retrieve=retrieve,
+                commit=commit,
+                raw_uri=raw_uri,
+                resource_type=resource_type,
+                query=query,
+            ),
             sort_keys=True,
         )
     )
     return 0
 
 
+def event_from_argv(default: str = "UserPromptSubmit") -> str:
+    for index, arg in enumerate(sys.argv):
+        if arg == "--event" and index + 1 < len(sys.argv):
+            return sys.argv[index + 1]
+        if arg.startswith("--event="):
+            return arg.split("=", 1)[1]
+    return os.environ.get("CODEX_HOOK_EVENT", default)
+
+
+def fail_open_enabled() -> bool:
+    return os.environ.get("MATRIXARK_HOOK_FAIL_OPEN", "1").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def print_hook_failure(exc: BaseException) -> None:
+    event = event_from_argv()
+    error = f"{type(exc).__name__}: {exc}"
+    output: Json = {
+        "status": "warning",
+        "event": event,
+        "component": "matrixark_codex_hook",
+        "reason": "hook_failed_fail_open",
+        "error": error,
+    }
+    if event == "UserPromptSubmit":
+        output["hookSpecificOutput"] = {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": (
+                "MatrixArk/TemporalStore retrieval was attempted for this prompt but failed before "
+                "remote context could be injected. Use visible local Codex context as authoritative "
+                f"for this turn. Failure: {_compact_one_line(error, max_chars=700)}"
+            ),
+        }
+    print(json.dumps(output, sort_keys=True))
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        if fail_open_enabled():
+            print_hook_failure(exc)
+            raise SystemExit(0)
+        raise
