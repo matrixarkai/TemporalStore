@@ -42,6 +42,12 @@ Json = dict[str, Any]
 
 
 try:
+    from tools.matrixark_mcp_errors import MatrixArkError, is_retryable_temporalstore_error
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_errors import MatrixArkError, is_retryable_temporalstore_error
+
+
+try:
     from tools.matrixark_mcp_identity import (
         MATRIXARK_ADMIN_SCOPES,
         MATRIXARK_ALL_SCOPES,
@@ -316,29 +322,6 @@ DEFAULT_BUSINESS_TYPE_WEIGHTS: Json = {
     "dialogue_batch": 0.45,
     "session": 0.45,
 }
-
-
-class MatrixArkError(ValueError):
-    pass
-
-
-def is_retryable_temporalstore_error(error: Any) -> bool:
-    text = str(error).lower()
-    retryable_fragments = (
-        "slot not found",
-        "partition info not found",
-        "partition no primary",
-        "no primary",
-        "not ready",
-        "unavailable",
-        "timed out",
-        "timeout",
-        "connection refused",
-        "connection reset",
-        "temporarily unavailable",
-        "server is busy",
-    )
-    return any(fragment in text for fragment in retryable_fragments)
 
 
 def parse_host_port(address: str) -> tuple[str, int] | None:
