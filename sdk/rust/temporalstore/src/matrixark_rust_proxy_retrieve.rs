@@ -4,6 +4,7 @@ use serde_json::{json, Value};
 use temporalstore::Client;
 
 use crate::matrixark_rust_proxy_candidates::{record_node_hash, record_ref_hash};
+use crate::matrixark_rust_proxy_cross_session::parse_cross_session_policy;
 use crate::matrixark_rust_proxy_metrics::unix_ms;
 use crate::matrixark_rust_proxy_pack::{
     candidate_text, context_class_name, is_serving_selected_ref_class, pack_ref_from_record,
@@ -16,9 +17,7 @@ use crate::matrixark_rust_proxy_retrieve_result::{
 use crate::matrixark_rust_proxy_retrieve_request::parse_retrieve_pack_request;
 use crate::matrixark_rust_proxy_retrieve_scoring::score_retrieve_candidates;
 use crate::matrixark_rust_proxy_scan::scan_matrixark_candidates;
-use crate::matrixark_rust_proxy_scope::{
-    parse_cross_session_policy, record_scope_string, session_scope_mode,
-};
+use crate::matrixark_rust_proxy_scope::{record_scope_string, session_scope_mode};
 
 fn cross_session_key(record: &Value) -> String {
     record_scope_string(record, "session_id")
