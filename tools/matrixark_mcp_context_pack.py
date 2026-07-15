@@ -359,3 +359,168 @@ def compact_refs_for_audit(refs: list[Json], *, preview_chars: int = 160) -> lis
             item["text_preview"] = _clip_context_text(text, max_chars=preview_chars)
         compact.append(item)
     return compact
+
+
+def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "") -> Json:
+    """Return only answer-bearing fields for the serving ContextPack payload."""
+    metadata = ref.get("metadata", {}) if isinstance(ref.get("metadata"), dict) else {}
+    item: Json = {
+        "text": ref.get("text", ""),
+        "tokens": ref.get("token_estimate", 0),
+    }
+    source = ref.get("citation") or ref.get("source_ref") or ref.get("source_locator") or metadata.get("source_locator")
+    if source:
+        item["source"] = source
+    optional_field_aliases = [
+        ("resource_type", "resource_type"),
+        ("unit_kind", "unit_kind"),
+        ("heading", "heading"),
+        ("heading_slug", "heading_slug"),
+        ("relative_path", "path"),
+        ("entity_type", "entity_type"),
+        ("entity_name", "entity"),
+        ("operator", "operator"),
+        ("summary_type", "summary_type"),
+        ("resource_version", "version"),
+        ("version_state", "version_state"),
+    ]
+    for field, alias in optional_field_aliases:
+        value = ref.get(field, metadata.get(field))
+        if value not in (None, "", [], {}):
+            item[alias] = value
+    session_continuity = str(ref.get("session_continuity") or metadata.get("session_continuity") or "")
+    if session_continuity and session_continuity != default_session_continuity:
+        item["session_continuity"] = session_continuity
+    return item
+
+
+def session_continuity_counts(refs: list[Json]) -> Json:
+    counts: Json = {}
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        metadata = ref.get("metadata", {}) if isinstance(ref.get("metadata"), dict) else {}
+        value = str(ref.get("session_continuity") or metadata.get("session_continuity") or "")
+        if not value:
+            continue
+        counts[value] = int(counts.get(value, 0)) + 1
+    return counts
+
+
+def default_session_continuity_for_pack(refs: list[Json]) -> str:
+    counts = session_continuity_counts(refs)
+    if not counts:
+        return ""
+    return max(counts.items(), key=lambda item: (item[1], item[0]))[0]
+
+
+def serving_refs_for_pack(refs: list[Json], *, default_session_continuity: str = "") -> list[Json]:
+    return [serving_ref_for_pack(ref, default_session_continuity=default_session_continuity) for ref in refs]
+
+
+def serving_ref_groups_for_pack(refs: list[Json], *, default_session_continuity: str = "") -> list[Json]:
+    groups: dict[tuple[str, str], Json] = {}
+    order: list[tuple[str, str]] = []
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        ref_type = str(ref.get("ref_type") or "")
+        context_class = str(ref.get("context_class") or ref_type)
+        key = (ref_type, context_class)
+        if key not in groups:
+            groups[key] = {"type": ref_type, "n": 0, "items": []}
+            if context_class and context_class != ref_type:
+                groups[key]["class"] = context_class
+            order.append(key)
+        item = serving_ref_for_pack(ref, default_session_continuity=default_session_continuity)
+        groups[key]["items"].append(item)
+        groups[key]["n"] += 1
+    return [groups[key] for key in order]
+
+
+def selected_ref_count_from_pack(pack: Json) -> int:
+    refs = pack.get("selected_refs")
+    if isinstance(refs, list):
+        return len(refs)
+    groups = pack.get("selected_ref_groups")
+    if isinstance(groups, list):
+        total = 0
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            refs_in_group = group.get("refs", group.get("items", []))
+            total += int(group.get("count") or group.get("n") or (len(refs_in_group) if isinstance(refs_in_group, list) else 0))
+        return total
+    groups = pack.get("groups")
+    if isinstance(groups, list):
+        total = 0
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            refs_in_group = group.get("items", group.get("refs", []))
+            total += int(group.get("n") or group.get("count") or (len(refs_in_group) if isinstance(refs_in_group, list) else 0))
+        return total
+    return 0
+
+
+def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False) -> Json:
+    """Strip planner/audit/debug fields from the default returned ContextPack.
+
+    Full retrieval policy, score details, dropped refs, storage mode, model
+    fallback flags, and operational visibility live in ContextPackAudit or
+    telemetry records when enabled. The serving pack should spend tokens on
+    evidence and citations.
+    """
+    _ = include_debug
+    compact: Json = {"context_pack_id": pack.get("context_pack_id", "")}
+    selected_refs = pack.get("selected_refs", [])
+    if isinstance(selected_refs, list) and (selected_refs or not isinstance(pack.get("groups"), list)):
+        default_session_continuity = default_session_continuity_for_pack(selected_refs)
+        compact["groups"] = serving_ref_groups_for_pack(selected_refs, default_session_continuity=default_session_continuity)
+        if pack.get("selected_ref_counts"):
+            compact.setdefault("counts", {})["refs"] = pack.get("selected_ref_counts", {})
+        continuity_counts = session_continuity_counts(selected_refs)
+        if continuity_counts:
+            compact.setdefault("defaults", {})["session_continuity"] = default_session_continuity
+            compact.setdefault("counts", {})["session_continuity"] = continuity_counts
+    elif isinstance(pack.get("groups"), list):
+        # Some adapters already return the serving shape. Preserve it so a
+        # second compaction pass in the MCP entrypoint does not erase refs.
+        compact["groups"] = pack.get("groups", [])
+        if isinstance(pack.get("counts"), dict):
+            compact["counts"] = pack.get("counts", {})
+        if isinstance(pack.get("defaults"), dict):
+            compact["defaults"] = pack.get("defaults", {})
+    local_refs = pack.get("local_context_refs", [])
+    if isinstance(local_refs, list):
+        local = [
+            {
+                ("tokens" if key == "token_estimate" else key): value
+                for key, value in ref.items()
+                if key in {"source", "token_estimate", "text"} and value not in (None, "", [], {})
+            }
+            for ref in local_refs
+            if isinstance(ref, dict)
+        ]
+        if local:
+            compact["local"] = local
+    tokens_summary = {
+        "remote": pack.get("used_remote_context_tokens", pack.get("used_context_tokens", 0)),
+        "local": pack.get("used_local_context_tokens", 0),
+        "total": pack.get("total_prompt_context_tokens", 0),
+        "remote_budget": pack.get("remote_context_budget_tokens", 0),
+    }
+    compact["tokens"] = {key: value for key, value in tokens_summary.items() if value not in (None, "", 0)}
+    if not compact["tokens"] and isinstance(pack.get("tokens"), dict):
+        compact["tokens"] = pack.get("tokens", {})
+    if pack.get("quality_warnings"):
+        compact["warnings"] = pack.get("quality_warnings", [])
+    if pack.get("partial_context_pack"):
+        compact["partial"] = True
+    if pack.get("insufficient_context"):
+        compact["insufficient_context"] = True
+    if pack.get("include_retrieval_metrics"):
+        compact["include_retrieval_metrics"] = True
+    if isinstance(pack.get("retrieval_metrics"), dict):
+        compact["retrieval_metrics"] = pack["retrieval_metrics"]
+    return compact
