@@ -210,6 +210,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIs(local_mod.compact_latest_value_records, latest_values_mod.compact_latest_value_records)
         self.assertIs(local_mod.latest_value_record_key, latest_values_mod.latest_value_record_key)
         self.assertIs(core_mod.context_event_time_key, event_keys_mod.context_event_time_key)
+        self.assertIs(core_mod.context_event_time_index_payload, event_keys_mod.context_event_time_index_payload)
         self.assertIs(core_mod.attach_context_placement, event_keys_mod.attach_context_placement)
         self.assertTrue(callable(core_mod.materialize_serving_records))
         self.assertTrue(callable(serving_records_mod.materialize_serving_records))

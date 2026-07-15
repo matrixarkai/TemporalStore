@@ -64,6 +64,42 @@ def attach_context_event_time_key(record: Json) -> Json:
     return enriched
 
 
+def context_event_time_index_key(storage_prefix: str, record: Json) -> str:
+    enriched = attach_context_event_time_key(record)
+    parent_type = str(enriched.get("context_event_parent_type") or "context_node")
+    parent_hash = enriched.get("context_event_parent_hash") or 0
+    return f"{storage_prefix}:context_event_by_ingestion_time:{parent_type}:{parent_hash}"
+
+
+def context_event_time_index_field(record: Json) -> str:
+    event_hash = record.get("event_id_hash") or stable_hash(
+        json.dumps(record, sort_keys=True, separators=(",", ":"))
+    )
+    timestamp_ms = context_event_timestamp_ms(record)
+    return f"{context_event_time_key(timestamp_ms, event_hash):020d}:{event_hash}"
+
+
+def context_event_time_index_payload(record: Json) -> str:
+    scope_key = str(record.get("scope_key") or "")
+    if not scope_key:
+        scope = record.get("scope") if isinstance(record.get("scope"), dict) else {}
+        scope_key = canonical_scope_key(scope)
+    payload: Json = {
+        "record_type": "context_event_ref",
+        "ref_hash": int(record.get("event_id_hash") or 0),
+        "node_hash": int(record.get("node_hash") or 0),
+        "scope_key": scope_key,
+        "timestamp_key_ms": context_event_timestamp_ms(record),
+    }
+    payload["context_event_key"] = context_event_time_key(
+        payload["timestamp_key_ms"], payload["ref_hash"]
+    )
+    source_chunk_hash = record.get("source_chunk_hash")
+    if source_chunk_hash is not None:
+        payload["source_chunk_hash"] = source_chunk_hash
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
 def context_placement_key(record: Json, *, scope_key: str = "", node_hash: Any = None) -> str:
     explicit = str(record.get("placement_key") or "")
     if explicit:

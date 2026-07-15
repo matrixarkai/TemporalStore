@@ -1013,15 +1013,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         return context_event_timestamp_ms(record)
 
     def _context_event_time_index_key(self, record: Json) -> str:
-        enriched = attach_context_event_time_key(record)
-        parent_type = str(enriched.get("context_event_parent_type") or "context_node")
-        parent_hash = enriched.get("context_event_parent_hash") or 0
-        return f"{self._storage_prefix}:context_event_by_ingestion_time:{parent_type}:{parent_hash}"
+        return context_event_time_index_key(self._storage_prefix, record)
 
     def _context_event_time_index_field(self, record: Json) -> str:
-        event_hash = record.get("event_id_hash") or stable_hash(json.dumps(record, sort_keys=True, separators=(",", ":")))
-        timestamp_ms = self._context_event_ingestion_time_ms(record)
-        return f"{context_event_time_key(timestamp_ms, event_hash):020d}:{event_hash}"
+        return context_event_time_index_field(record)
 
     def _context_event_time_index_payload(self, record: Json) -> str:
         """Compact timestamp-index payload.
@@ -1032,22 +1027,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         and extraction/debug fields out of this index avoids doubling hot write
         bytes for every event.
         """
-        scope_key = str(record.get("scope_key") or "")
-        if not scope_key:
-            scope = record.get("scope") if isinstance(record.get("scope"), dict) else {}
-            scope_key = canonical_scope_key(scope)
-        payload: Json = {
-            "record_type": "context_event_ref",
-            "ref_hash": int(record.get("event_id_hash") or 0),
-            "node_hash": int(record.get("node_hash") or 0),
-            "scope_key": scope_key,
-            "timestamp_key_ms": self._context_event_ingestion_time_ms(record),
-        }
-        payload["context_event_key"] = context_event_time_key(payload["timestamp_key_ms"], payload["ref_hash"])
-        source_chunk_hash = record.get("source_chunk_hash")
-        if source_chunk_hash is not None:
-            payload["source_chunk_hash"] = source_chunk_hash
-        return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return context_event_time_index_payload(record)
 
     def _context_event_time_index_entries(self, records: list[Json]) -> list[Json]:
         entries: list[Json] = []
