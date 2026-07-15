@@ -61,6 +61,8 @@ mod matrixark_rust_proxy_retrieve_policy;
 mod matrixark_rust_proxy_retrieve_result;
 #[path = "../matrixark_rust_proxy_retrieve_request.rs"]
 mod matrixark_rust_proxy_retrieve_request;
+#[path = "../matrixark_rust_proxy_retrieve_pack_json.rs"]
+mod matrixark_rust_proxy_retrieve_pack_json;
 #[path = "../matrixark_rust_proxy_retrieve_response.rs"]
 mod matrixark_rust_proxy_retrieve_response;
 #[path = "../matrixark_rust_proxy_retrieve_scoring.rs"]

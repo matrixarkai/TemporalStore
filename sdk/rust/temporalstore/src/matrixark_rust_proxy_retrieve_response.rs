@@ -4,12 +4,12 @@ use serde_json::{json, Value};
 
 use crate::matrixark_rust_proxy_cross_session::CrossSessionPolicy;
 use crate::matrixark_rust_proxy_clock::unix_ms;
-use crate::matrixark_rust_proxy_retrieve_policy::{
-    build_recall_policy, RetrieveRecallPolicyInput,
+use crate::matrixark_rust_proxy_retrieve_pack_json::{
+    build_context_pack, RetrieveContextPackInput,
 };
 use crate::matrixark_rust_proxy_retrieve_telemetry::{
-    dropped_refs_json, mark_native_pack_scan_stats, same_session_selected_ref_count,
-    total_dropped_ref_count, RetrieveDropCounts, RetrieveDroppedRefs,
+    mark_native_pack_scan_stats, same_session_selected_ref_count, total_dropped_ref_count,
+    RetrieveDropCounts,
 };
 use crate::matrixark_rust_proxy_retrieve_result::{scan_cache_hit, scan_dropped_count};
 
@@ -57,68 +57,34 @@ pub(crate) fn build_retrieve_pack_response(input: RetrievePackResponseInput) -> 
     });
     let selected_ref_count = input.selected.len();
     let same_session_selected_ref_count = same_session_selected_ref_count(&input.selected);
-    let secondary_index_matched_candidate_count = scan_stats
-        .get("secondary_index_matched_candidate_count")
-        .cloned()
-        .unwrap_or_else(|| json!(0));
-    let secondary_index_dropped_candidate_count = scan_stats
-        .get("secondary_index_dropped_candidate_count")
-        .cloned()
-        .unwrap_or_else(|| json!(0));
-    let requested_max_context_tokens = input
-        .request
-        .get("max_context_tokens")
-        .cloned()
-        .unwrap_or_else(|| json!(input.remote_budget));
-    let question_type = input
-        .request
-        .get("question_type")
-        .cloned()
-        .unwrap_or_else(|| json!("fact"));
-    let recall_policy = build_recall_policy(RetrieveRecallPolicyInput {
-        scan_stats: &scan_stats,
-        cross_policy: &input.cross_policy,
+    let pack = build_context_pack(RetrieveContextPackInput {
+        context_pack_id,
+        request: input.request,
+        query: input.query,
+        selected: input.selected,
+        selected_counts: input.selected_counts,
+        selected_nodes: input.selected_nodes,
+        scan_stats: scan_stats.clone(),
+        cross_policy: input.cross_policy,
         remote_budget: input.remote_budget,
         max_refs: input.max_refs,
         max_global_candidates: input.max_global_candidates,
         min_similarity_score: input.min_similarity_score,
-        budget_fill_policy: &input.budget_fill_policy,
-        session_scope_mode: &input.session_scope_mode,
-        same_session_selected_ref_count,
+        budget_fill_policy: input.budget_fill_policy,
+        session_scope_mode: input.session_scope_mode,
+        used_tokens: input.used_tokens,
+        cross_used_tokens: input.cross_used_tokens,
         cross_selected_refs: input.cross_selected_refs,
         entity_bridge_selected_refs: input.entity_bridge_selected_refs,
-        selected_cross_session_count: input.selected_cross_sessions.len() as u64,
-        cross_used_tokens: input.cross_used_tokens,
-        selected_node_count: input.selected_nodes.len() as u64,
-        secondary_index_matched_candidate_count,
-        secondary_index_dropped_candidate_count,
-    });
-    let selected = input.selected;
-    let pack = json!({
-        "context_pack_id": context_pack_id,
-        "query": input.query,
-        "question_type": question_type,
-        "selected_ref_counts": input.selected_counts,
-        "remote_context_refs": selected,
-        "selected_refs": selected,
-        "dropped_refs": dropped_refs_json(RetrieveDroppedRefs {
-            over_budget: input.dropped_over_budget,
-            cross_budget: input.dropped_cross_budget,
-            cross_session_cap: input.dropped_cross_session_cap,
-            cross_candidate_cap: input.dropped_cross_candidate_cap,
-            low_score: input.dropped_low_score,
-            duplicate_ref: input.dropped_duplicate_ref,
-            policy_ref: input.dropped_policy_ref,
-        }),
-        "used_context_tokens": input.used_tokens,
-        "used_remote_context_tokens": input.used_tokens,
-        "remote_context_budget_tokens": input.remote_budget,
-        "requested_max_context_tokens": requested_max_context_tokens,
-        "packing_policy": "native_rust_proxy_question_type_aware",
-        "context_pack_assembly": "native_rust_proxy",
-        "context_sources_order": ["entities", "events", "segments", "resources", "skills", "summaries"],
-        "recall_policy": recall_policy,
-        "quality_warnings": []
+        selected_cross_sessions: input.selected_cross_sessions,
+        dropped_over_budget: input.dropped_over_budget,
+        dropped_cross_budget: input.dropped_cross_budget,
+        dropped_cross_session_cap: input.dropped_cross_session_cap,
+        dropped_cross_candidate_cap: input.dropped_cross_candidate_cap,
+        dropped_low_score: input.dropped_low_score,
+        dropped_policy_ref: input.dropped_policy_ref,
+        dropped_duplicate_ref: input.dropped_duplicate_ref,
+        same_session_selected_ref_count,
     });
     json!({
         "ok": true,
