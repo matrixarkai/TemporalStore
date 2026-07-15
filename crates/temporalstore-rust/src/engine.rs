@@ -67,7 +67,7 @@ use self::storage_model::{
 };
 use self::storage_physical::{
     cpp_packed_page_index_bytes, cpp_packed_slot_node_bytes, CPP_PACKED_PAGE_INDEX_SIZE,
-    CPP_PACKED_SLOT_NODE_SIZE,
+    storage_block_address_sample, storage_page_address_sample, CPP_PACKED_SLOT_NODE_SIZE,
 };
 use crate::block_store::BlockAppendRecordRef;
 use crate::control::{
@@ -11472,35 +11472,6 @@ fn replace_model_page_address(
             .map(|series| replace_series_page_address(series, original, published))
             .unwrap_or(false),
         _ => false,
-    }
-}
-
-fn storage_page_address_sample(
-    shard_id: ShardId,
-    address: &PageAddress,
-) -> StoragePageAddressSample {
-    StoragePageAddressSample {
-        shard_id,
-        zone_id: address.extent_id.unwrap_or(address.page_segment_id),
-        segment_id: address.page_segment_id,
-        page_id: address.page_id.unwrap_or(address.page_segment_id),
-        offset: address.offset,
-        length: address.length,
-        generation: address.object_id.unwrap_or(0),
-    }
-}
-
-fn storage_block_address_sample(
-    shard_id: ShardId,
-    address: &PageAddress,
-) -> StorageBlockAddressSample {
-    StorageBlockAddressSample {
-        shard_id,
-        zone_id: address.extent_id.unwrap_or(address.page_segment_id),
-        block_id: address.page_segment_id,
-        offset: address.offset,
-        length: address.length,
-        checksum: address.sha256.clone().unwrap_or_default(),
     }
 }
 

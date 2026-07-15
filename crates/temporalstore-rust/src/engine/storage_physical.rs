@@ -1,6 +1,9 @@
 use crate::page_store::PageAddress;
 
-use super::reports::{StoragePhysicalPageIndex, StoragePhysicalSlotNode};
+use super::reports::{
+    StorageBlockAddressSample, StoragePageAddressSample, StoragePhysicalPageIndex,
+    StoragePhysicalSlotNode,
+};
 use super::storage_model::storage_model_code;
 
 pub(super) const CPP_PACKED_PAGE_INDEX_SIZE: usize = 17;
@@ -8,6 +11,35 @@ pub(super) const CPP_PACKED_SLOT_NODE_SIZE: usize = 24;
 
 fn physical_address_word(address: &PageAddress) -> u64 {
     address.page_segment_id.wrapping_shl(32) | (address.offset & u32::MAX as u64)
+}
+
+pub(super) fn storage_page_address_sample(
+    shard_id: u64,
+    address: &PageAddress,
+) -> StoragePageAddressSample {
+    StoragePageAddressSample {
+        shard_id,
+        zone_id: address.extent_id.unwrap_or(address.page_segment_id),
+        segment_id: address.page_segment_id,
+        page_id: address.page_id.unwrap_or(address.page_segment_id),
+        offset: address.offset,
+        length: address.length,
+        generation: address.object_id.unwrap_or(0),
+    }
+}
+
+pub(super) fn storage_block_address_sample(
+    shard_id: u64,
+    address: &PageAddress,
+) -> StorageBlockAddressSample {
+    StorageBlockAddressSample {
+        shard_id,
+        zone_id: address.extent_id.unwrap_or(address.page_segment_id),
+        block_id: address.page_segment_id,
+        offset: address.offset,
+        length: address.length,
+        checksum: address.sha256.clone().unwrap_or_default(),
+    }
 }
 
 pub(super) fn cpp_packed_page_index_bytes(
