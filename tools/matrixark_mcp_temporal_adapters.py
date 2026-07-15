@@ -44,6 +44,7 @@ try:
     from tools.matrixark_mcp_direct_write_queue import (
         direct_write_durable_field,
         direct_write_durable_payload,
+        direct_write_payload_is_pending,
     )
     from tools.matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from tools.matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
@@ -71,6 +72,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_direct_write_queue import (
         direct_write_durable_field,
         direct_write_durable_payload,
+        direct_write_payload_is_pending,
     )
     from matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
@@ -1382,7 +1384,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 payload = json.loads(value)
             except Exception:
                 continue
-            if isinstance(payload, dict) and str(payload.get("status") or "pending") in {"pending", "failed", "running"}:
+            if isinstance(payload, dict) and direct_write_payload_is_pending(payload):
                 count += 1
         return count
 

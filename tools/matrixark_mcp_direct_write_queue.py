@@ -38,3 +38,7 @@ def direct_write_durable_payload(
 def direct_write_durable_field(payload: Json) -> str:
     digest = stable_hash(json.dumps(payload, sort_keys=True, separators=(",", ":")))
     return f"{int(payload.get('created_at_ms') or now_ms()):020d}:{digest}"
+
+
+def direct_write_payload_is_pending(payload: Json) -> bool:
+    return str(payload.get("status") or "pending") in {"pending", "failed", "running"}
