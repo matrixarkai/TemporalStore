@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use serde_json::{json, Value};
 
 use crate::matrixark_rust_proxy_cross_session::CrossSessionPolicy;
-use crate::matrixark_rust_proxy_metrics::unix_ms;
+use crate::matrixark_rust_proxy_clock::unix_ms;
 use crate::matrixark_rust_proxy_retrieve_policy::{
     build_recall_policy, RetrieveRecallPolicyInput,
 };
