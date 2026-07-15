@@ -51,6 +51,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         query_mod = importlib.import_module("tools.matrixark_mcp_query")
         identity_mod = importlib.import_module("tools.matrixark_mcp_identity")
         context_pack_mod = importlib.import_module("tools.matrixark_mcp_context_pack")
+        entity_ops_mod = importlib.import_module("tools.matrixark_mcp_entity_ops")
         errors_mod = importlib.import_module("tools.matrixark_mcp_errors")
         models_mod = importlib.import_module("tools.matrixark_mcp_models")
         indexing_mod = importlib.import_module("tools.matrixark_mcp_indexing")
@@ -109,6 +110,9 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIs(core_mod.numeric_field, scoring_mod.numeric_field)
         self.assertIs(core_mod.apply_statistical_operator, scoring_mod.apply_statistical_operator)
         self.assertIs(core_mod.latest_record, scoring_mod.latest_record)
+        self.assertIs(core_mod.entity_patch, entity_ops_mod.entity_patch)
+        self.assertIs(core_mod.apply_entity_patch, entity_ops_mod.apply_entity_patch)
+        self.assertIs(core_mod.apply_entity_patches, entity_ops_mod.apply_entity_patches)
         self.assertIs(local_mod.compact_latest_value_records, latest_values_mod.compact_latest_value_records)
         self.assertIs(local_mod.latest_value_record_key, latest_values_mod.latest_value_record_key)
         self.assertIs(core_mod.context_event_time_key, event_keys_mod.context_event_time_key)
@@ -142,6 +146,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "matrixark_mcp_admin.py",
             "matrixark_mcp_cli.py",
             "matrixark_mcp_context_pack.py",
+            "matrixark_mcp_entity_ops.py",
             "matrixark_mcp_errors.py",
             "matrixark_mcp_models.py",
             "matrixark_mcp_indexing.py",
