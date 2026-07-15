@@ -17,6 +17,7 @@ mod constants;
 mod context;
 mod control_state;
 mod expiration;
+mod feature_reads;
 mod key_value_reads;
 mod lifecycle;
 mod object_manager;
@@ -42,6 +43,7 @@ use self::constants::*;
 use self::context::*;
 use self::control_state::{control_state_bucket_ms, control_state_manager_entries};
 use self::expiration::*;
+use self::feature_reads::*;
 use self::key_value_reads::*;
 use self::packed_pages::*;
 use self::page_reads::*;
@@ -71,10 +73,10 @@ use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextEmbedding,
     ContextEntity, ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit,
     ContextSummaryDirtyMarker, ControlStateFamily, ControlStateFolType, EventReplicationMode,
-    EventReplicationSelectionReport, ExecuteRequest, ExecuteResponse, FeatureFilter, FeaturePoint,
+    EventReplicationSelectionReport, ExecuteRequest, ExecuteResponse, FeaturePoint,
     FeatureWritePolicy, InternalContextIndex, IpsStats, ReplicatedBatchExecuteRequest,
-    ReplicatedBatchExecuteResponse, ReplicatedExecuteRequest, SequenceFeatureRow,
-    SequenceQuerySpec, ShardId, Status, StringSetCondition,
+    ReplicatedBatchExecuteResponse, ReplicatedExecuteRequest, SequenceQuerySpec, ShardId, Status,
+    StringSetCondition,
 };
 use crate::wal::LocalWriteAheadLogStore;
 use context::{
@@ -11056,44 +11058,6 @@ fn slot_index_object_page_addresses(
     addresses
 }
 
-fn timestamp_page_refs_in_range(
-    series: &BTreeMap<u64, PageAddress>,
-    start_ms: u64,
-    end_ms: u64,
-    limit: usize,
-) -> Vec<(u64, PageAddress)> {
-    let mut refs = Vec::with_capacity(limit.min(series.len()));
-    refs.extend(
-        series
-            .range(start_ms..=end_ms)
-            .take(limit)
-            .map(|(timestamp_ms, address)| (*timestamp_ms, address.clone())),
-    );
-    refs
-}
-
-fn timestamp_page_refs_last(
-    series: &BTreeMap<u64, PageAddress>,
-    limit: usize,
-) -> Vec<(u64, PageAddress)> {
-    let mut refs = Vec::with_capacity(limit.min(series.len()));
-    refs.extend(
-        series
-            .iter()
-            .rev()
-            .take(limit)
-            .map(|(timestamp_ms, address)| (*timestamp_ms, address.clone())),
-    );
-    refs
-}
-
-fn is_feature_count_aggregator(aggregator: &str) -> bool {
-    let aggregator = aggregator.trim();
-    aggregator.is_empty()
-        || aggregator.eq_ignore_ascii_case("count")
-        || aggregator.eq_ignore_ascii_case("events")
-}
-
 fn collect_live_page_segment_ids(shard: &ShardState) -> BTreeSet<u64> {
     let mut ids = BTreeSet::new();
     ids.extend(
@@ -15554,143 +15518,6 @@ fn invalidate_record_all(cache: &MultiLayerCache, shard_id: ShardId, key: &str) 
     for namespace in storage_model_kinds() {
         let _ = cache.invalidate_record(shard_id, namespace, key);
     }
-}
-
-fn read_feature_points_in_range(
-    cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
-    shard_id: ShardId,
-    shard: &ShardState,
-    model_id: &str,
-    key: &str,
-    start_ms: u64,
-    end_ms: u64,
-    limit: usize,
-) -> Vec<FeaturePoint> {
-    let series = match model_id {
-        "feature" => shard.features.get(key),
-        "sequence" => shard.sequences.get(key),
-        "ips" => shard.ips.get(key),
-        _ => None,
-    };
-    series
-        .map(|series| {
-            let refs = timestamp_page_refs_in_range(series, start_ms, end_ms, limit);
-            read_feature_points_cached_batch(cache, page_store, shard_id, &refs)
-        })
-        .unwrap_or_else(|| {
-            let addresses = slot_index_object_page_addresses(shard, model_id, key);
-            read_feature_points_from_pages_in_range(
-                cache, page_store, shard_id, &addresses, start_ms, end_ms, limit,
-            )
-        })
-}
-
-fn read_filtered_feature_points(
-    cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
-    shard_id: ShardId,
-    shard: &ShardState,
-    key: &str,
-    start_ms: u64,
-    end_ms: u64,
-    limit: usize,
-    filters: &[FeatureFilter],
-) -> Vec<FeaturePoint> {
-    read_feature_points_in_range(
-        cache, page_store, shard_id, shard, "feature", key, start_ms, end_ms, limit,
-    )
-    .into_iter()
-    .filter(|point| {
-        let Some(row) =
-            SequenceFeatureRow::decode_cpp_feature_value(point.timestamp_ms, &point.value)
-        else {
-            return false;
-        };
-        filters
-            .iter()
-            .all(|filter| sequence_filter_matches(&row, filter))
-    })
-    .collect()
-}
-
-fn read_feature_aggregate(
-    cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
-    shard_id: ShardId,
-    shard: &ShardState,
-    key: &str,
-    start_ms: u64,
-    end_ms: u64,
-    aggregator: &str,
-    count: Option<usize>,
-) -> i64 {
-    let limit = count.unwrap_or(5000);
-    if !is_supported_feature_aggregate(aggregator) {
-        return 0;
-    }
-    if is_feature_count_aggregator(aggregator) {
-        return read_feature_points_in_range(
-            cache, page_store, shard_id, shard, "feature", key, start_ms, end_ms, limit,
-        )
-        .len() as i64;
-    }
-    let values = read_feature_points_in_range(
-        cache, page_store, shard_id, shard, "feature", key, start_ms, end_ms, limit,
-    )
-    .into_iter()
-    .map(|point| point.value)
-    .collect::<Vec<_>>();
-    aggregate_feature_values(&values, aggregator)
-}
-
-fn read_ips_count_in_range(
-    cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
-    shard_id: ShardId,
-    shard: &ShardState,
-    key: &str,
-    start_ms: u64,
-    end_ms: u64,
-) -> i64 {
-    shard
-        .ips
-        .get(key)
-        .map(|series| series.range(start_ms..=end_ms).count() as i64)
-        .unwrap_or_else(|| {
-            let addresses = slot_index_object_page_addresses(shard, "ips", key);
-            read_feature_points_from_pages_in_range(
-                cache,
-                page_store,
-                shard_id,
-                &addresses,
-                start_ms,
-                end_ms,
-                usize::MAX,
-            )
-            .len() as i64
-        })
-}
-
-fn read_ips_points_last(
-    cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
-    shard_id: ShardId,
-    shard: &ShardState,
-    key: &str,
-    count: usize,
-) -> Vec<FeaturePoint> {
-    shard
-        .ips
-        .get(key)
-        .map(|series| {
-            let refs = timestamp_page_refs_last(series, count);
-            read_feature_points_cached_batch(cache, page_store, shard_id, &refs)
-        })
-        .unwrap_or_else(|| {
-            let addresses = slot_index_object_page_addresses(shard, "ips", key);
-            read_feature_points_from_pages_last(cache, page_store, shard_id, &addresses, count)
-        })
 }
 
 fn object_manager_stats(
