@@ -215,6 +215,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "matrixark_mcp_event_keys.py",
             "matrixark_mcp_serving_records.py",
             "matrixark_mcp_resources.py",
+            "matrixark_mcp_registry.py",
             "matrixark_mcp_summaries.py",
         ]
         offenders: list[str] = []
