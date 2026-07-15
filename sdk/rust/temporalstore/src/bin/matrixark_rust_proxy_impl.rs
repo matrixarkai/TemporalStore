@@ -3,7 +3,6 @@ use std::io::{self, BufRead, Read, Write};
 use std::sync::Arc;
 use std::time::Instant;
 
-use serde::Deserialize;
 use serde_json::{json, Value};
 use temporalstore::{Client, Options};
 
@@ -11,6 +10,8 @@ use temporalstore::{Client, Options};
 mod matrixark_rust_proxy_cache;
 #[path = "../matrixark_rust_proxy_metrics.rs"]
 mod matrixark_rust_proxy_metrics;
+#[path = "../matrixark_rust_proxy_protocol.rs"]
+mod matrixark_rust_proxy_protocol;
 use matrixark_rust_proxy_cache::{
     filtered_scan_cache_key, get_filtered_scan_cache, get_scan_record_cache,
     put_filtered_scan_cache, put_scan_record_cache, scan_record_cache_key,
@@ -19,49 +20,7 @@ use matrixark_rust_proxy_cache::{
 use matrixark_rust_proxy_metrics::{
     matrixark_rust_service_mode, unix_ms, CommandStats, MetricsSnapshot,
 };
-
-#[derive(Clone, Debug, Deserialize)]
-struct Command {
-    op: String,
-    key: Option<String>,
-    field: Option<String>,
-    value: Option<String>,
-    entries: Option<Vec<HashEntry>>,
-    entries_compact: Option<Vec<[String; 3]>>,
-    append_options: Option<Value>,
-    record: Option<Value>,
-    records: Option<Vec<Value>>,
-    record_type: Option<String>,
-    tenant_hash: Option<u64>,
-    record_id: Option<String>,
-    record_ids: Option<Vec<String>>,
-    count_key: Option<String>,
-    record_hash_key: Option<String>,
-    shard_size: Option<u64>,
-    record_types: Option<Vec<String>>,
-    secondary_index_groups: Option<Vec<Vec<String>>>,
-    selected_node_hashes: Option<Vec<u64>>,
-    scope: Option<Value>,
-    metaserver: Option<String>,
-    namespace: Option<String>,
-    table: Option<String>,
-    request_timeout_ms: Option<i32>,
-    io_timeout_ms: Option<i32>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-struct HashEntry {
-    key: String,
-    field: String,
-    value: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct HashEntryRef<'a> {
-    key: &'a str,
-    field: &'a str,
-    value: &'a str,
-}
+use matrixark_rust_proxy_protocol::{Command, HashEntryRef};
 
 fn command_stats(command: &Command, result: &Value) -> CommandStats {
     let mut stats = CommandStats::default();
