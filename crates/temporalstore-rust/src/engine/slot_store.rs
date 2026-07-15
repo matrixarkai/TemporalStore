@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::page_store::{LocalPageStore, PageAddress};
@@ -5,7 +7,7 @@ use crate::types::ShardId;
 use rustmtcache::MultiLayerCache;
 
 use super::state::{
-    object_component_lookup_key, object_page_lookup_key, ShardState, SlotLayoutState,
+    object_component_lookup_key, object_page_lookup_key, ShardState, SlotLayoutState, SlotNode,
 };
 use super::{read_page_bytes, read_page_bytes_batch_owned};
 
@@ -137,13 +139,61 @@ pub(super) fn runtime_report(shard: &ShardState) -> SlotStoreRuntimeReport {
 }
 
 #[allow(dead_code)]
-fn slot_layout_name(layout: SlotLayoutState) -> &'static str {
+pub(super) fn classify_slot_layout(object_count: usize, page_ref_count: usize) -> SlotLayoutState {
+    match (object_count, page_ref_count) {
+        (0, _) => SlotLayoutState::Empty,
+        (1, 0) => SlotLayoutState::SingleObject,
+        (_, 0) => SlotLayoutState::Empty,
+        (1, 1) => SlotLayoutState::SinglePageObject,
+        (1, _) => SlotLayoutState::MultiPageObject,
+        _ => SlotLayoutState::MultiObject,
+    }
+}
+
+#[allow(dead_code)]
+pub(super) fn slot_layout_name(layout: SlotLayoutState) -> &'static str {
     match layout {
         SlotLayoutState::Empty => "empty",
         SlotLayoutState::SingleObject => "single_object",
         SlotLayoutState::SinglePageObject => "single_page_object",
         SlotLayoutState::MultiPageObject => "multi_page_object",
         SlotLayoutState::MultiObject => "multi_object",
+    }
+}
+
+pub(super) fn update_slot_layout(slot: &mut SlotNode) {
+    let live_object_ids: BTreeSet<u64> = slot
+        .page_index
+        .values()
+        .filter(|page| !page.deleted)
+        .map(|page| page.object_id)
+        .collect();
+    if !live_object_ids.is_empty() {
+        slot.object_index = live_object_ids;
+    } else {
+        slot.object_index.clear();
+    }
+    slot.layout = classify_slot_layout(slot.object_index.len(), slot.page_index.len());
+}
+
+pub(super) fn refresh_slot_runtime_flags(shard: &mut ShardState, now: u64) {
+    for slot in shard.slot_index.slot_map.values_mut() {
+        slot.meta_loaded = true;
+        slot.loading = false;
+        slot.in_memory = !slot.page_index.is_empty();
+        slot.deleted =
+            !slot.page_index.is_empty() && slot.page_index.values().all(|page| page.deleted);
+        slot.dirty |= slot
+            .page_index
+            .values()
+            .any(|page| page.dirty || shard.dirty_objects.contains(&page.object_key));
+        slot.ttl_ms = slot
+            .page_index
+            .values()
+            .filter_map(|page| shard.expires_at_ms.get(&page.object_key).copied())
+            .map(|expires_at| expires_at.saturating_sub(now))
+            .min();
+        update_slot_layout(slot);
     }
 }
 
