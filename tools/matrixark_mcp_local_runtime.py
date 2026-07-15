@@ -4,15 +4,18 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import json
 import queue as thread_queue
 import threading
 from typing import Any, Iterator
 
 try:
     from tools.matrixark_mcp_core import Json
+    from tools.matrixark_mcp_core import materialize_serving_record_batch
     from tools.matrixark_mcp_env import env_float, env_int
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import Json
+    from matrixark_mcp_core import materialize_serving_record_batch
     from matrixark_mcp_env import env_float, env_int
 
 
@@ -72,6 +75,23 @@ def queue_batched_records(adapter: Any, records: list[Json]) -> bool:
         return False
     batch.extend(records)
     return True
+
+
+def append(adapter: Any, record: Json) -> None:
+    append_many(adapter, [record])
+
+
+def append_many(adapter: Any, records: list[Json]) -> None:
+    records = materialize_serving_record_batch(records)
+    if not records:
+        return
+    if queue_batched_records(adapter, records):
+        return
+    with adapter._event_log_lock:
+        with adapter.event_log.open("a", encoding="utf-8") as handle:
+            for record in records:
+                handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+    adapter._update_latest_entity_cache(records)
 
 
 @contextmanager

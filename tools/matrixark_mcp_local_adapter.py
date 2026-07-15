@@ -140,26 +140,10 @@ class MatrixArkLocalAdapter:
         local_cache_helpers.update_read_cache_after_append(self, records)
 
     def append(self, record: Json) -> None:
-        records = materialize_serving_record_batch([record])
-        if self._queue_batched_records(records):
-            return
-        with self._event_log_lock:
-            with self.event_log.open("a", encoding="utf-8") as handle:
-                for item in records:
-                    handle.write(json.dumps(item, separators=(",", ":")) + "\n")
-        self._update_latest_entity_cache(records)
+        local_runtime_helpers.append(self, record)
 
     def append_many(self, records: list[Json]) -> None:
-        records = materialize_serving_record_batch(records)
-        if not records:
-            return
-        if self._queue_batched_records(records):
-            return
-        with self._event_log_lock:
-            with self.event_log.open("a", encoding="utf-8") as handle:
-                for record in records:
-                    handle.write(json.dumps(record, separators=(",", ":")) + "\n")
-        self._update_latest_entity_cache(records)
+        local_runtime_helpers.append_many(self, records)
 
     def _update_latest_entity_cache(self, records: list[Json]) -> None:
         local_cache_helpers.update_latest_entity_cache(self, records)
