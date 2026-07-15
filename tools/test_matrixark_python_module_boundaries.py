@@ -194,6 +194,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(callable(local_replay_mod.compact_replay_record))
         self.assertTrue(callable(local_runtime_mod.init_local_runtime_state))
         self.assertTrue(callable(local_runtime_mod.write_batch))
+        self.assertTrue(callable(local_runtime_mod.append))
+        self.assertTrue(callable(local_runtime_mod.append_many))
         self.assertIs(local_mod.compact_latest_value_records, latest_values_mod.compact_latest_value_records)
         self.assertIs(local_mod.latest_value_record_key, latest_values_mod.latest_value_record_key)
         self.assertIs(core_mod.context_event_time_key, event_keys_mod.context_event_time_key)
