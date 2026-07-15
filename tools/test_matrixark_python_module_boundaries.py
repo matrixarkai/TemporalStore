@@ -201,6 +201,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         )
         self.assertEqual(durable_payload["record_count"], 1)
         self.assertTrue(direct_write_queue_mod.direct_write_durable_field(durable_payload))
+        self.assertTrue(direct_write_queue_mod.direct_write_payload_is_pending(durable_payload))
         self.assertIs(local_mod.RETRIEVAL_HOT_RECORD_TYPES, retrieval_records_mod.RETRIEVAL_HOT_RECORD_TYPES)
         self.assertEqual(adapter.ensure_backend_ready()["backend"], local_backend_mod.ensure_backend_ready(adapter)["backend"])
         self.assertEqual(adapter.backend_metrics()["metrics_format"], local_backend_mod.backend_metrics(adapter)["metrics_format"])
