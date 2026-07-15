@@ -51,6 +51,8 @@ mod matrixark_rust_proxy_retrieve_request;
 mod matrixark_rust_proxy_retrieve_response;
 #[path = "../matrixark_rust_proxy_retrieve_scoring.rs"]
 mod matrixark_rust_proxy_retrieve_scoring;
+#[path = "../matrixark_rust_proxy_retrieve_select.rs"]
+mod matrixark_rust_proxy_retrieve_select;
 #[path = "../matrixark_rust_proxy_retrieve_telemetry.rs"]
 mod matrixark_rust_proxy_retrieve_telemetry;
 #[path = "../matrixark_rust_proxy_runtime.rs"]
