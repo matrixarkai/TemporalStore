@@ -12,8 +12,10 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import *
 
 try:
+    from tools.matrixark_mcp_env import env_bool, env_float, env_int
     from tools.matrixark_mcp_metrics import MatrixArkServiceMetrics
 except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_env import env_bool, env_float, env_int
     from matrixark_mcp_metrics import MatrixArkServiceMetrics
 
 try:
@@ -78,7 +80,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 RETRIEVAL_HOT_RECORD_TYPES = retrieval_record_helpers.RETRIEVAL_HOT_RECORD_TYPES
 
-LOCAL_READ_CACHE_COPY = os.environ.get("MATRIXARK_LOCAL_READ_CACHE_COPY", "1").strip().lower() not in {"0", "false", "no"}
+LOCAL_READ_CACHE_COPY = env_bool("MATRIXARK_LOCAL_READ_CACHE_COPY", True)
 DEFAULT_SESSION_IDLE_COMMIT_TIMEOUT_MS = 5 * 60 * 1000
 
 @dataclass
@@ -92,8 +94,8 @@ class MatrixArkLocalAdapter:
         self.event_log.parent.mkdir(parents=True, exist_ok=True)
         self._write_batch_local = threading.local()
         self._event_log_lock = threading.RLock()
-        self._resource_import_worker_count = max(1, int(os.environ.get("MATRIXARK_RESOURCE_IMPORT_WORKERS", "2")))
-        self._resource_import_queue_max = max(1, int(os.environ.get("MATRIXARK_RESOURCE_IMPORT_QUEUE_MAX", "64")))
+        self._resource_import_worker_count = max(1, env_int("MATRIXARK_RESOURCE_IMPORT_WORKERS", 2))
+        self._resource_import_queue_max = max(1, env_int("MATRIXARK_RESOURCE_IMPORT_QUEUE_MAX", 64))
         self._resource_import_queue: thread_queue.Queue[Json] = thread_queue.Queue(maxsize=self._resource_import_queue_max)
         self._resource_import_workers_started = False
         self._resource_import_worker_lock = threading.RLock()
@@ -117,8 +119,8 @@ class MatrixArkLocalAdapter:
         self._retrieval_records_cache: dict[tuple[Any, ...], Json] = {}
         self._context_pack_cache_lock = threading.RLock()
         self._context_pack_cache: dict[tuple[Any, ...], tuple[float, Json]] = {}
-        self._context_pack_cache_max_entries = max(0, int(os.environ.get("MATRIXARK_CONTEXT_PACK_CACHE_MAX_ENTRIES", "256")))
-        self._context_pack_cache_ttl_s = max(0.0, float(os.environ.get("MATRIXARK_CONTEXT_PACK_CACHE_TTL_S", "30")))
+        self._context_pack_cache_max_entries = max(0, env_int("MATRIXARK_CONTEXT_PACK_CACHE_MAX_ENTRIES", 256))
+        self._context_pack_cache_ttl_s = max(0.0, env_float("MATRIXARK_CONTEXT_PACK_CACHE_TTL_S", 30.0))
 
     def _write_batch_stack(self) -> list[list[Json]]:
         local = getattr(self, "_write_batch_local", None)
