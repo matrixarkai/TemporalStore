@@ -8,8 +8,8 @@ use crate::matrixark_rust_proxy_retrieve_policy::{
     build_recall_policy, RetrieveRecallPolicyInput,
 };
 use crate::matrixark_rust_proxy_retrieve_telemetry::{
-    mark_native_pack_scan_stats, same_session_selected_ref_count, total_dropped_ref_count,
-    RetrieveDropCounts,
+    dropped_refs_json, mark_native_pack_scan_stats, same_session_selected_ref_count,
+    total_dropped_ref_count, RetrieveDropCounts, RetrieveDroppedRefs,
 };
 use crate::matrixark_rust_proxy_retrieve_result::{scan_cache_hit, scan_dropped_count};
 
@@ -101,24 +101,15 @@ pub(crate) fn build_retrieve_pack_response(input: RetrievePackResponseInput) -> 
         "selected_ref_counts": input.selected_counts,
         "remote_context_refs": selected,
         "selected_refs": selected,
-        "dropped_refs": {
-            "over_budget": input.dropped_over_budget,
-            "cross_session_budget": input.dropped_cross_budget,
-            "cross_session_session_cap": input.dropped_cross_session_cap,
-            "cross_session_candidate_cap": input.dropped_cross_candidate_cap,
-            "low_score": input.dropped_low_score,
-            "duplicate_ref": input.dropped_duplicate_ref,
-            "policy_ref": input.dropped_policy_ref,
-            "reason_counts": {
-                "over_budget": input.dropped_over_budget,
-                "cross_session_budget": input.dropped_cross_budget,
-                "cross_session_session_cap": input.dropped_cross_session_cap,
-                "cross_session_candidate_cap": input.dropped_cross_candidate_cap,
-                "low_score": input.dropped_low_score,
-                "duplicate_ref": input.dropped_duplicate_ref,
-                "policy_ref": input.dropped_policy_ref
-            }
-        },
+        "dropped_refs": dropped_refs_json(RetrieveDroppedRefs {
+            over_budget: input.dropped_over_budget,
+            cross_budget: input.dropped_cross_budget,
+            cross_session_cap: input.dropped_cross_session_cap,
+            cross_candidate_cap: input.dropped_cross_candidate_cap,
+            low_score: input.dropped_low_score,
+            duplicate_ref: input.dropped_duplicate_ref,
+            policy_ref: input.dropped_policy_ref,
+        }),
         "used_context_tokens": input.used_tokens,
         "used_remote_context_tokens": input.used_tokens,
         "remote_context_budget_tokens": input.remote_budget,
