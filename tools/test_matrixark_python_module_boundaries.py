@@ -76,6 +76,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "matrixark_mcp_ingestion.py",
             "matrixark_mcp_retrieval.py",
             "matrixark_mcp_admin.py",
+            "matrixark_mcp_cli.py",
         ]
         offenders: list[str] = []
         for module_name in module_names:
@@ -374,8 +375,11 @@ class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):
         self.assertEqual(event["node_hash"], event["context_event_parent_hash"])
         self.assertNotIn("parent_type", event)
         self.assertNotIn("parent_hash", event)
-        self.assertIn("context_event:context_node:", event["context_event_key"])
-        self.assertRegex(event["event_time_key"], r"^\d{20}:\d+$")
+        self.assertIsInstance(event["context_event_key"], int)
+        self.assertGreater(event["context_event_key"], 0)
+        self.assertIsInstance(event["timestamp_key_ms"], int)
+        self.assertGreater(event["timestamp_key_ms"], 0)
+        self.assertNotIn("event_time_key", event)
 
         route_cases = [
             ("shared_store_async", "shared_store", "shared_store", "async", False),
@@ -436,8 +440,9 @@ class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):
         )
         self.assertNotIn("recall_policy", pack)
         audit = next(record for record in reversed(server.adapter.read_all()) if record.get("record_type") == "context_pack_audit")
-        self.assertEqual("shared_store", audit["recall_policy"]["storage_options"]["storage_mode"])
-        self.assertEqual("sync", audit["storage_options"]["oplog_mode"])
+        self.assertEqual("shared_store", audit["recall_policy_summary"]["storage_route"]["storage_family"])
+        self.assertEqual("sync", audit["recall_policy_summary"]["storage_route"]["write_mode"])
+        self.assertEqual("debug", audit["storage_options"]["storage_part"])
 
     def test_invalid_storage_options_are_rejected(self) -> None:
         server = self._server()
