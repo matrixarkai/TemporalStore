@@ -37,7 +37,9 @@ pub use types::{
 #[cfg(feature = "direct")]
 mod direct_helpers;
 #[cfg(feature = "direct")]
-use direct_helpers::{check, cstring, CStringOptions};
+use direct_helpers::{
+    check, cstring, feature_points_from_c_array, ips_features_from_c_array, CStringOptions,
+};
 
 #[cfg(feature = "proxy")]
 mod proxy_helpers;
@@ -121,9 +123,9 @@ struct CFeatureFilter {
 #[cfg(feature = "direct")]
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct CFeaturePoint {
-    timestamp: u64,
-    value: *const c_char,
+pub(crate) struct CFeaturePoint {
+    pub(crate) timestamp: u64,
+    pub(crate) value: *const c_char,
 }
 
 #[cfg(feature = "direct")]
@@ -140,13 +142,13 @@ struct CSequenceFeatureRow {
 #[cfg(feature = "direct")]
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct CIpsFeatureStat {
-    id: i64,
-    slot: i32,
-    has_slot: c_int,
-    kind: i32,
-    v1: i32,
-    v2: i32,
+pub(crate) struct CIpsFeatureStat {
+    pub(crate) id: i64,
+    pub(crate) slot: i32,
+    pub(crate) has_slot: c_int,
+    pub(crate) kind: i32,
+    pub(crate) v1: i32,
+    pub(crate) v2: i32,
 }
 
 #[cfg(feature = "direct")]
@@ -175,9 +177,9 @@ struct CHashEntryArray {
 
 #[cfg(feature = "direct")]
 #[repr(C)]
-struct CFeaturePointArray {
-    count: usize,
-    points: *mut CFeaturePoint,
+pub(crate) struct CFeaturePointArray {
+    pub(crate) count: usize,
+    pub(crate) points: *mut CFeaturePoint,
 }
 
 #[cfg(feature = "direct")]
@@ -189,9 +191,9 @@ struct CSequenceFeatureRowArray {
 
 #[cfg(feature = "direct")]
 #[repr(C)]
-struct CIpsFeatureArray {
-    count: usize,
-    features: *mut CIpsFeatureStat,
+pub(crate) struct CIpsFeatureArray {
+    pub(crate) count: usize,
+    pub(crate) features: *mut CIpsFeatureStat,
 }
 
 #[cfg(feature = "direct")]
@@ -1145,47 +1147,6 @@ impl Client {
         check(code, error)?;
         Ok(count)
     }
-}
-
-#[cfg(feature = "direct")]
-fn feature_points_from_c_array(out: &CFeaturePointArray) -> Vec<FeaturePoint> {
-    if out.points.is_null() {
-        return Vec::new();
-    }
-    let slice = unsafe { std::slice::from_raw_parts(out.points, out.count) };
-    slice
-        .iter()
-        .map(|point| {
-            let value = if point.value.is_null() {
-                Vec::new()
-            } else {
-                unsafe { CStr::from_ptr(point.value).to_bytes().to_vec() }
-            };
-            FeaturePoint {
-                timestamp_ms: point.timestamp,
-                value,
-            }
-        })
-        .collect()
-}
-
-#[cfg(feature = "direct")]
-fn ips_features_from_c_array(out: &CIpsFeatureArray) -> Vec<IpsFeatureStat> {
-    if out.features.is_null() {
-        return Vec::new();
-    }
-    let slice = unsafe { std::slice::from_raw_parts(out.features, out.count) };
-    slice
-        .iter()
-        .map(|feature| IpsFeatureStat {
-            id: feature.id,
-            slot: feature.slot,
-            has_slot: feature.has_slot != 0,
-            kind: feature.kind,
-            v1: feature.v1,
-            v2: feature.v2,
-        })
-        .collect()
 }
 
 #[cfg(feature = "direct")]
