@@ -2,6 +2,7 @@ use serde_json::{json, Value};
 use temporalstore::Client;
 
 use crate::matrixark_rust_proxy_command_stats::command_entries;
+use crate::matrixark_rust_proxy_dispatch_hash;
 use crate::matrixark_rust_proxy_protocol::Command;
 use crate::matrixark_rust_proxy_records::{read_matrixark_record, write_matrixark_record};
 use crate::matrixark_rust_proxy_retrieve::retrieve_context_pack_native;
@@ -10,43 +11,10 @@ use crate::matrixark_rust_proxy_scan::scan_matrixark_candidates;
 
 pub(crate) fn run_with_client(client: &Client, command: Command) -> Result<Value, String> {
     match command.op.as_str() {
-        "put_string" => {
-            client
-                .put_string(
-                    &required(command.key, "key")?,
-                    &required(command.value, "value")?,
-                )
-                .map_err(|err| err.to_string())?;
-            Ok(json!({"ok": true}))
-        }
-        "get_string" => {
-            let value = client
-                .get_string(&required(command.key, "key")?)
-                .map_err(|err| err.to_string())?;
-            Ok(json!({"ok": true, "value": value}))
-        }
-        "hset" => {
-            client
-                .hset(
-                    &required(command.key, "key")?,
-                    &required(command.field, "field")?,
-                    &required(command.value, "value")?,
-                )
-                .map_err(|err| err.to_string())?;
-            Ok(json!({"ok": true}))
-        }
-        "batch_hset" => {
-            let entries = command_entries(&command)?;
-            if entries.is_empty() {
-                return Err("missing entries".to_string());
-            }
-            for entry in &entries {
-                client
-                    .hset(entry.key, entry.field, entry.value)
-                    .map_err(|err| err.to_string())?;
-            }
-            Ok(json!({"ok": true, "written": entries.len(), "batch_lowering": "raw_hset"}))
-        }
+        "put_string" => matrixark_rust_proxy_dispatch_hash::put_string(client, command),
+        "get_string" => matrixark_rust_proxy_dispatch_hash::get_string(client, command),
+        "hset" => matrixark_rust_proxy_dispatch_hash::hset(client, command),
+        "batch_hset" => matrixark_rust_proxy_dispatch_hash::batch_hset(client, &command),
         "matrixark_append_records" | "matrixark_batch_append_records" => {
             let entries = command_entries(&command)?;
             if entries.is_empty()
@@ -90,31 +58,8 @@ pub(crate) fn run_with_client(client: &Client, command: Command) -> Result<Value
                 "batch_lowering": "none"
             }))
         }
-        "batch_hget" => {
-            let entries = command_entries(&command)?;
-            if entries.is_empty() {
-                return Err("missing entries".to_string());
-            }
-            let mut reads = Vec::with_capacity(entries.len());
-            for entry in &entries {
-                let value = client
-                    .hget(entry.key, entry.field)
-                    .map_err(|err| err.to_string())?;
-                reads.push(json!({"key": entry.key, "field": entry.field, "value": value}));
-            }
-            Ok(json!({"ok": true, "read": reads.len(), "records": reads}))
-        }
-        "hgetall" | "scan_hash" => {
-            let key = required(command.key, "key")?;
-            let rows = client.scan_hash(&key).map_err(|err| err.to_string())?;
-            let records: Vec<Value> = rows
-                .iter()
-                .map(|(field, value)| json!({"key": key, "field": field, "value": value}))
-                .collect();
-            Ok(
-                json!({"ok": true, "count": records.len(), "read": records.len(), "records": records}),
-            )
-        }
+        "batch_hget" => matrixark_rust_proxy_dispatch_hash::batch_hget(client, &command),
+        "hgetall" | "scan_hash" => matrixark_rust_proxy_dispatch_hash::scan_hash(client, command),
         "matrixark_scan_candidates" => scan_matrixark_candidates(client, &command),
         "matrixark_retrieve_context_pack" => retrieve_context_pack_native(client, &command),
         "write_matrixark_record" => {
@@ -177,15 +122,7 @@ pub(crate) fn run_with_client(client: &Client, command: Command) -> Result<Value
             }
             Ok(json!({"ok": true, "read": reads.len(), "records": reads}))
         }
-        "hget" => {
-            let value = client
-                .hget(
-                    &required(command.key, "key")?,
-                    &required(command.field, "field")?,
-                )
-                .map_err(|err| err.to_string())?;
-            Ok(json!({"ok": true, "value": value}))
-        }
+        "hget" => matrixark_rust_proxy_dispatch_hash::hget(client, command),
         other => Err(format!("unsupported op {other}")),
     }
 }
