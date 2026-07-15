@@ -4,13 +4,11 @@
 from __future__ import annotations
 
 import json
-import os
 import queue
 import subprocess
 import threading
 import time
 from collections import defaultdict, deque
-from pathlib import Path
 from typing import Any
 
 try:
@@ -21,6 +19,11 @@ try:
         initialize_rust_proxy_cache_state,
         initialize_rust_proxy_metrics_state,
     )
+    from tools.matrixark_mcp_rust_proxy_process import (
+        close_proxy_lanes,
+        close_proxy_process,
+        ensure_lane_process,
+    )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import Json, MatrixArkError
     from matrixark_mcp_rust_proxy_config import initialize_rust_proxy_config
@@ -28,6 +31,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_rust_proxy_metrics_state import (
         initialize_rust_proxy_cache_state,
         initialize_rust_proxy_metrics_state,
+    )
+    from matrixark_mcp_rust_proxy_process import (
+        close_proxy_lanes,
+        close_proxy_process,
+        ensure_lane_process,
     )
 
 
@@ -82,58 +90,14 @@ class MatrixArkRustProxyClient:
         self._proc: subprocess.Popen[str] | None = None
 
     def close(self) -> None:
-        seen: set[int] = set()
-        for lanes in getattr(self, "_lanes", {}).values():
-            for lane in lanes:
-                proc = lane.get("proc")
-                lane["proc"] = None
-                if proc is None or id(proc) in seen:
-                    continue
-                seen.add(id(proc))
-                self._close_proc(proc)
-        proc = self._proc
-        self._proc = None
-        if proc is not None and id(proc) not in seen:
-            self._close_proc(proc)
+        close_proxy_lanes(self)
 
     @staticmethod
     def _close_proc(proc: subprocess.Popen[str]) -> None:
-        if proc.poll() is None:
-            try:
-                proc.terminate()
-                proc.wait(timeout=2)
-            except Exception:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-        for stream in (proc.stdin, proc.stdout, proc.stderr):
-            try:
-                if stream is not None:
-                    stream.close()
-            except Exception:
-                pass
+        close_proxy_process(proc)
 
     def _ensure_lane_proc(self, lane: Json) -> subprocess.Popen[str]:
-        proc = lane.get("proc")
-        if proc is not None and proc.poll() is None:
-            return proc
-        if proc is not None:
-            self._close_proc(proc)
-        env = os.environ.copy()
-        proxy_dir = str(Path(self.cli_path).resolve().parent)
-        existing_ld_path = env.get("LD_LIBRARY_PATH", "")
-        env["LD_LIBRARY_PATH"] = proxy_dir if not existing_ld_path else f"{proxy_dir}:{existing_ld_path}"
-        lane["proc"] = subprocess.Popen(
-            [self.cli_path, "--serve"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-            env=env,
-        )
-        return lane["proc"]
+        return ensure_lane_process(self, lane)
 
     def warm_lane_group(self, group: str) -> Json:
         lanes = self._lanes.get(group) or []
