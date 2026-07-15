@@ -3249,13 +3249,13 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             self.assertEqual(route.get("read_preference"), "replica_preferred")
             self.assertTrue(route.get("replica_read"))
 
-    def test_context_ingest_record_storage_options_override_inherited_policy(self) -> None:
+    def test_context_ingest_record_storage_options_keep_async_by_default(self) -> None:
         scope = {"tenant_hash": 11, "user_hash": 22, "session_hash": 33}
         envelope = mcp_core.normalize_envelope(
             {
                 "messages": [{"role": "user", "content": "Codex captured one message."}],
                 "scope": scope,
-                "storage_options": {"route": "raft_sync"},
+                "storage_options": {"route": "shared_store_async"},
                 "record_storage_options": {
                     "context_event": {"route": "shared_store_async"},
                     "index": {"route": "raft_async"},
@@ -3287,10 +3287,10 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(by_type["context_index"]["storage_route"]["storage_family"], "raft")
 
         self.assertEqual(by_type["context_entity"]["storage_record_kind"], "entity")
-        self.assertEqual(by_type["context_entity"]["storage_route"]["route"], "raft_sync")
-        self.assertEqual(by_type["context_entity"]["storage_route"]["write_mode"], "sync")
-        self.assertEqual(by_type["context_entity"]["storage_route"]["durability"], "sync")
-        self.assertFalse(by_type["context_entity"]["storage_route"]["replica_read"])
+        self.assertEqual(by_type["context_entity"]["storage_route"]["route"], "shared_store_async")
+        self.assertEqual(by_type["context_entity"]["storage_route"]["write_mode"], "async")
+        self.assertEqual(by_type["context_entity"]["storage_route"]["durability"], "async")
+        self.assertTrue(by_type["context_entity"]["storage_route"]["replica_read"])
 
     def test_native_context_pack_default_policy(self) -> None:
         mcp.MATRIXARK_MCP_PROFILE = "dev"
