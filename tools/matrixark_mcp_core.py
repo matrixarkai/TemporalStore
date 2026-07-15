@@ -3666,6 +3666,7 @@ STORAGE_ROUTE_PRESETS: dict[str, Json] = {
 }
 
 DEFAULT_ASYNC_INGEST_STORAGE_OPTIONS: Json = {
+    "durability": "async",
     "write_mode": "async",
     "oplog_mode": "async",
     "background_write": True,
@@ -3730,9 +3731,12 @@ def canonical_storage_route(storage_options: Json | None) -> Json:
     storage_mode = str(options.get("storage_mode") or "default")
     replication_mode = str(options.get("replication_mode") or "default")
     oplog_mode = str(options.get("oplog_mode") or "default")
+    requested_durability = str(options.get("durability") or "default")
     raft_mode = bool(options.get("raft_mode", False))
     requested_family = str(options.get("storage_family") or options.get("family") or "default")
-    requested_write_mode = str(options.get("write_mode") or "default")
+    requested_write_mode = str(options.get("write_mode") or requested_durability or "default")
+    if requested_write_mode == "default" and requested_durability in {"async", "sync"}:
+        requested_write_mode = requested_durability
     write_mode = requested_write_mode if requested_write_mode in {"async", "sync"} else oplog_mode
     if write_mode not in {"async", "sync"}:
         write_mode = "async"
@@ -3762,6 +3766,7 @@ def canonical_storage_route(storage_options: Json | None) -> Json:
         "storage_mode": storage_mode,
         "replication_mode": replication_mode,
         "oplog_mode": oplog_mode,
+        "durability": write_mode,
         "raft_mode": raft_mode,
         "consistency": str(options.get("consistency") or "default"),
         "read_preference": read_preference,
@@ -3793,6 +3798,7 @@ def normalize_storage_options(args: Json, metadata: Json | None = None) -> Json:
         "temporalstore_route": "route",
         "temporalstore_storage_family": "storage_family",
         "temporalstore_write_mode": "write_mode",
+        "temporalstore_durability": "durability",
         "temporalstore_background_write": "background_write",
         "temporalstore_read_preference": "read_preference",
     }
@@ -3807,6 +3813,7 @@ def normalize_storage_options(args: Json, metadata: Json | None = None) -> Json:
     allowed = {
         "storage_mode": {"default", "local", "single_node", "multi_node", "shared_store", "raft"},
         "oplog_mode": {"default", "async", "sync"},
+        "durability": {"default", "async", "sync"},
         "replication_mode": {"default", "none", "shared_store", "raft"},
         "consistency": {"default", "eventual", "read_your_writes", "linearizable"},
         "read_preference": {"default", "primary", "replica", "replica_preferred"},
@@ -3861,6 +3868,10 @@ def normalize_storage_options(args: Json, metadata: Json | None = None) -> Json:
         normalized["raft_mode"] = False
     if normalized.get("write_mode") in {"async", "sync"}:
         normalized["oplog_mode"] = normalized["write_mode"]
+        normalized["durability"] = normalized["write_mode"]
+    elif normalized.get("durability") in {"async", "sync"}:
+        normalized["write_mode"] = normalized["durability"]
+        normalized["oplog_mode"] = normalized["durability"]
     if normalized.get("oplog_mode") == "sync" and normalized.get("background_write") is True:
         raise MatrixArkError("storage_options.background_write cannot be true when write_mode/oplog_mode is sync")
     if normalized.get("raft_mode") is True:
@@ -3878,6 +3889,7 @@ def normalize_storage_options(args: Json, metadata: Json | None = None) -> Json:
                 "backend_family",
                 "storage_family",
                 "write_mode",
+                "durability",
                 "sync_write",
                 "async_write",
                 "background_write",

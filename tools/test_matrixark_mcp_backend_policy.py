@@ -3202,6 +3202,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         )
         self.assertEqual(envelope["storage_options"]["write_mode"], "async")
         self.assertEqual(envelope["storage_options"]["oplog_mode"], "async")
+        self.assertEqual(envelope["storage_options"]["durability"], "async")
         self.assertEqual(envelope["storage_options"]["read_preference"], "replica_preferred")
         self.assertTrue(envelope["storage_route"]["replica_read"])
 
@@ -3231,6 +3232,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 continue
             route = record.get("storage_route", {})
             self.assertEqual(route.get("write_mode"), "async")
+            self.assertEqual(route.get("durability"), "async")
             self.assertTrue(route.get("background_write"))
             self.assertEqual(route.get("read_preference"), "replica_preferred")
             self.assertTrue(route.get("replica_read"))
@@ -3265,6 +3267,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(by_type["context_event"]["storage_part"], "context_event")
         self.assertEqual(by_type["context_event"]["storage_route"]["route"], "shared_store_async")
         self.assertEqual(by_type["context_event"]["storage_route"]["write_mode"], "async")
+        self.assertEqual(by_type["context_event"]["storage_route"]["durability"], "async")
         self.assertTrue(by_type["context_event"]["storage_route"]["replica_read"])
 
         self.assertEqual(by_type["context_index"]["storage_part"], "index")
@@ -3274,6 +3277,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(by_type["context_entity"]["storage_part"], "entity")
         self.assertEqual(by_type["context_entity"]["storage_route"]["route"], "raft_sync")
         self.assertEqual(by_type["context_entity"]["storage_route"]["write_mode"], "sync")
+        self.assertEqual(by_type["context_entity"]["storage_route"]["durability"], "sync")
         self.assertFalse(by_type["context_entity"]["storage_route"]["replica_read"])
 
     def test_native_context_pack_default_policy(self) -> None:
