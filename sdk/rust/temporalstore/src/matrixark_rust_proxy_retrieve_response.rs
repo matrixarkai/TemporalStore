@@ -4,6 +4,10 @@ use serde_json::{json, Value};
 
 use crate::matrixark_rust_proxy_cross_session::CrossSessionPolicy;
 use crate::matrixark_rust_proxy_metrics::unix_ms;
+use crate::matrixark_rust_proxy_retrieve_telemetry::{
+    mark_native_pack_scan_stats, same_session_selected_ref_count, total_dropped_ref_count,
+    RetrieveDropCounts,
+};
 use crate::matrixark_rust_proxy_retrieve_result::{scan_cache_hit, scan_dropped_count};
 
 pub(crate) struct RetrievePackResponseInput {
@@ -36,30 +40,20 @@ pub(crate) struct RetrievePackResponseInput {
 
 pub(crate) fn build_retrieve_pack_response(input: RetrievePackResponseInput) -> Value {
     let context_pack_id = format!("rust-native-{}-{}", unix_ms(), input.selected.len());
-    let mut scan_stats = input.scan_stats;
-    if let Some(stats) = scan_stats.as_object_mut() {
-        stats.insert("native_pack_assembly".to_string(), json!(true));
-        stats.insert(
-            "pack_assembly_location".to_string(),
-            json!("rust_proxy_native"),
-        );
-        stats.insert("next_native_gap".to_string(), json!(""));
-    }
+    let scan_stats = mark_native_pack_scan_stats(input.scan_stats);
     let scan_dropped_count = scan_dropped_count(&scan_stats);
     let scan_cache_hit = scan_cache_hit(&scan_stats);
-    let dropped_ref_count = input.dropped_over_budget
-        + input.dropped_cross_budget
-        + input.dropped_cross_session_cap
-        + input.dropped_cross_candidate_cap
-        + input.dropped_policy_ref
-        + input.dropped_duplicate_ref
-        + scan_dropped_count;
+    let dropped_ref_count = total_dropped_ref_count(RetrieveDropCounts {
+        over_budget: input.dropped_over_budget,
+        cross_budget: input.dropped_cross_budget,
+        cross_session_cap: input.dropped_cross_session_cap,
+        cross_candidate_cap: input.dropped_cross_candidate_cap,
+        policy_ref: input.dropped_policy_ref,
+        duplicate_ref: input.dropped_duplicate_ref,
+        scan_dropped: scan_dropped_count,
+    });
     let selected_ref_count = input.selected.len();
-    let same_session_selected_ref_count = input
-        .selected
-        .iter()
-        .filter(|item| item.get("session_continuity").and_then(Value::as_str) == Some("same_session"))
-        .count();
+    let same_session_selected_ref_count = same_session_selected_ref_count(&input.selected);
     let secondary_index_matched_candidate_count = scan_stats
         .get("secondary_index_matched_candidate_count")
         .cloned()
