@@ -202,6 +202,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "matrixark_mcp_visibility.py",
             "matrixark_mcp_retrieval_records.py",
             "matrixark_mcp_resource_import_runtime.py",
+            "matrixark_mcp_local_cache.py",
             "matrixark_mcp_errors.py",
             "matrixark_mcp_models.py",
             "matrixark_mcp_indexing.py",
