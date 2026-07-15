@@ -29,6 +29,8 @@ pub use options::Options;
 #[cfg(feature = "direct")]
 mod direct_client;
 #[cfg(feature = "direct")]
+mod direct_client_matrixark;
+#[cfg(feature = "direct")]
 mod direct_control_state;
 #[cfg(feature = "direct")]
 mod direct_features;
