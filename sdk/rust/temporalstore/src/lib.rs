@@ -45,6 +45,8 @@ mod direct_ips;
 #[cfg(feature = "direct")]
 mod direct_key_value;
 #[cfg(feature = "direct")]
+mod direct_lifecycle;
+#[cfg(feature = "direct")]
 mod direct_sequence_features;
 #[cfg(feature = "direct")]
 mod direct_set;
@@ -77,6 +79,8 @@ mod proxy_helpers;
 mod proxy_ips;
 #[cfg(feature = "proxy")]
 mod proxy_key_value;
+#[cfg(feature = "proxy")]
+mod proxy_lifecycle;
 #[cfg(feature = "proxy")]
 mod proxy_sequence_features;
 #[cfg(feature = "proxy")]
