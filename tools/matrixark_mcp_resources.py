@@ -29,6 +29,12 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 Json = dict[str, Any]
 
 
+MAX_RESOURCE_FACT_CHUNKS = int(os.environ.get("MATRIXARK_MAX_RESOURCE_FACT_CHUNKS", "8"))
+MAX_RESOURCE_FACTS_PER_RESOURCE = int(os.environ.get("MATRIXARK_MAX_RESOURCE_FACTS_PER_RESOURCE", "8"))
+MAX_RESOURCE_FACTS_PER_CHUNK = int(os.environ.get("MATRIXARK_MAX_RESOURCE_FACTS_PER_CHUNK", "2"))
+ENABLE_GENERIC_RESOURCE_FACTS = os.environ.get("MATRIXARK_ENABLE_GENERIC_RESOURCE_FACTS", "0").strip().lower() in {"1", "true", "yes"}
+
+
 def compact_ws(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip()
 
@@ -453,5 +459,127 @@ def aggregate_parse_warnings_from_chunks(chunks: list[Any]) -> list[str]:
             if warning not in warnings:
                 warnings.append(warning)
     return warnings
+
+
+RESOURCE_FACT_KEYWORDS = re.compile(
+    r"\b(decision|decided|owner|owns|deadline|due|cost|budget|approval|approved|control_state|policy|must|should|required|requires|api|endpoint|contract|runbook|rollback|incident|troubleshoot|alert|sla|p95|p99|procedure|checklist)\b",
+    flags=re.IGNORECASE,
+)
+
+RESOURCE_FACT_SCHEMAS: list[Json] = [
+    {
+        "fact_type": "resource_decision",
+        "entity_type": "resource_decision",
+        "entity_prefix": "decision",
+        "keywords": ["decision", "decided", "approved", "rejected", "selected"],
+    },
+    {
+        "fact_type": "resource_owner",
+        "entity_type": "resource_owner",
+        "entity_prefix": "owner",
+        "keywords": ["owner", "owns", "reviewer", "assignee", "responsible"],
+    },
+    {
+        "fact_type": "resource_cost",
+        "entity_type": "resource_cost",
+        "entity_prefix": "cost",
+        "keywords": ["cost", "budget", "amount", "price", "spend", "$"],
+    },
+    {
+        "fact_type": "resource_deadline",
+        "entity_type": "resource_deadline",
+        "entity_prefix": "deadline",
+        "keywords": ["deadline", "due", "by monday", "by tuesday", "by wednesday", "by thursday", "by friday", "by saturday", "by sunday"],
+    },
+    {
+        "fact_type": "resource_api_contract",
+        "entity_type": "resource_api_contract",
+        "entity_prefix": "api",
+        "keywords": ["api", "endpoint", "contract", "schema", "request", "response", "http", "grpc"],
+    },
+    {
+        "fact_type": "resource_troubleshooting_step",
+        "entity_type": "resource_troubleshooting",
+        "entity_prefix": "troubleshooting",
+        "keywords": ["troubleshoot", "debug", "incident", "alert", "rollback", "runbook", "remediation", "mitigation"],
+    },
+    {
+        "fact_type": "resource_policy",
+        "entity_type": "resource_policy",
+        "entity_prefix": "policy",
+        "keywords": ["policy", "must", "should", "required", "requires", "cannot", "allowed"],
+    },
+    {
+        "fact_type": "resource_approval",
+        "entity_type": "resource_approval",
+        "entity_prefix": "approval",
+        "keywords": ["approval", "approved", "approve", "signoff", "confirmed"],
+    },
+    {
+        "fact_type": "resource_control_state",
+        "entity_type": "resource_control_state",
+        "entity_prefix": "control_state",
+        "keywords": ["control_state", "blocker", "blocked", "failure", "unsafe", "degraded"],
+    },
+    {
+        "fact_type": "resource_procedure",
+        "entity_type": "resource_procedure",
+        "entity_prefix": "procedure",
+        "keywords": ["procedure", "step", "checklist", "first", "then", "verify", "confirm"],
+    },
+]
+
+
+def should_extract_resource_fact(text: str, metadata: Json) -> bool:
+    if RESOURCE_FACT_KEYWORDS.search(text):
+        return True
+    unit_kind = str(metadata.get("unit_kind", ""))
+    return unit_kind in {"table_row", "table_row_group", "xlsx_row", "xlsx_row_group", "json_document", "json_record", "json_record_group"}
+
+
+def matched_resource_fact_schemas(text: str, metadata: Json) -> list[Json]:
+    lower = text.lower()
+    matches = [
+        schema
+        for schema in RESOURCE_FACT_SCHEMAS
+        if any(keyword in lower for keyword in schema["keywords"])
+    ]
+    if matches:
+        return matches[: max(0, MAX_RESOURCE_FACTS_PER_CHUNK)]
+    if ENABLE_GENERIC_RESOURCE_FACTS and should_extract_resource_fact(text, metadata):
+        return [{"fact_type": "resource_fact", "entity_type": "resource_fact", "entity_prefix": "fact", "keywords": []}]
+    return []
+
+
+def extract_resource_fact_value(text: str, fact_type: str) -> str:
+    patterns = {
+        "resource_owner": r"\b(?:owner|owns|reviewer|assignee|responsible)\s*(?:is|:|=)?\s*([^.;\n]{2,120})",
+        "resource_deadline": r"\b(?:deadline|due)\s*(?:is|:|=|by)?\s*([^.;\n]{2,120})",
+        "resource_cost": r"\b(?:cost|budget|amount|price|spend)\s*(?:is|:|=)?\s*([^.;\n]{2,120})",
+        "resource_api_contract": r"\b(?:api|endpoint|contract|schema)\s*(?:is|:|=)?\s*([^.;\n]{2,160})",
+        "resource_approval": r"\b(?:approval|approved|approve|signoff|confirmed)\s*(?:is|:|=)?\s*([^.;\n]{0,140})",
+        "resource_control_state": r"\b(?:control_state|blocker|blocked|failure)\s*(?:is|:|=)?\s*([^.;\n]{2,160})",
+        "resource_decision": r"\b(?:decision|decided)\s*(?:is|:|=)?\s*([^.;\n]{2,180})",
+        "resource_policy": r"\b(?:policy|must|should|required|requires)\s*(?:is|:|=)?\s*([^.;\n]{2,180})",
+        "resource_troubleshooting_step": r"\b(?:troubleshoot|debug|incident|alert|rollback|runbook|remediation|mitigation)\s*(?:is|:|=)?\s*([^.;\n]{2,180})",
+        "resource_procedure": r"\b(?:procedure|step|checklist|verify|confirm)\s*(?:is|:|=)?\s*([^.;\n]{2,180})",
+    }
+    pattern = patterns.get(fact_type, "")
+    if pattern:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return preview_text(match.group(1).strip(" :-"), limit=180)
+    return preview_text(text, limit=220)
+
+
+def resource_fact_entity_name(schema: Json, value: str, chunk_metadata: Json, raw_uri: str) -> str:
+    prefix = str(schema.get("entity_prefix") or schema.get("entity_type") or "fact")
+    semantic_value = preview_text(str(value or "").strip(), limit=80).strip()
+    if semantic_value:
+        return f"{prefix}:{semantic_value}"
+    heading = str(chunk_metadata.get("heading") or chunk_metadata.get("heading_slug") or "").strip()
+    if heading:
+        return f"{prefix}:{preview_text(heading, limit=80)}"
+    return prefix
 
 
