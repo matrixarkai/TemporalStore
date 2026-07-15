@@ -68,6 +68,8 @@ mod matrixark_rust_proxy_retrieve_response;
 mod matrixark_rust_proxy_retrieve_scoring;
 #[path = "../matrixark_rust_proxy_retrieve_select.rs"]
 mod matrixark_rust_proxy_retrieve_select;
+#[path = "../matrixark_rust_proxy_retrieve_select_state.rs"]
+mod matrixark_rust_proxy_retrieve_select_state;
 #[path = "../matrixark_rust_proxy_retrieve_signature.rs"]
 mod matrixark_rust_proxy_retrieve_signature;
 #[path = "../matrixark_rust_proxy_retrieve_telemetry.rs"]
