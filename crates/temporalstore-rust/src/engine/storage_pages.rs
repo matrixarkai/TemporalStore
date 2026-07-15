@@ -4,6 +4,14 @@ use super::cache::{page_physical_identity_key, PagePhysicalIdentityKey};
 use super::state::ShardState;
 use crate::page_store::PageAddress;
 
+pub(super) struct TimestampedPageBatchWrite {
+    pub(super) kind: &'static str,
+    pub(super) object_key: String,
+    pub(super) timestamp_ms: u64,
+    pub(super) value: Vec<u8>,
+    pub(super) routing_slot: u32,
+}
+
 pub(super) fn unique_timestamped_kv_page_addresses(
     series: &BTreeMap<u64, PageAddress>,
 ) -> Vec<PageAddress> {

@@ -113,14 +113,6 @@ pub struct TemporalEngine {
     admissions: Arc<RwLock<HashMap<AdmissionScope, AdmissionState>>>,
 }
 
-struct TimestampedPageBatchWrite {
-    kind: &'static str,
-    object_key: String,
-    timestamp_ms: u64,
-    value: Vec<u8>,
-    routing_slot: u32,
-}
-
 impl TemporalEngine {
     pub fn execute(&self, request: ExecuteRequest) -> ExecuteResponse {
         self.execute_with_storage_override(request, None)
@@ -11961,28 +11953,6 @@ fn collect_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
         return collect_slot_index_live_page_entries(shard);
     }
     collect_model_live_page_entries(shard)
-}
-
-fn model_id_for_kind(kind: &str) -> u16 {
-    match kind {
-        "string" => 1,
-        "hash" => 2,
-        "set" => 3,
-        "feature" => 4,
-        "sequence" => 5,
-        "ips" => 6,
-        "context_node" => 20,
-        "context_event" => 21,
-        "context_index" => 22,
-        "context_audit" => 23,
-        "context_dirty" => 24,
-        "context_entity" => 25,
-        "context_child" => 26,
-        "context_embedding" => 27,
-        "context_summary" => 28,
-        "context_compression" => 29,
-        _ => u16::MAX,
-    }
 }
 
 fn mark_async_dirty_object(
