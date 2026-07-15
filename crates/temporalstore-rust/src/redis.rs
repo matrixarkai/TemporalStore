@@ -1421,7 +1421,7 @@ pub fn execute_redis_command_with_state(
                 Err(err) => RespValue::Error(format!("ERR {err}")),
             }
         }
-        "RISKINCR" if args.len() == 4 => {
+        "CONTROLINCR" | "RISKINCR" if args.len() == 4 => {
             let timestamp_ms = match parse_u64(&args[2], "timestamp_ms") {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
@@ -1436,7 +1436,7 @@ pub fn execute_redis_command_with_state(
                 amount,
             }))
         }
-        "RISKINCROPT" if args.len() == 6 => {
+        "CONTROLINCROPT" | "RISKINCROPT" if args.len() == 6 => {
             let timestamp_ms = match parse_u64(&args[2], "timestamp_ms") {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
@@ -1461,7 +1461,7 @@ pub fn execute_redis_command_with_state(
                 ttl_ms: Some(ttl_ms),
             }))
         }
-        "RISKCHANGE" | "HCHANGE" if args.len() == 4 || args.len() == 6 => {
+        "CONTROLCHANGE" | "RISKCHANGE" | "HCHANGE" if args.len() == 4 || args.len() == 6 => {
             let timestamp_ms = match parse_u64(&args[2], "timestamp_ms") {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
@@ -1492,7 +1492,7 @@ pub fn execute_redis_command_with_state(
                 ttl_ms,
             }))
         }
-        "RISKCOUNT" if args.len() == 4 => {
+        "CONTROLCOUNT" | "RISKCOUNT" if args.len() == 4 => {
             let start_ms = match parse_u64(&args[2], "start_ms") {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
@@ -1507,7 +1507,7 @@ pub fn execute_redis_command_with_state(
                 end_ms,
             }))
         }
-        "RISKQUERY" if args.len() == 5 => {
+        "CONTROLQUERY" | "RISKQUERY" if args.len() == 5 => {
             let start_ms = match parse_u64(&args[2], "start_ms") {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
@@ -1523,7 +1523,7 @@ pub fn execute_redis_command_with_state(
                 aggregator: string_arg(&args[4]),
             }))
         }
-        "RISKDETAIL" if args.len() == 4 || args.len() == 5 => {
+        "CONTROLDETAIL" | "RISKDETAIL" if args.len() == 4 || args.len() == 5 => {
             let start_ms = match parse_u64(&args[2], "start_ms") {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
@@ -1546,7 +1546,7 @@ pub fn execute_redis_command_with_state(
                 count,
             }))
         }
-        "RISKHSET" if args.len() == 4 => {
+        "CONTROLHSET" | "RISKHSET" if args.len() == 4 => {
             let timestamp_ms = match parse_u64(&args[2], "timestamp_ms") {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
@@ -1679,6 +1679,13 @@ fn open_source_redis_command_allowed(command: &str) -> bool {
             | "FQUERYFILTER"
             | "FQUERYFILTERSTR"
             | "FAGG"
+            | "CONTROLINCR"
+            | "CONTROLINCROPT"
+            | "CONTROLCHANGE"
+            | "CONTROLCOUNT"
+            | "CONTROLQUERY"
+            | "CONTROLDETAIL"
+            | "CONTROLHSET"
             | "RISKINCR"
             | "RISKINCROPT"
             | "RISKCHANGE"
@@ -2170,6 +2177,41 @@ fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             flags: READ,
         },
         RedisCommandDescriptor {
+            name: "CONTROLINCR",
+            arity: 4,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "CONTROLINCROPT",
+            arity: 6,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "CONTROLCHANGE",
+            arity: -4,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "CONTROLCOUNT",
+            arity: 4,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "CONTROLQUERY",
+            arity: 5,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "CONTROLDETAIL",
+            arity: -4,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "CONTROLHSET",
+            arity: 4,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
             name: "RISKINCR",
             arity: 4,
             flags: WRITE,
@@ -2637,7 +2679,7 @@ fn redis_info(section: &str, shard_id: ShardId, state: &RedisCommandState) -> St
             "not_exist"
         };
         parts.push(format!(
-            "# Stats\r\npartition_loading_stats:{loading}\r\nredis_surface:trimmed_open_source_context_feature_risk\r\nredis_surface_schema:temporalstore_open_source_redis_surface_v1\r\nredis_surface_cxx_command_count:16\r\nredis_surface_blocked_command_family_count:9\r\ntotal_commands_processed:{}\r\nrejected_commands:{}\r\nopen_source_rejected_commands:{}\r\nunsupported_commands:{}\r\n",
+            "# Stats\r\npartition_loading_stats:{loading}\r\nredis_surface:trimmed_open_source_context_feature_control\r\nredis_surface_schema:temporalstore_open_source_redis_surface_v1\r\nredis_surface_cxx_command_count:16\r\nredis_surface_blocked_command_family_count:9\r\ntotal_commands_processed:{}\r\nrejected_commands:{}\r\nopen_source_rejected_commands:{}\r\nunsupported_commands:{}\r\n",
             state.total_commands_processed,
             state.rejected_commands,
             state.open_source_rejected_commands,
@@ -4245,7 +4287,16 @@ mod tests {
             RespValue::Integer(command_names.len() as i64)
         );
         for allowed in [
-            "CLIENT", "QUIT", "GET", "SET", "HSET", "HGET", "FAPPEND", "FQUERY", "RISKINCR",
+            "CLIENT",
+            "QUIT",
+            "GET",
+            "SET",
+            "HSET",
+            "HGET",
+            "FAPPEND",
+            "FQUERY",
+            "CONTROLINCR",
+            "RISKINCR",
         ] {
             assert!(
                 command_names.contains(&allowed.to_string()),
@@ -4287,6 +4338,10 @@ mod tests {
         );
         assert_eq!(
             run(&mut state, vec!["RISKINCR", "risk", "10", "5"]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(&mut state, vec!["CONTROLINCR", "control", "10", "5"]),
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(
@@ -5207,6 +5262,14 @@ mod tests {
         assert_eq!(
             run(vec!["RISKCOUNT", "risk", "0", "40"]),
             RespValue::Integer(10)
+        );
+        assert_eq!(
+            run(vec!["CONTROLINCR", "control", "10", "5"]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(vec!["CONTROLCOUNT", "control", "0", "40"]),
+            RespValue::Integer(5)
         );
         assert_eq!(
             run(vec!["RISKQUERY", "risk", "0", "40", "events"]),

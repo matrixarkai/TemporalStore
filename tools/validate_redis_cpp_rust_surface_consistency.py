@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Validate C++/Rust Redis and data-model command surface consistency.
+"""Validate C++/Rust Redis and capability command surface consistency.
 
 The first open-source release intentionally keeps one shared Redis-compatible
-base plus Rust-only explicit Feature/Risk model commands. This gate catches
+base plus Rust-only explicit Feature/Control State commands. This gate catches
 C++/Rust/manifest drift by validating only the positive public allowlist.
 """
 
@@ -54,9 +54,13 @@ def main() -> int:
     rust_source = RUST.read_text()
 
     shared = contract["shared_minimal_redis_commands"]
-    feature = contract["rust_public_data_model_commands"]["feature"]
-    risk = contract["rust_public_data_model_commands"]["risk_frequency_control"]
-    model_commands = feature + risk
+    public_capabilities = contract.get(
+        "rust_public_capability_commands",
+        contract.get("rust_public_data_model_commands", {}),
+    )
+    feature = public_capabilities["feature"]
+    control_state = public_capabilities["control_state"]
+    capability_commands = feature + control_state
 
     manifest_cxx = manifest.get("cxx_commands", [])
     manifest_rust_extra = manifest.get("rust_extra_commands", [])
@@ -65,10 +69,12 @@ def main() -> int:
 
     if contract.get("surface") != manifest.get("surface"):
         failures.append("manifest and parity contract must use the same public surface identity")
-    if contract.get("surface") != "trimmed_open_source_context_feature_risk":
-        failures.append("public surface identity must be Risk-specific, not generic frequency-control")
-    if "Risk is the only public frequency-cap/risk-control model" not in contract.get("rule", ""):
-        failures.append("parity contract must state Risk is the only public frequency-cap/risk-control model")
+    if contract.get("surface") != "trimmed_open_source_context_feature_control":
+        failures.append("public surface identity must use the Control State capability name")
+    if "Control State is the only public fast-changing serving-signal capability" not in contract.get("rule", ""):
+        failures.append("parity contract must state Control State is the only public serving-signal capability")
+    if "RISK* commands remain compatibility aliases" not in contract.get("rule", ""):
+        failures.append("parity contract must retain RISK* as compatibility aliases during migration")
     if manifest_cxx != shared:
         failures.append("manifest cxx_commands must exactly match shared minimal Redis commands")
     if cxx_commands != shared:
@@ -78,15 +84,15 @@ def main() -> int:
     if contract.get("cxx_public_command_count") != len(shared):
         failures.append("contract cxx_public_command_count must match shared minimal Redis command count")
 
-    if sorted(manifest_rust_extra) != sorted(model_commands):
-        failures.append("manifest rust_extra_commands must be exactly Feature plus single Risk model commands")
-    expected_rust = set(shared + model_commands)
+    if sorted(manifest_rust_extra) != sorted(capability_commands):
+        failures.append("manifest rust_extra_commands must be exactly Feature plus Control State capability commands")
+    expected_rust = set(shared + capability_commands)
     if rust_allow != expected_rust:
         missing = sorted(expected_rust - rust_allow)
         extra = sorted(rust_allow - expected_rust)
         failures.append(f"Rust trimmed allowlist drifted; missing={missing} extra={extra}")
     if contract.get("rust_trimmed_public_command_count") != len(expected_rust):
-        failures.append("contract rust_trimmed_public_command_count must match shared plus model commands")
+        failures.append("contract rust_trimmed_public_command_count must match shared plus capability commands")
 
     if failures:
         print("redis C++/Rust surface consistency validation failed:")

@@ -1054,5 +1054,10 @@ class CPCModel {
     FRIEND_TEST(RISKCPCModelTest, LowModel);
 };
 
+// Public first-release name for the fast-changing serving-signal model.
+// The underlying CPC implementation and model id stay unchanged for
+// storage/wire compatibility.
+using ControlStateModel = CPCModel;
+
 }  // namespace model
 }  // namespace bcache2

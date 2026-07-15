@@ -57,7 +57,14 @@ def main() -> int:
     manifest_rust_extra_commands = set(manifest.get("rust_extra_commands", []))
     manifest_rust_normal_helpers = set(manifest.get("rust_normal_helpers", []))
     parity_shared_commands = parity_contract.get("shared_minimal_redis_commands", [])
-    parity_model_commands = parity_contract.get("rust_public_data_model_commands", {}).get("feature", []) + parity_contract.get("rust_public_data_model_commands", {}).get("risk_frequency_control", [])
+    parity_public_capabilities = parity_contract.get(
+        "rust_public_capability_commands",
+        parity_contract.get("rust_public_data_model_commands", {}),
+    )
+    parity_model_commands = (
+        parity_public_capabilities.get("feature", [])
+        + parity_public_capabilities.get("control_state", [])
+    )
     manifest_benchmark_commands = manifest.get("benchmark_commands", {})
     manifest_feature_aggregate = manifest.get("feature_aggregate", {})
     manifest_required_benchmarks = manifest_benchmark_commands.get("required", [])
@@ -79,6 +86,8 @@ def main() -> int:
     ]
     expected_model_commands = [
         "FAPPEND", "FAPPENDPOLICY", "FQUERY", "FQUERYFILTER", "FQUERYFILTERSTR", "FAGG",
+        "CONTROLINCR", "CONTROLINCROPT", "CONTROLCHANGE", "CONTROLCOUNT", "CONTROLQUERY", "CONTROLDETAIL",
+        "CONTROLHSET",
         "RISKINCR", "RISKINCROPT", "RISKCHANGE", "RISKCOUNT", "RISKQUERY", "RISKDETAIL",
         "RISKHSET", "HCHANGE", "HQUERY", "HSETANDGET",
     ]
@@ -91,7 +100,7 @@ def main() -> int:
     require(
         sorted(manifest_rust_extra_commands) == sorted(expected_model_commands)
         and not manifest_rust_normal_helpers,
-        "Redis open-source surface manifest must keep Rust extras limited to data-model commands",
+        "Redis open-source surface manifest must keep Rust extras limited to capability commands",
         failures,
     )
     require(
@@ -134,21 +143,41 @@ def main() -> int:
         "minimal_ttl",
         "minimal_hash",
         "context_management",
-        "feature_model",
-        "risk_frequency_control",
+        "feature_capability",
+        "control_state",
     }
     require(
         manifest_allowed_surface_families == expected_allowed_families,
-        "Redis open-source surface manifest must explicitly limit allowed families to minimal string/hash/TTL plus context/feature/single Risk data models",
+        "Redis open-source surface manifest must explicitly limit allowed families to minimal string/hash/TTL plus context/feature/Control State capabilities",
         failures,
     )
     require(
         "context" in manifest.get("purpose", "").lower()
         and "feature" in manifest.get("purpose", "").lower()
         and "featureaggregate" in manifest.get("purpose", "").lower()
-        and "single risk data model" in manifest.get("purpose", "").lower()
+        and "control state" in manifest.get("purpose", "").lower()
+        and "fast-changing serving signals" in manifest.get("purpose", "").lower()
         and "minimal string/hash/ttl" in manifest.get("purpose", "").lower(),
-        "Redis open-source surface manifest purpose must describe the minimal first-release data-model families",
+        "Redis open-source surface manifest purpose must describe the minimal first-release capabilities",
+        failures,
+    )
+    manifest_control_state = manifest.get("control_state", {})
+    require(
+        manifest_control_state.get("capability") == "Control State"
+        and manifest_control_state.get("public_commands") == [
+            "CONTROLINCR",
+            "CONTROLINCROPT",
+            "CONTROLCHANGE",
+            "CONTROLCOUNT",
+            "CONTROLQUERY",
+            "CONTROLDETAIL",
+            "CONTROLHSET",
+        ]
+        and "RISKINCR" in manifest_control_state.get("compatibility_aliases", [])
+        and "RISKHSET" in manifest_control_state.get("compatibility_aliases", [])
+        and "HCHANGE" in manifest_control_state.get("compatibility_aliases", [])
+        and "fast-changing serving signals" in manifest_control_state.get("description", ""),
+        "Redis open-source manifest must expose Control State as the preferred public serving-signal capability with RISK* aliases",
         failures,
     )
     require(
@@ -253,7 +282,7 @@ def main() -> int:
         "ContextAuditModel must be disabled under BCACHE2_OPEN_SOURCE_SURFACE",
         failures,
     )
-    for symbol in ("REGISTER_MODEL(FeatureModel", "REGISTER_MODEL(HashModel", "REGISTER_MODEL(CPCModel"):
+    for symbol in ("REGISTER_MODEL(FeatureModel", "REGISTER_MODEL(HashModel", "REGISTER_MODEL(ControlStateModel"):
         require(symbol in model_manager, f"{symbol} must remain available", failures)
 
     require(
@@ -485,7 +514,7 @@ def main() -> int:
         require(f'"{denied}"' not in body, f"Rust allowlist must not include {denied}", failures)
 
     for metric in (
-        "redis_surface:trimmed_open_source_context_feature_risk",
+        "redis_surface:trimmed_open_source_context_feature_control",
         "redis_surface_schema:temporalstore_open_source_redis_surface_v1",
         "redis_surface_cxx_command_count:",
         f"redis_surface_blocked_command_family_count:{expected_blocked_family_count}",
@@ -522,7 +551,7 @@ def main() -> int:
         failures,
     )
     for family_phrase in (
-        "context, feature, and single Risk data models",
+        "context, feature, and Control State capabilities",
         "minimal string/hash/TTL commands",
     ):
         require(
@@ -536,7 +565,7 @@ def main() -> int:
         failures,
     )
     require(
-        "Only the model families listed above are public" in open_source_surface
+        "Only the capabilities listed above are public" in open_source_surface
         and "server-configuration or broad" in open_source_surface
         and "`CONFIG`" in open_source_surface
         and "`DBSIZE`" in open_source_surface
@@ -593,8 +622,8 @@ def main() -> int:
         failures,
     )
     require(
-        manifest.get("surface") == "trimmed_open_source_context_feature_risk",
-        "Redis open-source surface manifest must declare the trimmed context/feature/risk surface identity",
+        manifest.get("surface") == "trimmed_open_source_context_feature_control",
+        "Redis open-source surface manifest must declare the trimmed context/feature/control surface identity",
         failures,
     )
     require(
@@ -791,7 +820,7 @@ def main() -> int:
         failures,
     )
     for metric in (
-        "redis_surface:trimmed_open_source_context_feature_risk",
+        "redis_surface:trimmed_open_source_context_feature_control",
         "redis_surface_schema:temporalstore_open_source_redis_surface_v1",
         "redis_surface_cxx_command_count:",
         f"redis_surface_blocked_command_family_count:{expected_blocked_family_count}",
@@ -838,7 +867,7 @@ def main() -> int:
         failures,
     )
     for runtime_metric in (
-        "redis_surface:trimmed_open_source_context_feature_risk",
+        "redis_surface:trimmed_open_source_context_feature_control",
         "redis_surface_schema:temporalstore_open_source_redis_surface_v1",
     ):
         require(
