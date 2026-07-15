@@ -50,6 +50,7 @@ try:
         direct_write_durable_field,
         direct_write_durable_payload,
         direct_write_payload_is_pending,
+        ensure_direct_write_queue_fields,
     )
     from tools.matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from tools.matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
@@ -89,6 +90,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         direct_write_durable_field,
         direct_write_durable_payload,
         direct_write_payload_is_pending,
+        ensure_direct_write_queue_fields,
     )
     from matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
@@ -339,52 +341,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         self._ensure_direct_write_queue_fields()
 
     def _ensure_direct_write_queue_fields(self) -> None:
-        if not hasattr(self, "_direct_write_queue_enabled"):
-            self._direct_write_queue_enabled = os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE", "0").strip().lower() in {"1", "true", "yes"}
-        if not hasattr(self, "_direct_write_queue_max_records"):
-            self._direct_write_queue_max_records = max(1, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_MAX_RECORDS", "10000")))
-        if not hasattr(self, "_direct_write_queue_put_timeout_s"):
-            self._direct_write_queue_put_timeout_s = max(0.01, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_PUT_TIMEOUT_MS", "1000")) / 1000.0)
-        if not hasattr(self, "_direct_write_queue_mode"):
-            self._direct_write_queue_mode = os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_MODE", "memory").strip().lower() or "memory"
-        if self._direct_write_queue_mode not in {"memory", "temporalstore"}:
-            self._direct_write_queue_mode = "memory"
-        if not hasattr(self, "_direct_write_queue_drain_max_batches"):
-            self._direct_write_queue_drain_max_batches = max(1, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_DRAIN_MAX_BATCHES", "64")))
-        if not hasattr(self, "_direct_write_queue_allow_sync_context"):
-            self._direct_write_queue_allow_sync_context = os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_ALLOW_SYNC_CONTEXT", "0").strip().lower() in {"1", "true", "yes"}
-        if not hasattr(self, "_direct_write_queue_autostart"):
-            self._direct_write_queue_autostart = os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_AUTOSTART", "1").strip().lower() not in {"0", "false", "no"}
-        if not hasattr(self, "_native_side_index_assume_fresh"):
-            self._native_side_index_assume_fresh = os.environ.get("MATRIXARK_NATIVE_SIDE_INDEX_ASSUME_FRESH", "0").strip().lower() in {"1", "true", "yes"}
-        if not hasattr(self, "_direct_raw_ingestion_queue_enabled"):
-            self._direct_raw_ingestion_queue_enabled = os.environ.get("MATRIXARK_DIRECT_RAW_INGESTION_QUEUE", "0").strip().lower() in {"1", "true", "yes"}
-        if not hasattr(self, "_direct_write_queue_key"):
-            self._direct_write_queue_key = f"{self._storage_prefix}:direct_write_queue"
-        if not hasattr(self, "_direct_write_queue_done_key"):
-            self._direct_write_queue_done_key = f"{self._storage_prefix}:direct_write_queue_done"
-        if not hasattr(self, "_direct_write_queue_dead_key"):
-            self._direct_write_queue_dead_key = f"{self._storage_prefix}:direct_write_queue_dead"
-        if not hasattr(self, "_direct_write_queue"):
-            self._direct_write_queue = queue.Queue(maxsize=int(self._direct_write_queue_max_records))
-        if not hasattr(self, "_direct_write_worker_started"):
-            self._direct_write_worker_started = False
-        if not hasattr(self, "_direct_write_worker_lock"):
-            self._direct_write_worker_lock = threading.RLock()
-        if not hasattr(self, "_direct_write_stop"):
-            self._direct_write_stop = threading.Event()
-        if not hasattr(self, "_direct_write_failures"):
-            self._direct_write_failures = 0
-        if not hasattr(self, "_direct_write_enqueued_records"):
-            self._direct_write_enqueued_records = 0
-        if not hasattr(self, "_direct_write_flushed_records"):
-            self._direct_write_flushed_records = 0
-        if not hasattr(self, "_direct_write_enqueued_batches"):
-            self._direct_write_enqueued_batches = 0
-        if not hasattr(self, "_direct_write_flushed_batches"):
-            self._direct_write_flushed_batches = 0
-        if not hasattr(self, "_direct_write_dead_letter_batches"):
-            self._direct_write_dead_letter_batches = 0
+        ensure_direct_write_queue_fields(self)
 
     def _observe_append_queue_wait(self, elapsed_ms: float) -> None:
         self._ensure_backend_metric_fields()
