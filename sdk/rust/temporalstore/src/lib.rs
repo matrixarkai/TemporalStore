@@ -44,6 +44,11 @@ use direct_helpers::{
     check, cstring, feature_points_from_c_array, ips_features_from_c_array, CStringOptions,
 };
 
+#[cfg(feature = "direct")]
+mod direct_ffi;
+#[cfg(feature = "direct")]
+pub(crate) use direct_ffi::*;
+
 #[cfg(feature = "proxy")]
 mod proxy_helpers;
 #[cfg(feature = "proxy")]
@@ -81,341 +86,6 @@ fn cpp_matrixark_c_api_bridge_allowed(op: &str) -> Result<()> {
              or set TEMPORALSTORE_RUST_ALLOW_CPP_MATRIXARK_C_API=1 only for compatibility diagnostics."
         ),
     })
-}
-
-#[cfg(feature = "direct")]
-#[repr(C)]
-struct TemporalStoreClientOpaque {
-    _private: [u8; 0],
-}
-
-#[cfg(feature = "direct")]
-#[repr(C)]
-struct COptions {
-    metaserver_addr: *const c_char,
-    metaserver_consul: *const c_char,
-    namespace_name: *const c_char,
-    table_name: *const c_char,
-    idc: *const c_char,
-    host: *const c_char,
-    psm: *const c_char,
-    log_dir: *const c_char,
-    log_level: c_int,
-    io_timeout_ms: c_int,
-    connect_timeout_ms: c_int,
-    request_timeout_ms: c_int,
-    max_read_retries: c_int,
-    max_write_retries: c_int,
-    retry_backoff_ms: c_int,
-    max_feature_points_per_request: c_int,
-    max_feature_query_count: u64,
-    max_key_bytes: u64,
-    max_value_bytes: u64,
-    pin_primary: c_int,
-}
-
-#[cfg(feature = "direct")]
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct CFeatureFilter {
-    field: *const c_char,
-    op: c_int,
-    value: u64,
-}
-
-#[cfg(feature = "direct")]
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub(crate) struct CFeaturePoint {
-    pub(crate) timestamp: u64,
-    pub(crate) value: *const c_char,
-}
-
-#[cfg(feature = "direct")]
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct CSequenceFeatureRow {
-    timestamp: u64,
-    gid: u64,
-    action_type: u32,
-    duration: u32,
-    author_id: u64,
-}
-
-#[cfg(feature = "direct")]
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub(crate) struct CIpsFeatureStat {
-    pub(crate) id: i64,
-    pub(crate) slot: i32,
-    pub(crate) has_slot: c_int,
-    pub(crate) kind: i32,
-    pub(crate) v1: i32,
-    pub(crate) v2: i32,
-}
-
-#[cfg(feature = "direct")]
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct CHashEntry {
-    key: *const c_char,
-    field: *const c_char,
-    value: *const c_char,
-    route_json: *const c_char,
-}
-
-#[cfg(feature = "direct")]
-#[repr(C)]
-struct CStringArray {
-    count: usize,
-    values: *mut *mut c_char,
-}
-
-#[cfg(feature = "direct")]
-#[repr(C)]
-struct CHashEntryArray {
-    count: usize,
-    entries: *mut CHashEntry,
-}
-
-#[cfg(feature = "direct")]
-#[repr(C)]
-pub(crate) struct CFeaturePointArray {
-    pub(crate) count: usize,
-    pub(crate) points: *mut CFeaturePoint,
-}
-
-#[cfg(feature = "direct")]
-#[repr(C)]
-struct CSequenceFeatureRowArray {
-    count: usize,
-    rows: *mut CSequenceFeatureRow,
-}
-
-#[cfg(feature = "direct")]
-#[repr(C)]
-pub(crate) struct CIpsFeatureArray {
-    pub(crate) count: usize,
-    pub(crate) features: *mut CIpsFeatureStat,
-}
-
-#[cfg(feature = "direct")]
-extern "C" {
-    fn temporalstore_options_init(options: *mut COptions);
-    fn temporalstore_free_string(value: *mut c_char);
-    fn temporalstore_connect(
-        options: *const COptions,
-        client: *mut *mut TemporalStoreClientOpaque,
-        error_message: *mut *mut c_char,
-    ) -> c_int;
-    fn temporalstore_close(
-        client: *mut TemporalStoreClientOpaque,
-        error_message: *mut *mut c_char,
-    ) -> c_int;
-    fn temporalstore_put_string(
-        client: *mut TemporalStoreClientOpaque,
-        key: *const c_char,
-        value: *const c_char,
-        error_message: *mut *mut c_char,
-    ) -> c_int;
-    fn temporalstore_put_string_with_ttl(
-        client: *mut TemporalStoreClientOpaque,
-        key: *const c_char,
-        value: *const c_char,
-        ttl_ms: u64,
-        error_message: *mut *mut c_char,
-    ) -> c_int;
-    fn temporalstore_get_string(
-        client: *mut TemporalStoreClientOpaque,
-        key: *const c_char,
-        value: *mut *mut c_char,
-        error_message: *mut *mut c_char,
-    ) -> c_int;
-    fn temporalstore_delete_object(
-        client: *mut TemporalStoreClientOpaque,
-        key: *const c_char,
-        error_message: *mut *mut c_char,
-    ) -> c_int;
-    fn temporalstore_expire(
-        client: *mut TemporalStoreClientOpaque,
-        key: *const c_char,
-        ttl_ms: u64,
-        error_message: *mut *mut c_char,
-    ) -> c_int;
-    fn temporalstore_ttl(
-        client: *mut TemporalStoreClientOpaque,
-        key: *const c_char,
-        ttl_ms: *mut u64,
-        error_message: *mut *mut c_char,
-    ) -> c_int;
-    fn temporalstore_hset(
-        client: *mut TemporalStoreClientOpaque,
-        key: *const c_char,
-        field: *const c_char,
-        value: *const c_char,
-        error_message: *mut *mut c_char,
-    ) -> c_int;
-    fn temporalstore_hget(
-        client: *mut TemporalStoreClientOpaque,
-        key: *const c_char,
-        field: *const c_char,
-        value: *mut *mut c_char,
-        error_message: *mut *mut c_char,
-    ) -> c_int;
-    fn temporalstore_hgetall(
-        client: *mut TemporalStoreClientOpaque,
-        key: *const c_char,
-        entries: *mut CHashEntryArray,
-        error_message: *mut *mut c_char,
-    ) -> c_int;
-    fn temporalstore_hdel(
-        client: *mut TemporalStoreClientOpaque,
-        key: *const c_char,
-        field: *const c_char,
-        error_message: *mut *mut c_char,
-    ) -> c_int;
-    fn temporalstore_sadd(
-        client: *mut TemporalStoreClientOpaque,
-        key: *const c_char,
-        member: *const c_char,
-        error_message: *mut *mut c_char,
-    ) -> c_int;
-    fn temporalstore_smembers(
-        client: *mut TemporalStoreClientOpaque,
-        key: *const c_char,
-        members: *mut CStringArray,
-        error_message: *mut *mut c_char,
-    ) -> c_int;
-    fn temporalstore_string_array_free(array: *mut CStringArray);
-    fn temporalstore_hash_entry_array_free(array: *mut CHashEntryArray);
-    fn temporalstore_matrixark_batch_append_records(
-        client: *mut TemporalStoreClientOpaque,
-        entries: *const CHashEntry,
-        entry_count: usize,
-        count_key: *const c_char,
-        count_value: *const c_char,
-        error_message: *mut *mut c_char,
-    ) -> c_int;
-    fn temporalstore_matrixark_batch_append_records_v2(
-        client: *mut TemporalStoreClientOpaque,
-        entries: *const CHashEntry,
-        entry_count: usize,
-        count_key: *const c_char,
-        count_value: *const c_char,
-        append_options_json: *const c_char,
-        error_message: *mut *mut c_char,
-    ) -> c_int;
-    fn temporalstore_matrixark_scan_candidates(
-        client: *mut TemporalStoreClientOpaque,
-        count_key: *const c_char,
-        record_hash_key: *const c_char,
-        shard_size: usize,
-        request_json: *const c_char,
-        candidates_json: *mut *mut c_char,
-        error_message: *mut *mut c_char,
-    ) -> c_int;
-    fn temporalstore_matrixark_retrieve_context_pack(
-        client: *mut TemporalStoreClientOpaque,
-        count_key: *const c_char,
-        record_hash_key: *const c_char,
-        shard_size: usize,
-        request_json: *const c_char,
-        context_pack_json: *mut *mut c_char,
-        error_message: *mut *mut c_char,
-    ) -> c_int;
-    fn temporalstore_add_feature_points_with_policy(
-        client: *mut TemporalStoreClientOpaque,
-        key: *const c_char,
-        points: *const CFeaturePoint,
-        count: usize,
-        policy: c_int,
-        error_message: *mut *mut c_char,
-    ) -> c_int;
-    fn temporalstore_query_feature_points(
-        client: *mut TemporalStoreClientOpaque,
-        key: *const c_char,
-        start_ts: u64,
-        end_ts: u64,
-        count: u64,
-        points: *mut CFeaturePointArray,
-        error_message: *mut *mut c_char,
-    ) -> c_int;
-    fn temporalstore_query_feature_points_with_filters(
-        client: *mut TemporalStoreClientOpaque,
-        key: *const c_char,
-        start_ts: u64,
-        end_ts: u64,
-        count: u64,
-        filters: *const CFeatureFilter,
-        filter_count: usize,
-        points: *mut CFeaturePointArray,
-        error_message: *mut *mut c_char,
-    ) -> c_int;
-    fn temporalstore_feature_point_array_free(points: *mut CFeaturePointArray);
-    fn temporalstore_add_sequence_feature_rows_with_policy(
-        client: *mut TemporalStoreClientOpaque,
-        key: *const c_char,
-        rows: *const CSequenceFeatureRow,
-        count: usize,
-        policy: c_int,
-        error_message: *mut *mut c_char,
-    ) -> c_int;
-    fn temporalstore_query_sequence_feature_rows(
-        client: *mut TemporalStoreClientOpaque,
-        key: *const c_char,
-        start_ts: u64,
-        end_ts: u64,
-        count: u64,
-        filters: *const CFeatureFilter,
-        filter_count: usize,
-        rows: *mut CSequenceFeatureRowArray,
-        error_message: *mut *mut c_char,
-    ) -> c_int;
-    fn temporalstore_sequence_feature_row_array_free(rows: *mut CSequenceFeatureRowArray);
-    fn temporalstore_add_ips_instance(
-        client: *mut TemporalStoreClientOpaque,
-        table: *const c_char,
-        uid: i64,
-        timestamp_us: i64,
-        action_type: i32,
-        logical_table: i32,
-        features: *const CIpsFeatureStat,
-        feature_count: usize,
-        error_message: *mut *mut c_char,
-    ) -> c_int;
-    fn temporalstore_query_ips_last_instances(
-        client: *mut TemporalStoreClientOpaque,
-        table: *const c_char,
-        uid: i64,
-        action_type: i32,
-        logical_table: i32,
-        slot: i32,
-        top_k: i32,
-        last_instances: i64,
-        features: *mut CIpsFeatureArray,
-        error_message: *mut *mut c_char,
-    ) -> c_int;
-    fn temporalstore_ips_feature_array_free(features: *mut CIpsFeatureArray);
-    fn temporalstore_control_state_increment(
-        client: *mut TemporalStoreClientOpaque,
-        key: *const c_char,
-        amount: i64,
-        ttl_seconds: u64,
-        precision: i32,
-        uuid: *const c_char,
-        occur_time_seconds: u64,
-        error_message: *mut *mut c_char,
-    ) -> c_int;
-    fn temporalstore_control_state_count(
-        client: *mut TemporalStoreClientOpaque,
-        key: *const c_char,
-        precision: i32,
-        window_start: i64,
-        window_end: i64,
-        window_unit: i32,
-        count: *mut i64,
-        error_message: *mut *mut c_char,
-    ) -> c_int;
 }
 
 #[cfg(feature = "direct")]
@@ -2280,10 +1950,21 @@ mod tests {
         let _: fn(&Client, &super::IpsInstance) -> super::Result<()> = Client::add_ips_instance;
         let _: fn(&Client, &super::IpsLastQuery) -> super::Result<Vec<super::IpsFeatureStat>> =
             Client::query_ips_last_instances;
-        let _: fn(&Client, &str, i64, u64, super::ControlStatePrecision, &str, u64) -> super::Result<()> =
-            Client::control_state_increment;
-        let _: fn(&Client, &str, super::ControlStatePrecision, super::ControlStateWindow) -> super::Result<i64> =
-            Client::control_state_count;
+        let _: fn(
+            &Client,
+            &str,
+            i64,
+            u64,
+            super::ControlStatePrecision,
+            &str,
+            u64,
+        ) -> super::Result<()> = Client::control_state_increment;
+        let _: fn(
+            &Client,
+            &str,
+            super::ControlStatePrecision,
+            super::ControlStateWindow,
+        ) -> super::Result<i64> = Client::control_state_count;
         let _: fn(&Client, &[(&str, &str, &str)], Option<&str>, Option<&str>) -> super::Result<()> =
             Client::matrixark_batch_append_records;
     }
@@ -2329,7 +2010,8 @@ mod tests {
         ) -> super::Result<i64> = ProxyClient::control_state_count;
         let _: fn(&ProxyClient, &str, &str) -> super::Result<()> = ProxyClient::set;
         let _: fn(&ProxyClient, &str) -> super::Result<Option<String>> = ProxyClient::get;
-        let _: fn(&ProxyClient, &str, u64, i64) -> super::Result<()> = ProxyClient::control_state_hset;
+        let _: fn(&ProxyClient, &str, u64, i64) -> super::Result<()> =
+            ProxyClient::control_state_hset;
         let _: fn(
             &ProxyClient,
             &str,
@@ -2361,8 +2043,14 @@ mod tests {
             super::ControlStatePrecision,
             super::ControlStateWindow,
         ) -> super::Result<Vec<i64>> = ProxyClient::control_state_cpc_query;
-        let _: fn(&ProxyClient, &str, &str, u64, u64, super::ControlStateFolType) -> super::Result<()> =
-            ProxyClient::control_state_fol_set;
+        let _: fn(
+            &ProxyClient,
+            &str,
+            &str,
+            u64,
+            u64,
+            super::ControlStateFolType,
+        ) -> super::Result<()> = ProxyClient::control_state_fol_set;
         let _: fn(&ProxyClient, &str) -> super::Result<Option<String>> =
             ProxyClient::control_state_fol_query;
         let _: fn(&ProxyClient, &str) -> super::Result<Vec<(String, String)>> =
