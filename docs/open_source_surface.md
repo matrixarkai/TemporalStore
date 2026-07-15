@@ -10,10 +10,16 @@ The open-source build keeps:
 - MatrixArk context-management serving data models: nodes, events, child
   indexes, secondary indexes, entities, summaries, embeddings, dirty markers,
   and compression events.
-- Feature data model.
+- Feature observations and FeatureAggregate serving-time aggregates.
 - Single Risk data model for frequency-cap and risk-control.
 
 Only the model families listed above are public in the first open-source release. Context audit/replay/debug data models are not part of the first-release open-source surface. Other internal model families are intentionally omitted from docs, manifests, and compatibility corpora until they are ready for a future public release.
+
+FeatureAggregate stays inside the Feature capability. The public first-release
+aggregate set is exact and mature: `count`, `sum`, `min`, `max`, `avg`,
+`first`, and `latest`. High-cardinality/sketch-style aggregates such as
+`distinct_count`, `top_k`, `heavy_hitters`, `hll`, histograms, and percentiles
+are gated until they are production-ready.
 
 The open-source build excludes non-public/internal model families and extension
 modules that are not part of the first-release public contract. It also does not expose Redis server-configuration or broad

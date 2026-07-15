@@ -69,7 +69,37 @@
   ],
   "matrixobject_note": "MatrixObject integration sits below TemporalStore storage/backfill. It must not expand the public Redis API into collection-clone commands.",
   "opt_in_commands": {},
-  "purpose": "Keep only first-release Redis commands needed for minimal string/hash/TTL access plus MatrixArk context, feature, and the single Risk data model for frequency-cap/risk-control.",
+  "purpose": "Keep only first-release Redis commands needed for minimal string/hash/TTL access plus MatrixArk context, Feature observations with FeatureAggregate exact serving aggregates, and the single Risk data model for frequency-cap/risk-control.",
+  "feature_aggregate": {
+    "capability": "FeatureAggregate",
+    "parent_capability": "Feature",
+    "public_exact_aggregates": [
+      "count",
+      "sum",
+      "min",
+      "max",
+      "avg",
+      "first",
+      "latest"
+    ],
+    "compatibility_aliases": {
+      "events": "count",
+      "average": "avg",
+      "last": "latest"
+    },
+    "gated_high_cardinality_aggregates": [
+      "distinct_count",
+      "unique_count",
+      "top_k",
+      "heavy_hitters",
+      "hll",
+      "theta_sketch",
+      "count_min_sketch",
+      "histogram",
+      "percentile"
+    ],
+    "policy": "FeatureAggregate remains inside the Feature capability; public v1 exposes exact serving aggregates only and rejects sketch/high-cardinality aggregate names until mature."
+  },
   "rust_extra_commands": [
     "FAPPEND",
     "FAPPENDPOLICY",

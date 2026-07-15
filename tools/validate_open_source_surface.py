@@ -59,6 +59,7 @@ def main() -> int:
     parity_shared_commands = parity_contract.get("shared_minimal_redis_commands", [])
     parity_model_commands = parity_contract.get("rust_public_data_model_commands", {}).get("feature", []) + parity_contract.get("rust_public_data_model_commands", {}).get("risk_frequency_control", [])
     manifest_benchmark_commands = manifest.get("benchmark_commands", {})
+    manifest_feature_aggregate = manifest.get("feature_aggregate", {})
     manifest_required_benchmarks = manifest_benchmark_commands.get("required", [])
     manifest_opt_in_benchmarks = manifest_benchmark_commands.get("opt_in", [])
     manifest_gate_artifacts = manifest.get("production_gate_artifacts", {})
@@ -144,9 +145,19 @@ def main() -> int:
     require(
         "context" in manifest.get("purpose", "").lower()
         and "feature" in manifest.get("purpose", "").lower()
+        and "featureaggregate" in manifest.get("purpose", "").lower()
         and "single risk data model" in manifest.get("purpose", "").lower()
         and "minimal string/hash/ttl" in manifest.get("purpose", "").lower(),
         "Redis open-source surface manifest purpose must describe the minimal first-release data-model families",
+        failures,
+    )
+    require(
+        manifest_feature_aggregate.get("parent_capability") == "Feature"
+        and manifest_feature_aggregate.get("public_exact_aggregates") == ["count", "sum", "min", "max", "avg", "first", "latest"]
+        and "distinct_count" in manifest_feature_aggregate.get("gated_high_cardinality_aggregates", [])
+        and "hll" in manifest_feature_aggregate.get("gated_high_cardinality_aggregates", [])
+        and "top_k" in manifest_feature_aggregate.get("gated_high_cardinality_aggregates", []),
+        "Redis open-source manifest must keep FeatureAggregate under Feature with exact public aggregates and gated sketches",
         failures,
     )
     require(
@@ -539,6 +550,16 @@ def main() -> int:
     require(
         "Context audit/replay/debug data models are not part of the first-release open-source surface" in open_source_surface,
         "open-source surface overview must exclude context audit/replay/debug data models",
+        failures,
+    )
+    require(
+        "FeatureAggregate stays inside the Feature capability" in open_source_surface
+        and "`distinct_count`" in open_source_surface
+        and "`top_k`" in open_source_surface
+        and "`hll`" in open_source_surface
+        and "unsupported FeatureAggregate" in rust_redis
+        and "feature_aggregate_allowed" in rust_redis,
+        "FeatureAggregate public docs and Redis path must gate high-cardinality/sketch aggregates",
         failures,
     )
     require(
