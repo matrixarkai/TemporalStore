@@ -8,14 +8,14 @@ use crate::matrixark_rust_proxy_metrics::unix_ms;
 use crate::matrixark_rust_proxy_native_pack::retrieve_context_pack_via_sdk_native;
 use crate::matrixark_rust_proxy_pack::{
     candidate_text, context_class_name, is_serving_selected_ref_class, pack_ref_from_record,
-    sparse_query_score, token_estimate,
+    token_estimate,
 };
 use crate::matrixark_rust_proxy_protocol::Command;
 use crate::matrixark_rust_proxy_retrieve_request::parse_retrieve_pack_request;
+use crate::matrixark_rust_proxy_retrieve_scoring::score_retrieve_candidates;
 use crate::matrixark_rust_proxy_scan::scan_matrixark_candidates;
 use crate::matrixark_rust_proxy_scope::{
-    continuity_boost, cross_session_rerank_boost, parse_cross_session_policy, record_scope_string,
-    session_continuity_status, session_scope_mode,
+    parse_cross_session_policy, record_scope_string, session_scope_mode,
 };
 
 fn cross_session_key(record: &Value) -> String {
@@ -79,70 +79,14 @@ pub(crate) fn retrieve_context_pack_native(
         remote_budget,
         &question_type,
     );
-    let mut scored: Vec<(f64, &Value, String, f64, f64)> = records
-        .iter()
-        .filter(|record| {
-            matches!(
-                record
-                    .get("record_type")
-                    .and_then(Value::as_str)
-                    .unwrap_or(""),
-                "context_compression_event"
-                    | "context_entity"
-                    | "context_event"
-                    | "context_segment"
-                    | "context_summary"
-                    | "resource_chunk"
-                    | "skill_section"
-            ) && !candidate_text(record).is_empty()
-        })
-        .map(|record| {
-            let text = candidate_text(record);
-            let mut score = sparse_query_score(&query_terms, &text);
-            if matches!(
-                record.get("record_type").and_then(Value::as_str),
-                Some("context_entity")
-            ) {
-                score += 0.08;
-            }
-            if matches!(
-                record.get("record_type").and_then(Value::as_str),
-                Some("context_compression_event")
-            ) {
-                score += 0.06;
-            }
-            let context_class = context_class_name(record);
-            let session_continuity =
-                session_continuity_status(record, scope_for_continuity.as_ref());
-            let continuity_boost_value =
-                continuity_boost(record, &context_class, &session_continuity);
-            score += continuity_boost_value;
-            let cross_session_rerank_boost_value = cross_session_rerank_boost(
-                record,
-                &context_class,
-                &session_continuity,
-                &question_type,
-            );
-            score += cross_session_rerank_boost_value;
-            (
-                score,
-                record,
-                session_continuity,
-                continuity_boost_value,
-                cross_session_rerank_boost_value,
-            )
-        })
-        .filter(|(score, _, _, _, _)| *score >= min_similarity_score)
-        .collect();
-    scored.sort_by(|left, right| {
-        right
-            .0
-            .partial_cmp(&left.0)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    if scored.len() > max_global_candidates as usize {
-        scored.truncate(max_global_candidates as usize);
-    }
+    let scored = score_retrieve_candidates(
+        records,
+        &query_terms,
+        scope_for_continuity.as_ref(),
+        &question_type,
+        min_similarity_score,
+        max_global_candidates,
+    );
     let mut selected = Vec::new();
     let mut selected_signatures: HashSet<String> = HashSet::new();
     let mut dropped_duplicate_ref = 0_u64;
@@ -159,14 +103,12 @@ pub(crate) fn retrieve_context_pack_native(
     let mut cross_selected_refs = 0_u64;
     let mut entity_bridge_selected_refs = 0_u64;
     let mut selected_cross_sessions: HashSet<String> = HashSet::new();
-    for (
-        score,
-        record,
-        session_continuity,
-        continuity_boost_value,
-        cross_session_rerank_boost_value,
-    ) in scored
-    {
+    for scored_candidate in scored {
+        let score = scored_candidate.score;
+        let record = scored_candidate.record;
+        let session_continuity = scored_candidate.session_continuity;
+        let continuity_boost_value = scored_candidate.continuity_boost;
+        let cross_session_rerank_boost_value = scored_candidate.cross_session_rerank_boost;
         if selected.len() as u64 >= max_refs {
             break;
         }
