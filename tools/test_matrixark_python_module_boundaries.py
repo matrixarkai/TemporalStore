@@ -58,6 +58,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         latest_values_mod = importlib.import_module("tools.matrixark_mcp_latest_values")
         event_keys_mod = importlib.import_module("tools.matrixark_mcp_event_keys")
         serving_records_mod = importlib.import_module("tools.matrixark_mcp_serving_records")
+        resources_mod = importlib.import_module("tools.matrixark_mcp_resources")
         core_mod = importlib.import_module("tools.matrixark_mcp_core")
 
         self.assertIs(server_mod.MatrixArkServiceMetrics, metrics_mod.MatrixArkServiceMetrics)
@@ -95,6 +96,9 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(callable(core_mod.materialize_serving_records))
         self.assertTrue(callable(serving_records_mod.materialize_serving_records))
         self.assertIs(core_mod.compact_latest_context_state_records, serving_records_mod.compact_latest_context_state_records)
+        self.assertIs(core_mod.sanitize_resource_metadata, resources_mod.sanitize_resource_metadata)
+        self.assertIs(core_mod.resolve_raw_resource_for_ingest, resources_mod.resolve_raw_resource_for_ingest)
+        self.assertIs(core_mod.rewrite_chunk_uris, resources_mod.rewrite_chunk_uris)
 
     def test_mcp_entrypoint_stays_small(self) -> None:
         server_lines = (TOOLS_DIR / "matrixark_mcp_server.py").read_text(encoding="utf-8").splitlines()
@@ -120,6 +124,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "matrixark_mcp_latest_values.py",
             "matrixark_mcp_event_keys.py",
             "matrixark_mcp_serving_records.py",
+            "matrixark_mcp_resources.py",
         ]
         offenders: list[str] = []
         for module_name in module_names:
