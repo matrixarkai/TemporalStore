@@ -70,6 +70,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         indexing_mod = importlib.import_module("tools.matrixark_mcp_indexing")
         storage_options_mod = importlib.import_module("tools.matrixark_mcp_storage_options")
         native_helpers_mod = importlib.import_module("tools.matrixark_mcp_native_helpers")
+        native_side_index_mod = importlib.import_module("tools.matrixark_mcp_native_side_index")
         env_mod = importlib.import_module("tools.matrixark_mcp_env")
         scoring_mod = importlib.import_module("tools.matrixark_mcp_scoring")
         text_mod = importlib.import_module("tools.matrixark_mcp_text")
@@ -127,6 +128,10 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIs(core_mod.canonical_storage_route, storage_options_mod.canonical_storage_route)
         self.assertIs(temporal_mod._float_metric_or_default, native_helpers_mod.float_metric_or_default)
         self.assertIs(temporal_mod._compact_native_selected_refs, native_helpers_mod.compact_native_selected_refs)
+        self.assertEqual(
+            native_side_index_mod.merge_ref_hashes('{"ref_hashes":[3,"4","bad"]}', [4, 5]),
+            [3, 4, 5],
+        )
         self.assertIs(core_mod.hybrid_origin_score, scoring_mod.hybrid_origin_score)
         self.assertIs(core_mod.business_score_for_candidate, scoring_mod.business_score_for_candidate)
         self.assertIs(core_mod.numeric_field, scoring_mod.numeric_field)
