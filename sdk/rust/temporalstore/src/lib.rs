@@ -54,6 +54,8 @@ mod proxy_client;
 #[cfg(feature = "proxy")]
 mod proxy_control_state;
 #[cfg(feature = "proxy")]
+mod proxy_control_state_cpc;
+#[cfg(feature = "proxy")]
 mod proxy_features;
 #[cfg(feature = "proxy")]
 mod proxy_helpers;
