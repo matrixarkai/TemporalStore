@@ -2,13 +2,13 @@ use std::collections::HashSet;
 
 use crate::types::{Command, InternalContextIndex};
 
-use super::associated_record_keys;
 use super::context::{
     context_audit_key, context_child_key, context_compression_key, context_dirty_key,
     context_embedding_key, context_entity_key, context_event_key, context_event_kind_hash,
     context_index_disabled, context_index_key, context_node_key, context_summary_key,
 };
 use super::product_model::control_state_family_key;
+use super::records::associated_record_keys;
 
 pub(super) fn command_object_keys(command: &Command) -> Vec<String> {
     match command {
