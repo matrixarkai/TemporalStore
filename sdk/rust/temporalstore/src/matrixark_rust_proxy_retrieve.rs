@@ -5,15 +5,17 @@ use temporalstore::Client;
 
 use crate::matrixark_rust_proxy_candidates::{record_node_hash, record_ref_hash};
 use crate::matrixark_rust_proxy_cross_session::{cross_session_key, parse_cross_session_policy};
-use crate::matrixark_rust_proxy_metrics::unix_ms;
 use crate::matrixark_rust_proxy_pack::{
     candidate_text, context_class_name, is_serving_selected_ref_class, pack_ref_from_record,
     token_estimate,
 };
 use crate::matrixark_rust_proxy_protocol::Command;
 use crate::matrixark_rust_proxy_retrieve_request::parse_retrieve_pack_request;
+use crate::matrixark_rust_proxy_retrieve_response::{
+    build_retrieve_pack_response, RetrievePackResponseInput,
+};
 use crate::matrixark_rust_proxy_retrieve_result::{
-    scan_cache_hit, scan_dropped_count, try_sdk_native_pack, SdkNativePackAttempt,
+    try_sdk_native_pack, SdkNativePackAttempt,
 };
 use crate::matrixark_rust_proxy_retrieve_scoring::score_retrieve_candidates;
 use crate::matrixark_rust_proxy_scan::scan_matrixark_candidates;
@@ -185,142 +187,37 @@ pub(crate) fn retrieve_context_pack_native(
             cross_session_rerank_boost_value,
         ));
     }
-    let context_pack_id = format!("rust-native-{}-{}", unix_ms(), selected.len());
-    let mut scan_stats = scan.get("scan_stats").cloned().unwrap_or_else(|| json!({}));
-    if let Some(stats) = scan_stats.as_object_mut() {
-        stats.insert("native_pack_assembly".to_string(), json!(true));
-        stats.insert(
-            "pack_assembly_location".to_string(),
-            json!("rust_proxy_native"),
-        );
-        stats.insert("next_native_gap".to_string(), json!(""));
-    }
-    let pack = json!({
-        "context_pack_id": context_pack_id,
-        "query": query,
-        "question_type": request.get("question_type").cloned().unwrap_or_else(|| json!("fact")),
-        "selected_ref_counts": selected_counts,
-        "remote_context_refs": selected,
-        "selected_refs": selected,
-        "dropped_refs": {
-            "over_budget": dropped_over_budget,
-            "cross_session_budget": dropped_cross_budget,
-            "cross_session_session_cap": dropped_cross_session_cap,
-            "cross_session_candidate_cap": dropped_cross_candidate_cap,
-            "low_score": dropped_low_score,
-            "duplicate_ref": dropped_duplicate_ref,
-            "policy_ref": dropped_policy_ref,
-            "reason_counts": {
-                "over_budget": dropped_over_budget,
-                "cross_session_budget": dropped_cross_budget,
-                "cross_session_session_cap": dropped_cross_session_cap,
-                "cross_session_candidate_cap": dropped_cross_candidate_cap,
-                "low_score": dropped_low_score,
-                "duplicate_ref": dropped_duplicate_ref,
-                "policy_ref": dropped_policy_ref
-            }
-        },
-        "used_context_tokens": used_tokens,
-        "used_remote_context_tokens": used_tokens,
-        "remote_context_budget_tokens": remote_budget,
-        "requested_max_context_tokens": request.get("max_context_tokens").cloned().unwrap_or_else(|| json!(remote_budget)),
-        "packing_policy": "native_rust_proxy_question_type_aware",
-        "context_pack_assembly": "native_rust_proxy",
-        "context_sources_order": ["entities", "events", "segments", "resources", "skills", "summaries"],
-        "recall_policy": {
-            "native_context_pack": {
-                "enabled": true,
-                "backend": "rust_proxy",
-                "scan_filter_score_pack": true
-            },
-            "native_response_contract": {
-                "raw_records_returned_to_python": false,
-                "python_hot_path_records": 0,
-                "python_role": "dispatch_request_receive_context_pack",
-                "backend_role": "scan_filter_score_pack"
-            },
-            "scan_stats": scan_stats,
-            "rerank": {
-                "enabled": true,
-                "mode": "native_weighted_recall_plus_cross_session_rerank",
-                "cross_session_rerank_enabled": true,
-                "cross_session_signals": ["entity_state", "resource_fact_citation", "answer_event", "compression", "summary_demotion"],
-                "heavy_rerank_enabled": false
-            },
-            "ranking": {
-                "min_similarity_score": min_similarity_score,
-                "max_global_candidates": max_global_candidates,
-                "max_selected_refs": max_refs,
-                "budget_fill_policy": budget_fill_policy,
-                "quality_first_budget_underfill_allowed": budget_fill_policy == "quality_first"
-            },
-            "session_continuity": {
-                "mode": scan_command.scope.as_ref().map(session_scope_mode).unwrap_or("only"),
-                "policy": "same-session continuity first; entity state bridges cross-session memory; cross-session evidence remains eligible under account/tenant/user scope",
-                "same_session_selected_ref_count": selected.iter().filter(|item| item.get("session_continuity").and_then(Value::as_str) == Some("same_session")).count(),
-                "cross_session_selected_ref_count": cross_selected_refs,
-                "entity_bridge_selected_ref_count": entity_bridge_selected_refs
-            },
-            "cross_session": {
-                "enabled": cross_policy.enabled,
-                "mode": if cross_policy.enabled { "prefer" } else { "disabled" },
-                "budget_ratio": cross_policy.budget_ratio,
-                "max_budget_ratio": cross_policy.max_budget_ratio,
-                "budget_tokens": cross_policy.budget_tokens,
-                "remote_budget_tokens": remote_budget,
-                "max_budget_tokens": cross_policy.max_budget_tokens,
-                "max_sessions": cross_policy.max_sessions,
-                "max_candidates": cross_policy.max_candidates,
-                "min_score": cross_policy.min_score,
-                "raw_evidence_min_score": cross_policy.raw_evidence_min_score,
-                "parallelism": cross_policy.parallelism,
-                "selected_tokens": cross_used_tokens,
-                "selected_ref_count": cross_selected_refs,
-                "selected_session_count": selected_cross_sessions.len() as u64,
-                "entity_bridge_selected_ref_count": entity_bridge_selected_refs,
-                "strategy": "same_session_first_entity_bridge_then_bounded_cross_session",
-                "budget_guidance": "cross-session budget is a maximum cap, not a quota: 12% normally, 15% for broad/evidence, 20% for current-state/latest/multi-hop/date; spend it only on high-quality refs, prefer entities/summaries/compressions, and require high-confidence raw events"
-            },
-            "tree_traversal": {
-                "enabled": true,
-                "native_backend": true,
-                "fallback_to_flat": false,
-                "selected_node_count": selected_nodes.len() as u64,
-                "selected_leaf_count": selected_nodes.len() as u64,
-                "summary_embeddings": ["node_l0", "node_l1"]
-            },
-            "secondary_index_filter": {
-                "enabled": true,
-                "native_backend": true,
-                "applied_before_embedding_scoring": true,
-                "matched_candidate_count": scan.get("scan_stats").and_then(|v| v.get("secondary_index_matched_candidate_count")).cloned().unwrap_or_else(|| json!(0)),
-                "dropped_candidate_count": scan.get("scan_stats").and_then(|v| v.get("secondary_index_dropped_candidate_count")).cloned().unwrap_or_else(|| json!(0))
-            }
-        },
-        "quality_warnings": []
-    });
-    let scan_dropped_count = scan_dropped_count(&scan_stats);
-    let dropped_ref_count = dropped_over_budget
-        + dropped_cross_budget
-        + dropped_cross_session_cap
-        + dropped_cross_candidate_cap
-        + dropped_policy_ref
-        + dropped_duplicate_ref
-        + scan_dropped_count;
-    let scan_cache_hit = scan_cache_hit(&scan_stats);
-    Ok(json!({
-        "ok": true,
-        "count": selected.len(),
-        "native_pack_assembly": true,
-        "raw_records_returned": false,
-        "python_hot_path_records": 0,
-        "scan_count": scan_stats.get("scanned_records").and_then(Value::as_u64).unwrap_or(0),
-        "cache_hit": scan_cache_hit,
-        "cache_hit_used": scan_cache_hit,
-        "selected_ref_count": selected.len(),
-        "dropped_ref_count": dropped_ref_count,
-        "dropped_duplicate_ref_count": dropped_duplicate_ref,
-        "context_pack": pack,
-        "scan_stats": scan_stats
+    let scan_stats = scan.get("scan_stats").cloned().unwrap_or_else(|| json!({}));
+    Ok(build_retrieve_pack_response(RetrievePackResponseInput {
+        request,
+        query,
+        selected,
+        selected_counts,
+        selected_nodes,
+        scan_stats,
+        cross_policy,
+        remote_budget,
+        max_refs,
+        max_global_candidates,
+        min_similarity_score,
+        budget_fill_policy,
+        session_scope_mode: scan_command
+            .scope
+            .as_ref()
+            .map(session_scope_mode)
+            .unwrap_or("only")
+            .to_string(),
+        used_tokens,
+        cross_used_tokens,
+        cross_selected_refs,
+        entity_bridge_selected_refs,
+        selected_cross_sessions,
+        dropped_over_budget,
+        dropped_cross_budget,
+        dropped_cross_session_cap,
+        dropped_cross_candidate_cap,
+        dropped_low_score,
+        dropped_policy_ref,
+        dropped_duplicate_ref,
     }))
 }
