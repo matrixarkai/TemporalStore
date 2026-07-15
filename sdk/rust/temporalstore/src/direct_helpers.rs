@@ -1,7 +1,10 @@
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 
-use crate::{temporalstore_free_string, COptions, Error, Options, Result};
+use crate::{
+    temporalstore_free_string, CFeaturePointArray, CIpsFeatureArray, COptions, Error,
+    FeaturePoint, IpsFeatureStat, Options, Result,
+};
 
 pub(crate) struct CStringOptions {
     metaserver_addr: CString,
@@ -71,4 +74,43 @@ pub(crate) fn check(code: c_int, error: *mut c_char) -> Result<()> {
         message
     };
     Err(Error { code, message })
+}
+
+pub(crate) fn feature_points_from_c_array(out: &CFeaturePointArray) -> Vec<FeaturePoint> {
+    if out.points.is_null() {
+        return Vec::new();
+    }
+    let slice = unsafe { std::slice::from_raw_parts(out.points, out.count) };
+    slice
+        .iter()
+        .map(|point| {
+            let value = if point.value.is_null() {
+                Vec::new()
+            } else {
+                unsafe { CStr::from_ptr(point.value).to_bytes().to_vec() }
+            };
+            FeaturePoint {
+                timestamp_ms: point.timestamp,
+                value,
+            }
+        })
+        .collect()
+}
+
+pub(crate) fn ips_features_from_c_array(out: &CIpsFeatureArray) -> Vec<IpsFeatureStat> {
+    if out.features.is_null() {
+        return Vec::new();
+    }
+    let slice = unsafe { std::slice::from_raw_parts(out.features, out.count) };
+    slice
+        .iter()
+        .map(|feature| IpsFeatureStat {
+            id: feature.id,
+            slot: feature.slot,
+            has_slot: feature.has_slot != 0,
+            kind: feature.kind,
+            v1: feature.v1,
+            v2: feature.v2,
+        })
+        .collect()
 }
