@@ -60,6 +60,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         visibility_mod = importlib.import_module("tools.matrixark_mcp_visibility")
         retrieval_records_mod = importlib.import_module("tools.matrixark_mcp_retrieval_records")
         local_idempotency_mod = importlib.import_module("tools.matrixark_mcp_local_idempotency")
+        local_replay_mod = importlib.import_module("tools.matrixark_mcp_local_replay")
         errors_mod = importlib.import_module("tools.matrixark_mcp_errors")
         models_mod = importlib.import_module("tools.matrixark_mcp_models")
         indexing_mod = importlib.import_module("tools.matrixark_mcp_indexing")
@@ -180,6 +181,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIs(local_mod.RETRIEVAL_HOT_RECORD_TYPES, retrieval_records_mod.RETRIEVAL_HOT_RECORD_TYPES)
         self.assertTrue(callable(local_idempotency_mod.find_idempotency_record))
         self.assertTrue(callable(local_idempotency_mod.append_idempotency_record))
+        self.assertTrue(callable(local_replay_mod.replay))
+        self.assertTrue(callable(local_replay_mod.compact_replay_record))
         self.assertIs(local_mod.compact_latest_value_records, latest_values_mod.compact_latest_value_records)
         self.assertIs(local_mod.latest_value_record_key, latest_values_mod.latest_value_record_key)
         self.assertIs(core_mod.context_event_time_key, event_keys_mod.context_event_time_key)
@@ -226,6 +229,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "matrixark_mcp_resource_import_runtime.py",
             "matrixark_mcp_local_cache.py",
             "matrixark_mcp_local_idempotency.py",
+            "matrixark_mcp_local_replay.py",
             "matrixark_mcp_errors.py",
             "matrixark_mcp_models.py",
             "matrixark_mcp_indexing.py",
