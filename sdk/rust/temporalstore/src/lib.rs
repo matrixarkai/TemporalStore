@@ -33,6 +33,8 @@ mod direct_ffi;
 #[cfg(feature = "direct")]
 mod direct_helpers;
 #[cfg(feature = "direct")]
+mod direct_key_value;
+#[cfg(feature = "direct")]
 pub use direct_client::Client;
 #[cfg(feature = "direct")]
 pub(crate) use direct_ffi::*;
