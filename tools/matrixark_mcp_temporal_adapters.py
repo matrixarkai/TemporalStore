@@ -3953,9 +3953,10 @@ class MatrixArkRustProxyClient:
         )
         self._write_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_WRITE_LANES", "4")))
         self._read_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_READ_LANES", "4")))
-        # Native ContextPack assembly is read-heavy and benefits from a wider
-        # warm process pool; writes/read metadata stay on the shared lane below.
-        self._pack_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_PACK_LANES", "16")))
+        # Native ContextPack assembly should not over-provision proxy processes
+        # by default: cold process startup used to leak into p95/p99 on small
+        # retrieve runs. Match read lanes unless operators explicitly widen it.
+        self._pack_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_PACK_LANES", str(self._read_lane_count))))
         self._control_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_CONTROL_LANES", "1")))
         self._shared_process_mode = os.environ.get("MATRIXARK_RUST_PROXY_SHARED_PROCESS", "1").strip().lower() not in {"0", "false", "no"}
         self._dedicated_pack_lanes_enabled = (
@@ -4194,6 +4195,20 @@ class MatrixArkRustProxyClient:
         )
         return lane["proc"]
 
+    def warm_lane_group(self, group: str) -> Json:
+        lanes = self._lanes.get(group) or []
+        started = 0
+        for lane in lanes:
+            lock: threading.Lock = lane["lock"]
+            with lock:
+                before = lane.get("proc")
+                proc = self._ensure_lane_proc(lane)
+                if before is None or before.poll() is not None:
+                    started += 1
+                if proc.poll() is not None:
+                    raise MatrixArkError(f"Rust TemporalStore {group} proxy warmup failed with returncode {proc.returncode}")
+        return {"ok": True, "group": group, "lanes": len(lanes), "started": started}
+
     def _lane_group_for_op(self, op: str) -> str:
         if op in {
             "batch_hset",
@@ -4216,6 +4231,15 @@ class MatrixArkRustProxyClient:
         if not lanes or len(lanes) <= 1:
             return None
         request = kwargs.get("record")
+        if isinstance(request, dict):
+            query_id = request.get("query_id")
+            if isinstance(query_id, int):
+                return query_id % len(lanes)
+            try:
+                if query_id is not None:
+                    return int(str(query_id)) % len(lanes)
+            except (TypeError, ValueError):
+                pass
         query = request.get("query") if isinstance(request, dict) else ""
         ranking = request.get("ranking") if isinstance(request, dict) else {}
         sticky_payload = {
@@ -5732,6 +5756,9 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
                     io_timeout_ms=self._rust_io_timeout_ms,
                     sdk_mode=self._rust_sdk_mode,
                 )
+                warmer = getattr(self._retrieve_client, "warm_lane_group", None)
+                if callable(warmer):
+                    warmer("pack")
             return self._retrieve_client
 
     def flush_direct_writes(self, timeout_s: float | None = None) -> None:
