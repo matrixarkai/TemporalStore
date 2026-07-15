@@ -80,6 +80,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIs(server_mod.MatrixArkLocalAdapter, local_mod.MatrixArkLocalAdapter)
         self.assertIs(server_mod.MatrixArkTemporalStoreDirectAdapter, temporal_mod.MatrixArkTemporalStoreDirectAdapter)
         self.assertTrue(callable(env_mod.env_bool))
+        self.assertTrue(callable(env_mod.env_float))
         self.assertIs(server_mod.MatrixArkTemporalStoreRustAdapter, temporal_mod.MatrixArkTemporalStoreRustAdapter)
         self.assertTrue(ingestion_mod.is_ingestion_tool("matrixark_ingest"))
         self.assertTrue(retrieval_mod.is_retrieval_tool("matrixark_retrieve"))

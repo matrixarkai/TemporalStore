@@ -33,3 +33,9 @@ def env_int(name: str, default: int) -> int:
     except ValueError:
         return default
 
+
+def env_float(name: str, default: float) -> float:
+    try:
+        return float(env_text(name, str(default)))
+    except ValueError:
+        return default
