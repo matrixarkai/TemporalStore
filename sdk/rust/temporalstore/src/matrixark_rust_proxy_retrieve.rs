@@ -5,12 +5,14 @@ use temporalstore::Client;
 
 use crate::matrixark_rust_proxy_candidates::{record_node_hash, record_ref_hash};
 use crate::matrixark_rust_proxy_metrics::unix_ms;
-use crate::matrixark_rust_proxy_native_pack::retrieve_context_pack_via_sdk_native;
 use crate::matrixark_rust_proxy_pack::{
     candidate_text, context_class_name, is_serving_selected_ref_class, pack_ref_from_record,
     token_estimate,
 };
 use crate::matrixark_rust_proxy_protocol::Command;
+use crate::matrixark_rust_proxy_retrieve_result::{
+    scan_cache_hit, scan_dropped_count, try_sdk_native_pack, SdkNativePackAttempt,
+};
 use crate::matrixark_rust_proxy_retrieve_request::parse_retrieve_pack_request;
 use crate::matrixark_rust_proxy_retrieve_scoring::score_retrieve_candidates;
 use crate::matrixark_rust_proxy_scan::scan_matrixark_candidates;
@@ -29,31 +31,10 @@ pub(crate) fn retrieve_context_pack_native(
     client: &Client,
     command: &Command,
 ) -> Result<Value, String> {
-    let use_sdk_native = std::env::var("MATRIXARK_RUST_PROXY_DISABLE_SDK_NATIVE_PACK")
-        .map(|value| {
-            !matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes"
-            )
-        })
-        .unwrap_or(true);
-    if use_sdk_native {
-        match retrieve_context_pack_via_sdk_native(client, command) {
-            Ok(response) => return Ok(response),
-            Err(err) => {
-                if std::env::var("MATRIXARK_RUST_PROXY_DISABLE_LEGACY_PACK_FALLBACK")
-                    .map(|value| {
-                        matches!(
-                            value.trim().to_ascii_lowercase().as_str(),
-                            "1" | "true" | "yes"
-                        )
-                    })
-                    .unwrap_or(false)
-                {
-                    return Err(err);
-                }
-            }
-        }
+    match try_sdk_native_pack(client, command) {
+        SdkNativePackAttempt::Response(response) => return Ok(response),
+        SdkNativePackAttempt::Error(err) => return Err(err),
+        SdkNativePackAttempt::FallbackAllowed => {}
     }
     let parsed = parse_retrieve_pack_request(command);
     let request = parsed.request;
@@ -326,22 +307,7 @@ pub(crate) fn retrieve_context_pack_native(
         },
         "quality_warnings": []
     });
-    let scan_dropped_count = scan_stats
-        .get("dropped_by_type")
-        .and_then(Value::as_u64)
-        .unwrap_or(0)
-        + scan_stats
-            .get("dropped_by_scope")
-            .and_then(Value::as_u64)
-            .unwrap_or(0)
-        + scan_stats
-            .get("selected_node_dropped_candidate_count")
-            .and_then(Value::as_u64)
-            .unwrap_or(0)
-        + scan_stats
-            .get("secondary_index_dropped_candidate_count")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
+    let scan_dropped_count = scan_dropped_count(&scan_stats);
     let dropped_ref_count = dropped_over_budget
         + dropped_cross_budget
         + dropped_cross_session_cap
@@ -349,14 +315,7 @@ pub(crate) fn retrieve_context_pack_native(
         + dropped_policy_ref
         + dropped_duplicate_ref
         + scan_dropped_count;
-    let scan_cache_hit = scan_stats
-        .get("native_filtered_scan_cache_hit")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-        || scan_stats
-            .get("native_scan_record_cache_hit")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
+    let scan_cache_hit = scan_cache_hit(&scan_stats);
     Ok(json!({
         "ok": true,
         "count": selected.len(),
