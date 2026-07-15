@@ -7,6 +7,8 @@ use temporalstore::Client;
 
 #[path = "../matrixark_rust_proxy_cache.rs"]
 mod matrixark_rust_proxy_cache;
+#[path = "../matrixark_rust_proxy_candidate_node_path.rs"]
+mod matrixark_rust_proxy_candidate_node_path;
 #[path = "../matrixark_rust_proxy_candidates.rs"]
 mod matrixark_rust_proxy_candidates;
 #[path = "../matrixark_rust_proxy_command_entries.rs"]
