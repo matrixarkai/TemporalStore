@@ -1,6 +1,11 @@
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use crate::control::ObjectManagerStats;
+
+use super::routing::{routing_slot_count, slot_for_object};
 use super::state::ShardState;
+use super::slot_index_target_slots_for_object_key;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct ObjectRuntimeState {
@@ -189,5 +194,252 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
             .filter(|object| object.ttl_ms.is_some())
             .count(),
         objects,
+    }
+}
+
+pub(super) fn object_manager_stats(
+    shard: &ShardState,
+    start_routing_slot: u32,
+    end_routing_slot: u32,
+) -> ObjectManagerStats {
+    if !shard.slot_index.slot_map.is_empty() {
+        let (
+            slot_object_count,
+            slot_page_ref_count,
+            slot_dirty_object_count,
+            slot_dirty_slot_count,
+        ) = if !shard.slot_index.object_component_lookup.is_empty() {
+            let mut dirty_slots = shard
+                .slot_index
+                .slot_map
+                .iter()
+                .filter_map(|(slot_id, slot)| slot.dirty.then_some(*slot_id))
+                .collect::<BTreeSet<_>>();
+            for object_key in &shard.dirty_objects {
+                dirty_slots.extend(slot_index_target_slots_for_object_key(shard, object_key));
+            }
+            (
+                shard.slot_index.object_component_lookup.len(),
+                shard
+                    .slot_index
+                    .object_component_lookup
+                    .values()
+                    .map(BTreeSet::len)
+                    .sum::<usize>(),
+                shard.dirty_objects.len(),
+                dirty_slots.len(),
+            )
+        } else if let Some(index_stats) = shard
+            .slot_index
+            .object_key_lookup_stats(&shard.dirty_objects)
+        {
+            index_stats
+        } else {
+            let live_pages = shard
+                .slot_index
+                .slot_map
+                .values()
+                .flat_map(|slot| slot.page_index.values())
+                .filter(|page| !page.deleted)
+                .collect::<Vec<_>>();
+            let slot_object_count = live_pages
+                .iter()
+                .map(|page| {
+                    (
+                        page.model_id.as_str(),
+                        page.object_key.as_str(),
+                        (page.model_id == "hash")
+                            .then(|| page.component.as_deref())
+                            .flatten(),
+                    )
+                })
+                .collect::<BTreeSet<_>>()
+                .len();
+            let slot_dirty_object_count = live_pages
+                .iter()
+                .filter(|page| page.dirty || shard.dirty_objects.contains(&page.object_key))
+                .map(|page| {
+                    (
+                        page.model_id.as_str(),
+                        page.object_key.as_str(),
+                        (page.model_id == "hash")
+                            .then(|| page.component.as_deref())
+                            .flatten(),
+                    )
+                })
+                .collect::<BTreeSet<_>>()
+                .len();
+            let dirty_slot_count = shard
+                .slot_index
+                .slot_map
+                .values()
+                .filter(|slot| {
+                    slot.dirty
+                        || slot.page_index.values().any(|page| {
+                            page.dirty || shard.dirty_objects.contains(&page.object_key)
+                        })
+                })
+                .count();
+            (
+                slot_object_count,
+                live_pages.len(),
+                slot_dirty_object_count,
+                dirty_slot_count,
+            )
+        };
+        let secondary_object_count = shard.strings.len()
+            + shard.hashes.len()
+            + shard.sets.len()
+            + shard.features.len()
+            + shard.sequences.len()
+            + shard.ips.len()
+            + shard.control_state.len()
+            + shard.control_state_changes.len()
+            + shard.context_nodes.len()
+            + shard.context_events.len()
+            + shard.context_indexes.len()
+            + shard.context_audits.len()
+            + shard.context_dirty.len()
+            + shard.context_entities.len()
+            + shard.context_children.len()
+            + shard.context_embeddings.len()
+            + shard.context_summaries.len()
+            + shard.context_compressions.len();
+        let object_count = slot_object_count.max(secondary_object_count);
+        let dirty_object_count = slot_dirty_object_count.max(shard.dirty_objects.len());
+        let secondary_page_ref_count = shard.strings.len()
+            + shard.hashes.values().map(HashMap::len).sum::<usize>()
+            + shard.sets.values().map(BTreeMap::len).sum::<usize>()
+            + shard.features.values().map(BTreeMap::len).sum::<usize>()
+            + shard.sequences.values().map(BTreeMap::len).sum::<usize>()
+            + shard.ips.values().map(BTreeMap::len).sum::<usize>()
+            + shard.context_nodes.len()
+            + shard
+                .context_events
+                .values()
+                .map(BTreeMap::len)
+                .sum::<usize>()
+            + shard
+                .context_indexes
+                .values()
+                .map(BTreeMap::len)
+                .sum::<usize>()
+            + shard
+                .context_audits
+                .values()
+                .map(BTreeMap::len)
+                .sum::<usize>()
+            + shard
+                .context_dirty
+                .values()
+                .map(BTreeMap::len)
+                .sum::<usize>()
+            + shard.context_entities.len()
+            + shard
+                .context_children
+                .values()
+                .map(BTreeMap::len)
+                .sum::<usize>()
+            + shard.context_embeddings.len()
+            + shard
+                .context_summaries
+                .values()
+                .map(BTreeMap::len)
+                .sum::<usize>()
+            + shard
+                .context_compressions
+                .values()
+                .map(BTreeMap::len)
+                .sum::<usize>();
+        let dirty_slot_count = slot_dirty_slot_count;
+        return ObjectManagerStats {
+            object_count,
+            page_ref_count: slot_page_ref_count.max(secondary_page_ref_count),
+            dirty_object_count,
+            dirty_slot_count,
+            routing_slot_count: routing_slot_count(start_routing_slot, end_routing_slot),
+        };
+    }
+
+    let object_count = shard.strings.len()
+        + shard.hashes.len()
+        + shard.sets.len()
+        + shard.features.len()
+        + shard.sequences.len()
+        + shard.ips.len()
+        + shard.control_state.len()
+        + shard.context_nodes.len()
+        + shard.context_events.len()
+        + shard.context_indexes.len()
+        + shard.context_audits.len()
+        + shard.context_dirty.len()
+        + shard.context_entities.len()
+        + shard.context_children.len()
+        + shard.context_embeddings.len()
+        + shard.context_summaries.len()
+        + shard.context_compressions.len();
+    let page_ref_count = shard.strings.len()
+        + shard.hashes.values().map(HashMap::len).sum::<usize>()
+        + shard.sets.values().map(BTreeMap::len).sum::<usize>()
+        + shard.features.values().map(BTreeMap::len).sum::<usize>()
+        + shard.sequences.values().map(BTreeMap::len).sum::<usize>()
+        + shard.ips.values().map(BTreeMap::len).sum::<usize>()
+        + shard.context_nodes.len()
+        + shard
+            .context_events
+            .values()
+            .map(BTreeMap::len)
+            .sum::<usize>()
+        + shard
+            .context_indexes
+            .values()
+            .map(BTreeMap::len)
+            .sum::<usize>()
+        + shard
+            .context_audits
+            .values()
+            .map(BTreeMap::len)
+            .sum::<usize>()
+        + shard
+            .context_dirty
+            .values()
+            .map(BTreeMap::len)
+            .sum::<usize>()
+        + shard.context_entities.len()
+        + shard
+            .context_children
+            .values()
+            .map(BTreeMap::len)
+            .sum::<usize>()
+        + shard.context_embeddings.len()
+        + shard
+            .context_summaries
+            .values()
+            .map(BTreeMap::len)
+            .sum::<usize>()
+        + shard
+            .context_compressions
+            .values()
+            .map(BTreeMap::len)
+            .sum::<usize>();
+    let routing_slot_count = routing_slot_count(start_routing_slot, end_routing_slot);
+    let mut dirty_slots = shard
+        .slot_index
+        .slot_map
+        .iter()
+        .filter_map(|(slot, node)| node.dirty.then_some(*slot))
+        .collect::<BTreeSet<_>>();
+    dirty_slots.extend(
+        shard
+            .dirty_objects
+            .iter()
+            .map(|key| slot_for_object(key, start_routing_slot, routing_slot_count)),
+    );
+    ObjectManagerStats {
+        object_count,
+        page_ref_count,
+        dirty_object_count: shard.dirty_objects.len(),
+        dirty_slot_count: dirty_slots.len(),
+        routing_slot_count,
     }
 }
