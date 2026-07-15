@@ -36,19 +36,12 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_visibility as visibility_helpers
 
-RETRIEVAL_HOT_RECORD_TYPES = {
-    "context_compression_event",
-    "context_embedding",
-    "context_entity",
-    "context_event",
-    "context_index",
-    "context_segment",
-    "context_summary",
-    "resource_chunk",
-    "resource_manifest",
-    "skill_registry_update",
-    "skill_section",
-}
+try:
+    from tools import matrixark_mcp_retrieval_records as retrieval_record_helpers
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_retrieval_records as retrieval_record_helpers
+
+RETRIEVAL_HOT_RECORD_TYPES = retrieval_record_helpers.RETRIEVAL_HOT_RECORD_TYPES
 
 RESOURCE_IMPORT_IGNORE_DIRS = {".git", "node_modules", "target", "build", "dist", ".venv", "__pycache__"}
 LOCAL_READ_CACHE_COPY = os.environ.get("MATRIXARK_LOCAL_READ_CACHE_COPY", "1").strip().lower() not in {"0", "false", "no"}
@@ -447,16 +440,12 @@ class MatrixArkLocalAdapter:
         """
 
         allowed_types = record_types or RETRIEVAL_HOT_RECORD_TYPES
-        scope_key = canonical_scope_key(scope)
-        secondary_key = tuple(sorted(tuple(sorted(group)) for group in (secondary_index_groups or [])))
-        selected_key = tuple(sorted(int(item) for item in (selected_node_hashes or set())))
-        cache_key = (
-            self._retrieval_records_cache_generation,
-            scope_key,
-            session_scope_mode(scope),
-            tuple(sorted(allowed_types)),
-            secondary_key,
-            selected_key,
+        cache_key = retrieval_record_helpers.retrieval_records_cache_key(
+            generation=self._retrieval_records_cache_generation,
+            scope=scope,
+            allowed_types=allowed_types,
+            secondary_index_groups=secondary_index_groups,
+            selected_node_hashes=selected_node_hashes,
         )
         with self._retrieval_records_cache_lock:
             cached = self._retrieval_records_cache.get(cache_key)
@@ -464,35 +453,12 @@ class MatrixArkLocalAdapter:
                 scan_stats = dict(cached.get("scan_stats", {}))
                 scan_stats["cache_hit"] = True
                 return {"records": cached.get("records", []), "scan_stats": scan_stats}
-        raw_records = self.read_all()
-        filtered: list[Json] = []
-        scanned = 0
-        dropped_type = 0
-        dropped_scope = 0
-        dropped_node = 0
-        selected_nodes = selected_node_hashes or set()
-        for record in raw_records:
-            scanned += 1
-            record_type = str(record.get("record_type") or "")
-            if record_type not in allowed_types:
-                dropped_type += 1
-                continue
-            if selected_nodes:
-                try:
-                    record_node_hash = int(record.get("node_hash"))
-                except (TypeError, ValueError):
-                    record_node_hash = None
-                if record_node_hash is not None and record_node_hash not in selected_nodes:
-                    dropped_node += 1
-                    continue
-            if record_type in {"context_embedding", "context_index", "context_summary", "resource_manifest", "skill_registry_update"}:
-                if not scope_matches(candidate_access_scope(record), scope):
-                    dropped_scope += 1
-                    continue
-            elif not access_scope_matches_before_scoring(record, scope):
-                dropped_scope += 1
-                continue
-            filtered.append(record)
+        filtered, filter_stats = retrieval_record_helpers.filter_retrieval_records(
+            self.read_all(),
+            scope=scope,
+            allowed_types=allowed_types,
+            selected_node_hashes=selected_node_hashes,
+        )
         result = {
             "records": filtered,
             "scan_stats": {
@@ -503,11 +469,7 @@ class MatrixArkLocalAdapter:
                 "broad_scan_used": True,
                 "broad_scan_reason": "local_reference_adapter",
                 "record_types": sorted(allowed_types),
-                "scanned_records": scanned,
-                "returned_records": len(filtered),
-                "dropped_by_type": dropped_type,
-                "dropped_by_scope": dropped_scope,
-                "dropped_by_node": dropped_node,
+                **filter_stats,
                 "secondary_index_groups_supplied": len(secondary_index_groups or []),
                 "selected_node_hashes_supplied": len(selected_node_hashes or set()),
             },
