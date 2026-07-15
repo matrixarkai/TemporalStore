@@ -37,6 +37,8 @@ mod direct_ffi;
 #[cfg(feature = "direct")]
 mod direct_ffi_types;
 #[cfg(feature = "direct")]
+mod direct_hash;
+#[cfg(feature = "direct")]
 mod direct_helpers;
 #[cfg(feature = "direct")]
 mod direct_ips;
