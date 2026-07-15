@@ -99,6 +99,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIs(core_mod.sanitize_resource_metadata, resources_mod.sanitize_resource_metadata)
         self.assertIs(core_mod.resolve_raw_resource_for_ingest, resources_mod.resolve_raw_resource_for_ingest)
         self.assertIs(core_mod.rewrite_chunk_uris, resources_mod.rewrite_chunk_uris)
+        self.assertIs(core_mod.should_extract_resource_fact, resources_mod.should_extract_resource_fact)
+        self.assertIs(core_mod.resource_fact_entity_name, resources_mod.resource_fact_entity_name)
 
     def test_mcp_entrypoint_stays_small(self) -> None:
         server_lines = (TOOLS_DIR / "matrixark_mcp_server.py").read_text(encoding="utf-8").splitlines()
