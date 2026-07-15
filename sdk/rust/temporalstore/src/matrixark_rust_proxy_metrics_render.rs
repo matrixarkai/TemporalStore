@@ -2,9 +2,10 @@ use crate::matrixark_rust_proxy_metrics::MetricsSnapshot;
 
 use crate::matrixark_rust_proxy_metrics_backend_render::append_backend_metrics;
 use crate::matrixark_rust_proxy_metrics_core_render::{
-    append_command_metrics, append_process_metrics, append_proxy_io_metrics,
-    append_retrieve_metrics,
+    append_command_metrics, append_process_metrics,
 };
+use crate::matrixark_rust_proxy_metrics_io_render::append_proxy_io_metrics;
+use crate::matrixark_rust_proxy_metrics_retrieve_render::append_retrieve_metrics;
 
 impl MetricsSnapshot {
     pub fn render_prometheus(&self) -> String {
