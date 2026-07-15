@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use serde_json::Value;
 use temporalstore::Client;
@@ -12,6 +12,7 @@ use crate::matrixark_rust_proxy_candidate_node_path::{
 };
 use crate::matrixark_rust_proxy_candidates::record_node_hash;
 use crate::matrixark_rust_proxy_protocol::Command;
+use crate::matrixark_rust_proxy_scan_node_paths::node_paths_by_hash;
 use crate::matrixark_rust_proxy_scan_records::{
     load_scan_records, required, serving_count_key,
 };
@@ -70,26 +71,7 @@ pub(crate) fn scan_matrixark_candidates(
     let mut dropped_by_type = 0_u64;
     let mut dropped_by_scope = 0_u64;
     let mut selected_node_dropped = 0_u64;
-    let mut node_paths_by_hash: HashMap<u64, Vec<String>> = HashMap::new();
-    for record in records_source.iter() {
-        if record.get("record_type").and_then(Value::as_str) != Some("context_node") {
-            continue;
-        }
-        if let (Some(node_hash), Some(path)) = (
-            record_node_hash(record),
-            record.get("node_path").and_then(Value::as_array),
-        ) {
-            let values: Vec<String> = path
-                .iter()
-                .filter_map(Value::as_str)
-                .filter(|text| !text.is_empty())
-                .map(str::to_string)
-                .collect();
-            if !values.is_empty() {
-                node_paths_by_hash.insert(node_hash, values);
-            }
-        }
-    }
+    let node_paths_by_hash = node_paths_by_hash(records_source.as_ref());
     let node_path_filters = query_node_path_filters(command.scope.as_ref());
     let records = records_source
         .iter()
