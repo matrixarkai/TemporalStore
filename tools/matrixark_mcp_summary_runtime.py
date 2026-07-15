@@ -6,9 +6,37 @@ from __future__ import annotations
 from typing import Callable
 
 try:
-    from tools.matrixark_mcp_core import Json, candidate_access_scope, scope_matches, stable_hash
+    from tools.matrixark_mcp_core import (
+        Json,
+        MatrixArkError,
+        TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE,
+        TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH,
+        TIME_COMPRESSION_MIN_EVENT_AGE_MS,
+        TIME_COMPRESSION_MIN_EVENTS,
+        TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS,
+        TIME_COMPRESSION_WINDOW_EVENTS,
+        candidate_access_scope,
+        integer_arg,
+        optional_object,
+        scope_matches,
+        stable_hash,
+    )
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_core import Json, candidate_access_scope, scope_matches, stable_hash
+    from matrixark_mcp_core import (
+        Json,
+        MatrixArkError,
+        TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE,
+        TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH,
+        TIME_COMPRESSION_MIN_EVENT_AGE_MS,
+        TIME_COMPRESSION_MIN_EVENTS,
+        TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS,
+        TIME_COMPRESSION_WINDOW_EVENTS,
+        candidate_access_scope,
+        integer_arg,
+        optional_object,
+        scope_matches,
+        stable_hash,
+    )
 
 try:
     from tools.matrixark_mcp_tree import node_path_tuple, node_prefixes, starts_with_path
@@ -195,3 +223,54 @@ def append_node_summary_embeddings(
         "refresh_result": None,
         "async_required": True,
     }
+
+
+def refresh_summaries(adapter: object, args: Json) -> Json:
+    scope = optional_object(args, "scope")
+    limit = args.get("limit", 64)
+    if not isinstance(limit, int) or limit <= 0:
+        raise MatrixArkError("limit must be a positive integer")
+    refreshed_at_ms = args.get("refreshed_at_ms")
+    if refreshed_at_ms is not None and not isinstance(refreshed_at_ms, int):
+        raise MatrixArkError("refreshed_at_ms must be an integer")
+    return adapter.refresh_dirty_node_summaries(
+        scope=scope,
+        limit=limit,
+        refreshed_at_ms=refreshed_at_ms,
+        max_raw_events_per_node=integer_arg(
+            args,
+            "max_raw_events_per_node",
+            TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE,
+            minimum=1,
+        ),
+        compression_window_events=integer_arg(
+            args,
+            "compression_window_events",
+            TIME_COMPRESSION_WINDOW_EVENTS,
+            minimum=1,
+        ),
+        min_compression_events=integer_arg(
+            args,
+            "min_compression_events",
+            TIME_COMPRESSION_MIN_EVENTS,
+            minimum=1,
+        ),
+        max_compression_windows_per_node=integer_arg(
+            args,
+            "max_compression_windows_per_node",
+            TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH,
+            minimum=0,
+        ),
+        min_compression_event_age_ms=integer_arg(
+            args,
+            "min_compression_event_age_ms",
+            TIME_COMPRESSION_MIN_EVENT_AGE_MS,
+            minimum=0,
+        ),
+        raw_event_ttl_after_compression_ms=integer_arg(
+            args,
+            "raw_event_ttl_after_compression_ms",
+            TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS,
+            minimum=0,
+        ),
+    )
