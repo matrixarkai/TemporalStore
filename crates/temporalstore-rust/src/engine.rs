@@ -30,6 +30,7 @@ mod set_index_serde;
 mod slot_dump;
 mod slot_store;
 mod state;
+mod storage_model;
 mod storage_io;
 
 // shared-corpus: storage_slot_first_physical_index storage_object_manager_slotstore_runtime_authority storage_model_layout_compaction_policies storage_merged_dump_load_lifecycle storage_object_manager_cold_hot_reload storage_page_address_disk_cache_shared_store_fallback
@@ -60,6 +61,9 @@ use self::slot_store::{
 };
 use self::state::*;
 use self::storage_io::{atomic_write_bytes, serialize_index, unique_temp_path};
+use self::storage_model::{
+    compaction_layout_policy_for_model, compaction_object_page_packing_enabled, storage_model_code,
+};
 use crate::block_store::BlockAppendRecordRef;
 use crate::control::{
     CanonicalLogAckPolicy, CheckedBatchExecuteRequest, CheckedBatchExecuteResponse,
@@ -13754,29 +13758,6 @@ fn slot_storage_summaries(
 const CPP_PACKED_PAGE_INDEX_SIZE: usize = 17;
 const CPP_PACKED_SLOT_NODE_SIZE: usize = 24;
 
-fn storage_model_code(kind: &str) -> u8 {
-    match kind {
-        "string" => 1,
-        "hash" => 2,
-        "set" => 3,
-        "feature" => 4,
-        "sequence" => 5,
-        "ips" => 6,
-        "control_state" => 7,
-        "context_node" => 8,
-        "context_event" => 9,
-        "context_index" => 10,
-        "context_audit" => 11,
-        "context_dirty" => 12,
-        "context_entity" => 13,
-        "context_child" => 14,
-        "context_embedding" => 15,
-        "context_summary" => 16,
-        "context_compression" => 17,
-        _ => 0,
-    }
-}
-
 fn physical_address_word(address: &PageAddress) -> u64 {
     address.page_segment_id.wrapping_shl(32) | (address.offset & u32::MAX as u64)
 }
@@ -14745,25 +14726,6 @@ fn model_compaction_policy_reports(
             }
         })
         .collect()
-}
-
-fn compaction_layout_policy_for_model(model_id: &str) -> &'static str {
-    match model_id {
-        "string" | "control_state" | "context_node" | "context_entity" | "context_embedding" => {
-            "single_page_object"
-        }
-        "hash" | "set" => "component_page_object",
-        "feature" | "sequence" | "ips" => "timestamped_chunked_pages",
-        model if model.starts_with("context_") => "context_timeline_or_sidecar_pages",
-        _ => "generic_page_object",
-    }
-}
-
-fn compaction_object_page_packing_enabled(model_id: &str) -> bool {
-    matches!(
-        compaction_layout_policy_for_model(model_id),
-        "single_page_object" | "component_page_object"
-    )
 }
 
 fn compaction_action_for_policy(
