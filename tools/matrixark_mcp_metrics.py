@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import math
+
 try:
     from tools.matrixark_mcp_core import *
 except ModuleNotFoundError:  # Direct script execution from tools/.
