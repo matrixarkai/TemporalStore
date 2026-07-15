@@ -64,6 +64,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         indexing_mod = importlib.import_module("tools.matrixark_mcp_indexing")
         storage_options_mod = importlib.import_module("tools.matrixark_mcp_storage_options")
         native_helpers_mod = importlib.import_module("tools.matrixark_mcp_native_helpers")
+        env_mod = importlib.import_module("tools.matrixark_mcp_env")
         scoring_mod = importlib.import_module("tools.matrixark_mcp_scoring")
         text_mod = importlib.import_module("tools.matrixark_mcp_text")
         embeddings_mod = importlib.import_module("tools.matrixark_mcp_embeddings")
@@ -78,6 +79,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIs(server_mod.MatrixArkServiceMetrics, metrics_mod.MatrixArkServiceMetrics)
         self.assertIs(server_mod.MatrixArkLocalAdapter, local_mod.MatrixArkLocalAdapter)
         self.assertIs(server_mod.MatrixArkTemporalStoreDirectAdapter, temporal_mod.MatrixArkTemporalStoreDirectAdapter)
+        self.assertTrue(callable(env_mod.env_bool))
         self.assertIs(server_mod.MatrixArkTemporalStoreRustAdapter, temporal_mod.MatrixArkTemporalStoreRustAdapter)
         self.assertTrue(ingestion_mod.is_ingestion_tool("matrixark_ingest"))
         self.assertTrue(retrieval_mod.is_retrieval_tool("matrixark_retrieve"))
@@ -224,6 +226,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "matrixark_mcp_indexing.py",
             "matrixark_mcp_storage_options.py",
             "matrixark_mcp_native_helpers.py",
+            "matrixark_mcp_env.py",
             "matrixark_mcp_scoring.py",
             "matrixark_mcp_text.py",
             "matrixark_mcp_latest_values.py",
