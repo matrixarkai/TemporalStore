@@ -46,6 +46,7 @@ try:
         require_string,
         stable_hash,
     )
+    from tools.matrixark_mcp_context_pack import compact_context_pack_refs, compact_dropped_refs_for_context_pack
     from tools.matrixark_access import MatrixArkAccessManager
     from tools.matrixark_http import make_matrixark_http_handler
     from tools.matrixark_mcp_backends import (
@@ -85,6 +86,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         require_string,
         stable_hash,
     )
+    from matrixark_mcp_context_pack import compact_context_pack_refs, compact_dropped_refs_for_context_pack
     from matrixark_access import MatrixArkAccessManager
     from matrixark_http import make_matrixark_http_handler
     from matrixark_mcp_backends import (
