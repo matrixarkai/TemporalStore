@@ -71,6 +71,11 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_summary_runtime as summary_runtime
 
+try:
+    from tools import matrixark_mcp_time_compression_runtime as time_compression_runtime
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_time_compression_runtime as time_compression_runtime
+
 RETRIEVAL_HOT_RECORD_TYPES = retrieval_record_helpers.RETRIEVAL_HOT_RECORD_TYPES
 
 LOCAL_READ_CACHE_COPY = os.environ.get("MATRIXARK_LOCAL_READ_CACHE_COPY", "1").strip().lower() not in {"0", "false", "no"}
@@ -460,19 +465,7 @@ class MatrixArkLocalAdapter:
         )
 
     def context_event_ingestion_time_ms(self, record: Json, debug_by_ref: dict[Any, Json] | None = None) -> int:
-        event_hash = record.get("event_id_hash")
-        debug_payload = (debug_by_ref or {}).get(event_hash, {}) if event_hash is not None else {}
-        envelope = record.get("envelope", {}) if isinstance(record.get("envelope"), dict) else debug_payload.get("envelope", {})
-        if not isinstance(envelope, dict):
-            envelope = {}
-        for value in (envelope.get("ingestion_time_ms"), record.get("updated_at_ms"), record.get("created_at_ms")):
-            try:
-                timestamp = int(value)
-            except (TypeError, ValueError):
-                continue
-            if timestamp > 0:
-                return timestamp
-        return 0
+        return time_compression_runtime.context_event_ingestion_time_ms(record, debug_by_ref)
 
     def _write_time_compression_from_events(
         self,
@@ -489,98 +482,21 @@ class MatrixArkLocalAdapter:
         raw_event_ttl_after_compression_ms: int = TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS,
         summary_provider_meta: Json | None = None,
     ) -> Json:
-        if not selected:
-            raise MatrixArkError("no source events matched compression window")
-        source_event_ids = [int(record["event_id_hash"]) for record in selected if record.get("event_id_hash") is not None]
-        if not source_event_ids:
-            raise MatrixArkError("source events need event_id_hash for compression")
-        source_times = [event_times.get(event_id, 0) for event_id in source_event_ids if event_times.get(event_id, 0) > 0]
-        source_start_ms = min(source_times) if source_times else compressed_time_ms
-        source_end_ms = max(source_times) if source_times else compressed_time_ms
-        if not summary:
-            snippets = [summarize_text(str(record.get("text", "")), limit=180) for record in selected[:5]]
-            suffix = " plus additional source events" if truncated else ""
-            summary = (
-                f"Temporal compression window [{source_start_ms}, {source_end_ms}] contains "
-                f"{len(selected)} selected events{suffix}. " + " | ".join(snippets)
-            )
-        compression_id_hash = stable_hash(f"compress:{scope}:{node_hash}:{source_start_ms}:{source_end_ms}:{source_event_ids}")
-        record = {
-            "record_type": "context_compression_event",
-            "compression_id_hash": compression_id_hash,
-            "node_hash": node_hash,
-            "node_path": node_path,
-            "scope": scope,
-            "source_start_ms": source_start_ms,
-            "source_end_ms": source_end_ms,
-            "compressed_time_ms": compressed_time_ms,
-            "summary_text": summarize_text(summary, limit=1200),
-            "source_event_ids": source_event_ids,
-            "source_event_count": len(source_event_ids),
-            "truncated_source_events": truncated,
-            "operator": "TIME_COMPRESS",
-            "compression_mode": mode,
-            "summary_provider": summary_provider_meta
-            or {
-                "provider": "deterministic",
-                "model": "",
-                "fallback_used": False,
-            },
-            "compression_safety": {
-                "source_event_ids_retained": bool(source_event_ids),
-                "source_event_count": len(source_event_ids),
-                "summary_non_empty": bool(summary.strip()),
-                "raw_events_remain_replayable": True,
-                "ttl_marker_only": True,
-            },
-            "retention_policy": {
-                "raw_event_ttl_after_compression_ms": max(0, int(raw_event_ttl_after_compression_ms)),
-                "evict_after_ms": compressed_time_ms + max(0, int(raw_event_ttl_after_compression_ms))
-                if raw_event_ttl_after_compression_ms > 0
-                else 0,
-                "requires_no_recent_reinforcement": True,
-            },
-            "updated_at_ms": compressed_time_ms,
-        }
-        self.append(record)
-        summary_vector = embedding_for_text(record["summary_text"])
-        self.append(
-            {
-                "record_type": "context_embedding",
-                "embedding_type": "compression_summary",
-                "ref_type": "compression",
-                "ref_hash": compression_id_hash,
-                "node_hash": node_hash,
-                "node_path": node_path,
-                "dim": len(summary_vector),
-                "model": embedding_model_name(),
-                "vector": summary_vector,
-                "scope": scope,
-                "updated_at_ms": compressed_time_ms,
-            }
+        return time_compression_runtime.write_time_compression_from_events(
+            append=self.append,
+            append_many=self.append_many,
+            scope=scope,
+            node_hash=node_hash,
+            node_path=node_path,
+            selected=selected,
+            event_times=event_times,
+            compressed_time_ms=compressed_time_ms,
+            summary=summary,
+            truncated=truncated,
+            mode=mode,
+            raw_event_ttl_after_compression_ms=raw_event_ttl_after_compression_ms,
+            summary_provider_meta=summary_provider_meta,
         )
-        retention_records = []
-        evict_after_ms = int(record["retention_policy"]["evict_after_ms"] or 0)
-        for event_id in source_event_ids:
-            retention_records.append(
-                {
-                    "record_type": "context_event_retention_marker",
-                    "event_id_hash": event_id,
-                    "compression_id_hash": compression_id_hash,
-                    "node_hash": node_hash,
-                    "node_path": node_path,
-                    "scope": scope,
-                    "retention_state": "compressed_retained",
-                    "evict_after_ms": evict_after_ms,
-                    "raw_events_remain_replayable": True,
-                    "requires_no_recent_reinforcement": True,
-                    "created_at_ms": compressed_time_ms,
-                    "updated_at_ms": compressed_time_ms,
-                }
-            )
-        if retention_records:
-            self.append_many(retention_records)
-        return record
 
     def auto_time_compress_node_events(
         self,
@@ -597,147 +513,21 @@ class MatrixArkLocalAdapter:
         min_event_age_ms: int = TIME_COMPRESSION_MIN_EVENT_AGE_MS,
         raw_event_ttl_after_compression_ms: int = TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS,
     ) -> Json:
-        max_raw_events_per_node = max(1, int(max_raw_events_per_node))
-        max_source_events = max(1, int(max_source_events))
-        min_source_events = max(1, int(min_source_events))
-        max_windows = max(0, int(max_windows))
-        if max_windows <= 0:
-            return {"status": "disabled", "created_count": 0, "created": []}
-        debug_by_ref = {
-            record.get("ref_hash"): record.get("debug_payload", {})
-            for record in records
-            if record.get("record_type") == "context_debug_record" and record.get("ref_type") == "event"
-        }
-        compressed_source_ids: set[int] = set()
-        reinforced_source_ids: set[int] = set()
-        for record in records:
-            if record.get("record_type") != "context_compression_event":
-                if record.get("record_type") == "context_recall_reinforcement":
-                    if int(record.get("node_hash") or 0) != node_hash:
-                        continue
-                    if not scope_matches(candidate_access_scope(record), scope):
-                        continue
-                    if int(record.get("protected_until_ms") or 0) < compressed_time_ms:
-                        continue
-                    try:
-                        reinforced_source_ids.add(int(record.get("event_id_hash")))
-                    except (TypeError, ValueError):
-                        pass
-                continue
-            if int(record.get("node_hash") or 0) != node_hash:
-                continue
-            if not scope_matches(candidate_access_scope(record), scope):
-                continue
-            for event_id in record.get("source_event_ids", []) or []:
-                try:
-                    compressed_source_ids.add(int(event_id))
-                except (TypeError, ValueError):
-                    pass
-        events: list[Json] = []
-        event_times: dict[int, int] = {}
-        event_scopes: dict[int, Json] = {}
-        for record in records:
-            if record.get("record_type") != "context_event":
-                continue
-            if int(record.get("node_hash") or 0) != node_hash:
-                continue
-            if not scope_matches(candidate_access_scope(record), scope):
-                continue
-            try:
-                event_hash = int(record.get("event_id_hash"))
-            except (TypeError, ValueError):
-                continue
-            event_time = self.context_event_ingestion_time_ms(record, debug_by_ref)
-            if event_time <= 0:
-                continue
-            events.append(record)
-            event_times[event_hash] = event_time
-            event_scopes[event_hash] = candidate_access_scope(record)
-        events.sort(key=lambda record: (event_times.get(int(record.get("event_id_hash") or 0), 0), int(record.get("event_id_hash") or 0)))
-        if len(events) <= max_raw_events_per_node:
-            return {
-                "status": "skipped",
-                "reason": "raw_event_count_within_threshold",
-                "raw_event_count": len(events),
-                "max_raw_events_per_node": max_raw_events_per_node,
-                "created_count": 0,
-                "created": [],
-            }
-        newest_raw_ids = {
-            int(record.get("event_id_hash"))
-            for record in events[-max_raw_events_per_node:]
-            if record.get("event_id_hash") is not None
-        }
-        cold_cutoff_ms = compressed_time_ms - max(0, int(min_event_age_ms))
-        old_uncompressed = [
-            record
-            for record in events
-            if int(record.get("event_id_hash") or 0) not in newest_raw_ids
-            and int(record.get("event_id_hash") or 0) not in compressed_source_ids
-            and int(record.get("event_id_hash") or 0) not in reinforced_source_ids
-            and (
-                min_event_age_ms <= 0
-                or event_times.get(int(record.get("event_id_hash") or 0), compressed_time_ms) <= cold_cutoff_ms
-            )
-        ]
-        created: list[Json] = []
-        for window_start in range(0, len(old_uncompressed), max_source_events):
-            if len(created) >= max_windows:
-                break
-            window = old_uncompressed[window_start : window_start + max_source_events]
-            if len(window) < min_source_events:
-                continue
-            first_hash = int(window[0].get("event_id_hash") or 0)
-            compression_scope = event_scopes.get(first_hash, scope)
-            source_ids = [int(record["event_id_hash"]) for record in window if record.get("event_id_hash") is not None]
-            source_times = [event_times.get(event_id, 0) for event_id in source_ids if event_times.get(event_id, 0) > 0]
-            summary_result = generate_time_compression_summary(
-                node_path=node_path,
-                source_start_ms=min(source_times) if source_times else compressed_time_ms,
-                source_end_ms=max(source_times) if source_times else compressed_time_ms,
-                event_texts=[str(record.get("text", "")) for record in window if record.get("text")],
-                max_raw_events_per_node=max_raw_events_per_node,
-            )
-            created.append(
-                self._write_time_compression_from_events(
-                    scope=compression_scope,
-                    node_hash=node_hash,
-                    node_path=node_path,
-                    selected=window,
-                    event_times=event_times,
-                    compressed_time_ms=compressed_time_ms,
-                    summary=str(summary_result.get("summary", "")),
-                    truncated=len(old_uncompressed) > len(source_ids),
-                    mode="automatic",
-                    raw_event_ttl_after_compression_ms=raw_event_ttl_after_compression_ms,
-                    summary_provider_meta={
-                        "provider": summary_result.get("provider", "deterministic"),
-                        "model": summary_result.get("model", ""),
-                        "fallback_used": bool(summary_result.get("fallback_used", False)),
-                        "warning": summary_result.get("warning", ""),
-                    },
-                )
-            )
-        return {
-            "status": "ok" if created else "skipped",
-            "reason": "" if created else "no_uncompressed_old_window_met_minimum",
-            "raw_event_count": len(events),
-            "max_raw_events_per_node": max_raw_events_per_node,
-            "min_event_age_ms": max(0, int(min_event_age_ms)),
-            "cold_cutoff_ms": cold_cutoff_ms,
-            "old_uncompressed_event_count": len(old_uncompressed),
-            "reinforced_event_count": len(reinforced_source_ids),
-            "created_count": len(created),
-            "created": [
-                {
-                    "compression_id_hash": item.get("compression_id_hash"),
-                    "source_start_ms": item.get("source_start_ms"),
-                    "source_end_ms": item.get("source_end_ms"),
-                    "source_event_count": item.get("source_event_count"),
-                }
-                for item in created
-            ],
-        }
+        return time_compression_runtime.auto_time_compress_node_events(
+            append=self.append,
+            append_many=self.append_many,
+            records=records,
+            scope=scope,
+            node_hash=node_hash,
+            node_path=node_path,
+            compressed_time_ms=compressed_time_ms,
+            max_raw_events_per_node=max_raw_events_per_node,
+            max_source_events=max_source_events,
+            min_source_events=min_source_events,
+            max_windows=max_windows,
+            min_event_age_ms=min_event_age_ms,
+            raw_event_ttl_after_compression_ms=raw_event_ttl_after_compression_ms,
+        )
 
     def node_summary_dirty_records(
         self,

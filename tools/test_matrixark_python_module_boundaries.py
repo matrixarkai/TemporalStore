@@ -218,6 +218,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "matrixark_mcp_registry.py",
             "matrixark_mcp_summaries.py",
             "matrixark_mcp_summary_runtime.py",
+            "matrixark_mcp_time_compression_runtime.py",
         ]
         offenders: list[str] = []
         for module_name in module_names:
