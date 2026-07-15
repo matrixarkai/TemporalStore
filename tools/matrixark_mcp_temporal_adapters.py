@@ -41,6 +41,10 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 try:
     from tools.matrixark_mcp_env import env_bool, env_int, env_lower
+    from tools.matrixark_mcp_direct_write_queue import (
+        direct_write_durable_field,
+        direct_write_durable_payload,
+    )
     from tools.matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from tools.matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
     from tools.matrixark_mcp_metrics import MatrixArkServiceMetrics
@@ -64,6 +68,10 @@ try:
     from tools.matrixark_mcp_retrieval import native_retrieve_fallback_allowed
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_env import env_bool, env_int, env_lower
+    from matrixark_mcp_direct_write_queue import (
+        direct_write_durable_field,
+        direct_write_durable_payload,
+    )
     from matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
     from matrixark_mcp_metrics import MatrixArkServiceMetrics
@@ -1184,22 +1192,14 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 thread.start()
 
     def _direct_write_durable_payload(self, records: list[Json]) -> Json:
-        created_at = now_ms()
-        return {
-            "queue_version": 1,
-            "status": "pending",
-            "attempts": 0,
-            "created_at_ms": created_at,
-            "updated_at_ms": created_at,
-            "record_count": len(records),
-            "backend": self._backend_label(),
-            "storage_prefix": self._storage_prefix,
-            "records": records,
-        }
+        return direct_write_durable_payload(
+            records,
+            backend=self._backend_label(),
+            storage_prefix=self._storage_prefix,
+        )
 
     def _direct_write_durable_field(self, payload: Json) -> str:
-        digest = stable_hash(json.dumps(payload, sort_keys=True, separators=(",", ":")))
-        return f"{int(payload.get('created_at_ms') or now_ms()):020d}:{digest}"
+        return direct_write_durable_field(payload)
 
     def _enqueue_direct_write_durable(self, records: list[Json]) -> str:
         payload = self._direct_write_durable_payload(list(records))
