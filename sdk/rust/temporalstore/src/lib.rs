@@ -35,6 +35,8 @@ mod direct_features;
 #[cfg(feature = "direct")]
 mod direct_ffi;
 #[cfg(feature = "direct")]
+mod direct_ffi_matrixark;
+#[cfg(feature = "direct")]
 mod direct_ffi_types;
 #[cfg(feature = "direct")]
 mod direct_hash;
