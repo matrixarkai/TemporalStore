@@ -3,7 +3,7 @@ use std::io::{self, BufRead, Read, Write};
 use std::time::Instant;
 
 use serde_json::{json, Value};
-use temporalstore::{Client, Options};
+use temporalstore::Client;
 
 #[path = "../matrixark_rust_proxy_cache.rs"]
 mod matrixark_rust_proxy_cache;
@@ -21,6 +21,8 @@ mod matrixark_rust_proxy_protocol;
 mod matrixark_rust_proxy_records;
 #[path = "../matrixark_rust_proxy_retrieve.rs"]
 mod matrixark_rust_proxy_retrieve;
+#[path = "../matrixark_rust_proxy_runtime.rs"]
+mod matrixark_rust_proxy_runtime;
 #[path = "../matrixark_rust_proxy_scan.rs"]
 mod matrixark_rust_proxy_scan;
 #[path = "../matrixark_rust_proxy_scope.rs"]
@@ -28,6 +30,7 @@ mod matrixark_rust_proxy_scope;
 use matrixark_rust_proxy_command_stats::{command_entries, command_stats};
 use matrixark_rust_proxy_metrics::{matrixark_rust_service_mode, CommandStats, MetricsSnapshot};
 use matrixark_rust_proxy_protocol::Command;
+use matrixark_rust_proxy_runtime::{config_key, connect, required};
 #[cfg(test)]
 use matrixark_rust_proxy_records::{
     matrixark_context_event_time_field, matrixark_context_event_time_key,
@@ -37,49 +40,6 @@ use matrixark_rust_proxy_records::{
 use matrixark_rust_proxy_records::{read_matrixark_record, write_matrixark_record};
 use matrixark_rust_proxy_retrieve::retrieve_context_pack_native;
 use matrixark_rust_proxy_scan::scan_matrixark_candidates;
-
-fn required(value: Option<String>, name: &str) -> Result<String, String> {
-    value
-        .filter(|item| !item.is_empty())
-        .ok_or_else(|| format!("missing {name}"))
-}
-
-fn effective_config(command: &Command) -> (String, String, String, i32, i32) {
-    (
-        command
-            .metaserver
-            .clone()
-            .unwrap_or_else(|| "127.0.0.1:18000".to_string()),
-        command
-            .namespace
-            .clone()
-            .unwrap_or_else(|| "deploy_ns".to_string()),
-        command
-            .table
-            .clone()
-            .unwrap_or_else(|| "deploy_table".to_string()),
-        command.request_timeout_ms.unwrap_or(20_000),
-        command.io_timeout_ms.unwrap_or(20_000),
-    )
-}
-
-fn connect(command: &Command) -> Result<Client, String> {
-    let (metaserver, namespace, table, request_timeout_ms, io_timeout_ms) =
-        effective_config(command);
-    let mut options = Options::new(metaserver, namespace, table);
-    options.psm = "matrixark.rust.mcp".to_string();
-    options.request_timeout_ms = request_timeout_ms;
-    options.io_timeout_ms = io_timeout_ms;
-    Client::connect(options).map_err(|err| err.to_string())
-}
-
-fn config_key(command: &Command) -> String {
-    let (metaserver, namespace, table, request_timeout_ms, io_timeout_ms) =
-        effective_config(command);
-    format!(
-        "{metaserver}\u{1f}{namespace}\u{1f}{table}\u{1f}{request_timeout_ms}\u{1f}{io_timeout_ms}"
-    )
-}
 
 fn run_with_client(client: &Client, command: Command) -> Result<Value, String> {
     match command.op.as_str() {
