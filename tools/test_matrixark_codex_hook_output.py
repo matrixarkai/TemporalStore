@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+import unittest
+from argparse import Namespace
+from pathlib import Path
+
+import matrixark_codex_hook as hook
+
+
+class MatrixArkCodexHookOutputTest(unittest.TestCase):
+    def test_user_prompt_emit_codex_additional_context_from_selected_refs(self) -> None:
+        args = Namespace(session_id="codex-session-1")
+        output = hook.codex_hook_output(
+            args=args,
+            status="ok",
+            event="UserPromptSubmit",
+            session_id_source="payload_field",
+            agent_context={"local_context": [{"ref": "src/main.cc", "text": "local code"}], "workspace_root": "/repo"},
+            ingest={"status": "accepted", "event_id_hash": 123},
+            retrieve={
+                "context_pack_id": "pack-1",
+                "used_context_tokens": 42,
+                "selected_refs": [
+                    {
+                        "ref_type": "context_event",
+                        "citation": "session:abc#turn=2",
+                        "score": 0.91,
+                        "token_estimate": 12,
+                        "summary_text": "Alice asked Codex to keep TemporalStore production readiness context.",
+                    }
+                ],
+            },
+            query="TemporalStore hook status",
+        )
+
+        self.assertEqual("ok", output["status"])
+        self.assertTrue(output["retrieve"]["additional_context_emitted"])
+        self.assertEqual(1, output["retrieve"]["selected_ref_count"])
+        hook_output = output["hookSpecificOutput"]
+        self.assertEqual("UserPromptSubmit", hook_output["hookEventName"])
+        additional = hook_output["additionalContext"]
+        self.assertIn("MatrixArk/TemporalStore retrieved context for Codex", additional)
+        self.assertIn("Merge this remote memory with the visible local Codex context", additional)
+        self.assertIn("session:abc#turn=2", additional)
+        self.assertIn("Alice asked Codex", additional)
+        self.assertIn("local_context_refs_seen=1", additional)
+
+    def test_grouped_refs_count_and_format_as_additional_context(self) -> None:
+        args = Namespace(session_id="codex-session-1")
+        output = hook.codex_hook_output(
+            args=args,
+            status="ok",
+            event="UserPromptSubmit",
+            session_id_source="explicit",
+            agent_context={"local_context": [], "workspace_root": "/repo"},
+            retrieve={
+                "pack_id": "pack-grouped",
+                "tokens": {"remote": 9},
+                "selected_ref_groups": [
+                    {
+                        "count": 2,
+                        "refs": [
+                            {"ref_type": "summary", "source_locator": "node/a", "text": "Node A summary."},
+                            {"ref_type": "event", "source_locator": "node/b", "body": "Node B event."},
+                        ],
+                    }
+                ],
+            },
+            query="grouped refs",
+        )
+        additional = output["hookSpecificOutput"]["additionalContext"]
+        self.assertEqual(2, output["retrieve"]["selected_ref_count"])
+        self.assertEqual(9, output["retrieve"]["used_context_tokens"])
+        self.assertIn("node/a", additional)
+        self.assertIn("Node B event", additional)
+
+    def test_non_prompt_event_keeps_audit_json_without_additional_context(self) -> None:
+        args = Namespace(session_id="codex-session-1")
+        output = hook.codex_hook_output(
+            args=args,
+            status="ok",
+            event="PostToolUse",
+            session_id_source="explicit",
+            agent_context={"local_context": [], "workspace_root": "/repo"},
+            ingest={"status": "accepted"},
+        )
+        self.assertNotIn("hookSpecificOutput", output)
+        self.assertFalse(output["retrieve"]["additional_context_emitted"])
+        self.assertTrue(output["lifecycle_stage"]["after_llm_ingest_only"])
+
+    def test_fail_open_backend_error_is_visible_to_codex_user_prompt(self) -> None:
+        repo = Path(__file__).resolve().parents[1]
+        cmd = [
+            sys.executable,
+            str(repo / "tools" / "matrixark_codex_hook.py"),
+            "--event",
+            "UserPromptSubmit",
+            "--backend",
+            "temporalstore-direct",
+            "--metaserver",
+            "127.0.0.1:1",
+            "--namespace",
+            "missing_ns",
+            "--table",
+            "missing_table",
+            "--temporalstore-lib",
+            "/tmp/definitely-missing-libbcache2.so",
+            "--request-timeout-ms",
+            "1",
+            "--io-timeout-ms",
+            "1",
+        ]
+        proc = subprocess.run(
+            cmd,
+            input=json.dumps({"prompt": "Will this hook fail open?", "thread_id": "codex-fail-open"}),
+            cwd=repo,
+            text=True,
+            capture_output=True,
+            timeout=15,
+        )
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        output = json.loads(proc.stdout)
+        self.assertEqual("warning", output["status"])
+        self.assertEqual("hook_failed_fail_open", output["reason"])
+        self.assertIn("hookSpecificOutput", output)
+        self.assertIn("retrieval was attempted", output["hookSpecificOutput"]["additionalContext"])
+
+
+if __name__ == "__main__":
+    unittest.main()
