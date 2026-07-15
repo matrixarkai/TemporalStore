@@ -1,0 +1,190 @@
+#!/usr/bin/env python3
+"""Deadline fallback ContextPack assembly for MatrixArk MCP adapters."""
+
+from __future__ import annotations
+
+from typing import Any
+
+try:
+    from tools.matrixark_mcp_core import (
+        Json,
+        candidate_access_scope,
+        clip_context_text,
+        compact_context_pack_audit_record,
+        compact_context_pack_for_serving,
+        compact_context_pack_refs,
+        compact_local_context_refs,
+        compact_refs_for_audit,
+        embedding_execution_mode_name,
+        embedding_fallback_used,
+        embedding_model_name,
+        local_context_refs_for_pack,
+        now_ms,
+        scope_matches,
+        stable_hash,
+        summarize_text,
+        token_count,
+    )
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import (
+        Json,
+        candidate_access_scope,
+        clip_context_text,
+        compact_context_pack_audit_record,
+        compact_context_pack_for_serving,
+        compact_context_pack_refs,
+        compact_local_context_refs,
+        compact_refs_for_audit,
+        embedding_execution_mode_name,
+        embedding_fallback_used,
+        embedding_model_name,
+        local_context_refs_for_pack,
+        now_ms,
+        scope_matches,
+        stable_hash,
+        summarize_text,
+        token_count,
+    )
+
+
+def deadline_fallback_pack(
+    adapter: Any,
+    *,
+    query: str,
+    scope: Json,
+    question_type: str,
+    max_context_tokens: int,
+    local_budget: Json,
+    deadline_ms: int,
+    elapsed_ms: float,
+    records: list[Json],
+    reason: str,
+    budget_source: str = "matrixark_default_max_context_tokens",
+) -> Json:
+    selected = []
+    used_context_tokens = 0
+    local_tokens = int(local_budget.get("token_estimate", 0))
+    safety_margin_tokens = int(local_budget.get("safety_margin_tokens", 0))
+    remote_budget = max(0, max_context_tokens - local_tokens - safety_margin_tokens)
+    for record in reversed(records):
+        record_type = record.get("record_type")
+        record_scope = candidate_access_scope(record)
+        if record_type not in {"context_summary", "context_entity", "context_event", "context_segment"}:
+            continue
+        if not scope_matches(record_scope, scope):
+            continue
+        if record_type == "context_summary":
+            text = str(record.get("summary_text", ""))
+            ref_type = "summary"
+            ref_hash = record.get("summary_hash") or record.get("node_hash")
+        elif record_type == "context_entity":
+            text = f"{record.get('entity_type', '')}: {record.get('entity_name', '')} = {record.get('state', '')}"
+            ref_type = "entity"
+            ref_hash = record.get("entity_hash")
+        elif record_type == "context_segment":
+            text = f"{record.get('topic', '')}: {record.get('summary_text', '')}"
+            ref_type = "segment"
+            ref_hash = record.get("segment_hash")
+        else:
+            text = str(record.get("summary_text") or record.get("text") or "")
+            ref_type = "event"
+            ref_hash = record.get("event_id_hash")
+        if not text or ref_hash is None:
+            continue
+        item_tokens = token_count(text)
+        if used_context_tokens + item_tokens > remote_budget:
+            continue
+        selected.append(
+            {
+                "ref_type": ref_type,
+                "ref_hash": ref_hash,
+                "node_hash": record.get("node_hash"),
+                "node_path": record.get("node_path", []),
+                "score": 0.0,
+                "recall_path": "deadline_fallback_recent_context",
+                "updated_at_ms": record.get("updated_at_ms", record.get("envelope", {}).get("ingestion_time_ms", now_ms())),
+                "text": clip_context_text(text),
+            }
+        )
+        used_context_tokens += item_tokens
+        if len(selected) >= 8:
+            break
+    context_pack_id = str(stable_hash(f"deadline:{query}:{selected}:{now_ms()}"))
+    serving_selected = compact_context_pack_refs(selected, include_debug=False)
+    pack = {
+        "context_pack_id": context_pack_id,
+        "context_sources_order": ["local_context", "matrixark_remote_context"],
+        "local_context_refs": local_context_refs_for_pack(local_budget),
+        "selected_refs": serving_selected,
+        "remote_context_refs": serving_selected,
+        "layer_scores": [],
+        "question_type": question_type,
+        "packing_policy": f"deadline_fallback:{question_type}",
+        "query_embedding_model": embedding_model_name(),
+        "embedding_execution_mode": embedding_execution_mode_name(),
+        "embedding_fallback_used": embedding_fallback_used(),
+        "recall_policy": {
+            "deadline_ms": deadline_ms,
+            "elapsed_ms": elapsed_ms,
+            "partial_context_pack": True,
+            "fallback_reason": reason,
+        },
+        "primary_candidate_count": 0,
+        "auxiliary_candidate_count": 0,
+        "used_context_tokens": used_context_tokens,
+        "used_remote_context_tokens": used_context_tokens,
+        "used_local_context_tokens": local_tokens,
+        "total_prompt_context_tokens": used_context_tokens + local_tokens,
+        "remote_context_budget_tokens": remote_budget,
+        "requested_max_context_tokens": max_context_tokens,
+        "local_context_safety_margin_tokens": safety_margin_tokens,
+        "budget_source": budget_source,
+        "local_context_policy": {
+            "mode": "shared_budget_dedupe",
+            "local_context_count": len(local_budget["items"]),
+            "local_context_tokens": local_tokens,
+            "local_context_token_source": local_budget.get("token_source", "estimated_from_local_context"),
+            "safety_margin_tokens": safety_margin_tokens,
+            "safety_margin_source": local_budget.get("safety_margin_source", "matrixark_default_5_percent_capped"),
+            "dedupe_remote_against_local": True,
+            "remote_is_additive_only_within_remaining_budget": True,
+        },
+        "dropped_refs": {},
+        "quality_warnings": [f"retrieval_deadline_exceeded:{reason}"],
+        "insufficient_context": not selected,
+        "partial_context_pack": True,
+    }
+    if reason != "service_backpressure":
+        adapter.append_audit(
+            compact_context_pack_audit_record({
+                "record_type": "context_pack_audit",
+                "context_pack_id": context_pack_id,
+                "query": query,
+                "scope": scope,
+                "summary_text": summarize_text(" ".join(str(item.get("text", "")) for item in selected), limit=512),
+                "selected_refs": compact_refs_for_audit(selected),
+                "local_context_refs": compact_local_context_refs(local_budget),
+                "context_sources_order": pack["context_sources_order"],
+                "question_type": question_type,
+                "packing_policy": pack["packing_policy"],
+                "recall_policy": pack["recall_policy"],
+                "local_context_policy": pack["local_context_policy"],
+                "used_local_context_tokens": pack["used_local_context_tokens"],
+                "used_remote_context_tokens": pack["used_remote_context_tokens"],
+                "total_prompt_context_tokens": pack["total_prompt_context_tokens"],
+                "remote_context_budget_tokens": pack["remote_context_budget_tokens"],
+                "requested_max_context_tokens": pack["requested_max_context_tokens"],
+                "local_context_safety_margin_tokens": pack["local_context_safety_margin_tokens"],
+                "budget_source": pack["budget_source"],
+                "primary_candidate_count": 0,
+                "auxiliary_candidate_count": 0,
+                "created_at_ms": now_ms(),
+            })
+        )
+    else:
+        pack["operational_visibility_policy"] = {
+            "audit_mode": "telemetry_only",
+            "rich_replay_audit": False,
+            "reason": "service_backpressure_uses_access_audit_only",
+        }
+    return compact_context_pack_for_serving(pack)
