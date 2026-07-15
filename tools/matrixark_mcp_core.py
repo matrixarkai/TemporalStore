@@ -806,13 +806,19 @@ def attach_context_event_time_key(record: Json) -> Json:
 
 
 def attach_storage_route(record: Json) -> Json:
-    route_source = record.get("storage_options") if isinstance(record.get("storage_options"), dict) else {}
+    route_source = storage_options_for_record(record)
     envelope = record.get("envelope") if isinstance(record.get("envelope"), dict) else {}
-    if not route_source and isinstance(envelope.get("storage_options"), dict):
-        route_source = envelope.get("storage_options", {})
+    part = storage_part_for_record(record)
     if "storage_route" not in record or not isinstance(record.get("storage_route"), dict):
         if route_source:
-            record = {**record, "storage_route": canonical_storage_route(route_source)}
+            record = {
+                **record,
+                "storage_options": route_source,
+                "storage_part": part,
+                "storage_route": canonical_storage_route(route_source),
+            }
+    elif part and "storage_part" not in record:
+        record = {**record, "storage_part": part}
     return record
 
 
@@ -1091,6 +1097,10 @@ def compact_context_index_postings(records: list[Json]) -> list[Json]:
                 "posting_count": len(ref_hashes),
                 "updated_at_ms": context_index_timestamp_key(record),
             }
+            route_options = storage_options_for_record(record)
+            if route_options:
+                posting["storage_options"] = route_options
+                posting["storage_part"] = "index"
             posting = attach_context_placement(posting, scope_key=scope_key, node_hash=node_hash)
             postings[key] = posting
             posting_positions[key] = len(output)
@@ -3320,7 +3330,7 @@ def compact_context_index_postings(records: list[Json]) -> list[Json]:
                 "posting_count": 0,
                 "posting_policy": "bucketed_by_scope_capability_index_time",
             }
-            for field in ("scope_key", "ref_type", "storage_route"):
+            for field in ("scope_key", "ref_type", "storage_options", "storage_part", "storage_route", "placement_key", "placement_hash"):
                 value = record.get(field)
                 if value not in (None, "", [], {}):
                     grouped[key][field] = value
@@ -3367,6 +3377,13 @@ def compact_context_index_postings(records: list[Json]) -> list[Json]:
                 record["node_hash"] = record["node_hashes"][0]
             else:
                 record.pop("node_hash", None)
+            route = record.get("storage_route") if isinstance(record.get("storage_route"), dict) else {}
+            if route.get("placement_key") and not record.get("placement_key"):
+                record["placement_key"] = route.get("placement_key")
+            if route.get("placement_hash") and not record.get("placement_hash"):
+                record["placement_hash"] = route.get("placement_hash")
+            if not record.get("storage_part"):
+                record["storage_part"] = "index"
             if len(record.get("batch_id_hashes", [])) == 1:
                 record["batch_id_hash"] = record["batch_id_hashes"][0]
             else:
@@ -3576,14 +3593,21 @@ def normalize_envelope(args: Json, *, default_kind: str) -> Json:
     kind = args.get("kind", default_kind)
     if kind not in {"message", "feedback", "resource", "skill", "business_data"}:
         raise MatrixArkError("kind is invalid")
+    storage_options = normalize_storage_options(args, metadata)
+    if not storage_options:
+        storage_options = default_async_ingest_storage_options()
+        storage_options["request_level"] = True
+    part_storage_options = normalize_part_storage_options(args, metadata, storage_options)
     envelope: Json = {
         "kind": kind,
         "messages": messages,
         "scope": scope,
         "metadata": metadata,
         "ingestion_time_ms": now_ms(),
-        "storage_options": normalize_storage_options(args, metadata),
+        "storage_options": storage_options,
     }
+    if part_storage_options:
+        envelope["part_storage_options"] = part_storage_options
     envelope["storage_route"] = canonical_storage_route(envelope.get("storage_options", {}))
     for field in [
         "context_pack_id",
@@ -3641,6 +3665,65 @@ STORAGE_ROUTE_PRESETS: dict[str, Json] = {
     },
 }
 
+DEFAULT_ASYNC_INGEST_STORAGE_OPTIONS: Json = {
+    "write_mode": "async",
+    "oplog_mode": "async",
+    "background_write": True,
+    "read_preference": "replica_preferred",
+}
+
+KNOWN_PART_STORAGE_KEYS = {
+    "raw_ingestion",
+    "context_event",
+    "session_buffer",
+    "entity",
+    "summary",
+    "embedding",
+    "index",
+    "resource",
+    "resource_chunk",
+    "skill",
+    "compression",
+    "feedback",
+    "debug",
+}
+
+
+def storage_part_for_record(record: Json) -> str:
+    explicit = str(record.get("storage_part") or "").strip().lower().replace("-", "_")
+    if explicit:
+        return explicit
+    record_type = str(record.get("record_type") or "").strip().lower()
+    envelope = record.get("envelope") if isinstance(record.get("envelope"), dict) else {}
+    kind = str(envelope.get("kind") or record.get("kind") or "").strip().lower()
+    if kind == "feedback" or record_type in {"context_feedback", "feedback_event"}:
+        return "feedback"
+    if record_type in {"raw_ingestion", "raw_ingestion_event", "raw_agent_message"}:
+        return "raw_ingestion"
+    if record_type in {"session_buffer_event", "session_commit_marker"}:
+        return "session_buffer"
+    if record_type == "context_event":
+        return "context_event"
+    if record_type in {"context_entity", "context_entity_state"}:
+        return "entity"
+    if record_type in {"context_summary", "context_summary_dirty", "context_summary_refresh"}:
+        return "summary"
+    if record_type == "context_embedding":
+        return "embedding"
+    if record_type in {"context_index", "context_child_ref", "context_event_ref"}:
+        return "index"
+    if record_type in {"resource_manifest", "resource_registry_update"}:
+        return "resource"
+    if record_type in {"resource_chunk", "resource_fact", "extracted_resource_fact_event"}:
+        return "resource_chunk"
+    if record_type in {"skill_section", "skill_registry_update"}:
+        return "skill"
+    if record_type in {"context_compression_event", "context_temporal_compression"}:
+        return "compression"
+    if record_type in {"context_pack_audit", "context_pack_telemetry", "context_debug_record", "context_model_registry"}:
+        return "debug"
+    return record_type or "context_event"
+
 
 def canonical_storage_route(storage_options: Json | None) -> Json:
     options = storage_options if isinstance(storage_options, dict) else {}
@@ -3669,6 +3752,7 @@ def canonical_storage_route(storage_options: Json | None) -> Json:
         backend_family = storage_mode
     oplog_mode = write_mode if oplog_mode == "default" else oplog_mode
     background_write = bool(options.get("background_write", write_mode == "async"))
+    read_preference = str(options.get("read_preference") or ("replica_preferred" if write_mode == "async" else "primary"))
     return {
         "route": route,
         "route_key": route,
@@ -3680,6 +3764,8 @@ def canonical_storage_route(storage_options: Json | None) -> Json:
         "oplog_mode": oplog_mode,
         "raft_mode": raft_mode,
         "consistency": str(options.get("consistency") or "default"),
+        "read_preference": read_preference,
+        "replica_read": read_preference in {"replica", "replica_preferred"},
         "sync_write": write_mode == "sync",
         "async_write": write_mode == "async",
         "background_write": background_write,
@@ -3708,6 +3794,7 @@ def normalize_storage_options(args: Json, metadata: Json | None = None) -> Json:
         "temporalstore_storage_family": "storage_family",
         "temporalstore_write_mode": "write_mode",
         "temporalstore_background_write": "background_write",
+        "temporalstore_read_preference": "read_preference",
     }
     for source, target in aliases.items():
         if source in args:
@@ -3722,7 +3809,8 @@ def normalize_storage_options(args: Json, metadata: Json | None = None) -> Json:
         "oplog_mode": {"default", "async", "sync"},
         "replication_mode": {"default", "none", "shared_store", "raft"},
         "consistency": {"default", "eventual", "read_your_writes", "linearizable"},
-        "route": set(STORAGE_ROUTE_PRESETS),
+        "read_preference": {"default", "primary", "replica", "replica_preferred"},
+        "route": set(STORAGE_ROUTE_PRESETS) | {"default"},
         "storage_family": {"default", "shared_store", "raft"},
         "family": {"default", "shared_store", "raft"},
         "write_mode": {"default", "async", "sync"},
@@ -3732,9 +3820,12 @@ def normalize_storage_options(args: Json, metadata: Json | None = None) -> Json:
         if not isinstance(route_value, str):
             raise MatrixArkError("storage_options.route must be a string")
         route_key = route_value.strip().lower().replace("-", "_")
-        if route_key not in STORAGE_ROUTE_PRESETS:
+        if route_key == "default":
+            options = {**options, "route": route_key}
+        elif route_key not in STORAGE_ROUTE_PRESETS:
             raise MatrixArkError(f"storage_options.route must be one of {sorted(STORAGE_ROUTE_PRESETS)}")
-        options = {**STORAGE_ROUTE_PRESETS[route_key], **options, "route": route_key}
+        else:
+            options = {**STORAGE_ROUTE_PRESETS[route_key], **options, "route": route_key}
 
     normalized: Json = {}
     for key, value in options.items():
@@ -3794,11 +3885,85 @@ def normalize_storage_options(args: Json, metadata: Json | None = None) -> Json:
                 "native_backend_decides_route",
                 "selected_storage_family",
                 "selected_write_mode",
+                "read_preference",
+                "replica_read",
                 "durability_result",
             }
         }
     )
     normalized["request_level"] = True
+    return normalized
+
+
+def normalize_part_storage_options(args: Json, metadata: Json | None = None, base_options: Json | None = None) -> Json:
+    metadata = metadata if isinstance(metadata, dict) else optional_object(args, "metadata")
+    raw_options = args.get("part_storage_options")
+    if raw_options is None and isinstance(metadata, dict):
+        raw_options = metadata.get("part_storage_options")
+    if raw_options is None:
+        return {}
+    if not isinstance(raw_options, dict):
+        raise MatrixArkError("part_storage_options must be an object keyed by ingest part")
+    base = base_options if isinstance(base_options, dict) else {}
+    normalized_parts: Json = {}
+    for raw_part, raw_part_options in raw_options.items():
+        part = str(raw_part or "").strip().lower().replace("-", "_")
+        if not part:
+            raise MatrixArkError("part_storage_options keys must be non-empty")
+        if not isinstance(raw_part_options, dict):
+            raise MatrixArkError(f"part_storage_options.{part} must be an object")
+        route_defining_keys = {"route", "storage_family", "family", "storage_mode", "replication_mode", "raft_mode"}
+        if route_defining_keys.intersection(raw_part_options):
+            merged_options = dict(raw_part_options)
+        else:
+            merged_options = {**base, **raw_part_options}
+        normalized = normalize_storage_options({"storage_options": merged_options})
+        if not normalized:
+            normalized = normalize_storage_options({"storage_options": DEFAULT_ASYNC_INGEST_STORAGE_OPTIONS})
+        normalized["request_level"] = False
+        normalized["part_level"] = True
+        normalized["storage_part"] = part
+        normalized_parts[part] = normalized
+    return normalized_parts
+
+
+def default_async_ingest_storage_options() -> Json:
+    normalized = normalize_storage_options({"storage_options": DEFAULT_ASYNC_INGEST_STORAGE_OPTIONS})
+    normalized["request_level"] = False
+    normalized["default_async_ingest"] = True
+    return normalized
+
+
+def storage_options_for_record(record: Json) -> Json:
+    explicit = record.get("storage_options") if isinstance(record.get("storage_options"), dict) else {}
+    if explicit:
+        normalized = normalize_storage_options({"storage_options": explicit})
+        normalized["request_level"] = False
+        normalized["record_level"] = True
+        normalized.setdefault("storage_part", storage_part_for_record(record))
+        return normalized
+    envelope = record.get("envelope") if isinstance(record.get("envelope"), dict) else {}
+    part = storage_part_for_record(record)
+    part_options = envelope.get("part_storage_options") if isinstance(envelope.get("part_storage_options"), dict) else {}
+    if isinstance(part_options, dict):
+        selected = part_options.get(part)
+        if not selected and part == "resource_chunk":
+            selected = part_options.get("resource")
+        if isinstance(selected, dict) and selected:
+            normalized = normalize_storage_options({"storage_options": selected})
+            normalized["request_level"] = False
+            normalized["part_level"] = True
+            normalized["storage_part"] = part
+            return normalized
+    inherited = envelope.get("storage_options") if isinstance(envelope.get("storage_options"), dict) else {}
+    if inherited:
+        normalized = normalize_storage_options({"storage_options": inherited})
+        normalized["request_level"] = False
+        normalized["inherited_from_ingest"] = True
+        normalized["storage_part"] = part
+        return normalized
+    normalized = default_async_ingest_storage_options()
+    normalized["storage_part"] = part
     return normalized
 
 

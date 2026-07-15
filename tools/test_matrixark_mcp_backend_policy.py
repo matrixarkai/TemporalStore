@@ -3192,6 +3192,90 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             self.assertEqual(route.get("colocation_group"), "matrixark_context")
             self.assertEqual(route.get("placement_hash"), record.get("placement_hash"))
 
+    def test_context_ingest_defaults_to_async_replica_read_per_part(self) -> None:
+        envelope = mcp_core.normalize_envelope(
+            {
+                "messages": [{"role": "user", "content": "Codex captured one message."}],
+                "scope": {"tenant_hash": 11, "user_hash": 22, "session_hash": 33},
+            },
+            default_kind="message",
+        )
+        self.assertEqual(envelope["storage_options"]["write_mode"], "async")
+        self.assertEqual(envelope["storage_options"]["oplog_mode"], "async")
+        self.assertEqual(envelope["storage_options"]["read_preference"], "replica_preferred")
+        self.assertTrue(envelope["storage_route"]["replica_read"])
+
+        materialized = mcp_core.materialize_serving_record_batch(
+            [
+                {
+                    "record_type": "context_event",
+                    "event_id_hash": 1,
+                    "scope": envelope["scope"],
+                    "node_hash": 44,
+                    "envelope": envelope,
+                    "text": "event",
+                },
+                {
+                    "record_type": "context_index",
+                    "index_name": "source_type:message",
+                    "ref_hash": 1,
+                    "scope": envelope["scope"],
+                    "node_hash": 44,
+                    "envelope": envelope,
+                },
+            ]
+        )
+
+        for record in materialized:
+            if record.get("record_type") == "context_debug_record":
+                continue
+            route = record.get("storage_route", {})
+            self.assertEqual(route.get("write_mode"), "async")
+            self.assertTrue(route.get("background_write"))
+            self.assertEqual(route.get("read_preference"), "replica_preferred")
+            self.assertTrue(route.get("replica_read"))
+
+    def test_context_ingest_part_storage_options_override_inherited_policy(self) -> None:
+        scope = {"tenant_hash": 11, "user_hash": 22, "session_hash": 33}
+        envelope = mcp_core.normalize_envelope(
+            {
+                "messages": [{"role": "user", "content": "Codex captured one message."}],
+                "scope": scope,
+                "storage_options": {"route": "raft_sync"},
+                "part_storage_options": {
+                    "context_event": {"route": "shared_store_async"},
+                    "index": {"route": "raft_async"},
+                },
+            },
+            default_kind="message",
+        )
+
+        records = [
+            {"record_type": "context_event", "event_id_hash": 1, "scope": scope, "node_hash": 44, "envelope": envelope, "text": "event"},
+            {"record_type": "context_index", "index_name": "source_type:message", "ref_hash": 1, "scope": scope, "node_hash": 44, "envelope": envelope},
+            {"record_type": "context_entity", "entity_hash": 2, "scope": scope, "node_hash": 44, "envelope": envelope, "state": "entity"},
+        ]
+        materialized = [
+            record
+            for record in mcp_core.materialize_serving_record_batch(records)
+            if record.get("record_type") != "context_debug_record"
+        ]
+        by_type = {record["record_type"]: record for record in materialized}
+
+        self.assertEqual(by_type["context_event"]["storage_part"], "context_event")
+        self.assertEqual(by_type["context_event"]["storage_route"]["route"], "shared_store_async")
+        self.assertEqual(by_type["context_event"]["storage_route"]["write_mode"], "async")
+        self.assertTrue(by_type["context_event"]["storage_route"]["replica_read"])
+
+        self.assertEqual(by_type["context_index"]["storage_part"], "index")
+        self.assertEqual(by_type["context_index"]["storage_route"]["route"], "raft_async")
+        self.assertEqual(by_type["context_index"]["storage_route"]["storage_family"], "raft")
+
+        self.assertEqual(by_type["context_entity"]["storage_part"], "entity")
+        self.assertEqual(by_type["context_entity"]["storage_route"]["route"], "raft_sync")
+        self.assertEqual(by_type["context_entity"]["storage_route"]["write_mode"], "sync")
+        self.assertFalse(by_type["context_entity"]["storage_route"]["replica_read"])
+
     def test_native_context_pack_default_policy(self) -> None:
         mcp.MATRIXARK_MCP_PROFILE = "dev"
         mcp.MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK = ""
