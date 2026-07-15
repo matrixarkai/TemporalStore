@@ -1,5 +1,7 @@
 use serde_json::Value;
 
+use crate::matrixark_rust_proxy_candidates::record_node_hash;
+use crate::matrixark_rust_proxy_scope::record_scope_string;
 use crate::matrixark_rust_proxy_scope::session_scope_mode;
 
 #[derive(Clone, Debug)]
@@ -15,6 +17,13 @@ pub(crate) struct CrossSessionPolicy {
     pub(crate) raw_evidence_min_score: f64,
     pub(crate) min_entity_bridge_refs: u64,
     pub(crate) parallelism: u64,
+}
+
+pub(crate) fn cross_session_key(record: &Value) -> String {
+    record_scope_string(record, "session_id")
+        .or_else(|| record_scope_string(record, "scope_key"))
+        .or_else(|| record_node_hash(record).map(|node| format!("node:{node}")))
+        .unwrap_or_else(|| "unknown_cross_session".to_string())
 }
 
 pub(crate) fn parse_cross_session_policy(
