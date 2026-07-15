@@ -808,17 +808,18 @@ def attach_context_event_time_key(record: Json) -> Json:
 def attach_storage_route(record: Json) -> Json:
     route_source = storage_options_for_record(record)
     envelope = record.get("envelope") if isinstance(record.get("envelope"), dict) else {}
-    part = storage_part_for_record(record)
+    record_kind = storage_record_kind(record)
     if "storage_route" not in record or not isinstance(record.get("storage_route"), dict):
         if route_source:
             record = {
                 **record,
                 "storage_options": route_source,
-                "storage_part": part,
+                "storage_record_kind": record_kind,
+                "storage_part": record_kind,
                 "storage_route": canonical_storage_route(route_source),
             }
-    elif part and "storage_part" not in record:
-        record = {**record, "storage_part": part}
+    elif record_kind and "storage_record_kind" not in record:
+        record = {**record, "storage_record_kind": record_kind, "storage_part": record.get("storage_part") or record_kind}
     return record
 
 
@@ -1100,6 +1101,7 @@ def compact_context_index_postings(records: list[Json]) -> list[Json]:
             route_options = storage_options_for_record(record)
             if route_options:
                 posting["storage_options"] = route_options
+                posting["storage_record_kind"] = "index"
                 posting["storage_part"] = "index"
             posting = attach_context_placement(posting, scope_key=scope_key, node_hash=node_hash)
             postings[key] = posting
@@ -3330,7 +3332,7 @@ def compact_context_index_postings(records: list[Json]) -> list[Json]:
                 "posting_count": 0,
                 "posting_policy": "bucketed_by_scope_capability_index_time",
             }
-            for field in ("scope_key", "ref_type", "storage_options", "storage_part", "storage_route", "placement_key", "placement_hash"):
+            for field in ("scope_key", "ref_type", "storage_options", "storage_record_kind", "storage_part", "storage_route", "placement_key", "placement_hash"):
                 value = record.get(field)
                 if value not in (None, "", [], {}):
                     grouped[key][field] = value
@@ -3382,8 +3384,10 @@ def compact_context_index_postings(records: list[Json]) -> list[Json]:
                 record["placement_key"] = route.get("placement_key")
             if route.get("placement_hash") and not record.get("placement_hash"):
                 record["placement_hash"] = route.get("placement_hash")
+            if not record.get("storage_record_kind"):
+                record["storage_record_kind"] = "index"
             if not record.get("storage_part"):
-                record["storage_part"] = "index"
+                record["storage_part"] = record["storage_record_kind"]
             if len(record.get("batch_id_hashes", [])) == 1:
                 record["batch_id_hash"] = record["batch_id_hashes"][0]
             else:
@@ -3597,7 +3601,7 @@ def normalize_envelope(args: Json, *, default_kind: str) -> Json:
     if not storage_options:
         storage_options = default_async_ingest_storage_options()
         storage_options["request_level"] = True
-    part_storage_options = normalize_part_storage_options(args, metadata, storage_options)
+    record_storage_options = normalize_record_storage_options(args, metadata, storage_options)
     envelope: Json = {
         "kind": kind,
         "messages": messages,
@@ -3606,8 +3610,9 @@ def normalize_envelope(args: Json, *, default_kind: str) -> Json:
         "ingestion_time_ms": now_ms(),
         "storage_options": storage_options,
     }
-    if part_storage_options:
-        envelope["part_storage_options"] = part_storage_options
+    if record_storage_options:
+        envelope["record_storage_options"] = record_storage_options
+        envelope["part_storage_options"] = record_storage_options
     envelope["storage_route"] = canonical_storage_route(envelope.get("storage_options", {}))
     for field in [
         "context_pack_id",
@@ -3673,7 +3678,7 @@ DEFAULT_ASYNC_INGEST_STORAGE_OPTIONS: Json = {
     "read_preference": "replica_preferred",
 }
 
-KNOWN_PART_STORAGE_KEYS = {
+KNOWN_RECORD_STORAGE_KEYS = {
     "raw_ingestion",
     "context_event",
     "session_buffer",
@@ -3688,10 +3693,11 @@ KNOWN_PART_STORAGE_KEYS = {
     "feedback",
     "debug",
 }
+KNOWN_PART_STORAGE_KEYS = KNOWN_RECORD_STORAGE_KEYS
 
 
-def storage_part_for_record(record: Json) -> str:
-    explicit = str(record.get("storage_part") or "").strip().lower().replace("-", "_")
+def storage_record_kind(record: Json) -> str:
+    explicit = str(record.get("storage_record_kind") or record.get("storage_part") or "").strip().lower().replace("-", "_")
     if explicit:
         return explicit
     record_type = str(record.get("record_type") or "").strip().lower()
@@ -3724,6 +3730,10 @@ def storage_part_for_record(record: Json) -> str:
     if record_type in {"context_pack_audit", "context_pack_telemetry", "context_debug_record", "context_model_registry"}:
         return "debug"
     return record_type or "context_event"
+
+
+def storage_part_for_record(record: Json) -> str:
+    return storage_record_kind(record)
 
 
 def canonical_storage_route(storage_options: Json | None) -> Json:
@@ -3907,36 +3917,56 @@ def normalize_storage_options(args: Json, metadata: Json | None = None) -> Json:
     return normalized
 
 
-def normalize_part_storage_options(args: Json, metadata: Json | None = None, base_options: Json | None = None) -> Json:
+def normalize_record_storage_options(args: Json, metadata: Json | None = None, base_options: Json | None = None) -> Json:
     metadata = metadata if isinstance(metadata, dict) else optional_object(args, "metadata")
-    raw_options = args.get("part_storage_options")
+    raw_options = args.get("record_storage_options")
+    if raw_options is None:
+        raw_options = args.get("part_storage_options")
+    if raw_options is None and isinstance(metadata, dict):
+        raw_options = metadata.get("record_storage_options")
     if raw_options is None and isinstance(metadata, dict):
         raw_options = metadata.get("part_storage_options")
     if raw_options is None:
         return {}
     if not isinstance(raw_options, dict):
-        raise MatrixArkError("part_storage_options must be an object keyed by ingest part")
+        raise MatrixArkError("record_storage_options must be an object keyed by record kind")
     base = base_options if isinstance(base_options, dict) else {}
     normalized_parts: Json = {}
-    for raw_part, raw_part_options in raw_options.items():
-        part = str(raw_part or "").strip().lower().replace("-", "_")
-        if not part:
-            raise MatrixArkError("part_storage_options keys must be non-empty")
-        if not isinstance(raw_part_options, dict):
-            raise MatrixArkError(f"part_storage_options.{part} must be an object")
-        route_defining_keys = {"route", "storage_family", "family", "storage_mode", "replication_mode", "raft_mode"}
-        if route_defining_keys.intersection(raw_part_options):
-            merged_options = dict(raw_part_options)
+    for raw_record_kind, raw_record_options in raw_options.items():
+        record_kind = str(raw_record_kind or "").strip().lower().replace("-", "_")
+        if not record_kind:
+            raise MatrixArkError("record_storage_options keys must be non-empty")
+        if not isinstance(raw_record_options, dict):
+            raise MatrixArkError(f"record_storage_options.{record_kind} must be an object")
+        route_defining_keys = {
+            "route",
+            "storage_family",
+            "family",
+            "storage_mode",
+            "replication_mode",
+            "raft_mode",
+            "write_mode",
+            "durability",
+            "oplog_mode",
+        }
+        if route_defining_keys.intersection(raw_record_options):
+            merged_options = dict(raw_record_options)
         else:
-            merged_options = {**base, **raw_part_options}
+            merged_options = {**base, **raw_record_options}
         normalized = normalize_storage_options({"storage_options": merged_options})
         if not normalized:
             normalized = normalize_storage_options({"storage_options": DEFAULT_ASYNC_INGEST_STORAGE_OPTIONS})
         normalized["request_level"] = False
+        normalized["record_level"] = True
         normalized["part_level"] = True
-        normalized["storage_part"] = part
-        normalized_parts[part] = normalized
+        normalized["storage_record_kind"] = record_kind
+        normalized["storage_part"] = record_kind
+        normalized_parts[record_kind] = normalized
     return normalized_parts
+
+
+def normalize_part_storage_options(args: Json, metadata: Json | None = None, base_options: Json | None = None) -> Json:
+    return normalize_record_storage_options(args, metadata, base_options)
 
 
 def default_async_ingest_storage_options() -> Json:
@@ -3952,30 +3982,38 @@ def storage_options_for_record(record: Json) -> Json:
         normalized = normalize_storage_options({"storage_options": explicit})
         normalized["request_level"] = False
         normalized["record_level"] = True
-        normalized.setdefault("storage_part", storage_part_for_record(record))
+        record_kind = storage_record_kind(record)
+        normalized.setdefault("storage_record_kind", record_kind)
+        normalized.setdefault("storage_part", record_kind)
         return normalized
     envelope = record.get("envelope") if isinstance(record.get("envelope"), dict) else {}
-    part = storage_part_for_record(record)
-    part_options = envelope.get("part_storage_options") if isinstance(envelope.get("part_storage_options"), dict) else {}
-    if isinstance(part_options, dict):
-        selected = part_options.get(part)
-        if not selected and part == "resource_chunk":
-            selected = part_options.get("resource")
+    record_kind = storage_record_kind(record)
+    record_options = envelope.get("record_storage_options") if isinstance(envelope.get("record_storage_options"), dict) else {}
+    if not record_options and isinstance(envelope.get("part_storage_options"), dict):
+        record_options = envelope.get("part_storage_options", {})
+    if isinstance(record_options, dict):
+        selected = record_options.get(record_kind)
+        if not selected and record_kind == "resource_chunk":
+            selected = record_options.get("resource")
         if isinstance(selected, dict) and selected:
             normalized = normalize_storage_options({"storage_options": selected})
             normalized["request_level"] = False
+            normalized["record_level"] = True
             normalized["part_level"] = True
-            normalized["storage_part"] = part
+            normalized["storage_record_kind"] = record_kind
+            normalized["storage_part"] = record_kind
             return normalized
     inherited = envelope.get("storage_options") if isinstance(envelope.get("storage_options"), dict) else {}
     if inherited:
         normalized = normalize_storage_options({"storage_options": inherited})
         normalized["request_level"] = False
         normalized["inherited_from_ingest"] = True
-        normalized["storage_part"] = part
+        normalized["storage_record_kind"] = record_kind
+        normalized["storage_part"] = record_kind
         return normalized
     normalized = default_async_ingest_storage_options()
-    normalized["storage_part"] = part
+    normalized["storage_record_kind"] = record_kind
+    normalized["storage_part"] = record_kind
     return normalized
 
 

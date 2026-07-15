@@ -130,9 +130,9 @@ STORAGE_OPTIONS_SCHEMA: Json = {
     "additionalProperties": True,
 }
 
-PART_STORAGE_OPTIONS_SCHEMA: Json = {
+RECORD_STORAGE_OPTIONS_SCHEMA: Json = {
     "type": "object",
-    "description": "Optional per-part TemporalStore storage policy overrides. Each part inherits storage_options, and unspecified parts default to async write/backfill-friendly durability with replica-preferred reads.",
+    "description": "Optional per-record TemporalStore storage policy overrides. Each record kind inherits storage_options, and unspecified records default to async durability with replica-preferred reads.",
     "properties": {
         "raw_ingestion": STORAGE_OPTIONS_SCHEMA,
         "context_event": STORAGE_OPTIONS_SCHEMA,
@@ -150,6 +150,8 @@ PART_STORAGE_OPTIONS_SCHEMA: Json = {
     },
     "additionalProperties": STORAGE_OPTIONS_SCHEMA,
 }
+
+PART_STORAGE_OPTIONS_SCHEMA: Json = RECORD_STORAGE_OPTIONS_SCHEMA
 
 AGENT_HOOK_SCHEMA: Json = {
     "type": "object",
@@ -221,7 +223,11 @@ TOOLS: list[Json] = [
                 "scope": SCOPE_SCHEMA,
                 "metadata": METADATA_SCHEMA,
                 "storage_options": STORAGE_OPTIONS_SCHEMA,
-                "part_storage_options": PART_STORAGE_OPTIONS_SCHEMA,
+                "record_storage_options": RECORD_STORAGE_OPTIONS_SCHEMA,
+                "part_storage_options": {
+                    **RECORD_STORAGE_OPTIONS_SCHEMA,
+                    "description": "Compatibility alias for record_storage_options. Prefer record_storage_options in new clients.",
+                },
                 "temporalstore_storage_mode": {"type": "string", "description": "Convenience alias for storage_options.storage_mode."},
                 "temporalstore_oplog_mode": {"type": "string", "description": "Convenience alias for storage_options.oplog_mode."},
                 "temporalstore_replication_mode": {"type": "string", "description": "Convenience alias for storage_options.replication_mode."},
