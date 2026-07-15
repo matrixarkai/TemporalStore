@@ -8,16 +8,22 @@ from typing import Any
 try:
     from tools.matrixark_mcp_core import (
         Json,
+        MatrixArkError,
         candidate_access_scope,
         non_default_classification,
+        optional_object,
+        optional_string,
         scope_from_serving_record,
         scope_matches,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
         Json,
+        MatrixArkError,
         candidate_access_scope,
         non_default_classification,
+        optional_object,
+        optional_string,
         scope_from_serving_record,
         scope_matches,
     )
@@ -198,3 +204,35 @@ def dashboard_rows_for_table(records: list[Json], table: str, scope: Json) -> li
         rows.sort(key=lambda row: int(row.get("updated_at_ms") or row.get("created_at_ms") or 0), reverse=True)
     return rows
 
+
+def ingestion_dashboard(adapter: Any, args: Json) -> Json:
+    scope = optional_object(args, "scope")
+    table = optional_string(args, "table", "messages")
+    allowed_tables = {"messages", "resources", "skills", "events", "entities", "context_packs"}
+    if table not in allowed_tables:
+        raise MatrixArkError(f"table must be one of {sorted(allowed_tables)}")
+    page_size = args.get("page_size", 25)
+    if not isinstance(page_size, int) or page_size <= 0 or page_size > 200:
+        raise MatrixArkError("page_size must be an integer between 1 and 200")
+    page_token = args.get("page_token", 0)
+    if isinstance(page_token, str) and page_token.isdigit():
+        page_token = int(page_token)
+    if not isinstance(page_token, int) or page_token < 0:
+        raise MatrixArkError("page_token must be a non-negative integer offset")
+    records = adapter.read_all()
+    totals = {name: len(dashboard_rows_for_table(records, name, scope)) for name in sorted(allowed_tables)}
+    rows = dashboard_rows_for_table(records, table, scope)
+    page = rows[page_token : page_token + page_size]
+    next_page_token = page_token + page_size if page_token + page_size < len(rows) else None
+    return {
+        "status": "ok",
+        "scope": scope,
+        "table": table,
+        "page_size": page_size,
+        "page_token": page_token,
+        "next_page_token": next_page_token,
+        "total": len(rows),
+        "totals": totals,
+        "rows": page,
+        "record_count": len(records),
+    }
