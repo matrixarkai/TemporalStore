@@ -11,6 +11,8 @@ mod matrixark_rust_proxy_cache;
 mod matrixark_rust_proxy_candidates;
 #[path = "../matrixark_rust_proxy_command_stats.rs"]
 mod matrixark_rust_proxy_command_stats;
+#[path = "../matrixark_rust_proxy_cross_session.rs"]
+mod matrixark_rust_proxy_cross_session;
 #[path = "../matrixark_rust_proxy_metrics.rs"]
 mod matrixark_rust_proxy_metrics;
 #[path = "../matrixark_rust_proxy_metrics_backend_render.rs"]
