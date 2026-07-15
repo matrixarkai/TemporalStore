@@ -216,6 +216,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIs(core_mod.generate_time_compression_summary, summaries_mod.generate_time_compression_summary)
         self.assertIs(core_mod.node_l1_generation_policy, summaries_mod.node_l1_generation_policy)
         self.assertTrue(callable(time_compression_runtime_mod.append_recall_reinforcement_markers))
+        self.assertTrue(callable(time_compression_runtime_mod.query_time_compressions))
 
     def test_mcp_entrypoint_stays_small(self) -> None:
         server_lines = (TOOLS_DIR / "matrixark_mcp_server.py").read_text(encoding="utf-8").splitlines()

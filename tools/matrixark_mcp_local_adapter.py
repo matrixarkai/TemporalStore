@@ -2526,18 +2526,14 @@ class MatrixArkLocalAdapter:
     def query_time_compressions(
         self, *, scope: Json, node_hashes: set[int], start_time_ms: int, end_time_ms: int, limit: int = 16
     ) -> list[Json]:
-        matches = []
-        for record in self.read_all():
-            if record.get("record_type") != "context_compression_event":
-                continue
-            if node_hashes and int(record.get("node_hash") or 0) not in node_hashes:
-                continue
-            if not scope_matches(candidate_access_scope(record), scope):
-                continue
-            if int(record.get("source_end_ms") or 0) >= start_time_ms and int(record.get("source_start_ms") or 0) <= end_time_ms:
-                matches.append(record)
-        matches.sort(key=lambda record: (int(record.get("source_end_ms") or 0), int(record.get("compressed_time_ms") or 0)), reverse=True)
-        return matches[:limit]
+        return time_compression_runtime.query_time_compressions(
+            records=self.read_all(),
+            scope=scope,
+            node_hashes=node_hashes,
+            start_time_ms=start_time_ms,
+            end_time_ms=end_time_ms,
+            limit=limit,
+        )
 
     def append_recall_reinforcement_markers(
         self,
