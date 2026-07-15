@@ -231,6 +231,34 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
 
 
+try:
+    from tools.matrixark_mcp_scoring import (
+        business_instance_weight,
+        business_score_for_candidate,
+        business_type_score,
+        clamp01,
+        cosine,
+        hybrid_origin_score,
+        normalized_dense_score,
+        sparse_lexical_score,
+        time_decay_score,
+        tokens,
+    )
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_scoring import (
+        business_instance_weight,
+        business_score_for_candidate,
+        business_type_score,
+        clamp01,
+        cosine,
+        hybrid_origin_score,
+        normalized_dense_score,
+        sparse_lexical_score,
+        time_decay_score,
+        tokens,
+    )
+
+
 def _mcp_debug_log(message: str) -> None:
     path = os.environ.get("MATRIXARK_MCP_DEBUG_LOG")
     if not path:
@@ -3054,10 +3082,6 @@ def text_from_messages(messages: list[Json]) -> str:
     return "\n".join(f"{item['role']}: {item['content']}" for item in messages)
 
 
-def tokens(text: str) -> list[str]:
-    return re.findall(r"[a-z0-9_]+", text.lower())
-
-
 def token_count(text: str) -> int:
     return len(tokens(text))
 
@@ -3199,31 +3223,6 @@ def oss_embedding_for_text(text: str) -> list[float]:
                 os.environ.pop("MATRIXARK_EMBEDDING_PROVIDER", None)
             else:
                 os.environ["MATRIXARK_EMBEDDING_PROVIDER"] = previous
-
-
-def cosine(left: list[float], right: list[float]) -> float:
-    if not left or not right or len(left) != len(right):
-        return 0.0
-    return round(sum(a * b for a, b in zip(left, right)), 6)
-
-
-def clamp01(value: Any, default: float = 0.0) -> float:
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        number = default
-    return max(0.0, min(1.0, number))
-
-
-def normalized_dense_score(value: float) -> float:
-    return clamp01((value + 1.0) / 2.0)
-
-
-def sparse_lexical_score(query_terms: set[str], text: str) -> float:
-    if not query_terms:
-        return 0.0
-    matched = len(query_terms.intersection(tokens(text)))
-    return clamp01(matched / max(len(query_terms), 1))
 
 
 def infer_query_type(query: str) -> str:
@@ -3572,72 +3571,6 @@ def passes_applicable_secondary_index_filters(
     ]
     return passes_secondary_index_filters(candidate_terms, applicable_groups, mode=mode)
 
-
-
-def hybrid_origin_score(query_terms: set[str], text: str, embedding_score: float, node_score: float) -> float:
-    dense = normalized_dense_score(embedding_score)
-    sparse = sparse_lexical_score(query_terms, text)
-    node = normalized_dense_score(node_score)
-    return round(clamp01(0.55 * dense + 0.35 * sparse + 0.10 * node), 6)
-
-
-def time_decay_score(
-    record_time_ms: Any,
-    *,
-    reference_time_ms: int,
-    freshness_tolerance_ms: int,
-    half_life_ms: int,
-) -> float:
-    try:
-        event_time_ms = int(record_time_ms)
-    except (TypeError, ValueError):
-        return 0.5
-    age_ms = max(0, reference_time_ms - event_time_ms)
-    if age_ms <= freshness_tolerance_ms:
-        return 1.0
-    decay_age = age_ms - freshness_tolerance_ms
-    half_life_ms = max(1, half_life_ms)
-    # Fast initial decay, then slower long-tail decay for durable memories.
-    return round(math.exp(-math.sqrt(decay_age / half_life_ms)), 6)
-
-
-def business_instance_weight(*sources: Json) -> float | None:
-    for source in sources:
-        if not isinstance(source, dict):
-            continue
-        for field in ["business_weight", "business_score", "importance", "priority"]:
-            if field in source:
-                return clamp01(source.get(field))
-    return None
-
-
-def business_type_score(type_name: str, type_weights: Json) -> float:
-    if not type_name:
-        return 0.5
-    normalized = type_name.lower()
-    if normalized in type_weights:
-        return clamp01(type_weights[normalized], 0.5)
-    if "approval" in normalized or "budget" in normalized:
-        return 0.9
-    if "correction" in normalized or "confirmation" in normalized:
-        return 1.0
-    if "preference" in normalized or "plan" in normalized or "status" in normalized:
-        return 0.75
-    return 0.5
-
-
-def business_score_for_candidate(candidate: Json, type_weights: Json) -> float:
-    instance = business_instance_weight(candidate, candidate.get("metadata", {}), candidate.get("scope", {}))
-    if instance is not None:
-        return instance
-    type_name = str(
-        candidate.get("event_type")
-        or candidate.get("entity_type")
-        or candidate.get("topic")
-        or candidate.get("ref_type")
-        or ""
-    )
-    return business_type_score(type_name, type_weights)
 
 
 def final_recall_score(origin_score: float, time_score: float, business_score: float, weights: Json) -> float:
