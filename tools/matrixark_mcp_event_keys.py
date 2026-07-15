@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 try:
@@ -98,6 +99,35 @@ def context_event_time_index_payload(record: Json) -> str:
     if source_chunk_hash is not None:
         payload["source_chunk_hash"] = source_chunk_hash
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def context_event_time_index_entries(storage_prefix: str, records: list[Json]) -> list[Json]:
+    entries: list[Json] = []
+    full_payload = os.environ.get("MATRIXARK_CONTEXT_EVENT_TIME_INDEX_FULL_PAYLOAD", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    for record in records:
+        if record.get("record_type") != "context_event":
+            continue
+        if record.get("event_id_hash") is None:
+            continue
+        enriched = attach_context_event_time_key(record)
+        payload = (
+            json.dumps(enriched, sort_keys=True, separators=(",", ":"))
+            if full_payload
+            else context_event_time_index_payload(enriched)
+        )
+        entries.append(
+            {
+                "key": context_event_time_index_key(storage_prefix, enriched),
+                "field": context_event_time_index_field(enriched),
+                "value": payload,
+                "storage_route": record.get("storage_route") if isinstance(record.get("storage_route"), dict) else {},
+            }
+        )
+    return entries
 
 
 def context_placement_key(record: Json, *, scope_key: str = "", node_hash: Any = None) -> str:
