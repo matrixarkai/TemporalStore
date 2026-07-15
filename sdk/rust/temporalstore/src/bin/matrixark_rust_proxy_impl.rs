@@ -31,6 +31,8 @@ mod matrixark_rust_proxy_dispatch;
 mod matrixark_rust_proxy_io;
 #[path = "../matrixark_rust_proxy_retrieve.rs"]
 mod matrixark_rust_proxy_retrieve;
+#[path = "../matrixark_rust_proxy_retrieve_request.rs"]
+mod matrixark_rust_proxy_retrieve_request;
 #[path = "../matrixark_rust_proxy_runtime.rs"]
 mod matrixark_rust_proxy_runtime;
 #[path = "../matrixark_rust_proxy_scan.rs"]

@@ -11,10 +11,11 @@ use crate::matrixark_rust_proxy_pack::{
     sparse_query_score, token_estimate,
 };
 use crate::matrixark_rust_proxy_protocol::Command;
+use crate::matrixark_rust_proxy_retrieve_request::parse_retrieve_pack_request;
 use crate::matrixark_rust_proxy_scan::scan_matrixark_candidates;
 use crate::matrixark_rust_proxy_scope::{
-    continuity_boost, cross_session_rerank_boost, json_field, parse_cross_session_policy,
-    record_scope_string, session_continuity_status, session_scope_mode,
+    continuity_boost, cross_session_rerank_boost, parse_cross_session_policy, record_scope_string,
+    session_continuity_status, session_scope_mode,
 };
 
 fn cross_session_key(record: &Value) -> String {
@@ -54,87 +55,17 @@ pub(crate) fn retrieve_context_pack_native(
             }
         }
     }
-    let request = command.record.clone().unwrap_or_else(|| json!({}));
-    let query = request
-        .get("query")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
-    let query_terms: HashSet<String> = query
-        .to_ascii_lowercase()
-        .split(|ch: char| !ch.is_ascii_alphanumeric())
-        .filter(|part| part.len() > 2)
-        .map(str::to_string)
-        .collect();
-    let remote_budget = json_field(&request, &["local_budget", "remote_budget_tokens"])
-        .and_then(Value::as_u64)
-        .or_else(|| request.get("max_context_tokens").and_then(Value::as_u64))
-        .unwrap_or(4000);
-    let max_refs = json_field(&request, &["ranking", "max_selected_refs"])
-        .and_then(Value::as_u64)
-        .unwrap_or(24)
-        .max(1);
-    let max_global_candidates = json_field(&request, &["ranking", "max_global_candidates"])
-        .and_then(Value::as_u64)
-        .unwrap_or(512)
-        .max(1);
-    let min_similarity_score = json_field(&request, &["ranking", "min_similarity_score"])
-        .and_then(Value::as_f64)
-        .unwrap_or(0.20)
-        .clamp(0.0, 1.0);
-    let budget_fill_policy = json_field(&request, &["ranking", "budget_fill_policy"])
-        .and_then(Value::as_str)
-        .filter(|policy| *policy == "quality_first" || *policy == "force_fill")
-        .unwrap_or("quality_first")
-        .to_string();
-    let question_type = request
-        .get("question_type")
-        .and_then(Value::as_str)
-        .unwrap_or("fact")
-        .to_string();
-    let mut scan_command = command.clone();
-    scan_command.scope = request
-        .get("scope")
-        .cloned()
-        .or_else(|| command.scope.clone());
-    scan_command.secondary_index_groups = request
-        .get("secondary_index_groups")
-        .and_then(Value::as_array)
-        .map(|groups| {
-            groups
-                .iter()
-                .map(|group| {
-                    group
-                        .as_array()
-                        .map(|items| {
-                            items
-                                .iter()
-                                .filter_map(Value::as_str)
-                                .map(str::to_string)
-                                .collect()
-                        })
-                        .unwrap_or_default()
-                })
-                .collect()
-        })
-        .or_else(|| command.secondary_index_groups.clone());
-    if scan_command
-        .record_types
-        .as_ref()
-        .map(Vec::is_empty)
-        .unwrap_or(true)
-    {
-        scan_command.record_types = Some(vec![
-            "context_compression_event".to_string(),
-            "context_entity".to_string(),
-            "context_event".to_string(),
-            "context_segment".to_string(),
-            "context_summary".to_string(),
-            "resource_chunk".to_string(),
-            "skill_section".to_string(),
-            "context_index".to_string(),
-        ]);
-    }
+    let parsed = parse_retrieve_pack_request(command);
+    let request = parsed.request;
+    let query = parsed.query;
+    let query_terms = parsed.query_terms;
+    let remote_budget = parsed.remote_budget;
+    let max_refs = parsed.max_refs;
+    let max_global_candidates = parsed.max_global_candidates;
+    let min_similarity_score = parsed.min_similarity_score;
+    let budget_fill_policy = parsed.budget_fill_policy;
+    let question_type = parsed.question_type;
+    let scan_command = parsed.scan_command;
     let scan = scan_matrixark_candidates(client, &scan_command)?;
     let empty_records = Vec::new();
     let records = scan
