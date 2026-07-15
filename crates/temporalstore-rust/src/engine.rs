@@ -25,7 +25,7 @@ mod state;
 
 // shared-corpus: storage_slot_first_physical_index storage_object_manager_slotstore_runtime_authority storage_model_layout_compaction_policies storage_merged_dump_load_lifecycle storage_object_manager_cold_hot_reload storage_page_address_disk_cache_shared_store_fallback
 // shared-corpus: storage_stale_page_density_compaction storage_merged_dump_load_restart_interruption storage_gc_eviction_cold_reads storage_manager_real_pressure_signals storage_manager_wal_reclaim_slot_generation_retention storage_manager_expire_cursor_scan_limits
-// shared-corpus: storage_manager_active_eviction_runtime storage_manager_page_gc_dependency_refusal storage_manager_index_gc_thresholds_recovery storage_risk_context_page_backed_parity
+// shared-corpus: storage_manager_active_eviction_runtime storage_manager_page_gc_dependency_refusal storage_manager_index_gc_thresholds_recovery storage_control_state_context_page_backed_parity
 
 use self::admin_report::*;
 use self::constants::*;
@@ -55,7 +55,7 @@ use crate::types::{
     ContextSummaryDirtyMarker, EventReplicationMode, EventReplicationSelectionReport,
     ExecuteRequest, ExecuteResponse, FeatureFilter, FeaturePoint, FeatureWritePolicy,
     InternalContextIndex, IpsStats, ReplicatedBatchExecuteRequest, ReplicatedBatchExecuteResponse,
-    ReplicatedExecuteRequest, RiskFamily, RiskFolType, SequenceFeatureRow, SequenceQuerySpec,
+    ReplicatedExecuteRequest, ControlStateFamily, ControlStateFolType, SequenceFeatureRow, SequenceQuerySpec,
     ShardId, Status, StringSetCondition,
 };
 use crate::wal::LocalWriteAheadLogStore;
@@ -86,7 +86,7 @@ struct TimestampedPageBatchWrite {
     routing_slot: u32,
 }
 
-fn risk_manager_entries(
+fn control_state_manager_entries(
     shard: &ShardState,
     key: &str,
     op_type: Option<&str>,
@@ -95,16 +95,16 @@ fn risk_manager_entries(
     end_offset: &str,
     is_cpc: bool,
 ) -> Vec<(String, Vec<u8>)> {
-    match risk_manager_op_code(op_type) {
-        Some(2) => risk_manager_query_entries(shard, key, field_list, is_cpc),
-        Some(5) => risk_manager_field_list_entries(shard, key, start_offset, end_offset, is_cpc),
-        Some(6) => risk_manager_field_count_entries(shard, key, is_cpc),
-        Some(7) => risk_manager_all_data_entries(shard, key, is_cpc),
-        _ => risk_manager_summary_entries(shard, key),
+    match control_state_manager_op_code(op_type) {
+        Some(2) => control_state_manager_query_entries(shard, key, field_list, is_cpc),
+        Some(5) => control_state_manager_field_list_entries(shard, key, start_offset, end_offset, is_cpc),
+        Some(6) => control_state_manager_field_count_entries(shard, key, is_cpc),
+        Some(7) => control_state_manager_all_data_entries(shard, key, is_cpc),
+        _ => control_state_manager_summary_entries(shard, key),
     }
 }
 
-fn risk_manager_op_code(op_type: Option<&str>) -> Option<i64> {
+fn control_state_manager_op_code(op_type: Option<&str>) -> Option<i64> {
     let value = op_type?.trim();
     value.parse::<i64>().ok().or_else(|| match value {
         "QUERY" | "query" => Some(2),
@@ -115,32 +115,32 @@ fn risk_manager_op_code(op_type: Option<&str>) -> Option<i64> {
     })
 }
 
-fn risk_manager_series_key(key: &str, is_cpc: bool) -> String {
-    risk_family_key(
+fn control_state_manager_series_key(key: &str, is_cpc: bool) -> String {
+    control_state_family_key(
         if is_cpc {
-            RiskFamily::Cpc
+            ControlStateFamily::Cpc
         } else {
-            RiskFamily::H
+            ControlStateFamily::H
         },
         key,
     )
 }
 
-fn risk_manager_series<'a>(
+fn control_state_manager_series<'a>(
     shard: &'a ShardState,
     key: &str,
     is_cpc: bool,
 ) -> Option<&'a BTreeMap<u64, i64>> {
-    shard.risk.get(&risk_manager_series_key(key, is_cpc))
+    shard.control_state.get(&control_state_manager_series_key(key, is_cpc))
 }
 
-fn risk_manager_query_entries(
+fn control_state_manager_query_entries(
     shard: &ShardState,
     key: &str,
     field_list: &[(String, String)],
     is_cpc: bool,
 ) -> Vec<(String, Vec<u8>)> {
-    let Some(series) = risk_manager_series(shard, key, is_cpc) else {
+    let Some(series) = control_state_manager_series(shard, key, is_cpc) else {
         return Vec::new();
     };
     field_list
@@ -155,14 +155,14 @@ fn risk_manager_query_entries(
         .collect()
 }
 
-fn risk_manager_field_list_entries(
+fn control_state_manager_field_list_entries(
     shard: &ShardState,
     key: &str,
     start_offset: &str,
     end_offset: &str,
     is_cpc: bool,
 ) -> Vec<(String, Vec<u8>)> {
-    let Some(series) = risk_manager_series(shard, key, is_cpc) else {
+    let Some(series) = control_state_manager_series(shard, key, is_cpc) else {
         return vec![("key_list".to_string(), Vec::new())];
     };
     let start = start_offset.parse::<u64>().unwrap_or(0);
@@ -175,23 +175,23 @@ fn risk_manager_field_list_entries(
     vec![("key_list".to_string(), value.into_bytes())]
 }
 
-fn risk_manager_field_count_entries(
+fn control_state_manager_field_count_entries(
     shard: &ShardState,
     key: &str,
     is_cpc: bool,
 ) -> Vec<(String, Vec<u8>)> {
-    let size = risk_manager_series(shard, key, is_cpc)
+    let size = control_state_manager_series(shard, key, is_cpc)
         .map(BTreeMap::len)
         .unwrap_or_default();
     vec![("size".to_string(), size.to_string().into_bytes())]
 }
 
-fn risk_manager_all_data_entries(
+fn control_state_manager_all_data_entries(
     shard: &ShardState,
     key: &str,
     is_cpc: bool,
 ) -> Vec<(String, Vec<u8>)> {
-    risk_manager_series(shard, key, is_cpc)
+    control_state_manager_series(shard, key, is_cpc)
         .map(|series| {
             series
                 .iter()
@@ -203,25 +203,25 @@ fn risk_manager_all_data_entries(
         .unwrap_or_default()
 }
 
-fn risk_manager_summary_entries(shard: &ShardState, key: &str) -> Vec<(String, Vec<u8>)> {
+fn control_state_manager_summary_entries(shard: &ShardState, key: &str) -> Vec<(String, Vec<u8>)> {
     let mut entries = Vec::new();
-    for family in [RiskFamily::H, RiskFamily::Cpc, RiskFamily::Fol] {
-        let family_key = risk_family_key(family, key);
+    for family in [ControlStateFamily::H, ControlStateFamily::Cpc, ControlStateFamily::Fol] {
+        let family_key = control_state_family_key(family, key);
         let values = shard
-            .risk
+            .control_state
             .get(&family_key)
             .map(|series| series.values().copied().collect::<Vec<_>>())
             .unwrap_or_default();
         entries.push((
-            format!("{}_events", risk_family_name(family)),
+            format!("{}_events", control_state_family_name(family)),
             values.len().to_string().into_bytes(),
         ));
         entries.push((
-            format!("{}_sum", risk_family_name(family)),
+            format!("{}_sum", control_state_family_name(family)),
             values.iter().sum::<i64>().to_string().into_bytes(),
         ));
     }
-    if let Some(fol) = shard.risk_fol.get(key) {
+    if let Some(fol) = shard.control_state_fol.get(key) {
         entries.push(("fol_value".to_string(), fol.value.clone()));
         entries.push((
             "fol_occur_time_ms".to_string(),
@@ -230,15 +230,15 @@ fn risk_manager_summary_entries(shard: &ShardState, key: &str) -> Vec<(String, V
         entries.push((
             "fol_type".to_string(),
             match fol.fol_type {
-                RiskFolType::First => b"first".to_vec(),
-                RiskFolType::Last => b"last".to_vec(),
+                ControlStateFolType::First => b"first".to_vec(),
+                ControlStateFolType::Last => b"last".to_vec(),
             },
         ));
     }
     entries
 }
 
-fn risk_bucket_ms(timestamp_ms: u64, precision_ms: Option<u64>) -> u64 {
+fn control_state_bucket_ms(timestamp_ms: u64, precision_ms: Option<u64>) -> u64 {
     precision_ms
         .filter(|precision_ms| *precision_ms > 0)
         .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
@@ -5726,9 +5726,9 @@ impl TemporalEngine {
                 "temporalstore_shard_records",
                 &[
                     ("shard_id", stats.shard_id.to_string()),
-                    ("kind", "risk".into()),
+                    ("kind", "control_state".into()),
                 ],
-                stats.risk_records as u64,
+                stats.control_state_records as u64,
             );
             for (kind, value) in [
                 ("memory_hits", stats.cache.memory_hits),
@@ -7179,8 +7179,8 @@ impl TemporalEngine {
             &self.page_store,
             &self.cache,
             shard_id,
-            "risk",
-            shard.risk_pages.values_mut(),
+            "control_state",
+            shard.control_state_pages.values_mut(),
             &mut rewrite_stats,
         )?;
         compact_page_addresses(
@@ -7565,7 +7565,7 @@ impl TemporalEngine {
             let feature_records = state.features.len();
             let sequence_records = state.sequences.len();
             let ips_records = state.ips.len();
-            let risk_records = state.risk.len() + state.risk_changes.len();
+            let control_state_records = state.control_state.len() + state.control_state_changes.len();
             let loaded = info.as_ref().map(|info| info.loaded).unwrap_or(true);
             let readonly = info.as_ref().map(|info| info.readonly).unwrap_or(false);
             let load_version = info
@@ -7595,7 +7595,7 @@ impl TemporalEngine {
                 + feature_records
                 + sequence_records
                 + ips_records
-                + risk_records;
+                + control_state_records;
             let total_records = if state.slot_index.slot_map.is_empty() {
                 secondary_view_total_records
             } else {
@@ -7657,7 +7657,7 @@ impl TemporalEngine {
                 feature_records,
                 sequence_records,
                 ips_records,
-                risk_records,
+                control_state_records,
                 storage_bytes: page_store.bytes_written,
                 object_manager,
                 partition_info,
@@ -9875,19 +9875,19 @@ fn execute_on_shard(
                 ),
             }
         }
-        Command::RiskIncrement {
+        Command::ControlStateIncrement {
             key,
             timestamp_ms,
             amount,
         } => {
             remove_if_expired(cache, shard_id, shard, &key);
             *shard
-                .risk
+                .control_state
                 .entry(key.clone())
                 .or_default()
                 .entry(timestamp_ms)
                 .or_default() += amount;
-            persist_risk_page(
+            persist_control_state_page(
                 cache,
                 page_store,
                 shard_id,
@@ -9900,7 +9900,7 @@ fn execute_on_shard(
             mutated = true;
             CommandResponse::Empty
         }
-        Command::RiskIncrementWithOptions {
+        Command::ControlStateIncrementWithOptions {
             key,
             timestamp_ms,
             amount,
@@ -9913,7 +9913,7 @@ fn execute_on_shard(
                 .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
                 .unwrap_or(timestamp_ms);
             *shard
-                .risk
+                .control_state
                 .entry(key.clone())
                 .or_default()
                 .entry(bucket_ms)
@@ -9923,7 +9923,7 @@ fn execute_on_shard(
                     .expires_at_ms
                     .insert(key.clone(), now_ms().saturating_add(ttl_ms));
             }
-            persist_risk_page(
+            persist_control_state_page(
                 cache,
                 page_store,
                 shard_id,
@@ -9936,7 +9936,7 @@ fn execute_on_shard(
             mutated = true;
             CommandResponse::Empty
         }
-        Command::RiskChangeAdd {
+        Command::ControlStateChangeAdd {
             key,
             timestamp_ms,
             value,
@@ -9949,7 +9949,7 @@ fn execute_on_shard(
                 .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
                 .unwrap_or(timestamp_ms);
             shard
-                .risk_changes
+                .control_state_changes
                 .entry(key.clone())
                 .or_default()
                 .entry(bucket_ms)
@@ -9963,7 +9963,7 @@ fn execute_on_shard(
             mutated = true;
             CommandResponse::Empty
         }
-        Command::RiskCount {
+        Command::ControlStateCount {
             key,
             start_ms,
             end_ms,
@@ -9976,7 +9976,7 @@ fn execute_on_shard(
                 };
             }
             let value = shard
-                .risk
+                .control_state
                 .get(&key)
                 .map(|series| {
                     series
@@ -9987,7 +9987,7 @@ fn execute_on_shard(
                 .unwrap_or_default();
             CommandResponse::Integer { value }
         }
-        Command::RiskQuery {
+        Command::ControlStateQuery {
             key,
             start_ms,
             end_ms,
@@ -10000,13 +10000,13 @@ fn execute_on_shard(
                     mutated,
                 };
             }
-            if is_risk_change_aggregator(&aggregator) {
+            if is_control_state_change_aggregator(&aggregator) {
                 CommandResponse::Integer {
-                    value: count_risk_changes(shard, &key, start_ms, end_ms),
+                    value: count_control_state_changes(shard, &key, start_ms, end_ms),
                 }
             } else {
                 let values = shard
-                    .risk
+                    .control_state
                     .get(&key)
                     .map(|series| {
                         series
@@ -10016,11 +10016,11 @@ fn execute_on_shard(
                     })
                     .unwrap_or_default();
                 CommandResponse::Integer {
-                    value: aggregate_risk_values(&values, &aggregator),
+                    value: aggregate_control_state_values(&values, &aggregator),
                 }
             }
         }
-        Command::RiskDetail {
+        Command::ControlStateDetail {
             key,
             start_ms,
             end_ms,
@@ -10034,7 +10034,7 @@ fn execute_on_shard(
                 };
             }
             let points = shard
-                .risk
+                .control_state
                 .get(&key)
                 .map(|series| {
                     series
@@ -10049,7 +10049,7 @@ fn execute_on_shard(
                 .unwrap_or_default();
             CommandResponse::FeaturePoints { points }
         }
-        Command::RiskSet {
+        Command::ControlStateSet {
             family,
             key,
             timestamp_ms,
@@ -10057,11 +10057,11 @@ fn execute_on_shard(
             precision_ms,
             ttl_ms,
         } => {
-            let key = risk_family_key(family, &key);
+            let key = control_state_family_key(family, &key);
             remove_if_expired(cache, shard_id, shard, &key);
-            let bucket_ms = risk_bucket_ms(timestamp_ms, precision_ms);
+            let bucket_ms = control_state_bucket_ms(timestamp_ms, precision_ms);
             *shard
-                .risk
+                .control_state
                 .entry(key.clone())
                 .or_default()
                 .entry(bucket_ms)
@@ -10071,7 +10071,7 @@ fn execute_on_shard(
                     .expires_at_ms
                     .insert(key.clone(), now_ms().saturating_add(ttl_ms));
             }
-            persist_risk_page(
+            persist_control_state_page(
                 cache,
                 page_store,
                 shard_id,
@@ -10084,7 +10084,7 @@ fn execute_on_shard(
             mutated = true;
             CommandResponse::Empty
         }
-        Command::RiskSetAndGet {
+        Command::ControlStateSetAndGet {
             family,
             key,
             timestamp_ms,
@@ -10095,10 +10095,10 @@ fn execute_on_shard(
             precision_ms,
             ttl_ms,
         } => {
-            let key = risk_family_key(family, &key);
+            let key = control_state_family_key(family, &key);
             remove_if_expired(cache, shard_id, shard, &key);
-            let bucket_ms = risk_bucket_ms(timestamp_ms, precision_ms);
-            let series = shard.risk.entry(key.clone()).or_default();
+            let bucket_ms = control_state_bucket_ms(timestamp_ms, precision_ms);
+            let series = shard.control_state.entry(key.clone()).or_default();
             *series.entry(bucket_ms).or_default() += amount;
             if let Some(ttl_ms) = ttl_ms {
                 shard
@@ -10109,7 +10109,7 @@ fn execute_on_shard(
                 .range(start_ms..=end_ms)
                 .map(|(_, value)| *value)
                 .collect::<Vec<_>>();
-            persist_risk_page(
+            persist_control_state_page(
                 cache,
                 page_store,
                 shard_id,
@@ -10121,17 +10121,17 @@ fn execute_on_shard(
             );
             mutated = true;
             CommandResponse::Integer {
-                value: aggregate_risk_values(&values, &aggregator),
+                value: aggregate_control_state_values(&values, &aggregator),
             }
         }
-        Command::RiskFamilyQuery {
+        Command::ControlStateFamilyQuery {
             family,
             key,
             start_ms,
             end_ms,
             aggregator,
         } => {
-            let key = risk_family_key(family, &key);
+            let key = control_state_family_key(family, &key);
             if remove_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
@@ -10139,13 +10139,13 @@ fn execute_on_shard(
                     mutated,
                 };
             }
-            if is_risk_change_aggregator(&aggregator) {
+            if is_control_state_change_aggregator(&aggregator) {
                 CommandResponse::Integer {
-                    value: count_risk_changes(shard, &key, start_ms, end_ms),
+                    value: count_control_state_changes(shard, &key, start_ms, end_ms),
                 }
             } else {
                 let values = shard
-                    .risk
+                    .control_state
                     .get(&key)
                     .map(|series| {
                         series
@@ -10155,11 +10155,11 @@ fn execute_on_shard(
                     })
                     .unwrap_or_default();
                 CommandResponse::Integer {
-                    value: aggregate_risk_values(&values, &aggregator),
+                    value: aggregate_control_state_values(&values, &aggregator),
                 }
             }
         }
-        Command::RiskFolSet {
+        Command::ControlStateFolSet {
             key,
             value,
             occur_time_ms,
@@ -10168,17 +10168,17 @@ fn execute_on_shard(
         } => {
             remove_if_expired(cache, shard_id, shard, &key);
             let should_store = shard
-                .risk_fol
+                .control_state_fol
                 .get(&key)
                 .map(|existing| match fol_type {
-                    RiskFolType::First => occur_time_ms < existing.occur_time_ms,
-                    RiskFolType::Last => occur_time_ms > existing.occur_time_ms,
+                    ControlStateFolType::First => occur_time_ms < existing.occur_time_ms,
+                    ControlStateFolType::Last => occur_time_ms > existing.occur_time_ms,
                 })
                 .unwrap_or(true);
             if should_store {
-                shard.risk_fol.insert(
+                shard.control_state_fol.insert(
                     key.clone(),
-                    RiskFolValue {
+                    ControlStateFolValue {
                         occur_time_ms,
                         value,
                         fol_type,
@@ -10193,7 +10193,7 @@ fn execute_on_shard(
             mutated = true;
             CommandResponse::Empty
         }
-        Command::RiskFolQuery { key } => {
+        Command::ControlStateFolQuery { key } => {
             if remove_if_expired(cache, shard_id, shard, &key) {
                 mutated = true;
                 return ExecuteOutcome {
@@ -10202,10 +10202,10 @@ fn execute_on_shard(
                 };
             }
             CommandResponse::Bytes {
-                value: shard.risk_fol.get(&key).map(|stored| stored.value.clone()),
+                value: shard.control_state_fol.get(&key).map(|stored| stored.value.clone()),
             }
         }
-        Command::RiskManager {
+        Command::ControlStateManager {
             key,
             op_type,
             field_list,
@@ -10223,7 +10223,7 @@ fn execute_on_shard(
                 };
             }
             CommandResponse::HashEntries {
-                entries: risk_manager_entries(
+                entries: control_state_manager_entries(
                     shard,
                     &key,
                     op_type.as_deref(),
@@ -10234,7 +10234,7 @@ fn execute_on_shard(
                 ),
             }
         }
-        Command::RiskDebug {
+        Command::ControlStateDebug {
             key,
             start_ms,
             end_ms,
@@ -10252,10 +10252,10 @@ fn execute_on_shard(
             entries.push(("key".to_string(), key.as_bytes().to_vec()));
             entries.push(("start_ms".to_string(), start_ms.to_string().into_bytes()));
             entries.push(("end_ms".to_string(), end_ms.to_string().into_bytes()));
-            for family in [RiskFamily::H, RiskFamily::Cpc, RiskFamily::Fol] {
-                let family_key = risk_family_key(family, &key);
-                let name = risk_family_name(family);
-                let series = shard.risk.get(&family_key);
+            for family in [ControlStateFamily::H, ControlStateFamily::Cpc, ControlStateFamily::Fol] {
+                let family_key = control_state_family_key(family, &key);
+                let name = control_state_family_name(family);
+                let series = shard.control_state.get(&family_key);
                 let all_values = series
                     .map(|series| series.values().copied().collect::<Vec<_>>())
                     .unwrap_or_default();
@@ -10305,7 +10305,7 @@ fn execute_on_shard(
                         .into_bytes(),
                 ));
             }
-            if let Some(fol) = shard.risk_fol.get(&key) {
+            if let Some(fol) = shard.control_state_fol.get(&key) {
                 entries.push(("fol_value".to_string(), fol.value.clone()));
                 entries.push((
                     "fol_occur_time_ms".to_string(),
@@ -10314,8 +10314,8 @@ fn execute_on_shard(
                 entries.push((
                     "fol_type".to_string(),
                     match fol.fol_type {
-                        RiskFolType::First => b"first".to_vec(),
-                        RiskFolType::Last => b"last".to_vec(),
+                        ControlStateFolType::First => b"first".to_vec(),
+                        ControlStateFolType::Last => b"last".to_vec(),
                     },
                 ));
             }
@@ -11531,10 +11531,10 @@ fn delete_record_exact(
     removed |= shard.ips.remove(key).is_some();
     removed |= shard.ips_meta.remove(key).is_some();
     removed |= shard.ips_request_ids.remove(key).is_some();
-    removed |= shard.risk.remove(key).is_some();
-    removed |= shard.risk_pages.remove(key).is_some();
-    removed |= shard.risk_changes.remove(key).is_some();
-    removed |= shard.risk_fol.remove(key).is_some();
+    removed |= shard.control_state.remove(key).is_some();
+    removed |= shard.control_state_pages.remove(key).is_some();
+    removed |= shard.control_state_changes.remove(key).is_some();
+    removed |= shard.control_state_fol.remove(key).is_some();
     removed |= shard.context_nodes.remove(key).is_some();
     removed |= shard.context_events.remove(key).is_some();
     removed |= shard.context_indexes.remove(key).is_some();
@@ -11881,24 +11881,24 @@ fn is_feature_count_aggregator(aggregator: &str) -> bool {
 }
 
 fn associated_record_keys(key: &str) -> Vec<String> {
-    if key.starts_with("risk:") {
+    if key.starts_with("control_state:") {
         return vec![key.to_string()];
     }
     let mut keys = Vec::with_capacity(4);
     keys.push(key.to_string());
-    for family in [RiskFamily::H, RiskFamily::Cpc, RiskFamily::Fol] {
-        keys.push(risk_family_key(family, key));
+    for family in [ControlStateFamily::H, ControlStateFamily::Cpc, ControlStateFamily::Fol] {
+        keys.push(control_state_family_key(family, key));
     }
     keys
 }
 
 fn visit_associated_record_keys(key: &str, mut visit: impl FnMut(&str)) {
     visit(key);
-    if key.starts_with("risk:") {
+    if key.starts_with("control_state:") {
         return;
     }
-    for family in [RiskFamily::H, RiskFamily::Cpc, RiskFamily::Fol] {
-        let family_key = risk_family_key(family, key);
+    for family in [ControlStateFamily::H, ControlStateFamily::Cpc, ControlStateFamily::Fol] {
+        let family_key = control_state_family_key(family, key);
         visit(&family_key);
     }
 }
@@ -11907,11 +11907,11 @@ fn any_associated_record_key(key: &str, mut predicate: impl FnMut(&str) -> bool)
     if predicate(key) {
         return true;
     }
-    if key.starts_with("risk:") {
+    if key.starts_with("control_state:") {
         return false;
     }
-    for family in [RiskFamily::H, RiskFamily::Cpc, RiskFamily::Fol] {
-        let family_key = risk_family_key(family, key);
+    for family in [ControlStateFamily::H, ControlStateFamily::Cpc, ControlStateFamily::Fol] {
+        let family_key = control_state_family_key(family, key);
         if predicate(&family_key) {
             return true;
         }
@@ -12262,8 +12262,8 @@ fn replace_model_page_address(
             .get_mut(&entry.object_key)
             .map(|series| replace_series_page_address(series, original, published))
             .unwrap_or(false),
-        "risk" => shard
-            .risk_pages
+        "control_state" => shard
+            .control_state_pages
             .get_mut(&entry.object_key)
             .filter(|address| *address == original)
             .map(|address| *address = published.clone())
@@ -13061,9 +13061,9 @@ fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
     }
     entries.extend(
         shard
-            .risk_pages
+            .control_state_pages
             .iter()
-            .map(|(key, address)| live_page_entry(key.clone(), "risk", None, address.clone())),
+            .map(|(key, address)| live_page_entry(key.clone(), "control_state", None, address.clone())),
     );
     entries.extend(
         shard.context_nodes.iter().map(|(key, address)| {
@@ -13135,7 +13135,7 @@ fn model_live_page_entry_capacity(shard: &ShardState) -> usize {
         + shard.features.len()
         + shard.sequences.len()
         + shard.ips.len()
-        + shard.risk_pages.len()
+        + shard.control_state_pages.len()
         + shard.context_nodes.len()
         + shard.context_events.len()
         + shard.context_indexes.len()
@@ -13198,8 +13198,8 @@ fn collect_model_live_page_entries_for_keys(
                     .map(|address| live_page_entry(key.clone(), "ips", None, address)),
             );
         }
-        if let Some(address) = shard.risk_pages.get(key) {
-            entries.push(live_page_entry(key.clone(), "risk", None, address.clone()));
+        if let Some(address) = shard.control_state_pages.get(key) {
+            entries.push(live_page_entry(key.clone(), "control_state", None, address.clone()));
         }
         if let Some(address) = shard.context_nodes.get(key) {
             entries.push(live_page_entry(
@@ -13289,7 +13289,7 @@ fn model_live_page_entry_capacity_for_keys(shard: &ShardState, keys: &BTreeSet<S
                 + usize::from(shard.features.contains_key(key))
                 + usize::from(shard.sequences.contains_key(key))
                 + usize::from(shard.ips.contains_key(key))
-                + usize::from(shard.risk_pages.contains_key(key))
+                + usize::from(shard.control_state_pages.contains_key(key))
                 + usize::from(shard.context_nodes.contains_key(key))
                 + usize::from(shard.context_events.contains_key(key))
                 + usize::from(shard.context_indexes.contains_key(key))
@@ -13986,7 +13986,7 @@ fn object_still_has_hot_page(shard: &ShardState, object_key: &str) -> bool {
             .map(timestamped_series_has_hot_page)
             .unwrap_or(false)
         || shard
-            .risk_pages
+            .control_state_pages
             .get(object_key)
             .map(page_address_is_memory_only)
             .unwrap_or(false)
@@ -14185,7 +14185,7 @@ fn reconcile_secondary_views_from_slot_index(page_store: &LocalPageStore, shard:
     let mut saw_features = false;
     let mut saw_sequences = false;
     let mut saw_ips = false;
-    let mut saw_risk = false;
+    let mut saw_control_state = false;
     let mut saw_context_events = false;
     let mut saw_context_indexes = false;
     let mut saw_context_audits = false;
@@ -14202,8 +14202,8 @@ fn reconcile_secondary_views_from_slot_index(page_store: &LocalPageStore, shard:
     let mut features = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
     let mut sequences = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
     let mut ips = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
-    let mut risk = HashMap::<String, BTreeMap<u64, i64>>::new();
-    let mut risk_pages = HashMap::new();
+    let mut control_state = HashMap::<String, BTreeMap<u64, i64>>::new();
+    let mut control_state_pages = HashMap::new();
     let mut context_events = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
     let mut context_indexes = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
     let mut context_audits = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
@@ -14216,7 +14216,7 @@ fn reconcile_secondary_views_from_slot_index(page_store: &LocalPageStore, shard:
     let mut feature_entries = Vec::<(String, PageAddress)>::new();
     let mut sequence_entries = Vec::<(String, PageAddress)>::new();
     let mut ips_entries = Vec::<(String, PageAddress)>::new();
-    let mut risk_entries = Vec::<(String, PageAddress)>::new();
+    let mut control_state_entries = Vec::<(String, PageAddress)>::new();
     let mut context_event_entries = Vec::<(String, PageAddress)>::new();
     let mut context_index_entries = Vec::<(String, PageAddress)>::new();
     let mut context_audit_entries = Vec::<(String, PageAddress)>::new();
@@ -14261,10 +14261,10 @@ fn reconcile_secondary_views_from_slot_index(page_store: &LocalPageStore, shard:
                 saw_ips = true;
                 ips_entries.push((entry.object_key, entry.address));
             }
-            "risk" => {
-                saw_risk = true;
-                risk_entries.push((entry.object_key.clone(), entry.address.clone()));
-                risk_pages.insert(entry.object_key, entry.address);
+            "control_state" => {
+                saw_control_state = true;
+                control_state_entries.push((entry.object_key.clone(), entry.address.clone()));
+                control_state_pages.insert(entry.object_key, entry.address);
             }
             "context_event" => {
                 saw_context_events = true;
@@ -14309,7 +14309,7 @@ fn reconcile_secondary_views_from_slot_index(page_store: &LocalPageStore, shard:
     insert_timestamped_secondary_views(page_store, &mut features, feature_entries);
     insert_timestamped_secondary_views(page_store, &mut sequences, sequence_entries);
     insert_timestamped_secondary_views(page_store, &mut ips, ips_entries);
-    insert_risk_secondary_views(page_store, &mut risk, risk_entries);
+    insert_control_state_secondary_views(page_store, &mut control_state, control_state_entries);
     insert_timestamped_secondary_views(page_store, &mut context_events, context_event_entries);
     insert_timestamped_secondary_views(page_store, &mut context_indexes, context_index_entries);
     insert_timestamped_secondary_views(page_store, &mut context_audits, context_audit_entries);
@@ -14340,9 +14340,9 @@ fn reconcile_secondary_views_from_slot_index(page_store: &LocalPageStore, shard:
     if saw_ips {
         shard.ips = ips;
     }
-    if saw_risk {
-        shard.risk = risk;
-        shard.risk_pages = risk_pages;
+    if saw_control_state {
+        shard.control_state = control_state;
+        shard.control_state_pages = control_state_pages;
     }
     if saw_context_events {
         shard.context_events = context_events;
@@ -14406,7 +14406,7 @@ fn insert_timestamped_secondary_views(
     }
 }
 
-fn insert_risk_secondary_views(
+fn insert_control_state_secondary_views(
     page_store: &LocalPageStore,
     target: &mut HashMap<String, BTreeMap<u64, i64>>,
     entries: Vec<(String, PageAddress)>,
@@ -14677,7 +14677,7 @@ fn storage_model_code(kind: &str) -> u8 {
         "feature" => 4,
         "sequence" => 5,
         "ips" => 6,
-        "risk" => 7,
+        "control_state" => 7,
         "context_node" => 8,
         "context_event" => 9,
         "context_index" => 10,
@@ -15584,8 +15584,8 @@ fn model_compaction_policy_reports(
             "sequence"
         } else if shard.ips.contains_key(key) {
             "ips"
-        } else if shard.risk_pages.contains_key(key) {
-            "risk"
+        } else if shard.control_state_pages.contains_key(key) {
+            "control_state"
         } else if shard.context_nodes.contains_key(key) {
             "context_node"
         } else if shard.context_entities.contains_key(key) {
@@ -15634,7 +15634,7 @@ fn model_compaction_policy_reports(
                     layout_policy,
                     "timestamped_chunked_pages" | "context_timeline_or_sidecar_pages"
                 )
-                || model_id == "risk";
+                || model_id == "control_state";
             ModelCompactionPolicyReport {
                 layout_policy: layout_policy.to_string(),
                 object_page_packing_enabled,
@@ -15664,7 +15664,7 @@ fn model_compaction_policy_reports(
 
 fn compaction_layout_policy_for_model(model_id: &str) -> &'static str {
     match model_id {
-        "string" | "risk" | "context_node" | "context_entity" | "context_embedding" => {
+        "string" | "control_state" | "context_node" | "context_entity" | "context_embedding" => {
             "single_page_object"
         }
         "hash" | "set" => "component_page_object",
@@ -16287,7 +16287,7 @@ fn hash_multiset_batch_memory_put_min() -> usize {
     })
 }
 
-fn persist_risk_page(
+fn persist_control_state_page(
     cache: &MultiLayerCache,
     page_store: &LocalPageStore,
     shard_id: ShardId,
@@ -16297,14 +16297,14 @@ fn persist_risk_page(
     end_routing_slot: u32,
     async_storage: bool,
 ) -> bool {
-    let Some(series) = shard.risk.get(key) else {
-        shard.risk_pages.remove(key);
+    let Some(series) = shard.control_state.get(key) else {
+        shard.control_state_pages.remove(key);
         return false;
     };
     let Ok(bytes) = serde_json::to_vec(series) else {
         return false;
     };
-    let object_id = stable_page_object_id(shard_id, "risk", key, None);
+    let object_id = stable_page_object_id(shard_id, "control_state", key, None);
     let routing_slot = page_routing_slot(key, start_routing_slot, end_routing_slot);
     if let Ok(address) = append_value(
         cache,
@@ -16319,7 +16319,7 @@ fn persist_risk_page(
             cache,
             shard,
             shard_id,
-            "risk",
+            "control_state",
             key,
             None,
             address.clone(),
@@ -16327,7 +16327,7 @@ fn persist_risk_page(
             start_routing_slot,
             end_routing_slot,
         );
-        shard.risk_pages.insert(key.to_string(), address);
+        shard.control_state_pages.insert(key.to_string(), address);
         true
     } else {
         false
@@ -16394,10 +16394,10 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         || shard.features.contains_key(key)
         || shard.sequences.contains_key(key)
         || shard.ips.contains_key(key)
-        || shard.risk.contains_key(key)
-        || shard.risk_pages.contains_key(key)
-        || shard.risk_changes.contains_key(key)
-        || shard.risk_fol.contains_key(key)
+        || shard.control_state.contains_key(key)
+        || shard.control_state_pages.contains_key(key)
+        || shard.control_state_changes.contains_key(key)
+        || shard.control_state_fol.contains_key(key)
         || shard.context_nodes.contains_key(key)
         || shard.context_events.contains_key(key)
         || shard.context_indexes.contains_key(key)
@@ -16448,7 +16448,7 @@ fn storage_model_kinds() -> &'static [&'static str] {
         "feature",
         "sequence",
         "ips",
-        "risk",
+        "control_state",
         "context_node",
         "context_event",
         "context_index",
@@ -17149,8 +17149,8 @@ fn object_manager_stats(
             + shard.features.len()
             + shard.sequences.len()
             + shard.ips.len()
-            + shard.risk.len()
-            + shard.risk_changes.len()
+            + shard.control_state.len()
+            + shard.control_state_changes.len()
             + shard.context_nodes.len()
             + shard.context_events.len()
             + shard.context_indexes.len()
@@ -17223,7 +17223,7 @@ fn object_manager_stats(
         + shard.features.len()
         + shard.sequences.len()
         + shard.ips.len()
-        + shard.risk.len()
+        + shard.control_state.len()
         + shard.context_nodes.len()
         + shard.context_events.len()
         + shard.context_indexes.len()
@@ -17407,12 +17407,12 @@ fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::IpsLoad { key, .. }
         | Command::IpsRemove { key, .. }
         | Command::IpsDelete { key }
-        | Command::RiskIncrement { key, .. }
-        | Command::RiskIncrementWithOptions { key, .. }
-        | Command::RiskChangeAdd { key, .. }
-        | Command::RiskFolSet { key, .. } => vec![key.clone()],
-        Command::RiskSet { family, key, .. } | Command::RiskSetAndGet { family, key, .. } => {
-            vec![risk_family_key(*family, key)]
+        | Command::ControlStateIncrement { key, .. }
+        | Command::ControlStateIncrementWithOptions { key, .. }
+        | Command::ControlStateChangeAdd { key, .. }
+        | Command::ControlStateFolSet { key, .. } => vec![key.clone()],
+        Command::ControlStateSet { family, key, .. } | Command::ControlStateSetAndGet { family, key, .. } => {
+            vec![control_state_family_key(*family, key)]
         }
         Command::ContextUpsertNode { tenant_hash, node } => {
             vec![context_node_key(*tenant_hash, node.node_hash)]
@@ -17562,13 +17562,13 @@ fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::IpsSnapshotReport { .. }
         | Command::IpsStat { .. }
         | Command::IpsFilter { .. }
-        | Command::RiskCount { .. }
-        | Command::RiskQuery { .. }
-        | Command::RiskDetail { .. }
-        | Command::RiskFamilyQuery { .. }
-        | Command::RiskFolQuery { .. }
-        | Command::RiskManager { .. }
-        | Command::RiskDebug { .. }
+        | Command::ControlStateCount { .. }
+        | Command::ControlStateQuery { .. }
+        | Command::ControlStateDetail { .. }
+        | Command::ControlStateFamilyQuery { .. }
+        | Command::ControlStateFolQuery { .. }
+        | Command::ControlStateManager { .. }
+        | Command::ControlStateDebug { .. }
         | Command::ContextGetNode { .. }
         | Command::ContextGetNodes { .. }
         | Command::ContextQueryEvents { .. }
@@ -17601,10 +17601,10 @@ fn command_updates_slot_index_directly(command: &Command) -> bool {
             | Command::HashDelete { .. }
             | Command::SetAdd { .. }
             | Command::SetRemove { .. }
-            | Command::RiskIncrement { .. }
-            | Command::RiskIncrementWithOptions { .. }
-            | Command::RiskSet { .. }
-            | Command::RiskSetAndGet { .. }
+            | Command::ControlStateIncrement { .. }
+            | Command::ControlStateIncrementWithOptions { .. }
+            | Command::ControlStateSet { .. }
+            | Command::ControlStateSetAndGet { .. }
     )
 }
 
@@ -17634,12 +17634,12 @@ fn is_write_command(command: &Command) -> bool {
             | Command::IpsLoad { .. }
             | Command::IpsRemove { .. }
             | Command::IpsDelete { .. }
-            | Command::RiskIncrement { .. }
-            | Command::RiskIncrementWithOptions { .. }
-            | Command::RiskChangeAdd { .. }
-            | Command::RiskSet { .. }
-            | Command::RiskSetAndGet { .. }
-            | Command::RiskFolSet { .. }
+            | Command::ControlStateIncrement { .. }
+            | Command::ControlStateIncrementWithOptions { .. }
+            | Command::ControlStateChangeAdd { .. }
+            | Command::ControlStateSet { .. }
+            | Command::ControlStateSetAndGet { .. }
+            | Command::ControlStateFolSet { .. }
             | Command::ContextUpsertNode { .. }
             | Command::ContextWriteEvent { .. }
             | Command::ContextWriteExtractedEvent { .. }

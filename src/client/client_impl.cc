@@ -889,69 +889,69 @@ void TableImpl::AsyncSetEx(Controller* ctrl, const std::string& key, const std::
     Execute(ctrl, req, resp, callback, NewFuncClosure(std::move(func)), option);
 }
 
-// Risk批量写入命令
-Status TableImpl::RiskHset(const RiskHsetRequest& req, RiskHsetResponse* resp,
+// ControlState批量写入命令
+Status TableImpl::ControlStateHset(const ControlStateHsetRequest& req, ControlStateHsetResponse* resp,
                            const RequestOptions& option) {
-    SYNC_CALL_CMD(AsyncRiskHset, req, resp, option);
+    SYNC_CALL_CMD(AsyncControlStateHset, req, resp, option);
 }
 
-Status TableImpl::RiskHquery(const RiskHqueryRequest& req, RiskHqueryResponse* resp,
+Status TableImpl::ControlStateHquery(const ControlStateHqueryRequest& req, ControlStateHqueryResponse* resp,
                              const RequestOptions& option) {
-    SYNC_CALL_CMD(AsyncRiskHquery, req, resp, option);
+    SYNC_CALL_CMD(AsyncControlStateHquery, req, resp, option);
 }
-Status TableImpl::RiskFolSet(const RiskFolSetRequest& req, RiskFolSetResponse* resp,
+Status TableImpl::ControlStateFolSet(const ControlStateFolSetRequest& req, ControlStateFolSetResponse* resp,
                              const RequestOptions& option) {
-    SYNC_CALL_CMD(AsyncRiskFolSet, req, resp, option);
+    SYNC_CALL_CMD(AsyncControlStateFolSet, req, resp, option);
 }
 
-Status TableImpl::RiskFolQuery(const RiskFolQueryRequest& req, RiskFolQueryResponse* resp,
+Status TableImpl::ControlStateFolQuery(const ControlStateFolQueryRequest& req, ControlStateFolQueryResponse* resp,
                                const RequestOptions& option) {
-    SYNC_CALL_CMD(AsyncRiskFolQuery, req, resp, option);
+    SYNC_CALL_CMD(AsyncControlStateFolQuery, req, resp, option);
 }
 
-Status TableImpl::RiskCPCSet(const RiskCPCSetRequest& req, RiskCPCSetResponse* resp,
+Status TableImpl::ControlStateCPCSet(const ControlStateCPCSetRequest& req, ControlStateCPCSetResponse* resp,
                              const RequestOptions& option) {
-    SYNC_CALL_CMD(AsyncRiskCPCSet, req, resp, option);
+    SYNC_CALL_CMD(AsyncControlStateCPCSet, req, resp, option);
 }
 
-Status TableImpl::RiskCPCQuery(const RiskCPCQueryRequest& req, RiskCPCQueryResponse* resp,
+Status TableImpl::ControlStateCPCQuery(const ControlStateCPCQueryRequest& req, ControlStateCPCQueryResponse* resp,
                                const RequestOptions& option) {
-    SYNC_CALL_CMD(AsyncRiskCPCQuery, req, resp, option);
+    SYNC_CALL_CMD(AsyncControlStateCPCQuery, req, resp, option);
 }
 
-Status TableImpl::RiskManager(const RiskManagerRequest& req, RiskManagerResponse* resp,
+Status TableImpl::ControlStateManager(const ControlStateManagerRequest& req, ControlStateManagerResponse* resp,
                               const RequestOptions& option) {
-    SYNC_CALL_CMD(AsyncRiskManager, req, resp, option);
+    SYNC_CALL_CMD(AsyncControlStateManager, req, resp, option);
 }
 
-void TableImpl::AsyncRiskHset(Controller* ctrl, const RiskHsetRequest& risk_hset_req,
-                              RiskHsetResponse* risk_hset_resp, const RequestOptions& option,
+void TableImpl::AsyncControlStateHset(Controller* ctrl, const ControlStateHsetRequest& control_state_hset_req,
+                              ControlStateHsetResponse* control_state_hset_resp, const RequestOptions& option,
                               Closure<void>* callback) {
     Request* req = new Request();
     Response* resp = new Response();
-    req->key = risk_hset_req.key();
-    req->cmd_id = MakeCmdId(bcache2::Module::RISK, bcache2::risk::HSET);
-    req->input.set_module_id(bcache2::Module::RISK);
-    req->input.set_function_id(bcache2::risk::HSET);
+    req->key = control_state_hset_req.key();
+    req->cmd_id = MakeCmdId(bcache2::Module::CONTROL_STATE, bcache2::control_state::HSET);
+    req->input.set_module_id(bcache2::Module::CONTROL_STATE);
+    req->input.set_function_id(bcache2::control_state::HSET);
     std::string request_bytes;
-    risk_hset_req.SerializeToString(&request_bytes);
+    control_state_hset_req.SerializeToString(&request_bytes);
     req->input.set_request_bytes(request_bytes);
-    auto func = [this, req, resp, risk_hset_resp] { CALLBACK(req, resp); };
+    auto func = [this, req, resp, control_state_hset_resp] { CALLBACK(req, resp); };
     Execute(ctrl, req, resp, callback, NewFuncClosure(std::move(func)), option);
 }
 
-void TableImpl::AsyncRiskHquery(Controller* ctrl, const RiskHqueryRequest& risk_hquery_req,
-                                RiskHqueryResponse* risk_hquery_resp, const RequestOptions& option,
+void TableImpl::AsyncControlStateHquery(Controller* ctrl, const ControlStateHqueryRequest& control_state_hquery_req,
+                                ControlStateHqueryResponse* control_state_hquery_resp, const RequestOptions& option,
                                 Closure<void>* callback) {
     Request* req = new Request();
     Response* resp = new Response();
 
-    req->key = risk_hquery_req.key();
-    req->cmd_id = MakeCmdId(bcache2::Module::RISK, bcache2::risk::HQUERY);
-    req->input.set_module_id(bcache2::Module::RISK);
-    req->input.set_function_id(bcache2::risk::HQUERY);
+    req->key = control_state_hquery_req.key();
+    req->cmd_id = MakeCmdId(bcache2::Module::CONTROL_STATE, bcache2::control_state::HQUERY);
+    req->input.set_module_id(bcache2::Module::CONTROL_STATE);
+    req->input.set_function_id(bcache2::control_state::HQUERY);
     std::string request_bytes;
-    risk_hquery_req.SerializeToString(&request_bytes);
+    control_state_hquery_req.SerializeToString(&request_bytes);
     req->input.set_request_bytes(request_bytes);
 
     CoSyncClosure sync;
@@ -959,39 +959,39 @@ void TableImpl::AsyncRiskHquery(Controller* ctrl, const RiskHqueryRequest& risk_
     sync.Wait();
     CALLBACK(req, resp);
     std::string respBytes = resp->output->response_bytes();
-    risk_hquery_resp->ParseFromString(respBytes);
+    control_state_hquery_resp->ParseFromString(respBytes);
 }
 
-void TableImpl::AsyncRiskFolSet(Controller* ctrl, const RiskFolSetRequest& risk_fol_req,
-                                RiskFolSetResponse* risk_fol_resp, const RequestOptions& option,
+void TableImpl::AsyncControlStateFolSet(Controller* ctrl, const ControlStateFolSetRequest& control_state_fol_req,
+                                ControlStateFolSetResponse* control_state_fol_resp, const RequestOptions& option,
                                 Closure<void>* callback) {
     Request* req = new Request();
     Response* resp = new Response();
 
-    req->key = risk_fol_req.key();
-    req->cmd_id = MakeCmdId(bcache2::Module::RISK, bcache2::risk::FOLSET);
-    req->input.set_module_id(bcache2::Module::RISK);
-    req->input.set_function_id(bcache2::risk::FOLSET);
+    req->key = control_state_fol_req.key();
+    req->cmd_id = MakeCmdId(bcache2::Module::CONTROL_STATE, bcache2::control_state::FOLSET);
+    req->input.set_module_id(bcache2::Module::CONTROL_STATE);
+    req->input.set_function_id(bcache2::control_state::FOLSET);
     std::string request_bytes;
-    risk_fol_req.SerializeToString(&request_bytes);
+    control_state_fol_req.SerializeToString(&request_bytes);
     req->input.set_request_bytes(request_bytes);
 
-    auto func = [this, req, resp, risk_fol_resp] { CALLBACK(req, resp); };
+    auto func = [this, req, resp, control_state_fol_resp] { CALLBACK(req, resp); };
     Execute(ctrl, req, resp, callback, NewFuncClosure(std::move(func)), option);
 }
 
-void TableImpl::AsyncRiskFolQuery(Controller* ctrl, const RiskFolQueryRequest& risk_fol_req,
-                                  RiskFolQueryResponse* risk_fol_resp, const RequestOptions& option,
+void TableImpl::AsyncControlStateFolQuery(Controller* ctrl, const ControlStateFolQueryRequest& control_state_fol_req,
+                                  ControlStateFolQueryResponse* control_state_fol_resp, const RequestOptions& option,
                                   Closure<void>* callback) {
     Request* req = new Request();
     Response* resp = new Response();
 
-    req->key = risk_fol_req.key();
-    req->cmd_id = MakeCmdId(bcache2::Module::RISK, bcache2::risk::FOLQUERY);
-    req->input.set_module_id(bcache2::Module::RISK);
-    req->input.set_function_id(bcache2::risk::FOLQUERY);
+    req->key = control_state_fol_req.key();
+    req->cmd_id = MakeCmdId(bcache2::Module::CONTROL_STATE, bcache2::control_state::FOLQUERY);
+    req->input.set_module_id(bcache2::Module::CONTROL_STATE);
+    req->input.set_function_id(bcache2::control_state::FOLQUERY);
     std::string request_bytes;
-    risk_fol_req.SerializeToString(&request_bytes);
+    control_state_fol_req.SerializeToString(&request_bytes);
     req->input.set_request_bytes(request_bytes);
 
     CoSyncClosure sync;
@@ -999,59 +999,59 @@ void TableImpl::AsyncRiskFolQuery(Controller* ctrl, const RiskFolQueryRequest& r
     sync.Wait();
     CALLBACK(req, resp);
     std::string respBytes = resp->output->response_bytes();
-    risk_fol_resp->ParseFromString(respBytes);
+    control_state_fol_resp->ParseFromString(respBytes);
 }
 
-void TableImpl::AsyncRiskCPCSet(Controller* ctrl, const RiskCPCSetRequest& risk_cpcset_req,
-                                RiskCPCSetResponse* risk_cpcset_resp, const RequestOptions& option,
+void TableImpl::AsyncControlStateCPCSet(Controller* ctrl, const ControlStateCPCSetRequest& control_state_cpcset_req,
+                                ControlStateCPCSetResponse* control_state_cpcset_resp, const RequestOptions& option,
                                 Closure<void>* callback) {
     Request* req = new Request();
     Response* resp = new Response();
-    std::string key = risk_cpcset_req.key();
-    req->key = risk_cpcset_req.key();
-    req->cmd_id = MakeCmdId(bcache2::Module::RISK, bcache2::risk::CPCSET);
-    req->input.set_module_id(bcache2::Module::RISK);
-    req->input.set_function_id(bcache2::risk::CPCSET);
+    std::string key = control_state_cpcset_req.key();
+    req->key = control_state_cpcset_req.key();
+    req->cmd_id = MakeCmdId(bcache2::Module::CONTROL_STATE, bcache2::control_state::CPCSET);
+    req->input.set_module_id(bcache2::Module::CONTROL_STATE);
+    req->input.set_function_id(bcache2::control_state::CPCSET);
     std::string request_bytes;
-    risk_cpcset_req.SerializeToString(&request_bytes);
+    control_state_cpcset_req.SerializeToString(&request_bytes);
     req->input.set_request_bytes(request_bytes);
-    auto func = [this, req, resp, risk_cpcset_resp] { CALLBACK(req, resp); };
+    auto func = [this, req, resp, control_state_cpcset_resp] { CALLBACK(req, resp); };
     Execute(ctrl, req, resp, callback, NewFuncClosure(std::move(func)), option);
 }
 
-void TableImpl::AsyncRiskCPCQuery(Controller* ctrl, const RiskCPCQueryRequest& risk_cpcquery_req,
-                                  RiskCPCQueryResponse* risk_cpcquery_resp,
+void TableImpl::AsyncControlStateCPCQuery(Controller* ctrl, const ControlStateCPCQueryRequest& control_state_cpcquery_req,
+                                  ControlStateCPCQueryResponse* control_state_cpcquery_resp,
                                   const RequestOptions& option, Closure<void>* callback) {
     Request* req = new Request();
     Response* resp = new Response();
-    std::string key = risk_cpcquery_req.key();
-    req->key = risk_cpcquery_req.key();
-    req->cmd_id = MakeCmdId(bcache2::Module::RISK, bcache2::risk::CPCQUERY);
-    req->input.set_module_id(bcache2::Module::RISK);
-    req->input.set_function_id(bcache2::risk::CPCQUERY);
+    std::string key = control_state_cpcquery_req.key();
+    req->key = control_state_cpcquery_req.key();
+    req->cmd_id = MakeCmdId(bcache2::Module::CONTROL_STATE, bcache2::control_state::CPCQUERY);
+    req->input.set_module_id(bcache2::Module::CONTROL_STATE);
+    req->input.set_function_id(bcache2::control_state::CPCQUERY);
     std::string request_bytes;
-    risk_cpcquery_req.SerializeToString(&request_bytes);
+    control_state_cpcquery_req.SerializeToString(&request_bytes);
     req->input.set_request_bytes(request_bytes);
     CoSyncClosure sync;
     Execute(ctrl, req, resp, callback, &sync, option);
     sync.Wait();
     CALLBACK(req, resp);
     std::string respBytes = resp->output->response_bytes();
-    risk_cpcquery_resp->ParseFromString(respBytes);
+    control_state_cpcquery_resp->ParseFromString(respBytes);
 }
 
-void TableImpl::AsyncRiskManager(Controller* ctrl, const RiskManagerRequest& risk_manager_req,
-                                 RiskManagerResponse* risk_manager_resp,
+void TableImpl::AsyncControlStateManager(Controller* ctrl, const ControlStateManagerRequest& control_state_manager_req,
+                                 ControlStateManagerResponse* control_state_manager_resp,
                                  const RequestOptions& option, Closure<void>* callback) {
     Request* req = new Request();
     Response* resp = new Response();
 
-    req->key = risk_manager_req.key();
-    req->cmd_id = MakeCmdId(bcache2::Module::RISK, bcache2::risk::MANAGER);
-    req->input.set_module_id(bcache2::Module::RISK);
-    req->input.set_function_id(bcache2::risk::MANAGER);
+    req->key = control_state_manager_req.key();
+    req->cmd_id = MakeCmdId(bcache2::Module::CONTROL_STATE, bcache2::control_state::MANAGER);
+    req->input.set_module_id(bcache2::Module::CONTROL_STATE);
+    req->input.set_function_id(bcache2::control_state::MANAGER);
     std::string request_bytes;
-    risk_manager_req.SerializeToString(&request_bytes);
+    control_state_manager_req.SerializeToString(&request_bytes);
     req->input.set_request_bytes(request_bytes);
 
     CoSyncClosure sync;
@@ -1059,7 +1059,7 @@ void TableImpl::AsyncRiskManager(Controller* ctrl, const RiskManagerRequest& ris
     sync.Wait();
     CALLBACK(req, resp);
     std::string respBytes = resp->output->response_bytes();
-    risk_manager_resp->ParseFromString(respBytes);
+    control_state_manager_resp->ParseFromString(respBytes);
 }
 
 }  // namespace client

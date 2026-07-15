@@ -14,9 +14,9 @@ using FeatureWritePolicy = bcache2::client::TemporalFeatureWritePolicy;
 using IpsFeatureStat = bcache2::client::IpsFeatureStat;
 using IpsInstance = bcache2::client::IpsInstance;
 using IpsLastQuery = bcache2::client::IpsLastQuery;
-using RiskPrecision = bcache2::client::RiskPrecision;
-using RiskWindow = bcache2::client::RiskWindow;
-using RiskWindowUnit = bcache2::client::RiskWindowUnit;
+using ControlStatePrecision = bcache2::client::ControlStatePrecision;
+using ControlStateWindow = bcache2::client::ControlStateWindow;
+using ControlStateWindowUnit = bcache2::client::ControlStateWindowUnit;
 using SequenceFeatureRow = bcache2::client::SequenceFeatureRow;
 using Status = bcache2::Status;
 

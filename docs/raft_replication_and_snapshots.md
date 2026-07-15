@@ -43,7 +43,7 @@ Installing a snapshot rebuilds the follower shard engine from those entries, set
 the follower commit index to the snapshot index, and keeps newer local log entries.
 Stale snapshots cannot overwrite a node that already has a higher commit index.
 External S3/MinIO snapshot bootstrap now performs this stale-local-state check before downloading
-or verifying the object-store snapshot, so a newer replica does not waste work or risk installing an
+or verifying the object-store snapshot, so a newer replica does not waste work or control_state installing an
 older checkpoint.
 
 ## Metaserver Raft

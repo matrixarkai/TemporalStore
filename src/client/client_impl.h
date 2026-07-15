@@ -191,39 +191,39 @@ class TableImpl : public Pipeline, public TableCore {
                   const RequestOptions& option, Closure<void>* callback);
 
     // 以下命令为：字节电商平台治理相关的操作命令
-    Status RiskHset(const RiskHsetRequest& req, RiskHsetResponse* resp,
+    Status ControlStateHset(const ControlStateHsetRequest& req, ControlStateHsetResponse* resp,
                     const RequestOptions& option);
-    Status RiskHquery(const RiskHqueryRequest& req, RiskHqueryResponse* resp,
+    Status ControlStateHquery(const ControlStateHqueryRequest& req, ControlStateHqueryResponse* resp,
                       const RequestOptions& option);
 
-    Status RiskFolSet(const RiskFolSetRequest& req, RiskFolSetResponse* resp,
+    Status ControlStateFolSet(const ControlStateFolSetRequest& req, ControlStateFolSetResponse* resp,
                       const RequestOptions& option);
 
-    Status RiskFolQuery(const RiskFolQueryRequest& req, RiskFolQueryResponse* resp,
+    Status ControlStateFolQuery(const ControlStateFolQueryRequest& req, ControlStateFolQueryResponse* resp,
                         const RequestOptions& option);
-    Status RiskCPCSet(const RiskCPCSetRequest& req, RiskCPCSetResponse* resp,
+    Status ControlStateCPCSet(const ControlStateCPCSetRequest& req, ControlStateCPCSetResponse* resp,
                       const RequestOptions& option);
-    Status RiskCPCQuery(const RiskCPCQueryRequest& req, RiskCPCQueryResponse* resp,
+    Status ControlStateCPCQuery(const ControlStateCPCQueryRequest& req, ControlStateCPCQueryResponse* resp,
                         const RequestOptions& option);
-    Status RiskManager(const RiskManagerRequest& req, RiskManagerResponse* resp,
+    Status ControlStateManager(const ControlStateManagerRequest& req, ControlStateManagerResponse* resp,
                        const RequestOptions& option);
-    void AsyncRiskHset(Controller* ctrl, const RiskHsetRequest& req, RiskHsetResponse* resp,
+    void AsyncControlStateHset(Controller* ctrl, const ControlStateHsetRequest& req, ControlStateHsetResponse* resp,
                        const RequestOptions& option, Closure<void>* callback);
-    void AsyncRiskHquery(Controller* ctrl, const RiskHqueryRequest& risk_hquery_req,
-                         RiskHqueryResponse* risk_hquery_resp, const RequestOptions& option,
+    void AsyncControlStateHquery(Controller* ctrl, const ControlStateHqueryRequest& control_state_hquery_req,
+                         ControlStateHqueryResponse* control_state_hquery_resp, const RequestOptions& option,
                          Closure<void>* callback);
-    void AsyncRiskFolSet(Controller* ctrl, const RiskFolSetRequest& req, RiskFolSetResponse* resp,
+    void AsyncControlStateFolSet(Controller* ctrl, const ControlStateFolSetRequest& req, ControlStateFolSetResponse* resp,
                          const RequestOptions& option, Closure<void>* callback);
-    void AsyncRiskFolQuery(Controller* ctrl, const RiskFolQueryRequest& req,
-                           RiskFolQueryResponse* resp, const RequestOptions& option,
+    void AsyncControlStateFolQuery(Controller* ctrl, const ControlStateFolQueryRequest& req,
+                           ControlStateFolQueryResponse* resp, const RequestOptions& option,
                            Closure<void>* callback);
-    void AsyncRiskCPCSet(Controller* ctrl, const RiskCPCSetRequest& req, RiskCPCSetResponse* resp,
+    void AsyncControlStateCPCSet(Controller* ctrl, const ControlStateCPCSetRequest& req, ControlStateCPCSetResponse* resp,
                          const RequestOptions& option, Closure<void>* callback);
-    void AsyncRiskCPCQuery(Controller* ctrl, const RiskCPCQueryRequest& req,
-                           RiskCPCQueryResponse* resp, const RequestOptions& option,
+    void AsyncControlStateCPCQuery(Controller* ctrl, const ControlStateCPCQueryRequest& req,
+                           ControlStateCPCQueryResponse* resp, const RequestOptions& option,
                            Closure<void>* callback);
-    void AsyncRiskManager(Controller* ctrl, const RiskManagerRequest& req,
-                          RiskManagerResponse* resp, const RequestOptions& option,
+    void AsyncControlStateManager(Controller* ctrl, const ControlStateManagerRequest& req,
+                          ControlStateManagerResponse* resp, const RequestOptions& option,
                           Closure<void>* callback);
 };
 

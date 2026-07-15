@@ -19,8 +19,8 @@
 #include <utility>
 #include <vector>
 
-#include "extension/risk/window.h"
-#include "extension/risk/metrics_log.h"
+#include "extension/control_state/window.h"
+#include "extension/control_state/metrics_log.h"
 #include "model/cpc/cpc_sketch.h"
 #include "model/cpc/cpc_union.h"
 #include "model/persistent_map.h"
@@ -96,13 +96,13 @@ class CPCModel {
     CPCModel& operator=(const CPCModel&) = delete;
     CPCModel& operator=(CPCModel&&) = delete;
     // ================ 业务调用函数 ================
-    Status Update(partition::CmdContext* ctx, risk::RiskTimerLogger *timer,
+    Status Update(partition::CmdContext* ctx, control_state::ControlStateTimerLogger *timer,
                   const std::vector<std::string>& keys, const std::string& value,
                   uint64_t ttl, bool dont_upgrade_cpc = false, const std::string& uuid = "") {
         // 前置判断请求是否重复
         std::time_t now = std::time(0);
         if (!insertUUID(ctx, uuid, now)) {
-            return Status::RiskAlreadyHandled("");
+            return Status::ControlStateAlreadyHandled("");
         }
         // 如果禁止升级标识不一致, 则需要修改
         if (UNLIKELY(dont_upgrade_cpc != dont_upgrade_cpc_)) {
@@ -229,7 +229,7 @@ class CPCModel {
         return Status::OK();
     }
     // 传入的 range -> <start, end>, 扫描的区间为左闭右开区间 [start, end)
-    Status Scan(std::vector<risk_tool::RiskQueryRange> ranges, double* result) {
+    Status Scan(std::vector<control_state_tool::ControlStateQueryRange> ranges, double* result) {
         if (result == nullptr) {
             return Status::InvalidArgument("result ptr is nullptr");
         }
@@ -260,7 +260,7 @@ class CPCModel {
     }
 
     // 传入的 range -> <start, end>, 扫描的区间为左闭右开区间 [start, end), 返回列表详情
-    Status ScanForList(std::vector<risk_tool::RiskQueryRange> ranges,
+    Status ScanForList(std::vector<control_state_tool::ControlStateQueryRange> ranges,
                        absl::flat_hash_set<std::string>* result) {
         if (result == nullptr) {
             return Status::InvalidArgument("result ptr is nullptr");
@@ -981,7 +981,7 @@ class CPCModel {
         int64_t tmpMemSize = 0;
         for (uint32_t i = 0; i < resSize; ++i) {
             if (static_cast<std::size_t>(stream.CurrentPosition()) >= valueData.size()) {
-                LOG(ERROR) << "[risk_cpc_model]deserializeHashSet failed,"
+                LOG(ERROR) << "[control_state_cpc_model]deserializeHashSet failed,"
                               " read data len overflow.";
                 if (memSize != nullptr) {
                     (*memSize) = 0;
@@ -1051,7 +1051,7 @@ class CPCModel {
     BtreeMap<std::string, std::pair<Property, uint32_t>> data_uuid_;
 
     // For gtest
-    FRIEND_TEST(RISKCPCModelTest, LowModel);
+    FRIEND_TEST(CONTROL_STATECPCModelTest, LowModel);
 };
 
 // Public first-release name for the fast-changing serving-signal model.

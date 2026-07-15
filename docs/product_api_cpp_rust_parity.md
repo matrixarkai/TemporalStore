@@ -10,7 +10,7 @@ Unified cases should validate:
 - Feature nested point/proto semantics, replacement, filters, and aggregation
 - Sequence ordering, batch query, and missing-series behavior
 - IPS snapshot, stat, filter, and metadata behavior
-- Risk CPC, FOL/list, manager, and debug APIs
+- ControlState CPC, FOL/list, manager, and debug APIs
 
 When a behavior is product-visible, prefer a shared command/response case. Local C++ or Rust tests
 should remain only for implementation internals, parser helpers, mocks, and build-specific surfaces.

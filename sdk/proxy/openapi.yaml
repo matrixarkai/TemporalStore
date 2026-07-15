@@ -243,75 +243,75 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /ProxyService/RiskIncrement:
+  /ProxyService/ControlStateIncrement:
     post:
-      summary: Increment a risk counter.
+      summary: Increment a control_state counter.
       requestBody:
-        $ref: '#/components/requestBodies/RiskIncrement'
+        $ref: '#/components/requestBodies/ControlStateIncrement'
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /ProxyService/RiskCount:
+  /ProxyService/ControlStateCount:
     post:
-      summary: Query a risk counter window.
+      summary: Query a control_state counter window.
       requestBody:
-        $ref: '#/components/requestBodies/RiskCount'
+        $ref: '#/components/requestBodies/ControlStateCount'
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /ProxyService/RiskHset:
+  /ProxyService/ControlStateHset:
     post:
-      summary: Set a timestamped risk value.
+      summary: Set a timestamped control_state value.
       requestBody:
-        $ref: '#/components/requestBodies/RiskHset'
+        $ref: '#/components/requestBodies/ControlStateHset'
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /ProxyService/RiskHquery:
+  /ProxyService/ControlStateHquery:
     post:
-      summary: Query H-family risk values through the C++ proxy-compatible alias.
+      summary: Query H-family control_state values through the C++ proxy-compatible alias.
       requestBody:
-        $ref: '#/components/requestBodies/RiskHquery'
+        $ref: '#/components/requestBodies/ControlStateHquery'
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /ProxyService/RiskCPCSet:
+  /ProxyService/ControlStateCPCSet:
     post:
-      summary: Set CPC risk values through the C++ proxy-compatible alias.
+      summary: Set CPC control_state values through the C++ proxy-compatible alias.
       requestBody:
-        $ref: '#/components/requestBodies/RiskCPCSet'
+        $ref: '#/components/requestBodies/ControlStateCPCSet'
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /ProxyService/RiskCPCQuery:
+  /ProxyService/ControlStateCPCQuery:
     post:
-      summary: Query CPC risk counts through the C++ proxy-compatible alias.
+      summary: Query CPC control_state counts through the C++ proxy-compatible alias.
       requestBody:
-        $ref: '#/components/requestBodies/RiskCPCQuery'
+        $ref: '#/components/requestBodies/ControlStateCPCQuery'
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /ProxyService/RiskFolSet:
+  /ProxyService/ControlStateFolSet:
     post:
-      summary: Set first-or-last risk value.
+      summary: Set first-or-last control_state value.
       requestBody:
-        $ref: '#/components/requestBodies/RiskFolSet'
+        $ref: '#/components/requestBodies/ControlStateFolSet'
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /ProxyService/RiskFolQuery:
+  /ProxyService/ControlStateFolQuery:
     post:
-      summary: Query first-or-last risk value.
+      summary: Query first-or-last control_state value.
       requestBody:
         $ref: '#/components/requestBodies/Key'
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
-  /ProxyService/RiskManager:
+  /ProxyService/ControlStateManager:
     post:
-      summary: Query risk manager entries.
+      summary: Query control_state manager entries.
       requestBody:
-        $ref: '#/components/requestBodies/RiskManager'
+        $ref: '#/components/requestBodies/ControlStateManager'
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
@@ -456,54 +456,54 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/IpsQueryLastRequest'
-    RiskIncrement:
+    ControlStateIncrement:
       required: true
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/RiskIncrementRequest'
-    RiskCount:
+            $ref: '#/components/schemas/ControlStateIncrementRequest'
+    ControlStateCount:
       required: true
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/RiskCountRequest'
-    RiskHset:
+            $ref: '#/components/schemas/ControlStateCountRequest'
+    ControlStateHset:
       required: true
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/RiskHsetRequest'
-    RiskHquery:
+            $ref: '#/components/schemas/ControlStateHsetRequest'
+    ControlStateHquery:
       required: true
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/RiskHqueryRequest'
-    RiskCPCSet:
+            $ref: '#/components/schemas/ControlStateHqueryRequest'
+    ControlStateCPCSet:
       required: true
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/RiskCPCSetRequest'
-    RiskCPCQuery:
+            $ref: '#/components/schemas/ControlStateCPCSetRequest'
+    ControlStateCPCQuery:
       required: true
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/RiskCPCQueryRequest'
-    RiskFolSet:
+            $ref: '#/components/schemas/ControlStateCPCQueryRequest'
+    ControlStateFolSet:
       required: true
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/RiskFolSetRequest'
-    RiskManager:
+            $ref: '#/components/schemas/ControlStateFolSetRequest'
+    ControlStateManager:
       required: true
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/RiskManagerRequest'
+            $ref: '#/components/schemas/ControlStateManagerRequest'
     MatrixArkAppendRecords:
       required: true
       content:
@@ -821,7 +821,7 @@ components:
           type: string
         count:
           type: integer
-    RiskIncrementRequest:
+    ControlStateIncrementRequest:
       allOf:
         - $ref: '#/components/schemas/KeyRequest'
         - type: object
@@ -839,7 +839,7 @@ components:
             ttl_ms:
               type: integer
               format: int64
-    RiskCountRequest:
+    ControlStateCountRequest:
       allOf:
         - $ref: '#/components/schemas/KeyRequest'
         - type: object
@@ -851,7 +851,7 @@ components:
             end_ms:
               type: integer
               format: int64
-    RiskHsetRequest:
+    ControlStateHsetRequest:
       allOf:
         - $ref: '#/components/schemas/KeyRequest'
         - type: object
@@ -882,7 +882,7 @@ components:
             precision_ms:
               type: integer
               format: int64
-    RiskWindow:
+    ControlStateWindow:
       type: object
       required: [start_offset, end_offset, unit]
       properties:
@@ -895,7 +895,7 @@ components:
         unit:
           type: string
           enum: [second, minute, hour, day]
-    RiskHqueryRequest:
+    ControlStateHqueryRequest:
       allOf:
         - $ref: '#/components/schemas/KeyRequest'
         - type: object
@@ -909,7 +909,7 @@ components:
             windows:
               type: array
               items:
-                $ref: '#/components/schemas/RiskWindow'
+                $ref: '#/components/schemas/ControlStateWindow'
             htype:
               type: string
               enum: [count, min, max, change]
@@ -918,7 +918,7 @@ components:
             precision_ms:
               type: integer
               format: int64
-    RiskCPCSetRequest:
+    ControlStateCPCSetRequest:
       allOf:
         - $ref: '#/components/schemas/KeyRequest'
         - type: object
@@ -945,7 +945,7 @@ components:
               format: int64
             dont_upgrade_cpc:
               type: boolean
-    RiskCPCQueryRequest:
+    ControlStateCPCQueryRequest:
       allOf:
         - $ref: '#/components/schemas/KeyRequest'
         - type: object
@@ -962,13 +962,13 @@ components:
             windows:
               type: array
               items:
-                $ref: '#/components/schemas/RiskWindow'
+                $ref: '#/components/schemas/ControlStateWindow'
             with_detail:
               type: boolean
             precision_ms:
               type: integer
               format: int64
-    RiskFolSetRequest:
+    ControlStateFolSetRequest:
       allOf:
         - $ref: '#/components/schemas/KeyRequest'
         - type: object
@@ -993,7 +993,7 @@ components:
             fol_type:
               type: string
               enum: [first, last]
-    RiskManagerKvPair:
+    ControlStateManagerKvPair:
       type: object
       required: [key, value]
       properties:
@@ -1001,7 +1001,7 @@ components:
           type: string
         value:
           type: string
-    RiskManagerRequest:
+    ControlStateManagerRequest:
       allOf:
         - $ref: '#/components/schemas/KeyRequest'
         - type: object
@@ -1014,7 +1014,7 @@ components:
             field_list:
               type: array
               items:
-                $ref: '#/components/schemas/RiskManagerKvPair'
+                $ref: '#/components/schemas/ControlStateManagerKvPair'
             start_offset:
               type: string
             end_offset:

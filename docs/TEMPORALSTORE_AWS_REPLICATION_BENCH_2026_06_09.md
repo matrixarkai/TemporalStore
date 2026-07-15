@@ -153,7 +153,7 @@ Interpretation:
 
 | Mode | Status | 2-thread Write QPS | 2-thread Read QPS | Secondary Visibility | Notes |
 |---|---|---:|---:|---:|---|
-| shared-store async | Pass | `4395` | `3072` | `104 ms` | High-write path with RPO risk |
+| shared-store async | Pass | `4395` | `3072` | `104 ms` | High-write path with RPO control_state |
 | shared-store sync | Pass | `167` | `4705` | `101 ms` | Safer but EFS-write-limited |
 | Raft consensus | Fail | n/a | n/a | n/a | Control-plane Raft replica-group integration missing |
 

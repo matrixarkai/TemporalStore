@@ -1,5 +1,5 @@
 // Copyright (c) 2022-present, ByteDance Inc. All rights reserved.
-#include "model/risk_hash_model.h"
+#include "model/control_state_hash_model.h"
 
 #include <absl/container/flat_hash_set.h>
 
@@ -7,15 +7,15 @@
 #include <set>
 #include <vector>
 
-#include "model/risk_cpc_model.h"
+#include "model/control_state_cpc_model.h"
 
 namespace bcache2 {
 namespace model {
-void RiskHashOrSet::Del(partition::CmdContext* ctx, const std::string& key) {
+void ControlStateHashOrSet::Del(partition::CmdContext* ctx, const std::string& key) {
     data_->Del(ctx, key);
 }
 
-void RiskHashOrSet::DoMinGC(partition::CmdContext* ctx, const std::vector<std::string>& keys,
+void ControlStateHashOrSet::DoMinGC(partition::CmdContext* ctx, const std::vector<std::string>& keys,
                             std::time_t now) {
     // 从keys的前缀中获取到当前写入的精度(随机一个)，对该精度下的数据进行过期，每次过期1000个即终止，key的结束为前缀_(当前时间戳-ttl)
     size_t size = keys.size();
@@ -31,7 +31,7 @@ void RiskHashOrSet::DoMinGC(partition::CmdContext* ctx, const std::vector<std::s
     DoUUIDGC(ctx, now);
 }
 
-void RiskHashOrSet::DoUUIDGC(partition::CmdContext* ctx, std::time_t now) {
+void ControlStateHashOrSet::DoUUIDGC(partition::CmdContext* ctx, std::time_t now) {
     std::vector<std::string> expire_keys;
     auto startIter = data_->LowerBound(Uuid_key_prefix);
     std::string maxUUID = "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz";
@@ -47,7 +47,7 @@ void RiskHashOrSet::DoUUIDGC(partition::CmdContext* ctx, std::time_t now) {
     }
 }
 
-void RiskHashOrSet::DoGC(partition::CmdContext* ctx, const std::string& startPrefix,
+void ControlStateHashOrSet::DoGC(partition::CmdContext* ctx, const std::string& startPrefix,
                         const std::string& endPrefix, bool isFull) {
     uint64_t count = 0;
     std::vector<std::string> expire_keys;
@@ -66,11 +66,11 @@ void RiskHashOrSet::DoGC(partition::CmdContext* ctx, const std::string& startPre
 }
 
 // 过期的key多保留一会，保留过期时间的1.2倍的时间
-uint64_t RiskHashOrSet::GetEndTimestamp(std::time_t now) {
+uint64_t ControlStateHashOrSet::GetEndTimestamp(std::time_t now) {
     return now - ttl_;
 }
 
-void RiskHashOrSet::DoFullGC(partition::CmdContext* ctx, const std::vector<std::string>& keys,
+void ControlStateHashOrSet::DoFullGC(partition::CmdContext* ctx, const std::vector<std::string>& keys,
                              std::time_t now) {
     absl::flat_hash_set<std::string> prefixs;
     for (auto key : keys) {
@@ -89,7 +89,7 @@ void RiskHashOrSet::DoFullGC(partition::CmdContext* ctx, const std::vector<std::
     DoUUIDGC(ctx, now);
 }
 
-void RiskHashOrSet::SetTTL(partition::CmdContext* ctx, uint64_t ttl) {
+void ControlStateHashOrSet::SetTTL(partition::CmdContext* ctx, uint64_t ttl) {
     if (ttl_ == 0L) {
         auto it = data_->Find(Ttl_field_key);
         if (it == data_->End()) {
@@ -110,7 +110,7 @@ void RiskHashOrSet::SetTTL(partition::CmdContext* ctx, uint64_t ttl) {
     }
 }
 
-uint64_t RiskHashOrSet::GetTTL(partition::CmdContext* ctx) {
+uint64_t ControlStateHashOrSet::GetTTL(partition::CmdContext* ctx) {
     auto it = data_->Find(Ttl_field_key);
     if (it == data_->End()) {
         return 0L;
@@ -119,7 +119,7 @@ uint64_t RiskHashOrSet::GetTTL(partition::CmdContext* ctx) {
     }
 }
 
-Status RiskHashOrSet::InnerBatchSet(partition::CmdContext* ctx, risk::RiskTimerLogger *timer,
+Status ControlStateHashOrSet::InnerBatchSet(partition::CmdContext* ctx, control_state::ControlStateTimerLogger *timer,
                                     const std::vector<std::string>& keys,
                                     const std::vector<std::string>& vals,
                                     std::time_t now) {
@@ -151,12 +151,12 @@ Status RiskHashOrSet::InnerBatchSet(partition::CmdContext* ctx, risk::RiskTimerL
     return status;
 }
 
-Status RiskHashOrSet::CheckMinPrecisonFiledSize(partition::CmdContext* ctx,
+Status ControlStateHashOrSet::CheckMinPrecisonFiledSize(partition::CmdContext* ctx,
                                                 const std::vector<std::string>& keys) {
     if (keys.size() <= 0) {
         return Status::InvalidArgument("key is empty");
     }
-    // 精度越细，枚举值中RiskPrecision中的值越小
+    // 精度越细，枚举值中ControlStatePrecision中的值越小
     std::string min_precison_key = keys[0];
     for (auto key : keys) {
         if (key < min_precison_key) {
@@ -179,8 +179,8 @@ Status RiskHashOrSet::CheckMinPrecisonFiledSize(partition::CmdContext* ctx,
     }
 }
 
-Status RiskHashOrSet::InnerIncrByAndSetValue(partition::CmdContext* ctx,
-                                             risk::RiskTimerLogger *timer,
+Status ControlStateHashOrSet::InnerIncrByAndSetValue(partition::CmdContext* ctx,
+                                             control_state::ControlStateTimerLogger *timer,
                                              const std::string change_value, std::string key,
                                              std::time_t now) {
     int64_t cur_val = 1;

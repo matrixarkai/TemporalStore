@@ -9,17 +9,17 @@ extern "C" {
 
 typedef struct temporalstore_client temporalstore_client_t;
 
-typedef enum temporalstore_risk_precision {
-    TEMPORALSTORE_RISK_ONE_SECOND = 0,
-    TEMPORALSTORE_RISK_FIVE_SECONDS = 1,
-    TEMPORALSTORE_RISK_TEN_SECONDS = 2,
-    TEMPORALSTORE_RISK_ONE_MINUTE = 3,
-    TEMPORALSTORE_RISK_FIVE_MINUTES = 4,
-    TEMPORALSTORE_RISK_TEN_MINUTES = 5,
-    TEMPORALSTORE_RISK_ONE_HOUR = 6,
-    TEMPORALSTORE_RISK_ONE_DAY = 7,
-    TEMPORALSTORE_RISK_ONE_MONTH = 8,
-} temporalstore_risk_precision_t;
+typedef enum temporalstore_control_state_precision {
+    TEMPORALSTORE_CONTROL_STATE_ONE_SECOND = 0,
+    TEMPORALSTORE_CONTROL_STATE_FIVE_SECONDS = 1,
+    TEMPORALSTORE_CONTROL_STATE_TEN_SECONDS = 2,
+    TEMPORALSTORE_CONTROL_STATE_ONE_MINUTE = 3,
+    TEMPORALSTORE_CONTROL_STATE_FIVE_MINUTES = 4,
+    TEMPORALSTORE_CONTROL_STATE_TEN_MINUTES = 5,
+    TEMPORALSTORE_CONTROL_STATE_ONE_HOUR = 6,
+    TEMPORALSTORE_CONTROL_STATE_ONE_DAY = 7,
+    TEMPORALSTORE_CONTROL_STATE_ONE_MONTH = 8,
+} temporalstore_control_state_precision_t;
 
 typedef enum temporalstore_window_unit {
     TEMPORALSTORE_WINDOW_SECOND = 0,
@@ -231,12 +231,12 @@ int temporalstore_query_ips_last_instances(temporalstore_client_t* client, const
                                            temporalstore_ips_feature_array_t* features,
                                            char** error_message);
 
-int temporalstore_risk_increment(temporalstore_client_t* client, const char* key, int64_t amount,
+int temporalstore_control_state_increment(temporalstore_client_t* client, const char* key, int64_t amount,
                                  uint64_t ttl_seconds,
-                                 temporalstore_risk_precision_t precision, const char* uuid,
+                                 temporalstore_control_state_precision_t precision, const char* uuid,
                                  uint64_t occur_time_seconds, char** error_message);
-int temporalstore_risk_count(temporalstore_client_t* client, const char* key,
-                             temporalstore_risk_precision_t precision, int64_t window_start,
+int temporalstore_control_state_count(temporalstore_client_t* client, const char* key,
+                             temporalstore_control_state_precision_t precision, int64_t window_start,
                              int64_t window_end, temporalstore_window_unit_t window_unit,
                              int64_t* count, char** error_message);
 

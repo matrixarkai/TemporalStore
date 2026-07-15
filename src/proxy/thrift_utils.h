@@ -11,7 +11,7 @@
 #include "extension/feature/interface.pb.h"
 #include "extension/hash/interface.pb.h"
 #include "extension/modules.pb.h"
-#include "extension/risk/interface.pb.h"
+#include "extension/control_state/interface.pb.h"
 #include "extension/string/interface.pb.h"
 #include "thrift/TApplicationException.h"
 #include "thrift/TProcessor.h"
@@ -94,113 +94,113 @@ inline Status TransformRequest(const thrift::GetRequest& request,
     return Status::OK();
 }
 
-inline Status TransformRequest(const thrift::RiskHsetRequest& request,
+inline Status TransformRequest(const thrift::ControlStateHsetRequest& request,
                                client::TableCore::Request* client_request) {
-    risk::HsetRequest pb_request;
+    control_state::HsetRequest pb_request;
     pb_request.set_key(request.key);
-    pb_request.set_htype(risk::HType(request.htype));
+    pb_request.set_htype(control_state::HType(request.htype));
     pb_request.set_ttl(request.ttl);
     pb_request.set_value(request.value);
     pb_request.set_occur_time(request.occur_time);
-    pb_request.set_precision(risk::RiskPrecision(request.precision));
-    client_request->cmd_id = MakeCmdId(RISK, risk::HSET);
+    pb_request.set_precision(control_state::ControlStatePrecision(request.precision));
+    client_request->cmd_id = MakeCmdId(CONTROL_STATE, control_state::HSET);
     client_request->key = request.key;
-    client_request->input.set_module_id(RISK);
-    client_request->input.set_function_id(risk::HSET);
+    client_request->input.set_module_id(CONTROL_STATE);
+    client_request->input.set_function_id(control_state::HSET);
     client_request->input.set_request_bytes(pb_request.SerializeAsString());
     return Status::OK();
 }
 
-inline Status TransformRequest(const thrift::RiskHqueryRequest& request,
+inline Status TransformRequest(const thrift::ControlStateHqueryRequest& request,
                                client::TableCore::Request* client_request) {
-    risk::HqueryRequest pb_request;
+    control_state::HqueryRequest pb_request;
     pb_request.set_key(request.key);
     for (size_t i = 0; i < request.windows.size(); i++) {
         auto window = pb_request.add_windows();
         window->set_start(request.windows[i].start_offset);
         window->set_end(request.windows[i].end_offset);
-        window->set_unit(risk::WindowUnit(request.windows[i].unit));
+        window->set_unit(control_state::WindowUnit(request.windows[i].unit));
     }
-    pb_request.set_precision(risk::RiskPrecision(request.precision));
-    pb_request.set_htype(risk::HType(request.htype));
-    client_request->cmd_id = MakeCmdId(RISK, risk::HQUERY);
+    pb_request.set_precision(control_state::ControlStatePrecision(request.precision));
+    pb_request.set_htype(control_state::HType(request.htype));
+    client_request->cmd_id = MakeCmdId(CONTROL_STATE, control_state::HQUERY);
     client_request->key = request.key;
-    client_request->input.set_module_id(RISK);
-    client_request->input.set_function_id(risk::HQUERY);
+    client_request->input.set_module_id(CONTROL_STATE);
+    client_request->input.set_function_id(control_state::HQUERY);
     client_request->input.set_request_bytes(pb_request.SerializeAsString());
     return Status::OK();
 }
 
-inline Status TransformRequest(const thrift::RiskCPCSetRequest& request,
+inline Status TransformRequest(const thrift::ControlStateCPCSetRequest& request,
                                client::TableCore::Request* client_request) {
-    risk::CPCSetRequest pb_request;
+    control_state::CPCSetRequest pb_request;
     pb_request.set_key(request.key);
     pb_request.set_ttl(request.ttl);
     pb_request.set_occur_time(request.occur_time);
-    pb_request.set_precision(risk::RiskPrecision(request.precision));
+    pb_request.set_precision(control_state::ControlStatePrecision(request.precision));
     pb_request.set_dont_upgrade_cpc(request.dont_upgrade_cpc);
     for (size_t i = 0; i < request.values.size(); i++) {
         pb_request.add_values(request.values[i]);
     }
-    client_request->cmd_id = MakeCmdId(RISK, risk::CPCSET);
+    client_request->cmd_id = MakeCmdId(CONTROL_STATE, control_state::CPCSET);
     client_request->key = request.key;
-    client_request->input.set_module_id(RISK);
-    client_request->input.set_function_id(risk::CPCSET);
+    client_request->input.set_module_id(CONTROL_STATE);
+    client_request->input.set_function_id(control_state::CPCSET);
     client_request->input.set_request_bytes(pb_request.SerializeAsString());
     return Status::OK();
 }
 
-inline Status TransformRequest(const thrift::RiskCPCQueryRequest& request,
+inline Status TransformRequest(const thrift::ControlStateCPCQueryRequest& request,
                                client::TableCore::Request* client_request) {
-    risk::CPCQueryRequest pb_request;
+    control_state::CPCQueryRequest pb_request;
     pb_request.set_key(request.key);
     for (size_t i = 0; i < request.windows.size(); i++) {
         auto window = pb_request.add_windows();
         window->set_start(request.windows[i].start_offset);
         window->set_end(request.windows[i].end_offset);
-        window->set_unit(risk::WindowUnit(request.windows[i].unit));
+        window->set_unit(control_state::WindowUnit(request.windows[i].unit));
     }
-    pb_request.set_precision(risk::RiskPrecision(request.precision));
+    pb_request.set_precision(control_state::ControlStatePrecision(request.precision));
     pb_request.set_with_detail(request.with_detail);
-    client_request->cmd_id = MakeCmdId(RISK, risk::CPCQUERY);
+    client_request->cmd_id = MakeCmdId(CONTROL_STATE, control_state::CPCQUERY);
     client_request->key = request.key;
-    client_request->input.set_module_id(RISK);
-    client_request->input.set_function_id(risk::CPCQUERY);
+    client_request->input.set_module_id(CONTROL_STATE);
+    client_request->input.set_function_id(control_state::CPCQUERY);
     client_request->input.set_request_bytes(pb_request.SerializeAsString());
     return Status::OK();
 }
 
-inline Status TransformRequest(const thrift::RiskFolSetRequest& request,
+inline Status TransformRequest(const thrift::ControlStateFolSetRequest& request,
                                client::TableCore::Request* client_request) {
-    risk::FolSetRequest pb_request;
+    control_state::FolSetRequest pb_request;
     pb_request.set_key(request.key);
     pb_request.set_value(request.value);
     pb_request.set_ttl(request.ttl);
     pb_request.set_occur_time(request.occur_time);
-    pb_request.set_fol_type(bcache2::risk::FolType(request.fol_type));
-    client_request->cmd_id = MakeCmdId(RISK, risk::FOLSET);
+    pb_request.set_fol_type(bcache2::control_state::FolType(request.fol_type));
+    client_request->cmd_id = MakeCmdId(CONTROL_STATE, control_state::FOLSET);
     client_request->key = request.key;
-    client_request->input.set_module_id(RISK);
-    client_request->input.set_function_id(risk::FOLSET);
+    client_request->input.set_module_id(CONTROL_STATE);
+    client_request->input.set_function_id(control_state::FOLSET);
     client_request->input.set_request_bytes(pb_request.SerializeAsString());
     return Status::OK();
 }
 
-inline Status TransformRequest(const thrift::RiskFolQueryRequest& request,
+inline Status TransformRequest(const thrift::ControlStateFolQueryRequest& request,
                                client::TableCore::Request* client_request) {
-    risk::FolQueryRequest pb_request;
+    control_state::FolQueryRequest pb_request;
     pb_request.set_key(request.key);
-    client_request->cmd_id = MakeCmdId(RISK, risk::FOLQUERY);
+    client_request->cmd_id = MakeCmdId(CONTROL_STATE, control_state::FOLQUERY);
     client_request->key = request.key;
-    client_request->input.set_module_id(RISK);
-    client_request->input.set_function_id(risk::FOLQUERY);
+    client_request->input.set_module_id(CONTROL_STATE);
+    client_request->input.set_function_id(control_state::FOLQUERY);
     client_request->input.set_request_bytes(pb_request.SerializeAsString());
     return Status::OK();
 }
 
-inline Status TransformRequest(const thrift::RiskManagerRequest& request,
+inline Status TransformRequest(const thrift::ControlStateManagerRequest& request,
                                client::TableCore::Request* client_request) {
-    risk::ManagerRequest pb_request;
+    control_state::ManagerRequest pb_request;
     for (size_t i = 0; i < request.field_list.size(); i++) {
         auto kv_pair = pb_request.add_field_list();
         kv_pair->set_field(request.field_list[i].key);
@@ -208,13 +208,13 @@ inline Status TransformRequest(const thrift::RiskManagerRequest& request,
     }
     pb_request.set_key(request.key);
     pb_request.set_is_cpc(request.is_cpc);
-    pb_request.set_op_type(bcache2::risk::ManagerType(request.op_type));
+    pb_request.set_op_type(bcache2::control_state::ManagerType(request.op_type));
     pb_request.set_range_start(request.start_offset);
     pb_request.set_range_end(request.end_offset);
-    client_request->cmd_id = MakeCmdId(RISK, risk::MANAGER);
+    client_request->cmd_id = MakeCmdId(CONTROL_STATE, control_state::MANAGER);
     client_request->key = request.key;
-    client_request->input.set_module_id(RISK);
-    client_request->input.set_function_id(risk::MANAGER);
+    client_request->input.set_module_id(CONTROL_STATE);
+    client_request->input.set_function_id(control_state::MANAGER);
     client_request->input.set_request_bytes(pb_request.SerializeAsString());
     return Status::OK();
 }
@@ -312,20 +312,20 @@ inline Status TransformResponse(const client::TableCore::Response& client_respon
 }
 
 inline Status TransformResponse(const client::TableCore::Response& client_response,
-                                thrift::RiskCommonResponse* response) {
+                                thrift::ControlStateCommonResponse* response) {
     // do nothing
     return Status::OK();
 }
 
 inline Status TransformResponse(const client::TableCore::Response& client_response,
-                                thrift::RiskHqueryResponse* response) {
-    risk::HqueryResponse pb_resp;
+                                thrift::ControlStateHqueryResponse* response) {
+    control_state::HqueryResponse pb_resp;
     if (!pb_resp.ParseFromString(client_response.output->response_bytes())) {
         return Status::InvalidArgument("invalid response format");
     }
-    std::vector<thrift::RiskResultDetail> result_list;
+    std::vector<thrift::ControlStateResultDetail> result_list;
     for (int i = 0; i < pb_resp.result_list_size(); i++) {
-        thrift::RiskResultDetail resultDetail;
+        thrift::ControlStateResultDetail resultDetail;
         resultDetail.has_result = pb_resp.result_list(i).has_result();
         resultDetail.result = pb_resp.result_list(i).result();
         result_list.emplace_back(resultDetail);
@@ -335,8 +335,8 @@ inline Status TransformResponse(const client::TableCore::Response& client_respon
 }
 
 inline Status TransformResponse(const client::TableCore::Response& client_response,
-                                thrift::RiskCPCQueryResponse* response) {
-    risk::CPCQueryResponse pb_resp;
+                                thrift::ControlStateCPCQueryResponse* response) {
+    control_state::CPCQueryResponse pb_resp;
     if (!pb_resp.ParseFromString(client_response.output->response_bytes())) {
         return Status::InvalidArgument("invalid response format");
     }
@@ -346,9 +346,9 @@ inline Status TransformResponse(const client::TableCore::Response& client_respon
     }
     response->__set_count_list(count_list);
 
-    std::vector<thrift::RiskListDetail> result_list;
+    std::vector<thrift::ControlStateListDetail> result_list;
     for (int i = 0; i < pb_resp.detail_lists_size(); i++) {
-        thrift::RiskListDetail resultDetail;
+        thrift::ControlStateListDetail resultDetail;
         for (int j = 0; j < pb_resp.detail_lists(i).detail_size(); j++) {
             resultDetail.detail.emplace_back(pb_resp.detail_lists(i).detail(j));
         }
@@ -359,8 +359,8 @@ inline Status TransformResponse(const client::TableCore::Response& client_respon
 }
 
 inline Status TransformResponse(const client::TableCore::Response& client_response,
-                                thrift::RiskFolQueryResponse* response) {
-    risk::FolQueryResponse pb_resp;
+                                thrift::ControlStateFolQueryResponse* response) {
+    control_state::FolQueryResponse pb_resp;
     if (!pb_resp.ParseFromString(client_response.output->response_bytes())) {
         return Status::InvalidArgument("invalid response format");
     }
@@ -369,14 +369,14 @@ inline Status TransformResponse(const client::TableCore::Response& client_respon
 }
 
 inline Status TransformResponse(const client::TableCore::Response& client_response,
-                                thrift::RiskManagerResponse* response) {
-    risk::ManagerResponse pb_resp;
+                                thrift::ControlStateManagerResponse* response) {
+    control_state::ManagerResponse pb_resp;
     if (!pb_resp.ParseFromString(client_response.output->response_bytes())) {
         return Status::InvalidArgument("invalid response format");
     }
-    std::vector<thrift::RiskKvPair> result_list;
+    std::vector<thrift::ControlStateKvPair> result_list;
     for (int i = 0; i < pb_resp.result_size(); i++) {
-        thrift::RiskKvPair kvPair;
+        thrift::ControlStateKvPair kvPair;
         kvPair.key = pb_resp.result(i).field();
         kvPair.value = pb_resp.result(i).value();
         result_list.emplace_back(kvPair);

@@ -152,8 +152,8 @@ if [[ "${REDIS_COMPAT_SURFACE}" == "trimmed" ]]; then
     expect_eq fappend OK FAPPEND "$(k feature)" 10 2
     expect_eq fappend_policy 1 FAPPENDPOLICY "$(k feature)" 20 3 UPSERT
     expect_eq fagg 5 FAGG "$(k feature)" 0 30 sum
-    expect_eq riskincr OK RISKINCR "$(k risk)" 10 5
-    expect_eq riskcount 5 RISKCOUNT "$(k risk)" 0 30
+    expect_eq control_stateincr OK CONTROL_STATEINCR "$(k control_state)" 10 5
+    expect_eq control_statecount 5 CONTROL_STATECOUNT "$(k control_state)" 0 30
   fi
 
   if [[ "${REDIS_EXPECT_UNSUPPORTED_COLLECTIONS}" == "1" ]]; then
@@ -347,8 +347,8 @@ if [[ "${REDIS_TEST_MODEL_COMMANDS}" == "1" ]]; then
   expect_eq fappend OK FAPPEND "$(k feature)" 10 2
   expect_eq fappend_policy 1 FAPPENDPOLICY "$(k feature)" 20 3 UPSERT
   expect_eq fagg 5 FAGG "$(k feature)" 0 30 sum
-  expect_eq riskincr OK RISKINCR "$(k risk)" 10 5
-  expect_eq riskcount 5 RISKCOUNT "$(k risk)" 0 30
+  expect_eq control_stateincr OK CONTROL_STATEINCR "$(k control_state)" 10 5
+  expect_eq control_statecount 5 CONTROL_STATECOUNT "$(k control_state)" 0 30
 fi
 if [[ "${REDIS_COMPAT_SURFACE}" == "full" ]]; then
 expect_eq sadd 2 SADD "$(k set)" a b a

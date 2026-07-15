@@ -74,7 +74,7 @@ description: Debug payment incident context.
 
 ## When To Use
 
-Use when checkout latency or payment risk spikes.
+Use when checkout latency or payment control_state spikes.
 ```
 
 Rust API:

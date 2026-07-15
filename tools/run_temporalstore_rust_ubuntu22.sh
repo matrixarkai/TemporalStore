@@ -65,9 +65,9 @@ target/debug/client seqquery seq:1 0 200 10 action_type eq 3
 target/debug/client ipsadd ips:1 100 inst-a
 target/debug/client ipsadd ips:1 200 inst-b
 target/debug/client ipslast ips:1 1
-target/debug/client riskinc risk:1 100 2
-target/debug/client riskinc risk:1 200 3
-target/debug/client riskcount risk:1 0 200
+target/debug/client control_stateinc control_state:1 100 2
+target/debug/client control_stateinc control_state:1 200 3
+target/debug/client control_statecount control_state:1 0 200
 target/debug/client ttl hello
 
 python3 - <<'PY'

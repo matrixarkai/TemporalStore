@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::block_store::{BlockAddress, LocalBlockStore};
 use crate::types::{
-    FeatureFilter, FeatureFilterOp, FeaturePoint, IpsSnapshotReport, IpsStats, RiskFamily,
+    FeatureFilter, FeatureFilterOp, FeaturePoint, IpsSnapshotReport, IpsStats, ControlStateFamily,
     SequenceFeatureRow, ShardId,
 };
 use rustmtcache::MultiLayerCache;
@@ -125,7 +125,7 @@ pub(super) fn aggregate_feature_values(values: &[Vec<u8>], aggregator: &str) -> 
     }
 }
 
-pub(super) fn aggregate_risk_values(values: &[i64], aggregator: &str) -> i64 {
+pub(super) fn aggregate_control_state_values(values: &[i64], aggregator: &str) -> i64 {
     match aggregator.to_ascii_lowercase().as_str() {
         "sum" | "count" | "" => values.iter().sum(),
         "events" | "len" => values.len() as i64,
@@ -137,13 +137,13 @@ pub(super) fn aggregate_risk_values(values: &[i64], aggregator: &str) -> i64 {
     }
 }
 
-pub(super) fn is_risk_change_aggregator(aggregator: &str) -> bool {
+pub(super) fn is_control_state_change_aggregator(aggregator: &str) -> bool {
     aggregator.eq_ignore_ascii_case("change")
 }
 
-pub(super) fn count_risk_changes(shard: &ShardState, key: &str, start_ms: u64, end_ms: u64) -> i64 {
+pub(super) fn count_control_state_changes(shard: &ShardState, key: &str, start_ms: u64, end_ms: u64) -> i64 {
     let mut unique = BTreeSet::new();
-    if let Some(series) = shard.risk_changes.get(key) {
+    if let Some(series) = shard.control_state_changes.get(key) {
         for (_, values) in series.range(start_ms..=end_ms) {
             unique.extend(values.iter().cloned());
         }
@@ -151,15 +151,15 @@ pub(super) fn count_risk_changes(shard: &ShardState, key: &str, start_ms: u64, e
     unique.len() as i64
 }
 
-pub(super) fn risk_family_key(family: RiskFamily, key: &str) -> String {
-    format!("risk:{}:{key}", risk_family_name(family))
+pub(super) fn control_state_family_key(family: ControlStateFamily, key: &str) -> String {
+    format!("control_state:{}:{key}", control_state_family_name(family))
 }
 
-pub(super) fn risk_family_name(family: RiskFamily) -> &'static str {
+pub(super) fn control_state_family_name(family: ControlStateFamily) -> &'static str {
     match family {
-        RiskFamily::H => "h",
-        RiskFamily::Cpc => "cpc",
-        RiskFamily::Fol => "fol",
+        ControlStateFamily::H => "h",
+        ControlStateFamily::Cpc => "cpc",
+        ControlStateFamily::Fol => "fol",
     }
 }
 

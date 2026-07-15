@@ -14,50 +14,50 @@
 #include "common/logging.h"
 #include "common/macros.h"
 #include "extension/modules.pb.h"
-#include "extension/risk/define.h"
-#include "extension/risk/global.h"
-#include "extension/risk/interface.pb.h"
-#include "extension/risk/metrics_log.h"
-#include "extension/risk/window.h"
-#include "model/risk_cpc_model.h"
-#include "model/risk_hash_model.h"
+#include "extension/control_state/define.h"
+#include "extension/control_state/global.h"
+#include "extension/control_state/interface.pb.h"
+#include "extension/control_state/metrics_log.h"
+#include "extension/control_state/window.h"
+#include "model/control_state_cpc_model.h"
+#include "model/control_state_hash_model.h"
 #include "model/string_model.h"
 #include "partition/compute/execute_env.h"
 
 const int FirstAndSetTimestampSize = 10;
 const int64_t NeedLogLongCostNs = 1 * 1000 * 1000;  // 1ms
-const double kRiskKeyTTLBase = 1;
+const double kControlStateKeyTTLBase = 1;
 
 namespace bcache2 {
-namespace risk {
+namespace control_state {
 
-Status CountHset(ExecuteEnv* env, RiskTimerLogger *timer,
-                 const risk::HsetRequest& request, risk::HsetResponse* response,
-                 const model::RiskUpsertFunc& riskUpsertFunc) {
-    ObjectHandle<model::RiskHashModel> object;
+Status CountHset(ExecuteEnv* env, ControlStateTimerLogger *timer,
+                 const control_state::HsetRequest& request, control_state::HsetResponse* response,
+                 const model::ControlStateUpsertFunc& control_stateUpsertFunc) {
+    ObjectHandle<model::ControlStateHashModel> object;
     Status status = env->GetOrNewObject(request.key(), &object);
     timer->AddCheckPoint("load_data");
     if (!status.ok()) {
         return status;
     }
 
-    // 设置过期时间, 过期时间点的毫秒级时间戳, 过期时间延长 ttl 的 kRiskKeyTTLBase 倍
-    object.SetTtl(bcache2::GetCurrentTimeInMs() + int64_t(request.ttl() * kRiskKeyTTLBase * 1000));
+    // 设置过期时间, 过期时间点的毫秒级时间戳, 过期时间延长 ttl 的 kControlStateKeyTTLBase 倍
+    object.SetTtl(bcache2::GetCurrentTimeInMs() + int64_t(request.ttl() * kControlStateKeyTTLBase * 1000));
 
     timer->AddCheckPoint("set_ttl");
     std::vector<std::string> fields;
     std::vector<int64_t> values;
     time_t timestamp =
-        risk_tool::fixTimeWithPrecision(request.occur_time(), request.key(), request.precision());
+        control_state_tool::fixTimeWithPrecision(request.occur_time(), request.key(), request.precision());
     fields.emplace_back(std::to_string(request.precision()) + std::to_string(timestamp));
     values.emplace_back(std::strtoll(request.value().c_str(), nullptr, 10));
 
     timer->AddCheckPoint("pre_handle");
     status = object->OrSet().BatchUpsert(nullptr, timer,
-        fields, values, request.ttl(), riskUpsertFunc, request.uuid());
+        fields, values, request.ttl(), control_stateUpsertFunc, request.uuid());
 
-    if (UNLIKELY(status.IsRiskAlreadyHandled())) {
-        LOG(INFO) << "[risk]request is already handled, key="
+    if (UNLIKELY(status.IsControlStateAlreadyHandled())) {
+        LOG(INFO) << "[control_state]request is already handled, key="
             << request.key() << " uuid=" << request.uuid();
         status = Status::OK();
     }
@@ -67,28 +67,28 @@ Status CountHset(ExecuteEnv* env, RiskTimerLogger *timer,
     }
     return status;
 }
-Status ChangeHset(ExecuteEnv* env, RiskTimerLogger *timer,
-                  const risk::HsetRequest& request, risk::HsetResponse* response) {
-    ObjectHandle<model::RiskHashModel> object;
+Status ChangeHset(ExecuteEnv* env, ControlStateTimerLogger *timer,
+                  const control_state::HsetRequest& request, control_state::HsetResponse* response) {
+    ObjectHandle<model::ControlStateHashModel> object;
     Status status = env->GetOrNewObject(request.key(), &object);
     timer->AddCheckPoint("load_data");
     if (!status.ok()) {
         return status;
     }
-    // 设置过期时间, 过期时间点的毫秒级时间戳, 过期时间延长 ttl 的 kRiskKeyTTLBase 倍
-    object.SetTtl(bcache2::GetCurrentTimeInMs() + int64_t(request.ttl() * kRiskKeyTTLBase * 1000));
+    // 设置过期时间, 过期时间点的毫秒级时间戳, 过期时间延长 ttl 的 kControlStateKeyTTLBase 倍
+    object.SetTtl(bcache2::GetCurrentTimeInMs() + int64_t(request.ttl() * kControlStateKeyTTLBase * 1000));
 
     timer->AddCheckPoint("set_ttl");
     std::string field = "";
     time_t timestamp =
-        risk_tool::fixTimeWithPrecision(request.occur_time(), request.key(), request.precision());
+        control_state_tool::fixTimeWithPrecision(request.occur_time(), request.key(), request.precision());
     timer->AddCheckPoint("pre_handle");
     status = object->OrSet().CompareAndIncrBy(nullptr, timer,
         request.value(), std::to_string(request.precision()) + std::to_string(timestamp),
         request.ttl(), request.uuid());
 
-    if (UNLIKELY(status.IsRiskAlreadyHandled())) {
-        LOG(INFO) << "[risk]request is already handled, key="
+    if (UNLIKELY(status.IsControlStateAlreadyHandled())) {
+        LOG(INFO) << "[control_state]request is already handled, key="
             << request.key() << " uuid=" << request.uuid();
         status = Status::OK();
     }
@@ -98,12 +98,12 @@ Status ChangeHset(ExecuteEnv* env, RiskTimerLogger *timer,
     return status;
 }
 
-Status CountQuery(ExecuteEnv* env, RiskTimerLogger *timer,
-                  ObjectHandle<model::RiskHashModel>* object,
-                  const risk::Window& window, const risk::RiskPrecision riskPrecision,
-                  risk::HqueryResponse* response, const model::RiskComputeFunc& riskComputeFunc) {
-    std::vector<risk_tool::RiskQueryRange> queryRanges;
-    int ret = risk_tool::getWindows(window, riskPrecision, &queryRanges, false, 0);
+Status CountQuery(ExecuteEnv* env, ControlStateTimerLogger *timer,
+                  ObjectHandle<model::ControlStateHashModel>* object,
+                  const control_state::Window& window, const control_state::ControlStatePrecision control_statePrecision,
+                  control_state::HqueryResponse* response, const model::ControlStateComputeFunc& control_stateComputeFunc) {
+    std::vector<control_state_tool::ControlStateQueryRange> queryRanges;
+    int ret = control_state_tool::getWindows(window, control_statePrecision, &queryRanges, false, 0);
     if (ret != 0) {
         return Status::InvalidArgument("parse window failed");
     }
@@ -111,7 +111,7 @@ Status CountQuery(ExecuteEnv* env, RiskTimerLogger *timer,
     Status status;
     for (auto queryRange : queryRanges) {
         status =
-            (*object)->OrSet().Scan(nullptr, queryRange.begin, queryRange.end, riskComputeFunc);
+            (*object)->OrSet().Scan(nullptr, queryRange.begin, queryRange.end, control_stateComputeFunc);
         if (!status.ok()) {
             response->set_err_code(status.errorcode());
             response->set_err_msg(status.ToString());
@@ -123,8 +123,8 @@ Status CountQuery(ExecuteEnv* env, RiskTimerLogger *timer,
     return Status::OK();
 }
 
-Status FirstOrLastSet(ObjectHandle<model::StringModel>* object, const risk::FolSetRequest& request,
-                      risk::FolSetResponse* response) {
+Status FirstOrLastSet(ObjectHandle<model::StringModel>* object, const control_state::FolSetRequest& request,
+                      control_state::FolSetResponse* response) {
     std::string pre_val = (*object)->GetValue();
 
     int64_t occur_time = request.occur_time();
@@ -133,8 +133,8 @@ Status FirstOrLastSet(ObjectHandle<model::StringModel>* object, const risk::FolS
     }
     std::string cur_val = std::to_string(occur_time) + request.value();
 
-    // 设置过期时间, 过期时间点的毫秒级时间戳, 过期时间延长 ttl 的 kRiskKeyTTLBase 倍
-    object->SetTtl(bcache2::GetCurrentTimeInMs() + int64_t(request.ttl() * kRiskKeyTTLBase * 1000));
+    // 设置过期时间, 过期时间点的毫秒级时间戳, 过期时间延长 ttl 的 kControlStateKeyTTLBase 倍
+    object->SetTtl(bcache2::GetCurrentTimeInMs() + int64_t(request.ttl() * kControlStateKeyTTLBase * 1000));
 
     if (pre_val.empty()) {
         (*object)->SetValue(nullptr, cur_val, bcache2::GetCurrentTimeInMs() + request.ttl() * 1000);
@@ -143,8 +143,8 @@ Status FirstOrLastSet(ObjectHandle<model::StringModel>* object, const risk::FolS
         uint64_t pre_occur_time =
             std::strtoull(pre_val.substr(0, FirstAndSetTimestampSize).c_str(), nullptr, 10);
         auto fol_type = request.fol_type();
-        bool needOverride = (fol_type == bcache2::risk::FIRST && cur_occur_time < pre_occur_time) ||
-                            (fol_type == bcache2::risk::LAST && cur_occur_time > pre_occur_time);
+        bool needOverride = (fol_type == bcache2::control_state::FIRST && cur_occur_time < pre_occur_time) ||
+                            (fol_type == bcache2::control_state::LAST && cur_occur_time > pre_occur_time);
         if (needOverride) {
             (*object)->SetValue(nullptr, cur_val,
                 bcache2::GetCurrentTimeInMs() + request.ttl() * 1000);
@@ -155,59 +155,59 @@ Status FirstOrLastSet(ObjectHandle<model::StringModel>* object, const risk::FolS
 }
 
 Status FirstOrLastGet(ObjectHandle<model::StringModel>* object,
-                      const risk::FolQueryRequest& request, risk::FolQueryResponse* response) {
+                      const control_state::FolQueryRequest& request, control_state::FolQueryResponse* response) {
     response->set_result(((*object)->GetValue()).substr(FirstAndSetTimestampSize));
     return Status::OK();
 }
 
 // 实现指标，包括COUNT，MAX，MIN，CHANGE算子的查询
 Status Hset(ExecuteEnv* env, const HsetRequest& request, HsetResponse* response) {
-    RiskTimerLogger timer(__func__, request.key(), request.htype());
+    ControlStateTimerLogger timer(__func__, request.key(), request.htype());
     switch (request.htype()) {
-    case bcache2::risk::COUNT:
+    case bcache2::control_state::COUNT:
         return CountHset(env, &timer, request, response,
         [](int64_t cur_val, int64_t pre_val) -> int64_t {
             return cur_val + pre_val;
         });
-    case bcache2::risk::MIN:
+    case bcache2::control_state::MIN:
         return CountHset(env, &timer, request, response,
         [](int64_t cur_val, int64_t pre_val) -> int64_t {
             return std::min(cur_val, pre_val);
         });
-    case bcache2::risk::MAX:
+    case bcache2::control_state::MAX:
         return CountHset(env, &timer, request, response,
         [](int64_t cur_val, int64_t pre_val) -> int64_t {
             return std::max(cur_val, pre_val);
         });
-    case bcache2::risk::CHANGE:
+    case bcache2::control_state::CHANGE:
         return ChangeHset(env, &timer, request, response);
     default:
         return Status::InvalidArgument("Invalid htype");
     }
 }
 
-REGISTER_FUNCTION(RISK, HSET, Hset, Write);
+REGISTER_FUNCTION(CONTROL_STATE, HSET, Hset, Write);
 
 // 用于DC场景的写入
 Status CPCSet(ExecuteEnv* env, const CPCSetRequest& request, CPCSetResponse* response) {
-    RiskTimerLogger timer(__func__, request.key(), 0);
+    ControlStateTimerLogger timer(__func__, request.key(), 0);
     ObjectHandle<model::CPCModel> object;
     Status status = env->GetOrNewObject(request.key(), &object);
     timer.AddCheckPoint("load_data");
     if (!status.ok()) {
         return status;
     }
-    // 设置过期时间, 过期时间点的毫秒级时间戳, 过期时间延长 ttl 的 kRiskKeyTTLBase 倍
-    object.SetTtl(bcache2::GetCurrentTimeInMs() + int64_t(request.ttl() * kRiskKeyTTLBase * 1000));
+    // 设置过期时间, 过期时间点的毫秒级时间戳, 过期时间延长 ttl 的 kControlStateKeyTTLBase 倍
+    object.SetTtl(bcache2::GetCurrentTimeInMs() + int64_t(request.ttl() * kControlStateKeyTTLBase * 1000));
 
     timer.AddCheckPoint("set_ttl");
     std::vector<std::string> fields;
 
     // 根据输入的精度，然后获取到需要写入的精度列表，进而拼接字段
     auto precison = request.precision();
-    auto storeLevels = risk_tool::RiskGlobalData::getSingleton().getPrecisionLevelInfo(precison);
+    auto storeLevels = control_state_tool::ControlStateGlobalData::getSingleton().getPrecisionLevelInfo(precison);
     if (storeLevels.size() <= 0) {
-        LOG(WARNING) << "[risk]DcSet failed, get storeLevel failed, precision = " << precison
+        LOG(WARNING) << "[control_state]DcSet failed, get storeLevel failed, precision = " << precison
                      << std::endl;
         return Status::InvalidArgument("precision setting failed");
     }
@@ -215,7 +215,7 @@ Status CPCSet(ExecuteEnv* env, const CPCSetRequest& request, CPCSetResponse* res
     for (const auto& p : storeLevels) {
         // 构建当前的filed值
         time_t timestamp =
-            risk_tool::fixTimeWithPrecision(request.occur_time(), request.key(), p->window);
+            control_state_tool::fixTimeWithPrecision(request.occur_time(), request.key(), p->window);
         fields.emplace_back(std::to_string(p->window) + std::to_string(timestamp));
     }
     int values_size = request.values_size();
@@ -227,8 +227,8 @@ Status CPCSet(ExecuteEnv* env, const CPCSetRequest& request, CPCSetResponse* res
         status = object->Update(nullptr, &timer, fields, request.values(i), request.ttl(),
                                 request.dont_upgrade_cpc(), request.uuid());
 
-        if (UNLIKELY(status.IsRiskAlreadyHandled())) {
-            LOG(INFO) << "[risk]request is already handled, key="
+        if (UNLIKELY(status.IsControlStateAlreadyHandled())) {
+            LOG(INFO) << "[control_state]request is already handled, key="
                 << request.key() << " uuid=" << request.uuid();
             status = Status::OK();
         }
@@ -241,12 +241,12 @@ Status CPCSet(ExecuteEnv* env, const CPCSetRequest& request, CPCSetResponse* res
     return status;
 }
 
-REGISTER_FUNCTION(RISK, CPCSET, CPCSet, Write);
+REGISTER_FUNCTION(CONTROL_STATE, CPCSET, CPCSet, Write);
 
 // 用于dc的读
-Status CPCQuery(ExecuteEnv* env, const risk::CPCQueryRequest& request,
-                risk::CPCQueryResponse* response) {
-    RiskTimerLogger timer(__func__, request.key(), 0);
+Status CPCQuery(ExecuteEnv* env, const control_state::CPCQueryRequest& request,
+                control_state::CPCQueryResponse* response) {
+    ControlStateTimerLogger timer(__func__, request.key(), 0);
     ObjectHandle<model::CPCModel> object;
     Status status = env->GetObject(request.key(), &object);
     timer.AddCheckPoint("load_data");
@@ -266,9 +266,9 @@ Status CPCQuery(ExecuteEnv* env, const risk::CPCQueryRequest& request,
     }
     int windows_size = request.windows_size();
     for (int i = 0; i < windows_size; i++) {
-        std::vector<risk_tool::RiskQueryRange> queryRanges;
+        std::vector<control_state_tool::ControlStateQueryRange> queryRanges;
         int ret =
-            risk_tool::getWindows(request.windows(i), request.precision(), &queryRanges, true, 0);
+            control_state_tool::getWindows(request.windows(i), request.precision(), &queryRanges, true, 0);
         if (ret != 0) {
             return Status::InvalidArgument("parse window failed");
         }
@@ -282,7 +282,7 @@ Status CPCQuery(ExecuteEnv* env, const risk::CPCQueryRequest& request,
             }
             response->set_err_code(status.errorcode());
 
-            risk::ListDetail list_detail;
+            control_state::ListDetail list_detail;
             for (const auto& filed : dResult) {
                 list_detail.add_detail(filed);
             }
@@ -307,12 +307,12 @@ Status CPCQuery(ExecuteEnv* env, const risk::CPCQueryRequest& request,
     return status;
 }
 
-REGISTER_FUNCTION(RISK, CPCQUERY, CPCQuery, Read);
+REGISTER_FUNCTION(CONTROL_STATE, CPCQUERY, CPCQuery, Read);
 
 // 实现指标包括，COUNT，MAX，MIN,CHANGE 算子的查询
 Status Hquery(ExecuteEnv* env, const HqueryRequest& request, HqueryResponse* response) {
-    RiskTimerLogger timer(__func__, request.key(), request.htype());
-    ObjectHandle<model::RiskHashModel> object;
+    ControlStateTimerLogger timer(__func__, request.key(), request.htype());
+    ObjectHandle<model::ControlStateHashModel> object;
     Status status = env->GetObject(request.key(), &object);
     timer.AddCheckPoint("load_data");
     int windows_size = request.windows_size();
@@ -329,18 +329,18 @@ Status Hquery(ExecuteEnv* env, const HqueryRequest& request, HqueryResponse* res
         }
     }
     switch (request.htype()) {
-    case bcache2::risk::CHANGE:
-    case bcache2::risk::COUNT: {
+    case bcache2::control_state::CHANGE:
+    case bcache2::control_state::COUNT: {
         for (int i = 0; i < windows_size; i++) {
             int64_t count = 0;
             bool has_field = false;
-            auto riskCountFunc = [&count, &has_field](const std::string& field,
+            auto control_stateCountFunc = [&count, &has_field](const std::string& field,
                                           const std::string& value) -> void {
                 has_field = true;
                 count += std::strtoll(value.c_str(), nullptr, 10);
             };
             status = CountQuery(env, &timer, &object, request.windows(i), request.precision(),
-                                response, riskCountFunc);
+                                response, control_stateCountFunc);
             if (!status.ok()) {
                 return status;
             }
@@ -352,11 +352,11 @@ Status Hquery(ExecuteEnv* env, const HqueryRequest& request, HqueryResponse* res
         }
         return Status::OK();
     }
-    case bcache2::risk::MIN: {
+    case bcache2::control_state::MIN: {
         for (int i = 0; i < windows_size; i++) {
             bool has_field = false;
             int64_t result = INT64_MAX;
-            auto riskMinFunc = [&result, &has_field](const std::string& field,
+            auto control_stateMinFunc = [&result, &has_field](const std::string& field,
                                                      const std::string& value) -> void {
                 has_field = true;
                 int64_t cur_value = std::strtoll(value.c_str(), nullptr, 10);
@@ -365,7 +365,7 @@ Status Hquery(ExecuteEnv* env, const HqueryRequest& request, HqueryResponse* res
                 }
             };
             status = CountQuery(env, &timer, &object, request.windows(i), request.precision(),
-                                response, riskMinFunc);
+                                response, control_stateMinFunc);
             if (!status.ok()) {
                 return status;
             }
@@ -377,11 +377,11 @@ Status Hquery(ExecuteEnv* env, const HqueryRequest& request, HqueryResponse* res
         }
         return Status::OK();
     }
-    case bcache2::risk::MAX: {
+    case bcache2::control_state::MAX: {
         for (int i = 0; i < windows_size; i++) {
             bool has_field = false;
             int64_t result = INT64_MIN;
-            auto riskMaxFunc = [&result, &has_field](const std::string& filed,
+            auto control_stateMaxFunc = [&result, &has_field](const std::string& filed,
                                                      const std::string& value) -> void {
                 has_field = true;
                 int64_t cur_value = std::strtoll(value.c_str(), nullptr, 10);
@@ -390,7 +390,7 @@ Status Hquery(ExecuteEnv* env, const HqueryRequest& request, HqueryResponse* res
                 }
             };
             status = CountQuery(env, &timer, &object, request.windows(i), request.precision(),
-                                response, riskMaxFunc);
+                                response, control_stateMaxFunc);
             if (!status.ok()) {
                 return status;
             }
@@ -406,11 +406,11 @@ Status Hquery(ExecuteEnv* env, const HqueryRequest& request, HqueryResponse* res
         return Status::InvalidArgument("Invalid htype");
     }
 }
-REGISTER_FUNCTION(RISK, HQUERY, Hquery, Read);
+REGISTER_FUNCTION(CONTROL_STATE, HQUERY, Hquery, Read);
 
 // 实现同步指标，COUNT，MAX，MIN,CHANGE等算子
 Status HsetAndGet(ExecuteEnv* env, const HsetAndGetRequest& request, HsetAndGetResponse* response) {
-    RiskTimerLogger timer(__func__, request.key(), request.htype());
+    ControlStateTimerLogger timer(__func__, request.key(), request.htype());
     Status status;
     // 构建HsetRequest参数
     HsetRequest set_request;
@@ -445,12 +445,12 @@ Status HsetAndGet(ExecuteEnv* env, const HsetAndGetRequest& request, HsetAndGetR
     return status;
 }
 
-REGISTER_FUNCTION(RISK, HSETANDGET, HsetAndGet, Write);
+REGISTER_FUNCTION(CONTROL_STATE, HSETANDGET, HsetAndGet, Write);
 
 // 实现同步指标，DC，LIST算子
 Status CPCSetAndGet(ExecuteEnv* env, const CPCSetAndGetRequest& request,
                     CPCSetAndGetResponse* response) {
-    RiskTimerLogger timer(__func__, request.key(), 0);
+    ControlStateTimerLogger timer(__func__, request.key(), 0);
     Status status;
     CPCSetRequest set_request;
     set_request.set_key(request.key());
@@ -483,11 +483,11 @@ Status CPCSetAndGet(ExecuteEnv* env, const CPCSetAndGetRequest& request,
     return status;
 }
 
-REGISTER_FUNCTION(RISK, CPCSETANDGET, CPCSetAndGet, Write);
+REGISTER_FUNCTION(CONTROL_STATE, CPCSETANDGET, CPCSetAndGet, Write);
 
 // 实现first/last的指标查询算子
 Status FolQuery(ExecuteEnv* env, const FolQueryRequest& request, FolQueryResponse* response) {
-    RiskTimerLogger timer(__func__, request.key(), -1);
+    ControlStateTimerLogger timer(__func__, request.key(), -1);
     ObjectHandle<model::StringModel> object;
     Status status = env->GetObject(request.key(), &object);
     if (!status.ok()) {
@@ -501,11 +501,11 @@ Status FolQuery(ExecuteEnv* env, const FolQueryRequest& request, FolQueryRespons
     return FirstOrLastGet(&object, request, response);
 }
 
-REGISTER_FUNCTION(RISK, FOLQUERY, FolQuery, Read);
+REGISTER_FUNCTION(CONTROL_STATE, FOLQUERY, FolQuery, Read);
 
 // 实现first/last的指标写入算子
 Status FolSet(ExecuteEnv* env, const FolSetRequest& request, FolSetResponse* response) {
-    RiskTimerLogger timer(__func__, request.key(), -1);
+    ControlStateTimerLogger timer(__func__, request.key(), -1);
     ObjectHandle<model::StringModel> object;
     Status status = env->GetOrNewObject(request.key(), &object);
     if (!status.ok()) {
@@ -516,12 +516,12 @@ Status FolSet(ExecuteEnv* env, const FolSetRequest& request, FolSetResponse* res
     return FirstOrLastSet(&object, request, response);
 }
 
-REGISTER_FUNCTION(RISK, FOLSET, FolSet, Write);
+REGISTER_FUNCTION(CONTROL_STATE, FOLSET, FolSet, Write);
 
 // 实现first/last的同步指标算子
 Status FolSetAndGet(ExecuteEnv* env, const FolSetAndGetRequest& request,
                     FolSetAndGetResponse* response) {
-    RiskTimerLogger timer(__func__, request.key(), -1);
+    ControlStateTimerLogger timer(__func__, request.key(), -1);
     ObjectHandle<model::StringModel> object;
     auto key = request.key();
     Status status = env->GetOrNewObject(key, &object);
@@ -558,10 +558,10 @@ Status FolSetAndGet(ExecuteEnv* env, const FolSetAndGetRequest& request,
     }
 }
 
-REGISTER_FUNCTION(RISK, FOLSETANDGET, FolSetAndGet, Write);
+REGISTER_FUNCTION(CONTROL_STATE, FOLSETANDGET, FolSetAndGet, Write);
 
 Status CPCManager(ExecuteEnv* env, const ManagerRequest& request, ManagerResponse* response) {
-    RiskTimerLogger timer(__func__, request.key(), request.op_type());
+    ControlStateTimerLogger timer(__func__, request.key(), request.op_type());
     ObjectHandle<model::CPCModel> object;
     auto key = request.key();
     Status status = env->GetObject(request.key(), &object);
@@ -579,7 +579,7 @@ Status CPCManager(ExecuteEnv* env, const ManagerRequest& request, ManagerRespons
         value_list.emplace_back(kvpair.value());
     }
     status = Status::OK();
-    bcache2::risk::KvPair* resKVPair = nullptr;
+    bcache2::control_state::KvPair* resKVPair = nullptr;
     absl::flat_hash_map<std::string, std::string> resMap;
     switch (request.op_type()) {
     case FULLGC:
@@ -674,8 +674,8 @@ Status Manager(ExecuteEnv* env, const ManagerRequest& request, ManagerResponse* 
     if (request.is_cpc()) {
         return CPCManager(env, request, response);
     }
-    RiskTimerLogger timer(__func__, request.key(), request.op_type());
-    ObjectHandle<model::RiskHashModel> object;
+    ControlStateTimerLogger timer(__func__, request.key(), request.op_type());
+    ObjectHandle<model::ControlStateHashModel> object;
     auto key = request.key();
     Status status = env->GetObject(request.key(), &object);
     if (!status.ok()) {
@@ -692,7 +692,7 @@ Status Manager(ExecuteEnv* env, const ManagerRequest& request, ManagerResponse* 
         value_list.emplace_back(kvpair.value());
     }
     status = Status::OK();
-    bcache2::risk::KvPair* resKVPair = nullptr;
+    bcache2::control_state::KvPair* resKVPair = nullptr;
     switch (request.op_type()) {
     case FULLGC:
         if (size == 0) {
@@ -778,7 +778,7 @@ Status Manager(ExecuteEnv* env, const ManagerRequest& request, ManagerResponse* 
     return status;
 }
 
-REGISTER_FUNCTION(RISK, MANAGER, Manager, Write);
+REGISTER_FUNCTION(CONTROL_STATE, MANAGER, Manager, Write);
 
-}  // namespace risk
+}  // namespace control_state
 }  // namespace bcache2

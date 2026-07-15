@@ -337,7 +337,7 @@ admin tools.
 3. Register users from the customer app or SSO provider.
 4. Issue separate API keys for hooks, MCP servers, batch ingestion, and admin
    automation.
-5. Use user/session allow-lists for high-risk hooks or test deployments.
+5. Use user/session allow-lists for high-control_state hooks or test deployments.
 6. Disable users immediately during offboarding; existing context stays
    replayable for admins, but user-scoped API calls are blocked.
 7. Rotate keys on a fixed schedule and revoke old hooks immediately when a user

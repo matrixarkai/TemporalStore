@@ -1,5 +1,5 @@
 use temporalstore_rust::types::{
-    Command, ExecuteRequest, FeatureFilter, FeatureFilterOp, FeaturePoint, RiskFamily, RiskFolType,
+    Command, ExecuteRequest, FeatureFilter, FeatureFilterOp, FeaturePoint, ControlStateFamily, ControlStateFolType,
     SequenceFeatureRow, StringSetCondition,
 };
 use temporalstore_rust::TemporalStoreClient;
@@ -224,55 +224,55 @@ fn main() {
             start_ms: args[3].parse().expect("start must be u64"),
             end_ms: args[4].parse().expect("end must be u64"),
         },
-        "riskinc" if args.len() == 5 => Command::RiskIncrement {
+        "control_stateinc" if args.len() == 5 => Command::ControlStateIncrement {
             key: args[2].clone(),
             timestamp_ms: args[3].parse().expect("timestamp must be u64"),
             amount: args[4].parse().expect("amount must be i64"),
         },
-        "riskcount" if args.len() == 5 => Command::RiskCount {
+        "control_statecount" if args.len() == 5 => Command::ControlStateCount {
             key: args[2].clone(),
             start_ms: args[3].parse().expect("start must be u64"),
             end_ms: args[4].parse().expect("end must be u64"),
         },
-        "riskquery" if args.len() == 6 => Command::RiskQuery {
+        "control_statequery" if args.len() == 6 => Command::ControlStateQuery {
             key: args[2].clone(),
             start_ms: args[3].parse().expect("start must be u64"),
             end_ms: args[4].parse().expect("end must be u64"),
             aggregator: args[5].clone(),
         },
-        "riskdetail" if args.len() == 5 || args.len() == 6 => Command::RiskDetail {
+        "control_statedetail" if args.len() == 5 || args.len() == 6 => Command::ControlStateDetail {
             key: args[2].clone(),
             start_ms: args[3].parse().expect("start must be u64"),
             end_ms: args[4].parse().expect("end must be u64"),
             count: args.get(5).map(|v| v.parse().expect("count must be usize")),
         },
-        "riskhset" if args.len() == 5 => Command::RiskSet {
-            family: RiskFamily::H,
+        "control_statehset" if args.len() == 5 => Command::ControlStateSet {
+            family: ControlStateFamily::H,
             key: args[2].clone(),
             timestamp_ms: args[3].parse().expect("timestamp must be u64"),
             amount: args[4].parse().expect("amount must be i64"),
             precision_ms: None,
             ttl_ms: None,
         },
-        "cpcset" if args.len() == 5 => Command::RiskSet {
-            family: RiskFamily::Cpc,
+        "cpcset" if args.len() == 5 => Command::ControlStateSet {
+            family: ControlStateFamily::Cpc,
             key: args[2].clone(),
             timestamp_ms: args[3].parse().expect("timestamp must be u64"),
             amount: args[4].parse().expect("amount must be i64"),
             precision_ms: None,
             ttl_ms: None,
         },
-        "folset" if args.len() == 7 => Command::RiskFolSet {
+        "folset" if args.len() == 7 => Command::ControlStateFolSet {
             key: args[2].clone(),
             value: args[3].as_bytes().to_vec(),
             occur_time_ms: args[4].parse().expect("occur_time_ms must be u64"),
             ttl_ms: args[5].parse().expect("ttl_ms must be u64"),
             fol_type: parse_fol_type(&args[6]),
         },
-        "folquery" if args.len() == 3 => Command::RiskFolQuery {
+        "folquery" if args.len() == 3 => Command::ControlStateFolQuery {
             key: args[2].clone(),
         },
-        "riskmanager" if args.len() == 3 => Command::RiskManager {
+        "control_statemanager" if args.len() == 3 => Command::ControlStateManager {
             key: args[2].clone(),
             op_type: None,
             field_list: Vec::new(),
@@ -330,15 +330,15 @@ fn usage() {
     eprintln!("  client ipsremove <key> <timestamp_ms>");
     eprintln!("  client ipsdel <key>");
     eprintln!("  client ipscount <key> <start> <end>");
-    eprintln!("  client riskinc <key> <timestamp_ms> <amount>");
-    eprintln!("  client riskcount <key> <start_ms> <end_ms>");
-    eprintln!("  client riskquery <key> <start_ms> <end_ms> <sum|min|max|first|last|count>");
-    eprintln!("  client riskdetail <key> <start_ms> <end_ms> [count]");
-    eprintln!("  client riskhset <key> <timestamp_ms> <amount>");
+    eprintln!("  client control_stateinc <key> <timestamp_ms> <amount>");
+    eprintln!("  client control_statecount <key> <start_ms> <end_ms>");
+    eprintln!("  client control_statequery <key> <start_ms> <end_ms> <sum|min|max|first|last|count>");
+    eprintln!("  client control_statedetail <key> <start_ms> <end_ms> [count]");
+    eprintln!("  client control_statehset <key> <timestamp_ms> <amount>");
     eprintln!("  client cpcset <key> <timestamp_ms> <amount>");
     eprintln!("  client folset <key> <value> <occur_time_ms> <ttl_ms> <first|last>");
     eprintln!("  client folquery <key>");
-    eprintln!("  client riskmanager <key>");
+    eprintln!("  client control_statemanager <key>");
 }
 
 fn parse_filter_op(op: &str) -> FeatureFilterOp {
@@ -351,10 +351,10 @@ fn parse_filter_op(op: &str) -> FeatureFilterOp {
     }
 }
 
-fn parse_fol_type(value: &str) -> RiskFolType {
+fn parse_fol_type(value: &str) -> ControlStateFolType {
     match value.to_ascii_lowercase().as_str() {
-        "first" => RiskFolType::First,
-        "last" => RiskFolType::Last,
+        "first" => ControlStateFolType::First,
+        "last" => ControlStateFolType::Last,
         other => panic!("unsupported fol type: {other}"),
     }
 }

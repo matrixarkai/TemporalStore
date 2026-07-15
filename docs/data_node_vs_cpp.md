@@ -156,7 +156,7 @@ deletes old non-current page segment files below the requested generation.
 
 Stats now expose a C++-style partition/object-manager summary:
 
-- logical object count across strings, hashes, sets, feature series, sequence series, IPS series, and risk series
+- logical object count across strings, hashes, sets, feature series, sequence series, IPS series, and control_state series
 - page-address reference count separate from logical object count
 - transient dirty object and dirty routing-slot counts
 - table name, shard URI, load version, readonly state, routing-slot range, and storage bytes in `partition_info`

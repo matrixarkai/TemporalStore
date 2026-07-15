@@ -22,7 +22,7 @@
 #include "extension/hash/interface.pb.h"
 #include "extension/ips/interface.pb.h"
 #include "extension/modules.pb.h"
-#include "extension/risk/interface.pb.h"
+#include "extension/control_state/interface.pb.h"
 #include "extension/set/interface.pb.h"
 #include "extension/string/interface.pb.h"
 
@@ -748,42 +748,42 @@ Status ParseSequenceFeatureRow(const TemporalFeaturePoint& raw, SequenceFeatureR
     return Status::OK();
 }
 
-risk::RiskPrecision ToProto(RiskPrecision precision) {
+control_state::ControlStatePrecision ToProto(ControlStatePrecision precision) {
     switch (precision) {
-    case RiskPrecision::kOneSecond:
-        return risk::OneSecond;
-    case RiskPrecision::kFiveSeconds:
-        return risk::FiveSeconds;
-    case RiskPrecision::kTenSeconds:
-        return risk::TenSeconds;
-    case RiskPrecision::kOneMinute:
-        return risk::OneMinute;
-    case RiskPrecision::kFiveMinutes:
-        return risk::FiveMinutes;
-    case RiskPrecision::kTenMinutes:
-        return risk::TenMinutes;
-    case RiskPrecision::kOneHour:
-        return risk::OneHour;
-    case RiskPrecision::kOneDay:
-        return risk::OneDay;
-    case RiskPrecision::kOneMonth:
-        return risk::OneMonth;
+    case ControlStatePrecision::kOneSecond:
+        return control_state::OneSecond;
+    case ControlStatePrecision::kFiveSeconds:
+        return control_state::FiveSeconds;
+    case ControlStatePrecision::kTenSeconds:
+        return control_state::TenSeconds;
+    case ControlStatePrecision::kOneMinute:
+        return control_state::OneMinute;
+    case ControlStatePrecision::kFiveMinutes:
+        return control_state::FiveMinutes;
+    case ControlStatePrecision::kTenMinutes:
+        return control_state::TenMinutes;
+    case ControlStatePrecision::kOneHour:
+        return control_state::OneHour;
+    case ControlStatePrecision::kOneDay:
+        return control_state::OneDay;
+    case ControlStatePrecision::kOneMonth:
+        return control_state::OneMonth;
     }
-    return risk::OneMinute;
+    return control_state::OneMinute;
 }
 
-risk::WindowUnit ToProto(RiskWindowUnit unit) {
+control_state::WindowUnit ToProto(ControlStateWindowUnit unit) {
     switch (unit) {
-    case RiskWindowUnit::kSecond:
-        return risk::Second;
-    case RiskWindowUnit::kMinute:
-        return risk::Minute;
-    case RiskWindowUnit::kHour:
-        return risk::Hour;
-    case RiskWindowUnit::kDay:
-        return risk::Day;
+    case ControlStateWindowUnit::kSecond:
+        return control_state::Second;
+    case ControlStateWindowUnit::kMinute:
+        return control_state::Minute;
+    case ControlStateWindowUnit::kHour:
+        return control_state::Hour;
+    case ControlStateWindowUnit::kDay:
+        return control_state::Day;
     }
-    return risk::Hour;
+    return control_state::Hour;
 }
 
 }  // namespace
@@ -1477,56 +1477,56 @@ Status TemporalStoreClient::QueryIpsLastInstances(const IpsLastQuery& query,
     return Status::OK();
 }
 
-Status TemporalStoreClient::RiskIncrement(const std::string& key, int64_t amount,
-                                          uint64_t ttl_seconds, RiskPrecision precision,
+Status TemporalStoreClient::ControlStateIncrement(const std::string& key, int64_t amount,
+                                          uint64_t ttl_seconds, ControlStatePrecision precision,
                                           const std::string& uuid,
                                           uint64_t occur_time_seconds) {
     RETURN_IF_STATUS_ERROR(CheckInitialized());
     RETURN_IF_STATUS_ERROR(ValidateNotEmpty(key, "key"));
     RETURN_IF_STATUS_ERROR(ValidateSize(key.size(), impl_->options.max_key_bytes, "key"));
-    risk::HsetRequest request;
+    control_state::HsetRequest request;
     request.set_key(key);
     request.set_value(std::to_string(amount));
     request.set_ttl(ttl_seconds);
-    request.set_htype(risk::COUNT);
+    request.set_htype(control_state::COUNT);
     request.set_precision(ToProto(precision));
     request.set_occur_time(
         occur_time_seconds == 0 ? static_cast<uint64_t>(std::time(nullptr)) : occur_time_seconds);
     if (!uuid.empty()) {
         request.set_uuid(uuid);
     }
-    risk::HsetResponse response;
-    RETURN_IF_STATUS_ERROR(impl_->ExecuteRaw(Module::RISK, risk::HSET, key, request, &response,
+    control_state::HsetResponse response;
+    RETURN_IF_STATUS_ERROR(impl_->ExecuteRaw(Module::CONTROL_STATE, control_state::HSET, key, request, &response,
                                              true));
     if (response.err_code() != 0) {
-        return Status::Internal("risk increment failed: " + response.err_msg());
+        return Status::Internal("control_state increment failed: " + response.err_msg());
     }
     return Status::OK();
 }
 
-Status TemporalStoreClient::RiskCount(const std::string& key, RiskPrecision precision,
-                                      const RiskWindow& window, int64_t* count) {
+Status TemporalStoreClient::ControlStateCount(const std::string& key, ControlStatePrecision precision,
+                                      const ControlStateWindow& window, int64_t* count) {
     RETURN_IF_STATUS_ERROR(CheckInitialized());
     RETURN_IF_STATUS_ERROR(ValidateNotEmpty(key, "key"));
     RETURN_IF_STATUS_ERROR(ValidateSize(key.size(), impl_->options.max_key_bytes, "key"));
     RETURN_IF_STATUS_ERROR(ValidateOutput(count, "count"));
-    risk::HqueryRequest request;
+    control_state::HqueryRequest request;
     request.set_key(key);
     request.set_precision(ToProto(precision));
-    request.set_htype(risk::COUNT);
+    request.set_htype(control_state::COUNT);
     auto* proto_window = request.add_windows();
     proto_window->set_start(window.start);
     proto_window->set_end(window.end);
     proto_window->set_unit(ToProto(window.unit));
 
-    risk::HqueryResponse response;
-    RETURN_IF_STATUS_ERROR(impl_->ExecuteRaw(Module::RISK, risk::HQUERY, key, request, &response,
+    control_state::HqueryResponse response;
+    RETURN_IF_STATUS_ERROR(impl_->ExecuteRaw(Module::CONTROL_STATE, control_state::HQUERY, key, request, &response,
                                              false));
     if (response.err_code() != 0) {
-        return Status::Internal("risk count failed: " + response.err_msg());
+        return Status::Internal("control_state count failed: " + response.err_msg());
     }
     if (response.result_list_size() < 1 || !response.result_list(0).has_result()) {
-        return Status::NotFound("risk count has no result");
+        return Status::NotFound("control_state count has no result");
     }
     *count = response.result_list(0).result();
     return Status::OK();

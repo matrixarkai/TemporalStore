@@ -114,33 +114,33 @@ AREAS: tuple[ApiModelArea, ...] = (
         ),
     ),
     ApiModelArea(
-        name="ips_risk_models",
+        name="ips_control_state_models",
         corpus_cases=(
             "ips_options_range",
-            "risk_counter_window",
-            "risk_family_query_and_delete",
+            "control_state_counter_window",
+            "control_state_family_query_and_delete",
         ),
         command_kinds=(
             "ips_add_with_options",
             "ips_query_range",
-            "risk_increment",
-            "risk_count",
-            "risk_set",
-            "risk_family_query",
+            "control_state_increment",
+            "control_state_count",
+            "control_state_set",
+            "control_state_family_query",
         ),
         response_kinds=("feature_points", "integer", "empty"),
         rust_evidence=(
             RustEvidence(
                 "crates/temporalstore-rust/src/types.rs",
-                ("IpsAddWithOptions", "IpsSnapshotReport", "RiskIncrement", "RiskFamilyQuery"),
+                ("IpsAddWithOptions", "IpsSnapshotReport", "ControlStateIncrement", "ControlStateFamilyQuery"),
             ),
             RustEvidence(
                 "crates/temporalstore-rust/src/client.rs",
-                ("ips_snapshot_report", "ips_query_range_with_options", "risk_family_query"),
+                ("ips_snapshot_report", "ips_query_range_with_options", "control_state_family_query"),
             ),
             RustEvidence(
                 "crates/temporalstore-rust/src/client.rs",
-                ("ips_query_range_with_options", "risk_family_query"),
+                ("ips_query_range_with_options", "control_state_family_query"),
             ),
         ),
     ),

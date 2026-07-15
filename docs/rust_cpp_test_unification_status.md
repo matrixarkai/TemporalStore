@@ -55,7 +55,7 @@ self-executing shared cases:
 - `storage_shared_store_checkpoint_cursor_retention`
 - `sequence_cpp_feature_rows` / `sequence_batch_filter_groups`
 - `ips_options_range` / `ips_snapshot_stat_filter_batch`
-- `risk_counter_window` / `risk_family_query_and_delete` / `risk_manager_debug_fol`
+- `control_state_counter_window` / `control_state_family_query_and_delete` / `control_state_manager_debug_fol`
 - `storage_shared_store_sync_replay` / `storage_shared_store_async_replay`
 
 The duplicate-test guard derives its C++ Raft alias exemptions from
@@ -186,7 +186,7 @@ Detailed inventory: `docs/unified_test_case_inventory.md`.
 
 The shared corpus currently covers common/string/hash/set, Redis-compatible set, Feature,
 Sequence, advanced Feature policy/filter/aggregate flows, Sequence batch/filter groups, IPS
-snapshot/filter/stat/batch metadata flows, Risk manager/debug/FOL flows,
+snapshot/filter/stat/batch metadata flows, ControlState manager/debug/FOL flows,
 storage dump/load, fault matrix, follower-safe GC, cache refill, sync shared-store replay, async
 shared-store replay,
 explicit data-node Raft leader/failover, snapshot/restart/follower-lag, membership/secondary-read
@@ -241,7 +241,7 @@ Target disposition:
 | Storage/cache/local durability | Recovery behavior, dump/load manifests, cache refill, shared-store replay, corruption outcomes | Rust page-store helpers, serializer unit checks, local cache data-structure mechanics |
 | Control plane/service behavior | Client/proxy/meta/data-node topology, lifecycle, admission, retry, convergence workflows | Rust runtime worker handles, local mock plumbing, HTTP adapter unit details |
 | Raft/local consensus model | Log codec, snapshot install, membership, failover, read-index, catch-up semantics | Temporary local consensus scaffolding until replaced by production Raft implementation |
-| API/model/ingestion/context/SDK | Redis/API commands, Feature/Sequence/IPS/Risk/Context, ingestion offsets/checkpoints/dead letters | Rust SDK conversion helpers and provider mocks without cross-language behavior |
+| API/model/ingestion/context/SDK | Redis/API commands, Feature/Sequence/IPS/ControlState/Context, ingestion offsets/checkpoints/dead letters | Rust SDK conversion helpers and provider mocks without cross-language behavior |
 | Rust storage crash harness | Crash/restart/corrupt artifact outcomes | Process harness wiring that is only needed to drive Rust-local faults |
 | Other local tests | Readiness output, external chaos scenarios, replica replay, scale/fault logs | Thin binary/CLI argument parsing and local fixture setup |
 

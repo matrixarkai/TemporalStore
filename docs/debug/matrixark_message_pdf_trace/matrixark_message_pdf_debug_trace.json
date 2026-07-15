@@ -8242,7 +8242,7 @@
         "source_refs": [
           "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1"
         ],
-        "state": "resource_owner: Bob owns procurement and vendor coordination. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor sel...",
+        "state": "resource_owner: Bob owns procurement and vendor coordination. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. ControlState: Vendor sel...",
         "updated_at_ms": 1782415059110
       },
       {
@@ -8287,7 +8287,7 @@
         "source_refs": [
           "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1"
         ],
-        "state": "resource_cost: Current approved cap is 45000 dollars. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor selection i...",
+        "state": "resource_cost: Current approved cap is 45000 dollars. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. ControlState: Vendor selection i...",
         "updated_at_ms": 1782415059110
       },
       {
@@ -8332,7 +8332,7 @@
         "source_refs": [
           "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1"
         ],
-        "state": "resource_deadline: Purchase order must be ready by July 15, 2026. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor...",
+        "state": "resource_deadline: Purchase order must be ready by July 15, 2026. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. ControlState: Vendor...",
         "updated_at_ms": 1782415059110
       },
       {
@@ -8377,7 +8377,7 @@
         "source_refs": [
           "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1"
         ],
-        "state": "resource_policy: be ready by July 15, 2026. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor selection is blocked ...",
+        "state": "resource_policy: be ready by July 15, 2026. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. ControlState: Vendor selection is blocked ...",
         "updated_at_ms": 1782415059110
       },
       {
@@ -8422,15 +8422,15 @@
         "source_refs": [
           "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1"
         ],
-        "state": "resource_approval: Packet. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor selection is blocked if finance approv...",
+        "state": "resource_approval: Packet. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. ControlState: Vendor selection is blocked if finance approv...",
         "updated_at_ms": 1782415059110
       },
       {
         "batch_id_hash": 5406225360109673472,
         "confidence": 0.82,
         "entity_hash": 7448309444804846956,
-        "entity_name": "risk:<repo>/docs/debug/matrixark_message_pdf_trace/f:Vendor selection is blocked if finance approval is not attac",
-        "entity_type": "resource_risk",
+        "entity_name": "control_state:<repo>/docs/debug/matrixark_message_pdf_trace/f:Vendor selection is blocked if finance approval is not attac",
+        "entity_type": "resource_control_state",
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
@@ -8467,7 +8467,7 @@
         "source_refs": [
           "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1"
         ],
-        "state": "resource_risk: Vendor selection is blocked if finance approval is not attached. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026...",
+        "state": "resource_control_state: Vendor selection is blocked if finance approval is not attached. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026...",
         "updated_at_ms": 1782415059110
       },
       {
@@ -8744,8 +8744,8 @@
         "batch_id_hash": 644123701071499972,
         "confidence": 0.82,
         "entity_hash": 9128041085176869255,
-        "entity_name": "risk:<repo>/docs/debug/matrixark_message_pdf_trace/f:42000 dollars is historical and should not be used for curre",
-        "entity_type": "resource_risk",
+        "entity_name": "control_state:<repo>/docs/debug/matrixark_message_pdf_trace/f:42000 dollars is historical and should not be used for curre",
+        "entity_type": "resource_control_state",
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
@@ -8782,7 +8782,7 @@
         "source_refs": [
           "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1"
         ],
-        "state": "resource_risk: 42000 dollars is historical and should not be used for current-state answers. Source: Budget Update Memo Update: The backup GPU quote increased the cap from 42000 dollars to 45000 dollars. Current state: 45000 dollars is the valid active budget cap. Stale blocker: 42000 dollars is historical and should not be used for current-state answers....",
+        "state": "resource_control_state: 42000 dollars is historical and should not be used for current-state answers. Source: Budget Update Memo Update: The backup GPU quote increased the cap from 42000 dollars to 45000 dollars. Current state: 45000 dollars is the valid active budget cap. Stale blocker: 42000 dollars is historical and should not be used for current-state answers....",
         "updated_at_ms": 1782415059406
       },
       {
@@ -10551,7 +10551,7 @@
         "source_chunk_hash": 8736436273504687932,
         "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "summary_text": "resource_decision: Alice approved the Project Aurora GPU purchase after finance review",
-        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
         "updated_at_ms": 1782415059110
       },
       {
@@ -10640,7 +10640,7 @@
         "source_chunk_hash": 8736436273504687932,
         "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "summary_text": "resource_owner: Bob owns procurement and vendor coordination",
-        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
         "updated_at_ms": 1782415059110
       },
       {
@@ -10729,7 +10729,7 @@
         "source_chunk_hash": 8736436273504687932,
         "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "summary_text": "resource_cost: Current approved cap is 45000 dollars",
-        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
         "updated_at_ms": 1782415059110
       },
       {
@@ -10818,7 +10818,7 @@
         "source_chunk_hash": 8736436273504687932,
         "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "summary_text": "resource_deadline: Purchase order must be ready by July 15, 2026",
-        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
         "updated_at_ms": 1782415059110
       },
       {
@@ -10907,7 +10907,7 @@
         "source_chunk_hash": 8736436273504687932,
         "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "summary_text": "resource_policy: be ready by July 15, 2026",
-        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
         "updated_at_ms": 1782415059110
       },
       {
@@ -10996,7 +10996,7 @@
         "source_chunk_hash": 8736436273504687932,
         "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "summary_text": "resource_approval: Packet",
-        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
         "updated_at_ms": 1782415059110
       },
       {
@@ -11044,9 +11044,9 @@
         "internal_extraction": {
           "classification": "RESOURCE_FACT",
           "confidence": 0.82,
-          "entity_name": "risk:<repo>/docs/debug/matrixark_message_pdf_trace/f:Vendor selection is blocked if finance approval is not attac",
-          "entity_type": "resource_risk",
-          "event_type": "resource_risk",
+          "entity_name": "control_state:<repo>/docs/debug/matrixark_message_pdf_trace/f:Vendor selection is blocked if finance approval is not attac",
+          "entity_type": "resource_control_state",
+          "event_type": "resource_control_state",
           "extraction_provider": "deterministic",
           "mode": "matrixark_resource_schema",
           "resource_version": "1534ab01ed87c419",
@@ -11084,8 +11084,8 @@
         },
         "source_chunk_hash": 8736436273504687932,
         "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
-        "summary_text": "resource_risk: Vendor selection is blocked if finance approval is not attached",
-        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+        "summary_text": "resource_control_state: Vendor selection is blocked if finance approval is not attached",
+        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
         "updated_at_ms": 1782415059110
       },
       {
@@ -11743,37 +11743,37 @@
             {
               "node_hash": 1737304210274426578,
               "ref_hash": 4265994536714805107,
-              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached."
+              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached."
             },
             {
               "node_hash": 1737304210274426578,
               "ref_hash": 274150047248606686,
-              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached."
+              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached."
             },
             {
               "node_hash": 1737304210274426578,
               "ref_hash": 929939956861191542,
-              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached."
+              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached."
             },
             {
               "node_hash": 1737304210274426578,
               "ref_hash": 9047961491740927299,
-              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached."
+              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached."
             },
             {
               "node_hash": 1737304210274426578,
               "ref_hash": 1596920217437410578,
-              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached."
+              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached."
             },
             {
               "node_hash": 1737304210274426578,
               "ref_hash": 2900456491093257987,
-              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached."
+              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached."
             },
             {
               "node_hash": 1737304210274426578,
               "ref_hash": 571365746382456544,
-              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached."
+              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached."
             }
           ],
           "refs": [
@@ -12193,9 +12193,9 @@
         "internal_extraction": {
           "classification": "RESOURCE_FACT",
           "confidence": 0.82,
-          "entity_name": "risk:<repo>/docs/debug/matrixark_message_pdf_trace/f:42000 dollars is historical and should not be used for curre",
-          "entity_type": "resource_risk",
-          "event_type": "resource_risk",
+          "entity_name": "control_state:<repo>/docs/debug/matrixark_message_pdf_trace/f:42000 dollars is historical and should not be used for curre",
+          "entity_type": "resource_control_state",
+          "event_type": "resource_control_state",
           "extraction_provider": "deterministic",
           "mode": "matrixark_resource_schema",
           "resource_version": "5607f8c63b82d305",
@@ -12233,7 +12233,7 @@
         },
         "source_chunk_hash": 4893379877725482254,
         "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1",
-        "summary_text": "resource_risk: 42000 dollars is historical and should not be used for current-state answers",
+        "summary_text": "resource_control_state: 42000 dollars is historical and should not be used for current-state answers",
         "text": "Budget Update Memo\nUpdate: The backup GPU quote increased the cap from 42000 dollars to 45000 dollars.\nCurrent state: 45000 dollars is the valid active budget cap.\nStale blocker: 42000 dollars is historical and should not be used for current-state answers.\nApprover: Alice confirmed the updated cap.",
         "updated_at_ms": 1782415059406
       },
@@ -12471,17 +12471,17 @@
             {
               "node_hash": 1737304210274426578,
               "ref_hash": 4265994536714805107,
-              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached."
+              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached."
             },
             {
               "node_hash": 1737304210274426578,
               "ref_hash": 274150047248606686,
-              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached."
+              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached."
             },
             {
               "node_hash": 1737304210274426578,
               "ref_hash": 929939956861191542,
-              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached."
+              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached."
             }
           ],
           "refs": [
@@ -17313,7 +17313,7 @@
         "batch_id_hash": 5406225360109673472,
         "chunk_hash": 8736436273504687932,
         "index_hash": 9139996335400391065,
-        "index_name": "event_type:resource_risk",
+        "index_name": "event_type:resource_control_state",
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
@@ -17348,7 +17348,7 @@
         "batch_id_hash": 5406225360109673472,
         "chunk_hash": 8736436273504687932,
         "index_hash": 283746352784066219,
-        "index_name": "entity_type:resource_risk",
+        "index_name": "entity_type:resource_control_state",
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
@@ -22901,7 +22901,7 @@
         "batch_id_hash": 644123701071499972,
         "chunk_hash": 4893379877725482254,
         "index_hash": 4328172324394284284,
-        "index_name": "event_type:resource_risk",
+        "index_name": "event_type:resource_control_state",
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
@@ -22936,7 +22936,7 @@
         "batch_id_hash": 644123701071499972,
         "chunk_hash": 4893379877725482254,
         "index_hash": 4128572141507648639,
-        "index_name": "entity_type:resource_risk",
+        "index_name": "entity_type:resource_control_state",
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
@@ -24600,7 +24600,7 @@
               "matched_index_terms": [
                 "classification:resource_fact",
                 "event_type:confirmation",
-                "event_type:resource_risk",
+                "event_type:resource_control_state",
                 "keyword:alice",
                 "keyword:approval",
                 "keyword:approved",
@@ -24950,7 +24950,7 @@
               "matched_index_terms": [
                 "classification:resource_fact",
                 "event_type:correction",
-                "event_type:resource_risk",
+                "event_type:resource_control_state",
                 "keyword:alice",
                 "keyword:approval",
                 "keyword:approved",
@@ -26889,7 +26889,7 @@
             "updated_at_ms": 1782415059406
           }
         ],
-        "summary_text": "approval_state: the GPU purchase request for Project Aurora after reviewing the Q3 budget = the GPU purchase request for Project Aurora after reviewing the Q3 budget Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor selection is blocked if finance approval is not attached. a...",
+        "summary_text": "approval_state: the GPU purchase request for Project Aurora after reviewing the Q3 budget = the GPU purchase request for Project Aurora after reviewing the Q3 budget Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. ControlState: Vendor selection is blocked if finance approval is not attached. a...",
         "total_prompt_context_tokens": 430,
         "tree_traversal": {
           "enabled": true,
@@ -27462,7 +27462,7 @@
           8736436273504687932
         ],
         "summary_hash": 1065960116080248254,
-        "summary_text": "resource: <repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf section: pdf_page Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor selection is blocked if finance approval is not attached.",
+        "summary_text": "resource: <repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf section: pdf_page Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. ControlState: Vendor selection is blocked if finance approval is not attached.",
         "summary_type": "resource_l0",
         "updated_at_ms": 1782415059110
       },
@@ -31548,7 +31548,7 @@
           "chunk_index": 0,
           "citation": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
           "content_hash": "49199ad5bd94964c",
-          "embedding_text": "unit_kind: pdf_page\nresource_version: 1534ab01ed87c419\nkeywords: project, aurora, gpu, approval, packet, decision, alice, approved, purchase, finance, review, owner\nsource: <repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1\ncontent: Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+          "embedding_text": "unit_kind: pdf_page\nresource_version: 1534ab01ed87c419\nkeywords: project, aurora, gpu, approval, packet, decision, alice, approved, purchase, finance, review, owner\nsource: <repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1\ncontent: Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
           "keywords": [
             "project",
             "aurora",
@@ -31607,7 +31607,7 @@
           "user_id": "deeproute"
         },
         "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
-        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
         "token_estimate": 51,
         "updated_at_ms": 1782415059110
       },
@@ -39906,7 +39906,7 @@
           8736436273504687932
         ],
         "summary_hash": 1065960116080248254,
-        "summary_text": "resource: <repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf section: pdf_page Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor selection is blocked if finance approval is not attached.",
+        "summary_text": "resource: <repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf section: pdf_page Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. ControlState: Vendor selection is blocked if finance approval is not attached.",
         "summary_type": "resource_l0",
         "updated_at_ms": 1782415059110
       },
@@ -40369,7 +40369,7 @@
           "chunk_index": 0,
           "citation": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
           "content_hash": "49199ad5bd94964c",
-          "embedding_text": "unit_kind: pdf_page\nresource_version: 1534ab01ed87c419\nkeywords: project, aurora, gpu, approval, packet, decision, alice, approved, purchase, finance, review, owner\nsource: <repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1\ncontent: Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+          "embedding_text": "unit_kind: pdf_page\nresource_version: 1534ab01ed87c419\nkeywords: project, aurora, gpu, approval, packet, decision, alice, approved, purchase, finance, review, owner\nsource: <repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1\ncontent: Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
           "keywords": [
             "project",
             "aurora",
@@ -40428,7 +40428,7 @@
           "user_id": "deeproute"
         },
         "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
-        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
         "token_estimate": 51,
         "updated_at_ms": 1782415059110
       },
@@ -41111,7 +41111,7 @@
         "source_chunk_hash": 8736436273504687932,
         "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "summary_text": "resource_decision: Alice approved the Project Aurora GPU purchase after finance review",
-        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
         "updated_at_ms": 1782415059110
       },
       {
@@ -42011,7 +42011,7 @@
         "source_chunk_hash": 8736436273504687932,
         "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "summary_text": "resource_owner: Bob owns procurement and vendor coordination",
-        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
         "updated_at_ms": 1782415059110
       },
       {
@@ -42124,7 +42124,7 @@
         "source_refs": [
           "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1"
         ],
-        "state": "resource_owner: Bob owns procurement and vendor coordination. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor sel...",
+        "state": "resource_owner: Bob owns procurement and vendor coordination. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. ControlState: Vendor sel...",
         "updated_at_ms": 1782415059110
       },
       {
@@ -42911,7 +42911,7 @@
         "source_chunk_hash": 8736436273504687932,
         "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "summary_text": "resource_cost: Current approved cap is 45000 dollars",
-        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
         "updated_at_ms": 1782415059110
       },
       {
@@ -43024,7 +43024,7 @@
         "source_refs": [
           "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1"
         ],
-        "state": "resource_cost: Current approved cap is 45000 dollars. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor selection i...",
+        "state": "resource_cost: Current approved cap is 45000 dollars. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. ControlState: Vendor selection i...",
         "updated_at_ms": 1782415059110
       },
       {
@@ -43811,7 +43811,7 @@
         "source_chunk_hash": 8736436273504687932,
         "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "summary_text": "resource_deadline: Purchase order must be ready by July 15, 2026",
-        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
         "updated_at_ms": 1782415059110
       },
       {
@@ -43924,7 +43924,7 @@
         "source_refs": [
           "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1"
         ],
-        "state": "resource_deadline: Purchase order must be ready by July 15, 2026. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor...",
+        "state": "resource_deadline: Purchase order must be ready by July 15, 2026. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. ControlState: Vendor...",
         "updated_at_ms": 1782415059110
       },
       {
@@ -44711,7 +44711,7 @@
         "source_chunk_hash": 8736436273504687932,
         "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "summary_text": "resource_policy: be ready by July 15, 2026",
-        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
         "updated_at_ms": 1782415059110
       },
       {
@@ -44824,7 +44824,7 @@
         "source_refs": [
           "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1"
         ],
-        "state": "resource_policy: be ready by July 15, 2026. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor selection is blocked ...",
+        "state": "resource_policy: be ready by July 15, 2026. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. ControlState: Vendor selection is blocked ...",
         "updated_at_ms": 1782415059110
       },
       {
@@ -45611,7 +45611,7 @@
         "source_chunk_hash": 8736436273504687932,
         "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "summary_text": "resource_approval: Packet",
-        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
         "updated_at_ms": 1782415059110
       },
       {
@@ -45724,7 +45724,7 @@
         "source_refs": [
           "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1"
         ],
-        "state": "resource_approval: Packet. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor selection is blocked if finance approv...",
+        "state": "resource_approval: Packet. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. ControlState: Vendor selection is blocked if finance approv...",
         "updated_at_ms": 1782415059110
       },
       {
@@ -46470,9 +46470,9 @@
         "internal_extraction": {
           "classification": "RESOURCE_FACT",
           "confidence": 0.82,
-          "entity_name": "risk:<repo>/docs/debug/matrixark_message_pdf_trace/f:Vendor selection is blocked if finance approval is not attac",
-          "entity_type": "resource_risk",
-          "event_type": "resource_risk",
+          "entity_name": "control_state:<repo>/docs/debug/matrixark_message_pdf_trace/f:Vendor selection is blocked if finance approval is not attac",
+          "entity_type": "resource_control_state",
+          "event_type": "resource_control_state",
           "extraction_provider": "deterministic",
           "mode": "matrixark_resource_schema",
           "resource_version": "1534ab01ed87c419",
@@ -46510,8 +46510,8 @@
         },
         "source_chunk_hash": 8736436273504687932,
         "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
-        "summary_text": "resource_risk: Vendor selection is blocked if finance approval is not attached",
-        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+        "summary_text": "resource_control_state: Vendor selection is blocked if finance approval is not attached",
+        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
         "updated_at_ms": 1782415059110
       },
       {
@@ -46586,8 +46586,8 @@
         "batch_id_hash": 5406225360109673472,
         "confidence": 0.82,
         "entity_hash": 7448309444804846956,
-        "entity_name": "risk:<repo>/docs/debug/matrixark_message_pdf_trace/f:Vendor selection is blocked if finance approval is not attac",
-        "entity_type": "resource_risk",
+        "entity_name": "control_state:<repo>/docs/debug/matrixark_message_pdf_trace/f:Vendor selection is blocked if finance approval is not attac",
+        "entity_type": "resource_control_state",
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
@@ -46624,7 +46624,7 @@
         "source_refs": [
           "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1"
         ],
-        "state": "resource_risk: Vendor selection is blocked if finance approval is not attached. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026...",
+        "state": "resource_control_state: Vendor selection is blocked if finance approval is not attached. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026...",
         "updated_at_ms": 1782415059110
       },
       {
@@ -46734,7 +46734,7 @@
         "batch_id_hash": 5406225360109673472,
         "chunk_hash": 8736436273504687932,
         "index_hash": 9139996335400391065,
-        "index_name": "event_type:resource_risk",
+        "index_name": "event_type:resource_control_state",
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
@@ -46769,7 +46769,7 @@
         "batch_id_hash": 5406225360109673472,
         "chunk_hash": 8736436273504687932,
         "index_hash": 283746352784066219,
-        "index_name": "entity_type:resource_risk",
+        "index_name": "entity_type:resource_control_state",
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
@@ -52471,37 +52471,37 @@
             {
               "node_hash": 1737304210274426578,
               "ref_hash": 4265994536714805107,
-              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached."
+              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached."
             },
             {
               "node_hash": 1737304210274426578,
               "ref_hash": 274150047248606686,
-              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached."
+              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached."
             },
             {
               "node_hash": 1737304210274426578,
               "ref_hash": 929939956861191542,
-              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached."
+              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached."
             },
             {
               "node_hash": 1737304210274426578,
               "ref_hash": 9047961491740927299,
-              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached."
+              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached."
             },
             {
               "node_hash": 1737304210274426578,
               "ref_hash": 1596920217437410578,
-              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached."
+              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached."
             },
             {
               "node_hash": 1737304210274426578,
               "ref_hash": 2900456491093257987,
-              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached."
+              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached."
             },
             {
               "node_hash": 1737304210274426578,
               "ref_hash": 571365746382456544,
-              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached."
+              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached."
             }
           ],
           "refs": [
@@ -56820,9 +56820,9 @@
         "internal_extraction": {
           "classification": "RESOURCE_FACT",
           "confidence": 0.82,
-          "entity_name": "risk:<repo>/docs/debug/matrixark_message_pdf_trace/f:42000 dollars is historical and should not be used for curre",
-          "entity_type": "resource_risk",
-          "event_type": "resource_risk",
+          "entity_name": "control_state:<repo>/docs/debug/matrixark_message_pdf_trace/f:42000 dollars is historical and should not be used for curre",
+          "entity_type": "resource_control_state",
+          "event_type": "resource_control_state",
           "extraction_provider": "deterministic",
           "mode": "matrixark_resource_schema",
           "resource_version": "5607f8c63b82d305",
@@ -56860,7 +56860,7 @@
         },
         "source_chunk_hash": 4893379877725482254,
         "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1",
-        "summary_text": "resource_risk: 42000 dollars is historical and should not be used for current-state answers",
+        "summary_text": "resource_control_state: 42000 dollars is historical and should not be used for current-state answers",
         "text": "Budget Update Memo\nUpdate: The backup GPU quote increased the cap from 42000 dollars to 45000 dollars.\nCurrent state: 45000 dollars is the valid active budget cap.\nStale blocker: 42000 dollars is historical and should not be used for current-state answers.\nApprover: Alice confirmed the updated cap.",
         "updated_at_ms": 1782415059406
       },
@@ -56936,8 +56936,8 @@
         "batch_id_hash": 644123701071499972,
         "confidence": 0.82,
         "entity_hash": 9128041085176869255,
-        "entity_name": "risk:<repo>/docs/debug/matrixark_message_pdf_trace/f:42000 dollars is historical and should not be used for curre",
-        "entity_type": "resource_risk",
+        "entity_name": "control_state:<repo>/docs/debug/matrixark_message_pdf_trace/f:42000 dollars is historical and should not be used for curre",
+        "entity_type": "resource_control_state",
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
@@ -56974,7 +56974,7 @@
         "source_refs": [
           "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1"
         ],
-        "state": "resource_risk: 42000 dollars is historical and should not be used for current-state answers. Source: Budget Update Memo Update: The backup GPU quote increased the cap from 42000 dollars to 45000 dollars. Current state: 45000 dollars is the valid active budget cap. Stale blocker: 42000 dollars is historical and should not be used for current-state answers....",
+        "state": "resource_control_state: 42000 dollars is historical and should not be used for current-state answers. Source: Budget Update Memo Update: The backup GPU quote increased the cap from 42000 dollars to 45000 dollars. Current state: 45000 dollars is the valid active budget cap. Stale blocker: 42000 dollars is historical and should not be used for current-state answers....",
         "updated_at_ms": 1782415059406
       },
       {
@@ -57084,7 +57084,7 @@
         "batch_id_hash": 644123701071499972,
         "chunk_hash": 4893379877725482254,
         "index_hash": 4328172324394284284,
-        "index_name": "event_type:resource_risk",
+        "index_name": "event_type:resource_control_state",
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
@@ -57119,7 +57119,7 @@
         "batch_id_hash": 644123701071499972,
         "chunk_hash": 4893379877725482254,
         "index_hash": 4128572141507648639,
-        "index_name": "entity_type:resource_risk",
+        "index_name": "entity_type:resource_control_state",
         "node_hash": 1737304210274426578,
         "node_path": [
           "tenant:tenant_codex",
@@ -59016,17 +59016,17 @@
             {
               "node_hash": 1737304210274426578,
               "ref_hash": 4265994536714805107,
-              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached."
+              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached."
             },
             {
               "node_hash": 1737304210274426578,
               "ref_hash": 274150047248606686,
-              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached."
+              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached."
             },
             {
               "node_hash": 1737304210274426578,
               "ref_hash": 929939956861191542,
-              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached."
+              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached."
             }
           ],
           "refs": [
@@ -61841,7 +61841,7 @@
               "matched_index_terms": [
                 "classification:resource_fact",
                 "event_type:confirmation",
-                "event_type:resource_risk",
+                "event_type:resource_control_state",
                 "keyword:alice",
                 "keyword:approval",
                 "keyword:approved",
@@ -62191,7 +62191,7 @@
               "matched_index_terms": [
                 "classification:resource_fact",
                 "event_type:correction",
-                "event_type:resource_risk",
+                "event_type:resource_control_state",
                 "keyword:alice",
                 "keyword:approval",
                 "keyword:approved",
@@ -64130,7 +64130,7 @@
             "updated_at_ms": 1782415059406
           }
         ],
-        "summary_text": "approval_state: the GPU purchase request for Project Aurora after reviewing the Q3 budget = the GPU purchase request for Project Aurora after reviewing the Q3 budget Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor selection is blocked if finance approval is not attached. a...",
+        "summary_text": "approval_state: the GPU purchase request for Project Aurora after reviewing the Q3 budget = the GPU purchase request for Project Aurora after reviewing the Q3 budget Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. ControlState: Vendor selection is blocked if finance approval is not attached. a...",
         "total_prompt_context_tokens": 430,
         "tree_traversal": {
           "enabled": true,
@@ -64423,7 +64423,7 @@
           "matched_index_terms": [
             "classification:resource_fact",
             "event_type:confirmation",
-            "event_type:resource_risk",
+            "event_type:resource_control_state",
             "keyword:alice",
             "keyword:approval",
             "keyword:approved",
@@ -64773,7 +64773,7 @@
           "matched_index_terms": [
             "classification:resource_fact",
             "event_type:correction",
-            "event_type:resource_risk",
+            "event_type:resource_control_state",
             "keyword:alice",
             "keyword:approval",
             "keyword:approved",
@@ -65385,7 +65385,7 @@
         "source_chunk_hash": 8736436273504687932,
         "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "sparse_score": 0.7857142857142857,
-        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+        "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
         "time_score": 1.0,
         "token_estimate": 51,
         "updated_at_ms": 1782415059110
@@ -69304,7 +69304,7 @@
                 "matched_index_terms": [
                   "classification:resource_fact",
                   "event_type:confirmation",
-                  "event_type:resource_risk",
+                  "event_type:resource_control_state",
                   "keyword:alice",
                   "keyword:approval",
                   "keyword:approved",
@@ -69654,7 +69654,7 @@
                 "matched_index_terms": [
                   "classification:resource_fact",
                   "event_type:correction",
-                  "event_type:resource_risk",
+                  "event_type:resource_control_state",
                   "keyword:alice",
                   "keyword:approval",
                   "keyword:approved",
@@ -70266,7 +70266,7 @@
               "source_chunk_hash": 8736436273504687932,
               "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
               "sparse_score": 0.7857142857142857,
-              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
               "time_score": 1.0,
               "token_estimate": 51,
               "updated_at_ms": 1782415059110
@@ -78692,7 +78692,7 @@
                 8736436273504687932
               ],
               "summary_hash": 1065960116080248254,
-              "summary_text": "resource: <repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf section: pdf_page Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor selection is blocked if finance approval is not attached.",
+              "summary_text": "resource: <repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf section: pdf_page Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. ControlState: Vendor selection is blocked if finance approval is not attached.",
               "summary_type": "resource_l0",
               "updated_at_ms": 1782415059110
             },
@@ -79155,7 +79155,7 @@
                 "chunk_index": 0,
                 "citation": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
                 "content_hash": "49199ad5bd94964c",
-                "embedding_text": "unit_kind: pdf_page\nresource_version: 1534ab01ed87c419\nkeywords: project, aurora, gpu, approval, packet, decision, alice, approved, purchase, finance, review, owner\nsource: <repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1\ncontent: Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+                "embedding_text": "unit_kind: pdf_page\nresource_version: 1534ab01ed87c419\nkeywords: project, aurora, gpu, approval, packet, decision, alice, approved, purchase, finance, review, owner\nsource: <repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1\ncontent: Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
                 "keywords": [
                   "project",
                   "aurora",
@@ -79214,7 +79214,7 @@
                 "user_id": "deeproute"
               },
               "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
-              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
               "token_estimate": 51,
               "updated_at_ms": 1782415059110
             },
@@ -79897,7 +79897,7 @@
               "source_chunk_hash": 8736436273504687932,
               "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
               "summary_text": "resource_decision: Alice approved the Project Aurora GPU purchase after finance review",
-              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
               "updated_at_ms": 1782415059110
             },
             {
@@ -80797,7 +80797,7 @@
               "source_chunk_hash": 8736436273504687932,
               "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
               "summary_text": "resource_owner: Bob owns procurement and vendor coordination",
-              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
               "updated_at_ms": 1782415059110
             },
             {
@@ -80910,7 +80910,7 @@
               "source_refs": [
                 "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1"
               ],
-              "state": "resource_owner: Bob owns procurement and vendor coordination. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor sel...",
+              "state": "resource_owner: Bob owns procurement and vendor coordination. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. ControlState: Vendor sel...",
               "updated_at_ms": 1782415059110
             },
             {
@@ -81697,7 +81697,7 @@
               "source_chunk_hash": 8736436273504687932,
               "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
               "summary_text": "resource_cost: Current approved cap is 45000 dollars",
-              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
               "updated_at_ms": 1782415059110
             },
             {
@@ -81810,7 +81810,7 @@
               "source_refs": [
                 "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1"
               ],
-              "state": "resource_cost: Current approved cap is 45000 dollars. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor selection i...",
+              "state": "resource_cost: Current approved cap is 45000 dollars. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. ControlState: Vendor selection i...",
               "updated_at_ms": 1782415059110
             },
             {
@@ -82597,7 +82597,7 @@
               "source_chunk_hash": 8736436273504687932,
               "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
               "summary_text": "resource_deadline: Purchase order must be ready by July 15, 2026",
-              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
               "updated_at_ms": 1782415059110
             },
             {
@@ -82710,7 +82710,7 @@
               "source_refs": [
                 "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1"
               ],
-              "state": "resource_deadline: Purchase order must be ready by July 15, 2026. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor...",
+              "state": "resource_deadline: Purchase order must be ready by July 15, 2026. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. ControlState: Vendor...",
               "updated_at_ms": 1782415059110
             },
             {
@@ -83497,7 +83497,7 @@
               "source_chunk_hash": 8736436273504687932,
               "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
               "summary_text": "resource_policy: be ready by July 15, 2026",
-              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
               "updated_at_ms": 1782415059110
             },
             {
@@ -83610,7 +83610,7 @@
               "source_refs": [
                 "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1"
               ],
-              "state": "resource_policy: be ready by July 15, 2026. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor selection is blocked ...",
+              "state": "resource_policy: be ready by July 15, 2026. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. ControlState: Vendor selection is blocked ...",
               "updated_at_ms": 1782415059110
             },
             {
@@ -84397,7 +84397,7 @@
               "source_chunk_hash": 8736436273504687932,
               "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
               "summary_text": "resource_approval: Packet",
-              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
               "updated_at_ms": 1782415059110
             },
             {
@@ -84510,7 +84510,7 @@
               "source_refs": [
                 "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1"
               ],
-              "state": "resource_approval: Packet. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor selection is blocked if finance approv...",
+              "state": "resource_approval: Packet. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. ControlState: Vendor selection is blocked if finance approv...",
               "updated_at_ms": 1782415059110
             },
             {
@@ -85256,9 +85256,9 @@
               "internal_extraction": {
                 "classification": "RESOURCE_FACT",
                 "confidence": 0.82,
-                "entity_name": "risk:<repo>/docs/debug/matrixark_message_pdf_trace/f:Vendor selection is blocked if finance approval is not attac",
-                "entity_type": "resource_risk",
-                "event_type": "resource_risk",
+                "entity_name": "control_state:<repo>/docs/debug/matrixark_message_pdf_trace/f:Vendor selection is blocked if finance approval is not attac",
+                "entity_type": "resource_control_state",
+                "event_type": "resource_control_state",
                 "extraction_provider": "deterministic",
                 "mode": "matrixark_resource_schema",
                 "resource_version": "1534ab01ed87c419",
@@ -85296,8 +85296,8 @@
               },
               "source_chunk_hash": 8736436273504687932,
               "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
-              "summary_text": "resource_risk: Vendor selection is blocked if finance approval is not attached",
-              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
+              "summary_text": "resource_control_state: Vendor selection is blocked if finance approval is not attached",
+              "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached.",
               "updated_at_ms": 1782415059110
             },
             {
@@ -85372,8 +85372,8 @@
               "batch_id_hash": 5406225360109673472,
               "confidence": 0.82,
               "entity_hash": 7448309444804846956,
-              "entity_name": "risk:<repo>/docs/debug/matrixark_message_pdf_trace/f:Vendor selection is blocked if finance approval is not attac",
-              "entity_type": "resource_risk",
+              "entity_name": "control_state:<repo>/docs/debug/matrixark_message_pdf_trace/f:Vendor selection is blocked if finance approval is not attac",
+              "entity_type": "resource_control_state",
               "node_hash": 1737304210274426578,
               "node_path": [
                 "tenant:tenant_codex",
@@ -85410,7 +85410,7 @@
               "source_refs": [
                 "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1"
               ],
-              "state": "resource_risk: Vendor selection is blocked if finance approval is not attached. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026...",
+              "state": "resource_control_state: Vendor selection is blocked if finance approval is not attached. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026...",
               "updated_at_ms": 1782415059110
             },
             {
@@ -85520,7 +85520,7 @@
               "batch_id_hash": 5406225360109673472,
               "chunk_hash": 8736436273504687932,
               "index_hash": 9139996335400391065,
-              "index_name": "event_type:resource_risk",
+              "index_name": "event_type:resource_control_state",
               "node_hash": 1737304210274426578,
               "node_path": [
                 "tenant:tenant_codex",
@@ -85555,7 +85555,7 @@
               "batch_id_hash": 5406225360109673472,
               "chunk_hash": 8736436273504687932,
               "index_hash": 283746352784066219,
-              "index_name": "entity_type:resource_risk",
+              "index_name": "entity_type:resource_control_state",
               "node_hash": 1737304210274426578,
               "node_path": [
                 "tenant:tenant_codex",
@@ -91257,37 +91257,37 @@
                   {
                     "node_hash": 1737304210274426578,
                     "ref_hash": 4265994536714805107,
-                    "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached."
+                    "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached."
                   },
                   {
                     "node_hash": 1737304210274426578,
                     "ref_hash": 274150047248606686,
-                    "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached."
+                    "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached."
                   },
                   {
                     "node_hash": 1737304210274426578,
                     "ref_hash": 929939956861191542,
-                    "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached."
+                    "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached."
                   },
                   {
                     "node_hash": 1737304210274426578,
                     "ref_hash": 9047961491740927299,
-                    "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached."
+                    "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached."
                   },
                   {
                     "node_hash": 1737304210274426578,
                     "ref_hash": 1596920217437410578,
-                    "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached."
+                    "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached."
                   },
                   {
                     "node_hash": 1737304210274426578,
                     "ref_hash": 2900456491093257987,
-                    "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached."
+                    "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached."
                   },
                   {
                     "node_hash": 1737304210274426578,
                     "ref_hash": 571365746382456544,
-                    "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached."
+                    "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached."
                   }
                 ],
                 "refs": [
@@ -95606,9 +95606,9 @@
               "internal_extraction": {
                 "classification": "RESOURCE_FACT",
                 "confidence": 0.82,
-                "entity_name": "risk:<repo>/docs/debug/matrixark_message_pdf_trace/f:42000 dollars is historical and should not be used for curre",
-                "entity_type": "resource_risk",
-                "event_type": "resource_risk",
+                "entity_name": "control_state:<repo>/docs/debug/matrixark_message_pdf_trace/f:42000 dollars is historical and should not be used for curre",
+                "entity_type": "resource_control_state",
+                "event_type": "resource_control_state",
                 "extraction_provider": "deterministic",
                 "mode": "matrixark_resource_schema",
                 "resource_version": "5607f8c63b82d305",
@@ -95646,7 +95646,7 @@
               },
               "source_chunk_hash": 4893379877725482254,
               "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1",
-              "summary_text": "resource_risk: 42000 dollars is historical and should not be used for current-state answers",
+              "summary_text": "resource_control_state: 42000 dollars is historical and should not be used for current-state answers",
               "text": "Budget Update Memo\nUpdate: The backup GPU quote increased the cap from 42000 dollars to 45000 dollars.\nCurrent state: 45000 dollars is the valid active budget cap.\nStale blocker: 42000 dollars is historical and should not be used for current-state answers.\nApprover: Alice confirmed the updated cap.",
               "updated_at_ms": 1782415059406
             },
@@ -95722,8 +95722,8 @@
               "batch_id_hash": 644123701071499972,
               "confidence": 0.82,
               "entity_hash": 9128041085176869255,
-              "entity_name": "risk:<repo>/docs/debug/matrixark_message_pdf_trace/f:42000 dollars is historical and should not be used for curre",
-              "entity_type": "resource_risk",
+              "entity_name": "control_state:<repo>/docs/debug/matrixark_message_pdf_trace/f:42000 dollars is historical and should not be used for curre",
+              "entity_type": "resource_control_state",
               "node_hash": 1737304210274426578,
               "node_path": [
                 "tenant:tenant_codex",
@@ -95760,7 +95760,7 @@
               "source_refs": [
                 "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1"
               ],
-              "state": "resource_risk: 42000 dollars is historical and should not be used for current-state answers. Source: Budget Update Memo Update: The backup GPU quote increased the cap from 42000 dollars to 45000 dollars. Current state: 45000 dollars is the valid active budget cap. Stale blocker: 42000 dollars is historical and should not be used for current-state answers....",
+              "state": "resource_control_state: 42000 dollars is historical and should not be used for current-state answers. Source: Budget Update Memo Update: The backup GPU quote increased the cap from 42000 dollars to 45000 dollars. Current state: 45000 dollars is the valid active budget cap. Stale blocker: 42000 dollars is historical and should not be used for current-state answers....",
               "updated_at_ms": 1782415059406
             },
             {
@@ -95870,7 +95870,7 @@
               "batch_id_hash": 644123701071499972,
               "chunk_hash": 4893379877725482254,
               "index_hash": 4328172324394284284,
-              "index_name": "event_type:resource_risk",
+              "index_name": "event_type:resource_control_state",
               "node_hash": 1737304210274426578,
               "node_path": [
                 "tenant:tenant_codex",
@@ -95905,7 +95905,7 @@
               "batch_id_hash": 644123701071499972,
               "chunk_hash": 4893379877725482254,
               "index_hash": 4128572141507648639,
-              "index_name": "entity_type:resource_risk",
+              "index_name": "entity_type:resource_control_state",
               "node_hash": 1737304210274426578,
               "node_path": [
                 "tenant:tenant_codex",
@@ -97802,17 +97802,17 @@
                   {
                     "node_hash": 1737304210274426578,
                     "ref_hash": 4265994536714805107,
-                    "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached."
+                    "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached."
                   },
                   {
                     "node_hash": 1737304210274426578,
                     "ref_hash": 274150047248606686,
-                    "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached."
+                    "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached."
                   },
                   {
                     "node_hash": 1737304210274426578,
                     "ref_hash": 929939956861191542,
-                    "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached."
+                    "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nControlState: Vendor selection is blocked if finance approval is not attached."
                   }
                 ],
                 "refs": [
@@ -100627,7 +100627,7 @@
                     "matched_index_terms": [
                       "classification:resource_fact",
                       "event_type:confirmation",
-                      "event_type:resource_risk",
+                      "event_type:resource_control_state",
                       "keyword:alice",
                       "keyword:approval",
                       "keyword:approved",
@@ -100977,7 +100977,7 @@
                     "matched_index_terms": [
                       "classification:resource_fact",
                       "event_type:correction",
-                      "event_type:resource_risk",
+                      "event_type:resource_control_state",
                       "keyword:alice",
                       "keyword:approval",
                       "keyword:approved",
@@ -102916,7 +102916,7 @@
                   "updated_at_ms": 1782415059406
                 }
               ],
-              "summary_text": "approval_state: the GPU purchase request for Project Aurora after reviewing the Q3 budget = the GPU purchase request for Project Aurora after reviewing the Q3 budget Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. Risk: Vendor selection is blocked if finance approval is not attached. a...",
+              "summary_text": "approval_state: the GPU purchase request for Project Aurora after reviewing the Q3 budget = the GPU purchase request for Project Aurora after reviewing the Q3 budget Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Owner: Bob owns procurement and vendor coordination. Budget: Current approved cap is 45000 dollars. Deadline: Purchase order must be ready by July 15, 2026. ControlState: Vendor selection is blocked if finance approval is not attached. a...",
               "total_prompt_context_tokens": 430,
               "tree_traversal": {
                 "enabled": true,

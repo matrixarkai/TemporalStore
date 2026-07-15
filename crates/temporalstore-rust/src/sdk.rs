@@ -539,13 +539,13 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             end_ms: command.end_ms,
             count: nonzero_limit(command.limit),
         },
-        v1::command::Kind::RiskIncrement(command) => types::Command::RiskIncrement {
+        v1::command::Kind::ControlStateIncrement(command) => types::Command::ControlStateIncrement {
             key: command.key,
             timestamp_ms: command.timestamp_ms,
             amount: command.delta,
         },
-        v1::command::Kind::RiskIncrementWithOptions(command) => {
-            types::Command::RiskIncrementWithOptions {
+        v1::command::Kind::ControlStateIncrementWithOptions(command) => {
+            types::Command::ControlStateIncrementWithOptions {
                 key: command.key,
                 timestamp_ms: command.timestamp_ms,
                 amount: command.delta,
@@ -553,47 +553,47 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                 ttl_ms: command.ttl_ms,
             }
         }
-        v1::command::Kind::RiskCount(command) => types::Command::RiskCount {
+        v1::command::Kind::ControlStateCount(command) => types::Command::ControlStateCount {
             key: command.key,
             start_ms: command.start_ms,
             end_ms: command.end_ms,
         },
-        v1::command::Kind::RiskChangeAdd(command) => types::Command::RiskChangeAdd {
+        v1::command::Kind::ControlStateChangeAdd(command) => types::Command::ControlStateChangeAdd {
             key: command.key,
             timestamp_ms: command.timestamp_ms,
             value: command.value,
             precision_ms: command.precision_ms,
             ttl_ms: command.ttl_ms,
         },
-        v1::command::Kind::RiskDetail(command) => types::Command::RiskDetail {
+        v1::command::Kind::ControlStateDetail(command) => types::Command::ControlStateDetail {
             key: command.key,
             start_ms: command.start_ms,
             end_ms: command.end_ms,
             count: nonzero_limit(command.limit),
         },
-        v1::command::Kind::RiskQuery(command) => types::Command::RiskQuery {
+        v1::command::Kind::ControlStateQuery(command) => types::Command::ControlStateQuery {
             key: command.key,
             start_ms: command.start_ms,
             end_ms: command.end_ms,
             aggregator: command.family,
         },
-        v1::command::Kind::RiskFamilySet(command) => types::Command::RiskSet {
-            family: sdk_risk_family_to_types(command.family)?,
+        v1::command::Kind::ControlStateFamilySet(command) => types::Command::ControlStateSet {
+            family: sdk_control_state_family_to_types(command.family)?,
             key: command.key,
             timestamp_ms: command.timestamp_ms,
             amount: command.amount,
             precision_ms: None,
             ttl_ms: None,
         },
-        v1::command::Kind::RiskFamilyQuery(command) => types::Command::RiskFamilyQuery {
-            family: sdk_risk_family_to_types(command.family)?,
+        v1::command::Kind::ControlStateFamilyQuery(command) => types::Command::ControlStateFamilyQuery {
+            family: sdk_control_state_family_to_types(command.family)?,
             key: command.key,
             start_ms: command.start_ms,
             end_ms: command.end_ms,
             aggregator: command.aggregator,
         },
-        v1::command::Kind::RiskFamilySetAndGet(command) => types::Command::RiskSetAndGet {
-            family: sdk_risk_family_to_types(command.family)?,
+        v1::command::Kind::ControlStateFamilySetAndGet(command) => types::Command::ControlStateSetAndGet {
+            family: sdk_control_state_family_to_types(command.family)?,
             key: command.key,
             timestamp_ms: command.timestamp_ms,
             amount: command.amount,
@@ -603,17 +603,17 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             precision_ms: None,
             ttl_ms: None,
         },
-        v1::command::Kind::RiskFolSet(command) => types::Command::RiskFolSet {
+        v1::command::Kind::ControlStateFolSet(command) => types::Command::ControlStateFolSet {
             key: command.key,
             value: command.value,
             occur_time_ms: command.occur_time_ms,
             ttl_ms: command.ttl_ms,
-            fol_type: sdk_risk_fol_type_to_types(command.fol_type)?,
+            fol_type: sdk_control_state_fol_type_to_types(command.fol_type)?,
         },
-        v1::command::Kind::RiskFolQuery(command) => {
-            types::Command::RiskFolQuery { key: command.key }
+        v1::command::Kind::ControlStateFolQuery(command) => {
+            types::Command::ControlStateFolQuery { key: command.key }
         }
-        v1::command::Kind::RiskManager(command) => types::Command::RiskManager {
+        v1::command::Kind::ControlStateManager(command) => types::Command::ControlStateManager {
             key: command.key,
             op_type: None,
             field_list: Vec::new(),
@@ -621,7 +621,7 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             end_offset: String::new(),
             is_cpc: None,
         },
-        v1::command::Kind::RiskDebug(command) => types::Command::RiskDebug {
+        v1::command::Kind::ControlStateDebug(command) => types::Command::ControlStateDebug {
             key: command.key,
             start_ms: command.start_ms,
             end_ms: command.end_ms,
@@ -947,23 +947,23 @@ fn sdk_feature_filter_op_to_types(op: i32) -> Result<types::FeatureFilterOp, Ton
     }
 }
 
-fn sdk_risk_family_to_types(family: i32) -> Result<types::RiskFamily, TonicStatus> {
-    match v1::RiskFamily::try_from(family) {
-        Ok(v1::RiskFamily::H) => Ok(types::RiskFamily::H),
-        Ok(v1::RiskFamily::Cpc) => Ok(types::RiskFamily::Cpc),
-        Ok(v1::RiskFamily::Fol) => Ok(types::RiskFamily::Fol),
-        Ok(v1::RiskFamily::Unspecified) | Err(_) => Err(TonicStatus::invalid_argument(
-            "risk family missing or invalid",
+fn sdk_control_state_family_to_types(family: i32) -> Result<types::ControlStateFamily, TonicStatus> {
+    match v1::ControlStateFamily::try_from(family) {
+        Ok(v1::ControlStateFamily::H) => Ok(types::ControlStateFamily::H),
+        Ok(v1::ControlStateFamily::Cpc) => Ok(types::ControlStateFamily::Cpc),
+        Ok(v1::ControlStateFamily::Fol) => Ok(types::ControlStateFamily::Fol),
+        Ok(v1::ControlStateFamily::Unspecified) | Err(_) => Err(TonicStatus::invalid_argument(
+            "control_state family missing or invalid",
         )),
     }
 }
 
-fn sdk_risk_fol_type_to_types(fol_type: i32) -> Result<types::RiskFolType, TonicStatus> {
-    match v1::RiskFolType::try_from(fol_type) {
-        Ok(v1::RiskFolType::First) => Ok(types::RiskFolType::First),
-        Ok(v1::RiskFolType::Last) => Ok(types::RiskFolType::Last),
-        Ok(v1::RiskFolType::Unspecified) | Err(_) => Err(TonicStatus::invalid_argument(
-            "risk fol_type missing or invalid",
+fn sdk_control_state_fol_type_to_types(fol_type: i32) -> Result<types::ControlStateFolType, TonicStatus> {
+    match v1::ControlStateFolType::try_from(fol_type) {
+        Ok(v1::ControlStateFolType::First) => Ok(types::ControlStateFolType::First),
+        Ok(v1::ControlStateFolType::Last) => Ok(types::ControlStateFolType::Last),
+        Ok(v1::ControlStateFolType::Unspecified) | Err(_) => Err(TonicStatus::invalid_argument(
+            "control_state fol_type missing or invalid",
         )),
     }
 }

@@ -298,9 +298,9 @@ pub struct FeatureModuleProductionReadinessReport {
     pub golden_cpp_corpus_ready: bool,
     pub exact_feature_nested_point_proto_ready: bool,
     pub deployment_time_range_ready: bool,
-    pub risk_cpc_internals_ready: bool,
-    pub risk_list_internals_ready: bool,
-    pub risk_manager_debug_api_ready: bool,
+    pub control_state_cpc_internals_ready: bool,
+    pub control_state_list_internals_ready: bool,
+    pub control_state_manager_debug_api_ready: bool,
     pub engine_client_resp_coverage_ready: bool,
     pub production_ready: bool,
     pub missing: Vec<String>,
@@ -330,16 +330,16 @@ pub fn feature_module_production_readiness_report() -> FeatureModuleProductionRe
     let golden_cpp_corpus_ready = true;
     let exact_feature_nested_point_proto_ready = true;
     let deployment_time_range_ready = true;
-    let risk_cpc_internals_ready = true;
-    let risk_list_internals_ready = true;
-    let risk_manager_debug_api_ready = true;
+    let control_state_cpc_internals_ready = true;
+    let control_state_list_internals_ready = true;
+    let control_state_manager_debug_api_ready = true;
     let engine_client_resp_coverage_ready = true;
     let production_ready = golden_cpp_corpus_ready
         && exact_feature_nested_point_proto_ready
         && deployment_time_range_ready
-        && risk_cpc_internals_ready
-        && risk_list_internals_ready
-        && risk_manager_debug_api_ready
+        && control_state_cpc_internals_ready
+        && control_state_list_internals_ready
+        && control_state_manager_debug_api_ready
         && engine_client_resp_coverage_ready;
     let missing = if production_ready {
         Vec::new()
@@ -347,7 +347,7 @@ pub fn feature_module_production_readiness_report() -> FeatureModuleProductionRe
         vec![
             "exact C++ Feature nested point/proto semantics and deployment-specific time-range edge cases"
                 .to_string(),
-            "Risk production CPC/list internals and deployment-specific manager/debug APIs"
+            "ControlState production CPC/list internals and deployment-specific manager/debug APIs"
                 .to_string(),
         ]
     };
@@ -356,9 +356,9 @@ pub fn feature_module_production_readiness_report() -> FeatureModuleProductionRe
         golden_cpp_corpus_ready,
         exact_feature_nested_point_proto_ready,
         deployment_time_range_ready,
-        risk_cpc_internals_ready,
-        risk_list_internals_ready,
-        risk_manager_debug_api_ready,
+        control_state_cpc_internals_ready,
+        control_state_list_internals_ready,
+        control_state_manager_debug_api_ready,
         engine_client_resp_coverage_ready,
         production_ready,
         missing,
@@ -1334,7 +1334,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "client retry classifier separates budget-free safe topology retries from unsafe write retries that require explicit write retry budget"
                     .to_string(),
-                "shared C++/Rust corpus runs through the typed table client API and direct engine path for common, feature, sequence, IPS, risk, context, and restart reads"
+                "shared C++/Rust corpus runs through the typed table client API and direct engine path for common, feature, sequence, IPS, control_state, context, and restart reads"
                     .to_string(),
                 "versioned Rust-native SDK contract committed in proto/temporalstore/v1 with validation in the local parity gate"
                     .to_string(),
@@ -1365,7 +1365,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "C++ service-name admin aliases expose proxy info, heartbeat/config, and embedded client preflight"
                     .to_string(),
-                "C++ command-shaped proxy HTTP/JSON aliases cover Get, Set, FeatureAdd, RiskHset, HMGet, HMSet, HGetAll, and HLen through the normal routed client path"
+                "C++ command-shaped proxy HTTP/JSON aliases cover Get, Set, FeatureAdd, ControlStateHset, HMGet, HMSet, HGetAll, and HLen through the normal routed client path"
                     .to_string(),
                 "Rust-native service discovery replacement for consul via proxy auto-register, heartbeat TTL, admin inspection, and Prometheus stale/registered metrics"
                     .to_string(),
@@ -1535,7 +1535,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "local combined recovery proof covers Raft WAL restore plus oplog, index-log, page-file, and packed timestamped KV recovery"
                     .to_string(),
-                "Prometheus alert rules and fault runbook cover stuck replica, split-brain risk, slow follower, and storage pressure triage"
+                "Prometheus alert rules and fault runbook cover stuck replica, split-brain control_state, slow follower, and storage pressure triage"
                     .to_string(),
                 "external_chaos_gate composes OS-process Raft kill/restart, stale-read partition, lag/heal, rolling restart, networked membership/snapshot, and storage replay harnesses"
                     .to_string(),
@@ -1628,15 +1628,15 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "feature/sequence C++ protobuf golden corpus exercises filters, aggregates, sequence queries, and packed timestamped KV page layout"
                     .to_string(),
-                "full Rust-local C++ API golden corpus covers feature, sequence, IPS, Risk, Redis-compatible core commands, and admin storage readiness"
+                "full Rust-local C++ API golden corpus covers feature, sequence, IPS, ControlState, Redis-compatible core commands, and admin storage readiness"
                     .to_string(),
-                "IPS load/snapshot/stat/filter subset and Risk subset with typed client and RESP coverage"
+                "IPS load/snapshot/stat/filter subset and ControlState subset with typed client and RESP coverage"
                     .to_string(),
                 "IPS production snapshot report exposes range metadata, returned versus total counts, action/table server aggregations, and packed timestamped page evidence"
                     .to_string(),
-                "Risk debug report exposes H/CPC/FOL full and window counters plus FOL selection metadata through engine, typed client, and RESP"
+                "ControlState debug report exposes H/CPC/FOL full and window counters plus FOL selection metadata through engine, typed client, and RESP"
                     .to_string(),
-                "feature module production readiness covers golden C++ corpus replay, exact Feature nested point/proto semantics, deployment-specific time-range behavior, Risk CPC/list internals, manager/debug APIs, and engine/client/RESP coverage"
+                "feature module production readiness covers golden C++ corpus replay, exact Feature nested point/proto semantics, deployment-specific time-range behavior, ControlState CPC/list internals, manager/debug APIs, and engine/client/RESP coverage"
                     .to_string(),
             ],
             missing: feature_modules.missing,
@@ -1702,7 +1702,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "distributed Raft harness covers lag, catch-up, election, membership scale up/down, leader transfer, snapshot bootstrap, and secondary reads under load"
                     .to_string(),
-                "unified C++/Rust workload corpus covers Feature, IPS, Risk, Redis, Context, and admin API replay evidence"
+                "unified C++/Rust workload corpus covers Feature, IPS, ControlState, Redis, Context, and admin API replay evidence"
                     .to_string(),
                 "Docker/AWS SLO report covers metaserver, proxy, client, data-node, Raft failover, storage pressure, cache pressure, proxy convergence, workload replay, p50/p95/p99, throughput, error budget, CPU/memory/disk/network collectors, replica lag, failover count, and scale events"
                     .to_string(),
@@ -1934,8 +1934,8 @@ fn evidence_field_for(area: &str, capability: &str) -> &'static str {
         "feature_modules" if capability.contains("Feature") => {
             "feature_module_corpus.exact_feature_semantics_ready"
         }
-        "feature_modules" if capability.contains("Risk") => {
-            "feature_module_corpus.risk_production_semantics_ready"
+        "feature_modules" if capability.contains("ControlState") => {
+            "feature_module_corpus.control_state_production_semantics_ready"
         }
         "context_workflow" if capability.contains("corpus") => {
             "context_workflow_corpus.openviking_replay_ready"
@@ -1991,7 +1991,7 @@ fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static st
             "finish mtcache-class async writeback/backpressure and mature latency metrics"
         }
         ("feature_modules", "feature_module_cpp_parity") => {
-            "finish exact C++ feature/risk corpus coverage and deployment-specific module edge cases"
+            "finish exact C++ feature/control_state corpus coverage and deployment-specific module edge cases"
         }
         ("context_workflow", "context_model_provider_parity") => {
             "finish C++/OpenViking corpus replay and production policy controls"
@@ -2272,7 +2272,7 @@ mod tests {
         assert!(scale_testing
             .covered
             .iter()
-            .any(|item| item.contains("Feature, IPS, Risk, Redis, Context, and admin")));
+            .any(|item| item.contains("Feature, IPS, ControlState, Redis, Context, and admin")));
         assert!(scale_testing.covered.iter().any(|item| {
             item.contains("Docker/AWS SLO report")
                 && item.contains("metaserver, proxy, client, data-node")
@@ -2719,9 +2719,9 @@ mod tests {
         assert!(feature.golden_cpp_corpus_ready);
         assert!(feature.exact_feature_nested_point_proto_ready);
         assert!(feature.deployment_time_range_ready);
-        assert!(feature.risk_cpc_internals_ready);
-        assert!(feature.risk_list_internals_ready);
-        assert!(feature.risk_manager_debug_api_ready);
+        assert!(feature.control_state_cpc_internals_ready);
+        assert!(feature.control_state_list_internals_ready);
+        assert!(feature.control_state_manager_debug_api_ready);
         assert!(feature.engine_client_resp_coverage_ready);
         assert!(feature.production_ready);
         assert!(feature.missing.is_empty());

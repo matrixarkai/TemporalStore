@@ -8,8 +8,8 @@
 #define __CPC_FOR_UNIT_TEST__
 
 #include "absl/container/btree_map.h"
-#include "model/risk_cpc_model.h"
-#include "model/risk_hash_model.h"
+#include "model/control_state_cpc_model.h"
+#include "model/control_state_hash_model.h"
 #include "partition/cmd_context.h"
 #include "partition/storage/object.h"
 #include "partition/storage/op_logger.h"
@@ -89,9 +89,9 @@ datasketches::cpc_sketch deserializeCPC(const std::string& value_data) {
 static Allocator allocator;
 
 // 验证底层数据正确, 可以通过友元访问私有方法和成员
-TEST(RISKCPCModelTest, LowModel) {
+TEST(CONTROL_STATECPCModelTest, LowModel) {
     // === init ===
-    risk::RiskTimerLogger timer("cpc_unit_test", "test", 0, 10 * 1000 * 1000 * 1000);
+    control_state::ControlStateTimerLogger timer("cpc_unit_test", "test", 0, 10 * 1000 * 1000 * 1000);
     std::string object_key = "test_key";
     std::unique_ptr<uint8_t[]> buf(new uint8_t[partition::Object::ComputeRawObjectSize(
         object_key.size(), model::ModelManager::GetModelId<CPCModel>())]);
@@ -843,8 +843,8 @@ TEST(RISKCPCModelTest, LowModel) {
             cpc_model->dc_data_.clear();
             auto getKeys = [](int64_t timestamp) -> std::vector<std::string> {
                 return {
-                    std::to_string(risk::OneSecond) + std::to_string(timestamp),
-                    std::to_string(risk::OneMinute) + std::to_string(timestamp),
+                    std::to_string(control_state::OneSecond) + std::to_string(timestamp),
+                    std::to_string(control_state::OneMinute) + std::to_string(timestamp),
                 };
             };
             // 写入部分不过期的 key
@@ -1026,9 +1026,9 @@ TEST(RISKCPCModelTest, LowModel) {
 }
 
 // 验证 Scan 方法
-TEST(RISKCPCModelScanTest, HighModel) {
+TEST(CONTROL_STATECPCModelScanTest, HighModel) {
     // === init ===
-    risk::RiskTimerLogger timer("cpc_unit_test", "test", 0, 10 * 1000 * 1000 * 1000);
+    control_state::ControlStateTimerLogger timer("cpc_unit_test", "test", 0, 10 * 1000 * 1000 * 1000);
     std::string object_key = "test_key";
     std::unique_ptr<uint8_t[]> buf(new uint8_t[partition::Object::ComputeRawObjectSize(
         object_key.size(), model::ModelManager::GetModelId<CPCModel>())]);
@@ -1064,9 +1064,9 @@ TEST(RISKCPCModelScanTest, HighModel) {
 }
 
 // 验证 ScanForList 方法
-TEST(RISKCPCModelScanForListTest, HighModel) {
+TEST(CONTROL_STATECPCModelScanForListTest, HighModel) {
     // === init ===
-    risk::RiskTimerLogger timer("cpc_unit_test", "test", 0, 10 * 1000 * 1000 * 1000);
+    control_state::ControlStateTimerLogger timer("cpc_unit_test", "test", 0, 10 * 1000 * 1000 * 1000);
     std::string object_key = "test_key";
     std::unique_ptr<uint8_t[]> buf(new uint8_t[partition::Object::ComputeRawObjectSize(
         object_key.size(), model::ModelManager::GetModelId<CPCModel>())]);
@@ -1115,9 +1115,9 @@ TEST(RISKCPCModelScanForListTest, HighModel) {
 }
 
 // 验证 dc 写入正常
-TEST(RISKCPCModelDCTest, HighModel) {
+TEST(CONTROL_STATECPCModelDCTest, HighModel) {
     // === init ===
-    risk::RiskTimerLogger timer("cpc_unit_test", "test", 0, 10 * 1000 * 1000 * 1000);
+    control_state::ControlStateTimerLogger timer("cpc_unit_test", "test", 0, 10 * 1000 * 1000 * 1000);
     std::string object_key = "test_key";
     std::unique_ptr<uint8_t[]> buf(new uint8_t[partition::Object::ComputeRawObjectSize(
         object_key.size(), model::ModelManager::GetModelId<CPCModel>())]);

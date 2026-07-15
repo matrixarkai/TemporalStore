@@ -311,15 +311,15 @@ public final class TemporalStoreClient implements AutoCloseable {
         }
     }
 
-    public void riskIncrement(
+    public void control_stateIncrement(
             String key,
             long amount,
             long ttlSeconds,
-            RiskPrecision precision,
+            ControlStatePrecision precision,
             String uuid,
             long occurTimeSeconds) {
         PointerByReference error = new PointerByReference();
-        int code = api.temporalstore_risk_increment(
+        int code = api.temporalstore_control_state_increment(
                 requireOpen(),
                 key,
                 amount,
@@ -331,15 +331,15 @@ public final class TemporalStoreClient implements AutoCloseable {
         check(api, code, error);
     }
 
-    public long riskCount(
+    public long control_stateCount(
             String key,
-            RiskPrecision precision,
+            ControlStatePrecision precision,
             long windowStart,
             long windowEnd,
             WindowUnit windowUnit) {
         long[] count = new long[1];
         PointerByReference error = new PointerByReference();
-        int code = api.temporalstore_risk_count(
+        int code = api.temporalstore_control_state_count(
                 requireOpen(),
                 key,
                 precision.value,
@@ -485,7 +485,7 @@ public final class TemporalStoreClient implements AutoCloseable {
         }
     }
 
-    public enum RiskPrecision {
+    public enum ControlStatePrecision {
         ONE_SECOND(0),
         FIVE_SECONDS(1),
         TEN_SECONDS(2),
@@ -498,7 +498,7 @@ public final class TemporalStoreClient implements AutoCloseable {
 
         private final int value;
 
-        RiskPrecision(int value) {
+        ControlStatePrecision(int value) {
             this.value = value;
         }
     }
@@ -678,7 +678,7 @@ public final class TemporalStoreClient implements AutoCloseable {
                 NativeIpsFeatureArray features,
                 PointerByReference errorMessage);
 
-        int temporalstore_risk_increment(
+        int temporalstore_control_state_increment(
                 Pointer client,
                 String key,
                 long amount,
@@ -688,7 +688,7 @@ public final class TemporalStoreClient implements AutoCloseable {
                 long occurTimeSeconds,
                 PointerByReference errorMessage);
 
-        int temporalstore_risk_count(
+        int temporalstore_control_state_count(
                 Pointer client,
                 String key,
                 int precision,

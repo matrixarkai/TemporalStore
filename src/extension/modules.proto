@@ -10,7 +10,7 @@ enum Module {
     FEATURE    = 13;
     STRING    = 14;
     IPS       = 15;
-    RISK      = 16;
+    CONTROL_STATE      = 16;
     TEMPORAL_AGGREGATE = 17;
     CONTEXT   = 18;
 }

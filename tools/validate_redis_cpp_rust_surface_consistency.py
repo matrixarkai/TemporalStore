@@ -43,7 +43,7 @@ def extract_rust_allowlist(source: str) -> set[str]:
     )
     if not match:
         raise AssertionError("could not locate Rust open_source_redis_command_allowed")
-    return set(re.findall(r'"([A-Z0-9]+)"', match.group("body")))
+    return set(re.findall(r'"([A-Z0-9_]+)"', match.group("body")))
 
 
 def main() -> int:
@@ -73,8 +73,8 @@ def main() -> int:
         failures.append("public surface identity must use the Control State capability name")
     if "Control State is the only public fast-changing serving-signal capability" not in contract.get("rule", ""):
         failures.append("parity contract must state Control State is the only public serving-signal capability")
-    if "RISK* commands remain compatibility aliases" not in contract.get("rule", ""):
-        failures.append("parity contract must retain RISK* as compatibility aliases during migration")
+    if "CONTROL_STATE* commands remain compatibility aliases" not in contract.get("rule", ""):
+        failures.append("parity contract must retain CONTROL_STATE* as compatibility aliases during migration")
     if manifest_cxx != shared:
         failures.append("manifest cxx_commands must exactly match shared minimal Redis commands")
     if cxx_commands != shared:

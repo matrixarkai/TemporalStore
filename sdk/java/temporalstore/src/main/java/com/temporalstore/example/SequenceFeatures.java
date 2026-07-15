@@ -49,19 +49,19 @@ public final class SequenceFeatures {
                                             3)));
             System.out.println("rows=" + rows.size());
 
-            String riskKey = "java:user:42:risk";
-            client.riskIncrement(
-                    riskKey,
+            String control_stateKey = "java:user:42:control_state";
+            client.control_stateIncrement(
+                    control_stateKey,
                     1,
                     24 * 3600,
-                    TemporalStoreClient.RiskPrecision.ONE_MINUTE,
-                    "java-risk-1",
+                    TemporalStoreClient.ControlStatePrecision.ONE_MINUTE,
+                    "java-control_state-1",
                     0);
             System.out.println(
-                    "risk_count="
-                            + client.riskCount(
-                                    riskKey,
-                                    TemporalStoreClient.RiskPrecision.ONE_MINUTE,
+                    "control_state_count="
+                            + client.control_stateCount(
+                                    control_stateKey,
+                                    TemporalStoreClient.ControlStatePrecision.ONE_MINUTE,
                                     -1,
                                     0,
                                     TemporalStoreClient.WindowUnit.HOUR));

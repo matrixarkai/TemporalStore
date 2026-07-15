@@ -83,19 +83,19 @@ struct FeatureAddResponse {
     255: optional base.BaseResp BaseResp;
 }
 
-enum RiskHType {
+enum ControlStateHType {
     COUNT = 0;
     MIN = 1;
     MAX = 2;
     CHANGE = 3;
 }
 
-enum RiskFolType {
+enum ControlStateFolType {
     FIRST = 0;
     LAST = 1;
 }
 
-enum RiskPrecision {
+enum ControlStatePrecision {
     DISABLE = 0;
 
     OneSecond   = 10;
@@ -109,34 +109,34 @@ enum RiskPrecision {
     OneMonth    = 80;
 }
 
-enum RiskWindowUnit {
+enum ControlStateWindowUnit {
     Second = 0;
     Minute = 1;
     Hour = 2;
     Day = 3;
 }
 
-struct RiskKvPair {
+struct ControlStateKvPair {
     1:  required string key
     2:  required string value
 }
 
-struct RiskWindow {
+struct ControlStateWindow {
     1: required i64 start_offset;
     2: required i64 end_offset;
-    3: required RiskWindowUnit unit;
+    3: required ControlStateWindowUnit unit;
 }
 
-struct RiskListDetail {
+struct ControlStateListDetail {
     1: list<string> detail;
 }
 
-struct RiskResultDetail {
+struct ControlStateResultDetail {
     1: required bool has_result;
     2: required i64 result;
 }
 
-enum RiskManagerType {
+enum ControlStateManagerType {
     FULLGC = 0;
     SUBGC = 1;
     QUERY = 2;
@@ -147,104 +147,104 @@ enum RiskManagerType {
     ALL_DATA_VALUE = 7;
 }
 
-struct RiskHsetRequest {
+struct ControlStateHsetRequest {
     1:  required string namespace_name;
     2:  required string table_name;
     3:  required binary key;
     4:  required string value;
     5:  required i64 ttl; // 过期时间
-    6:  required RiskHType htype; // 写入的类型，区分DC，COUNT， MIN，MAX
+    6:  required ControlStateHType htype; // 写入的类型，区分DC，COUNT， MIN，MAX
     7:  required i64 occur_time;
-    8:  required RiskPrecision precision;
+    8:  required ControlStatePrecision precision;
     255: optional base.Base Base;
 }
 
-struct RiskCommonResponse {
+struct ControlStateCommonResponse {
     1: required Status status;
     255: optional base.BaseResp BaseResp;
 }
 
-struct RiskHqueryRequest {
+struct ControlStateHqueryRequest {
     1:  required string namespace_name;
     2:  required string table_name;
     3:  required binary key;
-    4:  required list<RiskWindow> windows;
-    7:  required RiskPrecision precision;
-    8:  required RiskHType htype;
+    4:  required list<ControlStateWindow> windows;
+    7:  required ControlStatePrecision precision;
+    8:  required ControlStateHType htype;
     255: optional base.Base Base;
 }
 
-struct RiskHqueryResponse {
+struct ControlStateHqueryResponse {
     1:  required Status status;
-    2:  required list<RiskResultDetail> result_list;
+    2:  required list<ControlStateResultDetail> result_list;
     255: optional base.BaseResp BaseResp;
 }
 
-struct RiskCPCSetRequest {
+struct ControlStateCPCSetRequest {
     1:  required string namespace_name;
     2:  required string table_name;
     3:  required binary key;
     4:  required list<string> values;
     5:  required i64 ttl; // 过期时间
     6:  required i64 occur_time; // 发生时间
-    7:  required RiskPrecision precision; // 写入的精度
+    7:  required ControlStatePrecision precision; // 写入的精度
     8:  required bool dont_upgrade_cpc; // 强制使用hash，不提升到cpc实现,用于兼容老的接口，用于dc list的场景
 }
 
-struct RiskCPCQueryRequest {
+struct ControlStateCPCQueryRequest {
     1:  required string namespace_name;
     2:  required string table_name;
     3:  required binary key;
-    4:  required RiskPrecision precision;// 精度，对于0-0d这种，不需要
-    5:  required list<RiskWindow> windows;
+    4:  required ControlStatePrecision precision;// 精度，对于0-0d这种，不需要
+    5:  required list<ControlStateWindow> windows;
     6:  required bool with_detail; // 是否返回详情，默认为false
 }
 
-struct RiskCPCQueryResponse {
+struct ControlStateCPCQueryResponse {
     1: required Status status;
     2: required list<i64> count_list;
-    3: required list<RiskListDetail> detail_lists;
+    3: required list<ControlStateListDetail> detail_lists;
     255: optional base.BaseResp BaseResp;
 }
 
-struct RiskFolSetRequest {
+struct ControlStateFolSetRequest {
     1:  required string namespace_name;
     2:  required string table_name;
     3:  required binary key;
     4:  required string value;
     5:  required i64 occur_time; // 发生时间
     6:  required i64 ttl; // 过期时间
-    7:  required RiskFolType fol_type;
+    7:  required ControlStateFolType fol_type;
     255: optional base.Base Base;
 }
 
-struct RiskFolQueryRequest {
+struct ControlStateFolQueryRequest {
     1:  required string namespace_name;
     2:  required string table_name;
     3:  required binary key;
     255: optional base.Base Base;
 }
 
-struct RiskFolQueryResponse {
+struct ControlStateFolQueryResponse {
     1: required Status status;
     2: required string result;
     255: optional base.BaseResp BaseResp;
 }
 
-struct RiskManagerRequest {
+struct ControlStateManagerRequest {
     1:  required string namespace_name;
     2:  required string table_name;
     3:  required binary key;
-    4:  required RiskManagerType op_type;
-    5:  optional list<RiskKvPair> field_list;
+    4:  required ControlStateManagerType op_type;
+    5:  optional list<ControlStateKvPair> field_list;
     6:  required string start_offset;
     7:  required string end_offset;
     8:  optional bool is_cpc;
 }
 
-struct RiskManagerResponse {
+struct ControlStateManagerResponse {
     1: required Status status;
-    2: required list<RiskKvPair> result;
+    2: required list<ControlStateKvPair> result;
     255: optional base.BaseResp BaseResp;
 }
 
@@ -313,14 +313,14 @@ service Bcache2ThriftService {
     GetResponse  Get(1:GetRequest request);
     SetResponse  Set(1:SetRequest request);
 
-    // risk module
-    RiskCommonResponse RiskHset(1:RiskHsetRequest request);
-    RiskHqueryResponse RiskHquery(1:RiskHqueryRequest request);
-    RiskCommonResponse RiskFolSet(1:RiskFolSetRequest request);
-    RiskFolQueryResponse RiskFolQuery(1:RiskFolQueryRequest request);
-    RiskCommonResponse RiskCPCSet(1:RiskCPCSetRequest request);
-    RiskCPCQueryResponse RiskCPCQuery(1:RiskCPCQueryRequest request);
-    RiskManagerResponse RiskManager(1:RiskManagerRequest request)
+    // control_state module
+    ControlStateCommonResponse ControlStateHset(1:ControlStateHsetRequest request);
+    ControlStateHqueryResponse ControlStateHquery(1:ControlStateHqueryRequest request);
+    ControlStateCommonResponse ControlStateFolSet(1:ControlStateFolSetRequest request);
+    ControlStateFolQueryResponse ControlStateFolQuery(1:ControlStateFolQueryRequest request);
+    ControlStateCommonResponse ControlStateCPCSet(1:ControlStateCPCSetRequest request);
+    ControlStateCPCQueryResponse ControlStateCPCQuery(1:ControlStateCPCQueryRequest request);
+    ControlStateManagerResponse ControlStateManager(1:ControlStateManagerRequest request)
 
     // hash module
     HMGetResponse HMGet(1:HMGetRequest request);

@@ -88,8 +88,8 @@ def main() -> int:
         "FAPPEND", "FAPPENDPOLICY", "FQUERY", "FQUERYFILTER", "FQUERYFILTERSTR", "FAGG",
         "CONTROLINCR", "CONTROLINCROPT", "CONTROLCHANGE", "CONTROLCOUNT", "CONTROLQUERY", "CONTROLDETAIL",
         "CONTROLHSET",
-        "RISKINCR", "RISKINCROPT", "RISKCHANGE", "RISKCOUNT", "RISKQUERY", "RISKDETAIL",
-        "RISKHSET", "HCHANGE", "HQUERY", "HSETANDGET",
+        "CONTROL_STATEINCR", "CONTROL_STATEINCROPT", "CONTROL_STATECHANGE", "CONTROL_STATECOUNT", "CONTROL_STATEQUERY", "CONTROL_STATEDETAIL",
+        "CONTROL_STATEHSET", "HCHANGE", "HQUERY", "HSETANDGET",
     ]
     require(
         manifest.get("cxx_command_count") == len(expected_minimal_cxx_commands)
@@ -173,11 +173,11 @@ def main() -> int:
             "CONTROLDETAIL",
             "CONTROLHSET",
         ]
-        and "RISKINCR" in manifest_control_state.get("compatibility_aliases", [])
-        and "RISKHSET" in manifest_control_state.get("compatibility_aliases", [])
+        and "CONTROL_STATEINCR" in manifest_control_state.get("compatibility_aliases", [])
+        and "CONTROL_STATEHSET" in manifest_control_state.get("compatibility_aliases", [])
         and "HCHANGE" in manifest_control_state.get("compatibility_aliases", [])
         and "fast-changing serving signals" in manifest_control_state.get("description", ""),
-        "Redis open-source manifest must expose Control State as the preferred public serving-signal capability with RISK* aliases",
+        "Redis open-source manifest must expose Control State as the preferred public serving-signal capability with CONTROL_STATE* aliases",
         failures,
     )
     require(
@@ -237,7 +237,7 @@ def main() -> int:
         failures,
     )
 
-    for module in ("ips", "risk", "temporal_aggregate"):
+    for module in ("ips", "control_state", "temporal_aggregate"):
         require(
             re.search(
                 r"if\s*\(NOT BCACHE2_OPEN_SOURCE_SURFACE\)(?:(?!endif).)*"
@@ -270,7 +270,7 @@ def main() -> int:
         "open-source model compile list must be trimmed to shared model sources",
         failures,
     )
-    for symbol in ("REGISTER_MODEL(TimeSeriesModel", "REGISTER_MODEL(IpsModel", "REGISTER_MODEL(RiskHashModel"):
+    for symbol in ("REGISTER_MODEL(TimeSeriesModel", "REGISTER_MODEL(IpsModel", "REGISTER_MODEL(ControlStateHashModel"):
         require(
             cxx_guarded_symbol(model_manager, symbol),
             f"{symbol} must be disabled under BCACHE2_OPEN_SOURCE_SURFACE",
@@ -430,7 +430,7 @@ def main() -> int:
 
     body = rust_allowlist_body(rust_redis)
     require(body, "Rust Redis open-source allowlist must exist", failures)
-    rust_allowed_commands = set(re.findall(r'"([A-Z0-9]+)"', body))
+    rust_allowed_commands = set(re.findall(r'"([A-Z0-9_]+)"', body))
     expected_rust_allowed_commands = set(manifest_cxx_commands) | manifest_rust_extra_commands
     require(
         rust_allowed_commands == expected_rust_allowed_commands,

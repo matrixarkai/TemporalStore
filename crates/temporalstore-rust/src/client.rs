@@ -37,7 +37,7 @@ use crate::types::{
     ContextExtractedEventIndexes, ContextIndexLookup, ContextIndexRef, ContextNode,
     ContextPackAudit, ContextSummary, ContextSummaryDirtyMarker, ContextTraversedNode,
     ExecuteRequest, ExecuteResponse, FeatureFilter, FeaturePoint, FeatureWritePolicy,
-    IpsSnapshotReport, IpsStats, RiskFamily, RiskFolType, SequenceFeatureRow, SequenceQuerySpec,
+    IpsSnapshotReport, IpsStats, ControlStateFamily, ControlStateFolType, SequenceFeatureRow, SequenceQuerySpec,
     ShardId, Status,
 };
 
@@ -325,7 +325,7 @@ impl Default for RequestOptions {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ClientRiskPrecision {
+pub enum ClientControlStatePrecision {
     OneSecond,
     FiveSeconds,
     TenSeconds,
@@ -337,7 +337,7 @@ pub enum ClientRiskPrecision {
     OneMonth,
 }
 
-impl ClientRiskPrecision {
+impl ClientControlStatePrecision {
     pub fn precision_ms(self) -> u64 {
         match self {
             Self::OneSecond => 1_000,
@@ -355,14 +355,14 @@ impl ClientRiskPrecision {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ClientRiskWindowUnit {
+pub enum ClientControlStateWindowUnit {
     Second,
     Minute,
     Hour,
     Day,
 }
 
-impl ClientRiskWindowUnit {
+impl ClientControlStateWindowUnit {
     pub fn duration_ms(self) -> i64 {
         match self {
             Self::Second => 1_000,
@@ -374,31 +374,31 @@ impl ClientRiskWindowUnit {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ClientRiskWindow {
-    #[serde(default = "default_client_risk_window_start")]
+pub struct ClientControlStateWindow {
+    #[serde(default = "default_client_control_state_window_start")]
     pub start: i64,
     #[serde(default)]
     pub end: i64,
-    #[serde(default = "default_client_risk_window_unit")]
-    pub unit: ClientRiskWindowUnit,
+    #[serde(default = "default_client_control_state_window_unit")]
+    pub unit: ClientControlStateWindowUnit,
 }
 
-impl Default for ClientRiskWindow {
+impl Default for ClientControlStateWindow {
     fn default() -> Self {
         Self {
-            start: default_client_risk_window_start(),
+            start: default_client_control_state_window_start(),
             end: 0,
-            unit: default_client_risk_window_unit(),
+            unit: default_client_control_state_window_unit(),
         }
     }
 }
 
-fn default_client_risk_window_start() -> i64 {
+fn default_client_control_state_window_start() -> i64 {
     -1
 }
 
-fn default_client_risk_window_unit() -> ClientRiskWindowUnit {
-    ClientRiskWindowUnit::Hour
+fn default_client_control_state_window_unit() -> ClientControlStateWindowUnit {
+    ClientControlStateWindowUnit::Hour
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -590,7 +590,7 @@ impl Default for ClientProductionReplacementContract {
                 "feature".to_string(),
                 "sequence".to_string(),
                 "ips".to_string(),
-                "risk".to_string(),
+                "control_state".to_string(),
                 "redis".to_string(),
                 "admin".to_string(),
                 "context".to_string(),
@@ -2352,16 +2352,16 @@ impl TemporalStoreClient {
         )
     }
 
-    pub fn risk_increment(
+    pub fn control_state_increment(
         &self,
         key: impl Into<String>,
         amount: i64,
         ttl_seconds: u64,
-        precision: ClientRiskPrecision,
+        precision: ClientControlStatePrecision,
         occur_time_seconds: u64,
     ) -> Result<(), ClientError> {
         let (namespace, table_name) = self.default_table_names()?;
-        self.risk_increment_table(
+        self.control_state_increment_table(
             namespace,
             table_name,
             key,
@@ -2372,37 +2372,37 @@ impl TemporalStoreClient {
         )
     }
 
-    pub fn risk_count(
+    pub fn control_state_count(
         &self,
         key: impl Into<String>,
-        precision: ClientRiskPrecision,
-        window: ClientRiskWindow,
+        precision: ClientControlStatePrecision,
+        window: ClientControlStateWindow,
     ) -> Result<i64, ClientError> {
         let (namespace, table_name) = self.default_table_names()?;
-        self.risk_count_table(namespace, table_name, key, precision, window)
+        self.control_state_count_table(namespace, table_name, key, precision, window)
     }
 
-    pub fn risk_hquery(
+    pub fn control_state_hquery(
         &self,
         key: impl Into<String>,
-        precision: ClientRiskPrecision,
-        window: ClientRiskWindow,
+        precision: ClientControlStatePrecision,
+        window: ClientControlStateWindow,
         aggregator: impl Into<String>,
     ) -> Result<i64, ClientError> {
         let (namespace, table_name) = self.default_table_names()?;
-        self.risk_hquery_table(namespace, table_name, key, precision, window, aggregator)
+        self.control_state_hquery_table(namespace, table_name, key, precision, window, aggregator)
     }
 
-    pub fn risk_cpc_set(
+    pub fn control_state_cpc_set(
         &self,
         key: impl Into<String>,
         values: Vec<String>,
         ttl_seconds: u64,
-        precision: ClientRiskPrecision,
+        precision: ClientControlStatePrecision,
         occur_time_seconds: u64,
     ) -> Result<(), ClientError> {
         let (namespace, table_name) = self.default_table_names()?;
-        self.risk_cpc_set_table(
+        self.control_state_cpc_set_table(
             namespace,
             table_name,
             key,
@@ -2413,24 +2413,24 @@ impl TemporalStoreClient {
         )
     }
 
-    pub fn risk_cpc_query(
+    pub fn control_state_cpc_query(
         &self,
         key: impl Into<String>,
-        precision: ClientRiskPrecision,
-        window: ClientRiskWindow,
+        precision: ClientControlStatePrecision,
+        window: ClientControlStateWindow,
     ) -> Result<i64, ClientError> {
         let (namespace, table_name) = self.default_table_names()?;
-        self.risk_cpc_query_table(namespace, table_name, key, precision, window)
+        self.control_state_cpc_query_table(namespace, table_name, key, precision, window)
     }
 
-    pub fn risk_increment_table(
+    pub fn control_state_increment_table(
         &self,
         namespace: impl Into<String>,
         table_name: impl Into<String>,
         key: impl Into<String>,
         amount: i64,
         ttl_seconds: u64,
-        precision: ClientRiskPrecision,
+        precision: ClientControlStatePrecision,
         occur_time_seconds: u64,
     ) -> Result<(), ClientError> {
         let table = self.table_for_command(namespace.into(), table_name.into())?;
@@ -2439,7 +2439,7 @@ impl TemporalStoreClient {
         } else {
             occur_time_seconds.saturating_mul(1_000)
         };
-        table.risk_increment_with_options(
+        table.control_state_increment_with_options(
             key,
             timestamp_ms,
             amount,
@@ -2448,41 +2448,41 @@ impl TemporalStoreClient {
         )
     }
 
-    pub fn risk_count_table(
+    pub fn control_state_count_table(
         &self,
         namespace: impl Into<String>,
         table_name: impl Into<String>,
         key: impl Into<String>,
-        precision: ClientRiskPrecision,
-        window: ClientRiskWindow,
+        precision: ClientControlStatePrecision,
+        window: ClientControlStateWindow,
     ) -> Result<i64, ClientError> {
         let table = self.table_for_command(namespace.into(), table_name.into())?;
-        let (start_ms, end_ms) = client_risk_window_bounds_ms(window, precision);
-        table.risk_count(key, start_ms, end_ms)
+        let (start_ms, end_ms) = client_control_state_window_bounds_ms(window, precision);
+        table.control_state_count(key, start_ms, end_ms)
     }
 
-    pub fn risk_hquery_table(
+    pub fn control_state_hquery_table(
         &self,
         namespace: impl Into<String>,
         table_name: impl Into<String>,
         key: impl Into<String>,
-        precision: ClientRiskPrecision,
-        window: ClientRiskWindow,
+        precision: ClientControlStatePrecision,
+        window: ClientControlStateWindow,
         aggregator: impl Into<String>,
     ) -> Result<i64, ClientError> {
         let table = self.table_for_command(namespace.into(), table_name.into())?;
-        let (start_ms, end_ms) = client_risk_window_bounds_ms(window, precision);
-        table.risk_family_query(RiskFamily::H, key, start_ms, end_ms, aggregator)
+        let (start_ms, end_ms) = client_control_state_window_bounds_ms(window, precision);
+        table.control_state_family_query(ControlStateFamily::H, key, start_ms, end_ms, aggregator)
     }
 
-    pub fn risk_cpc_set_table(
+    pub fn control_state_cpc_set_table(
         &self,
         namespace: impl Into<String>,
         table_name: impl Into<String>,
         key: impl Into<String>,
         values: Vec<String>,
         _ttl_seconds: u64,
-        _precision: ClientRiskPrecision,
+        _precision: ClientControlStatePrecision,
         occur_time_seconds: u64,
     ) -> Result<(), ClientError> {
         let table = self.table_for_command(namespace.into(), table_name.into())?;
@@ -2491,20 +2491,20 @@ impl TemporalStoreClient {
         } else {
             occur_time_seconds.saturating_mul(1_000)
         };
-        table.risk_family_set(RiskFamily::Cpc, key, timestamp_ms, values.len() as i64)
+        table.control_state_family_set(ControlStateFamily::Cpc, key, timestamp_ms, values.len() as i64)
     }
 
-    pub fn risk_cpc_query_table(
+    pub fn control_state_cpc_query_table(
         &self,
         namespace: impl Into<String>,
         table_name: impl Into<String>,
         key: impl Into<String>,
-        precision: ClientRiskPrecision,
-        window: ClientRiskWindow,
+        precision: ClientControlStatePrecision,
+        window: ClientControlStateWindow,
     ) -> Result<i64, ClientError> {
         let table = self.table_for_command(namespace.into(), table_name.into())?;
-        let (start_ms, end_ms) = client_risk_window_bounds_ms(window, precision);
-        table.risk_family_query(RiskFamily::Cpc, key, start_ms, end_ms, "sum")
+        let (start_ms, end_ms) = client_control_state_window_bounds_ms(window, precision);
+        table.control_state_family_query(ControlStateFamily::Cpc, key, start_ms, end_ms, "sum")
     }
 
     fn table_for_command(
@@ -4826,20 +4826,20 @@ impl TemporalStoreTable {
         }))
     }
 
-    pub fn risk_increment(
+    pub fn control_state_increment(
         &self,
         key: impl Into<String>,
         timestamp_ms: u64,
         amount: i64,
     ) -> Result<(), ClientError> {
-        self.expect_empty(Command::RiskIncrement {
+        self.expect_empty(Command::ControlStateIncrement {
             key: key.into(),
             timestamp_ms,
             amount,
         })
     }
 
-    pub fn risk_increment_with_options(
+    pub fn control_state_increment_with_options(
         &self,
         key: impl Into<String>,
         timestamp_ms: u64,
@@ -4847,7 +4847,7 @@ impl TemporalStoreTable {
         precision_ms: Option<u64>,
         ttl_ms: Option<u64>,
     ) -> Result<(), ClientError> {
-        self.expect_empty(Command::RiskIncrementWithOptions {
+        self.expect_empty(Command::ControlStateIncrementWithOptions {
             key: key.into(),
             timestamp_ms,
             amount,
@@ -4856,7 +4856,7 @@ impl TemporalStoreTable {
         })
     }
 
-    pub fn risk_change_add(
+    pub fn control_state_change_add(
         &self,
         key: impl Into<String>,
         timestamp_ms: u64,
@@ -4864,7 +4864,7 @@ impl TemporalStoreTable {
         precision_ms: Option<u64>,
         ttl_ms: Option<u64>,
     ) -> Result<(), ClientError> {
-        self.expect_empty(Command::RiskChangeAdd {
+        self.expect_empty(Command::ControlStateChangeAdd {
             key: key.into(),
             timestamp_ms,
             value: value.into(),
@@ -4873,14 +4873,14 @@ impl TemporalStoreTable {
         })
     }
 
-    pub fn risk_count(
+    pub fn control_state_count(
         &self,
         key: impl Into<String>,
         start_ms: u64,
         end_ms: u64,
     ) -> Result<i64, ClientError> {
         match self
-            .execute(Command::RiskCount {
+            .execute(Command::ControlStateCount {
                 key: key.into(),
                 start_ms,
                 end_ms,
@@ -4889,13 +4889,13 @@ impl TemporalStoreTable {
         {
             CommandResponse::Integer { value } => Ok(value),
             response => Err(ClientError::UnexpectedResponse {
-                operation: "risk_count",
+                operation: "control_state_count",
                 response,
             }),
         }
     }
 
-    pub fn risk_query(
+    pub fn control_state_query(
         &self,
         key: impl Into<String>,
         start_ms: u64,
@@ -4903,7 +4903,7 @@ impl TemporalStoreTable {
         aggregator: impl Into<String>,
     ) -> Result<i64, ClientError> {
         match self
-            .execute(Command::RiskQuery {
+            .execute(Command::ControlStateQuery {
                 key: key.into(),
                 start_ms,
                 end_ms,
@@ -4913,13 +4913,13 @@ impl TemporalStoreTable {
         {
             CommandResponse::Integer { value } => Ok(value),
             response => Err(ClientError::UnexpectedResponse {
-                operation: "risk_query",
+                operation: "control_state_query",
                 response,
             }),
         }
     }
 
-    pub fn risk_detail(
+    pub fn control_state_detail(
         &self,
         key: impl Into<String>,
         start_ms: u64,
@@ -4927,7 +4927,7 @@ impl TemporalStoreTable {
         count: Option<usize>,
     ) -> Result<Vec<FeaturePoint>, ClientError> {
         match self
-            .execute(Command::RiskDetail {
+            .execute(Command::ControlStateDetail {
                 key: key.into(),
                 start_ms,
                 end_ms,
@@ -4937,20 +4937,20 @@ impl TemporalStoreTable {
         {
             CommandResponse::FeaturePoints { points } => Ok(points),
             response => Err(ClientError::UnexpectedResponse {
-                operation: "risk_detail",
+                operation: "control_state_detail",
                 response,
             }),
         }
     }
 
-    pub fn risk_family_set(
+    pub fn control_state_family_set(
         &self,
-        family: RiskFamily,
+        family: ControlStateFamily,
         key: impl Into<String>,
         timestamp_ms: u64,
         amount: i64,
     ) -> Result<(), ClientError> {
-        self.expect_empty(Command::RiskSet {
+        self.expect_empty(Command::ControlStateSet {
             family,
             key: key.into(),
             timestamp_ms,
@@ -4960,16 +4960,16 @@ impl TemporalStoreTable {
         })
     }
 
-    pub fn risk_family_query(
+    pub fn control_state_family_query(
         &self,
-        family: RiskFamily,
+        family: ControlStateFamily,
         key: impl Into<String>,
         start_ms: u64,
         end_ms: u64,
         aggregator: impl Into<String>,
     ) -> Result<i64, ClientError> {
         match self
-            .execute(Command::RiskFamilyQuery {
+            .execute(Command::ControlStateFamilyQuery {
                 family,
                 key: key.into(),
                 start_ms,
@@ -4980,43 +4980,43 @@ impl TemporalStoreTable {
         {
             CommandResponse::Integer { value } => Ok(value),
             response => Err(ClientError::UnexpectedResponse {
-                operation: "risk_family_query",
+                operation: "control_state_family_query",
                 response,
             }),
         }
     }
 
-    pub fn risk_hquery(
+    pub fn control_state_hquery(
         &self,
         key: impl Into<String>,
         start_ms: u64,
         end_ms: u64,
         aggregator: impl Into<String>,
     ) -> Result<i64, ClientError> {
-        self.risk_family_query(RiskFamily::H, key, start_ms, end_ms, aggregator)
+        self.control_state_family_query(ControlStateFamily::H, key, start_ms, end_ms, aggregator)
     }
 
-    pub fn risk_cpc_set(
+    pub fn control_state_cpc_set(
         &self,
         key: impl Into<String>,
         values: Vec<String>,
         timestamp_ms: u64,
     ) -> Result<(), ClientError> {
-        self.risk_family_set(RiskFamily::Cpc, key, timestamp_ms, values.len() as i64)
+        self.control_state_family_set(ControlStateFamily::Cpc, key, timestamp_ms, values.len() as i64)
     }
 
-    pub fn risk_cpc_query(
+    pub fn control_state_cpc_query(
         &self,
         key: impl Into<String>,
         start_ms: u64,
         end_ms: u64,
     ) -> Result<i64, ClientError> {
-        self.risk_family_query(RiskFamily::Cpc, key, start_ms, end_ms, "sum")
+        self.control_state_family_query(ControlStateFamily::Cpc, key, start_ms, end_ms, "sum")
     }
 
-    pub fn risk_family_set_and_get(
+    pub fn control_state_family_set_and_get(
         &self,
-        family: RiskFamily,
+        family: ControlStateFamily,
         key: impl Into<String>,
         timestamp_ms: u64,
         amount: i64,
@@ -5025,7 +5025,7 @@ impl TemporalStoreTable {
         aggregator: impl Into<String>,
     ) -> Result<i64, ClientError> {
         match self
-            .execute(Command::RiskSetAndGet {
+            .execute(Command::ControlStateSetAndGet {
                 family,
                 key: key.into(),
                 timestamp_ms,
@@ -5040,21 +5040,21 @@ impl TemporalStoreTable {
         {
             CommandResponse::Integer { value } => Ok(value),
             response => Err(ClientError::UnexpectedResponse {
-                operation: "risk_family_set_and_get",
+                operation: "control_state_family_set_and_get",
                 response,
             }),
         }
     }
 
-    pub fn risk_fol_set(
+    pub fn control_state_fol_set(
         &self,
         key: impl Into<String>,
         value: impl Into<Vec<u8>>,
         occur_time_ms: u64,
         ttl_ms: u64,
-        fol_type: RiskFolType,
+        fol_type: ControlStateFolType,
     ) -> Result<(), ClientError> {
-        self.expect_empty(Command::RiskFolSet {
+        self.expect_empty(Command::ControlStateFolSet {
             key: key.into(),
             value: value.into(),
             occur_time_ms,
@@ -5063,25 +5063,25 @@ impl TemporalStoreTable {
         })
     }
 
-    pub fn risk_fol_query(&self, key: impl Into<String>) -> Result<Option<Vec<u8>>, ClientError> {
+    pub fn control_state_fol_query(&self, key: impl Into<String>) -> Result<Option<Vec<u8>>, ClientError> {
         match self
-            .execute(Command::RiskFolQuery { key: key.into() })?
+            .execute(Command::ControlStateFolQuery { key: key.into() })?
             .response
         {
             CommandResponse::Bytes { value } => Ok(value),
             response => Err(ClientError::UnexpectedResponse {
-                operation: "risk_fol_query",
+                operation: "control_state_fol_query",
                 response,
             }),
         }
     }
 
-    pub fn risk_manager(
+    pub fn control_state_manager(
         &self,
         key: impl Into<String>,
     ) -> Result<Vec<(String, Vec<u8>)>, ClientError> {
         match self
-            .execute(Command::RiskManager {
+            .execute(Command::ControlStateManager {
                 key: key.into(),
                 op_type: None,
                 field_list: Vec::new(),
@@ -5093,20 +5093,20 @@ impl TemporalStoreTable {
         {
             CommandResponse::HashEntries { entries } => Ok(entries),
             response => Err(ClientError::UnexpectedResponse {
-                operation: "risk_manager",
+                operation: "control_state_manager",
                 response,
             }),
         }
     }
 
-    pub fn risk_debug(
+    pub fn control_state_debug(
         &self,
         key: impl Into<String>,
         start_ms: u64,
         end_ms: u64,
     ) -> Result<Vec<(String, Vec<u8>)>, ClientError> {
         match self
-            .execute(Command::RiskDebug {
+            .execute(Command::ControlStateDebug {
                 key: key.into(),
                 start_ms,
                 end_ms,
@@ -5115,7 +5115,7 @@ impl TemporalStoreTable {
         {
             CommandResponse::HashEntries { entries } => Ok(entries),
             response => Err(ClientError::UnexpectedResponse {
-                operation: "risk_debug",
+                operation: "control_state_debug",
                 response,
             }),
         }
@@ -5806,9 +5806,9 @@ fn now_unix_ms() -> u64 {
         .min(u128::from(u64::MAX)) as u64
 }
 
-fn client_risk_window_bounds_ms(
-    window: ClientRiskWindow,
-    precision: ClientRiskPrecision,
+fn client_control_state_window_bounds_ms(
+    window: ClientControlStateWindow,
+    precision: ClientControlStatePrecision,
 ) -> (u64, u64) {
     let unit_ms = window.unit.duration_ms();
     let precision_ms = i128::from(precision.precision_ms());

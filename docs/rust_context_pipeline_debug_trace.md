@@ -108,8 +108,8 @@ The main non-benchmark trace uses the Rust harness input below:
   "tenant_hash": 20260616,
   "source_kind": "incident",
   "source_id": "mock-incident-1",
-  "title": "Checkout risk incident",
-  "body": "Customer checkout failed. Payment risk score spiked. The proxy retried safely and support asked for root cause.",
+  "title": "Checkout control_state incident",
+  "body": "Customer checkout failed. Payment control_state score spiked. The proxy retried safely and support asked for root cause.",
   "timestamp_ms": 1000,
   "provider": {
     "provider_name": "mock-openai-compatible",

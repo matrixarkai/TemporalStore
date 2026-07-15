@@ -1,6 +1,6 @@
 // Copyright (c) 2022-present, ByteDance Inc. All rights reserved.
 
-#include "extension/risk/window.h"
+#include "extension/control_state/window.h"
 
 #include <gtest/gtest.h>
 #include <stdio.h>
@@ -11,34 +11,34 @@
 #include <vector>
 
 namespace bcache2 {
-namespace risk_tool {
+namespace control_state_tool {
 
 // 所有区间都为左闭右开区间
-TEST(FixTime, RiskModule) {
+TEST(FixTime, ControlStateModule) {
     // 2022-11-28 23:59:59
     time_t timestamp = 1669651199;
     tm t;
     localtime_r(&timestamp, &t);
     // 精度为 1h
     {
-        bcache2::risk::Window window;
+        bcache2::control_state::Window window;
         window.set_end(-2);
         window.set_start(-10);
-        window.set_unit(risk::Day);
-        auto start = fixTime(t, window, risk::OneHour, false, true);
-        auto end = fixTime(t, window, risk::OneHour, true, true);
+        window.set_unit(control_state::Day);
+        auto start = fixTime(t, window, control_state::OneHour, false, true);
+        auto end = fixTime(t, window, control_state::OneHour, true, true);
         // 2022-11-27 23:00:00
         ASSERT_EQ(end, 1669561200);
         // 2022-11-18 23:00:00
         ASSERT_EQ(start, 1668783600);
     }
     {
-        bcache2::risk::Window window;
+        bcache2::control_state::Window window;
         window.set_end(0);
         window.set_start(-10);
-        window.set_unit(risk::Day);
-        auto start = fixTime(t, window, risk::OneHour, false, true);
-        auto end = fixTime(t, window, risk::OneHour, true, true);
+        window.set_unit(control_state::Day);
+        auto start = fixTime(t, window, control_state::OneHour, false, true);
+        auto end = fixTime(t, window, control_state::OneHour, true, true);
         // 2022-11-29 00:00:00
         ASSERT_EQ(end, 1669651200);
         // 2022-11-18 23:00:00
@@ -46,24 +46,24 @@ TEST(FixTime, RiskModule) {
     }
     // 精度为 1s
     {
-        bcache2::risk::Window window;
+        bcache2::control_state::Window window;
         window.set_end(-2);
         window.set_start(-10);
-        window.set_unit(risk::Minute);
-        auto start = fixTime(t, window, risk::OneSecond, false, true);
-        auto end = fixTime(t, window, risk::OneSecond, true, true);
+        window.set_unit(control_state::Minute);
+        auto start = fixTime(t, window, control_state::OneSecond, false, true);
+        auto end = fixTime(t, window, control_state::OneSecond, true, true);
         // 2022-11-28 23:58:59
         ASSERT_EQ(end, 1669651139);
         // 2022-11-28 23:49:59
         ASSERT_EQ(start, 1669650599);
     }
     {
-        bcache2::risk::Window window;
+        bcache2::control_state::Window window;
         window.set_end(0);
         window.set_start(-10);
-        window.set_unit(risk::Minute);
-        auto start = fixTime(t, window, risk::OneSecond, false, true);
-        auto end = fixTime(t, window, risk::OneSecond, true, true);
+        window.set_unit(control_state::Minute);
+        auto start = fixTime(t, window, control_state::OneSecond, false, true);
+        auto end = fixTime(t, window, control_state::OneSecond, true, true);
         // 2022-11-29 00:00:00
         ASSERT_EQ(end, 1669651200);
         // 2022-11-28 23:49:59
@@ -71,24 +71,24 @@ TEST(FixTime, RiskModule) {
     }
     // 精度为 1s unit 为 s
     {
-        bcache2::risk::Window window;
+        bcache2::control_state::Window window;
         window.set_end(-2);
         window.set_start(-10);
-        window.set_unit(risk::Second);
-        auto start = fixTime(t, window, risk::OneSecond, false, true);
-        auto end = fixTime(t, window, risk::OneSecond, true, true);
+        window.set_unit(control_state::Second);
+        auto start = fixTime(t, window, control_state::OneSecond, false, true);
+        auto end = fixTime(t, window, control_state::OneSecond, true, true);
         // 2022-11-28 23:59:58
         ASSERT_EQ(end, 1669651198);
         // 2022-11-28 23:59:49
         ASSERT_EQ(start, 1669651189);
     }
     {
-        bcache2::risk::Window window;
+        bcache2::control_state::Window window;
         window.set_end(0);
         window.set_start(-10);
-        window.set_unit(risk::Second);
-        auto start = fixTime(t, window, risk::OneSecond, false, true);
-        auto end = fixTime(t, window, risk::OneSecond, true, true);
+        window.set_unit(control_state::Second);
+        auto start = fixTime(t, window, control_state::OneSecond, false, true);
+        auto end = fixTime(t, window, control_state::OneSecond, true, true);
         // 2022-11-29 00:00:00
         ASSERT_EQ(end, 1669651200);
         // 2022-11-28 23:59:49
@@ -96,24 +96,24 @@ TEST(FixTime, RiskModule) {
     }
     // 精度为 1h unit = h
     {
-        bcache2::risk::Window window;
+        bcache2::control_state::Window window;
         window.set_end(-1);
         window.set_start(-1);
-        window.set_unit(risk::Hour);
-        auto start = fixTime(t, window, risk::OneHour, false, true);
-        auto end = fixTime(t, window, risk::OneHour, true, true);
+        window.set_unit(control_state::Hour);
+        auto start = fixTime(t, window, control_state::OneHour, false, true);
+        auto end = fixTime(t, window, control_state::OneHour, true, true);
         // 2022-11-28 23:00:00
         ASSERT_EQ(end, 1669647600);
         // 2022-11-28 22:00:00
         ASSERT_EQ(start, 1669644000);
     }
     {
-        bcache2::risk::Window window;
+        bcache2::control_state::Window window;
         window.set_end(0);
         window.set_start(-1);
-        window.set_unit(risk::Hour);
-        auto start = fixTime(t, window, risk::OneHour, false, true);
-        auto end = fixTime(t, window, risk::OneHour, true, true);
+        window.set_unit(control_state::Hour);
+        auto start = fixTime(t, window, control_state::OneHour, false, true);
+        auto end = fixTime(t, window, control_state::OneHour, true, true);
         // 2022-11-29 00:00:00
         ASSERT_EQ(end, 1669651200);
         // 2022-11-28 22:00:00
@@ -121,24 +121,24 @@ TEST(FixTime, RiskModule) {
     }
     // 精度为 1s unit = s
     {
-        bcache2::risk::Window window;
+        bcache2::control_state::Window window;
         window.set_end(-1);
         window.set_start(-1);
-        window.set_unit(risk::Second);
-        auto start = fixTime(t, window, risk::OneSecond, false, true);
-        auto end = fixTime(t, window, risk::OneSecond, true, true);
+        window.set_unit(control_state::Second);
+        auto start = fixTime(t, window, control_state::OneSecond, false, true);
+        auto end = fixTime(t, window, control_state::OneSecond, true, true);
         // 2022-11-28 23:59:59
         ASSERT_EQ(end, 1669651199);
         // 2022-11-28 23:59:58
         ASSERT_EQ(start, 1669651198);
     }
     {
-        bcache2::risk::Window window;
+        bcache2::control_state::Window window;
         window.set_end(0);
         window.set_start(-1);
-        window.set_unit(risk::Second);
-        auto start = fixTime(t, window, risk::OneSecond, false, true);
-        auto end = fixTime(t, window, risk::OneSecond, true, true);
+        window.set_unit(control_state::Second);
+        auto start = fixTime(t, window, control_state::OneSecond, false, true);
+        auto end = fixTime(t, window, control_state::OneSecond, true, true);
         // 2022-11-29 00:00:00
         ASSERT_EQ(end, 1669651200);
         // 2022-11-28 23:59:58
@@ -146,8 +146,8 @@ TEST(FixTime, RiskModule) {
     }
 }
 
-TEST(GetWindows, RiskModule) {
-    std::vector<RiskQueryRange> res;
+TEST(GetWindows, ControlStateModule) {
+    std::vector<ControlStateQueryRange> res;
     // 2022-11-28 22:59:50
     time_t timestamp = 1669647590;
     auto printRes = [&res]() -> std::string {
@@ -157,7 +157,7 @@ TEST(GetWindows, RiskModule) {
         res.clear();
         return "";
     };
-    auto checkAndClearRes = [&res, &printRes](std::vector<RiskQueryRange> want,
+    auto checkAndClearRes = [&res, &printRes](std::vector<ControlStateQueryRange> want,
                                               std::string caseName) {
         ASSERT_EQ(res.size(), want.size()) << " test_cast_name: " << caseName << printRes();
         for (size_t i = 0; i < res.size(); ++i) {
@@ -167,7 +167,7 @@ TEST(GetWindows, RiskModule) {
         res.clear();
     };
     auto getPrefix = [](int64_t start, int64_t end,
-                        risk::RiskPrecision precision) -> RiskQueryRange {
+                        control_state::ControlStatePrecision precision) -> ControlStateQueryRange {
         return {
             std::to_string(precision) + std::to_string(start),
             std::to_string(precision) + std::to_string(end),
@@ -176,43 +176,43 @@ TEST(GetWindows, RiskModule) {
 
     // DC
     {
-        bcache2::risk::Window window;
+        bcache2::control_state::Window window;
 
         // 精度 1h 单位 d
         {
             window.set_end(0);
             window.set_start(-10);
-            window.set_unit(risk::Day);
-            ASSERT_EQ(getWindows(window, risk::OneHour, &res, false, timestamp), 0);
+            window.set_unit(control_state::Day);
+            ASSERT_EQ(getWindows(window, control_state::OneHour, &res, false, timestamp), 0);
             checkAndClearRes(
                 {// 2022-11-18 22:00:00 - 2022-11-28 23:00:00
-                 {getPrefix(1668780000, 1669647600, risk::OneHour)}},
+                 {getPrefix(1668780000, 1669647600, control_state::OneHour)}},
                 "dc,1h,10d,ns");
-            ASSERT_EQ(getWindows(window, risk::OneHour, &res, true, timestamp), 0);
+            ASSERT_EQ(getWindows(window, control_state::OneHour, &res, true, timestamp), 0);
             checkAndClearRes(
                 {// 2022-11-18 22:00:00 - 2022-11-18 24:00:00
-                 {getPrefix(1668780000, 1668787200, risk::OneHour)},
+                 {getPrefix(1668780000, 1668787200, control_state::OneHour)},
                  // 2022-11-19 00:00:00 - 2022-11-28 00:00:00
-                 {getPrefix(1668787200, 1669564800, risk::OneDay)},
+                 {getPrefix(1668787200, 1669564800, control_state::OneDay)},
                  // 2022-11-28 00:00:00 - 2022-11-28 23:00:00
-                 {getPrefix(1669564800, 1669647600, risk::OneHour)}},
+                 {getPrefix(1669564800, 1669647600, control_state::OneHour)}},
                 "dc,1h,10d,s");
         }
         // 精度 1h 单位 h
         {
             window.set_end(0);
             window.set_start(-10);
-            window.set_unit(risk::Hour);
-            ASSERT_EQ(getWindows(window, risk::OneHour, &res, false, timestamp), 0);
+            window.set_unit(control_state::Hour);
+            ASSERT_EQ(getWindows(window, control_state::OneHour, &res, false, timestamp), 0);
             checkAndClearRes(
                 {// 2022-11-28 12:00:00 - 2022-11-28 23:00:00
-                 {getPrefix(1669608000, 1669647600, risk::OneHour)}},
+                 {getPrefix(1669608000, 1669647600, control_state::OneHour)}},
                 "dc,1h,10h,ns");
-            ASSERT_EQ(getWindows(window, risk::OneHour, &res, true, timestamp), 0);
+            ASSERT_EQ(getWindows(window, control_state::OneHour, &res, true, timestamp), 0);
             checkAndClearRes(
                 {
                     // 2022-11-28 12:00:00 - 2022-11-28 23:00:00
-                    {getPrefix(1669608000, 1669647600, risk::OneHour)},
+                    {getPrefix(1669608000, 1669647600, control_state::OneHour)},
                 },
                 "dc,1h,10h,s");
         }
@@ -220,21 +220,21 @@ TEST(GetWindows, RiskModule) {
         {
             window.set_end(0);
             window.set_start(-10);
-            window.set_unit(risk::Minute);
-            ASSERT_EQ(getWindows(window, risk::OneSecond, &res, false, timestamp), 0);
+            window.set_unit(control_state::Minute);
+            ASSERT_EQ(getWindows(window, control_state::OneSecond, &res, false, timestamp), 0);
             checkAndClearRes(
                 {// 2022-11-28 22:49:50 - 2022-11-28 22:59:51
-                 {getPrefix(1669646990, 1669647591, risk::OneSecond)}},
+                 {getPrefix(1669646990, 1669647591, control_state::OneSecond)}},
                 "dc,1s,10min,ns");
-            ASSERT_EQ(getWindows(window, risk::OneSecond, &res, true, timestamp), 0);
+            ASSERT_EQ(getWindows(window, control_state::OneSecond, &res, true, timestamp), 0);
             checkAndClearRes(
                 {
                     // 2022-11-28 22:49:50 - 2022-11-28 22:50:00
-                    {getPrefix(1669646990, 1669647000, risk::OneSecond)},
+                    {getPrefix(1669646990, 1669647000, control_state::OneSecond)},
                     // 2022-11-28 22:50:00 - 2022-11-28 22:59:00
-                    {getPrefix(1669647000, 1669647540, risk::OneMinute)},
+                    {getPrefix(1669647000, 1669647540, control_state::OneMinute)},
                     // 2022-11-28 22:59:00 - 2022-11-28 22:59:51
-                    {getPrefix(1669647540, 1669647591, risk::OneSecond)},
+                    {getPrefix(1669647540, 1669647591, control_state::OneSecond)},
                 },
                 "dc,1s,10min,s");
         }
@@ -242,58 +242,58 @@ TEST(GetWindows, RiskModule) {
         {
             window.set_end(0);
             window.set_start(-10);
-            window.set_unit(risk::Second);
-            ASSERT_EQ(getWindows(window, risk::OneSecond, &res, false, timestamp), 0);
+            window.set_unit(control_state::Second);
+            ASSERT_EQ(getWindows(window, control_state::OneSecond, &res, false, timestamp), 0);
             checkAndClearRes(
                 {// 2022-11-28 22:59:40 - 2022-11-28 22:59:51
-                 {getPrefix(1669647580, 1669647591, risk::OneSecond)}},
+                 {getPrefix(1669647580, 1669647591, control_state::OneSecond)}},
                 "dc,1s,10s,ns");
-            ASSERT_EQ(getWindows(window, risk::OneSecond, &res, true, timestamp), 0);
+            ASSERT_EQ(getWindows(window, control_state::OneSecond, &res, true, timestamp), 0);
             checkAndClearRes(
                 {// 2022-11-28 22:59:40 - 2022-11-28 22:59:51
-                 {getPrefix(1669647580, 1669647591, risk::OneSecond)}},
+                 {getPrefix(1669647580, 1669647591, control_state::OneSecond)}},
                 "dc,1s,10s,s");
         }
     }
     // 非 DC
     {
-        bcache2::risk::Window window;
+        bcache2::control_state::Window window;
 
         // 精度 1h 单位 d
         {
             window.set_end(0);
             window.set_start(-10);
-            window.set_unit(risk::Day);
-            ASSERT_EQ(getWindows(window, risk::OneHour, &res, false, timestamp), 0);
+            window.set_unit(control_state::Day);
+            ASSERT_EQ(getWindows(window, control_state::OneHour, &res, false, timestamp), 0);
             checkAndClearRes(
                 {// 2022-11-18 22:00:00 - 2022-11-28 23:00:00
-                 {getPrefix(1668780000, 1669647600, risk::OneHour)}},
+                 {getPrefix(1668780000, 1669647600, control_state::OneHour)}},
                 "min,1h,10d,ns");
-            ASSERT_EQ(getWindows(window, risk::OneHour, &res, true, timestamp), 0);
+            ASSERT_EQ(getWindows(window, control_state::OneHour, &res, true, timestamp), 0);
             checkAndClearRes(
                 {// 2022-11-18 22:00:00 - 2022-11-18 24:00:00
-                 {getPrefix(1668780000, 1668787200, risk::OneHour)},
+                 {getPrefix(1668780000, 1668787200, control_state::OneHour)},
                  // 2022-11-19 00:00:00 - 2022-11-28 00:00:00
-                 {getPrefix(1668787200, 1669564800, risk::OneDay)},
+                 {getPrefix(1668787200, 1669564800, control_state::OneDay)},
                  // 2022-11-28 00:00:00 - 2022-11-28 23:00:00
-                 {getPrefix(1669564800, 1669647600, risk::OneHour)}},
+                 {getPrefix(1669564800, 1669647600, control_state::OneHour)}},
                 "min,1h,10d,s");
         }
         // 精度 1h 单位 h
         {
             window.set_end(0);
             window.set_start(-10);
-            window.set_unit(risk::Hour);
-            ASSERT_EQ(getWindows(window, risk::OneHour, &res, false, timestamp), 0);
+            window.set_unit(control_state::Hour);
+            ASSERT_EQ(getWindows(window, control_state::OneHour, &res, false, timestamp), 0);
             checkAndClearRes(
                 {// 2022-11-28 12:00:00 - 2022-11-28 23:00:00
-                 {getPrefix(1669608000, 1669647600, risk::OneHour)}},
+                 {getPrefix(1669608000, 1669647600, control_state::OneHour)}},
                 "min,1h,10h,ns");
-            ASSERT_EQ(getWindows(window, risk::OneHour, &res, true, timestamp), 0);
+            ASSERT_EQ(getWindows(window, control_state::OneHour, &res, true, timestamp), 0);
             checkAndClearRes(
                 {
                     // 2022-11-28 12:00:00 - 2022-11-28 23:00:00
-                    {getPrefix(1669608000, 1669647600, risk::OneHour)},
+                    {getPrefix(1669608000, 1669647600, control_state::OneHour)},
                 },
                 "min,1h,10h,s");
         }
@@ -301,21 +301,21 @@ TEST(GetWindows, RiskModule) {
         {
             window.set_end(0);
             window.set_start(-10);
-            window.set_unit(risk::Minute);
-            ASSERT_EQ(getWindows(window, risk::OneSecond, &res, false, timestamp), 0);
+            window.set_unit(control_state::Minute);
+            ASSERT_EQ(getWindows(window, control_state::OneSecond, &res, false, timestamp), 0);
             checkAndClearRes(
                 {// 2022-11-28 22:49:50 - 2022-11-28 22:59:51
-                 {getPrefix(1669646990, 1669647591, risk::OneSecond)}},
+                 {getPrefix(1669646990, 1669647591, control_state::OneSecond)}},
                 "min,1s,10min,ns");
-            ASSERT_EQ(getWindows(window, risk::OneSecond, &res, true, timestamp), 0);
+            ASSERT_EQ(getWindows(window, control_state::OneSecond, &res, true, timestamp), 0);
             checkAndClearRes(
                 {
                     // 2022-11-28 22:49:50 - 2022-11-28 22:50:00
-                    {getPrefix(1669646990, 1669647000, risk::OneSecond)},
+                    {getPrefix(1669646990, 1669647000, control_state::OneSecond)},
                     // 2022-11-28 22:50:00 - 2022-11-28 22:59:00
-                    {getPrefix(1669647000, 1669647540, risk::OneMinute)},
+                    {getPrefix(1669647000, 1669647540, control_state::OneMinute)},
                     // 2022-11-28 22:59:00 - 2022-11-28 22:59:51
-                    {getPrefix(1669647540, 1669647591, risk::OneSecond)},
+                    {getPrefix(1669647540, 1669647591, control_state::OneSecond)},
                 },
                 "min,1s,10min,s");
         }
@@ -323,20 +323,20 @@ TEST(GetWindows, RiskModule) {
         {
             window.set_end(0);
             window.set_start(-10);
-            window.set_unit(risk::Second);
-            ASSERT_EQ(getWindows(window, risk::OneSecond, &res, false, timestamp), 0);
+            window.set_unit(control_state::Second);
+            ASSERT_EQ(getWindows(window, control_state::OneSecond, &res, false, timestamp), 0);
             checkAndClearRes(
                 {// 2022-11-28 22:59:40 - 2022-11-28 22:59:51
-                 {getPrefix(1669647580, 1669647591, risk::OneSecond)}},
+                 {getPrefix(1669647580, 1669647591, control_state::OneSecond)}},
                 "min,1s,10s,ns");
-            ASSERT_EQ(getWindows(window, risk::OneSecond, &res, true, timestamp), 0);
+            ASSERT_EQ(getWindows(window, control_state::OneSecond, &res, true, timestamp), 0);
             checkAndClearRes(
                 {// 2022-11-28 22:59:40 - 2022-11-28 22:59:51
-                 {getPrefix(1669647580, 1669647591, risk::OneSecond)}},
+                 {getPrefix(1669647580, 1669647591, control_state::OneSecond)}},
                 "min,1s,10s,s");
         }
     }
 }
 
-}  // namespace risk_tool
+}  // namespace control_state_tool
 }  // namespace bcache2

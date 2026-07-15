@@ -29,7 +29,7 @@ Compared:
 - Rust library client typed methods
 - Rust `client` binary
 - documented C++ client shape: table open/close, router, pipeline, meta sync, retry,
-  hash/string/common/feature/sequence/IPS/Risk families
+  hash/string/common/feature/sequence/IPS/ControlState families
 
 Findings:
 
@@ -44,8 +44,8 @@ Filled:
 - The CLI now exposes common missing direct commands:
   `exists`, `sdel`, `setnx`, `setxx`, `hmset`, `hmget`, `hincrby`, `hgetall`,
   `hlen`, `hdel`, `fappendnx`, `fappendxx`, `ipsrange`, `ipsremove`, `ipsdel`,
-  `ipscount`, `riskquery`, `riskdetail`, `riskhset`, `cpcset`, `folset`,
-  `folquery`, and `riskmanager`.
+  `ipscount`, `control_statequery`, `control_statedetail`, `control_statehset`, `cpcset`, `folset`,
+  `folquery`, and `control_statemanager`.
 
 Remaining client gaps:
 
@@ -78,7 +78,7 @@ Remaining proxy gaps:
 
 - legacy C++ wire framed server compatibility
 - command-specific C++ legacy framed RPC method aliases such as `Get`, `Set`, `FeatureAdd`,
-  `RiskHset`, `HMGet`, `HMSet`, `HGetAll`, and `HLen`
+  `ControlStateHset`, `HMGet`, `HMSet`, `HGetAll`, and `HLen`
 - consul/service-discovery registration
 - full C++ partition-set topology beyond the current open-source table topology model
 
@@ -153,7 +153,7 @@ Compared:
 
 Findings:
 
-- RESP already covers common string/hash/set, feature, sequence, IPS, Risk, FOL, admin,
+- RESP already covers common string/hash/set, feature, sequence, IPS, ControlState, FOL, admin,
   and partition smoke commands.
 - CLI coverage lagged behind RESP and the library client.
 
@@ -203,5 +203,5 @@ Next gaps to fill before making a stronger parity claim:
 3. Wire the metaserver scheduler loop to continuously apply membership plans against
    real data-node processes.
 4. Replace the local Raft model with a real OpenRaft or raft-rs FSM/storage layer.
-5. Build a C++ golden command corpus for feature, sequence, IPS, and Risk edge cases
+5. Build a C++ golden command corpus for feature, sequence, IPS, and ControlState edge cases
    and run it through the Rust RESP/client paths.

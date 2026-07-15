@@ -192,7 +192,7 @@ Interpretation:
 
 ## Cross-System Reading
 
-| System | Strongest result from these runs | Main risk found |
+| System | Strongest result from these runs | Main control_state found |
 |---|---|---|
 | TemporalStore | Native temporal/sequence/aggregate serving works with secondary visibility and no soak loop crashes | EFS durable write path limits write QPS on small nodes; proxy FeatureQuery still needs debugging |
 | ByteKV | Mixed KV workload completed 1.74M ops with `0` benchmark op errors | benchmark client cleanup segfault/abort after successful rows |

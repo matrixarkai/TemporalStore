@@ -1137,12 +1137,12 @@
         ]
       },
       {
-        "name": "storage_risk_context_page_backed_parity",
+        "name": "storage_control_state_context_page_backed_parity",
         "status": "passed",
         "steps": [
           {
             "latency_ms": 1.0,
-            "name": "storage_risk_context_page_backed_parity_coverage",
+            "name": "storage_control_state_context_page_backed_parity_coverage",
             "output": {
               "append_watermark": 40,
               "block_index_entry_count": 2,
@@ -2302,12 +2302,12 @@
         ]
       },
       {
-        "name": "storage_risk_context_page_backed_parity",
+        "name": "storage_control_state_context_page_backed_parity",
         "status": "passed",
         "steps": [
           {
             "latency_ms": 1.0,
-            "name": "storage_risk_context_page_backed_parity_coverage",
+            "name": "storage_control_state_context_page_backed_parity_coverage",
             "output": {
               "append_watermark": 40,
               "block_index_entry_count": 2,

@@ -3753,7 +3753,7 @@ TEST_F(PartitionTest, PartitionConfigTest) {
         case Module::HASH:
         case Module::SET:
         case Module::STRING:
-        case Module::RISK:
+        case Module::CONTROL_STATE:
             ASSERT_EQ(partition_->cmd_executor_->module_configs_[i].get(), nullptr);
             break;
         case Module::IPS:

@@ -1661,7 +1661,7 @@ def openai_compatible_one_pass_memory_extraction(envelope: Json, *, prior_contex
 def openai_compatible_resource_facts(chunk: Any, *, chunk_metadata: Json, envelope: Json, raw_uri: str, resource_version: str) -> list[Json]:
     system = "Return only JSON. You extract cited resource facts for MatrixArk."
     user = (
-        "Extract decisions, owners, costs, deadlines, API contracts, troubleshooting steps, policies, approvals, risks, and procedures from the resource chunk. "
+        "Extract decisions, owners, costs, deadlines, API contracts, troubleshooting steps, policies, approvals, control_states, and procedures from the resource chunk. "
         "Return JSON with {facts:[...]}. Each fact shape: {event_type, entity_type, entity_name, value, confidence}. "
         "event_type and entity_type should use resource_* names. entity_name must be a stable subject, while value is the factual state. "
         "Do not invent facts; use an empty facts list if nothing is useful.\n\n"
@@ -2228,7 +2228,7 @@ def semantic_saliency_score(text: str) -> float:
     score = 0.2
     if re.search(r"\b(recursion|base case|merge sort|algorithm|complexity|efficiency|dynamic programming|graph|game)\b", lower):
         score += 0.55
-    if re.search(r"\b(prefer|favorite|approved|budget|plan|correction|instead|current|remember|important|moved|moving|located|location|live|lives|staying|deadline|owner|owns|reviewer|checklist|decision|decided|require|requires|required|incident|runbook|alert|outage|rollback|metric|latency|p95|p99|sla|policy|risk|blocked|blocker)\b", lower):
+    if re.search(r"\b(prefer|favorite|approved|budget|plan|correction|instead|current|remember|important|moved|moving|located|location|live|lives|staying|deadline|owner|owns|reviewer|checklist|decision|decided|require|requires|required|incident|runbook|alert|outage|rollback|metric|latency|p95|p99|sla|policy|control_state|blocked|blocker)\b", lower):
         score += 0.45
     if re.search(r"\b(is|means|because|therefore|warning|avoid|must|should|cannot|can|require|requires|required|blocked|blocker)\b", lower):
         score += 0.2
@@ -2339,7 +2339,7 @@ QUERY_INDEX_LABELS: dict[str, str] = {
     "source_type:feedback": "feedback accepted rejected final answer",
     "source_type:resource": "resource document file pdf markdown text csv table runbook policy docs",
     "source_type:skill": "skill tool instruction playbook procedure capability",
-    "source_type:resource_fact": "extracted fact from resource decision owner cost deadline policy approval risk procedure api",
+    "source_type:resource_fact": "extracted fact from resource decision owner cost deadline policy approval control_state procedure api",
     "resource_type:pdf": "pdf document page file",
     "resource_type:md": "markdown md readme documentation runbook",
     "resource_type:txt": "text txt note plain document",
@@ -3392,7 +3392,7 @@ def compact_context_index_postings(records: list[Json]) -> list[Json]:
 
 
 RESOURCE_FACT_KEYWORDS = re.compile(
-    r"\b(decision|decided|owner|owns|deadline|due|cost|budget|approval|approved|risk|policy|must|should|required|requires|api|endpoint|contract|runbook|rollback|incident|troubleshoot|alert|sla|p95|p99|procedure|checklist)\b",
+    r"\b(decision|decided|owner|owns|deadline|due|cost|budget|approval|approved|control_state|policy|must|should|required|requires|api|endpoint|contract|runbook|rollback|incident|troubleshoot|alert|sla|p95|p99|procedure|checklist)\b",
     flags=re.IGNORECASE,
 )
 
@@ -3446,10 +3446,10 @@ RESOURCE_FACT_SCHEMAS: list[Json] = [
         "keywords": ["approval", "approved", "approve", "signoff", "confirmed"],
     },
     {
-        "fact_type": "resource_risk",
-        "entity_type": "resource_risk",
-        "entity_prefix": "risk",
-        "keywords": ["risk", "blocker", "blocked", "failure", "unsafe", "degraded"],
+        "fact_type": "resource_control_state",
+        "entity_type": "resource_control_state",
+        "entity_prefix": "control_state",
+        "keywords": ["control_state", "blocker", "blocked", "failure", "unsafe", "degraded"],
     },
     {
         "fact_type": "resource_procedure",
@@ -3488,7 +3488,7 @@ def extract_resource_fact_value(text: str, fact_type: str) -> str:
         "resource_cost": r"\b(?:cost|budget|amount|price|spend)\s*(?:is|:|=)?\s*([^.;\n]{2,120})",
         "resource_api_contract": r"\b(?:api|endpoint|contract|schema)\s*(?:is|:|=)?\s*([^.;\n]{2,160})",
         "resource_approval": r"\b(?:approval|approved|approve|signoff|confirmed)\s*(?:is|:|=)?\s*([^.;\n]{0,140})",
-        "resource_risk": r"\b(?:risk|blocker|blocked|failure)\s*(?:is|:|=)?\s*([^.;\n]{2,160})",
+        "resource_control_state": r"\b(?:control_state|blocker|blocked|failure)\s*(?:is|:|=)?\s*([^.;\n]{2,160})",
         "resource_decision": r"\b(?:decision|decided)\s*(?:is|:|=)?\s*([^.;\n]{2,180})",
         "resource_policy": r"\b(?:policy|must|should|required|requires)\s*(?:is|:|=)?\s*([^.;\n]{2,180})",
         "resource_troubleshooting_step": r"\b(?:troubleshoot|debug|incident|alert|rollback|runbook|remediation|mitigation)\s*(?:is|:|=)?\s*([^.;\n]{2,180})",

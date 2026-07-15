@@ -122,7 +122,7 @@ TemporalStore should expose explicit read modes:
 - `replica_stale`: any applied replica can serve; fastest, may lag.
 - `replica_min_index`: replica can serve only if `applied_index >= required_index`.
 
-For feature/risk serving, `replica_stale` is often acceptable. For strict read-after-write, use `leader` or `linearizable`.
+For feature/control_state serving, `replica_stale` is often acceptable. For strict read-after-write, use `leader` or `linearizable`.
 
 ## Code Integration Points
 

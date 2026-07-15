@@ -237,8 +237,8 @@ message Command {
     SequenceQuery sequence_query = 13;
     IpsAdd ips_add = 14;
     IpsQuery ips_query = 15;
-    RiskIncrement risk_increment = 16;
-    RiskQuery risk_query = 17;
+    ControlStateIncrement control_state_increment = 16;
+    ControlStateQuery control_state_query = 17;
     ContextNodeUpsert context_node_upsert = 18;
     ContextNodeGet context_node_get = 19;
     CommonExpire common_expire = 20;
@@ -254,17 +254,17 @@ message Command {
     SequenceBatchQuery sequence_batch_query = 30;
     IpsAddWithOptions ips_add_with_options = 31;
     IpsQueryLast ips_query_last = 32;
-    RiskIncrementWithOptions risk_increment_with_options = 33;
-    RiskCount risk_count = 34;
-    RiskChangeAdd risk_change_add = 35;
-    RiskDetail risk_detail = 36;
-    RiskFamilySet risk_family_set = 37;
-    RiskFamilyQuery risk_family_query = 38;
-    RiskFamilySetAndGet risk_family_set_and_get = 39;
-    RiskFolSet risk_fol_set = 40;
-    RiskFolQuery risk_fol_query = 41;
-    RiskManager risk_manager = 42;
-    RiskDebug risk_debug = 43;
+    ControlStateIncrementWithOptions control_state_increment_with_options = 33;
+    ControlStateCount control_state_count = 34;
+    ControlStateChangeAdd control_state_change_add = 35;
+    ControlStateDetail control_state_detail = 36;
+    ControlStateFamilySet control_state_family_set = 37;
+    ControlStateFamilyQuery control_state_family_query = 38;
+    ControlStateFamilySetAndGet control_state_family_set_and_get = 39;
+    ControlStateFolSet control_state_fol_set = 40;
+    ControlStateFolQuery control_state_fol_query = 41;
+    ControlStateManager control_state_manager = 42;
+    ControlStateDebug control_state_debug = 43;
     ContextWriteEvent context_write_event = 44;
     ContextQueryEvents context_query_events = 45;
     ContextNodesGet context_nodes_get = 46;
@@ -606,27 +606,27 @@ message IpsSnapshotReportRequest {
   uint32 limit = 4;
 }
 
-enum RiskFamily {
-  RISK_FAMILY_UNSPECIFIED = 0;
-  RISK_FAMILY_H = 1;
-  RISK_FAMILY_CPC = 2;
-  RISK_FAMILY_FOL = 3;
+enum ControlStateFamily {
+  CONTROL_STATE_FAMILY_UNSPECIFIED = 0;
+  CONTROL_STATE_FAMILY_H = 1;
+  CONTROL_STATE_FAMILY_CPC = 2;
+  CONTROL_STATE_FAMILY_FOL = 3;
 }
 
-enum RiskFolType {
-  RISK_FOL_TYPE_UNSPECIFIED = 0;
-  RISK_FOL_TYPE_FIRST = 1;
-  RISK_FOL_TYPE_LAST = 2;
+enum ControlStateFolType {
+  CONTROL_STATE_FOL_TYPE_UNSPECIFIED = 0;
+  CONTROL_STATE_FOL_TYPE_FIRST = 1;
+  CONTROL_STATE_FOL_TYPE_LAST = 2;
 }
 
-message RiskIncrement {
+message ControlStateIncrement {
   string key = 1;
   string family = 2;
   int64 delta = 3;
   uint64 timestamp_ms = 4;
 }
 
-message RiskIncrementWithOptions {
+message ControlStateIncrementWithOptions {
   string key = 1;
   int64 delta = 2;
   uint64 timestamp_ms = 3;
@@ -634,13 +634,13 @@ message RiskIncrementWithOptions {
   optional uint64 ttl_ms = 5;
 }
 
-message RiskCount {
+message ControlStateCount {
   string key = 1;
   uint64 start_ms = 2;
   uint64 end_ms = 3;
 }
 
-message RiskChangeAdd {
+message ControlStateChangeAdd {
   string key = 1;
   uint64 timestamp_ms = 2;
   bytes value = 3;
@@ -648,37 +648,37 @@ message RiskChangeAdd {
   optional uint64 ttl_ms = 5;
 }
 
-message RiskDetail {
+message ControlStateDetail {
   string key = 1;
   uint64 start_ms = 2;
   uint64 end_ms = 3;
   uint32 limit = 4;
 }
 
-message RiskQuery {
+message ControlStateQuery {
   string key = 1;
   string family = 2;
   uint64 start_ms = 3;
   uint64 end_ms = 4;
 }
 
-message RiskFamilySet {
-  RiskFamily family = 1;
+message ControlStateFamilySet {
+  ControlStateFamily family = 1;
   string key = 2;
   uint64 timestamp_ms = 3;
   int64 amount = 4;
 }
 
-message RiskFamilyQuery {
-  RiskFamily family = 1;
+message ControlStateFamilyQuery {
+  ControlStateFamily family = 1;
   string key = 2;
   uint64 start_ms = 3;
   uint64 end_ms = 4;
   string aggregator = 5;
 }
 
-message RiskFamilySetAndGet {
-  RiskFamily family = 1;
+message ControlStateFamilySetAndGet {
+  ControlStateFamily family = 1;
   string key = 2;
   uint64 timestamp_ms = 3;
   int64 amount = 4;
@@ -687,23 +687,23 @@ message RiskFamilySetAndGet {
   string aggregator = 7;
 }
 
-message RiskFolSet {
+message ControlStateFolSet {
   string key = 1;
   bytes value = 2;
   uint64 occur_time_ms = 3;
   uint64 ttl_ms = 4;
-  RiskFolType fol_type = 5;
+  ControlStateFolType fol_type = 5;
 }
 
-message RiskFolQuery {
+message ControlStateFolQuery {
   string key = 1;
 }
 
-message RiskManager {
+message ControlStateManager {
   string key = 1;
 }
 
-message RiskDebug {
+message ControlStateDebug {
   string key = 1;
   uint64 start_ms = 2;
   uint64 end_ms = 3;

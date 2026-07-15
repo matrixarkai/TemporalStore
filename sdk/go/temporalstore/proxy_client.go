@@ -294,11 +294,11 @@ func (c *ProxyClient) QueryIPSLastInstances(
 	return data.Features, err
 }
 
-func (c *ProxyClient) RiskIncrement(
+func (c *ProxyClient) ControlStateIncrement(
 	key string,
 	amount int64,
 	ttlSeconds uint64,
-	precision RiskPrecision,
+	precision ControlStatePrecision,
 	uuid string,
 	occurTimeSeconds uint64,
 ) error {
@@ -307,16 +307,16 @@ func (c *ProxyClient) RiskIncrement(
 	body["ttl_seconds"] = ttlSeconds
 	body["ttl_ms"] = ttlSeconds * 1000
 	body["precision"] = precision
-	body["precision_ms"] = riskPrecisionMs(precision)
+	body["precision_ms"] = control_statePrecisionMs(precision)
 	body["uuid"] = uuid
 	body["occur_time_seconds"] = occurTimeSeconds
 	body["timestamp_ms"] = proxyTimestampMs(occurTimeSeconds)
-	return c.post("/ProxyService/RiskIncrement", body, nil)
+	return c.post("/ProxyService/ControlStateIncrement", body, nil)
 }
 
-func (c *ProxyClient) RiskCount(
+func (c *ProxyClient) ControlStateCount(
 	key string,
-	precision RiskPrecision,
+	precision ControlStatePrecision,
 	windowStart int64,
 	windowEnd int64,
 	windowUnit WindowUnit,
@@ -326,45 +326,45 @@ func (c *ProxyClient) RiskCount(
 	body["window_start"] = windowStart
 	body["window_end"] = windowEnd
 	body["window_unit"] = windowUnit
-	startMs, endMs := riskWindowMs(windowStart, windowEnd, windowUnit)
+	startMs, endMs := control_stateWindowMs(windowStart, windowEnd, windowUnit)
 	body["start_ms"] = startMs
 	body["end_ms"] = endMs
 	var data struct {
 		Count int64 `json:"count"`
 	}
-	err := c.post("/ProxyService/RiskCount", body, &data)
+	err := c.post("/ProxyService/ControlStateCount", body, &data)
 	return data.Count, err
 }
 
-func (c *ProxyClient) RiskHSet(key string, timestampMs uint64, amount int64) error {
+func (c *ProxyClient) ControlStateHSet(key string, timestampMs uint64, amount int64) error {
 	body := c.keyBody(key)
 	body["timestamp_ms"] = timestampMs
 	body["amount"] = amount
-	return c.post("/ProxyService/RiskHset", body, nil)
+	return c.post("/ProxyService/ControlStateHset", body, nil)
 }
 
-func (c *ProxyClient) RiskFOLSet(key, value string, occurTimeMs uint64, ttlMs uint64, folType string) error {
+func (c *ProxyClient) ControlStateFOLSet(key, value string, occurTimeMs uint64, ttlMs uint64, folType string) error {
 	body := c.keyBody(key)
 	body["value"] = bytesValue(value)
 	body["occur_time_ms"] = occurTimeMs
 	body["ttl_ms"] = ttlMs
 	body["fol_type"] = folType
-	return c.post("/ProxyService/RiskFolSet", body, nil)
+	return c.post("/ProxyService/ControlStateFolSet", body, nil)
 }
 
-func (c *ProxyClient) RiskFOLQuery(key string) (string, error) {
+func (c *ProxyClient) ControlStateFOLQuery(key string) (string, error) {
 	var data struct {
 		Value string `json:"value"`
 	}
-	err := c.post("/ProxyService/RiskFolQuery", c.keyBody(key), &data)
+	err := c.post("/ProxyService/ControlStateFolQuery", c.keyBody(key), &data)
 	return data.Value, err
 }
 
-func (c *ProxyClient) RiskManager(key string) (map[string]string, error) {
+func (c *ProxyClient) ControlStateManager(key string) (map[string]string, error) {
 	var data struct {
 		Entries map[string]string `json:"entries"`
 	}
-	err := c.post("/ProxyService/RiskManager", c.keyBody(key), &data)
+	err := c.post("/ProxyService/ControlStateManager", c.keyBody(key), &data)
 	return data.Entries, err
 }
 
@@ -627,32 +627,32 @@ func proxyTimestampMs(occurTimeSeconds uint64) uint64 {
 	return occurTimeSeconds * 1000
 }
 
-func riskPrecisionMs(precision RiskPrecision) uint64 {
+func control_statePrecisionMs(precision ControlStatePrecision) uint64 {
 	switch precision {
-	case RiskOneSecond:
+	case ControlStateOneSecond:
 		return 1000
-	case RiskFiveSeconds:
+	case ControlStateFiveSeconds:
 		return 5000
-	case RiskTenSeconds:
+	case ControlStateTenSeconds:
 		return 10000
-	case RiskOneMinute:
+	case ControlStateOneMinute:
 		return 60000
-	case RiskFiveMinutes:
+	case ControlStateFiveMinutes:
 		return 5 * 60000
-	case RiskTenMinutes:
+	case ControlStateTenMinutes:
 		return 10 * 60000
-	case RiskOneHour:
+	case ControlStateOneHour:
 		return 60 * 60000
-	case RiskOneDay:
+	case ControlStateOneDay:
 		return 24 * 60 * 60000
-	case RiskOneMonth:
+	case ControlStateOneMonth:
 		return 30 * 24 * 60 * 60000
 	default:
 		return 60000
 	}
 }
 
-func riskWindowMs(windowStart int64, windowEnd int64, unit WindowUnit) (uint64, uint64) {
+func control_stateWindowMs(windowStart int64, windowEnd int64, unit WindowUnit) (uint64, uint64) {
 	now := time.Now().UnixMilli()
 	end := windowEnd
 	if end <= 0 {
