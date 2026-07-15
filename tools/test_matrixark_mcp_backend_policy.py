@@ -189,8 +189,8 @@ class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
                     os.environ[key] = value
 
         self.assertTrue(snapshot["shared_process_mode"])
-        self.assertEqual(snapshot["lane_pool"], {"write": 1, "read": 1, "pack": 16, "control": 1})
-        self.assertEqual(snapshot["max_inflight"], 19)
+        self.assertEqual(snapshot["lane_pool"], {"write": 1, "read": 1, "pack": 4, "control": 1})
+        self.assertEqual(snapshot["max_inflight"], 7)
         self.assertFalse(snapshot["write_pool_enabled"])
         self.assertFalse(snapshot["read_pool_enabled"])
         self.assertTrue(snapshot["pack_pool_enabled"])
@@ -931,8 +931,8 @@ class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
                     os.environ[key] = value
 
         self.assertFalse(snapshot["shared_process_mode"])
-        self.assertEqual(snapshot["lane_pool"], {"write": 4, "read": 4, "pack": 16, "control": 1})
-        self.assertEqual(snapshot["max_inflight"], 25)
+        self.assertEqual(snapshot["lane_pool"], {"write": 4, "read": 4, "pack": 4, "control": 1})
+        self.assertEqual(snapshot["max_inflight"], 13)
         self.assertTrue(snapshot["write_pool_enabled"])
         self.assertTrue(snapshot["read_pool_enabled"])
         self.assertTrue(snapshot["pack_pool_enabled"])
