@@ -5,12 +5,13 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, OnceLock, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod golden;
 pub mod reports;
+mod response_cache;
 
 mod admin_report;
+mod admission;
 mod constants;
 mod context;
 mod control_state;
@@ -31,6 +32,7 @@ mod storage_io;
 // shared-corpus: storage_manager_active_eviction_runtime storage_manager_page_gc_dependency_refusal storage_manager_index_gc_thresholds_recovery storage_control_state_context_page_backed_parity
 
 use self::admin_report::*;
+use self::admission::*;
 use self::constants::*;
 use self::context::*;
 use self::control_state::{control_state_bucket_ms, control_state_manager_entries};
@@ -38,6 +40,7 @@ use self::packed_pages::*;
 use self::page_reads::*;
 use self::product_model::*;
 use self::reports::*;
+use self::response_cache::*;
 use self::routing::*;
 use self::slot_dump::*;
 use self::slot_store::{
@@ -16819,96 +16822,6 @@ fn is_write_command(command: &Command) -> bool {
     )
 }
 
-fn admission_limits(
-    shard_id: ShardId,
-    write_command: bool,
-    config: &Config,
-    info: &Option<ShardInfo>,
-) -> Vec<AdmissionLimit> {
-    let mut limits = Vec::new();
-    if let Some(limit) = if write_command {
-        config.write_qps
-    } else {
-        config.read_qps
-    } {
-        limits.push(AdmissionLimit {
-            scope: AdmissionScope::Shard(shard_id),
-            limit,
-            label: if write_command {
-                "write_qps"
-            } else {
-                "read_qps"
-            },
-        });
-    }
-    if let Some(table_name) = info
-        .as_ref()
-        .map(|info| info.table_name.trim())
-        .filter(|table_name| !table_name.is_empty())
-    {
-        if let Some(limit) = if write_command {
-            config.table_write_qps
-        } else {
-            config.table_read_qps
-        } {
-            limits.push(AdmissionLimit {
-                scope: AdmissionScope::Table(table_name.to_string()),
-                limit,
-                label: if write_command {
-                    "table_write_qps"
-                } else {
-                    "table_read_qps"
-                },
-            });
-        }
-    }
-    if let Some(tenant_name) = config
-        .tenant_name
-        .as_deref()
-        .map(str::trim)
-        .filter(|tenant_name| !tenant_name.is_empty())
-    {
-        if let Some(limit) = if write_command {
-            config.tenant_write_qps
-        } else {
-            config.tenant_read_qps
-        } {
-            limits.push(AdmissionLimit {
-                scope: AdmissionScope::Tenant(tenant_name.to_string()),
-                limit,
-                label: if write_command {
-                    "tenant_write_qps"
-                } else {
-                    "tenant_read_qps"
-                },
-            });
-        }
-    }
-    limits
-}
-
-fn reset_admission_window(admission: &mut AdmissionState, now_sec: u64) {
-    if admission.window_epoch_sec != now_sec {
-        admission.window_epoch_sec = now_sec;
-        admission.read_count = 0;
-        admission.write_count = 0;
-    }
-}
-
-fn admission_count(admission: &mut AdmissionState, write_command: bool) -> &mut u64 {
-    if write_command {
-        &mut admission.write_count
-    } else {
-        &mut admission.read_count
-    }
-}
-
-fn now_epoch_seconds() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or_default()
-}
 
 fn validate_command_preconditions(
     cache: &MultiLayerCache,
@@ -17336,29 +17249,6 @@ fn validate_command_preconditions(
     Ok(())
 }
 
-fn cached_response(
-    cache: &MultiLayerCache,
-    key: CacheKey,
-    source: impl FnOnce() -> CommandResponse,
-) -> CommandResponse {
-    if let Ok(Some(bytes)) = cache.get(&key) {
-        if let Ok(response) = serde_json::from_slice::<CommandResponse>(&bytes) {
-            return response;
-        }
-        let _ = cache.invalidate(&key);
-    }
-    let response = source();
-    if let Ok(bytes) = serde_json::to_vec(&response) {
-        cache.put_memory_only(key, bytes);
-    }
-    response
-}
-
-fn invalidate_if_cached(cache: &MultiLayerCache, key: CacheKey) {
-    if cache.peek(&key) {
-        let _ = cache.invalidate(&key);
-    }
-}
 
 #[cfg(test)]
 mod tests;
