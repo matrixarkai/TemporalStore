@@ -3,10 +3,13 @@ use serde_json::{json, Value};
 use crate::matrixark_rust_proxy_command_stats::command_stats;
 use crate::matrixark_rust_proxy_metrics::{CommandStats, MetricsSnapshot};
 use crate::matrixark_rust_proxy_protocol::Command;
-use crate::matrixark_rust_proxy_records::{
+use crate::matrixark_rust_proxy_record_time_index::{
     matrixark_context_event_time_field, matrixark_context_event_time_key,
-    matrixark_context_event_time_payload, matrixark_record_id, matrixark_record_type,
-    matrixark_storage_field, matrixark_storage_key, matrixark_tenant_hash,
+    matrixark_context_event_time_payload,
+};
+use crate::matrixark_rust_proxy_records::{
+    matrixark_record_id, matrixark_record_type, matrixark_storage_field, matrixark_storage_key,
+    matrixark_tenant_hash,
 };
 
 #[test]

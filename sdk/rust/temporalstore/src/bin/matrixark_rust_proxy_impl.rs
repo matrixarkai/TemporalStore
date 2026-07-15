@@ -37,6 +37,8 @@ mod matrixark_rust_proxy_pack;
 mod matrixark_rust_proxy_protocol;
 #[path = "../matrixark_rust_proxy_records.rs"]
 mod matrixark_rust_proxy_records;
+#[path = "../matrixark_rust_proxy_record_time_index.rs"]
+mod matrixark_rust_proxy_record_time_index;
 #[path = "../matrixark_rust_proxy_dispatch.rs"]
 mod matrixark_rust_proxy_dispatch;
 #[path = "../matrixark_rust_proxy_dispatch_hash.rs"]
