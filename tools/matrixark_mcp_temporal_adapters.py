@@ -40,11 +40,13 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
 
 try:
+    from tools.matrixark_mcp_env import env_bool, env_int, env_lower
     from tools.matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from tools.matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
     from tools.matrixark_mcp_metrics import MatrixArkServiceMetrics
     from tools.matrixark_mcp_retrieval import native_retrieve_fallback_allowed
 except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_env import env_bool, env_int, env_lower
     from matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
     from matrixark_mcp_metrics import MatrixArkServiceMetrics
@@ -192,17 +194,17 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         self._write_retries = max(0, DIRECT_WRITE_RETRIES)
         self._write_backoff_s = max(0.0, DIRECT_WRITE_BACKOFF_MS / 1000.0)
         self._write_throttle_s = max(0.0, DIRECT_WRITE_THROTTLE_MS / 1000.0)
-        self._direct_write_queue_enabled = os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE", "0").strip().lower() in {"1", "true", "yes"}
-        self._direct_write_queue_max_records = max(1, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_MAX_RECORDS", "10000")))
-        self._direct_write_queue_put_timeout_s = max(0.01, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_PUT_TIMEOUT_MS", "1000")) / 1000.0)
-        self._direct_write_queue_mode = os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_MODE", "memory").strip().lower() or "memory"
+        self._direct_write_queue_enabled = env_bool("MATRIXARK_DIRECT_WRITE_QUEUE", False)
+        self._direct_write_queue_max_records = max(1, env_int("MATRIXARK_DIRECT_WRITE_QUEUE_MAX_RECORDS", 10000))
+        self._direct_write_queue_put_timeout_s = max(0.01, env_int("MATRIXARK_DIRECT_WRITE_QUEUE_PUT_TIMEOUT_MS", 1000) / 1000.0)
+        self._direct_write_queue_mode = env_lower("MATRIXARK_DIRECT_WRITE_QUEUE_MODE", "memory") or "memory"
         if self._direct_write_queue_mode not in {"memory", "temporalstore"}:
             raise MatrixArkError("MATRIXARK_DIRECT_WRITE_QUEUE_MODE must be memory or temporalstore")
-        self._direct_write_queue_drain_max_batches = max(1, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_DRAIN_MAX_BATCHES", "64")))
-        self._direct_write_queue_allow_sync_context = os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_ALLOW_SYNC_CONTEXT", "0").strip().lower() in {"1", "true", "yes"}
-        self._direct_write_queue_autostart = os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_AUTOSTART", "1").strip().lower() not in {"0", "false", "no"}
-        self._native_side_index_assume_fresh = os.environ.get("MATRIXARK_NATIVE_SIDE_INDEX_ASSUME_FRESH", "0").strip().lower() in {"1", "true", "yes"}
-        self._direct_raw_ingestion_queue_enabled = os.environ.get("MATRIXARK_DIRECT_RAW_INGESTION_QUEUE", "0").strip().lower() in {"1", "true", "yes"}
+        self._direct_write_queue_drain_max_batches = max(1, env_int("MATRIXARK_DIRECT_WRITE_QUEUE_DRAIN_MAX_BATCHES", 64))
+        self._direct_write_queue_allow_sync_context = env_bool("MATRIXARK_DIRECT_WRITE_QUEUE_ALLOW_SYNC_CONTEXT", False)
+        self._direct_write_queue_autostart = env_bool("MATRIXARK_DIRECT_WRITE_QUEUE_AUTOSTART", True)
+        self._native_side_index_assume_fresh = env_bool("MATRIXARK_NATIVE_SIDE_INDEX_ASSUME_FRESH", False)
+        self._direct_raw_ingestion_queue_enabled = env_bool("MATRIXARK_DIRECT_RAW_INGESTION_QUEUE", False)
         self._direct_write_queue_key = f"{self._storage_prefix}:direct_write_queue"
         self._direct_write_queue_done_key = f"{self._storage_prefix}:direct_write_queue_done"
         self._direct_write_queue_dead_key = f"{self._storage_prefix}:direct_write_queue_dead"
