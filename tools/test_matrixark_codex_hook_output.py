@@ -92,6 +92,28 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertFalse(output["retrieve"]["additional_context_emitted"])
         self.assertTrue(output["lifecycle_stage"]["after_llm_ingest_only"])
 
+    def test_strict_codex_stdout_removes_rich_audit_fields(self) -> None:
+        prompt_output = {
+            "status": "ok",
+            "event": "UserPromptSubmit",
+            "ingest": {"status": "accepted"},
+            "retrieve": {"additional_context_emitted": True},
+            "hookSpecificOutput": {
+                "hookEventName": "UserPromptSubmit",
+                "additionalContext": "remote memory",
+            },
+        }
+        self.assertEqual(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": "remote memory",
+                }
+            },
+            hook.strict_codex_stdout(prompt_output),
+        )
+        self.assertEqual({}, hook.strict_codex_stdout({"status": "ok", "event": "Stop"}))
+
     def test_fail_open_backend_error_is_visible_to_codex_user_prompt(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         cmd = [

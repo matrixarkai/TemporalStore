@@ -316,6 +316,14 @@ def codex_hook_output(
     return output
 
 
+def strict_codex_stdout(output: Json) -> Json:
+    """Return only fields accepted by Codex hook stdout parsers."""
+    hook_specific = output.get("hookSpecificOutput")
+    if isinstance(hook_specific, dict):
+        return {"hookSpecificOutput": hook_specific}
+    return {}
+
+
 def is_resource_event(event: str) -> bool:
     return normalized_event_name(event) in RESOURCE_EVENTS
 
@@ -412,6 +420,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--understanding-provider", default=os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER", "rules"))
     parser.add_argument("--segment-provider", default=os.environ.get("MATRIXARK_SEGMENT_PROVIDER", "deterministic"))
     parser.add_argument("--repo-root", type=Path, default=root)
+    parser.add_argument(
+        "--codex-strict-output",
+        action="store_true",
+        default=os.environ.get("MATRIXARK_CODEX_STRICT_OUTPUT", "").strip().lower() in {"1", "true", "yes", "on"},
+        help="Emit only Codex-supported hook stdout fields; rich audit JSON is for manual diagnostics only.",
+    )
     return parser.parse_args()
 
 
@@ -959,24 +973,22 @@ def main() -> int:
             },
         )
 
-    print(
-        json.dumps(
-            codex_hook_output(
-                args=args,
-                status="ok",
-                event=args.event,
-                session_id_source=session_id_source,
-                agent_context=agent_context,
-                ingest=ingest,
-                retrieve=retrieve,
-                commit=commit,
-                raw_uri=raw_uri,
-                resource_type=resource_type,
-                query=query,
-            ),
-            sort_keys=True,
-        )
+    output = codex_hook_output(
+        args=args,
+        status="ok",
+        event=args.event,
+        session_id_source=session_id_source,
+        agent_context=agent_context,
+        ingest=ingest,
+        retrieve=retrieve,
+        commit=commit,
+        raw_uri=raw_uri,
+        resource_type=resource_type,
+        query=query,
     )
+    if args.codex_strict_output:
+        output = strict_codex_stdout(output)
+    print(json.dumps(output, sort_keys=True))
     return 0
 
 
