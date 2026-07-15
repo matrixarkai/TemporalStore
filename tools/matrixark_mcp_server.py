@@ -13,7 +13,6 @@ storage adapters for compatibility with existing scripts.
 
 from __future__ import annotations
 
-import argparse
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 import json
@@ -734,98 +733,12 @@ class MatrixArkMcpServer:
             httpd.server_close()
 
 
-def production_profile_enabled() -> bool:
-    return MATRIXARK_MCP_PROFILE in {"prod", "production", "benchmark", "bench", "parity"}
-
-
-def python_hot_cache_allowed(*, backend_label: str = "") -> bool:
-    configured = os.environ.get("MATRIXARK_ALLOW_PYTHON_HOT_CACHE", "").strip().lower()
-    if configured:
-        return configured in {"1", "true", "yes"}
-    return backend_label == "local"
-
-
-def backend_ready_required(backend: str) -> bool:
-    if MATRIXARK_REQUIRE_BACKEND_READY:
-        return MATRIXARK_REQUIRE_BACKEND_READY in {"1", "true", "yes"}
-    return production_profile_enabled() and backend in {"temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"}
-
-
-def native_context_pack_required(backend: str) -> bool:
-    if MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK:
-        return MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK in {"1", "true", "yes"}
-    return backend in {"temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"}
-
-
-def native_candidate_prefilter_required_for_backend(backend: str) -> bool:
-    if backend not in {"temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"}:
-        return False
-    configured = os.environ.get("MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER", "").strip().lower()
-    if configured:
-        return configured in {"1", "true", "yes"}
-    return True
-
-
-def default_mcp_backend() -> str:
-    configured = os.environ.get("MATRIXARK_MCP_BACKEND")
-    if configured:
-        return configured
-    return "temporalstore-direct"
-
-
-def validate_mcp_backend_policy(args: argparse.Namespace) -> None:
-    if args.backend not in {"temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"}:
-        raise MatrixArkError(
-            "MatrixArk MCP no longer supports local JSONL serving backends; "
-            "use --backend temporalstore-direct, --backend temporalstore-rust, or --backend temporalstore-rust-direct."
-        )
-
-
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    add_backend_arguments(parser)
-    parser.add_argument(
-        "--line-json",
-        action="store_true",
-        help="Use newline-delimited JSON for simple shell debugging instead of MCP framing.",
-    )
-    parser.add_argument(
-        "--http-host",
-        default=os.environ.get("MATRIXARK_HTTP_HOST", "127.0.0.1"),
-        help="Host for the optional HTTP/JSON management portal facade.",
-    )
-    parser.add_argument(
-        "--http-port",
-        type=int,
-        default=int(os.environ.get("MATRIXARK_HTTP_PORT", "0")),
-        help="If non-zero, serve the browser portal and /api JSON facade instead of stdio MCP.",
-    )
-    parser.add_argument(
-        "--http-root",
-        type=Path,
-        default=Path(os.environ.get("MATRIXARK_HTTP_ROOT", str(Path(__file__).resolve().parent / "temporalstore-monitoring-ui"))),
-        help="Static document root for HTTP portal mode.",
-    )
-    parser.add_argument(
-        "--access-mode",
-        choices=["dev", "enforced"],
-        default=os.environ.get("MATRIXARK_ACCESS_MODE", "dev"),
-        help="dev allows omitted API keys for local testing; enforced requires scoped MatrixArk API keys.",
-    )
-    args = parser.parse_args()
-    if getattr(args, "rust_direct_lib", ""):
-        os.environ["MATRIXARK_TEMPORALSTORE_RUST_DIRECT_LIB"] = args.rust_direct_lib
-    _mcp_debug_log(f"main: parsed backend={args.backend} metaserver={args.metaserver}")
-    adapter = build_mcp_adapter(args)
-    ensure_startup_backend_ready(adapter, args.backend)
-    _mcp_debug_log("main: adapter ready; serving")
-    mcp_server = MatrixArkMcpServer(adapter, line_json=args.line_json, access_mode=args.access_mode)
-    if args.http_port:
-        mcp_server.serve_http(host=args.http_host, port=args.http_port, static_root=args.http_root)
-    else:
-        mcp_server.serve()
-    _mcp_debug_log("main: serve returned")
-    return 0
+    try:
+        from tools.matrixark_mcp_cli import main as cli_main
+    except ModuleNotFoundError:  # Direct script execution from tools/.
+        from matrixark_mcp_cli import main as cli_main
+    return cli_main()
 
 
 if __name__ == "__main__":
