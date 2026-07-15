@@ -17,6 +17,7 @@ mod constants;
 mod context;
 mod control_state;
 mod expiration;
+mod key_value_reads;
 mod lifecycle;
 mod object_manager;
 mod packed_pages;
@@ -41,6 +42,7 @@ use self::constants::*;
 use self::context::*;
 use self::control_state::{control_state_bucket_ms, control_state_manager_entries};
 use self::expiration::*;
+use self::key_value_reads::*;
 use self::packed_pages::*;
 use self::page_reads::*;
 use self::product_model::*;
@@ -51,7 +53,6 @@ use self::routing::*;
 use self::slot_dump::*;
 use self::slot_store::{
     read_component_page_address_values, read_slot_index_component_values, read_slot_index_value,
-    slot_index_component_page_addresses,
 };
 use self::state::*;
 use self::storage_io::{atomic_write_bytes, serialize_index, unique_temp_path};
@@ -15553,66 +15554,6 @@ fn invalidate_record_all(cache: &MultiLayerCache, shard_id: ShardId, key: &str) 
     for namespace in storage_model_kinds() {
         let _ = cache.invalidate_record(shard_id, namespace, key);
     }
-}
-
-fn read_hash_multi_values(
-    cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
-    shard_id: ShardId,
-    shard: &ShardState,
-    key: &str,
-    fields: &[String],
-) -> Vec<Option<Vec<u8>>> {
-    if fields.is_empty() {
-        return Vec::new();
-    }
-    if let Some(hash_fields) = shard.hashes.get(key) {
-        let addresses = fields
-            .iter()
-            .map(|field| hash_fields.get(field).cloned())
-            .collect::<Vec<_>>();
-        return read_page_bytes_batch(cache, page_store, shard_id, &addresses);
-    }
-    fields
-        .iter()
-        .map(|field| {
-            read_slot_index_value(
-                cache,
-                page_store,
-                shard_id,
-                shard,
-                "hash",
-                key,
-                Some(field.as_str()),
-            )
-        })
-        .collect()
-}
-
-fn read_hash_len(shard: &ShardState, key: &str) -> i64 {
-    shard.hashes.get(key).map_or_else(
-        || slot_index_component_page_addresses(shard, "hash", key).len() as i64,
-        |fields| fields.len() as i64,
-    )
-}
-
-fn read_set_members(
-    cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
-    shard_id: ShardId,
-    shard: &ShardState,
-    key: &str,
-) -> Vec<Vec<u8>> {
-    shard
-        .sets
-        .get(key)
-        .map(|members| members.keys().cloned().collect())
-        .unwrap_or_else(|| {
-            read_slot_index_component_values(cache, page_store, shard_id, shard, "set", key)
-                .into_iter()
-                .map(|(_, value)| value)
-                .collect()
-        })
 }
 
 fn read_feature_points_in_range(
