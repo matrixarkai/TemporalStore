@@ -21,8 +21,12 @@ mod matrixark_rust_proxy_metrics_backend_render;
 mod matrixark_rust_proxy_metrics_core_render;
 #[path = "../matrixark_rust_proxy_metrics_format.rs"]
 mod matrixark_rust_proxy_metrics_format;
+#[path = "../matrixark_rust_proxy_metrics_io_render.rs"]
+mod matrixark_rust_proxy_metrics_io_render;
 #[path = "../matrixark_rust_proxy_metrics_render.rs"]
 mod matrixark_rust_proxy_metrics_render;
+#[path = "../matrixark_rust_proxy_metrics_retrieve_render.rs"]
+mod matrixark_rust_proxy_metrics_retrieve_render;
 #[path = "../matrixark_rust_proxy_native_pack.rs"]
 mod matrixark_rust_proxy_native_pack;
 #[path = "../matrixark_rust_proxy_pack.rs"]
