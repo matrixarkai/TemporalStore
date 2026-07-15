@@ -50,6 +50,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         identity_mod = importlib.import_module("tools.matrixark_mcp_identity")
         context_pack_mod = importlib.import_module("tools.matrixark_mcp_context_pack")
         errors_mod = importlib.import_module("tools.matrixark_mcp_errors")
+        models_mod = importlib.import_module("tools.matrixark_mcp_models")
         core_mod = importlib.import_module("tools.matrixark_mcp_core")
 
         self.assertIs(server_mod.MatrixArkServiceMetrics, metrics_mod.MatrixArkServiceMetrics)
@@ -67,6 +68,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIs(core_mod.compact_context_pack_refs, context_pack_mod.compact_context_pack_refs)
         self.assertIs(server_mod.MatrixArkError, errors_mod.MatrixArkError)
         self.assertIs(core_mod.MatrixArkError, errors_mod.MatrixArkError)
+        self.assertIs(core_mod.embedding_model_ref_for_name, models_mod.embedding_model_ref_for_name)
+        self.assertIs(core_mod.compact_model_slug, models_mod.compact_model_slug)
 
     def test_mcp_entrypoint_stays_small(self) -> None:
         server_lines = (TOOLS_DIR / "matrixark_mcp_server.py").read_text(encoding="utf-8").splitlines()
@@ -84,6 +87,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "matrixark_mcp_cli.py",
             "matrixark_mcp_context_pack.py",
             "matrixark_mcp_errors.py",
+            "matrixark_mcp_models.py",
         ]
         offenders: list[str] = []
         for module_name in module_names:
