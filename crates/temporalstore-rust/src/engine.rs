@@ -50,6 +50,7 @@ use self::control_state::{control_state_bucket_ms, control_state_manager_entries
 use self::expiration::*;
 use self::feature_reads::*;
 use self::key_value_reads::*;
+use self::lifecycle::*;
 use self::object_manager::object_manager_stats;
 use self::packed_pages::*;
 use self::page_reads::*;
@@ -11229,79 +11230,6 @@ fn storage_reclaim_candidates_from_recovery(
             .then_with(|| left.page_segment_id.cmp(&right.page_segment_id))
     });
     candidates
-}
-
-fn annotate_storage_manager_admin_stage_fields(
-    stages: &mut [StorageManagerStageReport],
-    last_run_unix_ms: u64,
-    duration_ms: u64,
-    errors: &[String],
-    retention_blockers: usize,
-) {
-    for stage in stages {
-        stage.last_run_unix_ms = last_run_unix_ms;
-        stage.duration_ms = duration_ms;
-        if stage.skipped && stage.skipped_reason.is_empty() {
-            stage.skipped_reason = stage.reason.clone();
-        }
-        if !errors.is_empty() {
-            let prefix = format!("{}:", stage.stage);
-            stage.errors = errors
-                .iter()
-                .filter(|error| error.starts_with(&prefix))
-                .cloned()
-                .collect();
-        }
-        stage.bytes_reclaimed = stage
-            .page_bytes_reclaimed
-            .max(stage.cache_disk_bytes_removed)
-            .max(stage.before_bytes.saturating_sub(stage.after_bytes));
-        stage.pages_compacted = stage.rewritten_page_refs;
-        if stage.wal_floor_sequence == 0 {
-            stage.wal_floor_sequence = stage.retain_from_wal_sequence;
-        }
-        if stage.index_log_floor_sequence == 0 {
-            stage.index_log_floor_sequence = stage.retain_from_index_log_sequence;
-        }
-        if stage.retention_blockers == 0 {
-            stage.retention_blockers = retention_blockers;
-        }
-        if stage.pressure_before == 0 {
-            stage.pressure_before = stage.eviction_pressure_before.max(stage.before_bytes);
-        }
-        if stage.pressure_after == 0 {
-            stage.pressure_after = stage.eviction_pressure_after.max(stage.after_bytes);
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct StorageManagerPhaseExecutor {
-    round_started_unix_ms: u64,
-}
-
-impl StorageManagerPhaseExecutor {
-    fn new(round_started_unix_ms: u64) -> Self {
-        Self {
-            round_started_unix_ms,
-        }
-    }
-
-    fn annotate_reports(
-        &self,
-        stages: &mut [StorageManagerStageReport],
-        errors: &[String],
-        retention_blockers: usize,
-    ) {
-        let round_duration_ms = now_ms().saturating_sub(self.round_started_unix_ms);
-        annotate_storage_manager_admin_stage_fields(
-            stages,
-            self.round_started_unix_ms,
-            round_duration_ms,
-            errors,
-            retention_blockers,
-        );
-    }
 }
 
 #[derive(Debug, Clone)]
