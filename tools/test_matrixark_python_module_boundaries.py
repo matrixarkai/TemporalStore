@@ -55,6 +55,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         tree_mod = importlib.import_module("tools.matrixark_mcp_tree")
         rust_direct_mod = importlib.import_module("tools.matrixark_mcp_rust_direct_client")
         rust_proxy_mod = importlib.import_module("tools.matrixark_mcp_rust_proxy_client")
+        session_policy_mod = importlib.import_module("tools.matrixark_mcp_session_policy")
         errors_mod = importlib.import_module("tools.matrixark_mcp_errors")
         models_mod = importlib.import_module("tools.matrixark_mcp_models")
         indexing_mod = importlib.import_module("tools.matrixark_mcp_indexing")
@@ -122,6 +123,12 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIs(temporal_mod.MatrixArkRustCdylibClient, rust_direct_mod.MatrixArkRustCdylibClient)
         self.assertIs(temporal_mod.MatrixArkRustProxyClient, rust_proxy_mod.MatrixArkRustProxyClient)
         self.assertIs(temporal_mod.MatrixArkRustCliClient, rust_proxy_mod.MatrixArkRustCliClient)
+        adapter = local_mod.MatrixArkLocalAdapter(Path("/tmp/matrixark-module-boundary-unused.jsonl"))
+        sample_scope = {"tenant_id": "t", "user_id": "u", "session_id": "s"}
+        self.assertEqual(
+            adapter.default_session_node_path(sample_scope),
+            session_policy_mod.default_session_node_path(sample_scope),
+        )
         self.assertIs(local_mod.compact_latest_value_records, latest_values_mod.compact_latest_value_records)
         self.assertIs(local_mod.latest_value_record_key, latest_values_mod.latest_value_record_key)
         self.assertIs(core_mod.context_event_time_key, event_keys_mod.context_event_time_key)
@@ -159,6 +166,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "matrixark_mcp_tree.py",
             "matrixark_mcp_rust_direct_client.py",
             "matrixark_mcp_rust_proxy_client.py",
+            "matrixark_mcp_session_policy.py",
             "matrixark_mcp_errors.py",
             "matrixark_mcp_models.py",
             "matrixark_mcp_indexing.py",
