@@ -21,6 +21,7 @@ try:
     from tools.matrixark_mcp_temporal_adapters import (
         MatrixArkTemporalStoreDirectAdapter,
         MatrixArkTemporalStoreRustAdapter,
+        MatrixArkTemporalStoreRustDirectAdapter,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
@@ -35,6 +36,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_temporal_adapters import (
         MatrixArkTemporalStoreDirectAdapter,
         MatrixArkTemporalStoreRustAdapter,
+        MatrixArkTemporalStoreRustDirectAdapter,
     )
 
 
@@ -56,7 +58,7 @@ def production_profile_enabled() -> bool:
 def backend_ready_required(backend: str) -> bool:
     if MATRIXARK_REQUIRE_BACKEND_READY:
         return MATRIXARK_REQUIRE_BACKEND_READY in {"1", "true", "yes"}
-    return production_profile_enabled() and backend in {"temporalstore-direct", "temporalstore-rust"}
+    return production_profile_enabled() and backend in {"temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"}
 
 
 def default_mcp_backend() -> str:
@@ -71,16 +73,16 @@ def validate_mcp_backend_policy(args: argparse.Namespace) -> None:
     if production_profile_enabled() and args.backend in local_backends and not MATRIXARK_ALLOW_LOCAL_BACKEND:
         raise MatrixArkError(
             "MatrixArk MCP production/benchmark profile requires --backend temporalstore-direct "
-            "or --backend temporalstore-rust. Set MATRIXARK_ALLOW_LOCAL_BACKEND=1 only for debug."
+            "or --backend temporalstore-rust/temporalstore-rust-direct. Set MATRIXARK_ALLOW_LOCAL_BACKEND=1 only for debug."
         )
 
 
 def add_backend_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--backend",
-        choices=["local", "temporalstore-local", "temporalstore-direct", "temporalstore-rust"],
+        choices=["local", "temporalstore-local", "temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"],
         default=default_mcp_backend(),
-        help="Storage backend. local uses JSONL; temporalstore-local uses a no-metaserver local TemporalStore-shaped record log; temporalstore-direct uses the native C++ TemporalStore SDK.",
+        help="Storage backend. local uses JSONL; temporalstore-local uses a no-metaserver local TemporalStore-shaped record log; temporalstore-direct uses the native C++ TemporalStore SDK; temporalstore-rust uses the Rust proxy; temporalstore-rust-direct uses the Rust cdylib direct SDK.",
     )
     parser.add_argument(
         "--event-log",
@@ -122,7 +124,12 @@ def add_backend_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--rust-cli",
         default=os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_CLI", ""),
-        help="Path to the Rust matrixark_rust_proxy or direct SDK binary for --backend temporalstore-rust.",
+        help="Path to the Rust matrixark_rust_proxy binary for --backend temporalstore-rust.",
+    )
+    parser.add_argument(
+        "--rust-direct-lib",
+        default=os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_LIB", ""),
+        help="Path to libtemporalstore_rust.so for --backend temporalstore-rust-direct.",
     )
     parser.add_argument(
         "--request-timeout-ms",
@@ -150,8 +157,20 @@ def build_mcp_adapter(args: argparse.Namespace) -> MatrixArkLocalAdapter:
             request_timeout_ms=args.request_timeout_ms,
             io_timeout_ms=args.io_timeout_ms,
         )
+    if getattr(args, "rust_direct_lib", ""):
+        os.environ["MATRIXARK_TEMPORALSTORE_RUST_DIRECT_LIB"] = args.rust_direct_lib
     if args.backend == "temporalstore-rust":
         return MatrixArkTemporalStoreRustAdapter(
+            rust_cli=args.rust_cli,
+            metaserver=args.metaserver,
+            namespace=args.namespace,
+            table=args.table,
+            storage_prefix=args.storage_prefix,
+            request_timeout_ms=args.request_timeout_ms,
+            io_timeout_ms=args.io_timeout_ms,
+        )
+    if args.backend == "temporalstore-rust-direct":
+        return MatrixArkTemporalStoreRustDirectAdapter(
             rust_cli=args.rust_cli,
             metaserver=args.metaserver,
             namespace=args.namespace,

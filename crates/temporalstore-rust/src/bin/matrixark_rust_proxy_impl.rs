@@ -611,30 +611,12 @@ fn run_request(request: RecordLogRequest) -> Result<(String, RecordLogOutput), (
     Ok((op, output))
 }
 
-fn matrixark_rust_sdk_mode_is_direct() -> bool {
-    matches!(
-        env::var("MATRIXARK_RUST_SDK_MODE").ok().as_deref(),
-        Some("direct_sdk" | "direct-sdk" | "native-binding" | "rust-direct")
-    ) || env::args()
-        .next()
-        .map(|arg| arg.contains("matrixark_rust_direct_sdk"))
-        .unwrap_or(false)
-}
-
 fn matrixark_rust_storage_mode() -> &'static str {
-    if matrixark_rust_sdk_mode_is_direct() {
-        "rust-direct-sdk-bridge"
-    } else {
-        "rust-proxy"
-    }
+    "rust-proxy"
 }
 
 fn matrixark_rust_service_mode() -> &'static str {
-    if matrixark_rust_sdk_mode_is_direct() {
-        "long_lived_rust_direct_sdk_bridge"
-    } else {
-        "rust_proxy_stdio"
-    }
+    "rust_proxy_stdio"
 }
 
 fn render_prometheus_metrics(
