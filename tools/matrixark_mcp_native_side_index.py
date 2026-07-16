@@ -240,3 +240,45 @@ def native_side_index_entries_for_bundles(
             }
         )
     return entries
+
+
+class NativeSideIndexAdapterMixin:
+    """Adapter methods for native side-index lookup and materialization."""
+
+    def _context_index_lookup_key(self, scope_key: str) -> str:
+        return context_index_lookup_key(self._storage_prefix, scope_key)
+
+    def _context_ref_locator_key(self) -> str:
+        return context_ref_locator_key(self._storage_prefix)
+
+    def _context_placement_lookup_key(self, scope_key: str) -> str:
+        return context_placement_lookup_key(self._storage_prefix, scope_key)
+
+    def _merge_ref_hashes(self, existing_value: str, new_refs: list[int]) -> list[int]:
+        return merge_ref_hashes(existing_value, new_refs)
+
+    def _merge_ref_locations(self, existing_value: str, new_locations: list[Json]) -> list[Json]:
+        return merge_ref_locations(existing_value, new_locations)
+
+    def _merge_resource_versions(self, existing_value: str, new_versions: set[str]) -> list[str]:
+        return merge_resource_versions(existing_value, new_versions)
+
+    def _read_hash_value_best_effort(self, key: str, field: str) -> str:
+        if bool(getattr(self, "_native_side_index_assume_fresh", False)):
+            return ""
+        reader = getattr(self._client, "hget", None)
+        if not callable(reader):
+            return ""
+        try:
+            value = reader(key, field)
+        except Exception:
+            return ""
+        return str(value or "")
+
+    def _native_side_index_entries_for_bundles(self, bundles: list[tuple[list[Json], str, str]]) -> list[Json]:
+        return native_side_index_entries_for_bundles(
+            storage_prefix=self._storage_prefix,
+            bundles=bundles,
+            storage_route_for_bundle=self._storage_route_for_bundle,
+            read_hash_value=self._read_hash_value_best_effort,
+        )
