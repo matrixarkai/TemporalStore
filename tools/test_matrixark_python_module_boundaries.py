@@ -88,6 +88,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         serving_records_mod = importlib.import_module("tools.matrixark_mcp_serving_records")
         budget_pack_mod = importlib.import_module("tools.matrixark_mcp_budget_pack")
         recall_scoring_mod = importlib.import_module("tools.matrixark_mcp_recall_scoring")
+        oss_understanding_mod = importlib.import_module("tools.matrixark_mcp_oss_understanding")
         prior_context_mod = importlib.import_module("tools.matrixark_mcp_prior_context")
         resources_mod = importlib.import_module("tools.matrixark_mcp_resources")
         raw_ingestion_mod = importlib.import_module("tools.matrixark_mcp_raw_ingestion")
@@ -254,6 +255,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(callable(recall_scoring_mod.score_recall_candidate))
         self.assertTrue(callable(recall_scoring_mod.packing_sort_key))
         self.assertTrue(callable(recall_scoring_mod.record_dropped_candidate))
+        self.assertTrue(callable(oss_understanding_mod.oss_encoder_rank_labels))
+        self.assertTrue(callable(oss_understanding_mod.oss_encoder_compact_extraction))
         self.assertTrue(callable(prior_context_mod.collect_prior_context))
         self.assertTrue(callable(prior_context_mod.prior_context_payload))
         self.assertIs(core_mod.compact_latest_context_state_records, serving_records_mod.compact_latest_context_state_records)
@@ -321,6 +324,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "matrixark_mcp_env.py",
             "matrixark_mcp_scoring.py",
             "matrixark_mcp_recall_scoring.py",
+            "matrixark_mcp_oss_understanding.py",
             "matrixark_mcp_text.py",
             "matrixark_mcp_latest_values.py",
             "matrixark_mcp_event_keys.py",
