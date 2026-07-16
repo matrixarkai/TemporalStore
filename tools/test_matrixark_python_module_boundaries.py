@@ -78,6 +78,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         retrieve_cache_mod = importlib.import_module("tools.matrixark_mcp_retrieve_cache")
         native_retrieve_mod = importlib.import_module("tools.matrixark_mcp_native_retrieve")
         retrieve_continuity_mod = importlib.import_module("tools.matrixark_mcp_retrieve_continuity")
+        retrieve_deadline_mod = importlib.import_module("tools.matrixark_mcp_retrieve_deadline")
         retrieve_identity_mod = importlib.import_module("tools.matrixark_mcp_retrieve_identity")
         retrieve_resources_mod = importlib.import_module("tools.matrixark_mcp_retrieve_resources")
         retrieve_temporal_window_mod = importlib.import_module("tools.matrixark_mcp_retrieve_temporal_window")
@@ -291,6 +292,18 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(callable(retrieve_cache_mod.get_cached_context_pack))
         self.assertTrue(callable(native_retrieve_mod.try_native_context_pack))
         self.assertTrue(callable(retrieve_continuity_mod.annotate_session_continuity))
+        observed_stage_metrics: list[tuple[str, float]] = []
+        tracker = retrieve_deadline_mod.RetrievalDeadlineTracker(
+            started_perf=0.0,
+            deadline_ms=0,
+            stage_budgets_ms=retrieve_planning_mod.default_stage_budgets(0),
+            explicit_stage_budgets=set(),
+            observe_latency=lambda name, value: observed_stage_metrics.append((name, value)),
+        )
+        self.assertFalse(tracker.deadline_exceeded())
+        tracker.finish_stage("unit", 0.0)
+        self.assertEqual(observed_stage_metrics[0][0], "retrieval_unit")
+        self.assertIn("stages", tracker.stage_budget_snapshot())
         base_records = [{"record_type": "context_event", "event_id_hash": 5, "text": "old"}]
         retrieve_identity_mod.append_unique_records(
             base_records,
