@@ -86,9 +86,9 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_local_runtime as local_runtime_helpers
 
 try:
-    from tools import matrixark_mcp_local_ingest as local_ingest_helpers
+    from tools import matrixark_mcp_ingest_planning as ingest_planning_helpers
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    import matrixark_mcp_local_ingest as local_ingest_helpers
+    import matrixark_mcp_ingest_planning as ingest_planning_helpers
 
 try:
     from tools import matrixark_mcp_session_runtime as session_runtime
@@ -650,41 +650,17 @@ class MatrixArkLocalAdapter:
         return resource_import_runtime.resource_import_async_default_reason(args, envelope, raw_uri)
 
     def ingest(self, args: Json, *, hook: Json | None = None) -> Json:
-        envelope = normalize_envelope(args, default_kind="message")
-        hook = validate_hook(hook)
-        backend_readiness: Json | None = None
-        if envelope["kind"] in {"resource", "skill"}:
-            backend_readiness = self.ensure_backend_ready(reason=f"{envelope['kind']}_ingest")
-        idle_commit_result: Json | None = None
-        idle_commit_timeout_ms = args.get("idle_commit_timeout_ms", DEFAULT_SESSION_IDLE_COMMIT_TIMEOUT_MS)
-        if idle_commit_timeout_ms is not None:
-            if not isinstance(idle_commit_timeout_ms, int) or idle_commit_timeout_ms < 0:
-                raise MatrixArkError("idle_commit_timeout_ms must be a non-negative integer")
-        if (
-            isinstance(idle_commit_timeout_ms, int)
-            and idle_commit_timeout_ms > 0
-            and self.auto_batch_extract_enabled(args, kind=envelope["kind"])
-        ):
-            idle_commit_result = self.session_commit(
-                {
-                    "scope": envelope["scope"],
-                    "metadata": envelope["metadata"],
-                    "threshold_messages": args.get("session_buffer_threshold", 20),
-                    "force": False,
-                    "idle_timeout_ms": idle_commit_timeout_ms,
-                    "commit_reason": "idle_timeout",
-                    "skip_prior_context": bool(args.get("skip_prior_context", False)),
-                    "storage_options": envelope.get("storage_options", {}),
-                },
-                hook=hook,
-            )
-        lightweight_result = local_ingest_helpers.lightweight_async_accept(
+        ingest_start = ingest_planning_helpers.prepare_ingest_start(
             self,
             args,
-            envelope=envelope,
             hook=hook,
-            idle_commit_result=idle_commit_result,
+            default_idle_commit_timeout_ms=DEFAULT_SESSION_IDLE_COMMIT_TIMEOUT_MS,
         )
+        envelope = ingest_start["envelope"]
+        hook = ingest_start["hook"]
+        backend_readiness = ingest_start["backend_readiness"]
+        idle_commit_result = ingest_start["idle_commit_result"]
+        lightweight_result = ingest_start["lightweight_result"]
         if lightweight_result is not None:
             return lightweight_result
         prior_records = [] if args.get("skip_prior_context") else self.read_all()
