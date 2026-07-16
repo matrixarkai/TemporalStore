@@ -331,10 +331,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
     def test_public_mcp_modules_avoid_wildcard_imports(self) -> None:
         module_paths = sorted(TOOLS_DIR.glob("matrixark_mcp*.py"))
         self.assertGreater(len(module_paths), 20)
-        legacy_orchestrators = {
-            "matrixark_mcp_local_adapter.py",
-            "matrixark_mcp_local_ingest.py",
-        }
+        legacy_orchestrators: set[str] = set()
         offenders: list[str] = []
         for module_path in module_paths:
             tree = ast.parse(module_path.read_text(encoding="utf-8"))
