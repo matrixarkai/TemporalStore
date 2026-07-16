@@ -42,6 +42,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
     def test_mcp_entrypoint_reexports_split_modules(self) -> None:
         server_mod = importlib.import_module("tools.matrixark_mcp_server")
         schema_common_mod = importlib.import_module("tools.matrixark_mcp_schema_common")
+        auth_schemas_mod = importlib.import_module("tools.matrixark_mcp_auth_schemas")
+        admin_schemas_mod = importlib.import_module("tools.matrixark_mcp_admin_schemas")
         metrics_mod = importlib.import_module("tools.matrixark_mcp_metrics")
         local_mod = importlib.import_module("tools.matrixark_mcp_local_adapter")
         temporal_mod = importlib.import_module("tools.matrixark_mcp_temporal_adapters")
@@ -144,6 +146,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
 
         self.assertIs(server_mod.MatrixArkServiceMetrics, metrics_mod.MatrixArkServiceMetrics)
         self.assertIn("properties", schema_common_mod.SCOPE_SCHEMA)
+        self.assertIn("api_key", auth_schemas_mod.ADMIN_ACCOUNT_PROPERTIES)
+        self.assertTrue(any(tool.get("name") == "matrixark_admin_create_account" for tool in admin_schemas_mod.ADMIN_TOOLS))
         self.assertIs(server_mod.MatrixArkLocalAdapter, local_mod.MatrixArkLocalAdapter)
         self.assertIs(server_mod.MatrixArkTemporalStoreDirectAdapter, temporal_mod.MatrixArkTemporalStoreDirectAdapter)
         self.assertTrue(callable(env_mod.env_bool))
