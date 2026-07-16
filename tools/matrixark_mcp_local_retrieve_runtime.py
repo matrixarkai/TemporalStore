@@ -20,7 +20,6 @@ try:
         access_scope_matches_before_scoring,
         candidate_access_scope,
         candidate_index_terms,
-        clamp01,
         clip_context_text,
         compact_context_pack_for_serving,
         compact_context_pack_refs,
@@ -36,7 +35,6 @@ try:
         integer_arg,
         local_context_refs_for_pack,
         normalize_storage_options,
-        normalized_dense_score,
         now_ms,
         optional_object,
         passes_applicable_secondary_index_filters,
@@ -67,7 +65,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         access_scope_matches_before_scoring,
         candidate_access_scope,
         candidate_index_terms,
-        clamp01,
         clip_context_text,
         compact_context_pack_for_serving,
         compact_context_pack_refs,
@@ -83,7 +80,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         integer_arg,
         local_context_refs_for_pack,
         normalize_storage_options,
-        normalized_dense_score,
         now_ms,
         optional_object,
         passes_applicable_secondary_index_filters,
@@ -185,6 +181,19 @@ try:
     from tools.matrixark_mcp_retrieve_index_terms import add_context_index_terms
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_retrieve_index_terms import add_context_index_terms
+
+try:
+    from tools.matrixark_mcp_retrieve_node_scores import (
+        add_context_summary_text,
+        add_node_embedding_score,
+        add_secondary_index_hint_node_scores,
+    )
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_retrieve_node_scores import (
+        add_context_summary_text,
+        add_node_embedding_score,
+        add_secondary_index_hint_node_scores,
+    )
 
 def retrieve(target: Any, args: Json) -> Json:
     self = target
@@ -357,17 +366,7 @@ def retrieve(target: Any, args: Json) -> Json:
                 index_terms_by_ref=index_terms_by_ref,
                 index_terms_by_node_for_prefilter=index_terms_by_node_for_prefilter,
             )
-        if record_type == "context_summary" and scope_matches(candidate_access_scope(record), scope):
-            summary_type = str(record.get("summary_type", ""))
-            if summary_type in {"node_l0", "node_l1", "batch_l0", "session_l0"}:
-                try:
-                    node_hash_for_summary = int(record.get("node_hash"))
-                except (TypeError, ValueError):
-                    continue
-                existing = node_summary_text_by_hash.get(node_hash_for_summary, "")
-                summary_text = str(record.get("summary_text", ""))
-                if len(summary_text) > len(existing):
-                    node_summary_text_by_hash[node_hash_for_summary] = summary_text
+        add_context_summary_text(record, scope=scope, node_summary_text_by_hash=node_summary_text_by_hash)
     secondary_index_prefilter_node_hashes = {
         node_hash
         for node_hash, terms in index_terms_by_node_for_prefilter.items()
@@ -386,23 +385,14 @@ def retrieve(target: Any, args: Json) -> Json:
         if record_type == "context_embedding" and not scope_matches(candidate_access_scope(record), scope):
             continue
         if record_type == "context_embedding" and record.get("embedding_type") in {"node_l0", "node_l1"}:
-            dense_score = cosine(query_embedding, record.get("vector", []))
-            node_hash = record["node_hash"]
-            node_text = " ".join(record.get("node_path", [])) + " " + node_summary_text_by_hash.get(node_hash, "")
-            sparse_score = sparse_lexical_score(query_terms, node_text)
-            index_hint_boost = 0.08 if node_hash in secondary_index_prefilter_node_hashes else 0.0
-            score = round(clamp01(0.72 * normalized_dense_score(dense_score) + 0.28 * sparse_score + index_hint_boost), 6)
-            current = node_scores.get(node_hash)
-            if current is None or score > current["score"]:
-                node_scores[node_hash] = {
-                    "node_hash": node_hash,
-                    "node_path": record.get("node_path", []),
-                    "depth": record.get("depth", len(record.get("node_path", []))),
-                    "score": score,
-                    "dense_score": dense_score,
-                    "sparse_score": sparse_score,
-                    "embedding_type": record.get("embedding_type"),
-                }
+            add_node_embedding_score(
+                record,
+                query_embedding=query_embedding,
+                query_terms=query_terms,
+                node_summary_text_by_hash=node_summary_text_by_hash,
+                secondary_index_prefilter_node_hashes=secondary_index_prefilter_node_hashes,
+                node_scores=node_scores,
+            )
         elif record_type == "context_embedding":
             add_context_embedding_vector(
                 record,
@@ -413,24 +403,11 @@ def retrieve(target: Any, args: Json) -> Json:
                 resource_embedding_vectors=resource_embedding_vectors,
                 skill_embedding_vectors=skill_embedding_vectors,
             )
-    for record in records:
-        if record.get("record_type") != "context_node":
-            continue
-        try:
-            node_hash = int(record.get("node_hash"))
-        except (TypeError, ValueError):
-            continue
-        if node_hash not in secondary_index_prefilter_node_hashes or node_hash in node_scores:
-            continue
-        node_scores[node_hash] = {
-            "node_hash": node_hash,
-            "node_path": record.get("node_path", []),
-            "depth": record.get("depth", len(record.get("node_path", []))),
-            "score": 0.58,
-            "dense_score": 0.0,
-            "sparse_score": 0.0,
-            "embedding_type": "secondary_index_hint",
-        }
+    add_secondary_index_hint_node_scores(
+        records,
+        secondary_index_prefilter_node_hashes=secondary_index_prefilter_node_hashes,
+        node_scores=node_scores,
+    )
     if deadline_exceeded():
         return deadline_fallback("deadline_after_embedding_index_scan")
 
