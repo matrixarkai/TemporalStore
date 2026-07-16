@@ -3,18 +3,31 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import os
 
 try:
     from tools.matrixark_mcp_core import (
+        DEFAULT_BUDGET_FILL_POLICY,
+        DEFAULT_MAX_CANDIDATES_PER_NODE,
+        DEFAULT_MAX_CHILDREN_SCORED_PER_PARENT,
+        DEFAULT_MAX_GLOBAL_CANDIDATES,
+        DEFAULT_MAX_SELECTED_REFS,
+        DEFAULT_RETRIEVAL_MIN_SCORE,
+        DEFAULT_TOP_K_PER_LAYER,
+        HARD_MAX_CHILDREN_SCORED_PER_PARENT,
+        TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE,
         Json,
         MatrixArkError,
+        bounded_max_children_scored_per_parent,
         build_cross_session_policy,
         build_shared_context_policy,
         build_structured_query_plan,
         clamp01,
+        float_arg,
         infer_query_type,
         infer_secondary_index_filter_groups,
+        integer_arg,
         local_context_budget,
         now_ms,
         optional_object,
@@ -22,14 +35,26 @@ try:
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
+        DEFAULT_BUDGET_FILL_POLICY,
+        DEFAULT_MAX_CANDIDATES_PER_NODE,
+        DEFAULT_MAX_CHILDREN_SCORED_PER_PARENT,
+        DEFAULT_MAX_GLOBAL_CANDIDATES,
+        DEFAULT_MAX_SELECTED_REFS,
+        DEFAULT_RETRIEVAL_MIN_SCORE,
+        DEFAULT_TOP_K_PER_LAYER,
+        HARD_MAX_CHILDREN_SCORED_PER_PARENT,
+        TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE,
         Json,
         MatrixArkError,
+        bounded_max_children_scored_per_parent,
         build_cross_session_policy,
         build_shared_context_policy,
         build_structured_query_plan,
         clamp01,
+        float_arg,
         infer_query_type,
         infer_secondary_index_filter_groups,
+        integer_arg,
         local_context_budget,
         now_ms,
         optional_object,
@@ -38,6 +63,61 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 
 RETRIEVAL_STAGE_NAMES = ["query_understanding", "candidate_fetch", "node_traversal", "rerank_score", "pack", "audit"]
+
+
+@dataclass(frozen=True)
+class RetrievalRankingLimits:
+    top_k_per_layer: int
+    max_children_scored_per_parent: int
+    hard_max_children_scored_per_parent: int
+    max_candidates_per_node: int
+    max_selected_refs: int
+    max_global_candidates: int
+    min_similarity_score: float
+    budget_fill_policy: str
+    max_raw_events_per_node: int
+
+
+def retrieval_ranking_limits(ranking: Json) -> RetrievalRankingLimits:
+    budget_fill_policy = str(
+        ranking.get("budget_fill_policy", DEFAULT_BUDGET_FILL_POLICY) or DEFAULT_BUDGET_FILL_POLICY
+    ).strip().lower()
+    if budget_fill_policy not in {"quality_first", "force_fill"}:
+        raise MatrixArkError("budget_fill_policy must be quality_first or force_fill")
+    return RetrievalRankingLimits(
+        top_k_per_layer=integer_arg(ranking, "top_k_per_layer", DEFAULT_TOP_K_PER_LAYER, minimum=1),
+        max_children_scored_per_parent=bounded_max_children_scored_per_parent(
+            integer_arg(
+                ranking,
+                "max_children_scored_per_parent",
+                DEFAULT_MAX_CHILDREN_SCORED_PER_PARENT,
+                minimum=1,
+            )
+        ),
+        hard_max_children_scored_per_parent=max(1, HARD_MAX_CHILDREN_SCORED_PER_PARENT),
+        max_candidates_per_node=integer_arg(
+            ranking,
+            "max_candidates_per_node",
+            DEFAULT_MAX_CANDIDATES_PER_NODE,
+            minimum=1,
+        ),
+        max_selected_refs=integer_arg(ranking, "max_selected_refs", DEFAULT_MAX_SELECTED_REFS, minimum=1),
+        max_global_candidates=integer_arg(ranking, "max_global_candidates", DEFAULT_MAX_GLOBAL_CANDIDATES, minimum=1),
+        min_similarity_score=float_arg(
+            ranking,
+            "min_similarity_score",
+            DEFAULT_RETRIEVAL_MIN_SCORE,
+            minimum=0.0,
+            maximum=1.0,
+        ),
+        budget_fill_policy=budget_fill_policy,
+        max_raw_events_per_node=integer_arg(
+            ranking,
+            "max_raw_events_per_node",
+            TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE,
+            minimum=1,
+        ),
+    )
 
 
 def retrieval_audit_policy(args: Json) -> tuple[str, float]:

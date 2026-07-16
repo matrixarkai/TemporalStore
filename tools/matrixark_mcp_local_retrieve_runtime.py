@@ -9,24 +9,15 @@ from typing import Any
 try:
     from tools.matrixark_mcp_core import (
         CONTEXT_PACK_DEBUG_REFS,
-        DEFAULT_BUDGET_FILL_POLICY,
         DEFAULT_BUSINESS_WEIGHT,
-        DEFAULT_MAX_CANDIDATES_PER_NODE,
-        DEFAULT_MAX_CHILDREN_SCORED_PER_PARENT,
         DEFAULT_MAX_CONTEXT_TOKENS,
-        DEFAULT_MAX_GLOBAL_CANDIDATES,
         DEFAULT_MAX_SELECTED_REFS,
-        DEFAULT_RETRIEVAL_MIN_SCORE,
         DEFAULT_TIME_DECAY_HALFLIFE_MS,
         DEFAULT_TIME_DECAY_TOLERANCE_MS,
         DEFAULT_TIME_WEIGHT,
-        DEFAULT_TOP_K_PER_LAYER,
-        HARD_MAX_CHILDREN_SCORED_PER_PARENT,
-        TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE,
         Json,
         MatrixArkError,
         access_scope_matches_before_scoring,
-        bounded_max_children_scored_per_parent,
         candidate_access_scope,
         candidate_index_terms,
         clamp01,
@@ -42,7 +33,6 @@ try:
         embedding_fallback_used,
         embedding_for_text,
         embedding_model_name,
-        float_arg,
         hybrid_origin_score,
         integer_arg,
         local_context_refs_for_pack,
@@ -67,24 +57,15 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
         CONTEXT_PACK_DEBUG_REFS,
-        DEFAULT_BUDGET_FILL_POLICY,
         DEFAULT_BUSINESS_WEIGHT,
-        DEFAULT_MAX_CANDIDATES_PER_NODE,
-        DEFAULT_MAX_CHILDREN_SCORED_PER_PARENT,
         DEFAULT_MAX_CONTEXT_TOKENS,
-        DEFAULT_MAX_GLOBAL_CANDIDATES,
         DEFAULT_MAX_SELECTED_REFS,
-        DEFAULT_RETRIEVAL_MIN_SCORE,
         DEFAULT_TIME_DECAY_HALFLIFE_MS,
         DEFAULT_TIME_DECAY_TOLERANCE_MS,
         DEFAULT_TIME_WEIGHT,
-        DEFAULT_TOP_K_PER_LAYER,
-        HARD_MAX_CHILDREN_SCORED_PER_PARENT,
-        TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE,
         Json,
         MatrixArkError,
         access_scope_matches_before_scoring,
-        bounded_max_children_scored_per_parent,
         candidate_access_scope,
         candidate_index_terms,
         clamp01,
@@ -100,7 +81,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         embedding_fallback_used,
         embedding_for_text,
         embedding_model_name,
-        float_arg,
         hybrid_origin_score,
         integer_arg,
         local_context_refs_for_pack,
@@ -462,24 +442,16 @@ def retrieve(target: Any, args: Json) -> Json:
     if deadline_exceeded():
         return deadline_fallback("deadline_after_embedding_index_scan")
 
-    top_k_per_layer = integer_arg(ranking, "top_k_per_layer", DEFAULT_TOP_K_PER_LAYER, minimum=1)
-    max_children_scored_per_parent = bounded_max_children_scored_per_parent(
-        integer_arg(
-            ranking,
-            "max_children_scored_per_parent",
-            DEFAULT_MAX_CHILDREN_SCORED_PER_PARENT,
-            minimum=1,
-        )
-    )
-    hard_max_children_scored_per_parent = max(1, HARD_MAX_CHILDREN_SCORED_PER_PARENT)
-    max_candidates_per_node = integer_arg(ranking, "max_candidates_per_node", DEFAULT_MAX_CANDIDATES_PER_NODE, minimum=1)
-    max_selected_refs = integer_arg(ranking, "max_selected_refs", DEFAULT_MAX_SELECTED_REFS, minimum=1)
-    max_global_candidates = integer_arg(ranking, "max_global_candidates", DEFAULT_MAX_GLOBAL_CANDIDATES, minimum=1)
-    min_similarity_score = float_arg(ranking, "min_similarity_score", DEFAULT_RETRIEVAL_MIN_SCORE, minimum=0.0, maximum=1.0)
-    budget_fill_policy = str(ranking.get("budget_fill_policy", DEFAULT_BUDGET_FILL_POLICY) or DEFAULT_BUDGET_FILL_POLICY).strip().lower()
-    if budget_fill_policy not in {"quality_first", "force_fill"}:
-        raise MatrixArkError("budget_fill_policy must be quality_first or force_fill")
-    max_raw_events_per_node = integer_arg(ranking, "max_raw_events_per_node", TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE, minimum=1)
+    ranking_limits = retrieve_planning_helpers.retrieval_ranking_limits(ranking)
+    top_k_per_layer = ranking_limits.top_k_per_layer
+    max_children_scored_per_parent = ranking_limits.max_children_scored_per_parent
+    hard_max_children_scored_per_parent = ranking_limits.hard_max_children_scored_per_parent
+    max_candidates_per_node = ranking_limits.max_candidates_per_node
+    max_selected_refs = ranking_limits.max_selected_refs
+    max_global_candidates = ranking_limits.max_global_candidates
+    min_similarity_score = ranking_limits.min_similarity_score
+    budget_fill_policy = ranking_limits.budget_fill_policy
+    max_raw_events_per_node = ranking_limits.max_raw_events_per_node
     traversal = tree_first_traversal(
         node_scores,
         top_k_per_layer=top_k_per_layer,
