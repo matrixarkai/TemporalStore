@@ -16,10 +16,15 @@ try:
         TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS,
         TIME_COMPRESSION_WINDOW_EVENTS,
         candidate_access_scope,
+        embedding_for_text,
+        embedding_model_name,
         integer_arg,
+        node_l1_generation_policy,
         optional_object,
         scope_matches,
         stable_hash,
+        summarize_text,
+        synthesize_context_node_summary,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
@@ -32,10 +37,15 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS,
         TIME_COMPRESSION_WINDOW_EVENTS,
         candidate_access_scope,
+        embedding_for_text,
+        embedding_model_name,
         integer_arg,
+        node_l1_generation_policy,
         optional_object,
         scope_matches,
         stable_hash,
+        summarize_text,
+        synthesize_context_node_summary,
     )
 
 try:
@@ -295,6 +305,143 @@ def pending_dirty_node_records(
             "updated_at_ms": refreshed_at_ms,
         }
     return pending_by_node
+
+
+def build_node_summary_refresh_records(
+    *,
+    node_path: list[str],
+    node_hash: int,
+    scope: Json,
+    events: list[Json],
+    child_summaries: list[Json],
+    entity_states: list[Json],
+    operator_states: list[Json],
+    summary_source_policy: Json,
+    dirty_hash: int | None,
+    refreshed_at_ms: int,
+) -> Json:
+    event_texts = [str(record.get("text", "")) for record in events if record.get("text")]
+    child_summary_texts = [
+        str(record.get("summary_text", ""))
+        for record in child_summaries
+        if record.get("summary_text")
+    ]
+    entity_state_texts = [
+        summarize_text(
+            f"{record.get('entity_type', 'entity')} {record.get('entity_name', '')}: {record.get('state', '')}",
+            limit=240,
+        )
+        for record in entity_states
+        if record.get("state")
+    ]
+    operator_state_texts = [
+        summarize_text(
+            f"{record.get('operator', 'operator')}: {record.get('summary_text') or record.get('text') or ''}",
+            limit=260,
+        )
+        for record in operator_states
+        if record.get("summary_text") or record.get("text")
+    ]
+    source_text = " ".join(child_summary_texts + entity_state_texts + operator_state_texts + event_texts)
+    if not source_text:
+        source_text = " ".join(node_path)
+    prefix_label = " / ".join(node_path)
+    source_event_ids = [int(record["event_id_hash"]) for record in events if record.get("event_id_hash") is not None]
+    source_summary_hashes = [
+        int(record.get("summary_hash") or record.get("node_hash"))
+        for record in child_summaries
+        if record.get("summary_hash") is not None or record.get("node_hash") is not None
+    ]
+    source_entity_hashes = [
+        int(record.get("entity_hash"))
+        for record in entity_states
+        if record.get("entity_hash") is not None
+    ]
+    source_operator_hashes = [
+        int(record.get("compression_id_hash") or record.get("ref_hash"))
+        for record in operator_states
+        if record.get("compression_id_hash") is not None or record.get("ref_hash") is not None
+    ]
+    l1_policy = node_l1_generation_policy(
+        source_text=source_text,
+        event_count=len(source_event_ids),
+        child_summary_count=len(source_summary_hashes),
+    )
+    l1_policy = {**l1_policy, **summary_source_policy}
+    l0_summary, l0_provider_meta = synthesize_context_node_summary(
+        level="node_l0",
+        node_path=node_path,
+        source_text=source_text,
+        fallback_text=f"{prefix_label} :: {source_text}",
+        max_chars=220,
+        policy=l1_policy,
+    )
+    summary_specs = [("node_l0", l0_summary, "node_l0", l0_provider_meta)]
+    if l1_policy["generate_l1"]:
+        l1_summary, l1_provider_meta = synthesize_context_node_summary(
+            level="node_l1",
+            node_path=node_path,
+            source_text=source_text,
+            fallback_text=(
+                f"Context node {prefix_label}. Rich overview: {source_text}. "
+                f"This node belongs to path {prefix_label} and should be used for tree-first retrieval before leaf event/entity recall."
+            ),
+            max_chars=1200,
+            policy=l1_policy,
+        )
+        summary_specs.append(("node_l1", l1_summary, "node_l1", l1_provider_meta))
+
+    records: list[Json] = []
+    for level, summary_text, embedding_type, provider_meta in summary_specs:
+        summary_hash = stable_hash(f"context_summary:{level}:{node_hash}")
+        summary_policy = {**l1_policy, **provider_meta}
+        summary_vector = embedding_for_text(summary_text)
+        records.append(
+            {
+                "record_type": "context_summary",
+                "summary_type": level,
+                "summary_hash": summary_hash,
+                "node_hash": node_hash,
+                "node_path": node_path,
+                "depth": len(node_path),
+                "summary_text": summary_text,
+                "source_event_ids": source_event_ids,
+                "source_summary_hashes": source_summary_hashes,
+                "source_entity_hashes": source_entity_hashes,
+                "source_operator_hashes": source_operator_hashes,
+                "summary_generation_policy": summary_policy,
+                "dirty_hash": dirty_hash,
+                "scope": scope,
+                "updated_at_ms": refreshed_at_ms,
+            }
+        )
+        records.append(
+            {
+                "record_type": "context_embedding",
+                "embedding_type": embedding_type,
+                "ref_type": "summary",
+                "ref_hash": summary_hash,
+                "node_hash": node_hash,
+                "node_path": node_path,
+                "depth": len(node_path),
+                "dim": len(summary_vector),
+                "model": embedding_model_name(),
+                "vector": summary_vector,
+                "summary_generation_policy": summary_policy,
+                "dirty_hash": dirty_hash,
+                "scope": scope,
+                "updated_at_ms": refreshed_at_ms,
+            }
+        )
+    return {
+        "records": records,
+        "source_event_ids": source_event_ids,
+        "source_summary_hashes": source_summary_hashes,
+        "source_entity_hashes": source_entity_hashes,
+        "source_operator_hashes": source_operator_hashes,
+        "generated_summary_types": [spec[0] for spec in summary_specs],
+        "summary_generation_policy": l1_policy,
+    }
 
 
 MarkNodeSummaryDirty = Callable[..., list[int]]
