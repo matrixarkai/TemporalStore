@@ -311,3 +311,113 @@ def try_native_context_pack(target: Any, args: Json) -> Json | None:
         return result
     self._direct_context_pack_response_cache_put(cache_key, pack)
     return pack
+
+def native_context_pack(target: Any, request: Json) -> Json | None:
+    retriever = getattr(getattr(target, "_client", None), "matrixark_retrieve_context_pack", None)
+    if not callable(retriever):
+        return None
+    try:
+        response = retriever(
+            count_key=target._count_key,
+            record_hash_key=target._record_hash_key,
+            shard_size=target._shard_size,
+            request=request,
+        )
+    except Exception as exc:
+        if target.native_context_pack_required():
+            raise MatrixArkError(
+                f"backend-native ContextPack assembly failed for {target._backend_label()}: {exc}. "
+                "Python reference packing is disabled for TemporalStore serving unless explicitly overridden for local debug."
+            ) from exc
+        return None
+    if not isinstance(response, dict) or not response.get("native_pack_assembly"):
+        if target.native_context_pack_required():
+            raise MatrixArkError(
+                f"backend-native ContextPack assembly returned an invalid response for {target._backend_label()}. "
+                "Python reference packing is disabled for TemporalStore serving unless explicitly overridden for local debug."
+            )
+        return None
+    if isinstance(response.get("records"), list):
+        raise MatrixArkError(
+            "native matrixark_retrieve_context_pack must return a finished ContextPack, not raw records"
+        )
+    pack = response.get("context_pack")
+    if not isinstance(pack, dict):
+        return None
+    pack.setdefault("context_pack_assembly", "native_backend")
+    pack.setdefault("backend", target._backend_label())
+    recall_policy = pack.get("recall_policy") if isinstance(pack.get("recall_policy"), dict) else {}
+    contract = recall_policy.get("native_response_contract") if isinstance(recall_policy.get("native_response_contract"), dict) else {}
+    contract.setdefault("raw_records_returned_to_python", False)
+    contract.setdefault("python_hot_path_records", 0)
+    contract.setdefault("python_role", "dispatch_request_receive_context_pack")
+    contract.setdefault("backend_role", "scan_filter_score_pack")
+    recall_policy["native_response_contract"] = contract
+    pack["recall_policy"] = recall_policy
+    return pack
+
+
+def native_context_pack_fallback_blocker(target: Any, args: Json, *, reason: str) -> Json:
+    scope = args.get("scope") if isinstance(args.get("scope"), dict) else {}
+    query = str(args.get("query") or "")
+    context_pack_id = str(stable_hash(f"native-blocked:{query}:{canonical_scope_key(scope)}:{now_ms()}"))
+    pack: Json = {
+        "context_pack_id": context_pack_id,
+        "status": "timeout_partial",
+        "native_context_pack": False,
+        "context_pack_assembly": "native_context_pack_blocked",
+        "query_embedding_model": embedding_model_name(),
+        "embedding_execution_mode": embedding_execution_mode_name(),
+        "embedding_fallback_used": embedding_fallback_used(),
+        "remote_context_refs": [],
+        "groups": [],
+        "quality_warnings": [
+            {
+                "code": "native_backend_contract_blocked",
+                "message": "Native matrixark_retrieve_context_pack was available but did not return a valid compact ContextPack; Python broad scan and hot-path pack fallback are disabled for production retrieval.",
+                "reason": reason,
+            }
+        ],
+        "retrieval_metrics": {
+            "backend": target._backend_label(),
+            "native_api": "matrixark_retrieve_context_pack",
+            "native_pack_assembly": False,
+            "python_pack_fallback": False,
+            "raw_candidate_tables_returned": False,
+            "broad_scan_used": False,
+            "broad_scan_blocked": True,
+            "broad_scan_policy": "explicit_fallback_or_debug_only",
+            "fallback_reason": reason,
+            "selected_refs": 0,
+            "dropped_refs": 0,
+            "scanned_records": 0,
+            "index_postings_read": 0,
+            "placement_partitions_touched": 0,
+            "candidate_cache_hit": False,
+            "normal_path_stages": [
+                "query_understanding",
+                "scope_filter",
+                "l0_l1_node_traversal",
+                "compact_secondary_index_prefilter",
+                "placement_key_candidate_fetch",
+                "native_score_rerank_pack",
+            ],
+            "health_readiness_metrics": {
+                "health": True,
+                "readiness": True,
+                "metrics": True,
+            },
+        },
+        "recall_policy": {
+            "backend_retrieval_pushdown": {
+                "backend": target._backend_label(),
+                "execution_mode": "native_context_pack_blocked",
+                "python_materialized_records": 0,
+                "broad_scan_blocked": True,
+                "fallback_reason": reason,
+            }
+        },
+    }
+    if bool(args.get("include_retrieval_metrics")):
+        pack["include_retrieval_metrics"] = True
+    return pack
