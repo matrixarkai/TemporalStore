@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Any
 
 try:
@@ -159,3 +160,74 @@ def raw_session_index_entries(
         }
         for session_id in sorted(raw_record_session_ids(record))
     ]
+
+
+def get_raw_count(target: Any) -> int:
+    ensure_raw_ingestion_fields(target)
+    try:
+        raw = target._client.get_string(target._raw_count_key)
+    except Exception:
+        return 0
+    if not raw:
+        return 0
+    try:
+        value = int(raw)
+    except ValueError:
+        return 0
+    return max(0, value)
+
+
+def append_raw_ingestion_records(target: Any, records: list[Json], *, allow_queue: bool = True) -> None:
+    if not records:
+        return
+    ensure_raw_ingestion_fields(target)
+    if target._raw_ingestion_prefix == target._storage_prefix:
+        raise MatrixArkError("MATRIXARK_DIRECT_RAW_STORAGE_PREFIX must differ from the serving storage prefix")
+    if (
+        allow_queue
+        and bool(getattr(target, "_direct_raw_ingestion_queue_enabled", False))
+        and bool(getattr(target, "_direct_write_queue_enabled", False))
+        and getattr(target, "_direct_write_queue_mode", "memory") == "memory"
+    ):
+        target._enqueue_direct_write_item({"queue_mode": "raw_ingestion", "records": list(records)}, len(records))
+        return
+    started_perf = time.perf_counter()
+    with target._records_lock:
+        count = target._raw_entry_count_cache if target._raw_entry_count_cache is not None else get_raw_count(target)
+        sequence = count
+        entries: list[Json] = []
+        for record in records:
+            record_key, record_id = raw_record_location(target._raw_record_hash_key, target._shard_size, sequence)
+            payload = json.dumps(record, sort_keys=True, separators=(",", ":"))
+            route = record.get("storage_route") if isinstance(record.get("storage_route"), dict) else {}
+            entries.append({"key": record_key, "field": record_id, "value": payload, "storage_route": route})
+            entries.extend(
+                raw_session_index_entries(
+                    raw_ingestion_prefix=target._raw_ingestion_prefix,
+                    shard_size=target._shard_size,
+                    sequence=sequence,
+                    record=record,
+                )
+            )
+            sequence += 1
+        append_records = getattr(target._client, "matrixark_batch_append_records", None)
+        if callable(append_records):
+            target._write_with_backoff(
+                lambda: append_records(
+                    entries,
+                    count_key=target._raw_count_key,
+                    count_value=str(sequence),
+                    append_options=raw_ingestion_append_options(target._raw_storage_backend),
+                ),
+                op="matrixark_batch_append_raw_ingestion_records",
+            )
+        else:
+            target._hset_many_with_backoff(entries)
+            target._put_string_with_backoff(target._raw_count_key, str(sequence))
+        if target._raw_ingestion_visibility_required_after_flush():
+            target._note_pending_visibility_keys(
+                [target._raw_count_key] + [str(entry.get("key") or "") for entry in entries]
+            )
+        target._raw_entry_count_cache = sequence
+        elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
+        target._observe_backend_command(elapsed_ms, records_written=len(records))
