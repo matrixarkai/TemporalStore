@@ -177,6 +177,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_retrieve_fallback import deadline_fallback_pack
 
 try:
+    from tools.matrixark_mcp_retrieve_embeddings import add_context_embedding_vector
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_retrieve_embeddings import add_context_embedding_vector
+
+try:
     from tools.matrixark_mcp_retrieve_index_terms import add_context_index_terms
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_retrieve_index_terms import add_context_index_terms
@@ -398,20 +403,16 @@ def retrieve(target: Any, args: Json) -> Json:
                     "sparse_score": sparse_score,
                     "embedding_type": record.get("embedding_type"),
                 }
-        elif record_type == "context_embedding" and record.get("embedding_type") == "event_text":
-            event_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
-        elif record_type == "context_embedding" and record.get("embedding_type") == "entity_state":
-            entity_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
-        elif record_type == "context_embedding" and record.get("embedding_type") == "segment_text":
-            segment_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
-        elif record_type == "context_embedding" and record.get("embedding_type") == "compression_summary":
-            compression_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
-        elif record_type == "context_embedding" and record.get("embedding_type") == "resource_chunk":
-            resource_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
-        elif record_type == "context_embedding" and record.get("embedding_type") == "skill_section":
-            resource_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
-        elif record_type == "context_embedding" and record.get("embedding_type") == "skill_summary":
-            skill_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
+        elif record_type == "context_embedding":
+            add_context_embedding_vector(
+                record,
+                event_embedding_vectors=event_embedding_vectors,
+                entity_embedding_vectors=entity_embedding_vectors,
+                segment_embedding_vectors=segment_embedding_vectors,
+                compression_embedding_vectors=compression_embedding_vectors,
+                resource_embedding_vectors=resource_embedding_vectors,
+                skill_embedding_vectors=skill_embedding_vectors,
+            )
     for record in records:
         if record.get("record_type") != "context_node":
             continue
@@ -478,21 +479,15 @@ def retrieve(target: Any, args: Json) -> Json:
                     index_terms_by_node_for_prefilter=index_terms_by_node_for_prefilter,
                 )
             elif record_type == "context_embedding" and scope_matches(candidate_access_scope(record), scope):
-                embedding_type = record.get("embedding_type")
-                if embedding_type == "event_text":
-                    event_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
-                elif embedding_type == "entity_state":
-                    entity_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
-                elif embedding_type == "segment_text":
-                    segment_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
-                elif embedding_type == "compression_summary":
-                    compression_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
-                elif embedding_type == "resource_chunk":
-                    resource_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
-                elif embedding_type == "skill_section":
-                    resource_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
-                elif embedding_type == "skill_summary":
-                    skill_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
+                add_context_embedding_vector(
+                    record,
+                    event_embedding_vectors=event_embedding_vectors,
+                    entity_embedding_vectors=entity_embedding_vectors,
+                    segment_embedding_vectors=segment_embedding_vectors,
+                    compression_embedding_vectors=compression_embedding_vectors,
+                    resource_embedding_vectors=resource_embedding_vectors,
+                    skill_embedding_vectors=skill_embedding_vectors,
+                )
 
     selected_by_tree = retrieve_tree_filter_helpers.make_tree_selector(
         traversal=traversal,

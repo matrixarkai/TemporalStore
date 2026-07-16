@@ -79,6 +79,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         native_retrieve_mod = importlib.import_module("tools.matrixark_mcp_native_retrieve")
         retrieve_continuity_mod = importlib.import_module("tools.matrixark_mcp_retrieve_continuity")
         retrieve_deadline_mod = importlib.import_module("tools.matrixark_mcp_retrieve_deadline")
+        retrieve_embeddings_mod = importlib.import_module("tools.matrixark_mcp_retrieve_embeddings")
         retrieve_fallback_mod = importlib.import_module("tools.matrixark_mcp_retrieve_fallback")
         retrieve_identity_mod = importlib.import_module("tools.matrixark_mcp_retrieve_identity")
         retrieve_index_terms_mod = importlib.import_module("tools.matrixark_mcp_retrieve_index_terms")
@@ -309,6 +310,20 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             continuity_annotator({"origin_score": 1.0}, {"scope": {"session_id": "s1"}})["session_continuity"],
             "same_session",
         )
+        event_vectors: dict[int, list[float]] = {}
+        empty_vectors: dict[int, list[float]] = {}
+        self.assertTrue(
+            retrieve_embeddings_mod.add_context_embedding_vector(
+                {"record_type": "context_embedding", "embedding_type": "event_text", "ref_hash": 8, "vector": [0.5]},
+                event_embedding_vectors=event_vectors,
+                entity_embedding_vectors=empty_vectors,
+                segment_embedding_vectors=empty_vectors,
+                compression_embedding_vectors=empty_vectors,
+                resource_embedding_vectors=empty_vectors,
+                skill_embedding_vectors=empty_vectors,
+            )
+        )
+        self.assertEqual(event_vectors[8], [0.5])
         self.assertTrue(callable(retrieve_fallback_mod.deadline_fallback_pack))
         by_batch: dict[object, list[str]] = {}
         by_node: dict[object, list[str]] = {}
