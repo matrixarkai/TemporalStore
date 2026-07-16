@@ -463,18 +463,7 @@ def retrieve(target: Any, args: Json) -> Json:
             "embedding_type": "secondary_index_hint",
         }
     if deadline_exceeded():
-        return self.deadline_fallback_pack(
-            query=query,
-            scope=scope,
-            question_type=question_type,
-            max_context_tokens=max_context_tokens,
-            local_budget=local_budget,
-            deadline_ms=deadline_ms,
-            elapsed_ms=round((time.perf_counter() - started_perf) * 1000.0, 3),
-            records=records,
-            reason="deadline_after_embedding_index_scan",
-            budget_source=budget_source,
-        )
+        return deadline_fallback("deadline_after_embedding_index_scan")
 
     top_k_per_layer = integer_arg(ranking, "top_k_per_layer", DEFAULT_TOP_K_PER_LAYER, minimum=1)
     max_children_scored_per_parent = bounded_max_children_scored_per_parent(
@@ -739,18 +728,7 @@ def retrieve(target: Any, args: Json) -> Json:
                 )
             )
     if deadline_exceeded():
-        return self.deadline_fallback_pack(
-            query=query,
-            scope=scope,
-            question_type=question_type,
-            max_context_tokens=max_context_tokens,
-            local_budget=local_budget,
-            deadline_ms=deadline_ms,
-            elapsed_ms=round((time.perf_counter() - started_perf) * 1000.0, 3),
-            records=records,
-            reason="deadline_after_event_scan",
-            budget_source=budget_source,
-        )
+        return deadline_fallback("deadline_after_event_scan")
     for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
         if scan_index % 64 == 0 and deadline_exceeded():
             return deadline_fallback("deadline_during_entity_scan", records)
@@ -816,18 +794,7 @@ def retrieve(target: Any, args: Json) -> Json:
                 )
             )
     if deadline_exceeded():
-        return self.deadline_fallback_pack(
-            query=query,
-            scope=scope,
-            question_type=question_type,
-            max_context_tokens=max_context_tokens,
-            local_budget=local_budget,
-            deadline_ms=deadline_ms,
-            elapsed_ms=round((time.perf_counter() - started_perf) * 1000.0, 3),
-            records=records,
-            reason="deadline_after_entity_scan",
-            budget_source=budget_source,
-        )
+        return deadline_fallback("deadline_after_entity_scan")
     for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
         if scan_index % 64 == 0 and deadline_exceeded():
             return deadline_fallback("deadline_during_segment_scan", records)
@@ -891,18 +858,7 @@ def retrieve(target: Any, args: Json) -> Json:
                 )
             )
     if deadline_exceeded():
-        return self.deadline_fallback_pack(
-            query=query,
-            scope=scope,
-            question_type=question_type,
-            max_context_tokens=max_context_tokens,
-            local_budget=local_budget,
-            deadline_ms=deadline_ms,
-            elapsed_ms=round((time.perf_counter() - started_perf) * 1000.0, 3),
-            records=records,
-            reason="deadline_after_segment_scan",
-            budget_source=budget_source,
-        )
+        return deadline_fallback("deadline_after_segment_scan")
     for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
         if scan_index % 64 == 0 and deadline_exceeded():
             return deadline_fallback("deadline_during_resource_skill_scan", records)
@@ -1063,18 +1019,7 @@ def retrieve(target: Any, args: Json) -> Json:
                 )
             )
     if deadline_exceeded():
-        return self.deadline_fallback_pack(
-            query=query,
-            scope=scope,
-            question_type=question_type,
-            max_context_tokens=max_context_tokens,
-            local_budget=local_budget,
-            deadline_ms=deadline_ms,
-            elapsed_ms=round((time.perf_counter() - started_perf) * 1000.0, 3),
-            records=records,
-            reason="deadline_after_compression_scan",
-            budget_source=budget_source,
-        )
+        return deadline_fallback("deadline_after_compression_scan")
     finish_retrieval_stage("rerank_score", stage_started_perf)
     stage_started_perf = time.perf_counter()
     primary_matches.sort(key=lambda item: item["score"], reverse=True)
