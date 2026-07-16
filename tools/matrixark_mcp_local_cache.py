@@ -194,6 +194,14 @@ def ensure_latest_entity_cache_loaded(adapter: object) -> None:
     adapter._entity_cache_loaded = True
 
 
+def find_latest_entity(adapter: object, *, node_hash: int, entity_type: str, entity_name: str) -> Json | None:
+    entity_hash = stable_hash(f"{node_hash}:{entity_type}:{entity_name}")
+    if entity_hash in adapter._latest_entity_by_hash:
+        return adapter._latest_entity_by_hash[entity_hash]
+    ensure_latest_entity_cache_loaded(adapter)
+    return adapter._latest_entity_by_hash.get(entity_hash)
+
+
 def pending_session_events(adapter: object, scope: Json, *, limit: int | None = None) -> list[Json]:
     key = session_buffer_key_from_scope(scope)
     ensure_session_cache_fields(adapter)
