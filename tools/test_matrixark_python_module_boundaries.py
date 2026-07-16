@@ -55,6 +55,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         tree_mod = importlib.import_module("tools.matrixark_mcp_tree")
         rust_direct_mod = importlib.import_module("tools.matrixark_mcp_rust_direct_client")
         rust_proxy_mod = importlib.import_module("tools.matrixark_mcp_rust_proxy_client")
+        rust_proxy_metrics_snapshot_mod = importlib.import_module("tools.matrixark_mcp_rust_proxy_metrics_snapshot")
         session_policy_mod = importlib.import_module("tools.matrixark_mcp_session_policy")
         session_runtime_mod = importlib.import_module("tools.matrixark_mcp_session_runtime")
         dashboard_mod = importlib.import_module("tools.matrixark_mcp_dashboard")
@@ -65,6 +66,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         temporal_retrieval_records_mod = importlib.import_module("tools.matrixark_mcp_temporal_retrieval_records")
         temporal_readiness_mod = importlib.import_module("tools.matrixark_mcp_temporal_readiness")
         temporal_proxy_readiness_mod = importlib.import_module("tools.matrixark_mcp_temporal_proxy_readiness")
+        temporal_record_load_mod = importlib.import_module("tools.matrixark_mcp_temporal_record_load_runtime")
+        temporal_rust_adapters_mod = importlib.import_module("tools.matrixark_mcp_temporal_rust_adapters")
         retrieve_planning_mod = importlib.import_module("tools.matrixark_mcp_retrieve_planning")
         retrieve_cache_mod = importlib.import_module("tools.matrixark_mcp_retrieve_cache")
         ingest_planning_mod = importlib.import_module("tools.matrixark_mcp_ingest_planning")
@@ -82,6 +85,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         models_mod = importlib.import_module("tools.matrixark_mcp_models")
         indexing_mod = importlib.import_module("tools.matrixark_mcp_indexing")
         storage_options_mod = importlib.import_module("tools.matrixark_mcp_storage_options")
+        storage_schemas_mod = importlib.import_module("tools.matrixark_mcp_storage_schemas")
         native_helpers_mod = importlib.import_module("tools.matrixark_mcp_native_helpers")
         native_side_index_mod = importlib.import_module("tools.matrixark_mcp_native_side_index")
         native_pack_runtime_mod = importlib.import_module("tools.matrixark_mcp_native_pack_runtime")
@@ -99,6 +103,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         access_scope_mod = importlib.import_module("tools.matrixark_mcp_access_scope")
         oss_understanding_mod = importlib.import_module("tools.matrixark_mcp_oss_understanding")
         extraction_norm_mod = importlib.import_module("tools.matrixark_mcp_extraction_normalization")
+        extraction_runtime_mod = importlib.import_module("tools.matrixark_mcp_extraction_runtime")
         prior_context_mod = importlib.import_module("tools.matrixark_mcp_prior_context")
         resources_mod = importlib.import_module("tools.matrixark_mcp_resources")
         raw_ingestion_mod = importlib.import_module("tools.matrixark_mcp_raw_ingestion")
@@ -148,6 +153,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIs(core_mod.compact_context_index_postings, indexing_mod.compact_context_index_postings)
         self.assertIs(core_mod.context_index_posting_record, indexing_mod.context_index_posting_record)
         self.assertIs(core_mod.normalize_storage_options, storage_options_mod.normalize_storage_options)
+        self.assertIs(storage_schemas_mod.PART_STORAGE_OPTIONS_SCHEMA, storage_schemas_mod.RECORD_STORAGE_OPTIONS_SCHEMA)
         self.assertIs(core_mod.storage_options_for_record, storage_options_mod.storage_options_for_record)
         self.assertIs(core_mod.canonical_storage_route, storage_options_mod.canonical_storage_route)
         self.assertIs(temporal_mod._float_metric_or_default, native_helpers_mod.float_metric_or_default)
@@ -187,6 +193,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIs(core_mod.tree_first_traversal, tree_mod.tree_first_traversal)
         self.assertIs(temporal_mod.MatrixArkRustCdylibClient, rust_direct_mod.MatrixArkRustCdylibClient)
         self.assertIs(temporal_mod.MatrixArkRustProxyClient, rust_proxy_mod.MatrixArkRustProxyClient)
+        self.assertTrue(callable(rust_proxy_metrics_snapshot_mod.metrics_snapshot))
         self.assertIs(temporal_mod.MatrixArkRustCliClient, rust_proxy_mod.MatrixArkRustCliClient)
         adapter = local_mod.MatrixArkLocalAdapter(Path("/tmp/matrixark-module-boundary-unused.jsonl"))
         sample_scope = {"tenant_id": "t", "user_id": "u", "session_id": "s"}
@@ -238,6 +245,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(callable(temporal_retrieval_records_mod.native_locations_for_selected_nodes))
         self.assertTrue(callable(temporal_readiness_mod.run_backend_readiness_gate))
         self.assertTrue(callable(temporal_proxy_readiness_mod.ensure_backend_ready))
+        self.assertTrue(callable(temporal_record_load_mod.load_records_by_count))
+        self.assertIs(temporal_rust_adapters_mod.MatrixArkTemporalStoreRustAdapter, temporal_mod.MatrixArkTemporalStoreRustAdapter)
         self.assertTrue(callable(retrieve_planning_mod.retrieval_audit_policy))
         self.assertTrue(callable(retrieve_planning_mod.retrieval_query_budget_plan))
         self.assertTrue(callable(retrieve_planning_mod.retrieval_stage_budgets))
@@ -290,6 +299,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(callable(oss_understanding_mod.oss_encoder_compact_extraction))
         self.assertTrue(callable(extraction_norm_mod.normalize_extracted_entities))
         self.assertTrue(callable(extraction_norm_mod.extract_batch_entities))
+        self.assertTrue(callable(extraction_runtime_mod.one_pass_memory_extraction))
         self.assertTrue(callable(prior_context_mod.collect_prior_context))
         self.assertTrue(callable(prior_context_mod.prior_context_payload))
         self.assertIs(core_mod.compact_latest_context_state_records, serving_records_mod.compact_latest_context_state_records)
@@ -376,6 +386,11 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "matrixark_mcp_summaries.py",
             "matrixark_mcp_summary_runtime.py",
             "matrixark_mcp_time_compression_runtime.py",
+            "matrixark_mcp_storage_schemas.py",
+            "matrixark_mcp_extraction_runtime.py",
+            "matrixark_mcp_rust_proxy_metrics_snapshot.py",
+            "matrixark_mcp_temporal_rust_adapters.py",
+            "matrixark_mcp_temporal_record_load_runtime.py",
         ]
         offenders: list[str] = []
         for module_name in module_names:
