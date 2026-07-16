@@ -7,11 +7,16 @@ import json
 import os
 import queue
 import threading
+import time
 from typing import Any
 
 try:
+    from tools.matrixark_mcp_core import _mcp_debug_log
+    from tools.matrixark_mcp_errors import MatrixArkError
     from tools.matrixark_mcp_identity import now_ms, stable_hash
 except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_core import _mcp_debug_log
+    from matrixark_mcp_errors import MatrixArkError
     from matrixark_mcp_identity import now_ms, stable_hash
 
 
@@ -115,3 +120,65 @@ def ensure_direct_write_queue_fields(target: Any) -> None:
         target._direct_write_flushed_batches = 0
     if not hasattr(target, "_direct_write_dead_letter_batches"):
         target._direct_write_dead_letter_batches = 0
+
+
+def records_can_use_direct_write_queue(target: Any, records: list[Json]) -> bool:
+    ensure_direct_write_queue_fields(target)
+    if not bool(getattr(target, "_direct_write_queue_enabled", False)):
+        return False
+    if not records:
+        return False
+    if bool(getattr(target, "_direct_write_queue_allow_sync_context", False)):
+        return all(isinstance(record, dict) for record in records)
+    saw_background_route = False
+    for record in records:
+        route = record.get("storage_route")
+        if not isinstance(route, dict) or not route:
+            continue
+        if route.get("sync_write") is True or route.get("background_write") is not True:
+            return False
+        saw_background_route = True
+    return saw_background_route
+
+
+def start_direct_write_worker(target: Any) -> None:
+    ensure_direct_write_queue_fields(target)
+    with target._direct_write_worker_lock:
+        if not target._direct_write_worker_started:
+            target._direct_write_worker_started = True
+            thread = threading.Thread(
+                target=target._direct_write_loop,
+                name="matrixark-direct-write-queue",
+                daemon=True,
+            )
+            thread.start()
+
+
+def enqueue_direct_write_item(target: Any, item: Any, record_count: int) -> None:
+    ensure_direct_write_queue_fields(target)
+    if bool(getattr(target, "_direct_write_queue_autostart", True)):
+        start_direct_write_worker(target)
+    wait_started_perf = time.perf_counter()
+    try:
+        target._direct_write_queue.put(item, timeout=target._direct_write_queue_put_timeout_s)
+    except queue.Full as exc:
+        target._observe_append_queue_wait((time.perf_counter() - wait_started_perf) * 1000.0)
+        if isinstance(item, dict) and item.get("queue_mode") == "temporalstore":
+            _mcp_debug_log(
+                "matrixark durable direct write queue accepted batch but local worker queue is full; "
+                "batch will be recovered by drain"
+            )
+            target._direct_write_enqueued_records += record_count
+            target._direct_write_enqueued_batches += 1
+            return
+        raise MatrixArkError("direct TemporalStore write queue is full") from exc
+    target._observe_append_queue_wait((time.perf_counter() - wait_started_perf) * 1000.0)
+    target._direct_write_enqueued_records += record_count
+    target._direct_write_enqueued_batches += 1
+
+
+def enqueue_direct_write(target: Any, records: list[Json]) -> None:
+    item: Any = list(records)
+    if getattr(target, "_direct_write_queue_mode", "memory") == "temporalstore":
+        item = {"queue_mode": "temporalstore", "field": target._enqueue_direct_write_durable(records)}
+    enqueue_direct_write_item(target, item, len(records))

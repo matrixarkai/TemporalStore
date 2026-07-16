@@ -50,7 +50,11 @@ try:
         direct_write_durable_field,
         direct_write_durable_payload,
         direct_write_payload_is_pending,
+        enqueue_direct_write,
+        enqueue_direct_write_item,
         ensure_direct_write_queue_fields,
+        records_can_use_direct_write_queue,
+        start_direct_write_worker,
     )
     from tools.matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from tools.matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
@@ -95,7 +99,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         direct_write_durable_field,
         direct_write_durable_payload,
         direct_write_payload_is_pending,
+        enqueue_direct_write,
+        enqueue_direct_write_item,
         ensure_direct_write_queue_fields,
+        records_can_use_direct_write_queue,
+        start_direct_write_worker,
     )
     from matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
@@ -881,30 +889,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         return filtered
 
     def _records_can_use_direct_write_queue(self, records: list[Json]) -> bool:
-        self._ensure_direct_write_queue_fields()
-        if not bool(getattr(self, "_direct_write_queue_enabled", False)):
-            return False
-        if not records:
-            return False
-        if bool(getattr(self, "_direct_write_queue_allow_sync_context", False)):
-            return all(isinstance(record, dict) for record in records)
-        saw_background_route = False
-        for record in records:
-            route = record.get("storage_route")
-            if not isinstance(route, dict) or not route:
-                continue
-            if route.get("sync_write") is True or route.get("background_write") is not True:
-                return False
-            saw_background_route = True
-        return saw_background_route
+        return records_can_use_direct_write_queue(self, records)
 
     def _start_direct_write_worker(self) -> None:
-        self._ensure_direct_write_queue_fields()
-        with self._direct_write_worker_lock:
-            if not self._direct_write_worker_started:
-                self._direct_write_worker_started = True
-                thread = threading.Thread(target=self._direct_write_loop, name="matrixark-direct-write-queue", daemon=True)
-                thread.start()
+        start_direct_write_worker(self)
 
     def _direct_write_durable_payload(self, records: list[Json]) -> Json:
         return direct_write_durable_payload(
@@ -923,29 +911,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         return field
 
     def _enqueue_direct_write_item(self, item: Any, record_count: int) -> None:
-        self._ensure_direct_write_queue_fields()
-        if bool(getattr(self, "_direct_write_queue_autostart", True)):
-            self._start_direct_write_worker()
-        wait_started_perf = time.perf_counter()
-        try:
-            self._direct_write_queue.put(item, timeout=self._direct_write_queue_put_timeout_s)
-        except queue.Full as exc:
-            self._observe_append_queue_wait((time.perf_counter() - wait_started_perf) * 1000.0)
-            if isinstance(item, dict) and item.get("queue_mode") == "temporalstore":
-                _mcp_debug_log("matrixark durable direct write queue accepted batch but local worker queue is full; batch will be recovered by drain")
-                self._direct_write_enqueued_records += record_count
-                self._direct_write_enqueued_batches += 1
-                return
-            raise MatrixArkError("direct TemporalStore write queue is full") from exc
-        self._observe_append_queue_wait((time.perf_counter() - wait_started_perf) * 1000.0)
-        self._direct_write_enqueued_records += record_count
-        self._direct_write_enqueued_batches += 1
+        enqueue_direct_write_item(self, item, record_count)
 
     def _enqueue_direct_write(self, records: list[Json]) -> None:
-        item: Any = list(records)
-        if getattr(self, "_direct_write_queue_mode", "memory") == "temporalstore":
-            item = {"queue_mode": "temporalstore", "field": self._enqueue_direct_write_durable(records)}
-        self._enqueue_direct_write_item(item, len(records))
+        enqueue_direct_write(self, records)
 
     def _direct_write_loop(self) -> None:
         while not self._direct_write_stop.is_set():
