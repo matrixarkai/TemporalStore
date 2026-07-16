@@ -10,16 +10,38 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from tools.matrixark_mcp_core import *
-    from tools.matrixark_mcp_core import MatrixArkError
+    from tools.matrixark_mcp_core import (
+        DIRECT_AUDIT_BUFFER_MAX_RECORDS,
+        DIRECT_AUDIT_FLUSH_INTERVAL_MS,
+        DIRECT_AUDIT_MODE,
+        DIRECT_RECORD_LOG_SHARD_SIZE,
+        DIRECT_WRITE_BACKOFF_MS,
+        DIRECT_WRITE_RETRIES,
+        DIRECT_WRITE_THROTTLE_MS,
+        Json,
+        MatrixArkError,
+        compact_latest_context_state_records,
+        native_candidate_prefilter_required,
+    )
     from tools.matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from tools.matrixark_mcp_native_helpers import latency_quantile_from_bucket_map as _latency_quantile_from_bucket_map
     from tools.matrixark_mcp_rust_direct_client import MatrixArkRustCdylibClient
     from tools.matrixark_mcp_rust_proxy_client import MatrixArkRustCliClient, MatrixArkRustProxyClient
     from tools.matrixark_mcp_temporal_adapters import MatrixArkTemporalStoreDirectAdapter
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_core import *
-    from matrixark_mcp_core import MatrixArkError
+    from matrixark_mcp_core import (
+        DIRECT_AUDIT_BUFFER_MAX_RECORDS,
+        DIRECT_AUDIT_FLUSH_INTERVAL_MS,
+        DIRECT_AUDIT_MODE,
+        DIRECT_RECORD_LOG_SHARD_SIZE,
+        DIRECT_WRITE_BACKOFF_MS,
+        DIRECT_WRITE_RETRIES,
+        DIRECT_WRITE_THROTTLE_MS,
+        Json,
+        MatrixArkError,
+        compact_latest_context_state_records,
+        native_candidate_prefilter_required,
+    )
     from matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from matrixark_mcp_native_helpers import latency_quantile_from_bucket_map as _latency_quantile_from_bucket_map
     from matrixark_mcp_rust_direct_client import MatrixArkRustCdylibClient
