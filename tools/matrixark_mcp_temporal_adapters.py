@@ -136,17 +136,7 @@ try:
     from tools import matrixark_mcp_temporal_readiness as temporal_readiness
     from tools import matrixark_mcp_temporal_proxy_readiness as temporal_proxy_readiness
     from tools.matrixark_mcp_raw_ingestion import (
-        ensure_raw_ingestion_fields,
-        normalize_raw_storage_backend,
-        raw_ingestion_append_options,
-        raw_ingestion_append_path_for_backend,
-        append_raw_ingestion_records,
-        get_raw_count,
-        raw_record_location,
-        raw_record_scope_value,
-        raw_record_session_ids,
-        raw_session_index_entries,
-        raw_session_index_key,
+        RawIngestionAdapterMixin,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_env import env_bool, env_int, env_lower
@@ -197,17 +187,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         native_side_index_entries_for_bundles,
     )
     from matrixark_mcp_raw_ingestion import (
-        ensure_raw_ingestion_fields,
-        normalize_raw_storage_backend,
-        raw_ingestion_append_options,
-        raw_ingestion_append_path_for_backend,
-        append_raw_ingestion_records,
-        get_raw_count,
-        raw_record_location,
-        raw_record_scope_value,
-        raw_record_session_ids,
-        raw_session_index_entries,
-        raw_session_index_key,
+        RawIngestionAdapterMixin,
     )
 
 
@@ -229,7 +209,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
 
 
-class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
+class MatrixArkTemporalStoreDirectAdapter(RawIngestionAdapterMixin, MatrixArkLocalAdapter):
     """MatrixArk adapter backed by C++ TemporalStore proxy or direct SDK.
 
     Python stays as API/auth/model orchestration. Production retrieval should
@@ -515,51 +495,6 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             "audit_hot_path": "inline_counters_only",
             "full_context_pack_audit": "sample_or_enqueue_async_policy_enabled",
         }
-
-    def _normalize_raw_storage_backend(self, value: Any) -> str:
-        return normalize_raw_storage_backend(value)
-
-    def _raw_ingestion_append_path(self) -> str:
-        return raw_ingestion_append_path_for_backend(
-            getattr(self, "_raw_storage_backend", "temporalstore")
-        )
-
-    def _raw_ingestion_append_options(self) -> Json:
-        return raw_ingestion_append_options(
-            getattr(self, "_raw_storage_backend", "temporalstore")
-        )
-
-    def _ensure_raw_ingestion_fields(self) -> None:
-        ensure_raw_ingestion_fields(self)
-
-    def _raw_record_location(self, sequence: int) -> tuple[str, str]:
-        self._ensure_raw_ingestion_fields()
-        return raw_record_location(self._raw_record_hash_key, self._shard_size, sequence)
-
-    def _raw_session_index_key(self, session_id: str) -> str:
-        self._ensure_raw_ingestion_fields()
-        return raw_session_index_key(self._raw_ingestion_prefix, session_id)
-
-    def _raw_record_scope_value(self, record: Json, name: str) -> str:
-        return raw_record_scope_value(record, name)
-
-    def _raw_record_session_ids(self, record: Json) -> set[str]:
-        return raw_record_session_ids(record)
-
-    def _raw_session_index_entries(self, *, sequence: int, record: Json) -> list[Json]:
-        self._ensure_raw_ingestion_fields()
-        return raw_session_index_entries(
-            raw_ingestion_prefix=self._raw_ingestion_prefix,
-            shard_size=self._shard_size,
-            sequence=sequence,
-            record=record,
-        )
-
-    def _get_raw_count(self) -> int:
-        return get_raw_count(self)
-
-    def _append_raw_ingestion_records(self, records: list[Json], *, allow_queue: bool = True) -> None:
-        append_raw_ingestion_records(self, records, allow_queue=allow_queue)
 
     def _context_index_lookup_key(self, scope_key: str) -> str:
         return context_index_lookup_key(self._storage_prefix, scope_key)
