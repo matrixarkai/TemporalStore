@@ -231,3 +231,52 @@ def append_raw_ingestion_records(target: Any, records: list[Json], *, allow_queu
         target._raw_entry_count_cache = sequence
         elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
         target._observe_backend_command(elapsed_ms, records_written=len(records))
+
+
+class RawIngestionAdapterMixin:
+    """Adapter methods for raw ingestion storage and indexing."""
+
+    def _normalize_raw_storage_backend(self, value: Any) -> str:
+        return normalize_raw_storage_backend(value)
+
+    def _raw_ingestion_append_path(self) -> str:
+        return raw_ingestion_append_path_for_backend(
+            getattr(self, "_raw_storage_backend", "temporalstore")
+        )
+
+    def _raw_ingestion_append_options(self) -> Json:
+        return raw_ingestion_append_options(
+            getattr(self, "_raw_storage_backend", "temporalstore")
+        )
+
+    def _ensure_raw_ingestion_fields(self) -> None:
+        ensure_raw_ingestion_fields(self)
+
+    def _raw_record_location(self, sequence: int) -> tuple[str, str]:
+        self._ensure_raw_ingestion_fields()
+        return raw_record_location(self._raw_record_hash_key, self._shard_size, sequence)
+
+    def _raw_session_index_key(self, session_id: str) -> str:
+        self._ensure_raw_ingestion_fields()
+        return raw_session_index_key(self._raw_ingestion_prefix, session_id)
+
+    def _raw_record_scope_value(self, record: Json, name: str) -> str:
+        return raw_record_scope_value(record, name)
+
+    def _raw_record_session_ids(self, record: Json) -> set[str]:
+        return raw_record_session_ids(record)
+
+    def _raw_session_index_entries(self, *, sequence: int, record: Json) -> list[Json]:
+        self._ensure_raw_ingestion_fields()
+        return raw_session_index_entries(
+            raw_ingestion_prefix=self._raw_ingestion_prefix,
+            shard_size=self._shard_size,
+            sequence=sequence,
+            record=record,
+        )
+
+    def _get_raw_count(self) -> int:
+        return get_raw_count(self)
+
+    def _append_raw_ingestion_records(self, records: list[Json], *, allow_queue: bool = True) -> None:
+        append_raw_ingestion_records(self, records, allow_queue=allow_queue)
