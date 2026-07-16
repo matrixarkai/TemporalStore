@@ -81,6 +81,7 @@ try:
         native_side_index_entries_for_bundles,
     )
     from tools import matrixark_mcp_native_pack_runtime as native_pack_runtime
+    from tools import matrixark_mcp_native_lookup_runtime as native_lookup_runtime
     from tools.matrixark_mcp_raw_ingestion import (
         ensure_raw_ingestion_fields,
         normalize_raw_storage_backend,
@@ -102,6 +103,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_backend_metrics as backend_metrics_helpers
     import matrixark_mcp_direct_cache as direct_cache_helpers
     import matrixark_mcp_temporal_append as temporal_append_helpers
+    import matrixark_mcp_native_lookup_runtime as native_lookup_runtime
     from matrixark_mcp_direct_write_queue import (
         direct_write_durable_field,
         direct_write_durable_pending_count,
@@ -1467,125 +1469,17 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         )
 
     def _native_index_ref_hashes(self, *, scope: Json, secondary_index_groups: list[set[str]] | None) -> Json:
-        scope_key = canonical_scope_key(scope)
-        groups = secondary_index_groups or []
-        if not scope_key or not groups:
-            return {"ref_hashes": set(), "postings_found": 0, "index_terms": [], "posting_buckets": [], "eligible": False, "reason": "missing_scope_or_filters"}
-        batch_hget = getattr(self._client, "batch_hget", None)
-        if not callable(batch_hget):
-            return {"ref_hashes": set(), "postings_found": 0, "index_terms": [], "posting_buckets": [], "eligible": False, "reason": "backend_has_no_batch_hget"}
-        index_terms = sorted({term for group in groups for term in group if term})
-        entries = [{"key": self._context_index_lookup_key(scope_key), "field": term} for term in index_terms]
-        try:
-            rows = batch_hget(entries)
-        except Exception as exc:
-            return {"ref_hashes": set(), "postings_found": 0, "index_terms": index_terms, "posting_buckets": [], "eligible": False, "reason": f"index_lookup_failed:{exc}"}
-        ref_hashes: set[int] = set()
-        posting_buckets: set[int] = set()
-        postings_found = 0
-        for row in rows if isinstance(rows, list) else []:
-            if not isinstance(row, dict):
-                continue
-            value = row.get("value")
-            if not value:
-                continue
-            try:
-                decoded = json.loads(str(value))
-            except Exception:
-                continue
-            raw_refs = decoded.get("ref_hashes", []) if isinstance(decoded, dict) else []
-            raw_buckets = decoded.get("posting_buckets", []) if isinstance(decoded, dict) else []
-            if isinstance(raw_refs, list):
-                postings_found += 1
-                for value in raw_refs:
-                    try:
-                        ref_hash = int(value)
-                    except (TypeError, ValueError):
-                        continue
-                    if ref_hash:
-                        ref_hashes.add(ref_hash)
-            if isinstance(raw_buckets, list):
-                for value in raw_buckets:
-                    try:
-                        bucket = int(value)
-                    except (TypeError, ValueError):
-                        continue
-                    if bucket:
-                        posting_buckets.add(bucket)
-        return {
-            "ref_hashes": ref_hashes,
-            "postings_found": postings_found,
-            "index_terms": index_terms,
-            "posting_buckets": sorted(posting_buckets),
-            "eligible": bool(ref_hashes),
-            "reason": "ok" if ref_hashes else "no_matching_postings",
-        }
+        return native_lookup_runtime.native_index_ref_hashes(
+            self,
+            scope=scope,
+            secondary_index_groups=secondary_index_groups,
+        )
 
     def _native_locations_for_refs(self, ref_hashes: set[int]) -> Json:
-        batch_hget = getattr(self._client, "batch_hget", None)
-        if not callable(batch_hget) or not ref_hashes:
-            return {"locations": [], "locator_rows": 0}
-        entries = [{"key": self._context_ref_locator_key(), "field": str(ref_hash)} for ref_hash in sorted(ref_hashes)]
-        try:
-            rows = batch_hget(entries)
-        except Exception:
-            return {"locations": [], "locator_rows": 0}
-        locations: list[Json] = []
-        resource_versions: set[str] = set()
-        seen: set[tuple[str, str]] = set()
-        locator_rows = 0
-        for row in rows if isinstance(rows, list) else []:
-            if not isinstance(row, dict):
-                continue
-            value = row.get("value")
-            if not value:
-                continue
-            try:
-                decoded = json.loads(str(value))
-            except Exception:
-                continue
-            raw_locations = decoded.get("locations", []) if isinstance(decoded, dict) else []
-            raw_versions = decoded.get("resource_versions", []) if isinstance(decoded, dict) else []
-            if isinstance(raw_versions, list):
-                resource_versions.update(str(value) for value in raw_versions if str(value))
-            if not isinstance(raw_locations, list):
-                continue
-            locator_rows += 1
-            for location in raw_locations:
-                if not isinstance(location, dict):
-                    continue
-                key = str(location.get("key") or "")
-                field = str(location.get("field") or "")
-                if not key or not field or (key, field) in seen:
-                    continue
-                locations.append({"key": key, "field": field})
-                seen.add((key, field))
-        return {"locations": locations, "locator_rows": locator_rows}
+        return native_lookup_runtime.native_locations_for_refs(self, ref_hashes)
 
     def _load_records_from_locations(self, locations: list[Json]) -> list[Json]:
-        batch_hget = getattr(self._client, "batch_hget", None)
-        if not callable(batch_hget) or not locations:
-            return []
-        try:
-            rows = batch_hget(locations)
-        except Exception:
-            return []
-        records: list[Json] = []
-        for item in rows if isinstance(rows, list) else []:
-            if not isinstance(item, dict):
-                continue
-            payload = item.get("value", "")
-            if not payload:
-                continue
-            try:
-                decoded = json.loads(str(payload))
-            except Exception:
-                continue
-            if isinstance(decoded, dict) and isinstance(decoded.get("record_bundle"), list):
-                records.extend(row for row in decoded["record_bundle"] if isinstance(row, dict))
-            elif isinstance(decoded, dict):
-                records.append(decoded)
-        return records
+        return native_lookup_runtime.load_records_from_locations(self, locations)
 
     def _native_context_pack_fallback_blocker(self, args: Json, *, reason: str) -> Json:
         scope = optional_object(args, "scope")
