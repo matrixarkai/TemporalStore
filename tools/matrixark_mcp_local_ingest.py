@@ -119,6 +119,11 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_async_ingest import lightweight_async_accept
 
+try:
+    from tools.matrixark_mcp_resource_import_task import resource_import_task_record
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_resource_import_task import resource_import_task_record
+
 
 def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
     envelope = ingest_start["envelope"]
@@ -201,27 +206,25 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
         }
         if not resource_import_background:
             self.append(
-                {
-                    "record_type": "resource_import_task",
-                    "task_hash": resource_import_task_hash,
-                    "status": "queued",
-                    "kind": envelope["kind"],
-                    "raw_uri": requested_raw_uri,
-                    "requested_raw_uri": requested_raw_uri,
-                    "resource_type": resource_type,
-                    "raw_storage_mode": storage_resolution["storage_mode"],
-                    "raw_storage_policy": raw_storage_policy,
-                    "raw_bytes_stored": False,
-                    "node_hash": node_hash,
-                    "node_path": node_path,
-                    "scope": resource_record_scope,
-                    "storage_options": envelope.get("storage_options", {}),
-                    "wait": resource_import_wait,
-                    "async_default_reason": async_default_reason,
-                    "progress": {"stage": "queued", "percent": 0},
-                    "created_at_ms": envelope["ingestion_time_ms"],
-                    "updated_at_ms": envelope["ingestion_time_ms"],
-                }
+                resource_import_task_record(
+                    task_hash=resource_import_task_hash,
+                    status="queued",
+                    kind=envelope["kind"],
+                    raw_uri=requested_raw_uri,
+                    requested_raw_uri=requested_raw_uri,
+                    resource_type=resource_type,
+                    raw_storage_mode=str(storage_resolution["storage_mode"]),
+                    raw_storage_policy=raw_storage_policy,
+                    node_hash=node_hash,
+                    node_path=node_path,
+                    scope=resource_record_scope,
+                    storage_options=envelope.get("storage_options", {}),
+                    wait=resource_import_wait,
+                    async_default_reason=async_default_reason,
+                    progress={"stage": "queued", "percent": 0},
+                    updated_at_ms=envelope["ingestion_time_ms"],
+                    extra={"created_at_ms": envelope["ingestion_time_ms"]},
+                )
             )
         if not resource_import_wait:
             background_args = {
@@ -238,26 +241,24 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
                 )
             except MatrixArkError as exc:
                 self.append(
-                    {
-                        "record_type": "resource_import_task",
-                        "task_hash": resource_import_task_hash,
-                        "status": "failed",
-                        "kind": envelope["kind"],
-                        "raw_uri": requested_raw_uri,
-                        "requested_raw_uri": requested_raw_uri,
-                        "resource_type": resource_type,
-                        "raw_storage_mode": storage_resolution["storage_mode"],
-                        "raw_storage_policy": raw_storage_policy,
-                        "raw_bytes_stored": False,
-                    "error": str(exc),
-                    "node_hash": node_hash,
-                    "node_path": node_path,
-                    "scope": resource_record_scope,
-                    "storage_options": envelope.get("storage_options", {}),
-                    "progress": {"stage": "failed", "percent": 100},
-                    "updated_at_ms": now_ms(),
-                }
-            )
+                    resource_import_task_record(
+                        task_hash=resource_import_task_hash,
+                        status="failed",
+                        kind=envelope["kind"],
+                        raw_uri=requested_raw_uri,
+                        requested_raw_uri=requested_raw_uri,
+                        resource_type=resource_type,
+                        raw_storage_mode=str(storage_resolution["storage_mode"]),
+                        raw_storage_policy=raw_storage_policy,
+                        node_hash=node_hash,
+                        node_path=node_path,
+                        scope=resource_record_scope,
+                        storage_options=envelope.get("storage_options", {}),
+                        progress={"stage": "failed", "percent": 100},
+                        updated_at_ms=now_ms(),
+                        extra={"error": str(exc)},
+                    )
+                )
                 raise
             return {
                 "status": "queued",
@@ -293,24 +294,22 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
             )
         except MatrixArkError as exc:
             self.append(
-                {
-                    "record_type": "resource_import_task",
-                    "task_hash": resource_import_task_hash,
-                    "status": "failed",
-                    "kind": envelope["kind"],
-                    "raw_uri": requested_raw_uri,
-                    "requested_raw_uri": requested_raw_uri,
-                    "resource_type": resource_type,
-                    "raw_storage_mode": storage_resolution["storage_mode"],
-                    "raw_storage_policy": storage_resolution["raw_storage_policy"],
-                    "raw_bytes_stored": False,
-                    "error": str(exc),
-                    "node_hash": node_hash,
-                    "node_path": node_path,
-                    "scope": resource_record_scope,
-                    "progress": {"stage": "failed", "percent": 100},
-                    "updated_at_ms": now_ms(),
-                }
+                resource_import_task_record(
+                    task_hash=resource_import_task_hash,
+                    status="failed",
+                    kind=envelope["kind"],
+                    raw_uri=requested_raw_uri,
+                    requested_raw_uri=requested_raw_uri,
+                    resource_type=resource_type,
+                    raw_storage_mode=str(storage_resolution["storage_mode"]),
+                    raw_storage_policy=str(storage_resolution["raw_storage_policy"]),
+                    node_hash=node_hash,
+                    node_path=node_path,
+                    scope=resource_record_scope,
+                    progress={"stage": "failed", "percent": 100},
+                    updated_at_ms=now_ms(),
+                    extra={"error": str(exc)},
+                )
             )
             raise
         raw_uri = str(storage_resolution["stored_raw_uri"])
@@ -318,27 +317,27 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
         parse_text = storage_resolution.get("parse_text")
         raw_storage_policy = str(storage_resolution.get("raw_storage_policy") or "raw_uri_only")
         self.append(
-            {
-                "record_type": "resource_import_task",
-                "task_hash": resource_import_task_hash,
-                "status": "running",
-                "kind": envelope["kind"],
-                "raw_uri": raw_uri,
-                "requested_raw_uri": requested_raw_uri,
-                "resource_type": resource_type,
-                "raw_storage_mode": storage_resolution["storage_mode"],
-                "raw_storage_policy": raw_storage_policy,
-                "raw_bytes_stored": False,
-                "upload_status": storage_resolution.get("upload_status", "not_required"),
-                "cloud_bucket": storage_resolution.get("cloud_bucket", ""),
-                "cloud_key": storage_resolution.get("cloud_key", ""),
-                "node_hash": node_hash,
-                "node_path": node_path,
-                "scope": resource_record_scope,
-                "storage_options": envelope.get("storage_options", {}),
-                "progress": {"stage": "running", "percent": 10},
-                "updated_at_ms": now_ms(),
-            }
+            resource_import_task_record(
+                task_hash=resource_import_task_hash,
+                status="running",
+                kind=envelope["kind"],
+                raw_uri=raw_uri,
+                requested_raw_uri=requested_raw_uri,
+                resource_type=resource_type,
+                raw_storage_mode=str(storage_resolution["storage_mode"]),
+                raw_storage_policy=raw_storage_policy,
+                node_hash=node_hash,
+                node_path=node_path,
+                scope=resource_record_scope,
+                storage_options=envelope.get("storage_options", {}),
+                progress={"stage": "running", "percent": 10},
+                updated_at_ms=now_ms(),
+                extra={
+                    "upload_status": storage_resolution.get("upload_status", "not_required"),
+                    "cloud_bucket": storage_resolution.get("cloud_bucket", ""),
+                    "cloud_key": storage_resolution.get("cloud_key", ""),
+                },
+            )
         )
         try:
             if envelope["kind"] == "skill" or (resource_type or "").lower() == "skill":
@@ -473,25 +472,25 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
         if not parsed_chunks:
             resource_import_task_status = "failed"
             self.append(
-                {
-                    "record_type": "resource_import_task",
-                    "task_hash": resource_import_task_hash,
-                    "status": "failed",
-                    "kind": envelope["kind"],
-                    "raw_uri": raw_uri,
-                    "requested_raw_uri": requested_raw_uri,
-                    "resource_type": resource_type,
-                    "raw_storage_mode": storage_resolution["storage_mode"],
-                    "raw_storage_policy": raw_storage_policy,
-                    "raw_bytes_stored": False,
-                    "upload_status": storage_resolution.get("upload_status", "not_required"),
-                    "error": resource_parse_error or "resource ingestion produced no chunks",
-                    "node_hash": node_hash,
-                    "node_path": node_path,
-                    "scope": resource_record_scope,
-                    "progress": {"stage": "failed", "percent": 100},
-                    "updated_at_ms": now_ms(),
-                }
+                resource_import_task_record(
+                    task_hash=resource_import_task_hash,
+                    status="failed",
+                    kind=envelope["kind"],
+                    raw_uri=raw_uri,
+                    requested_raw_uri=requested_raw_uri,
+                    resource_type=resource_type,
+                    raw_storage_mode=str(storage_resolution["storage_mode"]),
+                    raw_storage_policy=raw_storage_policy,
+                    node_hash=node_hash,
+                    node_path=node_path,
+                    scope=resource_record_scope,
+                    progress={"stage": "failed", "percent": 100},
+                    updated_at_ms=now_ms(),
+                    extra={
+                        "upload_status": storage_resolution.get("upload_status", "not_required"),
+                        "error": resource_parse_error or "resource ingestion produced no chunks",
+                    },
+                )
             )
             raise MatrixArkError(resource_parse_error or "resource ingestion produced no chunks")
         original_chunk_count = len(parsed_chunks)
@@ -938,45 +937,45 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
         }
         resource_import_task_status = "completed"
         self.append(
-            {
-                "record_type": "resource_import_task",
-                "task_hash": resource_import_task_hash,
-                "status": "completed",
-                "kind": envelope["kind"],
-                "raw_uri": raw_uri,
-                "requested_raw_uri": requested_raw_uri,
-                "resource_type": resource_type or parsed_chunks[0].metadata.get("resource_type", "txt"),
-                "resource_version": resource_version_value,
-                "content_hash": resource_content_hash,
-                "raw_storage_mode": storage_resolution["storage_mode"],
-                "raw_storage_policy": raw_storage_policy,
-                "raw_bytes_stored": False,
-                "upload_status": storage_resolution.get("upload_status", "not_required"),
-                "cloud_bucket": storage_resolution.get("cloud_bucket", ""),
-                "cloud_key": storage_resolution.get("cloud_key", ""),
-                "parse_warnings": parse_warnings[:100],
-                "parse_warning_count": len(parse_warnings),
-                "chunk_count": len(parsed_chunks),
-                "original_chunk_count": original_chunk_count,
-                "deduped_chunk_count": deduped_chunk_count,
-                "superseded_chunk_count": superseded_chunk_count,
-                "superseded_chunk_hashes": superseded_chunk_hashes[:200],
-                "resource_fact_count": len(resource_fact_event_hashes),
-                "resource_entity_count": len(resource_fact_entity_hashes),
-                "index_candidate_count": index_candidate_count,
-                "index_write_count": index_write_count,
-                "index_dropped_by_cap_count": index_dropped_by_cap_count,
-                **secondary_index_budget_summary(secondary_index_budget),
-                "index_cap_per_chunk": MAX_INDEX_TERMS_PER_RESOURCE_CHUNK,
-                "index_cap_per_fact": MAX_INDEX_TERMS_PER_RESOURCE_FACT,
-                "summary_dirty_hashes": resource_dirty_hashes,
-                "progress": {"stage": "completed", "percent": 100},
-                "metrics": resource_import_metrics,
-                "node_hash": node_hash,
-                "node_path": node_path,
-                "scope": resource_record_scope,
-                "updated_at_ms": now_ms(),
-            }
+            resource_import_task_record(
+                task_hash=resource_import_task_hash,
+                status="completed",
+                kind=envelope["kind"],
+                raw_uri=raw_uri,
+                requested_raw_uri=requested_raw_uri,
+                resource_type=resource_type or parsed_chunks[0].metadata.get("resource_type", "txt"),
+                raw_storage_mode=str(storage_resolution["storage_mode"]),
+                raw_storage_policy=raw_storage_policy,
+                node_hash=node_hash,
+                node_path=node_path,
+                scope=resource_record_scope,
+                progress={"stage": "completed", "percent": 100},
+                updated_at_ms=now_ms(),
+                extra={
+                    "resource_version": resource_version_value,
+                    "content_hash": resource_content_hash,
+                    "upload_status": storage_resolution.get("upload_status", "not_required"),
+                    "cloud_bucket": storage_resolution.get("cloud_bucket", ""),
+                    "cloud_key": storage_resolution.get("cloud_key", ""),
+                    "parse_warnings": parse_warnings[:100],
+                    "parse_warning_count": len(parse_warnings),
+                    "chunk_count": len(parsed_chunks),
+                    "original_chunk_count": original_chunk_count,
+                    "deduped_chunk_count": deduped_chunk_count,
+                    "superseded_chunk_count": superseded_chunk_count,
+                    "superseded_chunk_hashes": superseded_chunk_hashes[:200],
+                    "resource_fact_count": len(resource_fact_event_hashes),
+                    "resource_entity_count": len(resource_fact_entity_hashes),
+                    "index_candidate_count": index_candidate_count,
+                    "index_write_count": index_write_count,
+                    "index_dropped_by_cap_count": index_dropped_by_cap_count,
+                    **secondary_index_budget_summary(secondary_index_budget),
+                    "index_cap_per_chunk": MAX_INDEX_TERMS_PER_RESOURCE_CHUNK,
+                    "index_cap_per_fact": MAX_INDEX_TERMS_PER_RESOURCE_FACT,
+                    "summary_dirty_hashes": resource_dirty_hashes,
+                    "metrics": resource_import_metrics,
+                },
+            )
         )
         self.append(
             {
