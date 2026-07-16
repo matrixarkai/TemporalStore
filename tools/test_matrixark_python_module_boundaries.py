@@ -81,6 +81,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         retrieve_deadline_mod = importlib.import_module("tools.matrixark_mcp_retrieve_deadline")
         retrieve_fallback_mod = importlib.import_module("tools.matrixark_mcp_retrieve_fallback")
         retrieve_identity_mod = importlib.import_module("tools.matrixark_mcp_retrieve_identity")
+        retrieve_index_terms_mod = importlib.import_module("tools.matrixark_mcp_retrieve_index_terms")
         retrieve_resources_mod = importlib.import_module("tools.matrixark_mcp_retrieve_resources")
         retrieve_temporal_window_mod = importlib.import_module("tools.matrixark_mcp_retrieve_temporal_window")
         retrieve_tree_filter_mod = importlib.import_module("tools.matrixark_mcp_retrieve_tree_filter")
@@ -309,6 +310,21 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "same_session",
         )
         self.assertTrue(callable(retrieve_fallback_mod.deadline_fallback_pack))
+        by_batch: dict[object, list[str]] = {}
+        by_node: dict[object, list[str]] = {}
+        by_ref: dict[object, list[str]] = {}
+        node_prefilter: dict[int, list[str]] = {}
+        self.assertTrue(
+            retrieve_index_terms_mod.add_context_index_terms(
+                {"record_type": "context_index", "index_name": "entity:gpu", "ref_hashes": [5], "node_hash": 9},
+                index_terms_by_batch=by_batch,
+                index_terms_by_node=by_node,
+                index_terms_by_ref=by_ref,
+                index_terms_by_node_for_prefilter=node_prefilter,
+            )
+        )
+        self.assertEqual(by_ref[5], ["entity:gpu"])
+        self.assertEqual(node_prefilter[9], ["entity:gpu"])
         observed_stage_metrics: list[tuple[str, float]] = []
         tracker = retrieve_deadline_mod.RetrievalDeadlineTracker(
             started_perf=0.0,
