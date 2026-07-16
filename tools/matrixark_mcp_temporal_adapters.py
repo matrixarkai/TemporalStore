@@ -34,7 +34,6 @@ try:
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE,
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK,
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES,
-        _mcp_debug_log,
         candidate_access_scope,
         compact_latest_context_state_records,
         context_event_time_index_entries,
@@ -70,7 +69,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE,
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK,
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES,
-        _mcp_debug_log,
         candidate_access_scope,
         compact_latest_context_state_records,
         context_event_time_index_entries,
@@ -93,6 +91,7 @@ try:
     from tools.matrixark_mcp_backend_metrics import BackendMetricsAdapterMixin
     from tools import matrixark_mcp_direct_cache as direct_cache_helpers
     from tools import matrixark_mcp_temporal_append as temporal_append_helpers
+    from tools.matrixark_mcp_temporal_audit import TemporalAuditAdapterMixin
     from tools.matrixark_mcp_direct_write_queue import (
         DirectWriteQueueAdapterMixin,
     )
@@ -122,6 +121,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_backend_metrics import BackendMetricsAdapterMixin
     import matrixark_mcp_direct_cache as direct_cache_helpers
     import matrixark_mcp_temporal_append as temporal_append_helpers
+    from matrixark_mcp_temporal_audit import TemporalAuditAdapterMixin
     import matrixark_mcp_native_lookup_runtime as native_lookup_runtime
     import matrixark_mcp_temporal_readiness as temporal_readiness
     import matrixark_mcp_temporal_proxy_readiness as temporal_proxy_readiness
@@ -167,6 +167,7 @@ class MatrixArkTemporalStoreDirectAdapter(
     NativeSideIndexAdapterMixin,
     RawIngestionAdapterMixin,
     DirectWriteQueueAdapterMixin,
+    TemporalAuditAdapterMixin,
     MatrixArkLocalAdapter,
 ):
     """MatrixArk adapter backed by C++ TemporalStore proxy or direct SDK.
@@ -497,23 +498,6 @@ class MatrixArkTemporalStoreDirectAdapter(
         pending.clear()
         return keys
 
-    def append_audit(self, record: Json) -> None:
-        if self._audit_mode == "drop":
-            _mcp_debug_log("matrixark audit record dropped by MATRIXARK_DIRECT_AUDIT_MODE=drop")
-            return
-        if self._audit_mode == "sync":
-            self.append(record)
-            return
-        with self._audit_lock:
-            self._audit_buffer.append(record)
-            if self._audit_mode == "buffered":
-                self._ensure_audit_flusher_locked()
-            max_pending = self._audit_buffer_max_records * 4
-            if len(self._audit_buffer) > max_pending:
-                dropped = len(self._audit_buffer) - max_pending
-                self._audit_buffer = self._audit_buffer[-max_pending:]
-                _mcp_debug_log(f"matrixark audit buffer dropped {dropped} oldest records after flush lag")
-
     def ensure_backend_ready(
         self,
         *,
@@ -614,37 +598,6 @@ class MatrixArkTemporalStoreDirectAdapter(
                 if sleep_s > 0:
                     time.sleep(sleep_s)
                 attempt += 1
-
-    def flush_audits(self) -> None:
-        with self._audit_lock:
-            if not self._audit_buffer:
-                return
-            records = self._audit_buffer
-            self._audit_buffer = []
-        try:
-            self.append_many(records)
-        except Exception as exc:
-            with self._audit_lock:
-                self._audit_flush_failures += 1
-                remaining_capacity = max(0, self._audit_buffer_max_records * 2 - len(self._audit_buffer))
-                if remaining_capacity:
-                    self._audit_buffer = records[-remaining_capacity:] + self._audit_buffer
-            _mcp_debug_log(f"matrixark audit flush failed: {exc}")
-
-    def _ensure_audit_flusher_locked(self) -> None:
-        if self._audit_flusher_started:
-            return
-        self._audit_flusher_started = True
-        thread = threading.Thread(target=self._audit_flush_loop, name="matrixark-audit-flusher", daemon=True)
-        thread.start()
-
-    def _audit_flush_loop(self) -> None:
-        while True:
-            time.sleep(self._audit_flush_interval_s)
-            try:
-                self.flush_audits()
-            except Exception as exc:
-                _mcp_debug_log(f"matrixark audit flush loop failed: {exc}")
 
     def _record_bundles(self, records: list[Json]) -> list[list[Json]]:
         bundles: list[list[Json]] = []
