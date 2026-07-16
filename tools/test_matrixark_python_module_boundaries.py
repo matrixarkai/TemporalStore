@@ -72,6 +72,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         local_read_mod = importlib.import_module("tools.matrixark_mcp_local_read")
         local_replay_mod = importlib.import_module("tools.matrixark_mcp_local_replay")
         local_runtime_mod = importlib.import_module("tools.matrixark_mcp_local_runtime")
+        local_retrieve_runtime_mod = importlib.import_module("tools.matrixark_mcp_local_retrieve_runtime")
         errors_mod = importlib.import_module("tools.matrixark_mcp_errors")
         models_mod = importlib.import_module("tools.matrixark_mcp_models")
         indexing_mod = importlib.import_module("tools.matrixark_mcp_indexing")
@@ -240,6 +241,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(callable(local_runtime_mod.write_batch))
         self.assertTrue(callable(local_runtime_mod.append))
         self.assertTrue(callable(local_runtime_mod.append_many))
+        self.assertTrue(callable(local_retrieve_runtime_mod.retrieve))
         self.assertTrue(callable(session_policy_mod.default_session_node_path))
         self.assertTrue(callable(session_runtime_mod.append_session_buffer_event))
         self.assertIs(local_mod.compact_latest_value_records, latest_values_mod.compact_latest_value_records)
@@ -327,6 +329,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "matrixark_mcp_local_read.py",
             "matrixark_mcp_local_replay.py",
             "matrixark_mcp_local_runtime.py",
+            "matrixark_mcp_local_retrieve_runtime.py",
             "matrixark_mcp_errors.py",
             "matrixark_mcp_models.py",
             "matrixark_mcp_indexing.py",
