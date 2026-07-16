@@ -662,6 +662,22 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_scope_identity import enrich_scope_with_identity
 
 
+try:
+    from tools.matrixark_mcp_prior_context import (
+        collect_prior_context,
+        message_from_event_record,
+        prior_context_payload,
+        session_summary_for_events,
+    )
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_prior_context import (
+        collect_prior_context,
+        message_from_event_record,
+        prior_context_payload,
+        session_summary_for_events,
+    )
+
+
 _RUNTIME_CONFIG_EXPORTS = (
     "AUDIT_DEBUG_PAYLOAD",
     "BACKEND_READINESS_BACKOFF_MS",
@@ -773,42 +789,6 @@ _DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES = int(os.environ.get("MATRIXARK_DI
 _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE: dict[str, list[tuple[str, int, int, Json]]] = {}
 _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_LOCK = threading.RLock()
 _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES = int(os.environ.get("MATRIXARK_DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES", "1024"))
-
-
-def message_from_event_record(record: Json) -> Json | None:
-    try:
-        from tools.matrixark_mcp_prior_context import message_from_event_record as _message_from_event_record
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_prior_context import message_from_event_record as _message_from_event_record
-
-    return _message_from_event_record(record)
-
-
-def session_summary_for_events(level: str, event_records: list[Json], all_records: list[Json]) -> Json | None:
-    try:
-        from tools.matrixark_mcp_prior_context import session_summary_for_events as _session_summary_for_events
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_prior_context import session_summary_for_events as _session_summary_for_events
-
-    return _session_summary_for_events(level, event_records, all_records)
-
-
-def collect_prior_context(envelope: Json, records: list[Json]) -> Json:
-    try:
-        from tools.matrixark_mcp_prior_context import collect_prior_context as _collect_prior_context
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_prior_context import collect_prior_context as _collect_prior_context
-
-    return _collect_prior_context(envelope, records)
-
-
-def prior_context_payload(level: str, event_records: list[Json], all_records: list[Json]) -> Json:
-    try:
-        from tools.matrixark_mcp_prior_context import prior_context_payload as _prior_context_payload
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_prior_context import prior_context_payload as _prior_context_payload
-
-    return _prior_context_payload(level, event_records, all_records)
 
 
 def normalize_entity_operator(raw_operator: Any, entity_type: str) -> str:

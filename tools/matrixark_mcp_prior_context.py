@@ -3,32 +3,33 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 try:
-    from tools.matrixark_mcp_core import (
-        Json,
-        MAX_PRIOR_CHARS,
-        MAX_PRIOR_MESSAGES,
+    from tools.matrixark_mcp_access_scope import scope_matches
+    from tools.matrixark_mcp_envelope_keys import (
         context_node_key,
         explicit_context_pack_id,
         has_confirmation_context,
-        scope_from_serving_record,
-        scope_matches,
         session_key,
         user_key,
     )
+    from tools.matrixark_mcp_identity import scope_from_serving_record
+    from tools.matrixark_mcp_runtime_config import MAX_PRIOR_CHARS, MAX_PRIOR_MESSAGES
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_core import (
-        Json,
-        MAX_PRIOR_CHARS,
-        MAX_PRIOR_MESSAGES,
+    from matrixark_mcp_access_scope import scope_matches
+    from matrixark_mcp_envelope_keys import (
         context_node_key,
         explicit_context_pack_id,
         has_confirmation_context,
-        scope_from_serving_record,
-        scope_matches,
         session_key,
         user_key,
     )
+    from matrixark_mcp_identity import scope_from_serving_record
+    from matrixark_mcp_runtime_config import MAX_PRIOR_CHARS, MAX_PRIOR_MESSAGES
+
+
+Json = dict[str, Any]
 
 
 def message_from_event_record(record: Json) -> Json | None:
@@ -207,5 +208,4 @@ def prior_context_payload(level: str, event_records: list[Json], all_records: li
         "char_count": char_count,
         "limit": MAX_PRIOR_MESSAGES,
     }
-
 
