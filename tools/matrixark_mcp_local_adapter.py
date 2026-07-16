@@ -259,11 +259,12 @@ class MatrixArkLocalAdapter:
         )
 
     def find_latest_entity(self, *, node_hash: int, entity_type: str, entity_name: str) -> Json | None:
-        entity_hash = stable_hash(f"{node_hash}:{entity_type}:{entity_name}")
-        if entity_hash in self._latest_entity_by_hash:
-            return self._latest_entity_by_hash[entity_hash]
-        self._ensure_latest_entity_cache_loaded()
-        return self._latest_entity_by_hash.get(entity_hash)
+        return local_cache_helpers.find_latest_entity(
+            self,
+            node_hash=node_hash,
+            entity_type=entity_type,
+            entity_name=entity_name,
+        )
 
     def pending_session_events(self, scope: Json, *, limit: int | None = None) -> list[Json]:
         return local_cache_helpers.pending_session_events(self, scope, limit=limit)
