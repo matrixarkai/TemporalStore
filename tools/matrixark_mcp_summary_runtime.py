@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import Any, Callable
 
 try:
     from tools.matrixark_mcp_core import (
@@ -192,6 +192,109 @@ def node_summary_dirty_records(
             }
         )
     return dirty_hashes, records
+
+
+ContextEventTime = Callable[[Json, dict[Any, Json] | None], int]
+
+
+def pending_dirty_node_records(
+    *,
+    records: list[Json],
+    scope: Json,
+    limit: int,
+    refreshed_at_ms: int,
+    max_raw_events_per_node: int,
+    min_compression_event_age_ms: int,
+    context_event_ingestion_time_ms: ContextEventTime,
+) -> dict[int, Json]:
+    completed_dirty_hashes = {
+        int(record.get("dirty_hash"))
+        for record in records
+        if record.get("record_type") in {"context_summary_refresh_audit", "context_summary_dirty"}
+        and record.get("status") in {"refreshed", "completed"}
+        and record.get("dirty_hash") is not None
+    }
+    pending_by_node: dict[int, Json] = {}
+    for record in records:
+        if record.get("record_type") != "context_summary_dirty":
+            continue
+        if not scope_matches(candidate_access_scope(record), scope):
+            continue
+        try:
+            dirty_hash = int(record.get("dirty_hash"))
+            node_hash = int(record.get("node_hash"))
+        except (TypeError, ValueError):
+            continue
+        if dirty_hash in completed_dirty_hashes:
+            continue
+        current = pending_by_node.get(node_hash)
+        if current is None or int(record.get("updated_at_ms") or 0) >= int(current.get("updated_at_ms") or 0):
+            pending_by_node[node_hash] = record
+    if len(pending_by_node) >= limit:
+        return pending_by_node
+
+    event_counts_by_node: dict[int, int] = {}
+    event_path_by_node: dict[int, list[str]] = {}
+    event_scope_by_node: dict[int, Json] = {}
+    oldest_event_time_by_node: dict[int, int] = {}
+    debug_by_ref = {
+        record.get("ref_hash"): record.get("debug_payload", {})
+        for record in records
+        if record.get("record_type") == "context_debug_record" and record.get("ref_type") == "event"
+    }
+    for record in records:
+        if record.get("record_type") != "context_event":
+            continue
+        if record.get("source_chunk_hash"):
+            continue
+        if not scope_matches(candidate_access_scope(record), scope):
+            continue
+        try:
+            event_node_hash = int(record.get("node_hash"))
+        except (TypeError, ValueError):
+            continue
+        event_counts_by_node[event_node_hash] = event_counts_by_node.get(event_node_hash, 0) + 1
+        event_path_by_node[event_node_hash] = [str(part) for part in record.get("node_path", [])]
+        event_scope_by_node[event_node_hash] = candidate_access_scope(record)
+        event_time = context_event_ingestion_time_ms(record, debug_by_ref)
+        if event_time > 0:
+            existing_time = oldest_event_time_by_node.get(event_node_hash)
+            if existing_time is None or event_time < existing_time:
+                oldest_event_time_by_node[event_node_hash] = event_time
+    cold_cutoff_ms = refreshed_at_ms - max(0, int(min_compression_event_age_ms))
+    for node_hash, event_count in sorted(event_counts_by_node.items(), key=lambda item: item[1], reverse=True):
+        if len(pending_by_node) >= limit:
+            break
+        if node_hash in pending_by_node:
+            continue
+        if event_count <= max_raw_events_per_node:
+            continue
+        if min_compression_event_age_ms > 0 and oldest_event_time_by_node.get(node_hash, refreshed_at_ms) > cold_cutoff_ms:
+            continue
+        node_path = event_path_by_node.get(node_hash, [])
+        if not node_path:
+            continue
+        synthetic_dirty_hash = stable_hash(
+            f"scheduled_time_compression:{node_hash}:{event_count}:{oldest_event_time_by_node.get(node_hash, 0)}:{refreshed_at_ms}"
+        )
+        if synthetic_dirty_hash in completed_dirty_hashes:
+            continue
+        pending_by_node[node_hash] = {
+            "record_type": "context_summary_dirty",
+            "dirty_hash": synthetic_dirty_hash,
+            "node_hash": node_hash,
+            "node_path": node_path,
+            "depth": len(node_path),
+            "dirty_reason": "scheduled_time_compression",
+            "source_ref_type": "event_window",
+            "changed_ref_count": event_count,
+            "propagate_depth": 0,
+            "scope": event_scope_by_node.get(node_hash, scope),
+            "status": "pending",
+            "created_at_ms": refreshed_at_ms,
+            "updated_at_ms": refreshed_at_ms,
+        }
+    return pending_by_node
 
 
 MarkNodeSummaryDirty = Callable[..., list[int]]
