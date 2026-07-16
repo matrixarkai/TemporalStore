@@ -150,6 +150,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_retrieve_continuity as retrieve_continuity_helpers
 
 try:
+    from tools import matrixark_mcp_retrieve_resources as retrieve_resource_helpers
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_retrieve_resources as retrieve_resource_helpers
+
+try:
     from tools import matrixark_mcp_retrieval_records as retrieval_record_helpers
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_retrieval_records as retrieval_record_helpers
@@ -316,24 +321,10 @@ def retrieve(target: Any, args: Json) -> Json:
         )
     skill_controls = self.latest_skill_controls(records)
     include_superseded_resources = bool(args.get("include_superseded_resources", False) or args.get("historical_replay", False))
-    latest_resource_version_by_hash: dict[int, str] = {}
-    resource_uri_by_hash: dict[int, str] = {}
-    for manifest in reversed(records):
-        if manifest.get("record_type") != "resource_manifest":
-            continue
-        if not scope_matches(candidate_access_scope(manifest), scope):
-            continue
-        try:
-            resource_hash_key = int(manifest.get("resource_hash") or 0)
-        except (TypeError, ValueError):
-            resource_hash_key = 0
-        raw_uri_key = str(manifest.get("raw_uri") or "")
-        resource_version_key = str(manifest.get("resource_version") or "")
-        if resource_hash_key:
-            if raw_uri_key and resource_hash_key not in resource_uri_by_hash:
-                resource_uri_by_hash[resource_hash_key] = raw_uri_key
-            if resource_version_key and resource_hash_key not in latest_resource_version_by_hash:
-                latest_resource_version_by_hash[resource_hash_key] = resource_version_key
+    latest_resource_version_by_hash, resource_uri_by_hash = retrieve_resource_helpers.latest_resource_metadata(
+        records,
+        scope,
+    )
     finish_retrieval_stage("candidate_fetch", stage_started_perf)
     stage_started_perf = time.perf_counter()
     if deadline_exceeded():

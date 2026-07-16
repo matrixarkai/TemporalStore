@@ -77,6 +77,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         retrieve_cache_mod = importlib.import_module("tools.matrixark_mcp_retrieve_cache")
         native_retrieve_mod = importlib.import_module("tools.matrixark_mcp_native_retrieve")
         retrieve_continuity_mod = importlib.import_module("tools.matrixark_mcp_retrieve_continuity")
+        retrieve_resources_mod = importlib.import_module("tools.matrixark_mcp_retrieve_resources")
         retrieve_metrics_mod = importlib.import_module("tools.matrixark_mcp_retrieve_metrics")
         ingest_planning_mod = importlib.import_module("tools.matrixark_mcp_ingest_planning")
         async_ingest_mod = importlib.import_module("tools.matrixark_mcp_async_ingest")
@@ -281,6 +282,27 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(callable(retrieve_cache_mod.get_cached_context_pack))
         self.assertTrue(callable(native_retrieve_mod.try_native_context_pack))
         self.assertTrue(callable(retrieve_continuity_mod.annotate_session_continuity))
+        latest_versions, resource_uris = retrieve_resources_mod.latest_resource_metadata(
+            [
+                {
+                    "record_type": "resource_manifest",
+                    "scope": sample_scope,
+                    "resource_hash": 7,
+                    "raw_uri": "old.pdf",
+                    "resource_version": "v1",
+                },
+                {
+                    "record_type": "resource_manifest",
+                    "scope": sample_scope,
+                    "resource_hash": 7,
+                    "raw_uri": "new.pdf",
+                    "resource_version": "v2",
+                },
+            ],
+            sample_scope,
+        )
+        self.assertEqual(latest_versions[7], "v2")
+        self.assertEqual(resource_uris[7], "new.pdf")
         self.assertTrue(callable(retrieve_metrics_mod.attach_python_retrieval_metrics))
         self.assertTrue(callable(ingest_planning_mod.prepare_ingest_start))
         self.assertIs(local_ingest_mod.lightweight_async_accept, async_ingest_mod.lightweight_async_accept)
