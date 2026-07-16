@@ -63,6 +63,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         tree_mod = importlib.import_module("tools.matrixark_mcp_tree")
         rust_direct_mod = importlib.import_module("tools.matrixark_mcp_rust_direct_client")
         rust_proxy_mod = importlib.import_module("tools.matrixark_mcp_rust_proxy_client")
+        rust_proxy_cache_mixin_mod = importlib.import_module("tools.matrixark_mcp_rust_proxy_cache_mixin")
         rust_proxy_lane_select_mod = importlib.import_module("tools.matrixark_mcp_rust_proxy_lane_select")
         rust_proxy_metrics_record_mod = importlib.import_module("tools.matrixark_mcp_rust_proxy_metrics_record")
         rust_proxy_metrics_snapshot_mod = importlib.import_module("tools.matrixark_mcp_rust_proxy_metrics_snapshot")
@@ -211,6 +212,12 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(callable(native_lookup_runtime_mod.native_index_ref_hashes))
         self.assertTrue(callable(native_lookup_runtime_mod.native_locations_for_refs))
         self.assertTrue(callable(native_lookup_runtime_mod.load_records_from_locations))
+        self.assertTrue(
+            issubclass(
+                rust_proxy_mod.MatrixArkRustProxyClient,
+                rust_proxy_cache_mixin_mod.MatrixArkRustProxyCacheMixin,
+            )
+        )
         self.assertIs(core_mod.hybrid_origin_score, scoring_mod.hybrid_origin_score)
         self.assertIs(core_mod.final_recall_score, scoring_mod.final_recall_score)
         self.assertIs(core_mod.business_score_for_candidate, scoring_mod.business_score_for_candidate)

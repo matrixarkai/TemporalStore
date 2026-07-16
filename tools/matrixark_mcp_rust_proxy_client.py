@@ -23,22 +23,7 @@ try:
         drain_batch_hset_coalescer,
         max_count_value,
     )
-    from tools.matrixark_mcp_rust_proxy_cache import (
-        context_pack_response_cache_clear,
-        context_pack_response_cache_get,
-        context_pack_response_cache_key,
-        context_pack_response_cache_put,
-        context_pack_response_singleflight_enter,
-        context_pack_response_singleflight_finish,
-        context_pack_response_singleflight_wait,
-        mark_context_pack_response_cache_hit,
-        scan_hash_cache_get,
-        scan_hash_cache_invalidate_keys,
-        scan_hash_cache_put,
-        string_cache_get,
-        string_cache_key_allowed,
-        string_cache_put,
-    )
+    from tools.matrixark_mcp_rust_proxy_cache_mixin import MatrixArkRustProxyCacheMixin
     from tools.matrixark_mcp_rust_proxy_config import initialize_rust_proxy_config
     from tools.matrixark_mcp_rust_proxy_lanes import build_lane_pools
     from tools.matrixark_mcp_rust_proxy_lane_select import (
@@ -74,22 +59,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         drain_batch_hset_coalescer,
         max_count_value,
     )
-    from matrixark_mcp_rust_proxy_cache import (
-        context_pack_response_cache_clear,
-        context_pack_response_cache_get,
-        context_pack_response_cache_key,
-        context_pack_response_cache_put,
-        context_pack_response_singleflight_enter,
-        context_pack_response_singleflight_finish,
-        context_pack_response_singleflight_wait,
-        mark_context_pack_response_cache_hit,
-        scan_hash_cache_get,
-        scan_hash_cache_invalidate_keys,
-        scan_hash_cache_put,
-        string_cache_get,
-        string_cache_key_allowed,
-        string_cache_put,
-    )
+    from matrixark_mcp_rust_proxy_cache_mixin import MatrixArkRustProxyCacheMixin
     import matrixark_mcp_rust_proxy_metrics_snapshot as metrics_snapshot_helpers
     from matrixark_mcp_rust_proxy_metrics_record import (
         count_context_record,
@@ -114,7 +84,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
 
 
-class MatrixArkRustProxyClient:
+class MatrixArkRustProxyClient(MatrixArkRustProxyCacheMixin):
     """Persistent Rust proxy boundary around the Rust TemporalStore SDK.
 
     The Rust binary owns SDK linkage and runs in JSON-lines ``--serve`` mode as
@@ -358,65 +328,6 @@ class MatrixArkRustProxyClient:
     def _call(self, op: str, **kwargs: Any) -> str:
         response = self._call_json(op, **kwargs)
         return str(response.get("value", ""))
-
-    def _string_cache_key_allowed(self, key: str) -> bool:
-        return string_cache_key_allowed(self, key)
-
-    def _string_cache_get(self, key: str) -> str | None:
-        return string_cache_get(self, key)
-
-    def _string_cache_put(self, key: str, value: str) -> None:
-        string_cache_put(self, key, value)
-
-    def _scan_hash_cache_get(self, key: str) -> Json | None:
-        return scan_hash_cache_get(self, key)
-
-    def _scan_hash_cache_put(self, key: str, response: Json) -> None:
-        scan_hash_cache_put(self, key, response)
-
-    def _scan_hash_cache_invalidate_keys(self, keys: Any) -> None:
-        scan_hash_cache_invalidate_keys(self, keys)
-
-    def _context_pack_response_cache_key(
-        self,
-        *,
-        count_key: str,
-        record_hash_key: str,
-        shard_size: int,
-        request: Json,
-    ) -> str:
-        return context_pack_response_cache_key(
-            count_key=count_key,
-            record_hash_key=record_hash_key,
-            shard_size=shard_size,
-            request=request,
-        )
-
-    def _mark_context_pack_response_cache_hit(self, response: Json) -> Json:
-        return mark_context_pack_response_cache_hit(response)
-
-    def _context_pack_response_cache_get(self, cache_key: str) -> Json | None:
-        return context_pack_response_cache_get(self, cache_key)
-
-    def _context_pack_response_cache_put(self, cache_key: str, response: Json) -> None:
-        context_pack_response_cache_put(self, cache_key, response)
-
-    def _context_pack_response_cache_clear(self) -> None:
-        context_pack_response_cache_clear(self)
-
-    def _context_pack_response_singleflight_enter(self, cache_key: str) -> tuple[Json, bool]:
-        return context_pack_response_singleflight_enter(self, cache_key)
-
-    def _context_pack_response_singleflight_finish(
-        self,
-        cache_key: str,
-        inflight: Json,
-        error: BaseException | None,
-    ) -> None:
-        context_pack_response_singleflight_finish(self, cache_key, inflight, error)
-
-    def _context_pack_response_singleflight_wait(self, cache_key: str, inflight: Json) -> Json:
-        return context_pack_response_singleflight_wait(self, cache_key, inflight)
 
     def put_string(self, key: str, value: str) -> None:
         self._call("put_string", key=key, value=value)
