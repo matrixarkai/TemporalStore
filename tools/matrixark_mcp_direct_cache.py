@@ -3,8 +3,12 @@
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
+import os
 import threading
+from collections import OrderedDict
 from typing import Any
 
 try:
@@ -258,3 +262,77 @@ def placement_candidate_records_from_cache_or_load(
         "loaded_records": len(loaded_records),
         "resource_version_watermark": resource_version_watermark,
     }
+
+
+def ensure_direct_context_pack_response_cache(target: Any) -> None:
+    if hasattr(target, "_direct_context_pack_response_cache"):
+        return
+    target._direct_context_pack_response_cache_enabled = (
+        os.environ.get("MATRIXARK_DIRECT_CONTEXT_PACK_RESPONSE_CACHE", "1").strip().lower()
+        not in {"0", "false", "no"}
+    )
+    target._direct_context_pack_response_cache_max_entries = max(
+        1, int(os.environ.get("MATRIXARK_DIRECT_CONTEXT_PACK_RESPONSE_CACHE_MAX_ENTRIES", "256"))
+    )
+    target._direct_context_pack_response_cache_lock = threading.Lock()
+    target._direct_context_pack_response_cache: OrderedDict[str, Json] = OrderedDict()
+    target._direct_context_pack_response_cache_hits_total = 0
+    target._direct_context_pack_response_cache_misses_total = 0
+    target._direct_context_pack_response_cache_updates_total = 0
+
+
+def direct_context_pack_response_cache_key(
+    target: Any,
+    *,
+    count_key: str,
+    record_hash_key: str,
+    shard_size: int,
+    request: Json,
+) -> str:
+    del target
+    ranking = request.get("ranking") if isinstance(request, dict) else {}
+    payload = {
+        "count_key": count_key,
+        "record_hash_key": record_hash_key,
+        "shard_size": int(shard_size),
+        "scope": request.get("scope", {}) if isinstance(request, dict) else {},
+        "secondary_index_groups": request.get("secondary_index_groups", []) if isinstance(request, dict) else [],
+        "query": request.get("query", "") if isinstance(request, dict) else "",
+        "max_selected_refs": ranking.get("max_selected_refs") if isinstance(ranking, dict) else None,
+        "max_context_tokens": request.get("max_context_tokens") if isinstance(request, dict) else None,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()
+    return hashlib.blake2b(encoded, digest_size=16).hexdigest()
+
+
+def direct_context_pack_response_cache_get(target: Any, cache_key: str) -> Json | None:
+    ensure_direct_context_pack_response_cache(target)
+    if not target._direct_context_pack_response_cache_enabled:
+        return None
+    with target._direct_context_pack_response_cache_lock:
+        cached = target._direct_context_pack_response_cache.get(cache_key)
+        if cached is not None:
+            target._direct_context_pack_response_cache.move_to_end(cache_key)
+            target._direct_context_pack_response_cache_hits_total += 1
+            result = copy.deepcopy(cached)
+        else:
+            target._direct_context_pack_response_cache_misses_total += 1
+            result = None
+    if result is not None:
+        metrics = result.get("retrieval_metrics")
+        if isinstance(metrics, dict):
+            metrics["context_pack_response_cache_hit"] = True
+            metrics["cache_hit"] = True
+    return result
+
+
+def direct_context_pack_response_cache_put(target: Any, cache_key: str, response: Json) -> None:
+    ensure_direct_context_pack_response_cache(target)
+    if not target._direct_context_pack_response_cache_enabled:
+        return
+    with target._direct_context_pack_response_cache_lock:
+        target._direct_context_pack_response_cache[cache_key] = copy.deepcopy(response)
+        target._direct_context_pack_response_cache.move_to_end(cache_key)
+        while len(target._direct_context_pack_response_cache) > target._direct_context_pack_response_cache_max_entries:
+            target._direct_context_pack_response_cache.popitem(last=False)
+        target._direct_context_pack_response_cache_updates_total += 1

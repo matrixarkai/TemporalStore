@@ -4,9 +4,6 @@
 from __future__ import annotations
 
 import queue
-import hashlib
-import copy
-from collections import OrderedDict, defaultdict, deque
 
 try:
     from tools.matrixark_mcp_core import *
@@ -1576,20 +1573,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         return callable(getattr(getattr(self, "_client", None), "matrixark_retrieve_context_pack", None))
 
     def _ensure_direct_context_pack_response_cache(self) -> None:
-        if hasattr(self, "_direct_context_pack_response_cache"):
-            return
-        self._direct_context_pack_response_cache_enabled = (
-            os.environ.get("MATRIXARK_DIRECT_CONTEXT_PACK_RESPONSE_CACHE", "1").strip().lower()
-            not in {"0", "false", "no"}
-        )
-        self._direct_context_pack_response_cache_max_entries = max(
-            1, int(os.environ.get("MATRIXARK_DIRECT_CONTEXT_PACK_RESPONSE_CACHE_MAX_ENTRIES", "256"))
-        )
-        self._direct_context_pack_response_cache_lock = threading.Lock()
-        self._direct_context_pack_response_cache: OrderedDict[str, Json] = OrderedDict()
-        self._direct_context_pack_response_cache_hits_total = 0
-        self._direct_context_pack_response_cache_misses_total = 0
-        self._direct_context_pack_response_cache_updates_total = 0
+        direct_cache_helpers.ensure_direct_context_pack_response_cache(self)
 
     def _direct_context_pack_response_cache_key(
         self,
@@ -1599,50 +1583,19 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         shard_size: int,
         request: Json,
     ) -> str:
-        ranking = request.get("ranking") if isinstance(request, dict) else {}
-        payload = {
-            "count_key": count_key,
-            "record_hash_key": record_hash_key,
-            "shard_size": int(shard_size),
-            "scope": request.get("scope", {}) if isinstance(request, dict) else {},
-            "secondary_index_groups": request.get("secondary_index_groups", []) if isinstance(request, dict) else [],
-            "query": request.get("query", "") if isinstance(request, dict) else "",
-            "max_selected_refs": ranking.get("max_selected_refs") if isinstance(ranking, dict) else None,
-            "max_context_tokens": request.get("max_context_tokens") if isinstance(request, dict) else None,
-        }
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()
-        return hashlib.blake2b(encoded, digest_size=16).hexdigest()
+        return direct_cache_helpers.direct_context_pack_response_cache_key(
+            self,
+            count_key=count_key,
+            record_hash_key=record_hash_key,
+            shard_size=shard_size,
+            request=request,
+        )
 
     def _direct_context_pack_response_cache_get(self, cache_key: str) -> Json | None:
-        self._ensure_direct_context_pack_response_cache()
-        if not self._direct_context_pack_response_cache_enabled:
-            return None
-        with self._direct_context_pack_response_cache_lock:
-            cached = self._direct_context_pack_response_cache.get(cache_key)
-            if cached is not None:
-                self._direct_context_pack_response_cache.move_to_end(cache_key)
-                self._direct_context_pack_response_cache_hits_total += 1
-                result = copy.deepcopy(cached)
-            else:
-                self._direct_context_pack_response_cache_misses_total += 1
-                result = None
-        if result is not None:
-            metrics = result.get("retrieval_metrics")
-            if isinstance(metrics, dict):
-                metrics["context_pack_response_cache_hit"] = True
-                metrics["cache_hit"] = True
-        return result
+        return direct_cache_helpers.direct_context_pack_response_cache_get(self, cache_key)
 
     def _direct_context_pack_response_cache_put(self, cache_key: str, response: Json) -> None:
-        self._ensure_direct_context_pack_response_cache()
-        if not self._direct_context_pack_response_cache_enabled:
-            return
-        with self._direct_context_pack_response_cache_lock:
-            self._direct_context_pack_response_cache[cache_key] = copy.deepcopy(response)
-            self._direct_context_pack_response_cache.move_to_end(cache_key)
-            while len(self._direct_context_pack_response_cache) > self._direct_context_pack_response_cache_max_entries:
-                self._direct_context_pack_response_cache.popitem(last=False)
-            self._direct_context_pack_response_cache_updates_total += 1
+        direct_cache_helpers.direct_context_pack_response_cache_put(self, cache_key, response)
 
     def native_context_pack(self, request: Json) -> Json | None:
         retriever = getattr(getattr(self, "_client", None), "matrixark_retrieve_context_pack", None)
