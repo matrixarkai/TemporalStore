@@ -62,6 +62,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         deadline_pack_mod = importlib.import_module("tools.matrixark_mcp_deadline_pack")
         direct_write_queue_mod = importlib.import_module("tools.matrixark_mcp_direct_write_queue")
         retrieval_records_mod = importlib.import_module("tools.matrixark_mcp_retrieval_records")
+        temporal_retrieval_records_mod = importlib.import_module("tools.matrixark_mcp_temporal_retrieval_records")
         retrieve_planning_mod = importlib.import_module("tools.matrixark_mcp_retrieve_planning")
         retrieve_cache_mod = importlib.import_module("tools.matrixark_mcp_retrieve_cache")
         ingest_planning_mod = importlib.import_module("tools.matrixark_mcp_ingest_planning")
@@ -226,6 +227,9 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(direct_write_queue_mod.direct_write_durable_field(durable_payload))
         self.assertTrue(direct_write_queue_mod.direct_write_payload_is_pending(durable_payload))
         self.assertIs(local_mod.RETRIEVAL_HOT_RECORD_TYPES, retrieval_records_mod.RETRIEVAL_HOT_RECORD_TYPES)
+        self.assertTrue(callable(temporal_retrieval_records_mod.retrieval_records))
+        self.assertTrue(callable(temporal_retrieval_records_mod.filter_retrieval_candidates))
+        self.assertTrue(callable(temporal_retrieval_records_mod.native_locations_for_selected_nodes))
         self.assertTrue(callable(retrieve_planning_mod.retrieval_audit_policy))
         self.assertTrue(callable(retrieve_planning_mod.retrieval_query_budget_plan))
         self.assertTrue(callable(retrieve_planning_mod.retrieval_stage_budgets))
@@ -328,6 +332,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "matrixark_mcp_visibility.py",
             "matrixark_mcp_deadline_pack.py",
             "matrixark_mcp_retrieval_records.py",
+            "matrixark_mcp_temporal_retrieval_records.py",
             "matrixark_mcp_resource_import_runtime.py",
             "matrixark_mcp_local_cache.py",
             "matrixark_mcp_local_backend.py",
