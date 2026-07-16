@@ -78,6 +78,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         retrieve_cache_mod = importlib.import_module("tools.matrixark_mcp_retrieve_cache")
         native_retrieve_mod = importlib.import_module("tools.matrixark_mcp_native_retrieve")
         retrieve_continuity_mod = importlib.import_module("tools.matrixark_mcp_retrieve_continuity")
+        retrieve_identity_mod = importlib.import_module("tools.matrixark_mcp_retrieve_identity")
         retrieve_resources_mod = importlib.import_module("tools.matrixark_mcp_retrieve_resources")
         retrieve_temporal_window_mod = importlib.import_module("tools.matrixark_mcp_retrieve_temporal_window")
         retrieve_tree_filter_mod = importlib.import_module("tools.matrixark_mcp_retrieve_tree_filter")
@@ -290,6 +291,15 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(callable(retrieve_cache_mod.get_cached_context_pack))
         self.assertTrue(callable(native_retrieve_mod.try_native_context_pack))
         self.assertTrue(callable(retrieve_continuity_mod.annotate_session_continuity))
+        base_records = [{"record_type": "context_event", "event_id_hash": 5, "text": "old"}]
+        retrieve_identity_mod.append_unique_records(
+            base_records,
+            [
+                {"record_type": "context_event", "event_id_hash": 5, "text": "duplicate"},
+                {"record_type": "context_event", "event_id_hash": 6, "text": "new"},
+            ],
+        )
+        self.assertEqual([record["event_id_hash"] for record in base_records], [5, 6])
         latest_versions, resource_uris = retrieve_resources_mod.latest_resource_metadata(
             [
                 {
