@@ -51,6 +51,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_retrieve_planning as retrieve_planning_helpers
 
 try:
+    from tools import matrixark_mcp_retrieve_cache as retrieve_cache_helpers
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_retrieve_cache as retrieve_cache_helpers
+
+try:
     from tools import matrixark_mcp_resource_import_runtime as resource_import_runtime
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_resource_import_runtime as resource_import_runtime
@@ -2248,36 +2253,20 @@ class MatrixArkLocalAdapter:
         reference_time_ms = int(retrieval_plan["reference_time_ms"])
         query_plan = retrieval_plan["query_plan"]
         debug_refs = bool(args.get("include_debug_refs") or ranking.get("include_debug_refs") or CONTEXT_PACK_DEBUG_REFS)
-        pack_cache_enabled = (
-            self._context_pack_cache_max_entries > 0
-            and self._context_pack_cache_ttl_s > 0
-            and python_hot_cache_allowed(backend_label=str(getattr(self, "_backend_label", lambda: "local")()))
+        pack_cache_key = retrieve_cache_helpers.context_pack_cache_key(
+            self,
+            scope=scope,
+            query=query,
+            question_type=question_type,
+            retrieval_session_scope=retrieval_session_scope,
+            max_context_tokens=max_context_tokens,
+            local_budget=local_budget,
+            ranking=ranking,
+            include_superseded=bool(args.get("include_superseded_resources", False) or args.get("historical_replay", False)),
         )
-        pack_cache_key = (
-            self._retrieval_records_cache_generation,
-            canonical_scope_key(scope),
-            query,
-            question_type,
-            retrieval_session_scope,
-            max_context_tokens,
-            int(local_budget.get("token_estimate", 0)),
-            tuple(sorted(local_budget.get("text_hashes", set()))),
-            json.dumps(ranking, sort_keys=True, separators=(",", ":")),
-            bool(args.get("include_superseded_resources", False) or args.get("historical_replay", False)),
-        )
-        if pack_cache_enabled:
-            with self._context_pack_cache_lock:
-                cached = self._context_pack_cache.get(pack_cache_key)
-                if cached is not None:
-                    cached_at, cached_pack = cached
-                    if time.monotonic() - cached_at <= self._context_pack_cache_ttl_s:
-                        pack = json.loads(json.dumps(cached_pack))
-                        pack["context_pack_cache_hit"] = True
-                        recall_policy = pack.get("recall_policy") if isinstance(pack.get("recall_policy"), dict) else {}
-                        recall_policy["context_pack_cache"] = {"hit": True, "ttl_s": self._context_pack_cache_ttl_s}
-                        pack["recall_policy"] = recall_policy
-                        return compact_context_pack_for_serving(pack, include_debug=debug_refs)
-                    self._context_pack_cache.pop(pack_cache_key, None)
+        cached_pack = retrieve_cache_helpers.get_cached_context_pack(self, pack_cache_key, include_debug=debug_refs)
+        if cached_pack is not None:
+            return cached_pack
         auxiliary_quota = integer_arg(ranking, "auxiliary_quota", 2, minimum=0)
         def annotate_session_continuity(candidate: Json, record: Json) -> Json:
             record_scope = candidate_access_scope(record)
@@ -3530,16 +3519,7 @@ class MatrixArkLocalAdapter:
             audit_sample_rate=audit_sample_rate,
         )
         pack["operational_visibility_policy"] = visibility_decision
-        if pack_cache_enabled and not pack.get("partial_context_pack"):
-            cached_pack = json.loads(json.dumps(pack))
-            cached_recall = cached_pack.get("recall_policy") if isinstance(cached_pack.get("recall_policy"), dict) else {}
-            cached_recall["context_pack_cache"] = {"hit": False, "ttl_s": self._context_pack_cache_ttl_s}
-            cached_pack["recall_policy"] = cached_recall
-            with self._context_pack_cache_lock:
-                if len(self._context_pack_cache) >= self._context_pack_cache_max_entries:
-                    oldest_key = next(iter(self._context_pack_cache))
-                    self._context_pack_cache.pop(oldest_key, None)
-                self._context_pack_cache[pack_cache_key] = (time.monotonic(), cached_pack)
+        retrieve_cache_helpers.put_cached_context_pack(self, pack_cache_key, pack)
         finish_retrieval_stage("audit", audit_started_perf)
         placement = retrieval_scan_stats.get("native_selected_node_locations", {}) if isinstance(retrieval_scan_stats, dict) else {}
         candidate_cache_hit = bool(
