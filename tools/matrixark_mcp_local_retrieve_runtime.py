@@ -155,6 +155,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_retrieve_resources as retrieve_resource_helpers
 
 try:
+    from tools import matrixark_mcp_retrieve_temporal_window as retrieve_temporal_window_helpers
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_retrieve_temporal_window as retrieve_temporal_window_helpers
+
+try:
     from tools import matrixark_mcp_retrieval_records as retrieval_record_helpers
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_retrieval_records as retrieval_record_helpers
@@ -611,44 +616,14 @@ def retrieve(target: Any, args: Json) -> Json:
     else:
         tree_candidate_records = records if traversal.get("fallback_to_flat") else [record for record in records if selected_by_tree(record)]
         tree_prefilter_dropped_count = 0 if traversal.get("fallback_to_flat") else max(0, len(records) - len(tree_candidate_records))
-    raw_event_ids_by_node: dict[Any, set[int]] = {}
-    raw_event_time_window_dropped_count = 0
-    events_by_node: dict[Any, list[Json]] = {}
-    nodes_with_compression: set[Any] = set()
     for scan_index, record in enumerate(tree_candidate_records, 1):
         if scan_index % 128 == 0 and deadline_exceeded():
             return deadline_fallback("deadline_during_tree_candidate_prefilter", records)
-        if record.get("record_type") == "context_compression_event":
-            node_key_for_compression: Any = record.get("node_hash")
-            if node_key_for_compression is None:
-                node_key_for_compression = tuple(record.get("node_path", []))
-            nodes_with_compression.add(node_key_for_compression)
-            continue
-        if record.get("record_type") != "context_event":
-            continue
-        if record.get("source_chunk_hash"):
-            continue
-        node_key: Any = record.get("node_hash")
-        if node_key is None:
-            node_key = tuple(record.get("node_path", []))
-        events_by_node.setdefault(node_key, []).append(record)
-    for node_key, node_events in events_by_node.items():
-        if node_key not in nodes_with_compression:
-            continue
-        node_events.sort(
-            key=lambda item: (
-                self.context_event_ingestion_time_ms(item),
-                int(item.get("event_id_hash") or 0),
-            ),
-            reverse=True,
-        )
-        admitted = {
-            int(record.get("event_id_hash"))
-            for record in node_events[:max_raw_events_per_node]
-            if record.get("event_id_hash") is not None
-        }
-        raw_event_ids_by_node[node_key] = admitted
-        raw_event_time_window_dropped_count += max(0, len(node_events) - len(admitted))
+    raw_event_ids_by_node, raw_event_time_window_dropped_count = retrieve_temporal_window_helpers.raw_event_admission_window(
+        tree_candidate_records,
+        max_raw_events_per_node=max_raw_events_per_node,
+        context_event_ingestion_time_ms=self.context_event_ingestion_time_ms,
+    )
     candidate_count_by_node: dict[Any, int] = {}
     fanout_dropped_count = 0
 
