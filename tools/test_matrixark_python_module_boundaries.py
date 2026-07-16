@@ -180,6 +180,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(callable(native_lookup_runtime_mod.native_locations_for_refs))
         self.assertTrue(callable(native_lookup_runtime_mod.load_records_from_locations))
         self.assertIs(core_mod.hybrid_origin_score, scoring_mod.hybrid_origin_score)
+        self.assertIs(core_mod.final_recall_score, scoring_mod.final_recall_score)
         self.assertIs(core_mod.business_score_for_candidate, scoring_mod.business_score_for_candidate)
         self.assertIs(core_mod.numeric_field, scoring_mod.numeric_field)
         self.assertIs(core_mod.apply_statistical_operator, scoring_mod.apply_statistical_operator)
