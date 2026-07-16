@@ -366,3 +366,65 @@ def flush_direct_writes(target: Any, timeout_s: float | None = None) -> None:
         if time.monotonic() >= deadline:
             raise MatrixArkError("timed out waiting for direct TemporalStore write queue to drain")
         time.sleep(0.01)
+
+
+class DirectWriteQueueAdapterMixin:
+    """Adapter methods for direct TemporalStore write queue handling."""
+
+    def _ensure_direct_write_queue_fields(self) -> None:
+        ensure_direct_write_queue_fields(self)
+
+    def _records_can_use_direct_write_queue(self, records: list[Json]) -> bool:
+        return records_can_use_direct_write_queue(self, records)
+
+    def _start_direct_write_worker(self) -> None:
+        start_direct_write_worker(self)
+
+    def _direct_write_durable_payload(self, records: list[Json]) -> Json:
+        return direct_write_durable_payload(
+            records,
+            backend=self._backend_label(),
+            storage_prefix=self._storage_prefix,
+        )
+
+    def _direct_write_durable_field(self, payload: Json) -> str:
+        return direct_write_durable_field(payload)
+
+    def _enqueue_direct_write_durable(self, records: list[Json]) -> str:
+        payload = self._direct_write_durable_payload(list(records))
+        field = self._direct_write_durable_field(payload)
+        self._hset_with_backoff(self._direct_write_queue_key, field, json.dumps(payload, separators=(",", ":")))
+        return field
+
+    def _enqueue_direct_write_item(self, item: Any, record_count: int) -> None:
+        enqueue_direct_write_item(self, item, record_count)
+
+    def _enqueue_direct_write(self, records: list[Json]) -> None:
+        enqueue_direct_write(self, records)
+
+    def _direct_write_loop(self) -> None:
+        direct_write_loop(self)
+
+    def _flush_direct_write_items(self, items: list[Any]) -> int:
+        return flush_direct_write_items(self, items)
+
+    def _flush_direct_write_item(self, item: Any) -> int:
+        return flush_direct_write_item(self, item)
+
+    def _load_direct_write_durable_payload(self, field: str) -> Json | None:
+        return load_direct_write_durable_payload(self, field)
+
+    def _write_direct_write_durable_status(self, field: str, payload: Json, status: str, error: str | None = None) -> None:
+        write_direct_write_durable_status(self, field, payload, status, error)
+
+    def _flush_direct_write_durable_field(self, field: str) -> int:
+        return flush_direct_write_durable_field(self, field)
+
+    def drain_durable_direct_write_queue(self, *, limit: int | None = None) -> Json:
+        return drain_durable_direct_write_queue(self, limit=limit)
+
+    def _direct_write_durable_pending_count(self) -> int:
+        return direct_write_durable_pending_count(self)
+
+    def flush_direct_writes(self, timeout_s: float | None = None) -> None:
+        flush_direct_writes(self, timeout_s=timeout_s)

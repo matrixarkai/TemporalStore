@@ -94,22 +94,7 @@ try:
     from tools import matrixark_mcp_direct_cache as direct_cache_helpers
     from tools import matrixark_mcp_temporal_append as temporal_append_helpers
     from tools.matrixark_mcp_direct_write_queue import (
-        direct_write_durable_field,
-        direct_write_durable_pending_count,
-        direct_write_durable_payload,
-        direct_write_loop,
-        drain_durable_direct_write_queue,
-        enqueue_direct_write,
-        enqueue_direct_write_item,
-        ensure_direct_write_queue_fields,
-        flush_direct_write_durable_field,
-        flush_direct_write_item,
-        flush_direct_write_items,
-        flush_direct_writes,
-        load_direct_write_durable_payload,
-        records_can_use_direct_write_queue,
-        start_direct_write_worker,
-        write_direct_write_durable_status,
+        DirectWriteQueueAdapterMixin,
     )
     from tools.matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from tools.matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
@@ -142,22 +127,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_temporal_proxy_readiness as temporal_proxy_readiness
     import matrixark_mcp_temporal_record_load_runtime as temporal_record_load_runtime
     from matrixark_mcp_direct_write_queue import (
-        direct_write_durable_field,
-        direct_write_durable_pending_count,
-        direct_write_durable_payload,
-        direct_write_loop,
-        drain_durable_direct_write_queue,
-        enqueue_direct_write,
-        enqueue_direct_write_item,
-        ensure_direct_write_queue_fields,
-        flush_direct_write_durable_field,
-        flush_direct_write_item,
-        flush_direct_write_items,
-        flush_direct_writes,
-        load_direct_write_durable_payload,
-        records_can_use_direct_write_queue,
-        start_direct_write_worker,
-        write_direct_write_durable_status,
+        DirectWriteQueueAdapterMixin,
     )
     from matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
@@ -195,6 +165,7 @@ class MatrixArkTemporalStoreDirectAdapter(
     LatestContextStateAdapterMixin,
     NativeSideIndexAdapterMixin,
     RawIngestionAdapterMixin,
+    DirectWriteQueueAdapterMixin,
     MatrixArkLocalAdapter,
 ):
     """MatrixArk adapter backed by C++ TemporalStore proxy or direct SDK.
@@ -380,9 +351,6 @@ class MatrixArkTemporalStoreDirectAdapter(
     def _ensure_backend_metric_fields(self) -> None:
         backend_metrics_helpers.ensure_temporal_backend_metric_fields(self)
 
-    def _ensure_direct_write_queue_fields(self) -> None:
-        ensure_direct_write_queue_fields(self)
-
     def _observe_append_queue_wait(self, elapsed_ms: float) -> None:
         backend_metrics_helpers.observe_append_queue_wait(self, elapsed_ms)
 
@@ -505,61 +473,6 @@ class MatrixArkTemporalStoreDirectAdapter(
 
     def _context_event_time_index_entries(self, records: list[Json]) -> list[Json]:
         return context_event_time_index_entries(self._storage_prefix, records)
-
-    def _records_can_use_direct_write_queue(self, records: list[Json]) -> bool:
-        return records_can_use_direct_write_queue(self, records)
-
-    def _start_direct_write_worker(self) -> None:
-        start_direct_write_worker(self)
-
-    def _direct_write_durable_payload(self, records: list[Json]) -> Json:
-        return direct_write_durable_payload(
-            records,
-            backend=self._backend_label(),
-            storage_prefix=self._storage_prefix,
-        )
-
-    def _direct_write_durable_field(self, payload: Json) -> str:
-        return direct_write_durable_field(payload)
-
-    def _enqueue_direct_write_durable(self, records: list[Json]) -> str:
-        payload = self._direct_write_durable_payload(list(records))
-        field = self._direct_write_durable_field(payload)
-        self._hset_with_backoff(self._direct_write_queue_key, field, json.dumps(payload, separators=(",", ":")))
-        return field
-
-    def _enqueue_direct_write_item(self, item: Any, record_count: int) -> None:
-        enqueue_direct_write_item(self, item, record_count)
-
-    def _enqueue_direct_write(self, records: list[Json]) -> None:
-        enqueue_direct_write(self, records)
-
-    def _direct_write_loop(self) -> None:
-        direct_write_loop(self)
-
-    def _flush_direct_write_items(self, items: list[Any]) -> int:
-        return flush_direct_write_items(self, items)
-
-    def _flush_direct_write_item(self, item: Any) -> int:
-        return flush_direct_write_item(self, item)
-
-    def _load_direct_write_durable_payload(self, field: str) -> Json | None:
-        return load_direct_write_durable_payload(self, field)
-
-    def _write_direct_write_durable_status(self, field: str, payload: Json, status: str, error: str | None = None) -> None:
-        write_direct_write_durable_status(self, field, payload, status, error)
-
-    def _flush_direct_write_durable_field(self, field: str) -> int:
-        return flush_direct_write_durable_field(self, field)
-
-    def drain_durable_direct_write_queue(self, *, limit: int | None = None) -> Json:
-        return drain_durable_direct_write_queue(self, limit=limit)
-
-    def _direct_write_durable_pending_count(self) -> int:
-        return direct_write_durable_pending_count(self)
-
-    def flush_direct_writes(self, timeout_s: float | None = None) -> None:
-        flush_direct_writes(self, timeout_s=timeout_s)
 
     def _append_client_for_records(self, records: list[Json]) -> Any:
         return self._client
