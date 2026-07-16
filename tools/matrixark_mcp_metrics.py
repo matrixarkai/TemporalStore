@@ -3,12 +3,15 @@
 
 from __future__ import annotations
 
+import json
 import math
+import threading
+import time
 
 try:
-    from tools.matrixark_mcp_core import *
+    from tools.matrixark_mcp_core import Json
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_core import *
+    from matrixark_mcp_core import Json
 
 class MatrixArkServiceMetrics:
     """In-process Prometheus metrics for MatrixArk MCP pipeline work."""
