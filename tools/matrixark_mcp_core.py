@@ -719,6 +719,9 @@ _RUNTIME_CONFIG_EXPORTS = (
     "MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK",
     "MAX_PRIOR_CHARS",
     "MAX_PRIOR_MESSAGES",
+    "matrixark_production_profile_enabled",
+    "native_candidate_prefilter_required",
+    "python_hot_cache_allowed",
     "RESOURCE_ASYNC_DEFAULT_BYTES",
     "RESOURCE_ASYNC_DEFAULT_PATH_COUNT",
     "RESOURCE_ASYNC_DEFAULT_TEXT_CHARS",
@@ -776,22 +779,6 @@ _DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES = int(os.environ.get("MATRIXARK_DI
 _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE: dict[str, list[tuple[str, int, int, Json]]] = {}
 _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_LOCK = threading.RLock()
 _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES = int(os.environ.get("MATRIXARK_DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES", "1024"))
-
-
-def matrixark_production_profile_enabled() -> bool:
-    return MATRIXARK_MCP_PROFILE in {"prod", "production", "benchmark", "bench", "parity"}
-
-
-def python_hot_cache_allowed(*, backend_label: str = "") -> bool:
-    if MATRIXARK_ALLOW_PYTHON_HOT_CACHE:
-        return MATRIXARK_ALLOW_PYTHON_HOT_CACHE in {"1", "true", "yes"}
-    return backend_label == "local"
-
-
-def native_candidate_prefilter_required(*, backend_label: str = "") -> bool:
-    if MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER:
-        return MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER in {"1", "true", "yes"}
-    return backend_label != "local"
 
 
 def message_from_event_record(record: Json) -> Json | None:
