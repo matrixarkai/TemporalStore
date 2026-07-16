@@ -296,6 +296,14 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(callable(retrieve_cache_mod.get_cached_context_pack))
         self.assertTrue(callable(native_retrieve_mod.try_native_context_pack))
         self.assertTrue(callable(retrieve_continuity_mod.annotate_session_continuity))
+        continuity_annotator = retrieve_continuity_mod.make_session_continuity_annotator(
+            retrieval_scope={"session_id": "s1"},
+            question_type="current_state",
+        )
+        self.assertEqual(
+            continuity_annotator({"origin_score": 1.0}, {"scope": {"session_id": "s1"}})["session_continuity"],
+            "same_session",
+        )
         self.assertTrue(callable(retrieve_fallback_mod.deadline_fallback_pack))
         observed_stage_metrics: list[tuple[str, float]] = []
         tracker = retrieve_deadline_mod.RetrievalDeadlineTracker(

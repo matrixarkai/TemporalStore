@@ -273,13 +273,10 @@ def retrieve(target: Any, args: Json) -> Json:
     if cached_pack is not None:
         return cached_pack
     auxiliary_quota = integer_arg(ranking, "auxiliary_quota", 2, minimum=0)
-    def annotate_session_continuity(candidate: Json, record: Json) -> Json:
-        return retrieve_continuity_helpers.annotate_session_continuity(
-            candidate,
-            record,
-            retrieval_scope=retrieval_scope,
-            question_type=question_type,
-        )
+    annotate_session_continuity = retrieve_continuity_helpers.make_session_continuity_annotator(
+        retrieval_scope=retrieval_scope,
+        question_type=question_type,
+    )
 
     finish_retrieval_stage("query_understanding", stage_started_perf)
     native_pack = native_retrieve_helpers.try_native_context_pack(

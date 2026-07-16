@@ -37,3 +37,15 @@ def annotate_session_continuity(candidate: Json, record: Json, *, retrieval_scop
         "continuity_reason": reason,
         "question_type": question_type,
     }
+
+
+def make_session_continuity_annotator(*, retrieval_scope: Json, question_type: str):
+    def annotator(candidate: Json, record: Json) -> Json:
+        return annotate_session_continuity(
+            candidate,
+            record,
+            retrieval_scope=retrieval_scope,
+            question_type=question_type,
+        )
+
+    return annotator
