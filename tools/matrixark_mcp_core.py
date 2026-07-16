@@ -927,23 +927,33 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
 
 
+try:
+    from tools.matrixark_mcp_recall_scoring import (
+        diversify_for_question_type,
+        dropped_candidate_audit_ref,
+        is_resource_or_skill_candidate,
+        is_shared_resource_candidate,
+        is_shared_skill_candidate,
+        merge_ranked_paths,
+        packing_sort_key,
+        question_type_ref_boost,
+        record_dropped_candidate,
+        score_recall_candidate,
+    )
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_recall_scoring import (
+        diversify_for_question_type,
+        dropped_candidate_audit_ref,
+        is_resource_or_skill_candidate,
+        is_shared_resource_candidate,
+        is_shared_skill_candidate,
+        merge_ranked_paths,
+        packing_sort_key,
+        question_type_ref_boost,
+        record_dropped_candidate,
+        score_recall_candidate,
+    )
 
-def is_shared_resource_candidate(candidate: Json) -> bool:
-    try:
-        from tools.matrixark_mcp_recall_scoring import is_shared_resource_candidate as _is_shared_resource_candidate
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_recall_scoring import is_shared_resource_candidate as _is_shared_resource_candidate
-
-    return _is_shared_resource_candidate(candidate)
-
-
-def is_shared_skill_candidate(candidate: Json) -> bool:
-    try:
-        from tools.matrixark_mcp_recall_scoring import is_shared_skill_candidate as _is_shared_skill_candidate
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_recall_scoring import is_shared_skill_candidate as _is_shared_skill_candidate
-
-    return _is_shared_skill_candidate(candidate)
 
 
 def bounded_max_children_scored_per_parent(value: int) -> int:
@@ -955,77 +965,6 @@ def bounded_max_children_scored_per_parent(value: int) -> int:
         )
     return value
 
-
-def score_recall_candidate(candidate: Json, ranking: Json, *, reference_time_ms: int) -> Json:
-    try:
-        from tools.matrixark_mcp_recall_scoring import score_recall_candidate as _score_recall_candidate
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_recall_scoring import score_recall_candidate as _score_recall_candidate
-
-    return _score_recall_candidate(candidate, ranking, reference_time_ms=reference_time_ms)
-
-
-def merge_ranked_paths(primary: list[Json], auxiliary: list[Json], *, total_limit: int, auxiliary_quota: int) -> list[Json]:
-    try:
-        from tools.matrixark_mcp_recall_scoring import merge_ranked_paths as _merge_ranked_paths
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_recall_scoring import merge_ranked_paths as _merge_ranked_paths
-
-    return _merge_ranked_paths(primary, auxiliary, total_limit=total_limit, auxiliary_quota=auxiliary_quota)
-
-
-def question_type_ref_boost(candidate: Json, question_type: str) -> float:
-    try:
-        from tools.matrixark_mcp_recall_scoring import question_type_ref_boost as _question_type_ref_boost
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_recall_scoring import question_type_ref_boost as _question_type_ref_boost
-
-    return _question_type_ref_boost(candidate, question_type)
-
-
-def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float, float]:
-    try:
-        from tools.matrixark_mcp_recall_scoring import packing_sort_key as _packing_sort_key
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_recall_scoring import packing_sort_key as _packing_sort_key
-
-    return _packing_sort_key(candidate, question_type)
-
-
-def is_resource_or_skill_candidate(candidate: Json) -> bool:
-    try:
-        from tools.matrixark_mcp_recall_scoring import is_resource_or_skill_candidate as _is_resource_or_skill_candidate
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_recall_scoring import is_resource_or_skill_candidate as _is_resource_or_skill_candidate
-
-    return _is_resource_or_skill_candidate(candidate)
-
-
-def dropped_candidate_audit_ref(candidate: Json, *, reason: str, token_estimate: int) -> Json:
-    try:
-        from tools.matrixark_mcp_recall_scoring import dropped_candidate_audit_ref as _dropped_candidate_audit_ref
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_recall_scoring import dropped_candidate_audit_ref as _dropped_candidate_audit_ref
-
-    return _dropped_candidate_audit_ref(candidate, reason=reason, token_estimate=token_estimate)
-
-
-def record_dropped_candidate(dropped: Json, candidate: Json, *, reason: str, token_estimate: int) -> None:
-    try:
-        from tools.matrixark_mcp_recall_scoring import record_dropped_candidate as _record_dropped_candidate
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_recall_scoring import record_dropped_candidate as _record_dropped_candidate
-
-    _record_dropped_candidate(dropped, candidate, reason=reason, token_estimate=token_estimate)
-
-
-def diversify_for_question_type(candidates: list[Json], question_type: str, *, total_limit: int) -> list[Json]:
-    try:
-        from tools.matrixark_mcp_recall_scoring import diversify_for_question_type as _diversify_for_question_type
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_recall_scoring import diversify_for_question_type as _diversify_for_question_type
-
-    return _diversify_for_question_type(candidates, question_type, total_limit=total_limit)
 
 def context_text_hashes(text: str) -> set[int]:
     try:
