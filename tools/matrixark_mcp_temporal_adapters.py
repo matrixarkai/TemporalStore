@@ -84,6 +84,7 @@ try:
     from tools import matrixark_mcp_native_lookup_runtime as native_lookup_runtime
     from tools import matrixark_mcp_temporal_retrieval_records as temporal_retrieval_record_runtime
     from tools import matrixark_mcp_temporal_readiness as temporal_readiness
+    from tools import matrixark_mcp_temporal_proxy_readiness as temporal_proxy_readiness
     from tools.matrixark_mcp_raw_ingestion import (
         ensure_raw_ingestion_fields,
         normalize_raw_storage_backend,
@@ -107,6 +108,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_temporal_append as temporal_append_helpers
     import matrixark_mcp_native_lookup_runtime as native_lookup_runtime
     import matrixark_mcp_temporal_readiness as temporal_readiness
+    import matrixark_mcp_temporal_proxy_readiness as temporal_proxy_readiness
     from matrixark_mcp_direct_write_queue import (
         direct_write_durable_field,
         direct_write_durable_pending_count,
@@ -391,89 +393,12 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         return backend_metrics_helpers.backend_metrics(self)
 
     def ensure_backend_ready(self, *, reason: str = "manual", probe: bool = True, timeout_ms: int | None = None) -> Json:
-        with self._readiness_lock:
-            if self._readiness_cache and self._readiness_cache.get("status") == "ready":
-                cached = dict(self._readiness_cache)
-                cached["cached"] = True
-                cached["reason"] = reason
-                return cached
-            timeout = max(1, int(timeout_ms or BACKEND_READINESS_TIMEOUT_MS))
-            deadline = time.monotonic() + timeout / 1000.0
-            attempts: list[Json] = []
-            attempt = 0
-            warmup_key = f"{self._storage_prefix}:readiness"
-            warmup_field = f"{stable_hash(f'{self._storage_prefix}:{reason}'):020d}"
-            warmup_value = json.dumps(
-                {
-                    "probe": "matrixark_backend_ready",
-                    "backend": self._backend_label(),
-                    "reason": reason,
-                    "ts_ms": now_ms(),
-                },
-                sort_keys=True,
-            )
-            while True:
-                attempt += 1
-                checks: Json = {
-                    "mcp_process_started": True,
-                    "metaserver_reachable": metaserver_reachable(self._metaserver),
-                    "namespace_table_opened": False,
-                    "slot_coverage_verified_by_warmup_hset_hget": False,
-                }
-                try:
-                    if not checks["metaserver_reachable"].get("ok"):
-                        raise MatrixArkError(checks["metaserver_reachable"].get("error", "metaserver is not reachable"))
-                    if probe:
-                        self._client.hset(warmup_key, warmup_field, warmup_value)
-                        checks["namespace_table_opened"] = True
-                        readback = self._client.hget(warmup_key, warmup_field)
-                        if readback != warmup_value:
-                            raise MatrixArkError("readiness warmup readback mismatch")
-                        checks["slot_coverage_verified_by_warmup_hset_hget"] = True
-                    else:
-                        checks["namespace_table_opened"] = True
-                    result: Json = {
-                        "status": "ready",
-                        "backend": self._backend_label(),
-                        "reason": reason,
-                        "probe": bool(probe),
-                        "attempts": attempt,
-                        "attempt_log": attempts,
-                        "topology": {
-                            "metaserver": self._metaserver,
-                            "namespace": self._namespace,
-                            "table": self._table,
-                            "storage_prefix": self._storage_prefix,
-                            "warmup_key": warmup_key,
-                            "warmup_field": warmup_field,
-                        },
-                        "checks": checks,
-                    }
-                    self._readiness_cache = result
-                    return dict(result)
-                except Exception as exc:
-                    retryable = is_retryable_temporalstore_error(exc)
-                    attempts.append({"attempt": attempt, "ok": False, "retryable": retryable, "error": str(exc), "checks": checks})
-                    if not retryable or time.monotonic() >= deadline:
-                        return {
-                            "status": "topology_not_ready",
-                            "backend": self._backend_label(),
-                            "reason": reason,
-                            "probe": bool(probe),
-                            "attempts": attempt,
-                            "attempt_log": attempts,
-                            "error": str(exc),
-                            "topology": {
-                                "metaserver": self._metaserver,
-                                "namespace": self._namespace,
-                                "table": self._table,
-                                "storage_prefix": self._storage_prefix,
-                                "warmup_key": warmup_key,
-                                "warmup_field": warmup_field,
-                            },
-                            "checks": checks,
-                        }
-                    time.sleep(max(0.05, BACKEND_READINESS_BACKOFF_MS / 1000.0))
+        return temporal_proxy_readiness.ensure_backend_ready(
+            self,
+            reason=reason,
+            probe=probe,
+            timeout_ms=timeout_ms,
+        )
 
     def _get_index(self) -> list[str]:
         try:
