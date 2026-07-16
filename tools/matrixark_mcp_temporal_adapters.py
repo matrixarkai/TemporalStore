@@ -121,13 +121,7 @@ try:
         latest_context_state_storage_key,
     )
     from tools.matrixark_mcp_native_side_index import (
-        context_index_lookup_key,
-        context_placement_lookup_key,
-        context_ref_locator_key,
-        merge_ref_hashes,
-        merge_ref_locations,
-        merge_resource_versions,
-        native_side_index_entries_for_bundles,
+        NativeSideIndexAdapterMixin,
     )
     from tools import matrixark_mcp_native_pack_runtime as native_pack_runtime
     from tools import matrixark_mcp_native_lookup_runtime as native_lookup_runtime
@@ -178,13 +172,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         latest_context_state_storage_key,
     )
     from matrixark_mcp_native_side_index import (
-        context_index_lookup_key,
-        context_placement_lookup_key,
-        context_ref_locator_key,
-        merge_ref_hashes,
-        merge_ref_locations,
-        merge_resource_versions,
-        native_side_index_entries_for_bundles,
+        NativeSideIndexAdapterMixin,
     )
     from matrixark_mcp_raw_ingestion import (
         RawIngestionAdapterMixin,
@@ -209,7 +197,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
 
 
-class MatrixArkTemporalStoreDirectAdapter(RawIngestionAdapterMixin, MatrixArkLocalAdapter):
+class MatrixArkTemporalStoreDirectAdapter(
+    NativeSideIndexAdapterMixin,
+    RawIngestionAdapterMixin,
+    MatrixArkLocalAdapter,
+):
     """MatrixArk adapter backed by C++ TemporalStore proxy or direct SDK.
 
     Python stays as API/auth/model orchestration. Production retrieval should
@@ -495,44 +487,6 @@ class MatrixArkTemporalStoreDirectAdapter(RawIngestionAdapterMixin, MatrixArkLoc
             "audit_hot_path": "inline_counters_only",
             "full_context_pack_audit": "sample_or_enqueue_async_policy_enabled",
         }
-
-    def _context_index_lookup_key(self, scope_key: str) -> str:
-        return context_index_lookup_key(self._storage_prefix, scope_key)
-
-    def _context_ref_locator_key(self) -> str:
-        return context_ref_locator_key(self._storage_prefix)
-
-    def _context_placement_lookup_key(self, scope_key: str) -> str:
-        return context_placement_lookup_key(self._storage_prefix, scope_key)
-
-    def _merge_ref_hashes(self, existing_value: str, new_refs: list[int]) -> list[int]:
-        return merge_ref_hashes(existing_value, new_refs)
-
-    def _merge_ref_locations(self, existing_value: str, new_locations: list[Json]) -> list[Json]:
-        return merge_ref_locations(existing_value, new_locations)
-
-    def _merge_resource_versions(self, existing_value: str, new_versions: set[str]) -> list[str]:
-        return merge_resource_versions(existing_value, new_versions)
-
-    def _read_hash_value_best_effort(self, key: str, field: str) -> str:
-        if bool(getattr(self, "_native_side_index_assume_fresh", False)):
-            return ""
-        reader = getattr(self._client, "hget", None)
-        if not callable(reader):
-            return ""
-        try:
-            value = reader(key, field)
-        except Exception:
-            return ""
-        return str(value or "")
-
-    def _native_side_index_entries_for_bundles(self, bundles: list[tuple[list[Json], str, str]]) -> list[Json]:
-        return native_side_index_entries_for_bundles(
-            storage_prefix=self._storage_prefix,
-            bundles=bundles,
-            storage_route_for_bundle=self._storage_route_for_bundle,
-            read_hash_value=self._read_hash_value_best_effort,
-        )
 
     def _context_event_ingestion_time_ms(self, record: Json) -> int:
         return context_event_timestamp_ms(record)
