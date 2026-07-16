@@ -8,7 +8,6 @@ from pathlib import Path
 
 try:
     from tools.matrixark_mcp_core import (
-        MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK,
         TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE,
         TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH,
         TIME_COMPRESSION_MIN_EVENTS,
@@ -20,7 +19,6 @@ try:
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
-        MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK,
         TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE,
         TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH,
         TIME_COMPRESSION_MIN_EVENTS,
@@ -107,6 +105,16 @@ try:
     from tools import matrixark_mcp_local_runtime as local_runtime_helpers
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_local_runtime as local_runtime_helpers
+
+try:
+    from tools.matrixark_mcp_native_pack_policy import native_context_pack_required_for_backend
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_native_pack_policy import native_context_pack_required_for_backend
+
+try:
+    from tools.matrixark_mcp_runtime_config import MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_runtime_config import MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK
 
 try:
     from tools import matrixark_mcp_ingest_planning as ingest_planning_helpers
@@ -679,10 +687,11 @@ class MatrixArkLocalAdapter:
         return False
 
     def native_context_pack_required(self) -> bool:
-        if MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK:
-            return MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK in {"1", "true", "yes"}
         backend_label = str(getattr(self, "_backend_label", lambda: "local")())
-        return backend_label != "local"
+        return native_context_pack_required_for_backend(
+            backend_label,
+            require_flag=MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK,
+        )
 
     def native_context_pack(self, request: Json) -> Json | None:
         """Return a backend-assembled ContextPack when the native backend supports it.

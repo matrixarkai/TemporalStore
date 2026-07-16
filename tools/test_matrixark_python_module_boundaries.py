@@ -104,6 +104,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         debug_mod = importlib.import_module("tools.matrixark_mcp_debug")
         native_helpers_mod = importlib.import_module("tools.matrixark_mcp_native_helpers")
         native_side_index_mod = importlib.import_module("tools.matrixark_mcp_native_side_index")
+        native_pack_policy_mod = importlib.import_module("tools.matrixark_mcp_native_pack_policy")
         native_pack_runtime_mod = importlib.import_module("tools.matrixark_mcp_native_pack_runtime")
         native_lookup_runtime_mod = importlib.import_module("tools.matrixark_mcp_native_lookup_runtime")
         env_mod = importlib.import_module("tools.matrixark_mcp_env")
@@ -192,6 +193,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             native_side_index_mod.merge_ref_hashes('{"ref_hashes":[3,"4","bad"]}', [4, 5]),
             [3, 4, 5],
         )
+        self.assertTrue(callable(native_pack_policy_mod.native_context_pack_required_for_backend))
         self.assertTrue(callable(native_pack_runtime_mod.try_native_context_pack))
         self.assertTrue(callable(native_pack_runtime_mod.native_context_pack))
         self.assertTrue(callable(native_pack_runtime_mod.native_context_pack_fallback_blocker))

@@ -1,15 +1,5 @@
 #!/usr/bin/env python3
-"""MatrixArk MCP server entrypoint.
-
-The implementation is split into focused modules:
-- matrixark_mcp_core: shared primitives, extraction, scoring, traversal helpers
-- matrixark_access: account/tenant/user/API-key metadata and governance
-- matrixark_mcp_schemas: MCP tool schema catalog
-- matrixark_http: management portal HTTP facade
-
-This file keeps the MCP dispatch loop and process entrypoint while re-exporting
-storage adapters for compatibility with existing scripts.
-"""
+"""MatrixArk MCP server entrypoint and compatibility re-export layer."""
 
 from __future__ import annotations
 
@@ -65,6 +55,7 @@ try:
     from tools.matrixark_mcp_requests import normalize_mcp_tool_request
     from tools.matrixark_mcp_retrieval import is_retrieval_tool
     from tools.matrixark_mcp_schemas import TOOLS
+    from tools.matrixark_mcp_native_pack_policy import native_context_pack_required_for_backend
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
         MATRIXARK_ALLOW_LOCAL_BACKEND,
@@ -106,6 +97,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_requests import normalize_mcp_tool_request
     from matrixark_mcp_retrieval import is_retrieval_tool
     from matrixark_mcp_schemas import TOOLS
+    from matrixark_mcp_native_pack_policy import native_context_pack_required_for_backend
 
 
 __all__ = [
@@ -119,6 +111,7 @@ __all__ = [
     "default_mcp_backend",
     "enrich_scope_with_identity",
     "main",
+    "native_context_pack_required",
     "production_profile_enabled",
     "validate_mcp_backend_policy",
 ]
@@ -148,6 +141,10 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 class MatrixArkBackpressureError(MatrixArkError):
     pass
+
+
+def native_context_pack_required(backend_label: str) -> bool:
+    return native_context_pack_required_for_backend(backend_label, require_flag=MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK)
 
 
 class MatrixArkMcpServer:
