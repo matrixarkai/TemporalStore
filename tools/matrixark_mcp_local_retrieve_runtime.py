@@ -144,6 +144,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_retrieve_continuity as retrieve_continuity_helpers
 
 try:
+    from tools import matrixark_mcp_retrieve_deadline as retrieve_deadline_helpers
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_retrieve_deadline as retrieve_deadline_helpers
+
+try:
     from tools import matrixark_mcp_retrieve_resources as retrieve_resource_helpers
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_retrieve_resources as retrieve_resource_helpers
@@ -198,30 +203,29 @@ def retrieve(target: Any, args: Json) -> Json:
     audit_mode, audit_sample_rate = retrieve_planning_helpers.retrieval_audit_policy(args)
     deadline_ms = retrieve_planning_helpers.retrieval_deadline_ms(args, ranking)
 
-    def deadline_exceeded() -> bool:
-        return deadline_ms > 0 and (time.perf_counter() - started_perf) * 1000.0 >= deadline_ms
-
     stage_budgets_ms, explicit_stage_budgets = retrieve_planning_helpers.retrieval_stage_budgets(
         args,
         ranking,
         deadline_ms=deadline_ms,
     )
-    stage_latencies_ms: dict[str, float] = {}
+    deadline_tracker = retrieve_deadline_helpers.RetrievalDeadlineTracker(
+        started_perf=started_perf,
+        deadline_ms=deadline_ms,
+        stage_budgets_ms=stage_budgets_ms,
+        explicit_stage_budgets=explicit_stage_budgets,
+        observe_latency=self._observe_model_latency,
+    )
+    stage_latencies_ms = deadline_tracker.stage_latencies_ms
     stage_started_perf = time.perf_counter()
 
+    def deadline_exceeded() -> bool:
+        return deadline_tracker.deadline_exceeded()
+
     def finish_retrieval_stage(stage: str, started: float) -> float:
-        elapsed = round((time.perf_counter() - started) * 1000.0, 3)
-        stage_latencies_ms[stage] = elapsed
-        self._observe_model_latency(f"retrieval_{stage}", elapsed)
-        return elapsed
+        return deadline_tracker.finish_stage(stage, started)
 
     def stage_budget_snapshot() -> Json:
-        return retrieve_planning_helpers.stage_budget_snapshot(
-            stage_budgets_ms=stage_budgets_ms,
-            stage_latencies_ms=stage_latencies_ms,
-            explicit_stage_budgets=explicit_stage_budgets,
-            deadline_ms=deadline_ms,
-        )
+        return deadline_tracker.stage_budget_snapshot()
 
     retrieval_plan = retrieve_planning_helpers.retrieval_query_budget_plan(
         args,
