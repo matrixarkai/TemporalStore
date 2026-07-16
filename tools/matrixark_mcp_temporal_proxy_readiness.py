@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 try:
@@ -16,7 +17,6 @@ try:
         metaserver_reachable,
         now_ms,
         stable_hash,
-        time,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
@@ -29,7 +29,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         metaserver_reachable,
         now_ms,
         stable_hash,
-        time,
     )
 
 
@@ -117,5 +116,4 @@ def ensure_backend_ready(target: Any, *, reason: str = "manual", probe: bool = T
                         "checks": checks,
                     }
                 time.sleep(max(0.05, BACKEND_READINESS_BACKOFF_MS / 1000.0))
-
 

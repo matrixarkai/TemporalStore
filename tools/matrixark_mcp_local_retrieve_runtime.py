@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 try:
@@ -66,7 +67,6 @@ try:
         stable_hash,
         starts_with_path,
         summarize_text,
-        time,
         tokens,
         tree_first_traversal,
     )
@@ -131,7 +131,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         stable_hash,
         starts_with_path,
         summarize_text,
-        time,
         tokens,
         tree_first_traversal,
     )

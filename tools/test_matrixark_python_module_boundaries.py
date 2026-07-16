@@ -86,6 +86,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         indexing_mod = importlib.import_module("tools.matrixark_mcp_indexing")
         storage_options_mod = importlib.import_module("tools.matrixark_mcp_storage_options")
         storage_schemas_mod = importlib.import_module("tools.matrixark_mcp_storage_schemas")
+        debug_mod = importlib.import_module("tools.matrixark_mcp_debug")
         native_helpers_mod = importlib.import_module("tools.matrixark_mcp_native_helpers")
         native_side_index_mod = importlib.import_module("tools.matrixark_mcp_native_side_index")
         native_pack_runtime_mod = importlib.import_module("tools.matrixark_mcp_native_pack_runtime")
@@ -165,6 +166,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIs(storage_schemas_mod.PART_STORAGE_OPTIONS_SCHEMA, storage_schemas_mod.RECORD_STORAGE_OPTIONS_SCHEMA)
         self.assertIs(core_mod.storage_options_for_record, storage_options_mod.storage_options_for_record)
         self.assertIs(core_mod.canonical_storage_route, storage_options_mod.canonical_storage_route)
+        self.assertIs(core_mod._mcp_debug_log, debug_mod._mcp_debug_log)
         self.assertIs(temporal_mod._float_metric_or_default, native_helpers_mod.float_metric_or_default)
         self.assertIs(temporal_mod._compact_native_selected_refs, native_helpers_mod.compact_native_selected_refs)
         self.assertEqual(
