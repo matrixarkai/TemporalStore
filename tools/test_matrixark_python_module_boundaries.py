@@ -79,6 +79,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         native_retrieve_mod = importlib.import_module("tools.matrixark_mcp_native_retrieve")
         retrieve_continuity_mod = importlib.import_module("tools.matrixark_mcp_retrieve_continuity")
         retrieve_deadline_mod = importlib.import_module("tools.matrixark_mcp_retrieve_deadline")
+        retrieve_fallback_mod = importlib.import_module("tools.matrixark_mcp_retrieve_fallback")
         retrieve_identity_mod = importlib.import_module("tools.matrixark_mcp_retrieve_identity")
         retrieve_resources_mod = importlib.import_module("tools.matrixark_mcp_retrieve_resources")
         retrieve_temporal_window_mod = importlib.import_module("tools.matrixark_mcp_retrieve_temporal_window")
@@ -295,6 +296,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(callable(retrieve_cache_mod.get_cached_context_pack))
         self.assertTrue(callable(native_retrieve_mod.try_native_context_pack))
         self.assertTrue(callable(retrieve_continuity_mod.annotate_session_continuity))
+        self.assertTrue(callable(retrieve_fallback_mod.deadline_fallback_pack))
         observed_stage_metrics: list[tuple[str, float]] = []
         tracker = retrieve_deadline_mod.RetrievalDeadlineTracker(
             started_perf=0.0,
