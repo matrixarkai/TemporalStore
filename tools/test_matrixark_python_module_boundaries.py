@@ -136,6 +136,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIs(core_mod.optional_object, validation_mod.optional_object)
         self.assertIs(core_mod.optional_string, validation_mod.optional_string)
         self.assertIs(core_mod.optional_string_list, validation_mod.optional_string_list)
+        self.assertIs(core_mod.integer_arg, validation_mod.integer_arg)
+        self.assertIs(core_mod.float_arg, validation_mod.float_arg)
         self.assertIs(core_mod.slug_candidates_from_query, query_mod.slug_candidates_from_query)
         self.assertIs(core_mod.path_candidates_from_query, query_mod.path_candidates_from_query)
         self.assertIs(core_mod.keyword_candidates_from_query, query_mod.keyword_candidates_from_query)
