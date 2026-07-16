@@ -243,6 +243,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(callable(serving_records_mod.materialize_serving_records))
         self.assertTrue(callable(budget_pack_mod.local_context_budget))
         self.assertTrue(callable(budget_pack_mod.local_context_refs_for_pack))
+        self.assertTrue(callable(budget_pack_mod.build_cross_session_policy))
+        self.assertTrue(callable(budget_pack_mod.build_shared_context_policy))
         self.assertTrue(callable(budget_pack_mod.select_token_budgeted_refs))
         self.assertIs(core_mod.compact_latest_context_state_records, serving_records_mod.compact_latest_context_state_records)
         self.assertIs(core_mod.sanitize_resource_metadata, resources_mod.sanitize_resource_metadata)
