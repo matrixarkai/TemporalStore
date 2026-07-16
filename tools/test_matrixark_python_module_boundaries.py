@@ -69,6 +69,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         ingest_planning_mod = importlib.import_module("tools.matrixark_mcp_ingest_planning")
         local_ingest_mod = importlib.import_module("tools.matrixark_mcp_local_ingest")
         batch_extract_planning_mod = importlib.import_module("tools.matrixark_mcp_batch_extract_planning")
+        local_batch_extract_runtime_mod = importlib.import_module("tools.matrixark_mcp_local_batch_extract_runtime")
         local_backend_mod = importlib.import_module("tools.matrixark_mcp_local_backend")
         local_idempotency_mod = importlib.import_module("tools.matrixark_mcp_local_idempotency")
         local_cache_mod = importlib.import_module("tools.matrixark_mcp_local_cache")
@@ -242,6 +243,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(callable(ingest_planning_mod.prepare_ingest_start))
         self.assertTrue(callable(local_ingest_mod.ingest_after_start))
         self.assertTrue(callable(batch_extract_planning_mod.prepare_batch_extract_start))
+        self.assertTrue(callable(local_batch_extract_runtime_mod.batch_extract_after_start))
         self.assertEqual(adapter.ensure_backend_ready()["backend"], local_backend_mod.ensure_backend_ready(adapter)["backend"])
         self.assertEqual(adapter.backend_metrics()["metrics_format"], local_backend_mod.backend_metrics(adapter)["metrics_format"])
         self.assertTrue(callable(local_backend_mod.observe_model_latency))
@@ -346,6 +348,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "matrixark_mcp_local_replay.py",
             "matrixark_mcp_local_runtime.py",
             "matrixark_mcp_local_retrieve_runtime.py",
+            "matrixark_mcp_local_batch_extract_runtime.py",
             "matrixark_mcp_errors.py",
             "matrixark_mcp_models.py",
             "matrixark_mcp_indexing.py",
