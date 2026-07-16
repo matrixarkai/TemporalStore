@@ -464,122 +464,18 @@ class MatrixArkLocalAdapter:
         min_compression_event_age_ms: int = TIME_COMPRESSION_MIN_EVENT_AGE_MS,
         raw_event_ttl_after_compression_ms: int = TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS,
     ) -> Json:
-        refreshed_at_ms = refreshed_at_ms or now_ms()
-        records = self.read_all()
-        pending_by_node = summary_runtime.pending_dirty_node_records(
-            records=records,
+        return summary_runtime.refresh_dirty_node_summaries(
+            self,
             scope=scope,
             limit=limit,
             refreshed_at_ms=refreshed_at_ms,
             max_raw_events_per_node=max_raw_events_per_node,
+            compression_window_events=compression_window_events,
+            min_compression_events=min_compression_events,
+            max_compression_windows_per_node=max_compression_windows_per_node,
             min_compression_event_age_ms=min_compression_event_age_ms,
-            context_event_ingestion_time_ms=self.context_event_ingestion_time_ms,
+            raw_event_ttl_after_compression_ms=raw_event_ttl_after_compression_ms,
         )
-        refreshed = []
-        for dirty in sorted(pending_by_node.values(), key=lambda item: int(item.get("updated_at_ms") or 0))[:limit]:
-            node_path = [str(part) for part in dirty.get("node_path", [])]
-            if not node_path:
-                continue
-            node_hash = int(dirty["node_hash"])
-            events, child_summaries, entity_states, operator_states, summary_source_policy = self.node_summary_source_records(
-                records=records,
-                node_path=node_path,
-                scope=dirty.get("scope", scope),
-                node_hash=node_hash,
-            )
-            summary_refresh_records = summary_runtime.build_node_summary_refresh_records(
-                node_path=node_path,
-                node_hash=node_hash,
-                scope=dirty.get("scope", scope),
-                events=events,
-                child_summaries=child_summaries,
-                entity_states=entity_states,
-                operator_states=operator_states,
-                summary_source_policy=summary_source_policy,
-                dirty_hash=dirty.get("dirty_hash"),
-                refreshed_at_ms=refreshed_at_ms,
-            )
-            self.append_many(summary_refresh_records["records"])
-            source_event_ids = summary_refresh_records["source_event_ids"]
-            source_summary_hashes = summary_refresh_records["source_summary_hashes"]
-            source_entity_hashes = summary_refresh_records["source_entity_hashes"]
-            source_operator_hashes = summary_refresh_records["source_operator_hashes"]
-            generated_summary_types = summary_refresh_records["generated_summary_types"]
-            l1_policy = summary_refresh_records["summary_generation_policy"]
-            compression_refresh = self.auto_time_compress_node_events(
-                records=records,
-                scope=dirty.get("scope", scope),
-                node_hash=node_hash,
-                node_path=node_path,
-                compressed_time_ms=refreshed_at_ms,
-                max_raw_events_per_node=max_raw_events_per_node,
-                max_source_events=compression_window_events,
-                min_source_events=min_compression_events,
-                max_windows=max_compression_windows_per_node,
-                min_event_age_ms=min_compression_event_age_ms,
-                raw_event_ttl_after_compression_ms=raw_event_ttl_after_compression_ms,
-            )
-            completion_marker = {
-                "record_type": "context_summary_dirty",
-                "dirty_hash": dirty.get("dirty_hash"),
-                "node_hash": node_hash,
-                "node_path": node_path,
-                "scope": dirty.get("scope", scope),
-                "status": "completed",
-                "updated_at_ms": refreshed_at_ms,
-                "completed_at_ms": refreshed_at_ms,
-            }
-            self.append(completion_marker)
-            if ENABLE_SUMMARY_REFRESH_AUDIT:
-                self.append(
-                    {
-                        "record_type": "context_summary_refresh_audit",
-                        "dirty_hash": dirty.get("dirty_hash"),
-                        "node_hash": node_hash,
-                        "node_path": node_path,
-                        "summary_version_hash": version_hash,
-                        "source_event_ids": source_event_ids,
-                        "source_summary_hashes": source_summary_hashes,
-                        "source_event_count": len(source_event_ids),
-                        "source_summary_count": len(source_summary_hashes),
-                        "generated_summary_types": generated_summary_types,
-                        "summary_generation_policy": l1_policy,
-                        "time_compression_policy": {
-                            "automatic": True,
-                            "max_raw_events_per_node": max_raw_events_per_node,
-                            "compression_window_events": compression_window_events,
-                            "min_compression_events": min_compression_events,
-                            "max_compression_windows_per_node": max_compression_windows_per_node,
-                            "min_compression_event_age_ms": min_compression_event_age_ms,
-                            "raw_event_ttl_after_compression_ms": raw_event_ttl_after_compression_ms,
-                        },
-                        "time_compression": compression_refresh,
-                        "status": "refreshed",
-                        "worker": "matrixark-local-async-summary-worker",
-                        "refreshed_at_ms": refreshed_at_ms,
-                        "scope": dirty.get("scope", scope),
-                    }
-                )
-            refreshed.append(
-                {
-                    "dirty_hash": dirty.get("dirty_hash"),
-                    "node_hash": node_hash,
-                    "node_path": node_path,
-                    "source_event_count": len(source_event_ids),
-                    "source_summary_count": len(source_summary_hashes),
-                    "source_entity_count": len(source_entity_hashes),
-                    "source_operator_count": len(source_operator_hashes),
-                    "generated_summary_types": generated_summary_types,
-                    "summary_generation_policy": l1_policy,
-                    "time_compression": compression_refresh,
-                }
-            )
-        return {
-            "status": "ok",
-            "refreshed_count": len(refreshed),
-            "compression_created_count": sum(int(item.get("time_compression", {}).get("created_count", 0)) for item in refreshed),
-            "refreshed": refreshed,
-        }
 
     def append_node_summary_embeddings(
         self,
