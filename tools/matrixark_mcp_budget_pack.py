@@ -36,14 +36,8 @@ try:
         Json,
         MatrixArkError,
         clip_context_text,
-        diversify_for_question_type,
         float_arg,
         integer_arg,
-        is_shared_resource_candidate,
-        is_shared_skill_candidate,
-        merge_ranked_paths,
-        packing_sort_key,
-        record_dropped_candidate,
         stable_hash,
         token_count,
         tokens,
@@ -77,17 +71,30 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         Json,
         MatrixArkError,
         clip_context_text,
-        diversify_for_question_type,
         float_arg,
         integer_arg,
+        stable_hash,
+        token_count,
+        tokens,
+    )
+
+try:
+    from tools.matrixark_mcp_recall_scoring import (
+        diversify_for_question_type,
         is_shared_resource_candidate,
         is_shared_skill_candidate,
         merge_ranked_paths,
         packing_sort_key,
         record_dropped_candidate,
-        stable_hash,
-        token_count,
-        tokens,
+    )
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_recall_scoring import (
+        diversify_for_question_type,
+        is_shared_resource_candidate,
+        is_shared_skill_candidate,
+        merge_ranked_paths,
+        packing_sort_key,
+        record_dropped_candidate,
     )
 
 
