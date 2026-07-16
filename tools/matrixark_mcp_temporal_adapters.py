@@ -83,6 +83,7 @@ try:
     from tools import matrixark_mcp_native_pack_runtime as native_pack_runtime
     from tools import matrixark_mcp_native_lookup_runtime as native_lookup_runtime
     from tools import matrixark_mcp_temporal_retrieval_records as temporal_retrieval_record_runtime
+    from tools import matrixark_mcp_temporal_record_load_runtime as temporal_record_load_runtime
     from tools import matrixark_mcp_temporal_readiness as temporal_readiness
     from tools import matrixark_mcp_temporal_proxy_readiness as temporal_proxy_readiness
     from tools.matrixark_mcp_raw_ingestion import (
@@ -109,6 +110,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_native_lookup_runtime as native_lookup_runtime
     import matrixark_mcp_temporal_readiness as temporal_readiness
     import matrixark_mcp_temporal_proxy_readiness as temporal_proxy_readiness
+    import matrixark_mcp_temporal_record_load_runtime as temporal_record_load_runtime
     from matrixark_mcp_direct_write_queue import (
         direct_write_durable_field,
         direct_write_durable_pending_count,
@@ -1206,106 +1208,16 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         )
 
     def _load_records_by_count(self, count: int) -> list[Json]:
-        records = []
-        self._last_read_all_native_shard_scan = False
-        scan_records = self._load_records_by_native_shard_scan(count)
-        if scan_records is not None:
-            self._last_read_all_native_shard_scan = True
-            return scan_records
-        batch_hget = getattr(self._client, "batch_hget", None)
-        if callable(batch_hget):
-            entries = []
-            for sequence in range(count):
-                record_key, record_id = self._record_location(sequence)
-                entries.append({"key": record_key, "field": record_id})
-            try:
-                read_records = batch_hget(entries)
-            except Exception:
-                read_records = []
-            for item in read_records:
-                if not isinstance(item, dict):
-                    continue
-                payload = item.get("value", "")
-                if not payload:
-                    continue
-                decoded = json.loads(str(payload))
-                if isinstance(decoded, dict) and isinstance(decoded.get("record_bundle"), list):
-                    records.extend(item for item in decoded["record_bundle"] if isinstance(item, dict))
-                elif isinstance(decoded, dict):
-                    records.append(decoded)
-            if records or count == 0:
-                return records
-        for sequence in range(count):
-            record_key, record_id = self._record_location(sequence)
-            try:
-                payload = self._client.hget(record_key, record_id)
-            except Exception:
-                continue
-            if not payload:
-                continue
-            decoded = json.loads(payload)
-            if isinstance(decoded, dict) and isinstance(decoded.get("record_bundle"), list):
-                records.extend(item for item in decoded["record_bundle"] if isinstance(item, dict))
-            elif isinstance(decoded, dict):
-                records.append(decoded)
-        return records
+        return temporal_record_load_runtime.load_records_by_count(self, count)
 
     def _load_records_by_native_shard_scan(self, count: int) -> list[Json] | None:
-        scanner = getattr(getattr(self, "_client", None), "scan_hash", None)
-        if not callable(scanner) or count <= 0:
-            return None
-        max_shard = (count - 1) // self._shard_size
-        records_by_sequence: list[tuple[int, Json]] = []
-        for shard in range(max_shard + 1):
-            key = f"{self._record_hash_key}:{shard:06d}"
-            try:
-                response = scanner(key)
-            except Exception:
-                return None
-            rows = response.get("records") if isinstance(response, dict) else None
-            if not isinstance(rows, list):
-                return None
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                field = str(row.get("field") or "")
-                value = row.get("value")
-                if not field or not isinstance(value, str):
-                    continue
-                try:
-                    offset = int(field)
-                    decoded = json.loads(value)
-                except Exception:
-                    continue
-                sequence = shard * self._shard_size + offset
-                if sequence >= count:
-                    continue
-                if isinstance(decoded, dict) and isinstance(decoded.get("record_bundle"), list):
-                    for item in decoded["record_bundle"]:
-                        if isinstance(item, dict):
-                            records_by_sequence.append((sequence, item))
-                elif isinstance(decoded, dict):
-                    records_by_sequence.append((sequence, decoded))
-        records_by_sequence.sort(key=lambda item: item[0])
-        return [record for _, record in records_by_sequence]
+        return temporal_record_load_runtime.load_records_by_native_shard_scan(self, count)
 
     def _record_location(self, sequence: int) -> tuple[str, str]:
-        shard = sequence // self._shard_size
-        offset = sequence % self._shard_size
-        return f"{self._record_hash_key}:{shard:06d}", f"{offset:020d}"
+        return temporal_record_load_runtime.record_location(self, sequence)
 
     def _load_records(self, index: list[str]) -> list[Json]:
-        records = []
-        for record_id in index:
-            try:
-                payload = self._client.hget(self._record_hash_key, record_id)
-            except Exception:
-                continue
-            if not payload:
-                continue
-            records.append(json.loads(payload))
-        return records
-
+        return temporal_record_load_runtime.load_records(self, index)
 
 
 try:
