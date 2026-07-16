@@ -35,6 +35,7 @@ try:
         DEFAULT_SHARED_RESOURCE_MAX_BUDGET_TOKENS,
         DEFAULT_SHARED_SKILL_BUDGET_RATIO,
         DEFAULT_SHARED_SKILL_MAX_BUDGET_TOKENS,
+        HARD_MAX_CHILDREN_SCORED_PER_PARENT,
     )
     from tools.matrixark_mcp_scoring import tokens
     from tools.matrixark_mcp_text import clip_context_text, token_count
@@ -67,6 +68,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         DEFAULT_SHARED_RESOURCE_MAX_BUDGET_TOKENS,
         DEFAULT_SHARED_SKILL_BUDGET_RATIO,
         DEFAULT_SHARED_SKILL_MAX_BUDGET_TOKENS,
+        HARD_MAX_CHILDREN_SCORED_PER_PARENT,
     )
     from matrixark_mcp_scoring import tokens
     from matrixark_mcp_text import clip_context_text, token_count
@@ -74,6 +76,16 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 
 Json = dict[str, Any]
+
+
+def bounded_max_children_scored_per_parent(value: int) -> int:
+    hard_cap = max(1, HARD_MAX_CHILDREN_SCORED_PER_PARENT)
+    if value > hard_cap:
+        raise MatrixArkError(
+            "max_children_scored_per_parent must be <= "
+            f"{hard_cap}; split over-wide ContextNode children into deeper node layers"
+        )
+    return value
 
 try:
     from tools.matrixark_mcp_recall_scoring import (

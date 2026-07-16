@@ -28,6 +28,7 @@ from tools.matrixark_mcp_server import (  # noqa: E402
     MatrixArkMcpServer,
 )
 from tools import matrixark_mcp_core as mcp_core  # noqa: E402
+from tools import matrixark_mcp_serving_records as serving_records  # noqa: E402
 
 
 Json = dict[str, Any]
@@ -1166,6 +1167,7 @@ def main() -> int:
     )
     args = parser.parse_args()
     mcp_core.ENABLE_CONTEXT_DEBUG_RECORDS = bool(args.include_debug_audit)
+    serving_records.ENABLE_CONTEXT_DEBUG_RECORDS = bool(args.include_debug_audit)
     mcp_core.ENABLE_CONTEXT_REPLAY = bool(args.include_debug_audit)
     mcp_core.ENABLE_SUMMARY_REFRESH_AUDIT = bool(args.include_debug_audit)
 
