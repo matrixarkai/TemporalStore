@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import hashlib
-import math
 import queue
 import subprocess
 import threading
@@ -48,6 +47,11 @@ try:
         initialize_rust_proxy_metrics_state,
     )
     from tools import matrixark_mcp_rust_proxy_metrics_snapshot as metrics_snapshot_helpers
+    from tools.matrixark_mcp_rust_proxy_metrics_record import (
+        count_context_record,
+        nested_float,
+        percentile,
+    )
     from tools.matrixark_mcp_rust_proxy_process import (
         close_proxy_lanes,
         close_proxy_process,
@@ -83,6 +87,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         string_cache_put,
     )
     import matrixark_mcp_rust_proxy_metrics_snapshot as metrics_snapshot_helpers
+    from matrixark_mcp_rust_proxy_metrics_record import (
+        count_context_record,
+        nested_float,
+        percentile,
+    )
     from matrixark_mcp_rust_proxy_config import initialize_rust_proxy_config
     from matrixark_mcp_rust_proxy_lanes import build_lane_pools
     from matrixark_mcp_rust_proxy_metrics_state import (
@@ -453,42 +462,14 @@ class MatrixArkRustProxyClient:
 
     @staticmethod
     def _nested_float(payload: Json, *paths: str) -> float:
-        for path in paths:
-            current: Any = payload
-            for part in path.split("."):
-                if not isinstance(current, dict) or part not in current:
-                    current = None
-                    break
-                current = current[part]
-            if current is None:
-                continue
-            try:
-                return float(current)
-            except (TypeError, ValueError):
-                continue
-        return 0.0
+        return nested_float(payload, *paths)
 
     def _count_context_record(self, value: Any) -> None:
-        if not isinstance(value, str) or not value.startswith("{"):
-            return
-        if '"record_type"' not in value:
-            return
-        try:
-            payload = json.loads(value)
-        except Exception:
-            return
-        record_type = str(payload.get("record_type") or "")
-        if not record_type:
-            return
-        self._context_record_counts[record_type] = self._context_record_counts.get(record_type, 0) + 1
+        count_context_record(self._context_record_counts, value)
 
     @staticmethod
-    def _percentile(values: list[float], percentile: float) -> float:
-        if not values:
-            return 0.0
-        ordered = sorted(values)
-        index = min(len(ordered) - 1, max(0, math.ceil(percentile * len(ordered)) - 1))
-        return ordered[index]
+    def _percentile(values: list[float], percentile_value: float) -> float:
+        return percentile(values, percentile_value)
 
     def matrixark_retrieve_context_pack(
         self,
