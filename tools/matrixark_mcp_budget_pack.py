@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Callable
+from typing import Any, Callable
 
 try:
-    from tools.matrixark_mcp_core import (
+    from tools.matrixark_mcp_errors import MatrixArkError
+    from tools.matrixark_mcp_identity import stable_hash
+    from tools.matrixark_mcp_runtime_config import (
         DEFAULT_BUDGET_FILL_POLICY,
         DEFAULT_CROSS_SESSION_BROAD_BUDGET_RATIO,
         DEFAULT_CROSS_SESSION_BUDGET_RATIO,
@@ -33,17 +35,14 @@ try:
         DEFAULT_SHARED_RESOURCE_MAX_BUDGET_TOKENS,
         DEFAULT_SHARED_SKILL_BUDGET_RATIO,
         DEFAULT_SHARED_SKILL_MAX_BUDGET_TOKENS,
-        Json,
-        MatrixArkError,
-        clip_context_text,
-        float_arg,
-        integer_arg,
-        stable_hash,
-        token_count,
-        tokens,
     )
+    from tools.matrixark_mcp_scoring import tokens
+    from tools.matrixark_mcp_text import clip_context_text, token_count
+    from tools.matrixark_mcp_validation import float_arg, integer_arg
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_core import (
+    from matrixark_mcp_errors import MatrixArkError
+    from matrixark_mcp_identity import stable_hash
+    from matrixark_mcp_runtime_config import (
         DEFAULT_BUDGET_FILL_POLICY,
         DEFAULT_CROSS_SESSION_BROAD_BUDGET_RATIO,
         DEFAULT_CROSS_SESSION_BUDGET_RATIO,
@@ -68,15 +67,13 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         DEFAULT_SHARED_RESOURCE_MAX_BUDGET_TOKENS,
         DEFAULT_SHARED_SKILL_BUDGET_RATIO,
         DEFAULT_SHARED_SKILL_MAX_BUDGET_TOKENS,
-        Json,
-        MatrixArkError,
-        clip_context_text,
-        float_arg,
-        integer_arg,
-        stable_hash,
-        token_count,
-        tokens,
     )
+    from matrixark_mcp_scoring import tokens
+    from matrixark_mcp_text import clip_context_text, token_count
+    from matrixark_mcp_validation import float_arg, integer_arg
+
+
+Json = dict[str, Any]
 
 try:
     from tools.matrixark_mcp_recall_scoring import (
