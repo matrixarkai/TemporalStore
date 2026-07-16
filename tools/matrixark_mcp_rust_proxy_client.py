@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-import hashlib
 import queue
 import subprocess
 import threading
@@ -42,6 +41,10 @@ try:
     )
     from tools.matrixark_mcp_rust_proxy_config import initialize_rust_proxy_config
     from tools.matrixark_mcp_rust_proxy_lanes import build_lane_pools
+    from tools.matrixark_mcp_rust_proxy_lane_select import (
+        lane_group_for_op,
+        pack_lane_sticky_index,
+    )
     from tools.matrixark_mcp_rust_proxy_metrics_state import (
         initialize_rust_proxy_cache_state,
         initialize_rust_proxy_metrics_state,
@@ -94,6 +97,10 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
     from matrixark_mcp_rust_proxy_config import initialize_rust_proxy_config
     from matrixark_mcp_rust_proxy_lanes import build_lane_pools
+    from matrixark_mcp_rust_proxy_lane_select import (
+        lane_group_for_op,
+        pack_lane_sticky_index,
+    )
     from matrixark_mcp_rust_proxy_metrics_state import (
         initialize_rust_proxy_cache_state,
         initialize_rust_proxy_metrics_state,
@@ -180,52 +187,10 @@ class MatrixArkRustProxyClient:
         return {"ok": True, "group": group, "lanes": len(lanes), "started": started}
 
     def _lane_group_for_op(self, op: str) -> str:
-        if op in {
-            "batch_hset",
-            "matrixark_append_records",
-            "matrixark_batch_append_records",
-            "matrixark_batch_append_raw_ingestion_records",
-            "hset",
-            "put_string",
-            "write_matrixark_record",
-            "write_matrixark_records",
-        }:
-            return "write"
-        if op in {"matrixark_retrieve_context_pack"}:
-            return "pack"
-        if op in {"batch_hget", "hgetall", "scan_hash", "hget", "get_string", "read_matrixark_record", "read_matrixark_records"}:
-            return "read"
-        return "control"
+        return lane_group_for_op(op)
 
     def _pack_lane_sticky_index(self, lanes: list[Json], kwargs: Json) -> int | None:
-        if not lanes or len(lanes) <= 1:
-            return None
-        request = kwargs.get("record")
-        if isinstance(request, dict):
-            query_id = request.get("query_id")
-            if isinstance(query_id, int):
-                return query_id % len(lanes)
-            try:
-                if query_id is not None:
-                    return int(str(query_id)) % len(lanes)
-            except (TypeError, ValueError):
-                pass
-        query = request.get("query") if isinstance(request, dict) else ""
-        ranking = request.get("ranking") if isinstance(request, dict) else {}
-        sticky_payload = {
-            "count_key": kwargs.get("count_key"),
-            "record_hash_key": kwargs.get("record_hash_key"),
-            "scope": kwargs.get("scope"),
-            "secondary_index_groups": kwargs.get("secondary_index_groups"),
-            "query": query,
-            "max_selected_refs": ranking.get("max_selected_refs") if isinstance(ranking, dict) else None,
-        }
-        try:
-            encoded = json.dumps(sticky_payload, sort_keys=True, separators=(",", ":")).encode()
-        except Exception:
-            return None
-        digest = hashlib.blake2b(encoded, digest_size=8).digest()
-        return int.from_bytes(digest, "big") % len(lanes)
+        return pack_lane_sticky_index(lanes, kwargs)
 
     def _choose_lane(self, op: str, kwargs: Json | None = None) -> tuple[str, Json]:
         group = self._lane_group_for_op(op)
