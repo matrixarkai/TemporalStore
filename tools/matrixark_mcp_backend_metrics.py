@@ -251,3 +251,37 @@ def backend_metrics(target: Any) -> Json:
             "records_read_total": target._records_read_total,
         },
     }
+
+
+class BackendMetricsAdapterMixin:
+    """Adapter methods for TemporalStore backend metrics."""
+
+    def _ensure_backend_metric_fields(self) -> None:
+        ensure_temporal_backend_metric_fields(self)
+
+    def _observe_append_queue_wait(self, elapsed_ms: float) -> None:
+        observe_append_queue_wait(self, elapsed_ms)
+
+    def _observe_append_engine(self, elapsed_ms: float) -> None:
+        observe_append_engine(self, elapsed_ms)
+
+    def _append_queue_wait_ms_avg(self) -> float:
+        return append_queue_wait_ms_avg(self)
+
+    def _append_engine_ms_avg(self) -> float:
+        return append_engine_ms_avg(self)
+
+    def _observe_backend_command(self, elapsed_ms: float, *, records_written: int = 0, records_read: int = 0, failed: bool = False) -> None:
+        observe_backend_command(
+            self,
+            elapsed_ms,
+            records_written=records_written,
+            records_read=records_read,
+            failed=failed,
+        )
+
+    def _backend_prometheus(self) -> str:
+        return backend_prometheus(self)
+
+    def backend_metrics(self) -> Json:
+        return backend_metrics(self)

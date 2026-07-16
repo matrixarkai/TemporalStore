@@ -90,7 +90,7 @@ try:
     from tools.matrixark_mcp_backend_metric_state import (
         initialize_backend_metric_state,
     )
-    from tools import matrixark_mcp_backend_metrics as backend_metrics_helpers
+    from tools.matrixark_mcp_backend_metrics import BackendMetricsAdapterMixin
     from tools import matrixark_mcp_direct_cache as direct_cache_helpers
     from tools import matrixark_mcp_temporal_append as temporal_append_helpers
     from tools.matrixark_mcp_direct_write_queue import (
@@ -119,7 +119,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_backend_metric_state import (
         initialize_backend_metric_state,
     )
-    import matrixark_mcp_backend_metrics as backend_metrics_helpers
+    from matrixark_mcp_backend_metrics import BackendMetricsAdapterMixin
     import matrixark_mcp_direct_cache as direct_cache_helpers
     import matrixark_mcp_temporal_append as temporal_append_helpers
     import matrixark_mcp_native_lookup_runtime as native_lookup_runtime
@@ -162,6 +162,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 
 class MatrixArkTemporalStoreDirectAdapter(
+    BackendMetricsAdapterMixin,
     LatestContextStateAdapterMixin,
     NativeSideIndexAdapterMixin,
     RawIngestionAdapterMixin,
@@ -347,36 +348,6 @@ class MatrixArkTemporalStoreDirectAdapter(
 
     def python_hot_cache_enabled(self) -> bool:
         return python_hot_cache_allowed(backend_label=self._backend_label())
-
-    def _ensure_backend_metric_fields(self) -> None:
-        backend_metrics_helpers.ensure_temporal_backend_metric_fields(self)
-
-    def _observe_append_queue_wait(self, elapsed_ms: float) -> None:
-        backend_metrics_helpers.observe_append_queue_wait(self, elapsed_ms)
-
-    def _observe_append_engine(self, elapsed_ms: float) -> None:
-        backend_metrics_helpers.observe_append_engine(self, elapsed_ms)
-
-    def _append_queue_wait_ms_avg(self) -> float:
-        return backend_metrics_helpers.append_queue_wait_ms_avg(self)
-
-    def _append_engine_ms_avg(self) -> float:
-        return backend_metrics_helpers.append_engine_ms_avg(self)
-
-    def _observe_backend_command(self, elapsed_ms: float, *, records_written: int = 0, records_read: int = 0, failed: bool = False) -> None:
-        backend_metrics_helpers.observe_backend_command(
-            self,
-            elapsed_ms,
-            records_written=records_written,
-            records_read=records_read,
-            failed=failed,
-        )
-
-    def _backend_prometheus(self) -> str:
-        return backend_metrics_helpers.backend_prometheus(self)
-
-    def backend_metrics(self) -> Json:
-        return backend_metrics_helpers.backend_metrics(self)
 
     def ensure_backend_ready(self, *, reason: str = "manual", probe: bool = True, timeout_ms: int | None = None) -> Json:
         return temporal_proxy_readiness.ensure_backend_ready(
