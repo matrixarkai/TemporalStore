@@ -678,6 +678,22 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
 
 
+try:
+    from tools.matrixark_mcp_extraction_normalization import (
+        normalize_entity_operator,
+        normalize_extracted_entities,
+        normalize_extracted_facts,
+        normalize_extracted_segments,
+    )
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_extraction_normalization import (
+        normalize_entity_operator,
+        normalize_extracted_entities,
+        normalize_extracted_facts,
+        normalize_extracted_segments,
+    )
+
+
 _RUNTIME_CONFIG_EXPORTS = (
     "AUDIT_DEBUG_PAYLOAD",
     "BACKEND_READINESS_BACKOFF_MS",
@@ -789,41 +805,6 @@ _DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES = int(os.environ.get("MATRIXARK_DI
 _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE: dict[str, list[tuple[str, int, int, Json]]] = {}
 _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_LOCK = threading.RLock()
 _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES = int(os.environ.get("MATRIXARK_DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES", "1024"))
-
-
-def normalize_entity_operator(raw_operator: Any, entity_type: str) -> str:
-    try:
-        from tools.matrixark_mcp_extraction_normalization import normalize_entity_operator as _normalize_entity_operator
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_extraction_normalization import normalize_entity_operator as _normalize_entity_operator
-
-    return _normalize_entity_operator(raw_operator, entity_type)
-
-def normalize_extracted_entities(raw_entities: Any, *, fallback_text: str, source_refs: list[str], extracted_by: str) -> list[Json]:
-    try:
-        from tools.matrixark_mcp_extraction_normalization import normalize_extracted_entities as _normalize_extracted_entities
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_extraction_normalization import normalize_extracted_entities as _normalize_extracted_entities
-
-    return _normalize_extracted_entities(raw_entities, fallback_text=fallback_text, source_refs=source_refs, extracted_by=extracted_by)
-
-
-def normalize_extracted_segments(raw_segments: Any, messages: list[Json]) -> list[Json]:
-    try:
-        from tools.matrixark_mcp_extraction_normalization import normalize_extracted_segments as _normalize_extracted_segments
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_extraction_normalization import normalize_extracted_segments as _normalize_extracted_segments
-
-    return _normalize_extracted_segments(raw_segments, messages)
-
-
-def normalize_extracted_facts(raw_facts: Any, *, chunk: Any, chunk_metadata: Json, raw_uri: str, resource_version: str, provider: str) -> list[Json]:
-    try:
-        from tools.matrixark_mcp_extraction_normalization import normalize_extracted_facts as _normalize_extracted_facts
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_extraction_normalization import normalize_extracted_facts as _normalize_extracted_facts
-
-    return _normalize_extracted_facts(raw_facts, chunk=chunk, chunk_metadata=chunk_metadata, raw_uri=raw_uri, resource_version=resource_version, provider=provider)
 
 
 try:

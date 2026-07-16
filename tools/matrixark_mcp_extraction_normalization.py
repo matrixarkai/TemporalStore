@@ -12,22 +12,16 @@ try:
     from tools.matrixark_mcp_entity_ops import entity_patch
     from tools.matrixark_mcp_errors import MatrixArkError
     from tools.matrixark_mcp_resources import resource_fact_entity_name
+    from tools.matrixark_mcp_runtime_config import DEFAULT_ENTITY_MERGE_OPERATOR, ENABLE_LLM_MERGE_OPERATOR
     from tools.matrixark_mcp_summaries import summarize_text
     from tools.matrixark_mcp_text import text_from_messages
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_entity_ops import entity_patch
     from matrixark_mcp_errors import MatrixArkError
     from matrixark_mcp_resources import resource_fact_entity_name
+    from matrixark_mcp_runtime_config import DEFAULT_ENTITY_MERGE_OPERATOR, ENABLE_LLM_MERGE_OPERATOR
     from matrixark_mcp_summaries import summarize_text
     from matrixark_mcp_text import text_from_messages
-
-
-def _core_runtime() -> Any:
-    try:
-        from tools import matrixark_mcp_core as core
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        import matrixark_mcp_core as core
-    return core
 
 
 def normalize_entity_operator(raw_operator: Any, entity_type: str) -> str:
@@ -40,9 +34,9 @@ def normalize_entity_operator(raw_operator: Any, entity_type: str) -> str:
     """
     if entity_type in {"confirmation", "correction"}:
         return "LATEST"
-    operator = str(raw_operator or _core_runtime().DEFAULT_ENTITY_MERGE_OPERATOR).strip().upper() or _core_runtime().DEFAULT_ENTITY_MERGE_OPERATOR
-    if operator == "LLM_MERGE" and not _core_runtime().ENABLE_LLM_MERGE_OPERATOR:
-        return _core_runtime().DEFAULT_ENTITY_MERGE_OPERATOR
+    operator = str(raw_operator or DEFAULT_ENTITY_MERGE_OPERATOR).strip().upper() or DEFAULT_ENTITY_MERGE_OPERATOR
+    if operator == "LLM_MERGE" and not ENABLE_LLM_MERGE_OPERATOR:
+        return DEFAULT_ENTITY_MERGE_OPERATOR
     return operator
 
 
@@ -85,7 +79,11 @@ def normalize_extracted_entities(raw_entities: Any, *, fallback_text: str, sourc
 def normalize_extracted_segments(raw_segments: Any, messages: list[Json]) -> list[Json]:
     if isinstance(raw_segments, list):
         try:
-            return _core_runtime().normalize_model_segments({"segments": raw_segments}, messages)
+            try:
+                from tools.matrixark_mcp_extraction_runtime import normalize_model_segments
+            except ModuleNotFoundError:  # Direct script execution from tools/.
+                from matrixark_mcp_extraction_runtime import normalize_model_segments
+            return normalize_model_segments({"segments": raw_segments}, messages)
         except MatrixArkError:
             return []
     return []
