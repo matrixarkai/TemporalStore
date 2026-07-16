@@ -49,6 +49,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         local_mod = importlib.import_module("tools.matrixark_mcp_local_adapter")
         local_portal_imports_mod = importlib.import_module("tools.matrixark_mcp_local_portal_imports")
         temporal_mod = importlib.import_module("tools.matrixark_mcp_temporal_adapters")
+        temporal_direct_cache_mod = importlib.import_module("tools.matrixark_mcp_temporal_direct_cache")
         admin_mod = importlib.import_module("tools.matrixark_mcp_admin")
         backends_mod = importlib.import_module("tools.matrixark_mcp_backends")
         dispatch_mod = importlib.import_module("tools.matrixark_mcp_dispatch")
@@ -155,6 +156,12 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIs(server_mod.MatrixArkLocalAdapter, local_mod.MatrixArkLocalAdapter)
         self.assertTrue(issubclass(local_mod.MatrixArkLocalAdapter, local_portal_imports_mod.MatrixArkLocalPortalImportMixin))
         self.assertIs(server_mod.MatrixArkTemporalStoreDirectAdapter, temporal_mod.MatrixArkTemporalStoreDirectAdapter)
+        self.assertTrue(
+            issubclass(
+                temporal_mod.MatrixArkTemporalStoreDirectAdapter,
+                temporal_direct_cache_mod.TemporalDirectCacheAdapterMixin,
+            )
+        )
         self.assertTrue(callable(env_mod.env_bool))
         self.assertTrue(callable(env_mod.env_float))
         self.assertIs(server_mod.MatrixArkTemporalStoreRustAdapter, temporal_mod.MatrixArkTemporalStoreRustAdapter)
