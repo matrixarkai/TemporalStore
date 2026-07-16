@@ -91,6 +91,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_ingest_planning as ingest_planning_helpers
 
 try:
+    from tools import matrixark_mcp_batch_extract_planning as batch_extract_planning_helpers
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_batch_extract_planning as batch_extract_planning_helpers
+
+try:
     from tools import matrixark_mcp_session_runtime as session_runtime
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_session_runtime as session_runtime
@@ -1749,21 +1754,14 @@ class MatrixArkLocalAdapter:
         }
 
     def batch_extract(self, args: Json, *, hook: Json | None = None) -> Json:
-        envelope = normalize_envelope(args, default_kind="message")
-        hook = validate_hook(hook)
-        threshold = args.get("threshold_messages", 20)
-        force = bool(args.get("force", False))
-        derive_from_existing_events = bool(args.get("derive_from_existing_events", False))
-        source_event_ids = [int(ref) for ref in args.get("source_event_ids", [])] if isinstance(args.get("source_event_ids", []), list) else []
-        if not isinstance(threshold, int) or threshold <= 0:
-            raise MatrixArkError("threshold_messages must be a positive integer")
-        if len(envelope["messages"]) < threshold and not force:
-            return {
-                "status": "deferred",
-                "message_count": len(envelope["messages"]),
-                "threshold_messages": threshold,
-                "reason": "logical batch below extraction threshold",
-            }
+        batch_start = batch_extract_planning_helpers.prepare_batch_extract_start(args, hook=hook)
+        envelope = batch_start["envelope"]
+        hook = batch_start["hook"]
+        threshold = batch_start["threshold"]
+        derive_from_existing_events = bool(batch_start["derive_from_existing_events"])
+        source_event_ids = list(batch_start["source_event_ids"])
+        if batch_start.get("deferred_result") is not None:
+            return batch_start["deferred_result"]
 
         prior_records = [] if args.get("skip_prior_context") else self.read_all()
         prior_context = (
