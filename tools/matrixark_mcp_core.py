@@ -2288,11 +2288,21 @@ def sharing_scope_from_candidate(candidate: Json) -> str:
 
 
 def is_shared_resource_candidate(candidate: Json) -> bool:
-    return str(candidate.get("ref_type") or "") == "resource_chunk" and sharing_scope_from_candidate(candidate) in {"tenant_shared", "global_shared"}
+    try:
+        from tools.matrixark_mcp_recall_scoring import is_shared_resource_candidate as _is_shared_resource_candidate
+    except ModuleNotFoundError:  # Direct script execution from tools/.
+        from matrixark_mcp_recall_scoring import is_shared_resource_candidate as _is_shared_resource_candidate
+
+    return _is_shared_resource_candidate(candidate)
 
 
 def is_shared_skill_candidate(candidate: Json) -> bool:
-    return str(candidate.get("ref_type") or "") == "skill_section" and sharing_scope_from_candidate(candidate) in {"tenant_shared", "global_shared"}
+    try:
+        from tools.matrixark_mcp_recall_scoring import is_shared_skill_candidate as _is_shared_skill_candidate
+    except ModuleNotFoundError:  # Direct script execution from tools/.
+        from matrixark_mcp_recall_scoring import is_shared_skill_candidate as _is_shared_skill_candidate
+
+    return _is_shared_skill_candidate(candidate)
 
 
 def bounded_max_children_scored_per_parent(value: int) -> int:
@@ -2306,151 +2316,75 @@ def bounded_max_children_scored_per_parent(value: int) -> int:
 
 
 def score_recall_candidate(candidate: Json, ranking: Json, *, reference_time_ms: int) -> Json:
-    freshness_tolerance_ms = integer_arg(
-        ranking,
-        "freshness_tolerance_ms",
-        DEFAULT_TIME_DECAY_TOLERANCE_MS,
-        minimum=0,
-    )
-    half_life_ms = integer_arg(
-        ranking,
-        "half_life_ms",
-        DEFAULT_TIME_DECAY_HALFLIFE_MS,
-        minimum=1,
-    )
-    type_weights = {**DEFAULT_BUSINESS_TYPE_WEIGHTS, **optional_object(ranking, "business_type_weights")}
-    weights = optional_object(ranking, "weights")
-    origin_score = clamp01(candidate.get("origin_score"))
-    s_time = time_decay_score(
-        candidate.get("updated_at_ms"),
-        reference_time_ms=reference_time_ms,
-        freshness_tolerance_ms=freshness_tolerance_ms,
-        half_life_ms=half_life_ms,
-    )
-    s_busi = business_score_for_candidate(candidate, type_weights)
-    continuity_boost = session_continuity_boost(candidate, str(candidate.get("question_type") or candidate.get("packing_policy") or "fact"))
-    cross_session_rerank_boost = cross_session_rerank_adjustment(candidate, str(candidate.get("question_type") or candidate.get("packing_policy") or "fact"))
-    final_score = clamp01(final_recall_score(origin_score, s_time, s_busi, weights) + continuity_boost + cross_session_rerank_boost)
-    return {
-        **candidate,
-        "origin_score": origin_score,
-        "time_score": s_time,
-        "business_score": s_busi,
-        "continuity_boost": round(continuity_boost, 6),
-        "cross_session_rerank_boost": round(cross_session_rerank_boost, 6),
-        "final_score": final_score,
-        "score": final_score,
-        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi+continuity_boost+cross_session_rerank_boost",
-    }
+    try:
+        from tools.matrixark_mcp_recall_scoring import score_recall_candidate as _score_recall_candidate
+    except ModuleNotFoundError:  # Direct script execution from tools/.
+        from matrixark_mcp_recall_scoring import score_recall_candidate as _score_recall_candidate
+
+    return _score_recall_candidate(candidate, ranking, reference_time_ms=reference_time_ms)
 
 
 def merge_ranked_paths(primary: list[Json], auxiliary: list[Json], *, total_limit: int, auxiliary_quota: int) -> list[Json]:
-    selected: list[Json] = []
-    seen: set[tuple[str, Any]] = set()
+    try:
+        from tools.matrixark_mcp_recall_scoring import merge_ranked_paths as _merge_ranked_paths
+    except ModuleNotFoundError:  # Direct script execution from tools/.
+        from matrixark_mcp_recall_scoring import merge_ranked_paths as _merge_ranked_paths
 
-    def take(items: list[Json], limit: int) -> None:
-        for item in items:
-            key = (str(item.get("ref_type", "")), item.get("ref_hash"))
-            if key in seen:
-                continue
-            selected.append(item)
-            seen.add(key)
-            if len(selected) >= limit:
-                return
-
-    auxiliary_quota = max(0, min(auxiliary_quota, total_limit))
-    primary_quota = max(0, total_limit - auxiliary_quota)
-    take(primary, primary_quota)
-    take(auxiliary, total_limit)
-    if len(selected) < total_limit:
-        take(primary, total_limit)
-    return selected[:total_limit]
+    return _merge_ranked_paths(primary, auxiliary, total_limit=total_limit, auxiliary_quota=auxiliary_quota)
 
 
 def question_type_ref_boost(candidate: Json, question_type: str) -> float:
-    ref_type = str(candidate.get("ref_type", ""))
-    context_class = str(candidate.get("context_class") or ref_type)
-    text = str(candidate.get("text", "")).lower()
-    event_type = str(candidate.get("event_type") or candidate.get("entity_type") or candidate.get("topic") or "").lower()
-    has_citation = bool(candidate.get("source_ref") or candidate.get("citation") or candidate.get("source_chunk_hash"))
-    if question_type == "procedure":
-        if ref_type == "skill_section":
-            return 0.36
-        if context_class in {"resource_fact", "resource_entity_fact"} and re.search(r"\b(procedure|troubleshoot|debug|rollback|runbook|checklist|alert|fix|remediation|mitigation)\b", event_type + " " + text):
-            return 0.34
-        if ref_type == "resource_chunk" and re.search(r"\b(procedure|troubleshoot|debug|rollback|runbook|checklist|alert|fix|remediation|mitigation)\b", text):
-            return 0.30
-        return 0.0
-    if question_type == "broad_exploration":
-        if ref_type == "summary":
-            return 0.35
-        if ref_type in {"segment", "compression"}:
-            return 0.16
-        return 0.02 if ref_type in {"resource_chunk", "event", "entity"} else 0.0
-    if ref_type == "compression" and question_type in {"fact", "current_state", "multi_hop"}:
-        source_count = len(candidate.get("source_event_ids", []) or [])
-        # Multi-event TIME_COMPRESS records should win tight fact/current/multi-hop packs
-        # because they preserve an old answer-bearing window in fewer tokens.
-        return 0.50 if source_count >= 2 else 0.24
-    if question_type == "current_state":
-        if ref_type == "entity":
-            return 0.30
-        if context_class == "resource_entity_fact":
-            return 0.28
-        if context_class == "resource_fact" or "correction" in event_type or "confirmation" in event_type:
-            return 0.18
-        if ref_type == "resource_chunk" and has_citation:
-            return 0.10
-        return 0.0
-    if question_type == "evidence":
-        if ref_type == "resource_chunk" and has_citation:
-            return 0.30
-        if ref_type == "event":
-            return 0.24
-        return 0.05 if ref_type == "segment" else 0.0
-    if question_type == "date":
-        if ref_type == "event" and re.search(r"\b(20\d{2}|19\d{2}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|monday|tuesday|wednesday|thursday|friday|saturday|sunday|before|after|on)\b", text):
-            return 0.28
-        return 0.08 if ref_type == "entity" else 0.0
-    if question_type == "multi_hop":
-        return 0.14 if ref_type in {"entity", "segment"} else 0.04
-    if question_type == "why_emotion":
-        return 0.18 if re.search(r"\b(because|reason|felt|feel|happy|sad|angry|worried|excited|concerned)\b", text) else 0.0
-    if question_type == "fact":
-        negated_approval = bool(
-            re.search(r"\b(no|not|without|missing|lacks?|lacked)\b.{0,48}\b(approval|approved|decision)\b", text)
-            or re.search(r"\b(approval|approved|decision)\b.{0,48}\b(no|not|without|missing|lacks?|lacked)\b", text)
-        )
-        affirmative_approval = bool(re.search(r"\b(approved|approval granted|approval confirmed|confirmed approval)\b", text))
-        if negated_approval and not affirmative_approval:
-            return -0.12
-        if affirmative_approval:
-            return 0.38 if ref_type in {"event", "entity"} else 0.26
-        if context_class in {"resource_fact", "resource_entity_fact"}:
-            return 0.30
-        if ref_type in {"entity", "event"}:
-            return 0.18
-        if ref_type == "resource_chunk" and has_citation:
-            return 0.06
-        return 0.03
-    return 0.0
+    try:
+        from tools.matrixark_mcp_recall_scoring import question_type_ref_boost as _question_type_ref_boost
+    except ModuleNotFoundError:  # Direct script execution from tools/.
+        from matrixark_mcp_recall_scoring import question_type_ref_boost as _question_type_ref_boost
+
+    return _question_type_ref_boost(candidate, question_type)
 
 
 def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float, float]:
-    score = float(candidate.get("score", 0.0))
-    boosted = clamp01(
-        score
-        + question_type_ref_boost(candidate, question_type)
-        + session_continuity_boost(candidate, question_type)
-        + cross_session_rerank_adjustment(candidate, question_type)
-    )
-    token_efficiency = boosted / max(1, token_count(str(candidate.get("text", ""))))
-    if candidate.get("ref_type") == "compression" and question_type in {"fact", "current_state", "multi_hop"}:
-        source_count = len(candidate.get("source_event_ids", []) or [])
-        if source_count >= 2:
-            token_efficiency *= 1.5
-    return (boosted, token_efficiency, score)
+    try:
+        from tools.matrixark_mcp_recall_scoring import packing_sort_key as _packing_sort_key
+    except ModuleNotFoundError:  # Direct script execution from tools/.
+        from matrixark_mcp_recall_scoring import packing_sort_key as _packing_sort_key
 
+    return _packing_sort_key(candidate, question_type)
+
+
+def is_resource_or_skill_candidate(candidate: Json) -> bool:
+    try:
+        from tools.matrixark_mcp_recall_scoring import is_resource_or_skill_candidate as _is_resource_or_skill_candidate
+    except ModuleNotFoundError:  # Direct script execution from tools/.
+        from matrixark_mcp_recall_scoring import is_resource_or_skill_candidate as _is_resource_or_skill_candidate
+
+    return _is_resource_or_skill_candidate(candidate)
+
+
+def dropped_candidate_audit_ref(candidate: Json, *, reason: str, token_estimate: int) -> Json:
+    try:
+        from tools.matrixark_mcp_recall_scoring import dropped_candidate_audit_ref as _dropped_candidate_audit_ref
+    except ModuleNotFoundError:  # Direct script execution from tools/.
+        from matrixark_mcp_recall_scoring import dropped_candidate_audit_ref as _dropped_candidate_audit_ref
+
+    return _dropped_candidate_audit_ref(candidate, reason=reason, token_estimate=token_estimate)
+
+
+def record_dropped_candidate(dropped: Json, candidate: Json, *, reason: str, token_estimate: int) -> None:
+    try:
+        from tools.matrixark_mcp_recall_scoring import record_dropped_candidate as _record_dropped_candidate
+    except ModuleNotFoundError:  # Direct script execution from tools/.
+        from matrixark_mcp_recall_scoring import record_dropped_candidate as _record_dropped_candidate
+
+    _record_dropped_candidate(dropped, candidate, reason=reason, token_estimate=token_estimate)
+
+
+def diversify_for_question_type(candidates: list[Json], question_type: str, *, total_limit: int) -> list[Json]:
+    try:
+        from tools.matrixark_mcp_recall_scoring import diversify_for_question_type as _diversify_for_question_type
+    except ModuleNotFoundError:  # Direct script execution from tools/.
+        from matrixark_mcp_recall_scoring import diversify_for_question_type as _diversify_for_question_type
+
+    return _diversify_for_question_type(candidates, question_type, total_limit=total_limit)
 
 def context_text_hashes(text: str) -> set[int]:
     try:
@@ -2487,64 +2421,6 @@ def local_context_refs_for_pack(local_budget: Json) -> list[Json]:
 
     return _local_context_refs_for_pack(local_budget)
 
-
-def is_resource_or_skill_candidate(candidate: Json) -> bool:
-    ref_type = str(candidate.get("ref_type") or "")
-    context_class = str(candidate.get("context_class") or "")
-    return ref_type in {"resource_chunk", "skill_section"} or context_class in {"resource_fact", "resource_entity_fact"}
-
-
-def dropped_candidate_audit_ref(candidate: Json, *, reason: str, token_estimate: int) -> Json:
-    metadata = candidate.get("metadata", {}) if isinstance(candidate.get("metadata"), dict) else {}
-    return {
-        "ref_type": candidate.get("ref_type", ""),
-        "ref_hash": candidate.get("ref_hash"),
-        "context_class": candidate.get("context_class") or candidate.get("ref_type", ""),
-        "drop_reason": reason,
-        "reason": reason,
-        "score": candidate.get("score", 0.0),
-        "origin_score": candidate.get("origin_score", 0.0),
-        "packing_score": round(packing_sort_key(candidate, str(candidate.get("packing_policy") or "fact"))[0], 6),
-        "token_estimate": token_estimate,
-        "token_cost": token_estimate,
-        "raw_uri": candidate.get("raw_uri", ""),
-        "source_ref": candidate.get("source_ref", ""),
-        "citation": candidate.get("citation") or candidate.get("source_ref", ""),
-        "resource_type": candidate.get("resource_type", ""),
-        "resource_version": candidate.get("resource_version") or metadata.get("resource_version", ""),
-        "version_state": candidate.get("version_state", "current"),
-        "stale_or_superseded": bool(candidate.get("stale_or_superseded", False)),
-        "access_decision": candidate.get("access_decision", "allowed_by_scope"),
-        "selection_reason": candidate.get("selection_reason", ""),
-        "matched_index_terms": candidate.get("matched_index_terms", []),
-        "node_hash": candidate.get("node_hash"),
-        "node_path": candidate.get("node_path", []),
-    }
-
-
-def record_dropped_candidate(dropped: Json, candidate: Json, *, reason: str, token_estimate: int) -> None:
-    if not is_resource_or_skill_candidate(candidate):
-        return
-    dropped.setdefault("refs", []).append(dropped_candidate_audit_ref(candidate, reason=reason, token_estimate=token_estimate))
-
-
-def diversify_for_question_type(candidates: list[Json], question_type: str, *, total_limit: int) -> list[Json]:
-    if question_type != "multi_hop":
-        return candidates[:total_limit]
-    selected: list[Json] = []
-    deferred: list[Json] = []
-    seen_nodes: set[Any] = set()
-    for candidate in candidates:
-        node_hash = candidate.get("node_hash")
-        if node_hash not in seen_nodes:
-            selected.append(candidate)
-            seen_nodes.add(node_hash)
-        else:
-            deferred.append(candidate)
-        if len(selected) >= total_limit:
-            return selected
-    selected.extend(deferred)
-    return selected[:total_limit]
 
 
 def select_token_budgeted_refs(
