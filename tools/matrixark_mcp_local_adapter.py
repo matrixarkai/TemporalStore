@@ -3,10 +3,33 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from pathlib import Path
+
 try:
-    from tools.matrixark_mcp_core import *
+    from tools.matrixark_mcp_core import (
+        MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK,
+        TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE,
+        TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH,
+        TIME_COMPRESSION_MIN_EVENTS,
+        TIME_COMPRESSION_MIN_EVENT_AGE_MS,
+        TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS,
+        TIME_COMPRESSION_REINFORCEMENT_PROTECT_MS,
+        TIME_COMPRESSION_WINDOW_EVENTS,
+        Json,
+    )
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_core import *
+    from matrixark_mcp_core import (
+        MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK,
+        TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE,
+        TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH,
+        TIME_COMPRESSION_MIN_EVENTS,
+        TIME_COMPRESSION_MIN_EVENT_AGE_MS,
+        TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS,
+        TIME_COMPRESSION_REINFORCEMENT_PROTECT_MS,
+        TIME_COMPRESSION_WINDOW_EVENTS,
+        Json,
+    )
 
 try:
     from tools.matrixark_mcp_env import env_bool
