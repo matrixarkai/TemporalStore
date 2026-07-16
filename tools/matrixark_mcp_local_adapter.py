@@ -439,7 +439,8 @@ class MatrixArkLocalAdapter:
         dirty_reason: str = "new_event",
         propagate_depth: int | None = None,
     ) -> list[int]:
-        dirty_hashes, records = self.node_summary_dirty_records(
+        return summary_runtime.mark_node_summary_dirty(
+            append_many=self.append_many,
             node_path=node_path,
             scope=scope,
             updated_at_ms=updated_at_ms,
@@ -449,8 +450,6 @@ class MatrixArkLocalAdapter:
             dirty_reason=dirty_reason,
             propagate_depth=propagate_depth,
         )
-        self.append_many(records)
-        return dirty_hashes
 
     def refresh_dirty_node_summaries(
         self,

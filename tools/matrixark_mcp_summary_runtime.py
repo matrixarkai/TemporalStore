@@ -204,6 +204,32 @@ def node_summary_dirty_records(
     return dirty_hashes, records
 
 
+def mark_node_summary_dirty(
+    *,
+    append_many: Callable[[list[Json]], None],
+    node_path: list[str],
+    scope: Json,
+    updated_at_ms: int,
+    source_ref_type: str,
+    source_hash_field: str,
+    source_hash: int,
+    dirty_reason: str = "new_event",
+    propagate_depth: int | None = None,
+) -> list[int]:
+    dirty_hashes, records = node_summary_dirty_records(
+        node_path=node_path,
+        scope=scope,
+        updated_at_ms=updated_at_ms,
+        source_ref_type=source_ref_type,
+        source_hash_field=source_hash_field,
+        source_hash=source_hash,
+        dirty_reason=dirty_reason,
+        propagate_depth=propagate_depth,
+    )
+    append_many(records)
+    return dirty_hashes
+
+
 ContextEventTime = Callable[[Json, dict[Any, Json] | None], int]
 
 
