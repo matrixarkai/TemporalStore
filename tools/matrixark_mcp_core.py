@@ -21,7 +21,6 @@ import re
 import sys
 import tempfile
 import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -41,6 +40,12 @@ try:
     from tools.matrixark_mcp_errors import MatrixArkError, is_retryable_temporalstore_error
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_errors import MatrixArkError, is_retryable_temporalstore_error
+
+
+try:
+    from tools.matrixark_mcp_debug import _mcp_debug_log, mcp_debug_log
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_debug import _mcp_debug_log, mcp_debug_log
 
 
 try:
@@ -740,17 +745,6 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     _runtime_config = importlib.import_module("matrixark_mcp_runtime_config")
 globals().update({name: getattr(_runtime_config, name) for name in _RUNTIME_CONFIG_EXPORTS})
-
-
-def _mcp_debug_log(message: str) -> None:
-    path = os.environ.get("MATRIXARK_MCP_DEBUG_LOG")
-    if not path:
-        return
-    try:
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(f"{time.time():.3f} {message}\n")
-    except Exception:
-        pass
 
 
 def _sync_serving_record_flags() -> None:

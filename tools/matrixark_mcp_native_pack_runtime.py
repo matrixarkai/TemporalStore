@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 try:
@@ -18,7 +19,6 @@ try:
         now_ms,
         os,
         stable_hash,
-        time,
         _mcp_debug_log,
     )
     from tools.matrixark_mcp_native_helpers import (
@@ -40,7 +40,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         now_ms,
         os,
         stable_hash,
-        time,
         _mcp_debug_log,
     )
     from matrixark_mcp_native_helpers import (

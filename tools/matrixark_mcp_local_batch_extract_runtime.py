@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 try:
@@ -26,7 +27,6 @@ try:
         summarize_text,
         take_secondary_index_terms,
         text_from_messages,
-        time,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
@@ -49,7 +49,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         summarize_text,
         take_secondary_index_terms,
         text_from_messages,
-        time,
     )
 
 
@@ -380,4 +379,3 @@ def batch_extract_after_start(self: Any, args: Json, batch_start: Json) -> Json:
         "one_pass": True,
         "threshold_messages": threshold,
     }
-
