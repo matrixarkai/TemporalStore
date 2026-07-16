@@ -79,6 +79,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         storage_options_mod = importlib.import_module("tools.matrixark_mcp_storage_options")
         native_helpers_mod = importlib.import_module("tools.matrixark_mcp_native_helpers")
         native_side_index_mod = importlib.import_module("tools.matrixark_mcp_native_side_index")
+        native_pack_runtime_mod = importlib.import_module("tools.matrixark_mcp_native_pack_runtime")
         env_mod = importlib.import_module("tools.matrixark_mcp_env")
         scoring_mod = importlib.import_module("tools.matrixark_mcp_scoring")
         text_mod = importlib.import_module("tools.matrixark_mcp_text")
@@ -149,6 +150,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             native_side_index_mod.merge_ref_hashes('{"ref_hashes":[3,"4","bad"]}', [4, 5]),
             [3, 4, 5],
         )
+        self.assertTrue(callable(native_pack_runtime_mod.try_native_context_pack))
         self.assertIs(core_mod.hybrid_origin_score, scoring_mod.hybrid_origin_score)
         self.assertIs(core_mod.business_score_for_candidate, scoring_mod.business_score_for_candidate)
         self.assertIs(core_mod.numeric_field, scoring_mod.numeric_field)
@@ -335,6 +337,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "matrixark_mcp_indexing.py",
             "matrixark_mcp_storage_options.py",
             "matrixark_mcp_native_helpers.py",
+            "matrixark_mcp_native_pack_runtime.py",
             "matrixark_mcp_env.py",
             "matrixark_mcp_scoring.py",
             "matrixark_mcp_recall_scoring.py",
