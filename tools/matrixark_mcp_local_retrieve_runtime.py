@@ -47,7 +47,6 @@ try:
         integer_arg,
         json,
         local_context_refs_for_pack,
-        node_path_tuple,
         normalize_storage_options,
         normalized_dense_score,
         now_ms,
@@ -62,7 +61,6 @@ try:
         source_ref_from_locator,
         sparse_lexical_score,
         stable_hash,
-        starts_with_path,
         summarize_text,
         tokens,
         tree_first_traversal,
@@ -108,7 +106,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         integer_arg,
         json,
         local_context_refs_for_pack,
-        node_path_tuple,
         normalize_storage_options,
         normalized_dense_score,
         now_ms,
@@ -123,7 +120,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         source_ref_from_locator,
         sparse_lexical_score,
         stable_hash,
-        starts_with_path,
         summarize_text,
         tokens,
         tree_first_traversal,
@@ -158,6 +154,11 @@ try:
     from tools import matrixark_mcp_retrieve_temporal_window as retrieve_temporal_window_helpers
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_retrieve_temporal_window as retrieve_temporal_window_helpers
+
+try:
+    from tools import matrixark_mcp_retrieve_tree_filter as retrieve_tree_filter_helpers
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_retrieve_tree_filter as retrieve_tree_filter_helpers
 
 try:
     from tools import matrixark_mcp_retrieval_records as retrieval_record_helpers
@@ -589,20 +590,13 @@ def retrieve(target: Any, args: Json) -> Json:
                     skill_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
 
     def selected_by_tree(record: Json) -> bool:
-        if traversal.get("fallback_to_flat"):
-            return True
-        path = node_path_tuple(record.get("node_path", []))
-        if path and path in selected_paths:
-            return True
-        if path and any(
-            starts_with_path(path, leaf_path) or starts_with_path(leaf_path, path)
-            for leaf_path in selected_leaf_paths
-        ):
-            return True
-        try:
-            return int(record.get("node_hash")) in selected_node_hashes
-        except (TypeError, ValueError):
-            return False
+        return retrieve_tree_filter_helpers.selected_by_tree(
+            record,
+            traversal=traversal,
+            selected_paths=selected_paths,
+            selected_leaf_paths=selected_leaf_paths,
+            selected_node_hashes=selected_node_hashes,
+        )
 
     if placement_candidate_records and not traversal.get("fallback_to_flat"):
         tree_candidate_records = [record for record in placement_candidate_records if selected_by_tree(record)]
@@ -624,20 +618,10 @@ def retrieve(target: Any, args: Json) -> Json:
         max_raw_events_per_node=max_raw_events_per_node,
         context_event_ingestion_time_ms=self.context_event_ingestion_time_ms,
     )
-    candidate_count_by_node: dict[Any, int] = {}
-    fanout_dropped_count = 0
+    fanout_limiter = retrieve_tree_filter_helpers.CandidateFanoutLimiter(max_candidates_per_node)
 
     def admit_candidate_for_node(record: Json) -> bool:
-        nonlocal fanout_dropped_count
-        node_key: Any = record.get("node_hash")
-        if node_key is None:
-            node_key = tuple(record.get("node_path", []))
-        count = candidate_count_by_node.get(node_key, 0)
-        if count >= max_candidates_per_node:
-            fanout_dropped_count += 1
-            return False
-        candidate_count_by_node[node_key] = count + 1
-        return True
+        return fanout_limiter.admit(record)
 
     layer_scores = sorted(
         traversal["trace"] or node_scores.values(),
@@ -1274,7 +1258,7 @@ def retrieve(target: Any, args: Json) -> Json:
                 "selected_leaf_count": len(traversal.get("leaf_paths", [])),
                 "candidate_records_after_tree": len(tree_candidate_records),
                 "records_dropped_by_tree": tree_prefilter_dropped_count,
-                "records_dropped_by_node_fanout": fanout_dropped_count,
+                "records_dropped_by_node_fanout": fanout_limiter.dropped_count,
                 "raw_events_dropped_by_time_window": raw_event_time_window_dropped_count,
                 "cold_events_represented_by_compression": raw_event_time_window_dropped_count > 0,
                 "leaf_record_fetch_policy": "events/entities/resources/skills/compressions scanned only inside selected L0/L1 folders",
@@ -1394,7 +1378,7 @@ def retrieve(target: Any, args: Json) -> Json:
         "auxiliary_candidate_count": len(auxiliary_matches),
         "tree_candidate_records": len(tree_candidate_records),
         "tree_prefilter_dropped_count": tree_prefilter_dropped_count,
-        "fanout_dropped_count": fanout_dropped_count,
+        "fanout_dropped_count": fanout_limiter.dropped_count,
         "max_candidates_per_node": max_candidates_per_node,
         "max_selected_refs": max_selected_refs,
         "created_at_ms": now_ms(),
