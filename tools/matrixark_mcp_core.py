@@ -518,6 +518,7 @@ try:
         business_type_score,
         clamp01,
         cosine,
+        final_recall_score,
         hybrid_origin_score,
         apply_statistical_operator,
         latest_record,
@@ -534,6 +535,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         business_type_score,
         clamp01,
         cosine,
+        final_recall_score,
         hybrid_origin_score,
         apply_statistical_operator,
         latest_record,
@@ -876,20 +878,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         resource_extraction_mode,
         semantic_saliency_score,
         understanding_provider,
-    )
-
-
-def final_recall_score(origin_score: float, time_score: float, business_score: float, weights: Json) -> float:
-    time_weight = clamp01(weights.get("time", DEFAULT_TIME_WEIGHT), DEFAULT_TIME_WEIGHT)
-    business_weight = clamp01(weights.get("business", DEFAULT_BUSINESS_WEIGHT), DEFAULT_BUSINESS_WEIGHT)
-    if time_weight + business_weight > 1.0:
-        scale = 1.0 / (time_weight + business_weight)
-        time_weight *= scale
-        business_weight *= scale
-    origin_weight = 1.0 - time_weight - business_weight
-    return round(
-        origin_weight * origin_score + time_weight * time_score + business_weight * business_score,
-        6,
     )
 
 

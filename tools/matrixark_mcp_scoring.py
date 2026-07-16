@@ -52,6 +52,28 @@ def hybrid_origin_score(query_terms: set[str], text: str, embedding_score: float
     return round(clamp01(0.55 * dense + 0.35 * sparse + 0.10 * node), 6)
 
 
+def final_recall_score(
+    origin_score: float,
+    time_score: float,
+    business_score: float,
+    weights: Json,
+    *,
+    default_time_weight: float = 0.18,
+    default_business_weight: float = 0.22,
+) -> float:
+    time_weight = clamp01(weights.get("time", default_time_weight), default_time_weight)
+    business_weight = clamp01(weights.get("business", default_business_weight), default_business_weight)
+    if time_weight + business_weight > 1.0:
+        scale = 1.0 / (time_weight + business_weight)
+        time_weight *= scale
+        business_weight *= scale
+    origin_weight = 1.0 - time_weight - business_weight
+    return round(
+        origin_weight * origin_score + time_weight * time_score + business_weight * business_score,
+        6,
+    )
+
+
 def time_decay_score(
     record_time_ms: Any,
     *,

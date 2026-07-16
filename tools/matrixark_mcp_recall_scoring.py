@@ -11,9 +11,9 @@ try:
         DEFAULT_BUSINESS_TYPE_WEIGHTS,
         DEFAULT_TIME_DECAY_HALFLIFE_MS,
         DEFAULT_TIME_DECAY_TOLERANCE_MS,
+        DEFAULT_TIME_WEIGHT,
         Json,
         cross_session_rerank_adjustment,
-        final_recall_score,
         integer_arg,
         optional_object,
         session_continuity_boost,
@@ -23,6 +23,7 @@ try:
     from tools.matrixark_mcp_scoring import (
         business_score_for_candidate,
         clamp01,
+        final_recall_score,
         time_decay_score,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
@@ -30,9 +31,9 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         DEFAULT_BUSINESS_TYPE_WEIGHTS,
         DEFAULT_TIME_DECAY_HALFLIFE_MS,
         DEFAULT_TIME_DECAY_TOLERANCE_MS,
+        DEFAULT_TIME_WEIGHT,
         Json,
         cross_session_rerank_adjustment,
-        final_recall_score,
         integer_arg,
         optional_object,
         session_continuity_boost,
@@ -42,6 +43,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_scoring import (
         business_score_for_candidate,
         clamp01,
+        final_recall_score,
         time_decay_score,
     )
 
@@ -80,7 +82,18 @@ def score_recall_candidate(candidate: Json, ranking: Json, *, reference_time_ms:
     question_type = str(candidate.get("question_type") or candidate.get("packing_policy") or "fact")
     continuity_boost = session_continuity_boost(candidate, question_type)
     cross_session_rerank_boost = cross_session_rerank_adjustment(candidate, question_type)
-    final_score = clamp01(final_recall_score(origin_score, s_time, s_busi, weights) + continuity_boost + cross_session_rerank_boost)
+    final_score = clamp01(
+        final_recall_score(
+            origin_score,
+            s_time,
+            s_busi,
+            weights,
+            default_time_weight=DEFAULT_TIME_WEIGHT,
+            default_business_weight=DEFAULT_BUSINESS_WEIGHT,
+        )
+        + continuity_boost
+        + cross_session_rerank_boost
+    )
     return {
         **candidate,
         "origin_score": origin_score,
