@@ -75,6 +75,8 @@ try:
         normalize_raw_storage_backend,
         raw_ingestion_append_options,
         raw_ingestion_append_path_for_backend,
+        append_raw_ingestion_records,
+        get_raw_count,
         raw_record_location,
         raw_record_scope_value,
         raw_record_session_ids,
@@ -118,6 +120,8 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         normalize_raw_storage_backend,
         raw_ingestion_append_options,
         raw_ingestion_append_path_for_backend,
+        append_raw_ingestion_records,
+        get_raw_count,
         raw_record_location,
         raw_record_scope_value,
         raw_record_session_ids,
@@ -737,66 +741,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         )
 
     def _get_raw_count(self) -> int:
-        self._ensure_raw_ingestion_fields()
-        try:
-            raw = self._client.get_string(self._raw_count_key)
-        except Exception:
-            return 0
-        if not raw:
-            return 0
-        try:
-            value = int(raw)
-        except ValueError:
-            return 0
-        return max(0, value)
+        return get_raw_count(self)
 
     def _append_raw_ingestion_records(self, records: list[Json], *, allow_queue: bool = True) -> None:
-        if not records:
-            return
-        self._ensure_raw_ingestion_fields()
-        if self._raw_ingestion_prefix == self._storage_prefix:
-            raise MatrixArkError("MATRIXARK_DIRECT_RAW_STORAGE_PREFIX must differ from the serving storage prefix")
-        if (
-            allow_queue
-            and bool(getattr(self, "_direct_raw_ingestion_queue_enabled", False))
-            and bool(getattr(self, "_direct_write_queue_enabled", False))
-            and getattr(self, "_direct_write_queue_mode", "memory") == "memory"
-        ):
-            self._enqueue_direct_write_item({"queue_mode": "raw_ingestion", "records": list(records)}, len(records))
-            return
-        started_perf = time.perf_counter()
-        with self._records_lock:
-            count = self._raw_entry_count_cache if self._raw_entry_count_cache is not None else self._get_raw_count()
-            sequence = count
-            entries: list[Json] = []
-            for record in records:
-                record_key, record_id = self._raw_record_location(sequence)
-                payload = json.dumps(record, sort_keys=True, separators=(",", ":"))
-                route = record.get("storage_route") if isinstance(record.get("storage_route"), dict) else {}
-                entries.append({"key": record_key, "field": record_id, "value": payload, "storage_route": route})
-                entries.extend(self._raw_session_index_entries(sequence=sequence, record=record))
-                sequence += 1
-            append_records = getattr(self._client, "matrixark_batch_append_records", None)
-            if callable(append_records):
-                self._write_with_backoff(
-                    lambda: append_records(
-                        entries,
-                        count_key=self._raw_count_key,
-                        count_value=str(sequence),
-                        append_options=self._raw_ingestion_append_options(),
-                    ),
-                    op="matrixark_batch_append_raw_ingestion_records",
-                )
-            else:
-                self._hset_many_with_backoff(entries)
-                self._put_string_with_backoff(self._raw_count_key, str(sequence))
-            if self._raw_ingestion_visibility_required_after_flush():
-                self._note_pending_visibility_keys(
-                    [self._raw_count_key] + [str(entry.get("key") or "") for entry in entries]
-                )
-            self._raw_entry_count_cache = sequence
-            elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
-            self._observe_backend_command(elapsed_ms, records_written=len(records))
+        append_raw_ingestion_records(self, records, allow_queue=allow_queue)
 
     def _context_index_lookup_key(self, scope_key: str) -> str:
         return context_index_lookup_key(self._storage_prefix, scope_key)
