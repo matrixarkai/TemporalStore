@@ -62,3 +62,24 @@ def optional_string_list(data: Json, field: str, default: list[str] | None = Non
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise MatrixArkError(f"{field} must be a list of strings")
     return list(value)
+
+
+def integer_arg(data: Json, field: str, default: int, *, minimum: int = 0) -> int:
+    value = data.get(field, default)
+    if not isinstance(value, int):
+        raise MatrixArkError(f"{field} must be an integer")
+    if value < minimum:
+        raise MatrixArkError(f"{field} must be >= {minimum}")
+    return value
+
+
+def float_arg(data: Json, field: str, default: float, *, minimum: float = 0.0, maximum: float | None = None) -> float:
+    value = data.get(field, default)
+    if not isinstance(value, (int, float)):
+        raise MatrixArkError(f"{field} must be a number")
+    result = float(value)
+    if result < minimum:
+        raise MatrixArkError(f"{field} must be >= {minimum}")
+    if maximum is not None and result > maximum:
+        raise MatrixArkError(f"{field} must be <= {maximum}")
+    return result

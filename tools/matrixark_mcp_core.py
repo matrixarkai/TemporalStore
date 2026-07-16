@@ -45,6 +45,8 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 try:
     from tools.matrixark_mcp_validation import (
+        float_arg,
+        integer_arg,
         optional_object,
         optional_string,
         optional_string_list,
@@ -53,6 +55,8 @@ try:
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_validation import (
+        float_arg,
+        integer_arg,
         optional_object,
         optional_string,
         optional_string_list,
@@ -945,27 +949,6 @@ def final_recall_score(origin_score: float, time_score: float, business_score: f
         origin_weight * origin_score + time_weight * time_score + business_weight * business_score,
         6,
     )
-
-
-def integer_arg(data: Json, field: str, default: int, *, minimum: int = 0) -> int:
-    value = data.get(field, default)
-    if not isinstance(value, int):
-        raise MatrixArkError(f"{field} must be an integer")
-    if value < minimum:
-        raise MatrixArkError(f"{field} must be >= {minimum}")
-    return value
-
-
-def float_arg(data: Json, field: str, default: float, *, minimum: float = 0.0, maximum: float | None = None) -> float:
-    value = data.get(field, default)
-    if not isinstance(value, (int, float)):
-        raise MatrixArkError(f"{field} must be a number")
-    result = float(value)
-    if result < minimum:
-        raise MatrixArkError(f"{field} must be >= {minimum}")
-    if maximum is not None and result > maximum:
-        raise MatrixArkError(f"{field} must be <= {maximum}")
-    return result
 
 
 def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str, session_scope: str, remote_budget_tokens: int) -> Json:
