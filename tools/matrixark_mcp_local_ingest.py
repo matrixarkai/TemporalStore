@@ -10,7 +10,6 @@ try:
     from tools.matrixark_mcp_core import (
         MAX_INDEX_TERMS_PER_RESOURCE_CHUNK,
         MAX_INDEX_TERMS_PER_RESOURCE_FACT,
-        MAX_PRIOR_MESSAGES,
         MAX_RESOURCE_FACTS_PER_RESOURCE,
         MAX_RESOURCE_FACT_CHUNKS,
         Json,
@@ -19,14 +18,11 @@ try:
         aggregate_parse_warnings_from_chunks,
         cleanup_temp_paths,
         clip_context_text,
-        collect_prior_context,
-        compact_internal_extraction,
         content_hash,
         context_index_name,
         context_index_posting_record,
         context_node_key,
         debug_resource_metadata,
-        deployment_scope_from_args,
         embedding_execution_mode_name,
         embedding_fallback_used,
         embedding_for_text,
@@ -39,7 +35,6 @@ try:
         metadata_index_terms,
         new_secondary_index_budget,
         non_default_classification,
-        normalized_node_path,
         now_ms,
         ordered_unique,
         parse_resource,
@@ -57,13 +52,11 @@ try:
         summarize_resource_chunks,
         summarize_text,
         take_secondary_index_terms,
-        text_from_messages,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
         MAX_INDEX_TERMS_PER_RESOURCE_CHUNK,
         MAX_INDEX_TERMS_PER_RESOURCE_FACT,
-        MAX_PRIOR_MESSAGES,
         MAX_RESOURCE_FACTS_PER_RESOURCE,
         MAX_RESOURCE_FACT_CHUNKS,
         Json,
@@ -72,14 +65,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         aggregate_parse_warnings_from_chunks,
         cleanup_temp_paths,
         clip_context_text,
-        collect_prior_context,
-        compact_internal_extraction,
         content_hash,
         context_index_name,
         context_index_posting_record,
         context_node_key,
         debug_resource_metadata,
-        deployment_scope_from_args,
         embedding_execution_mode_name,
         embedding_fallback_used,
         embedding_for_text,
@@ -92,7 +82,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         metadata_index_terms,
         new_secondary_index_budget,
         non_default_classification,
-        normalized_node_path,
         now_ms,
         ordered_unique,
         parse_resource,
@@ -110,7 +99,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         summarize_resource_chunks,
         summarize_text,
         take_secondary_index_terms,
-        text_from_messages,
     )
 
 
@@ -124,6 +112,11 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_resource_import_task import resource_import_task_record
 
+try:
+    from tools.matrixark_mcp_ingest_setup import prepare_ingest_context
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_ingest_setup import prepare_ingest_context
+
 
 def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
     envelope = ingest_start["envelope"]
@@ -134,36 +127,16 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
     if lightweight_result is not None:
         return lightweight_result
     prior_records = [] if args.get("skip_prior_context") else self.read_all()
-    prior_context = (
-        {"level": "", "refs": [], "messages": [], "summaries": [], "char_count": 0, "limit": MAX_PRIOR_MESSAGES}
-        if args.get("skip_prior_context")
-        else collect_prior_context(envelope, prior_records)
-    )
-    extraction_started_perf = time.perf_counter()
-    extraction = compact_internal_extraction(
-        envelope,
-        prior_context=prior_context,
-    )
-    self._observe_model_latency("extraction", (time.perf_counter() - extraction_started_perf) * 1000.0)
-    text = text_from_messages(envelope["messages"])
-    event_id_hash = stable_hash(
-        f"{envelope['kind']}:{text}:{envelope['scope']}:{envelope['ingestion_time_ms']}"
-    )
-    if envelope["kind"] in {"resource", "skill"}:
-        early_deployment_scope = deployment_scope_from_args(args, envelope)
-        early_sharing_scope = self.resource_sharing_scope(args, envelope, early_deployment_scope)
-        node_hint = self.default_resource_node_path(args, envelope, deployment_scope=early_deployment_scope, sharing_scope=early_sharing_scope)
-    else:
-        early_deployment_scope = "local"
-        early_sharing_scope = "private_user"
-        node_hint = envelope["metadata"].get("node_path") or self.default_session_node_path(envelope["scope"])
-    node_path = normalized_node_path(envelope, node_hint)
-    node_hash = stable_hash("/".join(node_path))
-    node_materialization = self.ensure_context_node_path(
-        node_path=node_path,
-        scope=envelope["scope"],
-        updated_at_ms=envelope["ingestion_time_ms"],
-    )
+    ingest_context = prepare_ingest_context(self, args, envelope, prior_records)
+    prior_context = ingest_context["prior_context"]
+    extraction = ingest_context["extraction"]
+    text = ingest_context["text"]
+    event_id_hash = ingest_context["event_id_hash"]
+    early_deployment_scope = ingest_context["early_deployment_scope"]
+    early_sharing_scope = ingest_context["early_sharing_scope"]
+    node_path = ingest_context["node_path"]
+    node_hash = ingest_context["node_hash"]
+    node_materialization = ingest_context["node_materialization"]
     resource_chunk_hashes: list[int] = []
     resource_dirty_hashes: list[int] = []
     resource_parse_error = ""
