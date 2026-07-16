@@ -12,7 +12,6 @@ import argparse
 import importlib
 import select
 import shutil
-import socket
 import subprocess
 import json
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -588,6 +587,44 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
 
 
+try:
+    from tools.matrixark_mcp_backend_readiness import (
+        adapter_ensure_backend_ready,
+        metaserver_reachable,
+        parse_host_port,
+    )
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_backend_readiness import (
+        adapter_ensure_backend_ready,
+        metaserver_reachable,
+        parse_host_port,
+    )
+
+
+try:
+    from tools.matrixark_mcp_hook_validation import validate_hook
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_hook_validation import validate_hook
+
+
+try:
+    from tools.matrixark_mcp_model_registry import (
+        context_model_registry_record,
+        context_model_registry_records,
+    )
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_model_registry import (
+        context_model_registry_record,
+        context_model_registry_records,
+    )
+
+
+try:
+    from tools.matrixark_mcp_scope_identity import enrich_scope_with_identity
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_scope_identity import enrich_scope_with_identity
+
+
 _RUNTIME_CONFIG_EXPORTS = (
     "AUDIT_DEBUG_PAYLOAD",
     "BACKEND_READINESS_BACKOFF_MS",
@@ -724,127 +761,6 @@ def native_candidate_prefilter_required(*, backend_label: str = "") -> bool:
         return MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER in {"1", "true", "yes"}
     return backend_label != "local"
 
-
-def parse_host_port(address: str) -> tuple[str, int] | None:
-    if not address or ":" not in address:
-        return None
-    host, port_text = address.rsplit(":", 1)
-    try:
-        return host or "127.0.0.1", int(port_text)
-    except ValueError:
-        return None
-
-
-def metaserver_reachable(address: str, timeout_ms: int = BACKEND_READINESS_CONNECT_TIMEOUT_MS) -> Json:
-    parsed = parse_host_port(address)
-    if parsed is None:
-        return {"ok": False, "address": address, "error": "invalid metaserver address"}
-    host, port = parsed
-    try:
-        with socket.create_connection((host, port), timeout=max(0.05, timeout_ms / 1000.0)):
-            return {"ok": True, "address": address}
-    except OSError as exc:
-        return {"ok": False, "address": address, "error": str(exc)}
-
-
-def context_model_registry_record(model_name: str, *, model_kind: str = "embedding", updated_at_ms: int | None = None) -> Json:
-    model_name = str(model_name or "").strip()
-    model_hash = stable_hash(f"{model_kind}_model:{model_name}")
-    return {
-        "record_type": "context_model_registry",
-        "model_kind": model_kind,
-        "model_ref": embedding_model_ref_for_name(model_name) if model_kind == "embedding" else f"{model_kind}:{compact_model_slug(model_name)}:{model_hash % 10000:04d}",
-        "model_name": model_name,
-        "model_hash": model_hash,
-        "provider": os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic") if model_kind == "embedding" else "",
-        "execution_mode": embedding_execution_mode_name() if model_kind == "embedding" else "",
-        "updated_at_ms": int(updated_at_ms or now_ms()),
-    }
-
-
-def context_model_registry_records(records: list[Json]) -> list[Json]:
-    models: dict[str, int] = {}
-    for record in records:
-        if str(record.get("record_type") or "") != "context_embedding":
-            continue
-        model_name = str(record.get("model") or "").strip()
-        if not model_name:
-            continue
-        updated_at_ms = record.get("updated_at_ms") or record.get("created_at_ms") or now_ms()
-        try:
-            timestamp = int(updated_at_ms)
-        except (TypeError, ValueError):
-            timestamp = now_ms()
-        models[model_name] = max(models.get(model_name, 0), timestamp)
-    return [context_model_registry_record(model_name, updated_at_ms=timestamp) for model_name, timestamp in sorted(models.items())]
-
-
-def enrich_scope_with_identity(scope: Json, identity: Json) -> Json:
-    account_id = str(identity["account_id"])
-    tenant_id = str(identity["tenant_id"])
-    user_id = str(scope.get("user_id") or identity.get("user_id") or "")
-    session_id = str(scope.get("session_id") or identity.get("session_id") or "")
-    hashes = identity_hashes(account_id, tenant_id, user_id, session_id)
-    explicit_scope_keys = {str(key) for key in scope.keys()}
-    if identity.get("mode") == "api_key":
-        if user_id:
-            explicit_scope_keys.add("user_id")
-        if session_id:
-            explicit_scope_keys.add("session_id")
-    enriched = {
-        **scope,
-        "account_id": account_id,
-        "tenant_id": tenant_id,
-        "tenant_hash": hashes["tenant_hash"],
-        "scope_key": hashes["scope_key"],
-        "_explicit_scope_keys": sorted(explicit_scope_keys),
-    }
-    if identity.get("agent_name") and "agent_name" not in enriched:
-        enriched["agent_name"] = identity["agent_name"]
-    if user_id:
-        enriched["user_id"] = user_id
-        enriched["user_hash"] = hashes["user_hash"]
-    if session_id:
-        enriched["session_id"] = session_id
-        enriched["session_hash"] = hashes["session_hash"]
-    return enriched
-
-
-def validate_hook(hook: Json | None) -> Json | None:
-    if hook is None:
-        return None
-    if not isinstance(hook, dict):
-        raise MatrixArkError("agent_hook must be an object")
-    hook_type = require_string(hook, "hook_type")
-    if hook_type not in {
-        "before_llm",
-        "after_llm",
-        "tool_result",
-        "resource_added",
-        "feedback",
-        "session_commit",
-    }:
-        raise MatrixArkError("agent_hook.hook_type is invalid")
-    require_string(hook, "source")
-    require_string(hook, "hook_id")
-    if not isinstance(hook.get("observed_at_ms"), int):
-        raise MatrixArkError("agent_hook.observed_at_ms must be an integer")
-    if not isinstance(hook.get("auto_captured"), bool):
-        raise MatrixArkError("agent_hook.auto_captured must be a boolean")
-    if "idempotency_key" in hook and not isinstance(hook["idempotency_key"], str):
-        raise MatrixArkError("agent_hook.idempotency_key must be a string")
-    return hook
-
-
-def adapter_ensure_backend_ready(adapter: Any, *, reason: str = "manual", probe: bool = True, timeout_ms: int | None = None) -> Json:
-    """Call adapter readiness across old/new adapter signatures."""
-    try:
-        return adapter.ensure_backend_ready(reason=reason, probe=probe, timeout_ms=timeout_ms)
-    except TypeError as exc:
-        text = str(exc)
-        if "unexpected keyword argument" not in text or "probe" not in text:
-            raise
-        return adapter.ensure_backend_ready(reason=reason)
 
 def has_confirmation_context(envelope: Json) -> bool:
     metadata = optional_object(envelope, "metadata")
