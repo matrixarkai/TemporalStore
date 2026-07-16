@@ -54,6 +54,7 @@ try:
         count_context_record,
         nested_float,
         percentile,
+        record_call_metrics,
     )
     from tools.matrixark_mcp_rust_proxy_process import (
         close_proxy_lanes,
@@ -94,6 +95,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         count_context_record,
         nested_float,
         percentile,
+        record_call_metrics,
     )
     from matrixark_mcp_rust_proxy_config import initialize_rust_proxy_config
     from matrixark_mcp_rust_proxy_lanes import build_lane_pools
@@ -295,135 +297,17 @@ class MatrixArkRustProxyClient:
         lane: str = "control",
         wait_ms: float = 0.0,
     ) -> None:
-        with self._metrics_lock:
-            self._commands_total += 1
-            self._lane_commands_total[lane] = self._lane_commands_total.get(lane, 0) + 1
-            self._lane_wait_ms_total[lane] = self._lane_wait_ms_total.get(lane, 0.0) + max(0.0, wait_ms)
-            self._lane_wait_ms_max[lane] = max(self._lane_wait_ms_max.get(lane, 0.0), max(0.0, wait_ms))
-            self._op_commands_total[op] = self._op_commands_total.get(op, 0) + 1
-            self._op_latency_ms_total[op] = self._op_latency_ms_total.get(op, 0.0) + max(0.0, elapsed_ms)
-            self._op_latency_ms_max[op] = max(self._op_latency_ms_max.get(op, 0.0), max(0.0, elapsed_ms))
-            if failed:
-                self._commands_failed_total += 1
-                if "timed out" in str(response or "").lower() or elapsed_ms >= self.request_timeout_ms:
-                    self._timeouts_total += 1
-            if backpressure:
-                self._backpressure_rejections_total += 1
-            if response:
-                serialization_ms = self._nested_float(
-                    response,
-                    "serialization_time_ms",
-                    "serialization_ms",
-                    "serialization_time",
-                )
-                engine_ms = self._nested_float(
-                    response,
-                    "rust_engine_time_ms",
-                    "engine_ms",
-                    "rust_engine_ms",
-                )
-                self._serialization_ms_total += serialization_ms
-                self._serialization_ms_max = max(self._serialization_ms_max, serialization_ms)
-                self._rust_engine_ms_total += engine_ms
-                self._rust_engine_ms_max = max(self._rust_engine_ms_max, engine_ms)
-                scan_count = int(
-                    self._nested_float(
-                        response,
-                        "scan_count",
-                        "scan_stats.scanned_records",
-                        "context_pack.recall_policy.scan_stats.scanned_records",
-                    )
-                    or 0
-                )
-                self._scan_count_total += scan_count
-                cache_hit = bool(response.get("cache_hit") or response.get("cache_hit_used"))
-                if cache_hit:
-                    self._cache_hits_total += 1
-                elif op in {"matrixark_scan_candidates", "matrixark_retrieve_context_pack"}:
-                    self._cache_misses_total += 1
-                selected_count = int(
-                    self._nested_float(
-                        response,
-                        "selected_ref_count",
-                        "context_pack.selected_ref_count",
-                    )
-                    or 0
-                )
-                if not selected_count and isinstance(response.get("context_pack"), dict):
-                    refs = response["context_pack"].get("selected_refs") or response["context_pack"].get("remote_context_refs") or []
-                    if isinstance(refs, list):
-                        selected_count = len(refs)
-                self._selected_refs_total += selected_count
-                dropped_count = int(
-                    self._nested_float(
-                        response,
-                        "dropped_ref_count",
-                        "context_pack.dropped_ref_count",
-                    )
-                    or 0
-                )
-                if not dropped_count and isinstance(response.get("context_pack"), dict):
-                    dropped = response["context_pack"].get("dropped_refs")
-                    if isinstance(dropped, dict):
-                        reasons = dropped.get("reason_counts")
-                        if isinstance(reasons, dict):
-                            dropped_count = sum(int(value or 0) for value in reasons.values())
-                self._dropped_refs_total += dropped_count
-            self._last_latency_ms = elapsed_ms
-            self._max_observed_latency_ms = max(self._max_observed_latency_ms, elapsed_ms)
-            self._latency_samples_ms.append(elapsed_ms)
-            if len(self._latency_samples_ms) > 2048:
-                del self._latency_samples_ms[: len(self._latency_samples_ms) - 2048]
-            lane_samples = self._lane_latency_samples_ms.setdefault(lane, [])
-            lane_samples.append(elapsed_ms)
-            if len(lane_samples) > 1024:
-                del lane_samples[: len(lane_samples) - 1024]
-            if response and response.get("ok"):
-                count = int(response.get("count") or 0)
-                if op in {"put_string", "hset"}:
-                    self._records_written_total += 1
-                    self._count_context_record(kwargs.get("value"))
-                elif op in {"batch_hset", "matrixark_append_records", "matrixark_batch_append_records"}:
-                    compact_entries = kwargs.get("entries_compact") or []
-                    entries_for_key = kwargs.get("entries_for_key") or []
-                    entries = kwargs.get("entries") or []
-                    self._records_written_total += count or len(compact_entries) or len(entries_for_key) or len(entries)
-                    for entry in entries:
-                        if isinstance(entry, dict):
-                            self._count_context_record(entry.get("value"))
-                    for entry in compact_entries:
-                        if isinstance(entry, (list, tuple)) and len(entry) >= 3:
-                            self._count_context_record(entry[2])
-                    for entry in entries_for_key:
-                        if isinstance(entry, (list, tuple)) and len(entry) >= 2:
-                            self._count_context_record(entry[1])
-                elif op in {"get_string", "hget"}:
-                    self._records_read_total += 1
-                elif op in {"batch_hget", "hgetall", "scan_hash"}:
-                    self._records_read_total += count
-                elif op == "matrixark_publish_visibility":
-                    visibility_keys = kwargs.get("visibility_keys") if isinstance(kwargs, dict) else []
-                    key_count = len(visibility_keys) if isinstance(visibility_keys, list) else 0
-                    index_bytes = int(
-                        self._nested_float(
-                            response,
-                            "matrixark_visibility_index_bytes",
-                            "extra.matrixark_visibility_index_bytes",
-                            "count",
-                        )
-                        or 0
-                    )
-                    full_shard = bool(
-                        response.get("matrixark_visibility_full_shard")
-                        or (isinstance(response.get("extra"), dict) and response["extra"].get("matrixark_visibility_full_shard"))
-                        or key_count == 0
-                    )
-                    self._publish_visibility_calls_total += 1
-                    self._publish_visibility_keys_total += key_count
-                    self._publish_visibility_full_shard_total += 1 if full_shard else 0
-                    self._publish_visibility_index_bytes_total += index_bytes
-                    self._publish_visibility_last_key_count = key_count
-                    self._publish_visibility_last_index_bytes = index_bytes
+        record_call_metrics(
+            self,
+            op,
+            kwargs,
+            response,
+            elapsed_ms,
+            failed=failed,
+            backpressure=backpressure,
+            lane=lane,
+            wait_ms=wait_ms,
+        )
 
     @staticmethod
     def _nested_float(payload: Json, *paths: str) -> float:
