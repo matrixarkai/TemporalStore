@@ -6,9 +6,35 @@ from __future__ import annotations
 import os
 
 try:
-    from tools.matrixark_mcp_core import Json, MatrixArkError, clamp01, optional_object
+    from tools.matrixark_mcp_core import (
+        Json,
+        MatrixArkError,
+        build_cross_session_policy,
+        build_shared_context_policy,
+        build_structured_query_plan,
+        clamp01,
+        infer_query_type,
+        infer_secondary_index_filter_groups,
+        local_context_budget,
+        now_ms,
+        optional_object,
+        tokens,
+    )
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_core import Json, MatrixArkError, clamp01, optional_object
+    from matrixark_mcp_core import (
+        Json,
+        MatrixArkError,
+        build_cross_session_policy,
+        build_shared_context_policy,
+        build_structured_query_plan,
+        clamp01,
+        infer_query_type,
+        infer_secondary_index_filter_groups,
+        local_context_budget,
+        now_ms,
+        optional_object,
+        tokens,
+    )
 
 
 RETRIEVAL_STAGE_NAMES = ["query_understanding", "candidate_fetch", "node_traversal", "rerank_score", "pack", "audit"]
@@ -99,4 +125,73 @@ def stage_budget_snapshot(
         "source": "explicit" if explicit_stage_budgets else ("deadline_derived" if deadline_ms > 0 else "defaults"),
         "stages": stages,
         "over_budget_stages": [stage for stage, row in stages.items() if row["over_budget"]],
+    }
+
+
+def retrieval_query_budget_plan(
+    args: Json,
+    ranking: Json,
+    *,
+    query: str,
+    scope: Json,
+    default_max_context_tokens: int,
+) -> Json:
+    question_type = str(args.get("question_type") or infer_query_type(query))
+    retrieval_session_scope = str(args.get("session_scope") or ranking.get("session_scope") or "prefer").strip().lower()
+    if retrieval_session_scope not in {"prefer", "only"}:
+        raise MatrixArkError("session_scope must be prefer or only")
+    retrieval_scope = {**scope, "_session_scope": retrieval_session_scope}
+    secondary_index_filter_groups = infer_secondary_index_filter_groups(query, question_type)
+    secondary_index_filter_mode = "any_group" if len(secondary_index_filter_groups) > 1 else "all_groups"
+    budget_source = (
+        "agent_provided_max_context_tokens"
+        if "max_context_tokens" in args
+        else "matrixark_default_max_context_tokens"
+    )
+    max_context_tokens = args.get("max_context_tokens", default_max_context_tokens)
+    if not isinstance(max_context_tokens, int) or max_context_tokens <= 0:
+        raise MatrixArkError("max_context_tokens must be a positive integer")
+    local_budget = local_context_budget(args)
+    local_tokens = int(local_budget.get("token_estimate", 0))
+    safety_margin_tokens = int(local_budget.get("safety_margin_tokens", 0))
+    remote_context_budget_tokens = max(0, max_context_tokens - local_tokens - safety_margin_tokens)
+    local_budget["remote_budget_tokens"] = remote_context_budget_tokens
+    cross_session_policy = build_cross_session_policy(
+        args,
+        ranking,
+        question_type=question_type,
+        session_scope=retrieval_session_scope,
+        remote_budget_tokens=remote_context_budget_tokens,
+    )
+    shared_context_policy = build_shared_context_policy(
+        args,
+        ranking,
+        remote_budget_tokens=remote_context_budget_tokens,
+    )
+    raw_reference_time_ms = args.get("reference_time_ms", now_ms())
+    if not isinstance(raw_reference_time_ms, int):
+        raise MatrixArkError("reference_time_ms must be an integer")
+    reference_time_ms = raw_reference_time_ms
+    query_plan = build_structured_query_plan(
+        query,
+        question_type=question_type,
+        secondary_index_filter_groups=secondary_index_filter_groups,
+        secondary_index_filter_mode=secondary_index_filter_mode,
+        reference_time_ms=reference_time_ms,
+    )
+    return {
+        "question_type": question_type,
+        "retrieval_session_scope": retrieval_session_scope,
+        "retrieval_scope": retrieval_scope,
+        "secondary_index_filter_groups": secondary_index_filter_groups,
+        "secondary_index_filter_mode": secondary_index_filter_mode,
+        "budget_source": budget_source,
+        "max_context_tokens": max_context_tokens,
+        "local_budget": local_budget,
+        "remote_context_budget_tokens": remote_context_budget_tokens,
+        "cross_session_policy": cross_session_policy,
+        "shared_context_policy": shared_context_policy,
+        "query_terms": {term for term in tokens(query) if len(term) > 2},
+        "reference_time_ms": reference_time_ms,
+        "query_plan": query_plan,
     }
