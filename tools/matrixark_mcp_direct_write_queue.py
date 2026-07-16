@@ -182,3 +182,187 @@ def enqueue_direct_write(target: Any, records: list[Json]) -> None:
     if getattr(target, "_direct_write_queue_mode", "memory") == "temporalstore":
         item = {"queue_mode": "temporalstore", "field": target._enqueue_direct_write_durable(records)}
     enqueue_direct_write_item(target, item, len(records))
+
+
+def direct_write_loop(target: Any) -> None:
+    while not target._direct_write_stop.is_set():
+        try:
+            first = target._direct_write_queue.get(timeout=0.1)
+        except queue.Empty:
+            continue
+        items = [first]
+        max_batches = max(1, int(getattr(target, "_direct_write_queue_drain_max_batches", 64) or 64))
+        while len(items) < max_batches:
+            try:
+                items.append(target._direct_write_queue.get_nowait())
+            except queue.Empty:
+                break
+        try:
+            flushed = target._flush_direct_write_items(items)
+            target._direct_write_flushed_records += flushed
+            target._direct_write_flushed_batches += len(items)
+        except Exception as exc:
+            target._direct_write_failures += 1
+            _mcp_debug_log(f"matrixark direct write queue flush failed: {exc}")
+        finally:
+            for _item in items:
+                try:
+                    target._direct_write_queue.task_done()
+                except Exception:
+                    pass
+
+
+def flush_direct_write_items(target: Any, items: list[Any]) -> int:
+    memory_records: list[Json] = []
+    raw_ingestion_records: list[Json] = []
+    flushed = 0
+    for item in items:
+        if isinstance(item, dict) and item.get("queue_mode") == "temporalstore":
+            flushed += target._flush_direct_write_durable_field(str(item.get("field") or ""))
+        elif isinstance(item, dict) and item.get("queue_mode") == "raw_ingestion":
+            rows = item.get("records")
+            if isinstance(rows, list):
+                raw_ingestion_records.extend(row for row in rows if isinstance(row, dict))
+        elif isinstance(item, list):
+            memory_records.extend(row for row in item if isinstance(row, dict))
+        else:
+            raise MatrixArkError("unknown direct write queue item")
+    if raw_ingestion_records:
+        target._append_raw_ingestion_records(raw_ingestion_records, allow_queue=False)
+        flushed += len(raw_ingestion_records)
+    if memory_records:
+        target._append_many_materialized(memory_records, allow_queue=False)
+        flushed += len(memory_records)
+    return flushed
+
+
+def flush_direct_write_item(target: Any, item: Any) -> int:
+    return flush_direct_write_items(target, [item])
+
+
+def load_direct_write_durable_payload(target: Any, field: str) -> Json | None:
+    if not field:
+        return None
+    raw = target._client.hget(target._direct_write_queue_key, field)
+    if not raw:
+        return None
+    payload = json.loads(raw)
+    return payload if isinstance(payload, dict) else None
+
+
+def write_direct_write_durable_status(
+    target: Any,
+    field: str,
+    payload: Json,
+    status: str,
+    error: str | None = None,
+) -> None:
+    updated = dict(payload)
+    updated["status"] = status
+    updated["updated_at_ms"] = now_ms()
+    updated["attempts"] = int(updated.get("attempts") or 0) + (1 if status in {"running", "failed", "dead"} else 0)
+    if error:
+        updated["error"] = error
+    key = (
+        target._direct_write_queue_done_key
+        if status == "done"
+        else target._direct_write_queue_dead_key if status == "dead" else target._direct_write_queue_key
+    )
+    target._hset_with_backoff(key, field, json.dumps(updated, separators=(",", ":")))
+    if key != target._direct_write_queue_key:
+        target._hset_with_backoff(target._direct_write_queue_key, field, json.dumps(updated, separators=(",", ":")))
+
+
+def flush_direct_write_durable_field(target: Any, field: str) -> int:
+    payload = target._load_direct_write_durable_payload(field)
+    if not payload:
+        return 0
+    status = str(payload.get("status") or "pending")
+    if status == "done":
+        return 0
+    if status == "dead":
+        return 0
+    records = payload.get("records")
+    if not isinstance(records, list):
+        target._write_direct_write_durable_status(field, payload, "dead", "durable queue payload has no records list")
+        target._direct_write_dead_letter_batches += 1
+        return 0
+    target._write_direct_write_durable_status(field, payload, "running")
+    try:
+        target._append_many_materialized(records, allow_queue=False)
+    except Exception as exc:
+        refreshed = target._load_direct_write_durable_payload(field) or payload
+        target._write_direct_write_durable_status(field, refreshed, "failed", str(exc))
+        raise
+    refreshed = target._load_direct_write_durable_payload(field) or payload
+    target._write_direct_write_durable_status(field, refreshed, "done")
+    return len(records)
+
+
+def drain_durable_direct_write_queue(target: Any, *, limit: int | None = None) -> Json:
+    target._ensure_direct_write_queue_fields()
+    if getattr(target, "_direct_write_queue_mode", "memory") != "temporalstore":
+        return {"status": "skipped", "reason": "queue_mode_not_temporalstore"}
+    scanner = getattr(target._client, "scan_hash", None)
+    if not callable(scanner):
+        return {"status": "skipped", "reason": "backend_has_no_scan_hash"}
+    response = scanner(target._direct_write_queue_key)
+    records = response.get("records") if isinstance(response, dict) else []
+    fields: list[str] = []
+    for row in records if isinstance(records, list) else []:
+        if not isinstance(row, dict):
+            continue
+        field = str(row.get("field") or "")
+        value = row.get("value")
+        if not field or not isinstance(value, str):
+            continue
+        try:
+            payload = json.loads(value)
+        except Exception:
+            continue
+        if isinstance(payload, dict) and str(payload.get("status") or "pending") in {"pending", "failed", "running"}:
+            fields.append(field)
+        if limit is not None and len(fields) >= limit:
+            break
+    target._start_direct_write_worker()
+    for field in fields:
+        target._direct_write_queue.put({"queue_mode": "temporalstore", "field": field}, timeout=target._direct_write_queue_put_timeout_s)
+    return {"status": "queued", "pending_batches": len(fields), "queue_key": target._direct_write_queue_key}
+
+
+def direct_write_durable_pending_count(target: Any) -> int:
+    target._ensure_direct_write_queue_fields()
+    scanner = getattr(getattr(target, "_client", None), "scan_hash", None)
+    if not callable(scanner):
+        return 0
+    try:
+        response = scanner(target._direct_write_queue_key)
+    except Exception:
+        return 0
+    rows = response.get("records") if isinstance(response, dict) else []
+    count = 0
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        value = row.get("value")
+        if not isinstance(value, str):
+            continue
+        try:
+            payload = json.loads(value)
+        except Exception:
+            continue
+        if isinstance(payload, dict) and direct_write_payload_is_pending(payload):
+            count += 1
+    return count
+
+
+def flush_direct_writes(target: Any, timeout_s: float | None = None) -> None:
+    target._ensure_direct_write_queue_fields()
+    target._start_direct_write_worker()
+    if getattr(target, "_direct_write_queue_mode", "memory") == "temporalstore":
+        target.drain_durable_direct_write_queue()
+    deadline = time.monotonic() + float(timeout_s if timeout_s is not None else 30.0)
+    while target._direct_write_queue.unfinished_tasks:
+        if time.monotonic() >= deadline:
+            raise MatrixArkError("timed out waiting for direct TemporalStore write queue to drain")
+        time.sleep(0.01)
