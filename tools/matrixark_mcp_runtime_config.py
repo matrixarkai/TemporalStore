@@ -37,6 +37,22 @@ MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK = os.environ.get("MATRIXARK_REQUIRE_NATIVE
 MATRIXARK_ALLOW_PYTHON_HOT_CACHE = os.environ.get("MATRIXARK_ALLOW_PYTHON_HOT_CACHE", "").strip().lower()
 MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER = os.environ.get("MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER", "").strip().lower()
 
+
+def matrixark_production_profile_enabled() -> bool:
+    return MATRIXARK_MCP_PROFILE in {"prod", "production", "benchmark", "bench", "parity"}
+
+
+def python_hot_cache_allowed(*, backend_label: str = "") -> bool:
+    if MATRIXARK_ALLOW_PYTHON_HOT_CACHE:
+        return MATRIXARK_ALLOW_PYTHON_HOT_CACHE in {"1", "true", "yes"}
+    return backend_label == "local"
+
+
+def native_candidate_prefilter_required(*, backend_label: str = "") -> bool:
+    if MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER:
+        return MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER in {"1", "true", "yes"}
+    return backend_label != "local"
+
 DEFAULT_MAX_CONTEXT_TOKENS = int(os.environ.get("MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS", "32000"))
 CONTEXT_PACK_DEBUG_REFS = os.environ.get("MATRIXARK_CONTEXT_PACK_DEBUG_REFS", "0").strip().lower() in {"1", "true", "yes"}
 AUDIT_DEBUG_PAYLOAD = os.environ.get("MATRIXARK_AUDIT_DEBUG_PAYLOAD", "0").strip().lower() in {"1", "true", "yes"}
