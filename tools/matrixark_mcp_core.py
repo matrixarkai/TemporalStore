@@ -412,7 +412,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 
 try:
-    import tools.matrixark_mcp_serving_records as _serving_records
     from tools.matrixark_mcp_serving_records import (
         COMPACT_SCOPE_RECORD_TYPES,
         COMPACT_TIMESTAMP_RECORD_TYPES,
@@ -427,7 +426,6 @@ try:
         materialize_serving_records,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    import matrixark_mcp_serving_records as _serving_records
     from matrixark_mcp_serving_records import (
         COMPACT_SCOPE_RECORD_TYPES,
         COMPACT_TIMESTAMP_RECORD_TYPES,
@@ -781,20 +779,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 globals().update({name: getattr(_runtime_config, name) for name in _RUNTIME_CONFIG_EXPORTS})
 
 
-def _sync_serving_record_flags() -> None:
-    _serving_records.ENABLE_CONTEXT_DEBUG_RECORDS = ENABLE_CONTEXT_DEBUG_RECORDS
-
-
-def materialize_serving_records(record: Json) -> list[Json]:
-    _sync_serving_record_flags()
-    return _serving_records.materialize_serving_records(record)
-
-
-def materialize_serving_record_batch(records: list[Json]) -> list[Json]:
-    _sync_serving_record_flags()
-    return _serving_records.materialize_serving_record_batch(records)
-
-
 _OSS_SEGMENT_MODEL_CACHE: dict[str, Any] = {}
 _OSS_UNDERSTANDING_PROTOTYPE_CACHE: dict[str, dict[str, list[float]]] = {}
 _DIRECT_RECORD_CACHE: dict[str, tuple[int, list[Json]]] = {}
@@ -885,6 +869,7 @@ try:
     from tools.matrixark_mcp_budget_pack import (
         build_cross_session_policy,
         build_shared_context_policy,
+        bounded_max_children_scored_per_parent,
         compact_local_context_refs,
         context_text_hashes,
         local_context_budget,
@@ -895,6 +880,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_budget_pack import (
         build_cross_session_policy,
         build_shared_context_policy,
+        bounded_max_children_scored_per_parent,
         compact_local_context_refs,
         context_text_hashes,
         local_context_budget,
@@ -951,14 +937,3 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         record_dropped_candidate,
         score_recall_candidate,
     )
-
-
-
-def bounded_max_children_scored_per_parent(value: int) -> int:
-    hard_cap = max(1, HARD_MAX_CHILDREN_SCORED_PER_PARENT)
-    if value > hard_cap:
-        raise MatrixArkError(
-            "max_children_scored_per_parent must be <= "
-            f"{hard_cap}; split over-wide ContextNode children into deeper node layers"
-        )
-    return value

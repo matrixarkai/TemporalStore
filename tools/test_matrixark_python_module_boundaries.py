@@ -292,11 +292,14 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIs(core_mod.attach_context_placement, event_keys_mod.attach_context_placement)
         self.assertTrue(callable(core_mod.materialize_serving_records))
         self.assertTrue(callable(serving_records_mod.materialize_serving_records))
+        self.assertIs(core_mod.materialize_serving_records, serving_records_mod.materialize_serving_records)
+        self.assertIs(core_mod.materialize_serving_record_batch, serving_records_mod.materialize_serving_record_batch)
         self.assertIs(core_mod.local_context_budget, budget_pack_mod.local_context_budget)
         self.assertIs(core_mod.local_context_refs_for_pack, budget_pack_mod.local_context_refs_for_pack)
         self.assertIs(core_mod.build_cross_session_policy, budget_pack_mod.build_cross_session_policy)
         self.assertIs(core_mod.build_shared_context_policy, budget_pack_mod.build_shared_context_policy)
         self.assertIs(core_mod.select_token_budgeted_refs, budget_pack_mod.select_token_budgeted_refs)
+        self.assertIs(core_mod.bounded_max_children_scored_per_parent, budget_pack_mod.bounded_max_children_scored_per_parent)
         self.assertIs(core_mod.scope_matches, access_scope_mod.scope_matches)
         self.assertIs(core_mod.candidate_access_scope, access_scope_mod.candidate_access_scope)
         self.assertIs(core_mod.access_scope_matches_before_scoring, access_scope_mod.access_scope_matches_before_scoring)
@@ -617,10 +620,18 @@ class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):
 
     def test_storage_options_are_validated_stored_and_audited(self) -> None:
         core_modules = []
+        serving_modules = []
         for module_name in ("matrixark_mcp_core", "tools.matrixark_mcp_core"):
             try:
                 module = importlib.import_module(module_name)
                 core_modules.append((module, module.ENABLE_CONTEXT_DEBUG_RECORDS))
+                module.ENABLE_CONTEXT_DEBUG_RECORDS = True
+            except ModuleNotFoundError:
+                pass
+        for module_name in ("matrixark_mcp_serving_records", "tools.matrixark_mcp_serving_records"):
+            try:
+                module = importlib.import_module(module_name)
+                serving_modules.append((module, module.ENABLE_CONTEXT_DEBUG_RECORDS))
                 module.ENABLE_CONTEXT_DEBUG_RECORDS = True
             except ModuleNotFoundError:
                 pass
@@ -635,6 +646,8 @@ class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):
             )
         finally:
             for module, old_debug in core_modules:
+                module.ENABLE_CONTEXT_DEBUG_RECORDS = old_debug
+            for module, old_debug in serving_modules:
                 module.ENABLE_CONTEXT_DEBUG_RECORDS = old_debug
         self.assertEqual("accepted", ingest["status"])
         records = server.adapter.read_all()
