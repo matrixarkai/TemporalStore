@@ -23,7 +23,7 @@ import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 try:
     from tools.matrixark_resource_parser import ResourceParserError, content_hash, embedding_text_for_chunk, normalize_parse_warnings, parse_resource, summarize_resource_chunks
@@ -881,28 +881,26 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
 
 
-def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str, session_scope: str, remote_budget_tokens: int) -> Json:
-    try:
-        from tools.matrixark_mcp_budget_pack import build_cross_session_policy as _build_cross_session_policy
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_budget_pack import build_cross_session_policy as _build_cross_session_policy
-
-    return _build_cross_session_policy(
-        args,
-        ranking,
-        question_type=question_type,
-        session_scope=session_scope,
-        remote_budget_tokens=remote_budget_tokens,
+try:
+    from tools.matrixark_mcp_budget_pack import (
+        build_cross_session_policy,
+        build_shared_context_policy,
+        compact_local_context_refs,
+        context_text_hashes,
+        local_context_budget,
+        local_context_refs_for_pack,
+        select_token_budgeted_refs,
     )
-
-
-def build_shared_context_policy(args: Json, ranking: Json, *, remote_budget_tokens: int) -> Json:
-    try:
-        from tools.matrixark_mcp_budget_pack import build_shared_context_policy as _build_shared_context_policy
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_budget_pack import build_shared_context_policy as _build_shared_context_policy
-
-    return _build_shared_context_policy(args, ranking, remote_budget_tokens=remote_budget_tokens)
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_budget_pack import (
+        build_cross_session_policy,
+        build_shared_context_policy,
+        compact_local_context_refs,
+        context_text_hashes,
+        local_context_budget,
+        local_context_refs_for_pack,
+        select_token_budgeted_refs,
+    )
 
 
 try:
@@ -964,82 +962,3 @@ def bounded_max_children_scored_per_parent(value: int) -> int:
             f"{hard_cap}; split over-wide ContextNode children into deeper node layers"
         )
     return value
-
-
-def context_text_hashes(text: str) -> set[int]:
-    try:
-        from tools.matrixark_mcp_budget_pack import context_text_hashes as _context_text_hashes
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_budget_pack import context_text_hashes as _context_text_hashes
-
-    return _context_text_hashes(text)
-
-
-def local_context_budget(args: Json) -> Json:
-    try:
-        from tools.matrixark_mcp_budget_pack import local_context_budget as _local_context_budget
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_budget_pack import local_context_budget as _local_context_budget
-
-    return _local_context_budget(args)
-
-
-def compact_local_context_refs(local_budget: Json) -> list[Json]:
-    try:
-        from tools.matrixark_mcp_budget_pack import compact_local_context_refs as _compact_local_context_refs
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_budget_pack import compact_local_context_refs as _compact_local_context_refs
-
-    return _compact_local_context_refs(local_budget)
-
-
-def local_context_refs_for_pack(local_budget: Json) -> list[Json]:
-    try:
-        from tools.matrixark_mcp_budget_pack import local_context_refs_for_pack as _local_context_refs_for_pack
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_budget_pack import local_context_refs_for_pack as _local_context_refs_for_pack
-
-    return _local_context_refs_for_pack(local_budget)
-
-
-
-def select_token_budgeted_refs(
-    primary: list[Json],
-    auxiliary: list[Json],
-    *,
-    max_context_tokens: int,
-    auxiliary_quota: int,
-    question_type: str = "fact",
-    reserved_tokens: int = 0,
-    max_selected_refs: int | None = None,
-    min_score: float = DEFAULT_RETRIEVAL_MIN_SCORE,
-    max_global_candidates: int | None = None,
-    budget_fill_policy: str = DEFAULT_BUDGET_FILL_POLICY,
-    duplicate_text_hashes: set[int] | None = None,
-    deadline_exceeded: Callable[[], bool] | None = None,
-    deadline_reason: str = "deadline_during_pack",
-    cross_session_policy: Json | None = None,
-    shared_context_policy: Json | None = None,
-) -> tuple[list[Json], int, Json]:
-    try:
-        from tools.matrixark_mcp_budget_pack import select_token_budgeted_refs as _select_token_budgeted_refs
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_budget_pack import select_token_budgeted_refs as _select_token_budgeted_refs
-
-    return _select_token_budgeted_refs(
-        primary,
-        auxiliary,
-        max_context_tokens=max_context_tokens,
-        auxiliary_quota=auxiliary_quota,
-        question_type=question_type,
-        reserved_tokens=reserved_tokens,
-        max_selected_refs=max_selected_refs,
-        min_score=min_score,
-        max_global_candidates=max_global_candidates,
-        budget_fill_policy=budget_fill_policy,
-        duplicate_text_hashes=duplicate_text_hashes,
-        deadline_exceeded=deadline_exceeded,
-        deadline_reason=deadline_reason,
-        cross_session_policy=cross_session_policy,
-        shared_context_policy=shared_context_policy,
-    )
