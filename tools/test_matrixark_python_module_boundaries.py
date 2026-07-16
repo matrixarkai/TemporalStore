@@ -334,7 +334,6 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         legacy_orchestrators = {
             "matrixark_mcp_local_adapter.py",
             "matrixark_mcp_local_ingest.py",
-            "matrixark_mcp_temporal_adapters.py",
         }
         offenders: list[str] = []
         for module_path in module_paths:

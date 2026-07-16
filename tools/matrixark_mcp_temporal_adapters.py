@@ -3,11 +3,27 @@
 
 from __future__ import annotations
 
+import json
+import os
 import queue
+import sys
+import threading
+import time
+from pathlib import Path
+from typing import Any
 
 try:
-    from tools.matrixark_mcp_core import *
     from tools.matrixark_mcp_core import (
+        DIRECT_AUDIT_BUFFER_MAX_RECORDS,
+        DIRECT_AUDIT_FLUSH_INTERVAL_MS,
+        DIRECT_AUDIT_MODE,
+        DIRECT_RECORD_BUNDLE_MAX_BYTES,
+        DIRECT_RECORD_LOG_SHARD_SIZE,
+        DIRECT_WRITE_BACKOFF_MS,
+        DIRECT_WRITE_RETRIES,
+        DIRECT_WRITE_THROTTLE_MS,
+        Json,
+        MatrixArkError,
         _DIRECT_RECORD_CACHE,
         _DIRECT_RECORD_CACHE_LOCK,
         _DIRECT_RECORD_CACHE_MAX_PREFIXES,
@@ -19,10 +35,31 @@ try:
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK,
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES,
         _mcp_debug_log,
+        candidate_access_scope,
+        compact_latest_context_state_records,
+        context_event_time_index_entries,
+        context_event_time_index_field,
+        context_event_time_index_key,
+        context_event_time_index_payload,
+        context_event_timestamp_ms,
+        materialize_serving_record_batch,
+        materialize_serving_records,
+        native_candidate_prefilter_required,
+        python_hot_cache_allowed,
+        scope_matches,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_core import *
     from matrixark_mcp_core import (
+        DIRECT_AUDIT_BUFFER_MAX_RECORDS,
+        DIRECT_AUDIT_FLUSH_INTERVAL_MS,
+        DIRECT_AUDIT_MODE,
+        DIRECT_RECORD_BUNDLE_MAX_BYTES,
+        DIRECT_RECORD_LOG_SHARD_SIZE,
+        DIRECT_WRITE_BACKOFF_MS,
+        DIRECT_WRITE_RETRIES,
+        DIRECT_WRITE_THROTTLE_MS,
+        Json,
+        MatrixArkError,
         _DIRECT_RECORD_CACHE,
         _DIRECT_RECORD_CACHE_LOCK,
         _DIRECT_RECORD_CACHE_MAX_PREFIXES,
@@ -34,6 +71,18 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK,
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES,
         _mcp_debug_log,
+        candidate_access_scope,
+        compact_latest_context_state_records,
+        context_event_time_index_entries,
+        context_event_time_index_field,
+        context_event_time_index_key,
+        context_event_time_index_payload,
+        context_event_timestamp_ms,
+        materialize_serving_record_batch,
+        materialize_serving_records,
+        native_candidate_prefilter_required,
+        python_hot_cache_allowed,
+        scope_matches,
     )
 
 try:
