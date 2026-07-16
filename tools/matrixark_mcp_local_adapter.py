@@ -269,22 +269,13 @@ class MatrixArkLocalAdapter:
         return local_cache_helpers.pending_session_events(self, scope, limit=limit)
 
     def append_session_buffer_event(self, *, envelope: Json, event_id_hash: int, node_hash: int, node_path: list[str], hook: Json | None) -> None:
-        key = session_buffer_key(envelope)
-        self.append(
-            {
-                "record_type": "session_buffer_event",
-                "buffer_key_hash": stable_hash(":".join(key)),
-                "buffer_key": list(key),
-                "event_id_hash": event_id_hash,
-                "node_hash": node_hash,
-                "storage_options": envelope.get("storage_options", {}),
-                "storage_route": envelope.get("storage_route", {}),
-                "node_path": node_path,
-                "scope": envelope["scope"],
-                "status": "pending",
-                "agent_hook": hook,
-                "created_at_ms": envelope["ingestion_time_ms"],
-            }
+        session_runtime.append_session_buffer_event(
+            self,
+            envelope=envelope,
+            event_id_hash=event_id_hash,
+            node_hash=node_hash,
+            node_path=node_path,
+            hook=hook,
         )
 
     def session_buffer_enabled(self, args: Json, *, kind: str = "message") -> bool:

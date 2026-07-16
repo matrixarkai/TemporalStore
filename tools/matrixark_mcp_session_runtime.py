@@ -13,6 +13,7 @@ try:
         now_ms,
         optional_object,
         optional_string,
+        session_buffer_key,
         stable_hash,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
@@ -25,7 +26,36 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         now_ms,
         optional_object,
         optional_string,
+        session_buffer_key,
         stable_hash,
+    )
+
+
+def append_session_buffer_event(
+    adapter: object,
+    *,
+    envelope: Json,
+    event_id_hash: int,
+    node_hash: int,
+    node_path: list[str],
+    hook: Json | None,
+) -> None:
+    key = session_buffer_key(envelope)
+    adapter.append(
+        {
+            "record_type": "session_buffer_event",
+            "buffer_key_hash": stable_hash(":".join(key)),
+            "buffer_key": list(key),
+            "event_id_hash": event_id_hash,
+            "node_hash": node_hash,
+            "storage_options": envelope.get("storage_options", {}),
+            "storage_route": envelope.get("storage_route", {}),
+            "node_path": node_path,
+            "scope": envelope["scope"],
+            "status": "pending",
+            "agent_hook": hook,
+            "created_at_ms": envelope["ingestion_time_ms"],
+        }
     )
 
 
