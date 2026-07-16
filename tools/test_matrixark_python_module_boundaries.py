@@ -230,6 +230,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIsNone(rust_proxy_lane_select_mod.pack_lane_sticky_index([{"lane": 0}], {}))
         self.assertTrue(callable(rust_proxy_metrics_record_mod.nested_float))
         self.assertTrue(callable(rust_proxy_metrics_record_mod.percentile))
+        self.assertTrue(callable(rust_proxy_metrics_record_mod.record_call_metrics))
         self.assertTrue(callable(rust_proxy_metrics_snapshot_mod.metrics_snapshot))
         self.assertIs(temporal_mod.MatrixArkRustCliClient, rust_proxy_mod.MatrixArkRustCliClient)
         adapter = local_mod.MatrixArkLocalAdapter(Path("/tmp/matrixark-module-boundary-unused.jsonl"))
