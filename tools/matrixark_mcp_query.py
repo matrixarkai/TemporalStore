@@ -17,6 +17,39 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 Json = dict[str, Any]
 
 
+QUERY_TYPE_LABELS: dict[str, str] = {
+    "date": "question asks when date before after yesterday tomorrow week month year",
+    "current_state": "question asks current latest now still status preference location role valid state",
+    "why_emotion": "question asks why reason feeling emotion because",
+    "evidence": "question asks quote exact message evidence what did someone say",
+    "procedure": "question asks procedure steps troubleshoot debug rollback runbook checklist how to fix",
+    "broad_exploration": "question asks overview summarize broad exploration topics inventory what is known",
+    "multi_hop": "question requires combining multiple sessions people facts cross conversation reasoning",
+    "fact": "question asks a direct factual answer",
+}
+
+QUERY_INDEX_LABELS: dict[str, str] = {
+    "entity_type:location": "location city moved lives staying where user is",
+    "entity_type:preference": "preference prefer favorite likes language tool choice",
+    "event_type:preference_update": "preference update changed choice likes prefers",
+    "entity_type:relationship": "relationship manager sister brother teammate family person",
+    "entity_type:family_profile": "family pet dog cat child household",
+    "entity_type:job_status": "job role work status position responsibility",
+    "event_type:status_update": "job status role work update",
+    "entity_type:current_plan": "plan current plan upcoming task schedule next milestone",
+    "event_type:plan_update": "plan update going to schedule will next",
+    "event_type:confirmation": "confirmation approved accepted yes correct confirmed",
+    "entity_type:approval_state": "approval budget purchase cost approved",
+    "entity_type:resource_fact": "resource document extracted fact approval owner budget",
+    "classification:confirmation": "confirmation approved accepted yes correct",
+    "classification:resource_fact": "resource fact extracted from document",
+    "segment_topic:approval_budget": "approval budget cost purchase decision",
+    "source_type:resource": "document resource pdf file chunk evidence",
+    "source_type:message": "conversation message dialogue user said assistant said",
+    "source_type:skill": "skill tool playbook procedure instruction",
+}
+
+
 def _ordered_unique(values: list[str]) -> list[str]:
     output: list[str] = []
     seen: set[str] = set()
@@ -243,4 +276,155 @@ def build_structured_query_plan(
             "budget_pack_contextpack",
         ],
     }
+
+
+def _core_query_runtime() -> Any:
+    try:
+        from tools import matrixark_mcp_core as core
+    except ModuleNotFoundError:  # Direct script execution from tools/.
+        import matrixark_mcp_core as core
+    return core
+
+
+def infer_query_type(query: str) -> str:
+    core = _core_query_runtime()
+    if core.understanding_provider() == "oss_encoder":
+        return oss_encoder_query_type(query)
+    lower = query.lower()
+    if re.search(r"\b(when|what date|which date|day|month|year|yesterday|tomorrow|last week|next week|before|after|as of|valid as of)\b", lower):
+        return "date"
+    if re.search(r"\b(current|currently|latest|now|still|today|valid|status|preference|prefer|likes|where does|where is)\b", lower):
+        return "current_state"
+    if re.search(r"\b(why|reason|because|feel|felt|emotion|happy|sad|angry|worried|excited)\b", lower):
+        return "why_emotion"
+    if re.search(r"\b(evidence|quote|exactly|what did .* say|conversation|dialogue|message)\b", lower):
+        return "evidence"
+    if re.search(r"\b(overview|summarize|summary|explore|broad|what is in|what do we know|topics|map|inventory)\b", lower):
+        return "broad_exploration"
+    if re.search(r"\b(procedure|steps?|how to|troubleshoot|debug|rollback|runbook|playbook|checklist|fix|remediate|mitigate)\b", lower):
+        return "procedure"
+    if re.search(r"\b(both|together|across|between|compare|combine|sessions|multi-hop|multi session|multi-session)\b", lower):
+        return "multi_hop"
+    return "fact"
+
+
+def infer_secondary_index_filter_groups(query: str, question_type: str) -> list[set[str]]:
+    core = _core_query_runtime()
+    if core.understanding_provider() == "oss_encoder":
+        return oss_encoder_secondary_index_filter_groups(query, question_type)
+    return deterministic_secondary_index_filter_groups(query, question_type)
+
+
+def oss_encoder_query_type(query: str) -> str:
+    core = _core_query_runtime()
+    ranked = core.oss_encoder_rank_labels(query, QUERY_TYPE_LABELS, limit=2)
+    if not ranked:
+        return "fact"
+    top = str(ranked[0]["label"])
+    if len(ranked) > 1 and top == "fact" and float(ranked[1]["score"]) >= float(ranked[0]["score"]) - 0.015:
+        return str(ranked[1]["label"])
+    return top
+
+
+def oss_encoder_secondary_index_filter_groups(query: str, question_type: str) -> list[set[str]]:
+    core = _core_query_runtime()
+    ranked = core.oss_encoder_rank_labels(f"{question_type}: {query}", QUERY_INDEX_LABELS, limit=5)
+    selected = [str(item["label"]) for item in ranked if float(item["score"]) >= 0.46]
+    if not selected and ranked:
+        selected = [str(ranked[0]["label"])]
+    groups: list[set[str]] = []
+    by_prefix: dict[str, set[str]] = {}
+    for label in selected:
+        prefix = label.split(":", 1)[0]
+        by_prefix.setdefault(prefix, set()).add(label)
+    for labels in by_prefix.values():
+        if labels and labels not in groups:
+            groups.append(labels)
+    return groups[:4]
+
+
+def candidate_index_terms(
+    record: Json,
+    index_terms_by_batch: dict[Any, list[str]],
+    index_terms_by_node: dict[Any, list[str]],
+    index_terms_by_ref: dict[Any, list[str]] | None = None,
+) -> set[str]:
+    try:
+        from tools.matrixark_mcp_indexing import metadata_index_terms, non_default_classification
+    except ModuleNotFoundError:  # Direct script execution from tools/.
+        from matrixark_mcp_indexing import metadata_index_terms, non_default_classification
+    core = _core_query_runtime()
+    terms: set[str] = set()
+    index_terms_by_ref = index_terms_by_ref or {}
+    record_type = record.get("record_type")
+    if record_type == "context_event":
+        terms.update(index_terms_by_batch.get(record.get("batch_id_hash"), []))
+        terms.update(index_terms_by_node.get(record.get("node_hash"), []))
+        terms.add(context_index_name("event_type", record.get("event_type")))
+        if not core.require_oss_understanding() and not record.get("event_type"):
+            terms.add(context_index_name("event_type", core.infer_event_type(str(record.get("text", "")))))
+        classification = non_default_classification(record.get("classification"))
+        if classification:
+            terms.add(context_index_name("classification", classification))
+        terms.add(context_index_name("status", record.get("status") or "observed"))
+        terms.add(context_index_name("source_type", record.get("source_type") or "message"))
+    elif record_type == "context_entity":
+        terms.add(context_index_name("entity_type", record.get("entity_type")))
+    elif record_type == "context_segment":
+        terms.add(context_index_name("segment_topic", record.get("topic")))
+    elif record_type == "resource_chunk":
+        terms.update(index_terms_by_ref.get(record.get("chunk_hash"), []))
+        terms.update(index_terms_by_node.get(record.get("node_hash"), []))
+        terms.add(context_index_name("source_type", "resource"))
+        terms.add(context_index_name("resource_type", record.get("resource_type")))
+        terms.update(metadata_index_terms(record.get("metadata", {})))
+    elif record_type == "skill_manifest":
+        terms.update(index_terms_by_ref.get(record.get("skill_hash"), []))
+        terms.update(index_terms_by_node.get(record.get("node_hash"), []))
+        terms.add(context_index_name("source_type", "skill"))
+        terms.add(context_index_name("resource_type", "skill"))
+        terms.add(context_index_name("skill_name", record.get("name")))
+        for trigger in record.get("triggers", [])[:8]:
+            terms.add(context_index_name("skill_trigger", trigger))
+        for tool in record.get("allowed_tools", [])[:8]:
+            terms.add(context_index_name("skill_tool", tool))
+    elif record_type == "skill_section":
+        terms.update(index_terms_by_ref.get(record.get("section_hash"), []))
+        terms.update(index_terms_by_node.get(record.get("node_hash"), []))
+        terms.add(context_index_name("source_type", "skill"))
+        terms.add(context_index_name("resource_type", "skill"))
+        terms.update(metadata_index_terms(record.get("metadata", {})))
+    return {term for term in terms if term}
+
+
+def passes_secondary_index_filters(candidate_terms: set[str], required_groups: list[set[str]], *, mode: str = "all_groups") -> bool:
+    if not required_groups:
+        return True
+    if mode == "any_group":
+        return any(bool(candidate_terms.intersection(group)) for group in required_groups)
+    return all(bool(candidate_terms.intersection(group)) for group in required_groups)
+
+
+def passes_applicable_secondary_index_filters(
+    candidate_terms: set[str],
+    required_groups: list[set[str]],
+    *,
+    mode: str = "all_groups",
+) -> bool:
+    """Apply only filter groups whose index prefix is present on this candidate."""
+    candidate_prefixes = {term.split(":", 1)[0] for term in candidate_terms if ":" in term}
+    candidate_is_context_asset = bool(
+        candidate_terms.intersection({"source_type:resource", "source_type:skill"})
+    )
+    applicable_groups = [
+        group
+        for group in required_groups
+        if candidate_prefixes.intersection({term.split(":", 1)[0] for term in group if ":" in term})
+        and not (
+            candidate_is_context_asset
+            and {term.split(":", 1)[0] for term in group if ":" in term} == {"source_type"}
+            and not candidate_terms.intersection(group)
+        )
+    ]
+    return passes_secondary_index_filters(candidate_terms, applicable_groups, mode=mode)
 
