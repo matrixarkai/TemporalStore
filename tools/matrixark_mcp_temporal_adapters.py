@@ -43,6 +43,7 @@ try:
     )
     from tools import matrixark_mcp_backend_metrics as backend_metrics_helpers
     from tools import matrixark_mcp_direct_cache as direct_cache_helpers
+    from tools import matrixark_mcp_temporal_append as temporal_append_helpers
     from tools.matrixark_mcp_direct_write_queue import (
         direct_write_durable_field,
         direct_write_durable_pending_count,
@@ -101,6 +102,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
     import matrixark_mcp_backend_metrics as backend_metrics_helpers
     import matrixark_mcp_direct_cache as direct_cache_helpers
+    import matrixark_mcp_temporal_append as temporal_append_helpers
     from matrixark_mcp_direct_write_queue import (
         direct_write_durable_field,
         direct_write_durable_pending_count,
@@ -780,136 +782,15 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         new_entry_count: int,
         records: list[Json],
     ) -> None:
-        """Refresh process-local materialized views after native latest-state writes.
-
-        Some compact context records are written as latest-state HSet entries
-        rather than append-log entries. Resource/skill list and retrieval paths
-        still need those records visible in the adapter's parsed caches during
-        the current process, without forcing the hot write path back through the
-        legacy full record log.
-        """
-        if not records:
-            return
-        try:
-            self._entry_count_cache = max(int(new_entry_count or 0), int(prior_entry_count or 0))
-        except Exception:
-            pass
-        if getattr(self, "_records_cache", None) is not None:
-            try:
-                self._records_cache.extend(records)
-                self._put_direct_record_cache(len(self._records_cache), self._records_cache)
-            except Exception:
-                pass
-        try:
-            self._prune_retrieval_candidate_cache(getattr(self, "_entry_count_cache", None) or int(new_entry_count or 0))
-        except Exception:
-            pass
-        try:
-            self._update_latest_entity_cache(records)
-        except Exception:
-            pass
+        temporal_append_helpers.materialize_appended_records_locked(
+            self,
+            prior_entry_count=prior_entry_count,
+            new_entry_count=new_entry_count,
+            records=records,
+        )
 
     def _append_many_materialized(self, records: list[Json], *, allow_queue: bool = True) -> None:
-        if not records:
-            return
-        records = compact_latest_context_state_records(records)
-        latest_state_entries, append_records_for_log = self._split_compacted_latest_context_state(records)
-        self._validate_storage_routes_available(records)
-        if latest_state_entries and not append_records_for_log:
-            self._hset_many_with_backoff(latest_state_entries)
-            self._materialize_appended_records_locked(
-                prior_entry_count=getattr(self, "_entry_count_cache", None) or self._get_count(),
-                new_entry_count=getattr(self, "_entry_count_cache", None) or self._get_count(),
-                records=records,
-            )
-            return
-        records_to_append = append_records_for_log
-        if allow_queue and self._records_can_use_direct_write_queue(records_to_append):
-            self._enqueue_direct_write(records)
-            return
-        started_perf = time.perf_counter()
-        with self._records_lock:
-            entry_count_cache = getattr(self, "_entry_count_cache", None)
-            count = entry_count_cache if entry_count_cache is not None else self._get_count()
-            if count <= 0 and self._index_cache is None:
-                self._index_cache = self._get_index()
-                self._legacy_index_mode = bool(self._index_cache)
-            event_time_entries = self._context_event_time_index_entries(records_to_append)
-            if self._legacy_index_mode:
-                if self._index_cache is None:
-                    self._index_cache = self._get_index()
-                entries: list[Json] = []
-                for record in records_to_append:
-                    payload = json.dumps(record, sort_keys=True, separators=(",", ":"))
-                    record_id = (
-                        f"{len(self._index_cache):020d}:"
-                        f"{record.get('record_type', 'record')}:"
-                        f"{stable_hash(json.dumps(record, sort_keys=True))}"
-                    )
-                    route = record.get("storage_route") if isinstance(record.get("storage_route"), dict) else {}
-                    entries.append({"key": self._record_hash_key, "field": record_id, "value": payload, "storage_route": route})
-                    self._index_cache.append(record_id)
-                self._hset_many_with_backoff(latest_state_entries + event_time_entries + entries)
-                self._put_string_with_backoff(self._index_key, json.dumps(self._index_cache, separators=(",", ":")))
-                self._note_pending_visibility_keys(
-                    [self._index_key]
-                    + [str(entry.get("key") or "") for entry in latest_state_entries]
-                    + [str(entry.get("key") or "") for entry in event_time_entries]
-                    + [str(entry.get("key") or "") for entry in entries]
-                )
-                if self._records_cache is not None:
-                    self._records_cache.extend(records)
-                    self._put_direct_record_cache(len(self._records_cache), self._records_cache)
-                self._update_latest_entity_cache(records)
-                elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
-                self._observe_append_engine(elapsed_ms)
-                self._observe_backend_command(elapsed_ms, records_written=len(records))
-                return
-
-            sequence = count
-            entries = []
-            located_bundles: list[tuple[list[Json], str, str]] = []
-            for bundle in self._record_bundles(records):
-                record_key, record_id = self._record_location(sequence)
-                payload_value: Json
-                payload_value = bundle[0] if len(bundle) == 1 else {"record_bundle": bundle}
-                payload = json.dumps(payload_value, sort_keys=True, separators=(",", ":"))
-                entries.append({"key": record_key, "field": record_id, "value": payload, "storage_route": self._storage_route_for_bundle(bundle)})
-                located_bundles.append((bundle, record_key, record_id))
-                sequence += 1
-            native_index_entries = self._native_side_index_entries_for_bundles(located_bundles)
-            append_records = getattr(self._client, "matrixark_batch_append_records", None)
-            if callable(append_records):
-                self._write_with_backoff(
-                    lambda: append_records(
-                        event_time_entries + native_index_entries + entries,
-                        count_key=self._count_key,
-                        count_value=str(sequence),
-                        append_options=self._native_append_options(),
-                    ),
-                    op="matrixark_batch_append_records",
-                )
-                if self._write_throttle_s > 0:
-                    time.sleep(self._write_throttle_s)
-            else:
-                self._hset_many_with_backoff(event_time_entries + native_index_entries + entries)
-                self._put_string_with_backoff(self._count_key, str(sequence))
-            self._note_pending_visibility_keys(
-                [self._count_key]
-                + [str(entry.get("key") or "") for entry in latest_state_entries]
-                + [str(entry.get("key") or "") for entry in event_time_entries]
-                + [str(entry.get("key") or "") for entry in native_index_entries]
-                + [str(entry.get("key") or "") for entry in entries]
-            )
-            self._entry_count_cache = sequence
-            if self._records_cache is not None:
-                self._records_cache.extend(records)
-                self._put_direct_record_cache(self._entry_count_cache, self._records_cache)
-            self._prune_retrieval_candidate_cache(sequence)
-            self._update_latest_entity_cache(records)
-            elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
-            self._observe_append_engine(elapsed_ms)
-            self._observe_backend_command(elapsed_ms, records_written=len(records))
+        temporal_append_helpers.append_many_materialized(self, records, allow_queue=allow_queue)
 
     def _note_pending_visibility_keys(self, keys: Iterable[str]) -> None:
         if not (
