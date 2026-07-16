@@ -360,10 +360,21 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 selected_node_hashes=set(),
             )
         )
+        selector = retrieve_tree_filter_mod.make_tree_selector(
+            traversal={},
+            selected_paths={("tenant:t", "user:u")},
+            selected_leaf_paths=set(),
+            selected_node_hashes=set(),
+        )
+        self.assertTrue(selector({"node_path": ["tenant:t", "user:u"], "node_hash": 44}))
         limiter = retrieve_tree_filter_mod.CandidateFanoutLimiter(1)
         self.assertTrue(limiter.admit({"node_hash": 1}))
         self.assertFalse(limiter.admit({"node_hash": 1}))
         self.assertEqual(limiter.dropped_count, 1)
+        admit, factory_limiter = retrieve_tree_filter_mod.make_candidate_admitter(1)
+        self.assertTrue(admit({"node_hash": 2}))
+        self.assertFalse(admit({"node_hash": 2}))
+        self.assertEqual(factory_limiter.dropped_count, 1)
         self.assertTrue(callable(retrieve_metrics_mod.attach_python_retrieval_metrics))
         self.assertTrue(callable(ingest_planning_mod.prepare_ingest_start))
         self.assertIs(local_ingest_mod.lightweight_async_accept, async_ingest_mod.lightweight_async_accept)

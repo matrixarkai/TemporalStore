@@ -35,6 +35,25 @@ def selected_by_tree(
         return False
 
 
+def make_tree_selector(
+    *,
+    traversal: Json,
+    selected_paths: set[tuple[str, ...]],
+    selected_leaf_paths: set[tuple[str, ...]],
+    selected_node_hashes: set[int],
+):
+    def selector(record: Json) -> bool:
+        return selected_by_tree(
+            record,
+            traversal=traversal,
+            selected_paths=selected_paths,
+            selected_leaf_paths=selected_leaf_paths,
+            selected_node_hashes=selected_node_hashes,
+        )
+
+    return selector
+
+
 class CandidateFanoutLimiter:
     def __init__(self, max_candidates_per_node: int) -> None:
         self.max_candidates_per_node = max_candidates_per_node
@@ -51,3 +70,8 @@ class CandidateFanoutLimiter:
             return False
         self.candidate_count_by_node[node_key] = count + 1
         return True
+
+
+def make_candidate_admitter(max_candidates_per_node: int):
+    limiter = CandidateFanoutLimiter(max_candidates_per_node)
+    return limiter.admit, limiter

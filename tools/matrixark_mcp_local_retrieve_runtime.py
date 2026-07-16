@@ -546,15 +546,12 @@ def retrieve(target: Any, args: Json) -> Json:
                 elif embedding_type == "skill_summary":
                     skill_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
 
-    def selected_by_tree(record: Json) -> bool:
-        return retrieve_tree_filter_helpers.selected_by_tree(
-            record,
-            traversal=traversal,
-            selected_paths=selected_paths,
-            selected_leaf_paths=selected_leaf_paths,
-            selected_node_hashes=selected_node_hashes,
-        )
-
+    selected_by_tree = retrieve_tree_filter_helpers.make_tree_selector(
+        traversal=traversal,
+        selected_paths=selected_paths,
+        selected_leaf_paths=selected_leaf_paths,
+        selected_node_hashes=selected_node_hashes,
+    )
     if placement_candidate_records and not traversal.get("fallback_to_flat"):
         tree_candidate_records = [record for record in placement_candidate_records if selected_by_tree(record)]
         tree_prefilter_dropped_count = max(0, len(placement_candidate_records) - len(tree_candidate_records))
@@ -575,10 +572,7 @@ def retrieve(target: Any, args: Json) -> Json:
         max_raw_events_per_node=max_raw_events_per_node,
         context_event_ingestion_time_ms=self.context_event_ingestion_time_ms,
     )
-    fanout_limiter = retrieve_tree_filter_helpers.CandidateFanoutLimiter(max_candidates_per_node)
-
-    def admit_candidate_for_node(record: Json) -> bool:
-        return fanout_limiter.admit(record)
+    admit_candidate_for_node, fanout_limiter = retrieve_tree_filter_helpers.make_candidate_admitter(max_candidates_per_node)
 
     layer_scores = sorted(
         traversal["trace"] or node_scores.values(),
