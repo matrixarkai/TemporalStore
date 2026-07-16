@@ -48,6 +48,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         admin_schemas_mod = importlib.import_module("tools.matrixark_mcp_admin_schemas")
         metrics_mod = importlib.import_module("tools.matrixark_mcp_metrics")
         local_mod = importlib.import_module("tools.matrixark_mcp_local_adapter")
+        local_core_mixin_mod = importlib.import_module("tools.matrixark_mcp_local_core_mixin")
         local_portal_imports_mod = importlib.import_module("tools.matrixark_mcp_local_portal_imports")
         temporal_mod = importlib.import_module("tools.matrixark_mcp_temporal_adapters")
         temporal_direct_cache_mod = importlib.import_module("tools.matrixark_mcp_temporal_direct_cache")
@@ -265,6 +266,12 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(callable(rust_proxy_metrics_record_mod.record_call_metrics))
         self.assertTrue(callable(rust_proxy_metrics_snapshot_mod.metrics_snapshot))
         self.assertIs(temporal_mod.MatrixArkRustCliClient, rust_proxy_mod.MatrixArkRustCliClient)
+        self.assertTrue(
+            issubclass(
+                local_mod.MatrixArkLocalAdapter,
+                local_core_mixin_mod.MatrixArkLocalCoreMixin,
+            )
+        )
         adapter = local_mod.MatrixArkLocalAdapter(Path("/tmp/matrixark-module-boundary-unused.jsonl"))
         sample_scope = {"tenant_id": "t", "user_id": "u", "session_id": "s"}
         self.assertEqual(
@@ -309,6 +316,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual(durable_payload["record_count"], 1)
         self.assertTrue(direct_write_queue_mod.direct_write_durable_field(durable_payload))
         self.assertTrue(direct_write_queue_mod.direct_write_payload_is_pending(durable_payload))
+        self.assertIs(local_mod.RETRIEVAL_HOT_RECORD_TYPES, local_core_mixin_mod.RETRIEVAL_HOT_RECORD_TYPES)
         self.assertIs(local_mod.RETRIEVAL_HOT_RECORD_TYPES, retrieval_records_mod.RETRIEVAL_HOT_RECORD_TYPES)
         self.assertTrue(callable(temporal_retrieval_records_mod.retrieval_records))
         self.assertTrue(callable(temporal_retrieval_records_mod.filter_retrieval_candidates))
