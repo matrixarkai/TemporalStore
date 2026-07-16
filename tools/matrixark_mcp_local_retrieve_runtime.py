@@ -67,6 +67,7 @@ try:
         starts_with_path,
         summarize_text,
         time,
+        tokens,
         tree_first_traversal,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
@@ -131,6 +132,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         starts_with_path,
         summarize_text,
         time,
+        tokens,
         tree_first_traversal,
     )
 
