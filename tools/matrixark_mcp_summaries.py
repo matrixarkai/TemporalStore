@@ -26,6 +26,14 @@ TIME_COMPRESSION_SUMMARY_TIMEOUT_SEC = float(os.environ.get("MATRIXARK_TIME_COMP
 TIME_COMPRESSION_REQUIRE_LLM_SUMMARY = os.environ.get("MATRIXARK_REQUIRE_LLM_TIME_COMPRESSION", "").strip().lower() in {"1", "true", "yes"}
 
 
+SUMMARY_LLM_PROVIDER = os.environ.get(
+    "MATRIXARK_SUMMARY_PROVIDER",
+    os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER", os.environ.get("MATRIXARK_EXTRACTION_PROVIDER", "deterministic")),
+).strip().lower().replace("-", "_")
+SUMMARY_LLM_MODEL = os.environ.get("MATRIXARK_SUMMARY_MODEL", os.environ.get("MATRIXARK_EXTRACTION_MODEL", os.environ.get("OPENAI_MODEL", "gpt-4o-mini")))
+SUMMARY_LLM_MAX_TOKENS = int(os.environ.get("MATRIXARK_SUMMARY_MAX_TOKENS", "900"))
+
+
 def summarize_text(text: str, *, limit: int = 220) -> str:
     compact = " ".join(text.split())
     if len(compact) <= limit:
@@ -183,4 +191,86 @@ def node_l1_generation_policy(
         return {**base, "generate_l1": True, "reason": "token_threshold"}
     return {**base, "generate_l1": False, "reason": "l0_sufficient"}
 
+
+def _require_oss_understanding() -> bool:
+    try:
+        from tools.matrixark_mcp_oss_understanding import require_oss_understanding
+    except ModuleNotFoundError:  # Direct script execution from tools/.
+        from matrixark_mcp_oss_understanding import require_oss_understanding
+    return require_oss_understanding()
+
+
+def summary_provider() -> str:
+    provider = os.environ.get("MATRIXARK_SUMMARY_PROVIDER", SUMMARY_LLM_PROVIDER).strip().lower().replace("-", "_")
+    if provider in {"oss", "open_source", "local_llm", "oss_llm"}:
+        return "openai_compatible"
+    if provider in {"", "deterministic", "rules", "local"} and _require_oss_understanding():
+        raise MatrixArkError("deterministic L0/L1 summary generation is disabled because MATRIXARK_REQUIRE_OSS_UNDERSTANDING=1")
+    return provider or "deterministic"
+
+
+def synthesize_context_node_summary(
+    *,
+    level: str,
+    node_path: list[str],
+    source_text: str,
+    fallback_text: str,
+    max_chars: int,
+    policy: Json,
+) -> tuple[str, Json]:
+    provider = summary_provider()
+    fallback_summary = summarize_text(fallback_text, limit=max_chars)
+    provider_meta: Json = {
+        "provider": provider,
+        "model": SUMMARY_LLM_MODEL if provider in {"openai", "openai_compatible", "openai_compatible_llm"} else "",
+        "fallback_used": False,
+        "summary_level": level,
+    }
+    if provider in {"openai", "openai_compatible", "openai_compatible_llm"}:
+        system = (
+            "You generate MatrixArk ContextNode traversal summaries. Return JSON only. "
+            "The summary must be faithful to the supplied child summaries, entity state, operator state, and recent events. "
+            "For node_l0 return a compact routing abstract. For node_l1 return a richer semantic synthesis for tree-first retrieval. "
+            "Do not invent facts. Prefer current state and resolved contradictions."
+        )
+        user = json.dumps(
+            {
+                "summary_level": level,
+                "node_path": node_path,
+                "generation_policy": policy,
+                "source_text": summarize_text(source_text, limit=5000),
+                "required_json_shape": {"summary_text": "string"},
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        try:
+            json_call = globals().get("openai_compatible_json_call")
+            if json_call is None:
+                try:
+                    from tools.matrixark_mcp_extraction_provider import openai_compatible_json_call as json_call
+                except ModuleNotFoundError:  # Direct script execution from tools/.
+                    from matrixark_mcp_extraction_provider import openai_compatible_json_call as json_call
+            result = json_call(
+                system=system,
+                user=user,
+                model=SUMMARY_LLM_MODEL,
+                max_tokens=SUMMARY_LLM_MAX_TOKENS,
+            )
+            summary_text = summarize_text(str(result.get("summary_text") or result.get("summary") or ""), limit=max_chars)
+            if not summary_text:
+                raise MatrixArkError("summary provider returned empty summary_text")
+            provider_meta["execution_mode"] = "llm_json"
+            return summary_text, provider_meta
+        except MatrixArkError:
+            if _require_oss_understanding():
+                raise
+            provider_meta["fallback_used"] = True
+            provider_meta["execution_mode"] = "deterministic_fallback"
+            return fallback_summary, provider_meta
+    if _require_oss_understanding():
+        raise MatrixArkError(f"unsupported OSS summary provider: {provider}")
+    provider_meta["fallback_used"] = True
+    provider_meta["execution_mode"] = "deterministic_fallback"
+    return fallback_summary, provider_meta
 
