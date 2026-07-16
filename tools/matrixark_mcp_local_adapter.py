@@ -46,6 +46,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_retrieval_records as retrieval_record_helpers
 
 try:
+    from tools import matrixark_mcp_retrieve_planning as retrieve_planning_helpers
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_retrieve_planning as retrieve_planning_helpers
+
+try:
     from tools import matrixark_mcp_resource_import_runtime as resource_import_runtime
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_resource_import_runtime as resource_import_runtime
@@ -2228,41 +2233,16 @@ class MatrixArkLocalAdapter:
             audit_sample_rate = clamp01(float(raw_audit_sample_rate))
         except (TypeError, ValueError):
             raise MatrixArkError("audit_sample_rate must be a number between 0 and 1")
-        raw_deadline_ms = args.get("deadline_ms", ranking.get("deadline_ms", os.environ.get("MATRIXARK_RETRIEVAL_TIMEOUT_MS", 0)))
-        try:
-            deadline_ms = int(raw_deadline_ms or 0)
-        except (TypeError, ValueError):
-            raise MatrixArkError("deadline_ms must be an integer")
+        deadline_ms = retrieve_planning_helpers.retrieval_deadline_ms(args, ranking)
 
         def deadline_exceeded() -> bool:
             return deadline_ms > 0 and (time.perf_counter() - started_perf) * 1000.0 >= deadline_ms
 
-        stage_names = ["query_understanding", "candidate_fetch", "node_traversal", "rerank_score", "pack", "audit"]
-        explicit_stage_budgets = optional_object(args, "stage_budgets_ms") or optional_object(ranking, "stage_budgets_ms")
-        if deadline_ms > 0:
-            default_stage_budgets = {
-                "query_understanding": max(25, int(deadline_ms * 0.15)),
-                "candidate_fetch": max(25, int(deadline_ms * 0.20)),
-                "node_traversal": max(25, int(deadline_ms * 0.15)),
-                "rerank_score": max(25, int(deadline_ms * 0.30)),
-                "pack": max(25, int(deadline_ms * 0.15)),
-                "audit": max(10, int(deadline_ms * 0.05)),
-            }
-        else:
-            default_stage_budgets = {
-                "query_understanding": 500,
-                "candidate_fetch": 750,
-                "node_traversal": 500,
-                "rerank_score": 1000,
-                "pack": 500,
-                "audit": 250,
-            }
-        stage_budgets_ms: dict[str, int] = {}
-        for stage in stage_names:
-            value = explicit_stage_budgets.get(stage, ranking.get(f"{stage}_budget_ms", default_stage_budgets[stage]))
-            if not isinstance(value, int) or value < 0:
-                raise MatrixArkError(f"stage budget for {stage} must be a non-negative integer")
-            stage_budgets_ms[stage] = value
+        stage_budgets_ms, explicit_stage_budgets = retrieve_planning_helpers.retrieval_stage_budgets(
+            args,
+            ranking,
+            deadline_ms=deadline_ms,
+        )
         stage_latencies_ms: dict[str, float] = {}
         stage_started_perf = time.perf_counter()
 
@@ -2273,20 +2253,12 @@ class MatrixArkLocalAdapter:
             return elapsed
 
         def stage_budget_snapshot() -> Json:
-            stages = {
-                stage: {
-                    "budget_ms": stage_budgets_ms[stage],
-                    "elapsed_ms": round(float(stage_latencies_ms.get(stage, 0.0)), 3),
-                    "over_budget": bool(stage_budgets_ms[stage] > 0 and float(stage_latencies_ms.get(stage, 0.0)) > stage_budgets_ms[stage]),
-                }
-                for stage in stage_names
-            }
-            return {
-                "enabled": True,
-                "source": "explicit" if explicit_stage_budgets else ("deadline_derived" if deadline_ms > 0 else "defaults"),
-                "stages": stages,
-                "over_budget_stages": [stage for stage, row in stages.items() if row["over_budget"]],
-            }
+            return retrieve_planning_helpers.stage_budget_snapshot(
+                stage_budgets_ms=stage_budgets_ms,
+                stage_latencies_ms=stage_latencies_ms,
+                explicit_stage_budgets=explicit_stage_budgets,
+                deadline_ms=deadline_ms,
+            )
 
         question_type = str(args.get("question_type") or infer_query_type(query))
         retrieval_session_scope = str(args.get("session_scope") or ranking.get("session_scope") or "prefer").strip().lower()
