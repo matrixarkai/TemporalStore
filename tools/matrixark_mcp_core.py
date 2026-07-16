@@ -2700,121 +2700,39 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
 
 
 def context_text_hashes(text: str) -> set[int]:
-    compact = " ".join(str(text).split())
-    variants = {compact[:512]}
-    without_role = re.sub(r"^(user|assistant|tool|system):\s*", "", compact, flags=re.IGNORECASE)
-    variants.add(without_role[:512])
-    tokenized = tokens(compact)
-    if tokenized:
-        variants.add(" ".join(tokenized)[:512])
-        if tokenized[0] in {"user", "assistant", "tool", "system"}:
-            variants.add(" ".join(tokenized[1:])[:512])
-    return {stable_hash(variant) for variant in variants if variant}
+    try:
+        from tools.matrixark_mcp_budget_pack import context_text_hashes as _context_text_hashes
+    except ModuleNotFoundError:  # Direct script execution from tools/.
+        from matrixark_mcp_budget_pack import context_text_hashes as _context_text_hashes
+
+    return _context_text_hashes(text)
 
 
 def local_context_budget(args: Json) -> Json:
-    raw_items = args.get("local_context", [])
-    if raw_items is None:
-        raw_items = []
-    if not isinstance(raw_items, list):
-        raise MatrixArkError("local_context must be an array")
-    items: list[Json] = []
-    text_hashes: set[int] = set()
-    token_total = 0
-    for index, item in enumerate(raw_items):
-        if isinstance(item, str):
-            text = item
-            source = f"local:{index}"
-            ref_type = "local_context"
-        elif isinstance(item, dict):
-            text = str(item.get("text") or item.get("content") or "")
-            source = str(item.get("source") or item.get("ref") or f"local:{index}")
-            ref_type = str(item.get("ref_type") or "local_context")
-        else:
-            raise MatrixArkError("local_context items must be strings or objects")
-        text = clip_context_text(text)
-        if not text:
-            continue
-        item_tokens = token_count(text)
-        token_total += item_tokens
-        text_hashes.update(context_text_hashes(text))
-        items.append(
-            {
-                "ref_type": ref_type,
-                "source": source,
-                "text": text,
-                "token_estimate": item_tokens,
-                "text_hash": stable_hash(text[:512]),
-            }
-        )
-    explicit_tokens = args.get("local_context_tokens")
-    token_source = "estimated_from_local_context"
-    if explicit_tokens is not None:
-        if not isinstance(explicit_tokens, int) or explicit_tokens < 0:
-            raise MatrixArkError("local_context_tokens must be a non-negative integer")
-        token_total = max(token_total, explicit_tokens)
-        token_source = "agent_provided_local_context_tokens"
-    raw_safety_margin = args.get("local_context_safety_margin_tokens")
-    if raw_safety_margin is None:
-        raw_safety_margin = os.environ.get("MATRIXARK_LOCAL_CONTEXT_SAFETY_MARGIN_TOKENS")
-    if raw_safety_margin is None:
-        raw_max_context = args.get("max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)
-        try:
-            max_context_tokens = max(0, int(raw_max_context or DEFAULT_MAX_CONTEXT_TOKENS))
-        except (TypeError, ValueError):
-            max_context_tokens = DEFAULT_MAX_CONTEXT_TOKENS
-        safety_margin_tokens = min(512, max_context_tokens // 20)
-        safety_margin_source = "matrixark_default_5_percent_capped"
-    else:
-        try:
-            safety_margin_tokens = int(raw_safety_margin or 0)
-        except (TypeError, ValueError):
-            raise MatrixArkError("local_context_safety_margin_tokens must be a non-negative integer")
-        safety_margin_source = "agent_provided_safety_margin" if "local_context_safety_margin_tokens" in args else "env_safety_margin"
-    if safety_margin_tokens < 0:
-        raise MatrixArkError("local_context_safety_margin_tokens must be a non-negative integer")
-    return {
-        "items": items,
-        "token_estimate": token_total,
-        "text_hashes": text_hashes,
-        "token_source": token_source,
-        "safety_margin_tokens": safety_margin_tokens,
-        "safety_margin_source": safety_margin_source,
-    }
+    try:
+        from tools.matrixark_mcp_budget_pack import local_context_budget as _local_context_budget
+    except ModuleNotFoundError:  # Direct script execution from tools/.
+        from matrixark_mcp_budget_pack import local_context_budget as _local_context_budget
+
+    return _local_context_budget(args)
 
 
 def compact_local_context_refs(local_budget: Json) -> list[Json]:
-    refs: list[Json] = []
-    for item in local_budget.get("items", []):
-        if not isinstance(item, dict):
-            continue
-        refs.append(
-            {
-                "ref_type": item.get("ref_type", "local_context"),
-                "source": item.get("source", ""),
-                "token_estimate": item.get("token_estimate", 0),
-                "text_hash": item.get("text_hash"),
-            }
-        )
-    return refs
+    try:
+        from tools.matrixark_mcp_budget_pack import compact_local_context_refs as _compact_local_context_refs
+    except ModuleNotFoundError:  # Direct script execution from tools/.
+        from matrixark_mcp_budget_pack import compact_local_context_refs as _compact_local_context_refs
+
+    return _compact_local_context_refs(local_budget)
 
 
 def local_context_refs_for_pack(local_budget: Json) -> list[Json]:
-    refs: list[Json] = []
-    for item in local_budget.get("items", []):
-        if not isinstance(item, dict):
-            continue
-        refs.append(
-            {
-                "ref_type": item.get("ref_type", "local_context"),
-                "source": item.get("source", ""),
-                "token_estimate": item.get("token_estimate", 0),
-                "text_hash": item.get("text_hash"),
-                "text": item.get("text", ""),
-                "selection_reason": "provided by agent-visible local context before MatrixArk remote retrieval",
-            }
-        )
-    return refs
+    try:
+        from tools.matrixark_mcp_budget_pack import local_context_refs_for_pack as _local_context_refs_for_pack
+    except ModuleNotFoundError:  # Direct script execution from tools/.
+        from matrixark_mcp_budget_pack import local_context_refs_for_pack as _local_context_refs_for_pack
+
+    return _local_context_refs_for_pack(local_budget)
 
 
 def is_resource_or_skill_candidate(candidate: Json) -> bool:
