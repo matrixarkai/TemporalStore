@@ -45,7 +45,6 @@ try:
         float_arg,
         hybrid_origin_score,
         integer_arg,
-        json,
         local_context_refs_for_pack,
         normalize_storage_options,
         normalized_dense_score,
@@ -104,7 +103,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         float_arg,
         hybrid_origin_score,
         integer_arg,
-        json,
         local_context_refs_for_pack,
         normalize_storage_options,
         normalized_dense_score,
@@ -149,6 +147,11 @@ try:
     from tools import matrixark_mcp_retrieve_resources as retrieve_resource_helpers
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_retrieve_resources as retrieve_resource_helpers
+
+try:
+    from tools import matrixark_mcp_retrieve_identity as retrieve_identity_helpers
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_retrieve_identity as retrieve_identity_helpers
 
 try:
     from tools import matrixark_mcp_retrieve_temporal_window as retrieve_temporal_window_helpers
@@ -514,41 +517,7 @@ def retrieve(target: Any, args: Json) -> Json:
         )
         placement_candidate_records = placement_record_result.get("records", [])
 
-        def record_identity(record: Json) -> tuple[str, Any]:
-            record_type = str(record.get("record_type") or "")
-            for field in (
-                "event_id_hash",
-                "entity_hash",
-                "segment_hash",
-                "compression_id_hash",
-                "summary_hash",
-                "chunk_hash",
-                "section_hash",
-                "skill_hash",
-                "resource_hash",
-                "batch_id_hash",
-            ):
-                if record.get(field) is not None:
-                    return (record_type, record.get(field))
-            if record_type == "context_index":
-                return (
-                    record_type,
-                    (
-                        record.get("index_name"),
-                        record.get("node_hash"),
-                        tuple(context_index_ref_hashes(record)),
-                        record.get("timestamp_key_ms"),
-                    ),
-                )
-            return (record_type, stable_hash(json.dumps(record, sort_keys=True, separators=(",", ":"))))
-
-        seen_record_identities = {record_identity(record) for record in records}
-        for record in placement_candidate_records:
-            identity = record_identity(record)
-            if identity in seen_record_identities:
-                continue
-            records.append(record)
-            seen_record_identities.add(identity)
+        retrieve_identity_helpers.append_unique_records(records, placement_candidate_records)
 
         for record in placement_candidate_records:
             record_type = record.get("record_type")
