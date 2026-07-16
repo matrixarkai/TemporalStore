@@ -78,6 +78,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         native_retrieve_mod = importlib.import_module("tools.matrixark_mcp_native_retrieve")
         retrieve_continuity_mod = importlib.import_module("tools.matrixark_mcp_retrieve_continuity")
         retrieve_resources_mod = importlib.import_module("tools.matrixark_mcp_retrieve_resources")
+        retrieve_temporal_window_mod = importlib.import_module("tools.matrixark_mcp_retrieve_temporal_window")
         retrieve_metrics_mod = importlib.import_module("tools.matrixark_mcp_retrieve_metrics")
         ingest_planning_mod = importlib.import_module("tools.matrixark_mcp_ingest_planning")
         async_ingest_mod = importlib.import_module("tools.matrixark_mcp_async_ingest")
@@ -303,6 +304,18 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         )
         self.assertEqual(latest_versions[7], "v2")
         self.assertEqual(resource_uris[7], "new.pdf")
+        admitted_events, dropped_events = retrieve_temporal_window_mod.raw_event_admission_window(
+            [
+                {"record_type": "context_compression_event", "node_hash": 9},
+                {"record_type": "context_event", "node_hash": 9, "event_id_hash": 1, "ingestion_time_ms": 10},
+                {"record_type": "context_event", "node_hash": 9, "event_id_hash": 2, "ingestion_time_ms": 20},
+                {"record_type": "context_event", "node_hash": 9, "event_id_hash": 3, "ingestion_time_ms": 30},
+            ],
+            max_raw_events_per_node=2,
+            context_event_ingestion_time_ms=lambda record: int(record.get("ingestion_time_ms") or 0),
+        )
+        self.assertEqual(admitted_events[9], {2, 3})
+        self.assertEqual(dropped_events, 1)
         self.assertTrue(callable(retrieve_metrics_mod.attach_python_retrieval_metrics))
         self.assertTrue(callable(ingest_planning_mod.prepare_ingest_start))
         self.assertIs(local_ingest_mod.lightweight_async_accept, async_ingest_mod.lightweight_async_accept)
