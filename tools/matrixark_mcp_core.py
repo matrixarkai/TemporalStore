@@ -602,6 +602,28 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 
 try:
+    from tools.matrixark_mcp_envelope_keys import (
+        context_node_key,
+        explicit_context_pack_id,
+        has_confirmation_context,
+        session_buffer_key,
+        session_buffer_key_from_scope,
+        session_key,
+        user_key,
+    )
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_envelope_keys import (
+        context_node_key,
+        explicit_context_pack_id,
+        has_confirmation_context,
+        session_buffer_key,
+        session_buffer_key_from_scope,
+        session_key,
+        user_key,
+    )
+
+
+try:
     from tools.matrixark_mcp_hook_validation import validate_hook
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_hook_validation import validate_hook
@@ -760,64 +782,6 @@ def native_candidate_prefilter_required(*, backend_label: str = "") -> bool:
     if MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER:
         return MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER in {"1", "true", "yes"}
     return backend_label != "local"
-
-
-def has_confirmation_context(envelope: Json) -> bool:
-    metadata = optional_object(envelope, "metadata")
-    return bool(
-        envelope.get("context_pack_id")
-        or metadata.get("reply_to_context_pack_id")
-        or envelope.get("accepted_refs")
-        or envelope.get("rejected_refs")
-    )
-
-
-def explicit_context_pack_id(envelope: Json) -> str:
-    metadata = optional_object(envelope, "metadata")
-    value = envelope.get("context_pack_id") or metadata.get("reply_to_context_pack_id") or ""
-    return str(value) if value else ""
-
-
-def session_key(envelope: Json) -> tuple[Any, Any, Any]:
-    scope = envelope.get("scope", {})
-    return (
-        scope.get("user_id", ""),
-        scope.get("session_id", ""),
-        scope.get("team", ""),
-    )
-
-
-def user_key(envelope: Json) -> tuple[Any, Any]:
-    scope = envelope.get("scope", {})
-    return (
-        scope.get("user_id", ""),
-        scope.get("team", ""),
-    )
-
-
-def context_node_key(envelope: Json) -> tuple[Any, Any, Any, Any]:
-    scope = envelope.get("scope", {})
-    return (
-        scope.get("user_id", ""),
-        scope.get("session_id", ""),
-        scope.get("team", ""),
-        scope.get("project", ""),
-    )
-
-
-def session_buffer_key_from_scope(scope: Json) -> tuple[str, str, str, str]:
-    user_id = str(scope.get("user_id") or "")
-    session_id = str(scope.get("session_id") or user_id or "")
-    return (
-        str(scope.get("account_id") or "acct_local"),
-        str(scope.get("tenant_id") or "tenant_local_agent"),
-        user_id,
-        session_id,
-    )
-
-
-def session_buffer_key(envelope: Json) -> tuple[str, str, str, str]:
-    return session_buffer_key_from_scope(envelope.get("scope", {}))
 
 
 def message_from_event_record(record: Json) -> Json | None:
