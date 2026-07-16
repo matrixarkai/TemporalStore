@@ -193,6 +193,11 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_retrieve_metrics import attach_python_retrieval_metrics
 
+try:
+    from tools.matrixark_mcp_retrieve_fallback import deadline_fallback_pack
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_retrieve_fallback import deadline_fallback_pack
+
 def retrieve(target: Any, args: Json) -> Json:
     self = target
     started_perf = time.perf_counter()
@@ -320,14 +325,15 @@ def retrieve(target: Any, args: Json) -> Json:
     retrieval_scan_stats = retrieval_record_result.get("scan_stats", {})
 
     def deadline_fallback(reason: str, fallback_records: list[Json] | None = None) -> Json:
-        return self.deadline_fallback_pack(
+        return deadline_fallback_pack(
+            self,
             query=query,
             scope=scope,
             question_type=question_type,
             max_context_tokens=max_context_tokens,
             local_budget=local_budget,
             deadline_ms=deadline_ms,
-            elapsed_ms=round((time.perf_counter() - started_perf) * 1000.0, 3),
+            started_perf=started_perf,
             records=records if fallback_records is None else fallback_records,
             reason=reason,
             budget_source=budget_source,
@@ -341,18 +347,7 @@ def retrieve(target: Any, args: Json) -> Json:
     finish_retrieval_stage("candidate_fetch", stage_started_perf)
     stage_started_perf = time.perf_counter()
     if deadline_exceeded():
-        return self.deadline_fallback_pack(
-            query=query,
-            scope=scope,
-            question_type=question_type,
-            max_context_tokens=max_context_tokens,
-            local_budget=local_budget,
-            deadline_ms=deadline_ms,
-            elapsed_ms=round((time.perf_counter() - started_perf) * 1000.0, 3),
-            records=records,
-            reason="deadline_after_record_load",
-            budget_source=budget_source,
-        )
+        return deadline_fallback("deadline_after_record_load")
     node_scores: dict[int, Json] = {}
     event_embedding_vectors: dict[int, list[float]] = {}
     entity_embedding_vectors: dict[int, list[float]] = {}
