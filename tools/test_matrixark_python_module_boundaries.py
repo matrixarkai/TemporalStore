@@ -120,6 +120,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         prior_context_mod = importlib.import_module("tools.matrixark_mcp_prior_context")
         resources_mod = importlib.import_module("tools.matrixark_mcp_resources")
         raw_ingestion_mod = importlib.import_module("tools.matrixark_mcp_raw_ingestion")
+        resource_import_task_mod = importlib.import_module("tools.matrixark_mcp_resource_import_task")
         summaries_mod = importlib.import_module("tools.matrixark_mcp_summaries")
         summary_dirty_mod = importlib.import_module("tools.matrixark_mcp_summary_dirty")
         summary_runtime_mod = importlib.import_module("tools.matrixark_mcp_summary_runtime")
@@ -390,6 +391,25 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             raw_ingestion_mod.raw_ingestion_append_path_for_backend("s3"),
             "matrixark_raw_ingestion_s3_object_ref",
         )
+        task_record = resource_import_task_mod.resource_import_task_record(
+            task_hash=11,
+            status="queued",
+            kind="resource",
+            raw_uri="s3://bucket/doc.pdf",
+            requested_raw_uri="doc.pdf",
+            resource_type="pdf",
+            raw_storage_mode="object",
+            raw_storage_policy="raw_uri_only",
+            node_hash=22,
+            node_path=["tenant:t", "resources"],
+            scope=sample_scope,
+            updated_at_ms=33,
+            wait=False,
+            async_default_reason="large_resource",
+        )
+        self.assertEqual(task_record["record_type"], "resource_import_task")
+        self.assertEqual(task_record["progress"], {"stage": "queued", "percent": 0})
+        self.assertFalse(task_record["wait"])
         self.assertIs(core_mod.summarize_text, summaries_mod.summarize_text)
         self.assertIs(core_mod.generate_time_compression_summary, summaries_mod.generate_time_compression_summary)
         self.assertIs(core_mod.node_l1_generation_policy, summaries_mod.node_l1_generation_policy)
