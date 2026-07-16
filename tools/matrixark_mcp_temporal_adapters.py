@@ -39,10 +39,9 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 try:
     from tools.matrixark_mcp_env import env_bool, env_int, env_lower
     from tools.matrixark_mcp_backend_metric_state import (
-        ensure_backend_metric_state,
         initialize_backend_metric_state,
-        metric_average,
     )
+    from tools import matrixark_mcp_backend_metrics as backend_metrics_helpers
     from tools import matrixark_mcp_direct_cache as direct_cache_helpers
     from tools.matrixark_mcp_direct_write_queue import (
         direct_write_durable_field,
@@ -98,10 +97,9 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_env import env_bool, env_int, env_lower
     from matrixark_mcp_backend_metric_state import (
-        ensure_backend_metric_state,
         initialize_backend_metric_state,
-        metric_average,
     )
+    import matrixark_mcp_backend_metrics as backend_metrics_helpers
     import matrixark_mcp_direct_cache as direct_cache_helpers
     from matrixark_mcp_direct_write_queue import (
         direct_write_durable_field,
@@ -161,7 +159,6 @@ try:
         compact_native_selected_refs as _compact_native_selected_refs,
         float_metric_or_default as _float_metric_or_default,
         latency_quantile_from_bucket_map as _latency_quantile_from_bucket_map,
-        latency_quantile_from_cumulative_buckets as _latency_quantile_from_cumulative_buckets,
         selected_ref_class as _selected_ref_class,
         selected_ref_stable_key as _selected_ref_stable_key,
     )
@@ -170,7 +167,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         compact_native_selected_refs as _compact_native_selected_refs,
         float_metric_or_default as _float_metric_or_default,
         latency_quantile_from_bucket_map as _latency_quantile_from_bucket_map,
-        latency_quantile_from_cumulative_buckets as _latency_quantile_from_cumulative_buckets,
         selected_ref_class as _selected_ref_class,
         selected_ref_stable_key as _selected_ref_stable_key,
     )
@@ -358,221 +354,37 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         return python_hot_cache_allowed(backend_label=self._backend_label())
 
     def _ensure_backend_metric_fields(self) -> None:
-        ensure_backend_metric_state(self, MatrixArkServiceMetrics.LATENCY_BUCKETS_MS)
-        if not hasattr(self, "_backend_ready"):
-            self._backend_ready = False
-        if not hasattr(self, "_records_cache"):
-            self._records_cache = []
-        if not hasattr(self, "_retrieval_candidate_cache"):
-            self._retrieval_candidate_cache = {}
-        if not hasattr(self, "_retrieval_candidate_cache_lock"):
-            self._retrieval_candidate_cache_lock = threading.RLock()
-        if not hasattr(self, "_audit_buffer"):
-            self._audit_buffer = []
-        if not hasattr(self, "_audit_flush_failures"):
-            self._audit_flush_failures = 0
-        self._ensure_direct_write_queue_fields()
+        backend_metrics_helpers.ensure_temporal_backend_metric_fields(self)
 
     def _ensure_direct_write_queue_fields(self) -> None:
         ensure_direct_write_queue_fields(self)
 
     def _observe_append_queue_wait(self, elapsed_ms: float) -> None:
-        self._ensure_backend_metric_fields()
-        with self._metrics_lock:
-            self._append_queue_wait_ms_total += max(0.0, float(elapsed_ms))
-            self._append_queue_wait_count += 1
+        backend_metrics_helpers.observe_append_queue_wait(self, elapsed_ms)
 
     def _observe_append_engine(self, elapsed_ms: float) -> None:
-        self._ensure_backend_metric_fields()
-        with self._metrics_lock:
-            self._append_engine_ms_total += max(0.0, float(elapsed_ms))
-            self._append_engine_count += 1
+        backend_metrics_helpers.observe_append_engine(self, elapsed_ms)
 
     def _append_queue_wait_ms_avg(self) -> float:
-        return metric_average(
-            getattr(self, "_append_queue_wait_ms_total", 0.0),
-            getattr(self, "_append_queue_wait_count", 0),
-        )
+        return backend_metrics_helpers.append_queue_wait_ms_avg(self)
 
     def _append_engine_ms_avg(self) -> float:
-        return metric_average(
-            getattr(self, "_append_engine_ms_total", 0.0),
-            getattr(self, "_append_engine_count", 0),
-        )
+        return backend_metrics_helpers.append_engine_ms_avg(self)
 
     def _observe_backend_command(self, elapsed_ms: float, *, records_written: int = 0, records_read: int = 0, failed: bool = False) -> None:
-        self._ensure_backend_metric_fields()
-        with self._metrics_lock:
-            self._commands_total += 1
-            if failed:
-                self._errors_total += 1
-            if elapsed_ms >= 0:
-                self._latency_sum_ms += float(elapsed_ms)
-                self._latency_max_ms = max(self._latency_max_ms, float(elapsed_ms))
-                for index, bucket in enumerate(MatrixArkServiceMetrics.LATENCY_BUCKETS_MS):
-                    if elapsed_ms <= bucket:
-                        self._latency_buckets[index] += 1
-            self._records_written_total += int(records_written or 0)
-            self._records_read_total += int(records_read or 0)
+        backend_metrics_helpers.observe_backend_command(
+            self,
+            elapsed_ms,
+            records_written=records_written,
+            records_read=records_read,
+            failed=failed,
+        )
 
     def _backend_prometheus(self) -> str:
-        self._ensure_backend_metric_fields()
-        backend = "cpp" if self._backend_label() in {"temporalstore-direct", "temporalstore-cpp"} else self._backend_label()
-        with self._metrics_lock:
-            elapsed_s = max(0.001, (now_ms() - self._metrics_started_at_ms) / 1000.0)
-            lines = [
-                "# HELP matrixark_backend_qps MatrixArk storage backend command QPS.",
-                "# TYPE matrixark_backend_qps gauge",
-                f'matrixark_backend_qps{{backend="{backend}"}} {round(self._commands_total / elapsed_s, 6)}',
-                "# HELP matrixark_backend_commands_total MatrixArk storage backend command count.",
-                "# TYPE matrixark_backend_commands_total counter",
-                f'matrixark_backend_commands_total{{backend="{backend}"}} {self._commands_total}',
-                "# HELP matrixark_backend_errors_total MatrixArk storage backend command errors.",
-                "# TYPE matrixark_backend_errors_total counter",
-                f'matrixark_backend_errors_total{{backend="{backend}"}} {self._errors_total}',
-                "# HELP matrixark_backend_timeouts_total MatrixArk storage backend command timeouts.",
-                "# TYPE matrixark_backend_timeouts_total counter",
-                f'matrixark_backend_timeouts_total{{backend="{backend}"}} {self._timeouts_total}',
-                "# HELP matrixark_backend_info MatrixArk storage backend identity and mode.",
-                "# TYPE matrixark_backend_info gauge",
-                f'matrixark_backend_info{{backend="{backend}",storage_mode="direct-sdk"}} 1',
-                "# HELP matrixark_backend_ready MatrixArk storage backend readiness, 1 for ready and 0 for not ready.",
-                "# TYPE matrixark_backend_ready gauge",
-                f'matrixark_backend_ready{{backend="{backend}",storage_mode="direct-sdk",status="{"ready" if self._backend_ready else "unknown"}"}} {1 if self._backend_ready else 0}',
-                "# HELP matrixark_backend_command_latency_ms MatrixArk storage backend command latency quantiles.",
-                "# TYPE matrixark_backend_command_latency_ms gauge",
-                f'matrixark_backend_command_latency_ms{{backend="{backend}",quantile="0.50"}} {round(_latency_quantile_from_cumulative_buckets(self._latency_buckets, MatrixArkServiceMetrics.LATENCY_BUCKETS_MS, self._commands_total, 0.50), 3)}',
-                f'matrixark_backend_command_latency_ms{{backend="{backend}",quantile="0.95"}} {round(_latency_quantile_from_cumulative_buckets(self._latency_buckets, MatrixArkServiceMetrics.LATENCY_BUCKETS_MS, self._commands_total, 0.95), 3)}',
-                f'matrixark_backend_command_latency_ms{{backend="{backend}",quantile="0.99"}} {round(_latency_quantile_from_cumulative_buckets(self._latency_buckets, MatrixArkServiceMetrics.LATENCY_BUCKETS_MS, self._commands_total, 0.99), 3)}',
-                "# HELP matrixark_backend_command_latency_ms_bucket MatrixArk storage backend command latency buckets.",
-                "# TYPE matrixark_backend_command_latency_ms_bucket counter",
-                "# HELP matrixark_backend_command_latency_ms_sum MatrixArk storage backend command latency sum in milliseconds.",
-                "# TYPE matrixark_backend_command_latency_ms_sum counter",
-                f'matrixark_backend_command_latency_ms_sum{{backend="{backend}"}} {round(self._latency_sum_ms, 3)}',
-                "# HELP matrixark_backend_command_latency_ms_count MatrixArk storage backend command latency sample count.",
-                "# TYPE matrixark_backend_command_latency_ms_count counter",
-                f'matrixark_backend_command_latency_ms_count{{backend="{backend}"}} {self._commands_total}',
-                "# HELP matrixark_backend_command_latency_max_ms MatrixArk storage backend maximum command latency in milliseconds.",
-                "# TYPE matrixark_backend_command_latency_max_ms gauge",
-                f'matrixark_backend_command_latency_max_ms{{backend="{backend}"}} {round(self._latency_max_ms, 3)}',
-            ]
-            for bucket, count in zip(MatrixArkServiceMetrics.LATENCY_BUCKETS_MS, self._latency_buckets):
-                le = "+Inf" if bucket == float("inf") else str(int(bucket))
-                lines.append(f'matrixark_backend_command_latency_ms_bucket{{backend="{backend}",le="{le}"}} {int(count)}')
-            lines.extend(
-                [
-                    "# HELP matrixark_backend_records_written_total MatrixArk storage backend records written.",
-                    "# TYPE matrixark_backend_records_written_total counter",
-                    f'matrixark_backend_records_written_total{{backend="{backend}"}} {self._records_written_total}',
-                    "# HELP matrixark_backend_records_read_total MatrixArk storage backend records read.",
-                    "# TYPE matrixark_backend_records_read_total counter",
-                    f'matrixark_backend_records_read_total{{backend="{backend}"}} {self._records_read_total}',
-                    "# HELP matrixark_context_records_total MatrixArk context records currently cached by backend.",
-                    "# TYPE matrixark_context_records_total gauge",
-                    f'matrixark_context_records_total{{backend="{backend}"}} {len(self._records_cache or [])}',
-                    "# HELP matrixark_backend_cached_clients MatrixArk storage backend cached clients.",
-                    "# TYPE matrixark_backend_cached_clients gauge",
-                    f'matrixark_backend_cached_clients{{backend="{backend}"}} 1',
-                    "# HELP matrixark_backend_matrixark_native_batch_append_available MatrixArk native batch append C API availability.",
-                    "# TYPE matrixark_backend_matrixark_native_batch_append_available gauge",
-                    f'matrixark_backend_matrixark_native_batch_append_available{{backend="{backend}",write_path="{getattr(self, "_matrixark_append_write_path", "unknown")}"}} {1 if bool(getattr(self, "_matrixark_native_batch_append_available", False)) else 0}',
-                    "# HELP matrixark_backend_matrixark_per_record_hset_fallback MatrixArk write path is using the old per-record HSet fallback.",
-                    "# TYPE matrixark_backend_matrixark_per_record_hset_fallback gauge",
-                    f'matrixark_backend_matrixark_per_record_hset_fallback{{backend="{backend}",write_path="{getattr(self, "_matrixark_append_write_path", "unknown")}"}} {1 if bool(getattr(self, "_matrixark_append_uses_per_record_hset", True)) else 0}',
-                    "# HELP matrixark_backend_context_extension_append_selected MatrixArk writes are using native CONTEXT extension append commands.",
-                    "# TYPE matrixark_backend_context_extension_append_selected gauge",
-                    f'matrixark_backend_context_extension_append_selected{{backend="{backend}"}} {1 if bool(getattr(self, "_matrixark_context_extension_append_selected", False)) else 0}',
-                    "# HELP matrixark_backend_audit_buffered_records MatrixArk buffered audit records awaiting flush.",
-                    "# TYPE matrixark_backend_audit_buffered_records gauge",
-                    f'matrixark_backend_audit_buffered_records{{backend="{backend}"}} {len(getattr(self, "_audit_buffer", []))}',
-                    "# HELP matrixark_backend_audit_flush_failures_total MatrixArk audit flush failure count.",
-                    "# TYPE matrixark_backend_audit_flush_failures_total counter",
-                    f'matrixark_backend_audit_flush_failures_total{{backend="{backend}"}} {int(getattr(self, "_audit_flush_failures", 0) or 0)}',
-                    "# HELP matrixark_backend_write_queue_depth MatrixArk direct backend queued write batches.",
-                    "# TYPE matrixark_backend_write_queue_depth gauge",
-                    f'matrixark_backend_write_queue_depth{{backend="{backend}"}} {getattr(self, "_direct_write_queue", None).qsize() if hasattr(self, "_direct_write_queue") else 0}',
-                    "# HELP matrixark_backend_write_queue_durable_pending_batches MatrixArk durable TemporalStore-backed write queue pending batches.",
-                    "# TYPE matrixark_backend_write_queue_durable_pending_batches gauge",
-                    f'matrixark_backend_write_queue_durable_pending_batches{{backend="{backend}",mode="{getattr(self, "_direct_write_queue_mode", "memory")}"}} {self._direct_write_durable_pending_count() if getattr(self, "_direct_write_queue_mode", "memory") == "temporalstore" else 0}',
-                    "# HELP matrixark_backend_write_queue_failures_total MatrixArk direct backend background write failures.",
-                    "# TYPE matrixark_backend_write_queue_failures_total counter",
-                    f'matrixark_backend_write_queue_failures_total{{backend="{backend}"}} {int(getattr(self, "_direct_write_failures", 0) or 0)}',
-                    "# HELP matrixark_backend_write_queue_enqueued_records_total MatrixArk direct backend records accepted into the async write queue.",
-                    "# TYPE matrixark_backend_write_queue_enqueued_records_total counter",
-                    f'matrixark_backend_write_queue_enqueued_records_total{{backend="{backend}"}} {int(getattr(self, "_direct_write_enqueued_records", 0) or 0)}',
-                    "# HELP matrixark_backend_write_queue_flushed_records_total MatrixArk direct backend queued records flushed to TemporalStore.",
-                    "# TYPE matrixark_backend_write_queue_flushed_records_total counter",
-                    f'matrixark_backend_write_queue_flushed_records_total{{backend="{backend}"}} {int(getattr(self, "_direct_write_flushed_records", 0) or 0)}',
-                    "# HELP matrixark_backend_write_queue_dead_letter_batches_total MatrixArk durable direct write queue batches moved to dead letter.",
-                    "# TYPE matrixark_backend_write_queue_dead_letter_batches_total counter",
-                    f'matrixark_backend_write_queue_dead_letter_batches_total{{backend="{backend}"}} {int(getattr(self, "_direct_write_dead_letter_batches", 0) or 0)}',
-                    "# HELP matrixark_backend_append_queue_wait_ms MatrixArk append queue wait time average in milliseconds.",
-                    "# TYPE matrixark_backend_append_queue_wait_ms gauge",
-                    f'matrixark_backend_append_queue_wait_ms{{backend="{backend}"}} {round(self._append_queue_wait_ms_avg(), 3)}',
-                    "# HELP matrixark_backend_append_engine_ms MatrixArk append engine execution time average in milliseconds.",
-                    "# TYPE matrixark_backend_append_engine_ms gauge",
-                    f'matrixark_backend_append_engine_ms{{backend="{backend}"}} {round(self._append_engine_ms_avg(), 3)}',
-                ]
-            )
-            return "\n".join(lines) + "\n"
+        return backend_metrics_helpers.backend_prometheus(self)
 
     def backend_metrics(self) -> Json:
-        return {
-            "backend": self._backend_label(),
-            "metrics_format": "prometheus",
-            "prometheus": self._backend_prometheus(),
-            "capabilities": {
-                "health_endpoint": True,
-                "readiness_endpoint": True,
-                "metrics_endpoint": True,
-                "matrixark_batch_append_records": True,
-                "matrixark_retrieve_context_pack": callable(getattr(self._client, "matrixark_retrieve_context_pack", None)),
-                "compact_secondary_index_lookup": True,
-                "placement_key_candidate_fetch": True,
-                "context_pack_telemetry": True,
-            },
-            "metrics": {
-                "mode": "cpp-proxy" if getattr(self, "_matrixark_proxy_mode", False) else "direct-sdk",
-                "cpp_proxy_endpoint": getattr(self, "_cpp_proxy_endpoint", ""),
-                "metaserver": self._metaserver,
-                "namespace": self._namespace,
-                "table": self._table,
-                "storage_prefix": self._storage_prefix,
-                "raw_ingestion_backend": self._normalize_raw_storage_backend(
-                    getattr(self, "_raw_storage_backend", "temporalstore")
-                ),
-                "raw_ingestion_prefix": getattr(
-                    self,
-                    "_raw_ingestion_prefix",
-                    f"{self._storage_prefix}:raw_ingestion",
-                ),
-                "audit_mode": self._audit_mode,
-                "audit_buffered_records": len(self._audit_buffer),
-                "audit_flush_failures": self._audit_flush_failures,
-                "write_queue_enabled": bool(getattr(self, "_direct_write_queue_enabled", False)),
-                "write_queue_mode": getattr(self, "_direct_write_queue_mode", "memory"),
-                "write_queue_depth": getattr(self, "_direct_write_queue", None).qsize() if hasattr(self, "_direct_write_queue") else 0,
-                "write_queue_durable_pending_batches": self._direct_write_durable_pending_count() if getattr(self, "_direct_write_queue_mode", "memory") == "temporalstore" else 0,
-                "write_queue_failures": int(getattr(self, "_direct_write_failures", 0) or 0),
-                "write_queue_enqueued_records": int(getattr(self, "_direct_write_enqueued_records", 0) or 0),
-                "write_queue_flushed_records": int(getattr(self, "_direct_write_flushed_records", 0) or 0),
-                "write_queue_enqueued_batches": int(getattr(self, "_direct_write_enqueued_batches", 0) or 0),
-                "write_queue_flushed_batches": int(getattr(self, "_direct_write_flushed_batches", 0) or 0),
-                "write_queue_dead_letter_batches": int(getattr(self, "_direct_write_dead_letter_batches", 0) or 0),
-                "append_queue_wait_ms": round(self._append_queue_wait_ms_avg(), 3),
-                "append_queue_wait_count": int(getattr(self, "_append_queue_wait_count", 0) or 0),
-                "append_engine_ms": round(self._append_engine_ms_avg(), 3),
-                "append_engine_count": int(getattr(self, "_append_engine_count", 0) or 0),
-                "entry_count_cache": self._entry_count_cache,
-                "python_hot_cache_allowed": self.python_hot_cache_enabled(),
-                "records_cache_ready": self._records_cache is not None,
-                "commands_total": self._commands_total,
-                "errors_total": self._errors_total,
-                "timeouts_total": self._timeouts_total,
-                "records_written_total": self._records_written_total,
-                "records_read_total": self._records_read_total,
-            },
-        }
+        return backend_metrics_helpers.backend_metrics(self)
 
     def ensure_backend_ready(self, *, reason: str = "manual", probe: bool = True, timeout_ms: int | None = None) -> Json:
         with self._readiness_lock:
