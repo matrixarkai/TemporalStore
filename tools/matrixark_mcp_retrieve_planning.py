@@ -6,12 +6,31 @@ from __future__ import annotations
 import os
 
 try:
-    from tools.matrixark_mcp_core import Json, MatrixArkError, optional_object
+    from tools.matrixark_mcp_core import Json, MatrixArkError, clamp01, optional_object
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_core import Json, MatrixArkError, optional_object
+    from matrixark_mcp_core import Json, MatrixArkError, clamp01, optional_object
 
 
 RETRIEVAL_STAGE_NAMES = ["query_understanding", "candidate_fetch", "node_traversal", "rerank_score", "pack", "audit"]
+
+
+def retrieval_audit_policy(args: Json) -> tuple[str, float]:
+    audit_mode = str(
+        args.get("audit_mode") or os.environ.get("MATRIXARK_CONTEXT_AUDIT_MODE", "telemetry_only")
+    ).strip().lower()
+    if audit_mode not in {"full", "telemetry_only", "off"}:
+        raise MatrixArkError("audit_mode must be full, telemetry_only, or off")
+    if "audit_sample_rate" in args:
+        raw_audit_sample_rate = args.get("audit_sample_rate")
+    elif audit_mode == "full":
+        raw_audit_sample_rate = 1.0
+    else:
+        raw_audit_sample_rate = os.environ.get("MATRIXARK_CONTEXT_AUDIT_SAMPLE_RATE", 0.01)
+    try:
+        audit_sample_rate = clamp01(float(raw_audit_sample_rate))
+    except (TypeError, ValueError):
+        raise MatrixArkError("audit_sample_rate must be a number between 0 and 1")
+    return audit_mode, audit_sample_rate
 
 
 def retrieval_deadline_ms(args: Json, ranking: Json) -> int:
