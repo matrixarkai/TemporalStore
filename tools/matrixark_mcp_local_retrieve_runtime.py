@@ -59,8 +59,6 @@ try:
         score_recall_candidate,
         select_token_budgeted_refs,
         selected_context_class_counts,
-        session_continuity_boost,
-        session_continuity_status,
         source_ref_from_locator,
         sparse_lexical_score,
         stable_hash,
@@ -122,8 +120,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         score_recall_candidate,
         select_token_budgeted_refs,
         selected_context_class_counts,
-        session_continuity_boost,
-        session_continuity_status,
         source_ref_from_locator,
         sparse_lexical_score,
         stable_hash,
@@ -147,6 +143,11 @@ try:
     from tools import matrixark_mcp_native_retrieve as native_retrieve_helpers
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_native_retrieve as native_retrieve_helpers
+
+try:
+    from tools import matrixark_mcp_retrieve_continuity as retrieve_continuity_helpers
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_retrieve_continuity as retrieve_continuity_helpers
 
 try:
     from tools import matrixark_mcp_retrieval_records as retrieval_record_helpers
@@ -250,23 +251,12 @@ def retrieve(target: Any, args: Json) -> Json:
         return cached_pack
     auxiliary_quota = integer_arg(ranking, "auxiliary_quota", 2, minimum=0)
     def annotate_session_continuity(candidate: Json, record: Json) -> Json:
-        record_scope = candidate_access_scope(record)
-        status = session_continuity_status(record_scope, retrieval_scope)
-        boost = session_continuity_boost({**candidate, "session_continuity": status}, question_type)
-        reason = (
-            "same-session continuity"
-            if status == "same_session"
-            else "cross-session memory bridge"
-            if status == "cross_session"
-            else "session-neutral context"
+        return retrieve_continuity_helpers.annotate_session_continuity(
+            candidate,
+            record,
+            retrieval_scope=retrieval_scope,
+            question_type=question_type,
         )
-        return {
-            **candidate,
-            "session_continuity": status,
-            "continuity_boost": round(boost, 6),
-            "continuity_reason": reason,
-            "question_type": question_type,
-        }
 
     finish_retrieval_stage("query_understanding", stage_started_perf)
     native_pack = native_retrieve_helpers.try_native_context_pack(
