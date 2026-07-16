@@ -110,6 +110,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         summaries_mod = importlib.import_module("tools.matrixark_mcp_summaries")
         summary_runtime_mod = importlib.import_module("tools.matrixark_mcp_summary_runtime")
         time_compression_runtime_mod = importlib.import_module("tools.matrixark_mcp_time_compression_runtime")
+        runtime_config_mod = importlib.import_module("tools.matrixark_mcp_runtime_config")
         core_mod = importlib.import_module("tools.matrixark_mcp_core")
 
         self.assertIs(server_mod.MatrixArkServiceMetrics, metrics_mod.MatrixArkServiceMetrics)
@@ -316,6 +317,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIs(core_mod.summarize_text, summaries_mod.summarize_text)
         self.assertIs(core_mod.generate_time_compression_summary, summaries_mod.generate_time_compression_summary)
         self.assertIs(core_mod.node_l1_generation_policy, summaries_mod.node_l1_generation_policy)
+        self.assertEqual(core_mod.MAX_PRIOR_MESSAGES, runtime_config_mod.MAX_PRIOR_MESSAGES)
+        self.assertIs(core_mod.DEFAULT_BUSINESS_TYPE_WEIGHTS, runtime_config_mod.DEFAULT_BUSINESS_TYPE_WEIGHTS)
         self.assertTrue(callable(summary_runtime_mod.mark_node_summary_dirty))
         self.assertTrue(callable(summary_runtime_mod.append_node_summary_embeddings))
         self.assertTrue(callable(summary_runtime_mod.refresh_dirty_node_summaries))
