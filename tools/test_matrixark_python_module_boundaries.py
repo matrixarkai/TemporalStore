@@ -126,6 +126,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         event_keys_mod = importlib.import_module("tools.matrixark_mcp_event_keys")
         serving_records_mod = importlib.import_module("tools.matrixark_mcp_serving_records")
         budget_pack_mod = importlib.import_module("tools.matrixark_mcp_budget_pack")
+        budget_policies_mod = importlib.import_module("tools.matrixark_mcp_budget_policies")
         recall_scoring_mod = importlib.import_module("tools.matrixark_mcp_recall_scoring")
         access_scope_mod = importlib.import_module("tools.matrixark_mcp_access_scope")
         oss_understanding_mod = importlib.import_module("tools.matrixark_mcp_oss_understanding")
@@ -479,6 +480,12 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIs(core_mod.local_context_refs_for_pack, budget_pack_mod.local_context_refs_for_pack)
         self.assertIs(core_mod.build_cross_session_policy, budget_pack_mod.build_cross_session_policy)
         self.assertIs(core_mod.build_shared_context_policy, budget_pack_mod.build_shared_context_policy)
+        self.assertIs(budget_pack_mod.build_cross_session_policy, budget_policies_mod.build_cross_session_policy)
+        self.assertIs(budget_pack_mod.build_shared_context_policy, budget_policies_mod.build_shared_context_policy)
+        self.assertIs(
+            budget_pack_mod.bounded_max_children_scored_per_parent,
+            budget_policies_mod.bounded_max_children_scored_per_parent,
+        )
         self.assertIs(core_mod.select_token_budgeted_refs, budget_pack_mod.select_token_budgeted_refs)
         self.assertIs(core_mod.bounded_max_children_scored_per_parent, budget_pack_mod.bounded_max_children_scored_per_parent)
         self.assertIs(core_mod.scope_matches, access_scope_mod.scope_matches)
