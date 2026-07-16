@@ -2194,19 +2194,7 @@ class MatrixArkLocalAdapter:
         scope = optional_object(args, "scope")
         storage_options = normalize_storage_options(args)
         ranking = optional_object(args, "ranking")
-        audit_mode = str(args.get("audit_mode") or os.environ.get("MATRIXARK_CONTEXT_AUDIT_MODE", "telemetry_only")).strip().lower()
-        if audit_mode not in {"full", "telemetry_only", "off"}:
-            raise MatrixArkError("audit_mode must be full, telemetry_only, or off")
-        if "audit_sample_rate" in args:
-            raw_audit_sample_rate = args.get("audit_sample_rate")
-        elif audit_mode == "full":
-            raw_audit_sample_rate = 1.0
-        else:
-            raw_audit_sample_rate = os.environ.get("MATRIXARK_CONTEXT_AUDIT_SAMPLE_RATE", 0.01)
-        try:
-            audit_sample_rate = clamp01(float(raw_audit_sample_rate))
-        except (TypeError, ValueError):
-            raise MatrixArkError("audit_sample_rate must be a number between 0 and 1")
+        audit_mode, audit_sample_rate = retrieve_planning_helpers.retrieval_audit_policy(args)
         deadline_ms = retrieve_planning_helpers.retrieval_deadline_ms(args, ranking)
 
         def deadline_exceeded() -> bool:
