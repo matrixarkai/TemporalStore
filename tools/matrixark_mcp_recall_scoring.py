@@ -7,19 +7,20 @@ import re
 from typing import Any
 
 try:
-    from tools.matrixark_mcp_core import (
+    from tools.matrixark_mcp_access_scope import (
+        cross_session_rerank_adjustment,
+        session_continuity_boost,
+        sharing_scope_from_candidate,
+    )
+    from tools.matrixark_mcp_runtime_config import (
         DEFAULT_BUSINESS_TYPE_WEIGHTS,
         DEFAULT_TIME_DECAY_HALFLIFE_MS,
         DEFAULT_TIME_DECAY_TOLERANCE_MS,
+        DEFAULT_BUSINESS_WEIGHT,
         DEFAULT_TIME_WEIGHT,
-        Json,
-        cross_session_rerank_adjustment,
-        integer_arg,
-        optional_object,
-        session_continuity_boost,
-        sharing_scope_from_candidate,
-        token_count,
     )
+    from tools.matrixark_mcp_text import token_count
+    from tools.matrixark_mcp_validation import integer_arg, optional_object
     from tools.matrixark_mcp_scoring import (
         business_score_for_candidate,
         clamp01,
@@ -27,25 +28,29 @@ try:
         time_decay_score,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_core import (
+    from matrixark_mcp_access_scope import (
+        cross_session_rerank_adjustment,
+        session_continuity_boost,
+        sharing_scope_from_candidate,
+    )
+    from matrixark_mcp_runtime_config import (
         DEFAULT_BUSINESS_TYPE_WEIGHTS,
         DEFAULT_TIME_DECAY_HALFLIFE_MS,
         DEFAULT_TIME_DECAY_TOLERANCE_MS,
+        DEFAULT_BUSINESS_WEIGHT,
         DEFAULT_TIME_WEIGHT,
-        Json,
-        cross_session_rerank_adjustment,
-        integer_arg,
-        optional_object,
-        session_continuity_boost,
-        sharing_scope_from_candidate,
-        token_count,
     )
+    from matrixark_mcp_text import token_count
+    from matrixark_mcp_validation import integer_arg, optional_object
     from matrixark_mcp_scoring import (
         business_score_for_candidate,
         clamp01,
         final_recall_score,
         time_decay_score,
     )
+
+
+Json = dict[str, Any]
 
 
 def is_shared_resource_candidate(candidate: Json) -> bool:
