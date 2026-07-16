@@ -207,6 +207,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(direct_write_queue_mod.direct_write_payload_is_pending(durable_payload))
         self.assertIs(local_mod.RETRIEVAL_HOT_RECORD_TYPES, retrieval_records_mod.RETRIEVAL_HOT_RECORD_TYPES)
         self.assertTrue(callable(retrieve_planning_mod.retrieval_audit_policy))
+        self.assertTrue(callable(retrieve_planning_mod.retrieval_query_budget_plan))
         self.assertTrue(callable(retrieve_planning_mod.retrieval_stage_budgets))
         self.assertEqual(retrieve_planning_mod.RETRIEVAL_STAGE_NAMES[0], "query_understanding")
         self.assertTrue(callable(ingest_planning_mod.prepare_ingest_start))
