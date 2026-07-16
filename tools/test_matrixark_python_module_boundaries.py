@@ -256,6 +256,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIs(core_mod.node_l1_generation_policy, summaries_mod.node_l1_generation_policy)
         self.assertTrue(callable(summary_runtime_mod.mark_node_summary_dirty))
         self.assertTrue(callable(summary_runtime_mod.append_node_summary_embeddings))
+        self.assertTrue(callable(summary_runtime_mod.refresh_dirty_node_summaries))
         self.assertTrue(callable(summary_runtime_mod.refresh_summaries))
         self.assertTrue(callable(time_compression_runtime_mod.write_time_compression))
         self.assertTrue(callable(time_compression_runtime_mod.append_recall_reinforcement_markers))
