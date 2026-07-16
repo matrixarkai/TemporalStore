@@ -6,11 +6,11 @@ from __future__ import annotations
 from typing import Any
 
 try:
+    from tools.matrixark_mcp_async_ingest import lightweight_async_accept
     from tools.matrixark_mcp_core import Json, MatrixArkError, normalize_envelope, validate_hook
-    from tools import matrixark_mcp_local_ingest as local_ingest_helpers
 except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_async_ingest import lightweight_async_accept
     from matrixark_mcp_core import Json, MatrixArkError, normalize_envelope, validate_hook
-    import matrixark_mcp_local_ingest as local_ingest_helpers
 
 
 def prepare_ingest_start(
@@ -50,7 +50,7 @@ def prepare_ingest_start(
             hook=hook,
         )
 
-    lightweight_result = local_ingest_helpers.lightweight_async_accept(
+    lightweight_result = lightweight_async_accept(
         target,
         args,
         envelope=envelope,
