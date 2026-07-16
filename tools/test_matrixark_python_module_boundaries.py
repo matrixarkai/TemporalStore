@@ -19,9 +19,12 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
     def test_package_imports_expose_server_and_schema_catalog(self) -> None:
         server_mod = importlib.import_module("tools.matrixark_mcp_server")
         schemas_mod = importlib.import_module("tools.matrixark_mcp_schemas")
+        schema_common_mod = importlib.import_module("tools.matrixark_mcp_schema_common")
         self.assertTrue(hasattr(server_mod, "MatrixArkMcpServer"))
         self.assertTrue(hasattr(server_mod, "MatrixArkLocalAdapter"))
         self.assertGreaterEqual(len(schemas_mod.TOOLS), 10)
+        self.assertIs(schemas_mod.MESSAGE_SCHEMA, schema_common_mod.MESSAGE_SCHEMA)
+        self.assertIs(schemas_mod.SCOPE_SCHEMA, schema_common_mod.SCOPE_SCHEMA)
 
     def test_direct_tools_path_imports_still_work_for_script_launches(self) -> None:
         sys.path.insert(0, str(TOOLS_DIR))
@@ -38,6 +41,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
 
     def test_mcp_entrypoint_reexports_split_modules(self) -> None:
         server_mod = importlib.import_module("tools.matrixark_mcp_server")
+        schema_common_mod = importlib.import_module("tools.matrixark_mcp_schema_common")
         metrics_mod = importlib.import_module("tools.matrixark_mcp_metrics")
         local_mod = importlib.import_module("tools.matrixark_mcp_local_adapter")
         temporal_mod = importlib.import_module("tools.matrixark_mcp_temporal_adapters")
@@ -124,6 +128,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         core_mod = importlib.import_module("tools.matrixark_mcp_core")
 
         self.assertIs(server_mod.MatrixArkServiceMetrics, metrics_mod.MatrixArkServiceMetrics)
+        self.assertIn("properties", schema_common_mod.SCOPE_SCHEMA)
         self.assertIs(server_mod.MatrixArkLocalAdapter, local_mod.MatrixArkLocalAdapter)
         self.assertIs(server_mod.MatrixArkTemporalStoreDirectAdapter, temporal_mod.MatrixArkTemporalStoreDirectAdapter)
         self.assertTrue(callable(env_mod.env_bool))
