@@ -329,75 +329,20 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertLessEqual(len(server_lines), 750)
 
     def test_public_mcp_modules_avoid_wildcard_imports(self) -> None:
-        module_names = [
-            "matrixark_mcp_server.py",
-            "matrixark_mcp_backends.py",
-            "matrixark_mcp_dispatch.py",
-            "matrixark_mcp_requests.py",
-            "matrixark_mcp_validation.py",
-            "matrixark_mcp_query.py",
-            "matrixark_mcp_ingestion.py",
-            "matrixark_mcp_retrieval.py",
-            "matrixark_mcp_admin.py",
-            "matrixark_mcp_cli.py",
-            "matrixark_mcp_context_pack.py",
-            "matrixark_mcp_entity_ops.py",
-            "matrixark_mcp_tree.py",
-            "matrixark_mcp_context_nodes.py",
-            "matrixark_mcp_rust_direct_client.py",
-            "matrixark_mcp_rust_proxy_client.py",
-            "matrixark_mcp_session_policy.py",
-            "matrixark_mcp_session_runtime.py",
-            "matrixark_mcp_dashboard.py",
-            "matrixark_mcp_visibility.py",
-            "matrixark_mcp_deadline_pack.py",
-            "matrixark_mcp_retrieval_records.py",
-            "matrixark_mcp_temporal_retrieval_records.py",
-            "matrixark_mcp_temporal_readiness.py",
-            "matrixark_mcp_temporal_proxy_readiness.py",
-            "matrixark_mcp_resource_import_runtime.py",
-            "matrixark_mcp_local_cache.py",
-            "matrixark_mcp_local_backend.py",
-            "matrixark_mcp_local_idempotency.py",
-            "matrixark_mcp_local_read.py",
-            "matrixark_mcp_local_replay.py",
-            "matrixark_mcp_local_runtime.py",
-            "matrixark_mcp_local_retrieve_runtime.py",
-            "matrixark_mcp_local_batch_extract_runtime.py",
-            "matrixark_mcp_errors.py",
-            "matrixark_mcp_models.py",
-            "matrixark_mcp_indexing.py",
-            "matrixark_mcp_storage_options.py",
-            "matrixark_mcp_native_helpers.py",
-            "matrixark_mcp_native_pack_runtime.py",
-            "matrixark_mcp_native_lookup_runtime.py",
-            "matrixark_mcp_env.py",
-            "matrixark_mcp_scoring.py",
-            "matrixark_mcp_recall_scoring.py",
-            "matrixark_mcp_access_scope.py",
-            "matrixark_mcp_oss_understanding.py",
-            "matrixark_mcp_extraction_normalization.py",
-            "matrixark_mcp_text.py",
-            "matrixark_mcp_latest_values.py",
-            "matrixark_mcp_event_keys.py",
-            "matrixark_mcp_serving_records.py",
-            "matrixark_mcp_resources.py",
-            "matrixark_mcp_registry.py",
-            "matrixark_mcp_summaries.py",
-            "matrixark_mcp_summary_runtime.py",
-            "matrixark_mcp_time_compression_runtime.py",
-            "matrixark_mcp_storage_schemas.py",
-            "matrixark_mcp_extraction_runtime.py",
-            "matrixark_mcp_rust_proxy_metrics_snapshot.py",
-            "matrixark_mcp_temporal_rust_adapters.py",
-            "matrixark_mcp_temporal_record_load_runtime.py",
-        ]
+        module_paths = sorted(TOOLS_DIR.glob("matrixark_mcp*.py"))
+        self.assertGreater(len(module_paths), 20)
+        legacy_orchestrators = {
+            "matrixark_mcp_local_adapter.py",
+            "matrixark_mcp_local_ingest.py",
+            "matrixark_mcp_temporal_adapters.py",
+        }
         offenders: list[str] = []
-        for module_name in module_names:
-            tree = ast.parse((TOOLS_DIR / module_name).read_text(encoding="utf-8"))
+        for module_path in module_paths:
+            tree = ast.parse(module_path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom) and any(alias.name == "*" for alias in node.names):
-                    offenders.append(f"{module_name}:{node.lineno}")
+                    if module_path.name not in legacy_orchestrators:
+                        offenders.append(f"{module_path.name}:{node.lineno}")
         self.assertEqual([], offenders)
 
     def test_pyproject_exposes_matrixark_console_scripts(self) -> None:

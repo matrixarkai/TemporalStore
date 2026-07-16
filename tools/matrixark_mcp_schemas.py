@@ -8,9 +8,9 @@ keeps MCP contract changes easy to review.
 from __future__ import annotations
 
 try:
-    from tools.matrixark_mcp_core import *
+    from tools.matrixark_mcp_core import BACKEND_READINESS_TIMEOUT_MS, Json
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_core import *
+    from matrixark_mcp_core import BACKEND_READINESS_TIMEOUT_MS, Json
 
 
 MESSAGE_SCHEMA: Json = {
