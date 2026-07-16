@@ -80,6 +80,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         retrieve_continuity_mod = importlib.import_module("tools.matrixark_mcp_retrieve_continuity")
         retrieve_resources_mod = importlib.import_module("tools.matrixark_mcp_retrieve_resources")
         retrieve_temporal_window_mod = importlib.import_module("tools.matrixark_mcp_retrieve_temporal_window")
+        retrieve_tree_filter_mod = importlib.import_module("tools.matrixark_mcp_retrieve_tree_filter")
         retrieve_metrics_mod = importlib.import_module("tools.matrixark_mcp_retrieve_metrics")
         ingest_planning_mod = importlib.import_module("tools.matrixark_mcp_ingest_planning")
         async_ingest_mod = importlib.import_module("tools.matrixark_mcp_async_ingest")
@@ -322,6 +323,19 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         )
         self.assertEqual(admitted_events[9], {2, 3})
         self.assertEqual(dropped_events, 1)
+        self.assertTrue(
+            retrieve_tree_filter_mod.selected_by_tree(
+                {"node_path": ["tenant:t", "user:u"], "node_hash": 44},
+                traversal={},
+                selected_paths={("tenant:t", "user:u")},
+                selected_leaf_paths=set(),
+                selected_node_hashes=set(),
+            )
+        )
+        limiter = retrieve_tree_filter_mod.CandidateFanoutLimiter(1)
+        self.assertTrue(limiter.admit({"node_hash": 1}))
+        self.assertFalse(limiter.admit({"node_hash": 1}))
+        self.assertEqual(limiter.dropped_count, 1)
         self.assertTrue(callable(retrieve_metrics_mod.attach_python_retrieval_metrics))
         self.assertTrue(callable(ingest_planning_mod.prepare_ingest_start))
         self.assertIs(local_ingest_mod.lightweight_async_accept, async_ingest_mod.lightweight_async_accept)
