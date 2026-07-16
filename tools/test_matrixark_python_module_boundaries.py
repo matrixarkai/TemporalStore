@@ -88,6 +88,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         serving_records_mod = importlib.import_module("tools.matrixark_mcp_serving_records")
         budget_pack_mod = importlib.import_module("tools.matrixark_mcp_budget_pack")
         recall_scoring_mod = importlib.import_module("tools.matrixark_mcp_recall_scoring")
+        access_scope_mod = importlib.import_module("tools.matrixark_mcp_access_scope")
         oss_understanding_mod = importlib.import_module("tools.matrixark_mcp_oss_understanding")
         extraction_norm_mod = importlib.import_module("tools.matrixark_mcp_extraction_normalization")
         prior_context_mod = importlib.import_module("tools.matrixark_mcp_prior_context")
@@ -253,6 +254,13 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(callable(budget_pack_mod.build_cross_session_policy))
         self.assertTrue(callable(budget_pack_mod.build_shared_context_policy))
         self.assertTrue(callable(budget_pack_mod.select_token_budgeted_refs))
+        self.assertIs(core_mod.scope_matches, access_scope_mod.scope_matches)
+        self.assertIs(core_mod.candidate_access_scope, access_scope_mod.candidate_access_scope)
+        self.assertIs(core_mod.access_scope_matches_before_scoring, access_scope_mod.access_scope_matches_before_scoring)
+        self.assertIs(core_mod.session_continuity_status, access_scope_mod.session_continuity_status)
+        self.assertIs(core_mod.session_continuity_boost, access_scope_mod.session_continuity_boost)
+        self.assertIs(core_mod.cross_session_rerank_adjustment, access_scope_mod.cross_session_rerank_adjustment)
+        self.assertIs(core_mod.sharing_scope_from_candidate, access_scope_mod.sharing_scope_from_candidate)
         self.assertTrue(callable(recall_scoring_mod.score_recall_candidate))
         self.assertTrue(callable(recall_scoring_mod.packing_sort_key))
         self.assertTrue(callable(recall_scoring_mod.record_dropped_candidate))
@@ -327,6 +335,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             "matrixark_mcp_env.py",
             "matrixark_mcp_scoring.py",
             "matrixark_mcp_recall_scoring.py",
+            "matrixark_mcp_access_scope.py",
             "matrixark_mcp_oss_understanding.py",
             "matrixark_mcp_extraction_normalization.py",
             "matrixark_mcp_text.py",
