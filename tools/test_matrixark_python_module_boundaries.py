@@ -157,6 +157,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             [3, 4, 5],
         )
         self.assertTrue(callable(native_pack_runtime_mod.try_native_context_pack))
+        self.assertTrue(callable(native_pack_runtime_mod.native_context_pack))
+        self.assertTrue(callable(native_pack_runtime_mod.native_context_pack_fallback_blocker))
         self.assertTrue(callable(native_lookup_runtime_mod.native_index_ref_hashes))
         self.assertTrue(callable(native_lookup_runtime_mod.native_locations_for_refs))
         self.assertTrue(callable(native_lookup_runtime_mod.load_records_from_locations))
