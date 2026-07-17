@@ -117,14 +117,17 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_ingest_resource_facts as resource_fact_helpers
 
 try:
+    from tools import matrixark_mcp_ingest_resource_queue as resource_queue_helpers
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_ingest_resource_queue as resource_queue_helpers
+
+try:
     from tools.matrixark_mcp_ingest_response import (
         build_ingest_response,
-        build_resource_import_queued_response,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_ingest_response import (
         build_ingest_response,
-        build_resource_import_queued_response,
     )
 
 
@@ -202,74 +205,27 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
             "upload_status": "not_started",
             "temp_paths": [],
         }
-        if not resource_import_background:
-            self.append(
-                resource_import_task_record(
-                    task_hash=resource_import_task_hash,
-                    status="queued",
-                    kind=envelope["kind"],
-                    raw_uri=requested_raw_uri,
-                    requested_raw_uri=requested_raw_uri,
-                    resource_type=resource_type,
-                    raw_storage_mode=str(storage_resolution["storage_mode"]),
-                    raw_storage_policy=raw_storage_policy,
-                    node_hash=node_hash,
-                    node_path=node_path,
-                    scope=resource_record_scope,
-                    storage_options=envelope.get("storage_options", {}),
-                    wait=resource_import_wait,
-                    async_default_reason=async_default_reason,
-                    progress={"stage": "queued", "percent": 0},
-                    updated_at_ms=envelope["ingestion_time_ms"],
-                    extra={"created_at_ms": envelope["ingestion_time_ms"]},
-                )
-            )
-        if not resource_import_wait:
-            background_args = {
-                **args,
-                "wait": True,
-                "_background_resource_import": True,
-                "_resource_import_task_hash": resource_import_task_hash,
-            }
-            try:
-                queue_status = self._enqueue_resource_import(
-                    args=background_args,
-                    hook=hook,
-                    task_hash=resource_import_task_hash,
-                )
-            except MatrixArkError as exc:
-                self.append(
-                    resource_import_task_record(
-                        task_hash=resource_import_task_hash,
-                        status="failed",
-                        kind=envelope["kind"],
-                        raw_uri=requested_raw_uri,
-                        requested_raw_uri=requested_raw_uri,
-                        resource_type=resource_type,
-                        raw_storage_mode=str(storage_resolution["storage_mode"]),
-                        raw_storage_policy=raw_storage_policy,
-                        node_hash=node_hash,
-                        node_path=node_path,
-                        scope=resource_record_scope,
-                        storage_options=envelope.get("storage_options", {}),
-                        progress={"stage": "failed", "percent": 100},
-                        updated_at_ms=now_ms(),
-                        extra={"error": str(exc)},
-                    )
-                )
-                raise
-            return build_resource_import_queued_response(
-                event_id_hash=event_id_hash,
-                node_hash=node_hash,
-                resource_import_task_hash=resource_import_task_hash,
-                requested_raw_uri=requested_raw_uri,
-                resource_type=resource_type,
-                storage_resolution=storage_resolution,
-                raw_storage_policy=raw_storage_policy,
-                queue_status=queue_status,
-                async_default_reason=async_default_reason,
-                node_materialization=node_materialization,
-            )
+        queued_response = resource_queue_helpers.queue_resource_import_if_needed(
+            self,
+            args=args,
+            envelope=envelope,
+            hook=hook,
+            event_id_hash=event_id_hash,
+            node_hash=node_hash,
+            node_path=node_path,
+            node_materialization=node_materialization,
+            resource_record_scope=resource_record_scope,
+            requested_raw_uri=requested_raw_uri,
+            resource_type=resource_type,
+            resource_import_task_hash=resource_import_task_hash,
+            resource_import_wait=resource_import_wait,
+            resource_import_background=resource_import_background,
+            storage_resolution=storage_resolution,
+            raw_storage_policy=raw_storage_policy,
+            async_default_reason=async_default_reason,
+        )
+        if queued_response is not None:
+            return queued_response
         resource_import_task_status = "running"
         resource_text = "\n\n".join(str(message["content"]) for message in envelope["messages"])
         try:
