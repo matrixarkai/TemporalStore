@@ -12,6 +12,33 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from tools.matrixark_mcp_direct_cache_state import (
+        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE,
+        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_LOCK,
+        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES,
+        _DIRECT_RECORD_CACHE,
+        _DIRECT_RECORD_CACHE_LOCK,
+        _DIRECT_RECORD_CACHE_MAX_PREFIXES,
+        _DIRECT_RECORD_LOAD_LOCKS,
+        _DIRECT_RETRIEVAL_CANDIDATE_CACHE,
+        _DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK,
+        _DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES,
+    )
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_direct_cache_state import (
+        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE,
+        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_LOCK,
+        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES,
+        _DIRECT_RECORD_CACHE,
+        _DIRECT_RECORD_CACHE_LOCK,
+        _DIRECT_RECORD_CACHE_MAX_PREFIXES,
+        _DIRECT_RECORD_LOAD_LOCKS,
+        _DIRECT_RETRIEVAL_CANDIDATE_CACHE,
+        _DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK,
+        _DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES,
+    )
+
+try:
     from tools.matrixark_mcp_core import (
         DIRECT_AUDIT_BUFFER_MAX_RECORDS,
         DIRECT_AUDIT_FLUSH_INTERVAL_MS,
@@ -22,16 +49,6 @@ try:
         DIRECT_WRITE_THROTTLE_MS,
         Json,
         MatrixArkError,
-        _DIRECT_RECORD_CACHE,
-        _DIRECT_RECORD_CACHE_LOCK,
-        _DIRECT_RECORD_CACHE_MAX_PREFIXES,
-        _DIRECT_RECORD_LOAD_LOCKS,
-        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE,
-        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_LOCK,
-        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES,
-        _DIRECT_RETRIEVAL_CANDIDATE_CACHE,
-        _DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK,
-        _DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES,
         candidate_access_scope,
         compact_latest_context_state_records,
         native_candidate_prefilter_required,
@@ -49,16 +66,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         DIRECT_WRITE_THROTTLE_MS,
         Json,
         MatrixArkError,
-        _DIRECT_RECORD_CACHE,
-        _DIRECT_RECORD_CACHE_LOCK,
-        _DIRECT_RECORD_CACHE_MAX_PREFIXES,
-        _DIRECT_RECORD_LOAD_LOCKS,
-        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE,
-        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_LOCK,
-        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES,
-        _DIRECT_RETRIEVAL_CANDIDATE_CACHE,
-        _DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK,
-        _DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES,
         candidate_access_scope,
         compact_latest_context_state_records,
         native_candidate_prefilter_required,

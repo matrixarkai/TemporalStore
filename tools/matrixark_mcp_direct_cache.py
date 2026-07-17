@@ -12,8 +12,7 @@ from collections import OrderedDict
 from typing import Any
 
 try:
-    from tools.matrixark_mcp_core import (
-        Json,
+    from tools.matrixark_mcp_direct_cache_state import (
         _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE,
         _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_LOCK,
         _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES,
@@ -24,6 +23,24 @@ try:
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE,
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK,
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES,
+    )
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_direct_cache_state import (
+        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE,
+        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_LOCK,
+        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES,
+        _DIRECT_RECORD_CACHE,
+        _DIRECT_RECORD_CACHE_LOCK,
+        _DIRECT_RECORD_CACHE_MAX_PREFIXES,
+        _DIRECT_RECORD_LOAD_LOCKS,
+        _DIRECT_RETRIEVAL_CANDIDATE_CACHE,
+        _DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK,
+        _DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES,
+    )
+
+try:
+    from tools.matrixark_mcp_core import (
+        Json,
         canonical_scope_key,
         stable_hash,
     )
@@ -31,16 +48,6 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
         Json,
-        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE,
-        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_LOCK,
-        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES,
-        _DIRECT_RECORD_CACHE,
-        _DIRECT_RECORD_CACHE_LOCK,
-        _DIRECT_RECORD_CACHE_MAX_PREFIXES,
-        _DIRECT_RECORD_LOAD_LOCKS,
-        _DIRECT_RETRIEVAL_CANDIDATE_CACHE,
-        _DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK,
-        _DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES,
         canonical_scope_key,
         stable_hash,
     )
