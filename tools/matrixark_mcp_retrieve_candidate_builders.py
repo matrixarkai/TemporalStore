@@ -153,3 +153,62 @@ def compression_candidate(
         "updated_at_ms": record.get("compressed_time_ms", record.get("updated_at_ms", now_ms())),
         "text": clip_context_text(text),
     }
+
+
+def resource_skill_candidate(
+    record: Json,
+    *,
+    ref_type: str,
+    ref_hash: int,
+    resource_hash: int,
+    source_locator: str,
+    resource_version: str,
+    supersedes_chunk_hash: object,
+    version_state: str,
+    stale_or_superseded: bool,
+    citation: str,
+    metadata: Json,
+    business_type: str,
+    index_terms: set[str],
+    origin_score: float,
+    keyword_score: int,
+    sparse_score: float,
+    embedding_score: float,
+    node_score: float,
+    text: str,
+) -> Json:
+    return {
+        "ref_type": ref_type,
+        "ref_hash": ref_hash,
+        "node_hash": record.get("node_hash"),
+        "node_path": record.get("node_path", []),
+        "origin_score": origin_score,
+        "keyword_score": keyword_score,
+        "sparse_score": sparse_score,
+        "embedding_score": embedding_score,
+        "node_score": node_score,
+        "matched_index_terms": sorted(index_terms),
+        "selection_reason": (
+            "selected by tree path, secondary indexes, and resource/skill hybrid score"
+            if index_terms
+            else "selected by tree path and resource/skill hybrid score"
+        ),
+        "event_type": business_type,
+        "context_class": ref_type,
+        "resource_hash": resource_hash,
+        "source_locator": source_locator,
+        "resource_type": record.get("resource_type", ""),
+        "resource_version": resource_version,
+        "supersedes_chunk_hash": supersedes_chunk_hash,
+        "version_state": version_state,
+        "stale_or_superseded": stale_or_superseded,
+        "access_decision": "allowed_by_registry_scope_before_scoring",
+        "access_scope": candidate_access_scope(record),
+        "deployment_scope": record.get("deployment_scope", "local"),
+        "citation": citation,
+        "metadata": metadata,
+        "scope": candidate_access_scope(record),
+        "updated_at_ms": record.get("updated_at_ms", now_ms()),
+        "text": clip_context_text(text),
+        "recall_path": "primary_resource_skill",
+    }
