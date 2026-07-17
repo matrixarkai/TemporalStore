@@ -14,13 +14,12 @@ import select
 import shutil
 import subprocess
 import json
+import os
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
-import os
 import re
 import sys
 import tempfile
-import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -781,16 +780,32 @@ globals().update({name: getattr(_runtime_config, name) for name in _RUNTIME_CONF
 
 _OSS_SEGMENT_MODEL_CACHE: dict[str, Any] = {}
 _OSS_UNDERSTANDING_PROTOTYPE_CACHE: dict[str, dict[str, list[float]]] = {}
-_DIRECT_RECORD_CACHE: dict[str, tuple[int, list[Json]]] = {}
-_DIRECT_RECORD_CACHE_LOCK = threading.RLock()
-_DIRECT_RECORD_CACHE_MAX_PREFIXES = 64
-_DIRECT_RECORD_LOAD_LOCKS: dict[str, threading.RLock] = {}
-_DIRECT_RETRIEVAL_CANDIDATE_CACHE: dict[str, Json] = {}
-_DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK = threading.RLock()
-_DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES = int(os.environ.get("MATRIXARK_DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES", "256"))
-_DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE: dict[str, list[tuple[str, int, int, Json]]] = {}
-_DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_LOCK = threading.RLock()
-_DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES = int(os.environ.get("MATRIXARK_DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES", "1024"))
+try:
+    from tools.matrixark_mcp_direct_cache_state import (
+        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE,
+        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_LOCK,
+        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES,
+        _DIRECT_RECORD_CACHE,
+        _DIRECT_RECORD_CACHE_LOCK,
+        _DIRECT_RECORD_CACHE_MAX_PREFIXES,
+        _DIRECT_RECORD_LOAD_LOCKS,
+        _DIRECT_RETRIEVAL_CANDIDATE_CACHE,
+        _DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK,
+        _DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES,
+    )
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_direct_cache_state import (
+        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE,
+        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_LOCK,
+        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES,
+        _DIRECT_RECORD_CACHE,
+        _DIRECT_RECORD_CACHE_LOCK,
+        _DIRECT_RECORD_CACHE_MAX_PREFIXES,
+        _DIRECT_RECORD_LOAD_LOCKS,
+        _DIRECT_RETRIEVAL_CANDIDATE_CACHE,
+        _DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK,
+        _DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES,
+    )
 
 
 try:

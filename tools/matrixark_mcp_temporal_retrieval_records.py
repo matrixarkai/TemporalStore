@@ -6,10 +6,19 @@ from __future__ import annotations
 from typing import Any
 
 try:
-    from tools.matrixark_mcp_core import (
-        Json,
+    from tools.matrixark_mcp_direct_cache_state import (
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE,
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK,
+    )
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_direct_cache_state import (
+        _DIRECT_RETRIEVAL_CANDIDATE_CACHE,
+        _DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK,
+    )
+
+try:
+    from tools.matrixark_mcp_core import (
+        Json,
         access_scope_matches_before_scoring,
         candidate_access_scope,
         canonical_scope_key,
@@ -20,8 +29,6 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
         Json,
-        _DIRECT_RETRIEVAL_CANDIDATE_CACHE,
-        _DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK,
         access_scope_matches_before_scoring,
         candidate_access_scope,
         canonical_scope_key,
