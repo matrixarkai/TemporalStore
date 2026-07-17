@@ -15,9 +15,7 @@ try:
         Json,
         MatrixArkError,
         ResourceParserError,
-        aggregate_parse_warnings_from_chunks,
         cleanup_temp_paths,
-        content_hash,
         context_index_name,
         context_index_posting_record,
         context_node_key,
@@ -54,9 +52,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         Json,
         MatrixArkError,
         ResourceParserError,
-        aggregate_parse_warnings_from_chunks,
         cleanup_temp_paths,
-        content_hash,
         context_index_name,
         context_index_posting_record,
         context_node_key,
@@ -120,6 +116,11 @@ try:
     from tools import matrixark_mcp_ingest_resource_queue as resource_queue_helpers
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_ingest_resource_queue as resource_queue_helpers
+
+try:
+    from tools import matrixark_mcp_ingest_resource_chunks as resource_chunk_helpers
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_ingest_resource_chunks as resource_chunk_helpers
 
 try:
     from tools.matrixark_mcp_ingest_response import (
@@ -406,30 +407,18 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
                 )
             )
             raise MatrixArkError(resource_parse_error or "resource ingestion produced no chunks")
-        original_chunk_count = len(parsed_chunks)
-        deduped_source_refs: list[str] = []
-        seen_content_hashes: set[str] = set()
-        unique_chunks = []
-        for chunk in parsed_chunks:
-            chunk_content_hash = str(chunk.metadata.get("content_hash") or content_hash(chunk.text))
-            if chunk_content_hash in seen_content_hashes:
-                deduped_source_refs.append(chunk.source_ref)
-                continue
-            seen_content_hashes.add(chunk_content_hash)
-            unique_chunks.append(chunk)
-        parsed_chunks = unique_chunks
-        deduped_chunk_count = original_chunk_count - len(parsed_chunks)
+        normalized_chunks = resource_chunk_helpers.normalize_resource_chunks(parsed_chunks)
+        parsed_chunks = normalized_chunks["chunks"]
+        original_chunk_count = int(normalized_chunks["original_chunk_count"])
+        deduped_chunk_count = int(normalized_chunks["deduped_chunk_count"])
+        deduped_source_refs = list(normalized_chunks["deduped_source_refs"])
         if not parsed_chunks:
             raise MatrixArkError("resource ingestion produced only duplicate chunks")
-        resource_version_value = str(parsed_chunks[0].metadata.get("resource_version") or "")
-        resource_content_hash = content_hash("\n".join(str(chunk.metadata.get("content_hash") or content_hash(chunk.text)) for chunk in parsed_chunks))
-        superseded_chunk_count = sum(1 for chunk in parsed_chunks if chunk.metadata.get("supersedes_chunk_hash"))
-        superseded_chunk_hashes = [
-            int(chunk.metadata["supersedes_chunk_hash"])
-            for chunk in parsed_chunks
-            if isinstance(chunk.metadata.get("supersedes_chunk_hash"), int)
-        ]
-        parse_warnings = aggregate_parse_warnings_from_chunks(parsed_chunks)
+        resource_version_value = str(normalized_chunks["resource_version"])
+        resource_content_hash = str(normalized_chunks["resource_content_hash"])
+        superseded_chunk_count = int(normalized_chunks["superseded_chunk_count"])
+        superseded_chunk_hashes = list(normalized_chunks["superseded_chunk_hashes"])
+        parse_warnings = list(normalized_chunks["parse_warnings"])
         chunk_vectors = embeddings_for_texts([embedding_text_for_chunk(chunk) for chunk in parsed_chunks])
         index_write_count = 0
         index_candidate_count = 0
