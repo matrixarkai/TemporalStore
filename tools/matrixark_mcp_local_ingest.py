@@ -522,34 +522,30 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
         resource_summary_hash = stable_hash(f"{resource_kind}_l0:{raw_uri}:{node_hash}")
         resource_summary_vector = embedding_for_text(" ".join(node_path + [resource_l0_text]))
         self.append(
-            {
-                "record_type": "context_summary",
-                "summary_type": f"{resource_kind}_l0",
-                "summary_hash": resource_summary_hash,
-                "import_task_hash": resource_import_task_hash,
-                "node_hash": node_hash,
-                "node_path": node_path,
-                "raw_uri": raw_uri,
-                "summary_text": resource_l0_text,
-                "source_chunk_hashes": [chunk.chunk_hash for chunk in parsed_chunks],
-                "scope": resource_record_scope,
-                "updated_at_ms": envelope["ingestion_time_ms"],
-            }
+            resource_record_builders.resource_l0_summary_record(
+                resource_kind=resource_kind,
+                summary_hash=resource_summary_hash,
+                import_task_hash=resource_import_task_hash,
+                node_hash=node_hash,
+                node_path=node_path,
+                raw_uri=raw_uri,
+                summary_text=resource_l0_text,
+                source_chunk_hashes=[chunk.chunk_hash for chunk in parsed_chunks],
+                scope=resource_record_scope,
+                updated_at_ms=envelope["ingestion_time_ms"],
+            )
         )
         self.append(
-            {
-                "record_type": "context_embedding",
-                "embedding_type": f"{resource_kind}_l0",
-                "ref_type": "summary",
-                "ref_hash": resource_summary_hash,
-                "node_hash": node_hash,
-                "node_path": node_path,
-                "dim": len(resource_summary_vector),
-                "model": embedding_model_name(),
-                "vector": resource_summary_vector,
-                "scope": resource_record_scope,
-                "updated_at_ms": envelope["ingestion_time_ms"],
-            }
+            resource_record_builders.context_embedding_record(
+                embedding_type=f"{resource_kind}_l0",
+                ref_type="summary",
+                ref_hash=resource_summary_hash,
+                node_hash=node_hash,
+                node_path=node_path,
+                vector=resource_summary_vector,
+                scope=resource_record_scope,
+                updated_at_ms=envelope["ingestion_time_ms"],
+            )
         )
         resource_dirty_hashes = self.mark_node_summary_dirty(
             node_path=node_path,
@@ -769,20 +765,17 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
             for index_name in chunk_index_terms:
                 index_write_count += 1
                 self.append(
-                    {
-                        "record_type": "context_index",
-                        "index_name": index_name,
-                        "index_hash": stable_hash(f"{index_name}:{chunk.chunk_hash}"),
-                        "ref_type": "skill_section" if skill_hash is not None else "resource_chunk",
-                        "ref_hash": chunk.chunk_hash,
-                        "chunk_hash": chunk.chunk_hash,
-                        "resource_hash": resource_manifest_hash if skill_hash is None else skill_hash,
-                        "source_locator": source_locator,
-                        "node_hash": node_hash,
-                        "node_path": node_path,
-                        "scope": resource_record_scope,
-                        "updated_at_ms": envelope["ingestion_time_ms"],
-                    }
+                    resource_record_builders.resource_chunk_index_record(
+                        index_name=index_name,
+                        ref_type="skill_section" if skill_hash is not None else "resource_chunk",
+                        chunk_hash=chunk.chunk_hash,
+                        resource_hash=resource_manifest_hash if skill_hash is None else skill_hash,
+                        source_locator=source_locator,
+                        node_hash=node_hash,
+                        node_path=node_path,
+                        scope=resource_record_scope,
+                        updated_at_ms=envelope["ingestion_time_ms"],
+                    )
                 )
         fact_chunks = [chunk for chunk in parsed_chunks if skill_hash is None and should_extract_resource_fact(chunk.text, chunk.metadata)][:MAX_RESOURCE_FACT_CHUNKS]
         resource_fact_records, resource_fact_event_hashes, resource_fact_entity_hashes = resource_fact_helpers.build_resource_fact_records(
