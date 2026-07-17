@@ -94,6 +94,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         retrieve_fallback_mod = importlib.import_module("tools.matrixark_mcp_retrieve_fallback")
         retrieve_identity_mod = importlib.import_module("tools.matrixark_mcp_retrieve_identity")
         retrieve_index_terms_mod = importlib.import_module("tools.matrixark_mcp_retrieve_index_terms")
+        retrieve_scan_state_mod = importlib.import_module("tools.matrixark_mcp_retrieve_scan_state")
         retrieve_resources_mod = importlib.import_module("tools.matrixark_mcp_retrieve_resources")
         retrieve_temporal_window_mod = importlib.import_module("tools.matrixark_mcp_retrieve_temporal_window")
         retrieve_tree_filter_mod = importlib.import_module("tools.matrixark_mcp_retrieve_tree_filter")
@@ -408,6 +409,16 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         )
         self.assertEqual(by_ref[5], ["entity:gpu"])
         self.assertEqual(node_prefilter[9], ["entity:gpu"])
+        self.assertTrue(callable(retrieve_scan_state_mod.scan_context_indexes))
+        self.assertTrue(callable(retrieve_scan_state_mod.scan_context_embeddings))
+        scan_state = retrieve_scan_state_mod.RetrieveScanState()
+        self.assertTrue(
+            retrieve_scan_state_mod.add_index_terms(
+                {"record_type": "context_index", "index_name": "entity:cpu", "ref_hash": 6, "node_hash": 10},
+                state=scan_state,
+            )
+        )
+        self.assertEqual(scan_state.index_terms_by_ref[6], ["entity:cpu"])
         observed_stage_metrics: list[tuple[str, float]] = []
         tracker = retrieve_deadline_mod.RetrievalDeadlineTracker(
             started_perf=0.0,

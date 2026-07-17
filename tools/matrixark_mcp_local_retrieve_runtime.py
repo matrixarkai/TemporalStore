@@ -147,27 +147,9 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_retrieve_fallback import deadline_fallback_pack
 
 try:
-    from tools.matrixark_mcp_retrieve_embeddings import add_context_embedding_vector
+    from tools import matrixark_mcp_retrieve_scan_state as retrieve_scan_state_helpers
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_retrieve_embeddings import add_context_embedding_vector
-
-try:
-    from tools.matrixark_mcp_retrieve_index_terms import add_context_index_terms
-except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_retrieve_index_terms import add_context_index_terms
-
-try:
-    from tools.matrixark_mcp_retrieve_node_scores import (
-        add_context_summary_text,
-        add_node_embedding_score,
-        add_secondary_index_hint_node_scores,
-    )
-except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_retrieve_node_scores import (
-        add_context_summary_text,
-        add_node_embedding_score,
-        add_secondary_index_hint_node_scores,
-    )
+    import matrixark_mcp_retrieve_scan_state as retrieve_scan_state_helpers
 
 try:
     from tools import matrixark_mcp_retrieve_candidate_builders as candidate_builders
@@ -348,72 +330,40 @@ def retrieve(target: Any, args: Json) -> Json:
     stage_started_perf = time.perf_counter()
     if deadline_exceeded():
         return deadline_fallback("deadline_after_record_load")
-    node_scores: dict[int, Json] = {}
-    event_embedding_vectors: dict[int, list[float]] = {}
-    entity_embedding_vectors: dict[int, list[float]] = {}
-    segment_embedding_vectors: dict[int, list[float]] = {}
-    compression_embedding_vectors: dict[int, list[float]] = {}
-    resource_embedding_vectors: dict[int, list[float]] = {}
-    skill_embedding_vectors: dict[int, list[float]] = {}
-    index_terms_by_batch: dict[Any, list[str]] = {}
-    index_terms_by_node: dict[Any, list[str]] = {}
-    index_terms_by_ref: dict[Any, list[str]] = {}
-    index_terms_by_node_for_prefilter: dict[int, list[str]] = {}
-    node_summary_text_by_hash: dict[int, str] = {}
-    for scan_index, record in enumerate(records, 1):
-        if scan_index % 128 == 0 and deadline_exceeded():
-            return deadline_fallback("deadline_during_embedding_index_scan")
-        record_type = record.get("record_type")
-        if record_type == "context_index" and scope_matches(candidate_access_scope(record), retrieval_scope):
-            add_context_index_terms(
-                record,
-                index_terms_by_batch=index_terms_by_batch,
-                index_terms_by_node=index_terms_by_node,
-                index_terms_by_ref=index_terms_by_ref,
-                index_terms_by_node_for_prefilter=index_terms_by_node_for_prefilter,
-            )
-        add_context_summary_text(record, scope=scope, node_summary_text_by_hash=node_summary_text_by_hash)
-    secondary_index_prefilter_node_hashes = {
-        node_hash
-        for node_hash, terms in index_terms_by_node_for_prefilter.items()
-        if passes_secondary_index_filters(set(terms), secondary_index_filter_groups, mode=secondary_index_filter_mode)
-    } if secondary_index_filter_groups else set()
-    query_plan["secondary_index_prefilter"] = {
-        "applied_before_l0_l1_traversal": True,
-        "matched_node_count": len(secondary_index_prefilter_node_hashes),
-        "fallback_when_no_index_matches": True,
-        "strategy": "ContextIndex node hints boost L0/L1 traversal; leaf candidates still verify filters before embedding scoring",
-    }
-    for scan_index, record in enumerate(records, 1):
-        if scan_index % 128 == 0 and deadline_exceeded():
-            return deadline_fallback("deadline_during_embedding_vector_scan")
-        record_type = record.get("record_type")
-        if record_type == "context_embedding" and not scope_matches(candidate_access_scope(record), scope):
-            continue
-        if record_type == "context_embedding" and record.get("embedding_type") in {"node_l0", "node_l1"}:
-            add_node_embedding_score(
-                record,
-                query_embedding=query_embedding,
-                query_terms=query_terms,
-                node_summary_text_by_hash=node_summary_text_by_hash,
-                secondary_index_prefilter_node_hashes=secondary_index_prefilter_node_hashes,
-                node_scores=node_scores,
-            )
-        elif record_type == "context_embedding":
-            add_context_embedding_vector(
-                record,
-                event_embedding_vectors=event_embedding_vectors,
-                entity_embedding_vectors=entity_embedding_vectors,
-                segment_embedding_vectors=segment_embedding_vectors,
-                compression_embedding_vectors=compression_embedding_vectors,
-                resource_embedding_vectors=resource_embedding_vectors,
-                skill_embedding_vectors=skill_embedding_vectors,
-            )
-    add_secondary_index_hint_node_scores(
+    scan_state = retrieve_scan_state_helpers.RetrieveScanState()
+    node_scores = scan_state.node_scores
+    event_embedding_vectors = scan_state.event_embedding_vectors
+    entity_embedding_vectors = scan_state.entity_embedding_vectors
+    segment_embedding_vectors = scan_state.segment_embedding_vectors
+    compression_embedding_vectors = scan_state.compression_embedding_vectors
+    resource_embedding_vectors = scan_state.resource_embedding_vectors
+    skill_embedding_vectors = scan_state.skill_embedding_vectors
+    index_terms_by_batch = scan_state.index_terms_by_batch
+    index_terms_by_node = scan_state.index_terms_by_node
+    index_terms_by_ref = scan_state.index_terms_by_ref
+    secondary_index_prefilter_node_hashes, fallback_reason = retrieve_scan_state_helpers.scan_context_indexes(
         records,
-        secondary_index_prefilter_node_hashes=secondary_index_prefilter_node_hashes,
-        node_scores=node_scores,
+        retrieval_scope=retrieval_scope,
+        scope=scope,
+        query_plan=query_plan,
+        secondary_index_filter_groups=secondary_index_filter_groups,
+        secondary_index_filter_mode=secondary_index_filter_mode,
+        state=scan_state,
+        deadline_exceeded=deadline_exceeded,
     )
+    if fallback_reason:
+        return deadline_fallback(fallback_reason)
+    fallback_reason = retrieve_scan_state_helpers.scan_context_embeddings(
+        records,
+        scope=scope,
+        query_embedding=query_embedding,
+        query_terms=query_terms,
+        secondary_index_prefilter_node_hashes=secondary_index_prefilter_node_hashes,
+        state=scan_state,
+        deadline_exceeded=deadline_exceeded,
+    )
+    if fallback_reason:
+        return deadline_fallback(fallback_reason)
     if deadline_exceeded():
         return deadline_fallback("deadline_after_embedding_index_scan")
 
@@ -454,23 +404,9 @@ def retrieve(target: Any, args: Json) -> Json:
         for record in placement_candidate_records:
             record_type = record.get("record_type")
             if record_type == "context_index" and scope_matches(candidate_access_scope(record), scope):
-                add_context_index_terms(
-                    record,
-                    index_terms_by_batch=index_terms_by_batch,
-                    index_terms_by_node=index_terms_by_node,
-                    index_terms_by_ref=index_terms_by_ref,
-                    index_terms_by_node_for_prefilter=index_terms_by_node_for_prefilter,
-                )
+                retrieve_scan_state_helpers.add_index_terms(record, state=scan_state)
             elif record_type == "context_embedding" and scope_matches(candidate_access_scope(record), scope):
-                add_context_embedding_vector(
-                    record,
-                    event_embedding_vectors=event_embedding_vectors,
-                    entity_embedding_vectors=entity_embedding_vectors,
-                    segment_embedding_vectors=segment_embedding_vectors,
-                    compression_embedding_vectors=compression_embedding_vectors,
-                    resource_embedding_vectors=resource_embedding_vectors,
-                    skill_embedding_vectors=skill_embedding_vectors,
-                )
+                retrieve_scan_state_helpers.add_embedding_vector(record, state=scan_state)
 
     selected_by_tree = retrieve_tree_filter_helpers.make_tree_selector(
         traversal=traversal,
