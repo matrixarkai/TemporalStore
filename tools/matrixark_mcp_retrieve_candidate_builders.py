@@ -155,6 +155,42 @@ def compression_candidate(
     }
 
 
+def summary_candidate(
+    record: Json,
+    *,
+    summary_type: str,
+    index_terms: set[str],
+    origin_score: float,
+    keyword_score: int,
+    sparse_score: float,
+    embedding_score: float,
+    node_score: float,
+    text: str,
+) -> Json:
+    return {
+        "ref_type": "summary",
+        "ref_hash": record.get("summary_hash") or record.get("node_hash"),
+        "node_hash": record.get("node_hash"),
+        "node_path": record.get("node_path", []),
+        "origin_score": origin_score,
+        "keyword_score": keyword_score,
+        "sparse_score": sparse_score,
+        "embedding_score": embedding_score,
+        "node_score": node_score,
+        "matched_index_terms": sorted(index_terms),
+        "selection_reason": "selected by tree path and L0/L1 summary relevance",
+        "event_type": summary_type,
+        "context_class": "summary",
+        "summary_type": summary_type,
+        "access_decision": "allowed_by_registry_scope_before_scoring",
+        "access_scope": candidate_access_scope(record),
+        "scope": candidate_access_scope(record),
+        "updated_at_ms": record.get("updated_at_ms", now_ms()),
+        "text": clip_context_text(text),
+        "recall_path": "primary_summary",
+    }
+
+
 def resource_skill_candidate(
     record: Json,
     *,

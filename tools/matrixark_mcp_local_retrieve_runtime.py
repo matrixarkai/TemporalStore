@@ -542,30 +542,20 @@ def retrieve(target: Any, args: Json) -> Json:
             origin_score = min(1.0, 0.06 + hybrid_origin_score(query_terms, text, embedding_score, node_score))
             if origin_score <= 0:
                 continue
+            candidate = candidate_builders.summary_candidate(
+                record,
+                summary_type=summary_type,
+                index_terms=index_terms,
+                origin_score=origin_score,
+                keyword_score=keyword_score,
+                sparse_score=sparse_score,
+                embedding_score=embedding_score,
+                node_score=node_score,
+                text=text,
+            )
             primary_matches.append(
                 score_recall_candidate(
-                    annotate_session_continuity({
-                        "ref_type": "summary",
-                        "ref_hash": record.get("summary_hash") or record.get("node_hash"),
-                        "node_hash": record.get("node_hash"),
-                        "node_path": record.get("node_path", []),
-                        "origin_score": origin_score,
-                        "keyword_score": keyword_score,
-                        "sparse_score": sparse_score,
-                        "embedding_score": embedding_score,
-                        "node_score": node_score,
-                        "matched_index_terms": sorted(index_terms),
-                        "selection_reason": "selected by tree path and L0/L1 summary relevance",
-                        "event_type": summary_type,
-                        "context_class": "summary",
-                        "summary_type": summary_type,
-                        "access_decision": "allowed_by_registry_scope_before_scoring",
-                        "access_scope": candidate_access_scope(record),
-                        "scope": candidate_access_scope(record),
-                        "updated_at_ms": record.get("updated_at_ms", now_ms()),
-                        "text": clip_context_text(text),
-                        "recall_path": "primary_summary",
-                    }, record),
+                    annotate_session_continuity(candidate, record),
                     ranking,
                     reference_time_ms=reference_time_ms,
                 )
