@@ -152,6 +152,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_retrieve_scan_state as retrieve_scan_state_helpers
 
 try:
+    from tools import matrixark_mcp_retrieve_summary_scan as retrieve_summary_scan_helpers
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_retrieve_summary_scan as retrieve_summary_scan_helpers
+
+try:
     from tools import matrixark_mcp_retrieve_candidate_builders as candidate_builders
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_retrieve_candidate_builders as candidate_builders
@@ -443,53 +448,29 @@ def retrieve(target: Any, args: Json) -> Json:
     primary_matches = []
     auxiliary_matches = []
     if question_type == "broad_exploration":
-        for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
-            if scan_index % 64 == 0 and deadline_exceeded():
-                return deadline_fallback("deadline_during_summary_scan", records)
-            if record.get("record_type") != "context_summary":
-                continue
-            if not access_scope_matches_before_scoring(record, retrieval_scope):
-                continue
-            if not selected_by_tree(record):
-                continue
-            summary_type = str(record.get("summary_type") or "")
-            if summary_type not in {"node_l0", "node_l1", "resource_l0", "batch_l0", "session_l0"}:
-                continue
-            index_terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node, index_terms_by_ref)
-            if not passes_applicable_secondary_index_filters(index_terms, secondary_index_filter_groups, mode=secondary_index_filter_mode):
-                secondary_index_dropped_count += 1
-                continue
-            secondary_index_matched_count += 1
-            if not admit_candidate_for_node(record):
-                continue
-            text = str(record.get("summary_text", ""))
-            if not text:
-                continue
-            sparse_score = sparse_lexical_score(query_terms, text)
-            keyword_score = len(query_terms.intersection(tokens(text)))
-            embedding_score = cosine(query_embedding, embedding_for_text(" ".join(record.get("node_path", []) + [summary_type, text])))
-            node_score = node_scores.get(record.get("node_hash"), {}).get("score", 0.0)
-            origin_score = min(1.0, 0.06 + hybrid_origin_score(query_terms, text, embedding_score, node_score))
-            if origin_score <= 0:
-                continue
-            candidate = candidate_builders.summary_candidate(
-                record,
-                summary_type=summary_type,
-                index_terms=index_terms,
-                origin_score=origin_score,
-                keyword_score=keyword_score,
-                sparse_score=sparse_score,
-                embedding_score=embedding_score,
-                node_score=node_score,
-                text=text,
-            )
-            primary_matches.append(
-                score_recall_candidate(
-                    annotate_session_continuity(candidate, record),
-                    ranking,
-                    reference_time_ms=reference_time_ms,
-                )
-            )
+        summary_matches, summary_dropped, summary_matched, fallback_reason = retrieve_summary_scan_helpers.scan_summary_candidates(
+            tree_candidate_records,
+            retrieval_scope=retrieval_scope,
+            selected_by_tree=selected_by_tree,
+            index_terms_by_batch=index_terms_by_batch,
+            index_terms_by_node=index_terms_by_node,
+            index_terms_by_ref=index_terms_by_ref,
+            secondary_index_filter_groups=secondary_index_filter_groups,
+            secondary_index_filter_mode=secondary_index_filter_mode,
+            admit_candidate_for_node=admit_candidate_for_node,
+            query_terms=query_terms,
+            query_embedding=query_embedding,
+            node_scores=node_scores,
+            annotate_session_continuity=annotate_session_continuity,
+            ranking=ranking,
+            reference_time_ms=reference_time_ms,
+            deadline_exceeded=deadline_exceeded,
+        )
+        if fallback_reason:
+            return deadline_fallback(fallback_reason, records)
+        primary_matches.extend(summary_matches)
+        secondary_index_dropped_count += summary_dropped
+        secondary_index_matched_count += summary_matched
     for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
         if scan_index % 64 == 0 and deadline_exceeded():
             return deadline_fallback("deadline_during_event_scan", records)
