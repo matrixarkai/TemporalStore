@@ -8,8 +8,6 @@ from typing import Any
 
 try:
     from tools.matrixark_mcp_core import (
-        CONTEXT_PACK_DEBUG_REFS,
-        DEFAULT_MAX_CONTEXT_TOKENS,
         DEFAULT_MAX_SELECTED_REFS,
         Json,
         MatrixArkError,
@@ -19,12 +17,8 @@ try:
         clip_context_text,
         compact_context_pack_for_serving,
         embedding_for_text,
-        integer_arg,
-        normalize_storage_options,
         now_ms,
-        optional_object,
         passes_secondary_index_filters,
-        require_string,
         scope_matches,
         select_token_budgeted_refs,
         stable_hash,
@@ -33,8 +27,6 @@ try:
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
-        CONTEXT_PACK_DEBUG_REFS,
-        DEFAULT_MAX_CONTEXT_TOKENS,
         DEFAULT_MAX_SELECTED_REFS,
         Json,
         MatrixArkError,
@@ -44,12 +36,8 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         clip_context_text,
         compact_context_pack_for_serving,
         embedding_for_text,
-        integer_arg,
-        normalize_storage_options,
         now_ms,
-        optional_object,
         passes_secondary_index_filters,
-        require_string,
         scope_matches,
         select_token_budgeted_refs,
         stable_hash,
@@ -68,19 +56,14 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_retrieve_cache as retrieve_cache_helpers
 
 try:
+    from tools import matrixark_mcp_retrieve_request as retrieve_request_helpers
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_retrieve_request as retrieve_request_helpers
+
+try:
     from tools import matrixark_mcp_native_retrieve as native_retrieve_helpers
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_native_retrieve as native_retrieve_helpers
-
-try:
-    from tools import matrixark_mcp_retrieve_continuity as retrieve_continuity_helpers
-except ModuleNotFoundError:  # Direct script execution from tools/.
-    import matrixark_mcp_retrieve_continuity as retrieve_continuity_helpers
-
-try:
-    from tools import matrixark_mcp_retrieve_deadline as retrieve_deadline_helpers
-except ModuleNotFoundError:  # Direct script execution from tools/.
-    import matrixark_mcp_retrieve_deadline as retrieve_deadline_helpers
 
 try:
     from tools import matrixark_mcp_retrieve_resources as retrieve_resource_helpers
@@ -197,27 +180,17 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 def retrieve(target: Any, args: Json) -> Json:
     self = target
     started_perf = time.perf_counter()
-    query = require_string(args, "query")
-    scope = optional_object(args, "scope")
-    storage_options = normalize_storage_options(args)
-    ranking = optional_object(args, "ranking")
-    audit_mode, audit_sample_rate = retrieve_planning_helpers.retrieval_audit_policy(args)
-    deadline_ms = retrieve_planning_helpers.retrieval_deadline_ms(args, ranking)
-
-    stage_budgets_ms, explicit_stage_budgets = retrieve_planning_helpers.retrieval_stage_budgets(
-        args,
-        ranking,
-        deadline_ms=deadline_ms,
-    )
-    deadline_tracker = retrieve_deadline_helpers.RetrievalDeadlineTracker(
-        started_perf=started_perf,
-        deadline_ms=deadline_ms,
-        stage_budgets_ms=stage_budgets_ms,
-        explicit_stage_budgets=explicit_stage_budgets,
-        observe_latency=self._observe_model_latency,
-    )
+    retrieval_request = retrieve_request_helpers.prepare_retrieval_request(self, args, started_perf=started_perf)
+    query = retrieval_request["query"]
+    scope = retrieval_request["scope"]
+    storage_options = retrieval_request["storage_options"]
+    ranking = retrieval_request["ranking"]
+    audit_mode = retrieval_request["audit_mode"]
+    audit_sample_rate = retrieval_request["audit_sample_rate"]
+    deadline_ms = retrieval_request["deadline_ms"]
+    deadline_tracker = retrieval_request["deadline_tracker"]
     stage_latencies_ms = deadline_tracker.stage_latencies_ms
-    stage_started_perf = time.perf_counter()
+    stage_started_perf = retrieval_request["stage_started_perf"]
 
     def deadline_exceeded() -> bool:
         return deadline_tracker.deadline_exceeded()
@@ -228,51 +201,32 @@ def retrieve(target: Any, args: Json) -> Json:
     def stage_budget_snapshot() -> Json:
         return deadline_tracker.stage_budget_snapshot()
 
-    retrieval_plan = retrieve_planning_helpers.retrieval_query_budget_plan(
-        args,
-        ranking,
-        query=query,
-        scope=scope,
-        default_max_context_tokens=DEFAULT_MAX_CONTEXT_TOKENS,
-    )
-    question_type = str(retrieval_plan["question_type"])
-    retrieval_session_scope = str(retrieval_plan["retrieval_session_scope"])
-    retrieval_scope = retrieval_plan["retrieval_scope"]
-    secondary_index_filter_groups = retrieval_plan["secondary_index_filter_groups"]
-    secondary_index_filter_mode = str(retrieval_plan["secondary_index_filter_mode"])
+    retrieval_plan = retrieval_request["retrieval_plan"]
+    question_type = retrieval_request["question_type"]
+    retrieval_session_scope = retrieval_request["retrieval_session_scope"]
+    retrieval_scope = retrieval_request["retrieval_scope"]
+    secondary_index_filter_groups = retrieval_request["secondary_index_filter_groups"]
+    secondary_index_filter_mode = retrieval_request["secondary_index_filter_mode"]
     secondary_index_dropped_count = 0
     secondary_index_matched_count = 0
-    budget_source = str(retrieval_plan["budget_source"])
-    max_context_tokens = int(retrieval_plan["max_context_tokens"])
-    local_budget = retrieval_plan["local_budget"]
-    local_tokens = int(local_budget.get("token_estimate", 0))
-    safety_margin_tokens = int(local_budget.get("safety_margin_tokens", 0))
-    remote_context_budget_tokens = int(retrieval_plan["remote_context_budget_tokens"])
-    cross_session_policy = retrieval_plan["cross_session_policy"]
-    shared_context_policy = retrieval_plan["shared_context_policy"]
-    query_terms = retrieval_plan["query_terms"]
-    reference_time_ms = int(retrieval_plan["reference_time_ms"])
-    query_plan = retrieval_plan["query_plan"]
-    debug_refs = bool(args.get("include_debug_refs") or ranking.get("include_debug_refs") or CONTEXT_PACK_DEBUG_REFS)
-    pack_cache_key = retrieve_cache_helpers.context_pack_cache_key(
-        self,
-        scope=scope,
-        query=query,
-        question_type=question_type,
-        retrieval_session_scope=retrieval_session_scope,
-        max_context_tokens=max_context_tokens,
-        local_budget=local_budget,
-        ranking=ranking,
-        include_superseded=bool(args.get("include_superseded_resources", False) or args.get("historical_replay", False)),
-    )
-    cached_pack = retrieve_cache_helpers.get_cached_context_pack(self, pack_cache_key, include_debug=debug_refs)
+    budget_source = retrieval_request["budget_source"]
+    max_context_tokens = retrieval_request["max_context_tokens"]
+    local_budget = retrieval_request["local_budget"]
+    local_tokens = retrieval_request["local_tokens"]
+    safety_margin_tokens = retrieval_request["safety_margin_tokens"]
+    remote_context_budget_tokens = retrieval_request["remote_context_budget_tokens"]
+    cross_session_policy = retrieval_request["cross_session_policy"]
+    shared_context_policy = retrieval_request["shared_context_policy"]
+    query_terms = retrieval_request["query_terms"]
+    reference_time_ms = retrieval_request["reference_time_ms"]
+    query_plan = retrieval_request["query_plan"]
+    debug_refs = retrieval_request["debug_refs"]
+    pack_cache_key = retrieval_request["pack_cache_key"]
+    cached_pack = retrieval_request["cached_pack"]
     if cached_pack is not None:
         return cached_pack
-    auxiliary_quota = integer_arg(ranking, "auxiliary_quota", 2, minimum=0)
-    annotate_session_continuity = retrieve_continuity_helpers.make_session_continuity_annotator(
-        retrieval_scope=retrieval_scope,
-        question_type=question_type,
-    )
+    auxiliary_quota = retrieval_request["auxiliary_quota"]
+    annotate_session_continuity = retrieval_request["annotate_session_continuity"]
 
     finish_retrieval_stage("query_understanding", stage_started_perf)
     native_pack = native_retrieve_helpers.try_native_context_pack(
@@ -662,7 +616,6 @@ def retrieve(target: Any, args: Json) -> Json:
             "skipped": True,
             "reason": "disabled_for_read_only_scale_or_benchmark_run",
         }
-    debug_refs = bool(args.get("include_debug_refs") or ranking.get("include_debug_refs") or CONTEXT_PACK_DEBUG_REFS)
     serving_selected, serving_dropped = prepare_serving_refs(
         selected=selected,
         dropped_over_budget=dropped_over_budget,
