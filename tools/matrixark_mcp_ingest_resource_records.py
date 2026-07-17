@@ -4,9 +4,37 @@
 from __future__ import annotations
 
 try:
-    from tools.matrixark_mcp_core import Json, clip_context_text, embedding_model_name
+    from tools.matrixark_mcp_core import Json, clip_context_text, embedding_model_name, stable_hash
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_core import Json, clip_context_text, embedding_model_name
+    from matrixark_mcp_core import Json, clip_context_text, embedding_model_name, stable_hash
+
+
+def resource_l0_summary_record(
+    *,
+    resource_kind: str,
+    summary_hash: int,
+    import_task_hash: int,
+    node_hash: int,
+    node_path: list[str],
+    raw_uri: str,
+    summary_text: str,
+    source_chunk_hashes: list[int],
+    scope: Json,
+    updated_at_ms: int,
+) -> Json:
+    return {
+        "record_type": "context_summary",
+        "summary_type": f"{resource_kind}_l0",
+        "summary_hash": summary_hash,
+        "import_task_hash": import_task_hash,
+        "node_hash": node_hash,
+        "node_path": node_path,
+        "raw_uri": raw_uri,
+        "summary_text": summary_text,
+        "source_chunk_hashes": source_chunk_hashes,
+        "scope": scope,
+        "updated_at_ms": updated_at_ms,
+    }
 
 
 def skill_section_record(
@@ -145,6 +173,34 @@ def context_embedding_record(
         "dim": len(vector),
         "model": embedding_model_name(),
         "vector": vector,
+        "scope": scope,
+        "updated_at_ms": updated_at_ms,
+    }
+
+
+def resource_chunk_index_record(
+    *,
+    index_name: str,
+    ref_type: str,
+    chunk_hash: int,
+    resource_hash: int,
+    source_locator: str,
+    node_hash: int,
+    node_path: list[str],
+    scope: Json,
+    updated_at_ms: int,
+) -> Json:
+    return {
+        "record_type": "context_index",
+        "index_name": index_name,
+        "index_hash": stable_hash(f"{index_name}:{chunk_hash}"),
+        "ref_type": ref_type,
+        "ref_hash": chunk_hash,
+        "chunk_hash": chunk_hash,
+        "resource_hash": resource_hash,
+        "source_locator": source_locator,
+        "node_hash": node_hash,
+        "node_path": node_path,
         "scope": scope,
         "updated_at_ms": updated_at_ms,
     }

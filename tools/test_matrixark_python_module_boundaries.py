@@ -266,6 +266,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(callable(ingest_resource_records_mod.resource_chunk_record))
         self.assertTrue(callable(ingest_resource_records_mod.resource_chunk_debug_record))
         self.assertTrue(callable(ingest_resource_records_mod.context_embedding_record))
+        self.assertTrue(callable(ingest_resource_records_mod.resource_l0_summary_record))
+        self.assertTrue(callable(ingest_resource_records_mod.resource_chunk_index_record))
         self.assertTrue(callable(ingest_resource_facts_mod.build_resource_fact_records))
         self.assertTrue(callable(ingest_response_mod.build_ingest_response))
         self.assertTrue(callable(ingest_response_mod.build_resource_import_queued_response))
