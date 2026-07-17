@@ -96,6 +96,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         retrieve_index_terms_mod = importlib.import_module("tools.matrixark_mcp_retrieve_index_terms")
         retrieve_scan_state_mod = importlib.import_module("tools.matrixark_mcp_retrieve_scan_state")
         retrieve_summary_scan_mod = importlib.import_module("tools.matrixark_mcp_retrieve_summary_scan")
+        retrieve_event_scan_mod = importlib.import_module("tools.matrixark_mcp_retrieve_event_scan")
         retrieve_resources_mod = importlib.import_module("tools.matrixark_mcp_retrieve_resources")
         retrieve_temporal_window_mod = importlib.import_module("tools.matrixark_mcp_retrieve_temporal_window")
         retrieve_tree_filter_mod = importlib.import_module("tools.matrixark_mcp_retrieve_tree_filter")
@@ -427,6 +428,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         )
         self.assertEqual(scan_state.index_terms_by_ref[6], ["entity:cpu"])
         self.assertTrue(callable(retrieve_summary_scan_mod.scan_summary_candidates))
+        self.assertTrue(callable(retrieve_event_scan_mod.scan_event_candidates))
         observed_stage_metrics: list[tuple[str, float]] = []
         tracker = retrieve_deadline_mod.RetrievalDeadlineTracker(
             started_perf=0.0,
