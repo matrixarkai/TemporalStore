@@ -25,13 +25,11 @@ try:
         normalize_storage_options,
         now_ms,
         optional_object,
-        passes_applicable_secondary_index_filters,
         passes_secondary_index_filters,
         require_string,
         scope_matches,
         score_recall_candidate,
         select_token_budgeted_refs,
-        source_ref_from_locator,
         sparse_lexical_score,
         stable_hash,
         summarize_text,
@@ -57,13 +55,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         normalize_storage_options,
         now_ms,
         optional_object,
-        passes_applicable_secondary_index_filters,
         passes_secondary_index_filters,
         require_string,
         scope_matches,
         score_recall_candidate,
         select_token_budgeted_refs,
-        source_ref_from_locator,
         sparse_lexical_score,
         stable_hash,
         summarize_text,
@@ -170,6 +166,11 @@ try:
     from tools import matrixark_mcp_retrieve_segment_scan as retrieve_segment_scan_helpers
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_retrieve_segment_scan as retrieve_segment_scan_helpers
+
+try:
+    from tools import matrixark_mcp_retrieve_resource_skill_scan as retrieve_resource_skill_scan_helpers
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_retrieve_resource_skill_scan as retrieve_resource_skill_scan_helpers
 
 try:
     from tools import matrixark_mcp_retrieve_candidate_builders as candidate_builders
@@ -568,98 +569,36 @@ def retrieve(target: Any, args: Json) -> Json:
     secondary_index_matched_count += segment_matched
     if deadline_exceeded():
         return deadline_fallback("deadline_after_segment_scan")
-    for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
-        if scan_index % 64 == 0 and deadline_exceeded():
-            return deadline_fallback("deadline_during_resource_skill_scan", records)
-        if record.get("record_type") not in {"resource_chunk", "skill_section"}:
-            continue
-        if not access_scope_matches_before_scoring(record, retrieval_scope):
-            continue
-        if not selected_by_tree(record):
-            continue
-        if record.get("record_type") == "resource_chunk" and record.get("resource_type") == "skill":
-            continue
-        index_terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node, index_terms_by_ref)
-        if not passes_applicable_secondary_index_filters(index_terms, secondary_index_filter_groups, mode=secondary_index_filter_mode):
-            secondary_index_dropped_count += 1
-            continue
-        secondary_index_matched_count += 1
-        if not admit_candidate_for_node(record):
-            continue
-        if record.get("record_type") == "skill_section":
-            ref_type = "skill_section"
-            ref_hash = int(record.get("section_hash") or 0)
-            parent_skill_hash = int(record.get("skill_hash") or 0)
-            control = skill_controls.get(parent_skill_hash, {})
-            if str(control.get("status") or "active") != "active":
-                continue
-            resource_hash = parent_skill_hash
-            raw_uri_value = str(record.get("raw_uri") or "")
-            source_locator = str(record.get("source_locator") or "")
-            citation = str(record.get("source_ref") or source_ref_from_locator(raw_uri_value, source_locator))
-            resource_version_value = str(record.get("metadata", {}).get("resource_version") or record.get("resource_version") or "")
-            version_state = "current"
-            is_superseded_version = False
-            text = f"skill section {record.get('heading', '')}: {record.get('text', '')}"
-            embedding_score = cosine(query_embedding, resource_embedding_vectors.get(ref_hash, embedding_for_text(text)))
-            business_type = "skill"
-            metadata = {**record.get("metadata", {}), "skill_registry": control}
-        else:
-            ref_type = "resource_chunk"
-            ref_hash = int(record.get("chunk_hash") or 0)
-            metadata = record.get("metadata", {})
-            resource_hash = int(record.get("resource_hash") or 0)
-            raw_uri_value = str(record.get("raw_uri") or resource_uri_by_hash.get(resource_hash, ""))
-            source_locator = str(record.get("source_locator") or metadata.get("source_locator") or "")
-            citation = str(record.get("source_ref") or source_ref_from_locator(raw_uri_value, source_locator))
-            resource_version_value = str(metadata.get("resource_version") or record.get("resource_version") or "")
-            latest_version = latest_resource_version_by_hash.get(resource_hash, resource_version_value)
-            is_superseded_version = bool(
-                resource_version_value
-                and latest_version
-                and resource_version_value != latest_version
-            )
-            if is_superseded_version and not include_superseded_resources:
-                secondary_index_dropped_count += 1
-                continue
-            version_state = "historical" if is_superseded_version else "current"
-            text = f"resource {source_locator}: {record.get('text', '')}"
-            embedding_score = cosine(query_embedding, resource_embedding_vectors.get(ref_hash, embedding_for_text(text)))
-            business_type = str(record.get("resource_type") or "resource")
-        sparse_score = sparse_lexical_score(query_terms, text)
-        keyword_score = len(query_terms.intersection(tokens(text)))
-        node_score = node_scores.get(record.get("node_hash"), {}).get("score", 0.0)
-        origin_score = min(1.0, 0.08 + hybrid_origin_score(query_terms, text, embedding_score, node_score))
-        if origin_score <= 0:
-            continue
-        candidate = candidate_builders.resource_skill_candidate(
-            record,
-            ref_type=ref_type,
-            ref_hash=ref_hash,
-            resource_hash=resource_hash,
-            source_locator=source_locator,
-            resource_version=resource_version_value,
-            supersedes_chunk_hash=metadata.get("supersedes_chunk_hash"),
-            version_state=version_state,
-            stale_or_superseded=is_superseded_version,
-            citation=citation,
-            metadata=metadata,
-            business_type=business_type,
-            index_terms=index_terms,
-            origin_score=origin_score,
-            keyword_score=keyword_score,
-            sparse_score=sparse_score,
-            embedding_score=embedding_score,
-            node_score=node_score,
-            text=text,
+    resource_skill_primary, resource_skill_dropped, resource_skill_matched, fallback_reason = (
+        retrieve_resource_skill_scan_helpers.scan_resource_skill_candidates(
+            tree_candidate_records,
+            retrieval_scope=retrieval_scope,
+            selected_by_tree=selected_by_tree,
+            index_terms_by_batch=index_terms_by_batch,
+            index_terms_by_node=index_terms_by_node,
+            index_terms_by_ref=index_terms_by_ref,
+            secondary_index_filter_groups=secondary_index_filter_groups,
+            secondary_index_filter_mode=secondary_index_filter_mode,
+            admit_candidate_for_node=admit_candidate_for_node,
+            query_terms=query_terms,
+            query_embedding=query_embedding,
+            resource_embedding_vectors=resource_embedding_vectors,
+            node_scores=node_scores,
+            annotate_session_continuity=annotate_session_continuity,
+            ranking=ranking,
+            reference_time_ms=reference_time_ms,
+            skill_controls=skill_controls,
+            latest_resource_version_by_hash=latest_resource_version_by_hash,
+            resource_uri_by_hash=resource_uri_by_hash,
+            include_superseded_resources=include_superseded_resources,
+            deadline_exceeded=deadline_exceeded,
         )
-        primary_matches.append(
-            score_recall_candidate(
-                annotate_session_continuity(candidate, record),
-                ranking,
-                reference_time_ms=reference_time_ms,
-            )
-        )
+    )
+    if fallback_reason:
+        return deadline_fallback(fallback_reason, records)
+    primary_matches.extend(resource_skill_primary)
+    secondary_index_dropped_count += resource_skill_dropped
+    secondary_index_matched_count += resource_skill_matched
 
     for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
         if scan_index % 64 == 0 and deadline_exceeded():
