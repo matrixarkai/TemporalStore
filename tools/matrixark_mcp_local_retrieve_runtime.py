@@ -157,6 +157,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_retrieve_summary_scan as retrieve_summary_scan_helpers
 
 try:
+    from tools import matrixark_mcp_retrieve_event_scan as retrieve_event_scan_helpers
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_retrieve_event_scan as retrieve_event_scan_helpers
+
+try:
     from tools import matrixark_mcp_retrieve_candidate_builders as candidate_builders
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_retrieve_candidate_builders as candidate_builders
@@ -471,78 +476,32 @@ def retrieve(target: Any, args: Json) -> Json:
         primary_matches.extend(summary_matches)
         secondary_index_dropped_count += summary_dropped
         secondary_index_matched_count += summary_matched
-    for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
-        if scan_index % 64 == 0 and deadline_exceeded():
-            return deadline_fallback("deadline_during_event_scan", records)
-        if record.get("record_type") != "context_event":
-            continue
-        event_node_key: Any = record.get("node_hash")
-        if event_node_key is None:
-            event_node_key = tuple(record.get("node_path", []))
-        if (
-            not record.get("source_chunk_hash")
-            and event_node_key in raw_event_ids_by_node
-            and int(record.get("event_id_hash") or 0) not in raw_event_ids_by_node[event_node_key]
-        ):
-            continue
-        envelope = record.get("envelope", {}) if isinstance(record.get("envelope"), dict) else {}
-        record_scope = candidate_access_scope(record)
-        if not access_scope_matches_before_scoring(record, retrieval_scope):
-            continue
-        if not selected_by_tree(record):
-            continue
-        index_terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node, index_terms_by_ref)
-        if not passes_secondary_index_filters(index_terms, secondary_index_filter_groups, mode=secondary_index_filter_mode):
-            secondary_index_dropped_count += 1
-            continue
-        secondary_index_matched_count += 1
-        if not admit_candidate_for_node(record):
-            continue
-        text = str(record.get("text", ""))
-        sparse_score = sparse_lexical_score(query_terms, text)
-        keyword_score = len(query_terms.intersection(tokens(text)))
-        embedding_score = cosine(query_embedding, event_embedding_vectors.get(record["event_id_hash"], []))
-        node_score = node_scores.get(record["node_hash"], {}).get("score", 0.0)
-        origin_score = hybrid_origin_score(query_terms, text, embedding_score, node_score)
-        event_type = str(record.get("event_type") or record.get("classification") or "")
-        candidate_metadata: Json = {}
-        record_metadata = record.get("metadata")
-        envelope_metadata = envelope.get("metadata")
-        if isinstance(record_metadata, dict):
-            candidate_metadata.update(record_metadata)
-        if isinstance(envelope_metadata, dict):
-            candidate_metadata.update(envelope_metadata)
-        candidate = candidate_builders.event_candidate(
-            record,
-            envelope=envelope,
-            record_scope=record_scope,
-            index_terms=index_terms,
-            event_type=event_type,
-            origin_score=origin_score,
-            keyword_score=keyword_score,
-            sparse_score=sparse_score,
-            embedding_score=embedding_score,
-            node_score=node_score,
-            metadata=candidate_metadata,
-            text=text,
-        )
-        if origin_score > 0:
-            primary_matches.append(score_recall_candidate(annotate_session_continuity({**candidate, "recall_path": "primary_hybrid"}, record), ranking, reference_time_ms=reference_time_ms))
-        graph_text = " ".join(record.get("node_path", []) + sorted(index_terms) + [event_type, text])
-        graph_score = sparse_lexical_score(query_terms, graph_text)
-        if graph_score > 0:
-            auxiliary_matches.append(
-                score_recall_candidate(
-                    {
-                        **annotate_session_continuity(candidate, record),
-                        "recall_path": "auxiliary_keyword_graph",
-                        "origin_score": graph_score,
-                        "keyword_graph_score": graph_score,
-                    },
-                    ranking,
-                    reference_time_ms=reference_time_ms,
-                )
-            )
+    event_primary, event_auxiliary, event_dropped, event_matched, fallback_reason = retrieve_event_scan_helpers.scan_event_candidates(
+        tree_candidate_records,
+        raw_event_ids_by_node=raw_event_ids_by_node,
+        retrieval_scope=retrieval_scope,
+        selected_by_tree=selected_by_tree,
+        index_terms_by_batch=index_terms_by_batch,
+        index_terms_by_node=index_terms_by_node,
+        index_terms_by_ref=index_terms_by_ref,
+        secondary_index_filter_groups=secondary_index_filter_groups,
+        secondary_index_filter_mode=secondary_index_filter_mode,
+        admit_candidate_for_node=admit_candidate_for_node,
+        query_terms=query_terms,
+        query_embedding=query_embedding,
+        event_embedding_vectors=event_embedding_vectors,
+        node_scores=node_scores,
+        annotate_session_continuity=annotate_session_continuity,
+        ranking=ranking,
+        reference_time_ms=reference_time_ms,
+        deadline_exceeded=deadline_exceeded,
+    )
+    if fallback_reason:
+        return deadline_fallback(fallback_reason, records)
+    primary_matches.extend(event_primary)
+    auxiliary_matches.extend(event_auxiliary)
+    secondary_index_dropped_count += event_dropped
+    secondary_index_matched_count += event_matched
     if deadline_exceeded():
         return deadline_fallback("deadline_after_event_scan")
     for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
