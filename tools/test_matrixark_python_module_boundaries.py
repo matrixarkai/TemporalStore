@@ -268,6 +268,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(callable(ingest_resource_records_mod.context_embedding_record))
         self.assertTrue(callable(ingest_resource_facts_mod.build_resource_fact_records))
         self.assertTrue(callable(ingest_response_mod.build_ingest_response))
+        self.assertTrue(callable(ingest_response_mod.build_resource_import_queued_response))
         self.assertIs(core_mod.node_path_tuple, tree_mod.node_path_tuple)
         self.assertIs(core_mod.starts_with_path, tree_mod.starts_with_path)
         self.assertIs(core_mod.tree_first_traversal, tree_mod.tree_first_traversal)

@@ -120,9 +120,15 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_ingest_resource_facts as resource_fact_helpers
 
 try:
-    from tools.matrixark_mcp_ingest_response import build_ingest_response
+    from tools.matrixark_mcp_ingest_response import (
+        build_ingest_response,
+        build_resource_import_queued_response,
+    )
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_ingest_response import build_ingest_response
+    from matrixark_mcp_ingest_response import (
+        build_ingest_response,
+        build_resource_import_queued_response,
+    )
 
 
 def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
@@ -255,27 +261,18 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
                     )
                 )
                 raise
-            return {
-                "status": "queued",
-                "event_id_hash": event_id_hash,
-                "node_hash": node_hash,
-                "resource_import_task": {
-                    "task_hash": resource_import_task_hash,
-                    "status": "queued",
-                    "wait": False,
-                    "background_started": True,
-                    "raw_uri": requested_raw_uri,
-                    "requested_raw_uri": requested_raw_uri,
-                    "resource_type": resource_type,
-                    "raw_storage_mode": storage_resolution["storage_mode"],
-                    "raw_storage_policy": raw_storage_policy,
-                    "raw_bytes_stored": False,
-                    "worker_pool": queue_status,
-                    "progress": {"stage": "queued", "percent": 0},
-                    "async_default_reason": async_default_reason,
-                },
-                "node_materialization": node_materialization,
-            }
+            return build_resource_import_queued_response(
+                event_id_hash=event_id_hash,
+                node_hash=node_hash,
+                resource_import_task_hash=resource_import_task_hash,
+                requested_raw_uri=requested_raw_uri,
+                resource_type=resource_type,
+                storage_resolution=storage_resolution,
+                raw_storage_policy=raw_storage_policy,
+                queue_status=queue_status,
+                async_default_reason=async_default_reason,
+                node_materialization=node_materialization,
+            )
         resource_import_task_status = "running"
         resource_text = "\n\n".join(str(message["content"]) for message in envelope["messages"])
         try:
