@@ -47,6 +47,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         auth_schemas_mod = importlib.import_module("tools.matrixark_mcp_auth_schemas")
         admin_schemas_mod = importlib.import_module("tools.matrixark_mcp_admin_schemas")
         metrics_mod = importlib.import_module("tools.matrixark_mcp_metrics")
+        runtime_exports_mod = importlib.import_module("tools.matrixark_mcp_runtime_exports")
         local_mod = importlib.import_module("tools.matrixark_mcp_local_adapter")
         local_core_mixin_mod = importlib.import_module("tools.matrixark_mcp_local_core_mixin")
         local_portal_imports_mod = importlib.import_module("tools.matrixark_mcp_local_portal_imports")
@@ -216,6 +217,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIs(core_mod.storage_options_for_record, storage_options_mod.storage_options_for_record)
         self.assertIs(core_mod.canonical_storage_route, storage_options_mod.canonical_storage_route)
         self.assertIs(core_mod._mcp_debug_log, debug_mod._mcp_debug_log)
+        self.assertIn("DEFAULT_MAX_CONTEXT_TOKENS", runtime_exports_mod.RUNTIME_CONFIG_EXPORTS)
+        self.assertEqual(core_mod.DEFAULT_MAX_CONTEXT_TOKENS, runtime_exports_mod.runtime_config_exports()["DEFAULT_MAX_CONTEXT_TOKENS"])
         self.assertIs(temporal_mod._float_metric_or_default, native_helpers_mod.float_metric_or_default)
         self.assertIs(temporal_mod._compact_native_selected_refs, native_helpers_mod.compact_native_selected_refs)
         self.assertEqual(
