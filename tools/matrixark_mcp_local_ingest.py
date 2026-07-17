@@ -17,7 +17,6 @@ try:
         ResourceParserError,
         cleanup_temp_paths,
         context_index_name,
-        context_index_posting_record,
         context_node_key,
         debug_resource_metadata,
         embedding_for_text,
@@ -39,7 +38,6 @@ try:
         should_extract_resource_fact,
         source_locator_from_ref,
         stable_hash,
-        summarize_resource_chunks,
         summarize_text,
         take_secondary_index_terms,
     )
@@ -54,7 +52,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         ResourceParserError,
         cleanup_temp_paths,
         context_index_name,
-        context_index_posting_record,
         context_node_key,
         debug_resource_metadata,
         embedding_for_text,
@@ -76,7 +73,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         should_extract_resource_fact,
         source_locator_from_ref,
         stable_hash,
-        summarize_resource_chunks,
         summarize_text,
         take_secondary_index_terms,
     )
@@ -121,6 +117,11 @@ try:
     from tools import matrixark_mcp_ingest_resource_chunks as resource_chunk_helpers
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_ingest_resource_chunks as resource_chunk_helpers
+
+try:
+    from tools import matrixark_mcp_ingest_resource_summary as resource_summary_helpers
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_ingest_resource_summary as resource_summary_helpers
 
 try:
     from tools.matrixark_mcp_ingest_response import (
@@ -424,79 +425,26 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
         index_candidate_count = 0
         index_dropped_by_cap_count = 0
         secondary_index_budget = new_secondary_index_budget()
-        resource_kind = "skill" if skill_hash is not None else "resource"
-        resource_l0_text = summarize_text(
-            summarize_resource_chunks(parsed_chunks, raw_uri=raw_uri, resource_kind=resource_kind),
-            limit=700,
-        )
-        resource_summary_hash = stable_hash(f"{resource_kind}_l0:{raw_uri}:{node_hash}")
-        resource_summary_vector = embedding_for_text(" ".join(node_path + [resource_l0_text]))
-        self.append(
-            resource_record_builders.resource_l0_summary_record(
-                resource_kind=resource_kind,
-                summary_hash=resource_summary_hash,
-                import_task_hash=resource_import_task_hash,
-                node_hash=node_hash,
-                node_path=node_path,
-                raw_uri=raw_uri,
-                summary_text=resource_l0_text,
-                source_chunk_hashes=[chunk.chunk_hash for chunk in parsed_chunks],
-                scope=resource_record_scope,
-                updated_at_ms=envelope["ingestion_time_ms"],
-            )
-        )
-        self.append(
-            resource_record_builders.context_embedding_record(
-                embedding_type=f"{resource_kind}_l0",
-                ref_type="summary",
-                ref_hash=resource_summary_hash,
-                node_hash=node_hash,
-                node_path=node_path,
-                vector=resource_summary_vector,
-                scope=resource_record_scope,
-                updated_at_ms=envelope["ingestion_time_ms"],
-            )
-        )
-        resource_dirty_hashes = self.mark_node_summary_dirty(
+        summary_result = resource_summary_helpers.append_resource_summary_and_indexes(
+            self,
+            envelope=envelope,
+            parsed_chunks=parsed_chunks,
+            raw_uri=raw_uri,
+            resource_type=resource_type,
+            resource_import_task_hash=resource_import_task_hash,
+            node_hash=node_hash,
             node_path=node_path,
-            scope=envelope["scope"],
-            updated_at_ms=envelope["ingestion_time_ms"],
-            source_ref_type=f"{resource_kind}_summary",
-            source_hash_field="source_summary_hash",
-            source_hash=resource_summary_hash,
-            dirty_reason=f"{resource_kind}_update",
+            resource_record_scope=resource_record_scope,
+            skill_hash=skill_hash,
+            skill_name=parsed_skill.name if skill_hash is not None else "",
+            skill_metadata=parsed_skill.metadata if skill_hash is not None else {},
+            secondary_index_budget=secondary_index_budget,
         )
-        raw_resource_indexes = ordered_unique(
-            [
-                context_index_name("source_type", envelope["kind"]),
-                context_index_name("resource_type", resource_type or parsed_chunks[0].metadata.get("resource_type", "txt")),
-            ]
-            + (
-                [
-                    context_index_name("skill_name", parsed_skill.name),
-                ]
-                + [context_index_name("skill_trigger", trigger) for trigger in parsed_skill.metadata.get("triggers", [])]
-                + [context_index_name("skill_tool", tool) for tool in parsed_skill.metadata.get("allowed_tools", [])]
-                if skill_hash is not None
-                else []
-            )
-        )
-        index_candidate_count += len(raw_resource_indexes)
-        resource_indexes = take_secondary_index_terms(raw_resource_indexes, secondary_index_budget)
-        for index_name in resource_indexes:
-            index_write_count += 1
-            self.append(
-                context_index_posting_record(
-                    index_name=index_name,
-                    capability=f"{resource_kind}_summary",
-                    ref_type="summary",
-                    ref_hashes=[resource_summary_hash],
-                    node_hash=node_hash,
-                    scope=resource_record_scope,
-                    updated_at_ms=envelope["ingestion_time_ms"],
-                    storage_options=envelope.get("storage_options", {}),
-                )
-            )
+        resource_kind = str(summary_result["resource_kind"])
+        resource_summary_hash = int(summary_result["resource_summary_hash"])
+        resource_dirty_hashes = list(summary_result["resource_dirty_hashes"])
+        index_candidate_count += int(summary_result["index_candidate_count"])
+        index_write_count += int(summary_result["index_write_count"])
         resource_manifest_hash = stable_hash(f"resource_manifest:{raw_uri}:{node_hash}")
         raw_uri_hash = stable_hash(raw_uri)
         if envelope["kind"] == "resource":
