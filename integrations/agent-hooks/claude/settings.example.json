@@ -1,0 +1,24 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /absolute/path/to/TemporalStore/integrations/agent-hooks/codex/plugin/scripts/temporalstore_hook_launcher.mjs UserPromptSubmit"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /absolute/path/to/TemporalStore/integrations/agent-hooks/codex/plugin/scripts/temporalstore_hook_launcher.mjs Stop"
+          }
+        ]
+      }
+    ]
+  }
+}
