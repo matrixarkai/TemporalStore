@@ -812,43 +812,30 @@ def retrieve(target: Any, args: Json) -> Json:
         origin_score = min(1.0, 0.08 + hybrid_origin_score(query_terms, text, embedding_score, node_score))
         if origin_score <= 0:
             continue
+        candidate = candidate_builders.resource_skill_candidate(
+            record,
+            ref_type=ref_type,
+            ref_hash=ref_hash,
+            resource_hash=resource_hash,
+            source_locator=source_locator,
+            resource_version=resource_version_value,
+            supersedes_chunk_hash=metadata.get("supersedes_chunk_hash"),
+            version_state=version_state,
+            stale_or_superseded=is_superseded_version,
+            citation=citation,
+            metadata=metadata,
+            business_type=business_type,
+            index_terms=index_terms,
+            origin_score=origin_score,
+            keyword_score=keyword_score,
+            sparse_score=sparse_score,
+            embedding_score=embedding_score,
+            node_score=node_score,
+            text=text,
+        )
         primary_matches.append(
             score_recall_candidate(
-                annotate_session_continuity({
-                    "ref_type": ref_type,
-                    "ref_hash": ref_hash,
-                    "node_hash": record.get("node_hash"),
-                    "node_path": record.get("node_path", []),
-                    "origin_score": origin_score,
-                    "keyword_score": keyword_score,
-                    "sparse_score": sparse_score,
-                    "embedding_score": embedding_score,
-                    "node_score": node_score,
-                    "matched_index_terms": sorted(index_terms),
-                    "selection_reason": (
-                        "selected by tree path, secondary indexes, and resource/skill hybrid score"
-                        if index_terms
-                        else "selected by tree path and resource/skill hybrid score"
-                    ),
-                    "event_type": business_type,
-                    "context_class": ref_type,
-                    "resource_hash": resource_hash,
-                    "source_locator": source_locator,
-                    "resource_type": record.get("resource_type", ""),
-                    "resource_version": resource_version_value,
-                    "supersedes_chunk_hash": metadata.get("supersedes_chunk_hash"),
-                    "version_state": version_state,
-                    "stale_or_superseded": is_superseded_version,
-                    "access_decision": "allowed_by_registry_scope_before_scoring",
-                    "access_scope": candidate_access_scope(record),
-                    "deployment_scope": record.get("deployment_scope", "local"),
-                    "citation": citation,
-                    "metadata": metadata,
-                    "scope": candidate_access_scope(record),
-                    "updated_at_ms": record.get("updated_at_ms", now_ms()),
-                    "text": clip_context_text(text),
-                    "recall_path": "primary_resource_skill",
-                }, record),
+                annotate_session_continuity(candidate, record),
                 ranking,
                 reference_time_ms=reference_time_ms,
             )
