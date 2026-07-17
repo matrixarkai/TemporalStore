@@ -354,6 +354,7 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(callable(retrieve_candidate_builders_mod.entity_candidate))
         self.assertTrue(callable(retrieve_candidate_builders_mod.segment_candidate))
         self.assertTrue(callable(retrieve_candidate_builders_mod.compression_candidate))
+        self.assertTrue(callable(retrieve_candidate_builders_mod.summary_candidate))
         self.assertTrue(callable(retrieve_candidate_builders_mod.resource_skill_candidate))
         self.assertTrue(callable(native_retrieve_mod.try_native_context_pack))
         self.assertTrue(callable(retrieve_continuity_mod.annotate_session_continuity))
