@@ -23,14 +23,11 @@ try:
         context_node_key,
         debug_resource_metadata,
         embedding_for_text,
-        embedding_model_name,
         embedding_text_for_chunk,
         embeddings_for_texts,
-        infer_event_type,
         limited_index_terms,
         metadata_index_terms,
         new_secondary_index_budget,
-        non_default_classification,
         now_ms,
         ordered_unique,
         parse_resource,
@@ -65,14 +62,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         context_node_key,
         debug_resource_metadata,
         embedding_for_text,
-        embedding_model_name,
         embedding_text_for_chunk,
         embeddings_for_texts,
-        infer_event_type,
         limited_index_terms,
         metadata_index_terms,
         new_secondary_index_budget,
-        non_default_classification,
         now_ms,
         ordered_unique,
         parse_resource,
@@ -111,6 +105,11 @@ try:
     from tools import matrixark_mcp_ingest_resource_records as resource_record_builders
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_ingest_resource_records as resource_record_builders
+
+try:
+    from tools import matrixark_mcp_ingest_message_records as message_record_builders
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_ingest_message_records as message_record_builders
 
 try:
     from tools import matrixark_mcp_ingest_resource_facts as resource_fact_helpers
@@ -844,91 +843,65 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
             session_summary_text = summarize_text(session_summary_source, limit=512)
             session_summary_hash = stable_hash("session:" + "/".join(session_key_parts))
             self.append(
-                {
-                    "record_type": "context_summary",
-                    "summary_type": "session_l0",
-                    "summary_hash": session_summary_hash,
-                    "summary_identity": "stable_per_session_node",
-                    "node_hash": node_hash,
-                    "node_path": node_path,
-                    "context_node_key": session_key_parts,
-                    "summary_text": session_summary_text,
-                    "source_event_hash": event_id_hash,
-                    "scope": hot_record_scope,
-                    "updated_at_ms": envelope["ingestion_time_ms"],
-                }
+                message_record_builders.session_l0_summary_record(
+                    summary_hash=session_summary_hash,
+                    node_hash=node_hash,
+                    node_path=node_path,
+                    context_node_key=session_key_parts,
+                    summary_text=session_summary_text,
+                    source_event_hash=event_id_hash,
+                    scope=hot_record_scope,
+                    updated_at_ms=envelope["ingestion_time_ms"],
+                )
             )
+            session_summary_embedding = embedding_for_text(session_summary_text)
             self.append(
-                {
-                    "record_type": "context_embedding",
-                    "embedding_type": "session_l0",
-                    "ref_type": "summary",
-                    "ref_hash": session_summary_hash,
-                    "node_hash": node_hash,
-                    "node_path": node_path,
-                    "dim": len(embedding_for_text(session_summary_text)),
-                    "model": embedding_model_name(),
-                    "vector": embedding_for_text(session_summary_text),
-                    "scope": hot_record_scope,
-                    "updated_at_ms": envelope["ingestion_time_ms"],
-                }
+                message_record_builders.context_embedding_record(
+                    embedding_type="session_l0",
+                    ref_type="summary",
+                    ref_hash=session_summary_hash,
+                    node_hash=node_hash,
+                    node_path=node_path,
+                    vector=session_summary_embedding,
+                    scope=hot_record_scope,
+                    updated_at_ms=envelope["ingestion_time_ms"],
+                )
             )
         self.append(
-            {
-                "record_type": "context_embedding",
-                "embedding_type": "event_text",
-                "ref_type": "event",
-                "ref_hash": event_id_hash,
-                "node_hash": node_hash,
-                "node_path": node_path,
-                "dim": len(event_embedding),
-                "model": embedding_model_name(),
-                "vector": event_embedding,
-                "scope": hot_record_scope,
-                "updated_at_ms": envelope["ingestion_time_ms"],
-            }
-        )
-        record = {
-            "record_type": "context_event",
-            "event_id_hash": event_id_hash,
-            "node_hash": node_hash,
-            "node_path": node_path,
-            "text": text,
-            "classification": extraction.get("classification", ""),
-            "event_type": extraction.get("event_type", ""),
-            "entity_type": extraction.get("entity_type", ""),
-            "status": extraction.get("status", "observed"),
-            "source_kind": envelope.get("kind", "message"),
-            "envelope": envelope,
-            "internal_extraction": extraction,
-            "prior_context": prior_context,
-            "agent_hook": hook,
-            "storage_options": envelope.get("storage_options", {}),
-        }
-        self.append(record)
-        event_index_terms = ordered_unique(
-            extraction.get("indexes")
-            or [
-                context_index_name("event_type", extraction.get("event_type") or infer_event_type(text)),
-                context_index_name("classification", non_default_classification(extraction.get("classification"))),
-                context_index_name("status", extraction.get("status") or "observed"),
-                context_index_name("source_type", envelope["kind"]),
-            ]
-        )
-        event_index_records: list[Json] = []
-        for index_name in event_index_terms:
-            event_index_records.append(
-                {
-                    "record_type": "context_index",
-                    "index_name": index_name,
-                    "capability": "context_event",
-                    "ref_type": "event",
-                    "ref_hashes": [event_id_hash],
-                    "node_hash": node_hash,
-                    "scope": envelope["scope"],
-                    "updated_at_ms": envelope["ingestion_time_ms"],
-                }
+            message_record_builders.context_embedding_record(
+                embedding_type="event_text",
+                ref_type="event",
+                ref_hash=event_id_hash,
+                node_hash=node_hash,
+                node_path=node_path,
+                vector=event_embedding,
+                scope=hot_record_scope,
+                updated_at_ms=envelope["ingestion_time_ms"],
             )
+        )
+        record = message_record_builders.context_event_record(
+            event_id_hash=event_id_hash,
+            node_hash=node_hash,
+            node_path=node_path,
+            text=text,
+            extraction=extraction,
+            envelope=envelope,
+            prior_context=prior_context,
+            hook=hook,
+        )
+        self.append(record)
+        event_index_terms = message_record_builders.context_event_index_terms(
+            extraction=extraction,
+            text=text,
+            envelope=envelope,
+        )
+        event_index_records = message_record_builders.context_event_index_records(
+            index_terms=event_index_terms,
+            event_id_hash=event_id_hash,
+            node_hash=node_hash,
+            scope=envelope["scope"],
+            updated_at_ms=envelope["ingestion_time_ms"],
+        )
         if event_index_records:
             self.append_many(event_index_records)
         if self.session_buffer_enabled(args, kind=envelope["kind"]):
