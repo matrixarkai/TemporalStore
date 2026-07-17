@@ -167,6 +167,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_retrieve_entity_scan as retrieve_entity_scan_helpers
 
 try:
+    from tools import matrixark_mcp_retrieve_segment_scan as retrieve_segment_scan_helpers
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_retrieve_segment_scan as retrieve_segment_scan_helpers
+
+try:
     from tools import matrixark_mcp_retrieve_candidate_builders as candidate_builders
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_retrieve_candidate_builders as candidate_builders
@@ -536,58 +541,31 @@ def retrieve(target: Any, args: Json) -> Json:
     secondary_index_matched_count += entity_matched
     if deadline_exceeded():
         return deadline_fallback("deadline_after_entity_scan")
-    for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
-        if scan_index % 64 == 0 and deadline_exceeded():
-            return deadline_fallback("deadline_during_segment_scan", records)
-        if record.get("record_type") != "context_segment":
-            continue
-        if not access_scope_matches_before_scoring(record, retrieval_scope):
-            continue
-        if not selected_by_tree(record):
-            continue
-        index_terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node, index_terms_by_ref)
-        if not passes_secondary_index_filters(index_terms, secondary_index_filter_groups, mode=secondary_index_filter_mode):
-            secondary_index_dropped_count += 1
-            continue
-        secondary_index_matched_count += 1
-        if not admit_candidate_for_node(record):
-            continue
-        text = f"{record.get('topic', '')}: {record.get('summary_text', '')}"
-        sparse_score = sparse_lexical_score(query_terms, text)
-        keyword_score = len(query_terms.intersection(tokens(text)))
-        embedding_score = cosine(query_embedding, segment_embedding_vectors.get(record["segment_hash"], []))
-        node_score = node_scores.get(record["node_hash"], {}).get("score", 0.0)
-        saliency_score = float(record.get("saliency_score", 0.0))
-        origin_score = min(
-            1.0,
-            0.1 + 0.75 * hybrid_origin_score(query_terms, text, embedding_score, node_score) + 0.15 * saliency_score,
-        )
-        candidate = candidate_builders.segment_candidate(
-            record,
-            index_terms=index_terms,
-            origin_score=origin_score,
-            keyword_score=keyword_score,
-            sparse_score=sparse_score,
-            embedding_score=embedding_score,
-            node_score=node_score,
-            saliency_score=saliency_score,
-        )
-        if origin_score > 0:
-            primary_matches.append(score_recall_candidate(annotate_session_continuity({**candidate, "recall_path": "primary_hybrid"}, record), ranking, reference_time_ms=reference_time_ms))
-        graph_score = sparse_lexical_score(query_terms, " ".join(record.get("node_path", []) + sorted(index_terms) + [record.get("topic", ""), text]))
-        if graph_score > 0:
-            auxiliary_matches.append(
-                score_recall_candidate(
-                    {
-                        **annotate_session_continuity(candidate, record),
-                        "recall_path": "auxiliary_keyword_graph",
-                        "origin_score": graph_score,
-                        "keyword_graph_score": graph_score,
-                    },
-                    ranking,
-                    reference_time_ms=reference_time_ms,
-                )
-            )
+    segment_primary, segment_auxiliary, segment_dropped, segment_matched, fallback_reason = retrieve_segment_scan_helpers.scan_segment_candidates(
+        tree_candidate_records,
+        retrieval_scope=retrieval_scope,
+        selected_by_tree=selected_by_tree,
+        index_terms_by_batch=index_terms_by_batch,
+        index_terms_by_node=index_terms_by_node,
+        index_terms_by_ref=index_terms_by_ref,
+        secondary_index_filter_groups=secondary_index_filter_groups,
+        secondary_index_filter_mode=secondary_index_filter_mode,
+        admit_candidate_for_node=admit_candidate_for_node,
+        query_terms=query_terms,
+        query_embedding=query_embedding,
+        segment_embedding_vectors=segment_embedding_vectors,
+        node_scores=node_scores,
+        annotate_session_continuity=annotate_session_continuity,
+        ranking=ranking,
+        reference_time_ms=reference_time_ms,
+        deadline_exceeded=deadline_exceeded,
+    )
+    if fallback_reason:
+        return deadline_fallback(fallback_reason, records)
+    primary_matches.extend(segment_primary)
+    auxiliary_matches.extend(segment_auxiliary)
+    secondary_index_dropped_count += segment_dropped
+    secondary_index_matched_count += segment_matched
     if deadline_exceeded():
         return deadline_fallback("deadline_after_segment_scan")
     for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
