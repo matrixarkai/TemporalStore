@@ -23,8 +23,6 @@ try:
         context_index_posting_record,
         context_node_key,
         debug_resource_metadata,
-        embedding_execution_mode_name,
-        embedding_fallback_used,
         embedding_for_text,
         embedding_model_name,
         embedding_text_for_chunk,
@@ -44,7 +42,6 @@ try:
         rewrite_chunk_uris,
         secondary_index_budget_summary,
         serving_resource_metadata,
-        session_buffer_key,
         should_extract_resource_fact,
         source_locator_from_ref,
         stable_hash,
@@ -69,8 +66,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         context_index_posting_record,
         context_node_key,
         debug_resource_metadata,
-        embedding_execution_mode_name,
-        embedding_fallback_used,
         embedding_for_text,
         embedding_model_name,
         embedding_text_for_chunk,
@@ -90,7 +85,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         rewrite_chunk_uris,
         secondary_index_budget_summary,
         serving_resource_metadata,
-        session_buffer_key,
         should_extract_resource_fact,
         source_locator_from_ref,
         stable_hash,
@@ -125,6 +119,11 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_ingest_resource_facts as resource_fact_helpers
 
+try:
+    from tools.matrixark_mcp_ingest_response import build_ingest_response
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_mcp_ingest_response import build_ingest_response
+
 
 def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
     envelope = ingest_start["envelope"]
@@ -155,6 +154,21 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
     resource_fact_event_hashes: list[int] = []
     resource_fact_entity_hashes: list[int] = []
     skill_hash = None
+    raw_uri = ""
+    requested_raw_uri = ""
+    raw_storage_policy = ""
+    storage_resolution: Json = {}
+    original_chunk_count = 0
+    deduped_chunk_count = 0
+    deduped_source_refs: list[str] = []
+    resource_version_value = ""
+    resource_content_hash = ""
+    parse_warnings: list[str] = []
+    superseded_chunk_count = 0
+    superseded_chunk_hashes: list[int] = []
+    index_candidate_count = 0
+    index_write_count = 0
+    index_dropped_by_cap_count = 0
     if envelope["kind"] in {"resource", "skill"}:
         requested_raw_uri = str(envelope.get("raw_uri") or envelope["metadata"].get("raw_uri") or "inline-resource")
         resource_type = str(envelope.get("resource_type") or envelope["metadata"].get("resource_type") or "")
@@ -1010,81 +1024,44 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
             },
             hook=hook,
         )
-    return {
-        "status": "accepted",
-        "event_id_hash": event_id_hash,
-        "node_hash": record["node_hash"],
-        "storage_options": envelope.get("storage_options", {}),
-        "storage_route": envelope.get("storage_route", {}),
-        "hook_captured": hook is not None,
-        "embedding_model": embedding_model_name(),
-        "embedding_execution_mode": embedding_execution_mode_name(),
-        "embedding_fallback_used": embedding_fallback_used(),
-        "extraction_mode": extraction["mode"],
-        "classification": extraction.get("classification", "UNCLASSIFIED"),
-        "prior_context": extraction.get("prior_context", ""),
-        "prior_refs": extraction.get("prior_refs", []),
-        "prior_message_count": extraction.get("prior_message_count", 0),
-        "prior_summary_count": extraction.get("prior_summary_count", 0),
-        "quality_warning": extraction.get("quality_warning", ""),
-        "summary_refresh": summary_refresh,
-        "resource_summary_refresh": {
-            "status": "dirty_marked" if resource_dirty_hashes else "not_applicable",
-            "dirty_hashes": resource_dirty_hashes,
-            "refresh_result": None,
-            "async_required": bool(resource_dirty_hashes),
-        },
-        "resource_import_task": {
-            "task_hash": resource_import_task_hash,
-            "status": resource_import_task_status,
-            "wait": resource_import_wait,
-            "metrics": resource_import_metrics,
-            "raw_uri": raw_uri if resource_import_task_hash else "",
-            "requested_raw_uri": requested_raw_uri if resource_import_task_hash else "",
-            "raw_storage_mode": storage_resolution.get("storage_mode", "") if resource_import_task_hash else "",
-            "raw_storage_policy": raw_storage_policy if resource_import_task_hash else "",
-            "raw_bytes_stored": False if resource_import_task_hash else None,
-            "upload_status": storage_resolution.get("upload_status", "") if resource_import_task_hash else "",
-            "cloud_bucket": storage_resolution.get("cloud_bucket", "") if resource_import_task_hash else "",
-            "cloud_key": storage_resolution.get("cloud_key", "") if resource_import_task_hash else "",
-            "progress": {"stage": resource_import_task_status, "percent": 100 if resource_import_task_status == "completed" else 0},
-        },
-        "node_materialization": node_materialization,
-        "resource_chunks": resource_chunk_hashes,
-        "resource_chunk_count": len(resource_chunk_hashes),
-        "resource_original_chunk_count": original_chunk_count if envelope["kind"] in {"resource", "skill"} else 0,
-        "resource_deduped_chunk_count": deduped_chunk_count if envelope["kind"] in {"resource", "skill"} else 0,
-        "resource_deduped_source_refs": deduped_source_refs[:20] if envelope["kind"] in {"resource", "skill"} else [],
-        "resource_version": resource_version_value if envelope["kind"] in {"resource", "skill"} else "",
-        "resource_content_hash": resource_content_hash if envelope["kind"] in {"resource", "skill"} else "",
-        "resource_parse_warnings": parse_warnings if envelope["kind"] in {"resource", "skill"} else [],
-        "resource_parse_warning_count": len(parse_warnings) if envelope["kind"] in {"resource", "skill"} else 0,
-        "resource_raw_uri": raw_uri if envelope["kind"] in {"resource", "skill"} else "",
-        "resource_requested_raw_uri": requested_raw_uri if envelope["kind"] in {"resource", "skill"} else "",
-        "resource_raw_storage_mode": storage_resolution.get("storage_mode", "") if envelope["kind"] in {"resource", "skill"} else "",
-        "resource_raw_storage_policy": raw_storage_policy if envelope["kind"] in {"resource", "skill"} else "",
-        "resource_raw_bytes_stored": False if envelope["kind"] in {"resource", "skill"} else None,
-        "backend_readiness": backend_readiness or {},
-        "resource_superseded_chunk_count": superseded_chunk_count if envelope["kind"] in {"resource", "skill"} else 0,
-        "resource_superseded_chunk_hashes": superseded_chunk_hashes if envelope["kind"] in {"resource", "skill"} else [],
-        "resource_fact_events": resource_fact_event_hashes,
-        "resource_fact_event_count": len(resource_fact_event_hashes),
-        "resource_fact_entities": resource_fact_entity_hashes,
-        "resource_fact_entity_count": len(resource_fact_entity_hashes),
-        "resource_index_candidate_count": index_candidate_count if envelope["kind"] in {"resource", "skill"} else 0,
-        "resource_index_write_count": index_write_count if envelope["kind"] in {"resource", "skill"} else 0,
-        "resource_index_dropped_by_cap_count": index_dropped_by_cap_count if envelope["kind"] in {"resource", "skill"} else 0,
-        "resource_index_cap_per_chunk": MAX_INDEX_TERMS_PER_RESOURCE_CHUNK,
-        "resource_index_cap_per_fact": MAX_INDEX_TERMS_PER_RESOURCE_FACT,
-        "skill_hash": skill_hash,
-        "session_buffer": {
-            "enabled": session_buffer_enabled,
-            "buffer_key": list(session_buffer_key(envelope)),
-            "pending_event_count": pending_event_count,
-            "threshold_messages": session_buffer_threshold,
-            "auto_batch_extract": auto_batch_extract,
-            "boundary_commit_requested": session_boundary_commit,
-        },
-        "idle_commit_result": idle_commit_result,
-        "auto_batch_extract_result": auto_batch_result,
-    }
+    return build_ingest_response(
+        envelope=envelope,
+        hook=hook,
+        event_id_hash=event_id_hash,
+        node_hash=record["node_hash"],
+        extraction=extraction,
+        summary_refresh=summary_refresh,
+        resource_dirty_hashes=resource_dirty_hashes,
+        resource_import_task_hash=resource_import_task_hash,
+        resource_import_task_status=resource_import_task_status,
+        resource_import_wait=resource_import_wait,
+        resource_import_metrics=resource_import_metrics,
+        raw_uri=raw_uri,
+        requested_raw_uri=requested_raw_uri,
+        storage_resolution=storage_resolution,
+        raw_storage_policy=raw_storage_policy,
+        node_materialization=node_materialization,
+        resource_chunk_hashes=resource_chunk_hashes,
+        original_chunk_count=original_chunk_count,
+        deduped_chunk_count=deduped_chunk_count,
+        deduped_source_refs=deduped_source_refs,
+        resource_version_value=resource_version_value,
+        resource_content_hash=resource_content_hash,
+        parse_warnings=parse_warnings,
+        superseded_chunk_count=superseded_chunk_count,
+        superseded_chunk_hashes=superseded_chunk_hashes,
+        resource_fact_event_hashes=resource_fact_event_hashes,
+        resource_fact_entity_hashes=resource_fact_entity_hashes,
+        index_candidate_count=index_candidate_count,
+        index_write_count=index_write_count,
+        index_dropped_by_cap_count=index_dropped_by_cap_count,
+        skill_hash=skill_hash,
+        session_buffer_enabled=session_buffer_enabled,
+        pending_event_count=pending_event_count,
+        session_buffer_threshold=session_buffer_threshold,
+        auto_batch_extract=auto_batch_extract,
+        session_boundary_commit=session_boundary_commit,
+        idle_commit_result=idle_commit_result,
+        auto_batch_result=auto_batch_result,
+        backend_readiness=backend_readiness,
+    )
