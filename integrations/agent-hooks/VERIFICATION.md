@@ -3,6 +3,7 @@
 ## Local Static Checks
 
 ```bash
+node --check codex/plugin/scripts/config_loader.mjs
 node --check codex/plugin/scripts/payload_normalizer.mjs
 node --check codex/plugin/scripts/session_resolver.mjs
 node --check codex/plugin/scripts/temporalstore_client.mjs
@@ -77,3 +78,19 @@ Claude:
 
 - Confirm the generated settings include the hook launcher command.
 - Start a new Claude session and verify the smoke marker is ingested.
+
+
+## Installer Verification
+
+Codex install without modifying the active Codex config can be tested with:
+
+```bash
+bash install/install.sh --agent codex --mode dry-run --dest /tmp/temporalstore-agent-hooks-test --skip-codex-add
+```
+
+Claude settings generation can be tested with:
+
+```bash
+bash install/install.sh --agent claude --mode dry-run --dest /tmp/temporalstore-agent-hooks-claude --claude-settings /tmp/claude-settings.json
+python3 -m json.tool /tmp/claude-settings.json >/dev/null
+```

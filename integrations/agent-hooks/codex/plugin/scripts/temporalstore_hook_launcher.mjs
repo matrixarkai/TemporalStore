@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { loadPayloadFromStdin, callLocalPythonHook, callRemoteHook } from "./temporalstore_client.mjs";
 import { normalizePayload } from "./payload_normalizer.mjs";
+import { loadPluginEnv } from "./config_loader.mjs";
 
 function usage() {
   return `Usage: temporalstore_hook_launcher.mjs <event> [--dry-run] [--print-config]\n`;
@@ -27,6 +28,7 @@ function parseArgs(argv) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  loadPluginEnv();
   const env = process.env;
   const mode = args.dryRun ? "dry-run" : (env.TEMPORALSTORE_AGENT_MODE || "dry-run").toLowerCase();
   const payload = await loadPayloadFromStdin();

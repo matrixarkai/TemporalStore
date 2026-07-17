@@ -33,6 +33,7 @@ integrations/agent-hooks/
       hooks/hooks.template.json
       hooks/hooks.json
       scripts/
+        config_loader.mjs
         payload_normalizer.mjs
         session_resolver.mjs
         temporalstore_client.mjs
@@ -64,12 +65,30 @@ Windows with WSL:
 .\integrations\agent-hooks\install\smoke_test.ps1 -Mode dry-run
 ```
 
+This installs a Codex personal-marketplace plugin at
+`%USERPROFILE%\plugins\temporalstore-agent-hooks`, writes plugin-local `.env`,
+updates `%USERPROFILE%\.agents\plugins\marketplace.json`, and runs
+`codex plugin add temporalstore-agent-hooks@personal` unless `-SkipCodexAdd` is set.
+
 Linux/macOS native:
 
 ```bash
 bash ./integrations/agent-hooks/install/install.sh --agent codex --mode native
 bash ./integrations/agent-hooks/install/smoke_test.sh --mode dry-run
 ```
+
+This writes `$HOME/plugins/temporalstore-agent-hooks`, updates
+`$HOME/.agents/plugins/marketplace.json`, and runs
+`codex plugin add temporalstore-agent-hooks@personal` when `codex` is on `PATH`.
+
+Claude:
+
+```bash
+bash ./integrations/agent-hooks/install/install.sh --agent claude --mode remote --endpoint https://temporalstore.example.com
+```
+
+This writes a Claude settings file with `UserPromptSubmit` and `Stop` hooks
+pointing at the same cross-platform launcher.
 
 Remote TemporalStore:
 
