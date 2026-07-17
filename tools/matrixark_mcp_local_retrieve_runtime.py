@@ -192,6 +192,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
 
 try:
+    from tools import matrixark_mcp_retrieve_candidate_builders as candidate_builders
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_retrieve_candidate_builders as candidate_builders
+
+try:
     from tools.matrixark_mcp_retrieve_pack_policy import (
         build_rerank_policy,
         build_time_weighted_recall,
@@ -606,31 +611,20 @@ def retrieve(target: Any, args: Json) -> Json:
             candidate_metadata.update(record_metadata)
         if isinstance(envelope_metadata, dict):
             candidate_metadata.update(envelope_metadata)
-        candidate = {
-            "ref_type": "event",
-            "ref_hash": record["event_id_hash"],
-            "node_hash": record["node_hash"],
-            "node_path": record.get("node_path", []),
-            "origin_score": origin_score,
-            "keyword_score": keyword_score,
-            "sparse_score": sparse_score,
-            "embedding_score": embedding_score,
-            "node_score": node_score,
-            "matched_index_terms": sorted(index_terms),
-            "selection_reason": (
-                "selected by tree path, secondary indexes, and resource fact/event hybrid score"
-                if record.get("source_chunk_hash")
-                else "selected by tree path, secondary indexes, and event hybrid score"
-            ),
-            "event_type": event_type,
-            "context_class": "resource_fact" if record.get("source_chunk_hash") else "event",
-            "source_chunk_hash": record.get("source_chunk_hash"),
-            "source_ref": record.get("source_ref", ""),
-            "metadata": candidate_metadata,
-            "scope": record_scope,
-            "updated_at_ms": record.get("updated_at_ms") or envelope.get("ingestion_time_ms", now_ms()),
-            "text": clip_context_text(text),
-        }
+        candidate = candidate_builders.event_candidate(
+            record,
+            envelope=envelope,
+            record_scope=record_scope,
+            index_terms=index_terms,
+            event_type=event_type,
+            origin_score=origin_score,
+            keyword_score=keyword_score,
+            sparse_score=sparse_score,
+            embedding_score=embedding_score,
+            node_score=node_score,
+            metadata=candidate_metadata,
+            text=text,
+        )
         if origin_score > 0:
             primary_matches.append(score_recall_candidate(annotate_session_continuity({**candidate, "recall_path": "primary_hybrid"}, record), ranking, reference_time_ms=reference_time_ms))
         graph_text = " ".join(record.get("node_path", []) + sorted(index_terms) + [event_type, text])
@@ -672,32 +666,16 @@ def retrieve(target: Any, args: Json) -> Json:
         embedding_score = cosine(query_embedding, entity_embedding_vectors.get(record["entity_hash"], []))
         node_score = node_scores.get(record["node_hash"], {}).get("score", 0.0)
         origin_score = min(1.0, 0.12 + hybrid_origin_score(query_terms, text, embedding_score, node_score))
-        candidate = {
-            "ref_type": "entity",
-            "ref_hash": record["entity_hash"],
-            "node_hash": record["node_hash"],
-            "node_path": record.get("node_path", []),
-            "origin_score": origin_score,
-            "keyword_score": keyword_score,
-            "sparse_score": sparse_score,
-            "embedding_score": embedding_score,
-            "node_score": node_score,
-            "matched_index_terms": sorted(index_terms),
-            "selection_reason": (
-                "selected by tree path, secondary indexes, and resource entity state score"
-                if record.get("source_chunk_hash")
-                else "selected by tree path, secondary indexes, and entity state score"
-            ),
-            "entity_type": record.get("entity_type", ""),
-            "entity_name": record.get("entity_name", ""),
-            "context_class": "resource_entity_fact" if record.get("source_chunk_hash") else "entity",
-            "source_chunk_hash": record.get("source_chunk_hash"),
-            "source_ref": record.get("source_ref", ""),
-            "metadata": record.get("metadata", {}),
-            "scope": candidate_access_scope(record),
-            "updated_at_ms": record.get("updated_at_ms", now_ms()),
-            "text": clip_context_text(text),
-        }
+        candidate = candidate_builders.entity_candidate(
+            record,
+            index_terms=index_terms,
+            origin_score=origin_score,
+            keyword_score=keyword_score,
+            sparse_score=sparse_score,
+            embedding_score=embedding_score,
+            node_score=node_score,
+            text=text,
+        )
         if origin_score > 0:
             primary_matches.append(score_recall_candidate(annotate_session_continuity({**candidate, "recall_path": "primary_hybrid"}, record), ranking, reference_time_ms=reference_time_ms))
         graph_score = sparse_lexical_score(query_terms, " ".join(record.get("node_path", []) + sorted(index_terms) + [text]))
@@ -742,26 +720,16 @@ def retrieve(target: Any, args: Json) -> Json:
             1.0,
             0.1 + 0.75 * hybrid_origin_score(query_terms, text, embedding_score, node_score) + 0.15 * saliency_score,
         )
-        candidate = {
-            "ref_type": "segment",
-            "ref_hash": record["segment_hash"],
-            "node_hash": record["node_hash"],
-            "node_path": record.get("node_path", []),
-            "origin_score": origin_score,
-            "keyword_score": keyword_score,
-            "sparse_score": sparse_score,
-            "embedding_score": embedding_score,
-            "node_score": node_score,
-            "matched_index_terms": sorted(index_terms),
-            "selection_reason": "selected by tree path, secondary indexes, segment saliency, and segment hybrid score",
-            "saliency_score": saliency_score,
-            "topic": record.get("topic", ""),
-            "coordinate_tuples": record.get("coordinate_tuples", []),
-            "non_contiguous": record.get("non_contiguous", False),
-            "scope": candidate_access_scope(record),
-            "updated_at_ms": record.get("updated_at_ms", now_ms()),
-            "text": clip_context_text(str(record.get("summary_text", ""))),
-        }
+        candidate = candidate_builders.segment_candidate(
+            record,
+            index_terms=index_terms,
+            origin_score=origin_score,
+            keyword_score=keyword_score,
+            sparse_score=sparse_score,
+            embedding_score=embedding_score,
+            node_score=node_score,
+            saliency_score=saliency_score,
+        )
         if origin_score > 0:
             primary_matches.append(score_recall_candidate(annotate_session_continuity({**candidate, "recall_path": "primary_hybrid"}, record), ranking, reference_time_ms=reference_time_ms))
         graph_score = sparse_lexical_score(query_terms, " ".join(record.get("node_path", []) + sorted(index_terms) + [record.get("topic", ""), text]))
@@ -904,25 +872,16 @@ def retrieve(target: Any, args: Json) -> Json:
         embedding_score = cosine(query_embedding, compression_embedding_vectors.get(compression_hash, embedding_for_text(text)))
         node_score = node_scores.get(record["node_hash"], {}).get("score", 0.0)
         origin_score = min(1.0, 0.08 + hybrid_origin_score(query_terms, text, embedding_score, node_score))
-        candidate = {
-            "ref_type": "compression",
-            "ref_hash": compression_hash,
-            "node_hash": record["node_hash"],
-            "node_path": record.get("node_path", []),
-            "origin_score": origin_score,
-            "keyword_score": keyword_score,
-            "sparse_score": sparse_score,
-            "embedding_score": embedding_score,
-            "node_score": node_score,
-            "event_type": "time_compress",
-            "operator": "TIME_COMPRESS",
-            "source_event_ids": record.get("source_event_ids", []),
-            "source_start_ms": record.get("source_start_ms"),
-            "source_end_ms": record.get("source_end_ms"),
-            "scope": candidate_access_scope(record),
-            "updated_at_ms": record.get("compressed_time_ms", record.get("updated_at_ms", now_ms())),
-            "text": clip_context_text(text),
-        }
+        candidate = candidate_builders.compression_candidate(
+            record,
+            compression_hash=compression_hash,
+            origin_score=origin_score,
+            keyword_score=keyword_score,
+            sparse_score=sparse_score,
+            embedding_score=embedding_score,
+            node_score=node_score,
+            text=text,
+        )
         if origin_score > 0:
             primary_matches.append(score_recall_candidate(annotate_session_continuity({**candidate, "recall_path": "primary_time_compression"}, record), ranking, reference_time_ms=reference_time_ms))
         graph_score = sparse_lexical_score(query_terms, " ".join(record.get("node_path", []) + [text, "time_compress"]))
