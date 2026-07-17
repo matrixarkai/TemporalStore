@@ -18,9 +18,7 @@ try:
         candidate_index_terms,
         clip_context_text,
         compact_context_pack_for_serving,
-        cosine,
         embedding_for_text,
-        hybrid_origin_score,
         integer_arg,
         normalize_storage_options,
         now_ms,
@@ -28,12 +26,9 @@ try:
         passes_secondary_index_filters,
         require_string,
         scope_matches,
-        score_recall_candidate,
         select_token_budgeted_refs,
-        sparse_lexical_score,
         stable_hash,
         summarize_text,
-        tokens,
         tree_first_traversal,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
@@ -48,9 +43,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         candidate_index_terms,
         clip_context_text,
         compact_context_pack_for_serving,
-        cosine,
         embedding_for_text,
-        hybrid_origin_score,
         integer_arg,
         normalize_storage_options,
         now_ms,
@@ -58,12 +51,9 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         passes_secondary_index_filters,
         require_string,
         scope_matches,
-        score_recall_candidate,
         select_token_budgeted_refs,
-        sparse_lexical_score,
         stable_hash,
         summarize_text,
-        tokens,
         tree_first_traversal,
     )
 
@@ -173,9 +163,9 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_retrieve_resource_skill_scan as retrieve_resource_skill_scan_helpers
 
 try:
-    from tools import matrixark_mcp_retrieve_candidate_builders as candidate_builders
+    from tools import matrixark_mcp_retrieve_compression_scan as retrieve_compression_scan_helpers
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    import matrixark_mcp_retrieve_candidate_builders as candidate_builders
+    import matrixark_mcp_retrieve_compression_scan as retrieve_compression_scan_helpers
 
 try:
     from tools.matrixark_mcp_retrieve_pack_policy import (
@@ -600,50 +590,24 @@ def retrieve(target: Any, args: Json) -> Json:
     secondary_index_dropped_count += resource_skill_dropped
     secondary_index_matched_count += resource_skill_matched
 
-    for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
-        if scan_index % 64 == 0 and deadline_exceeded():
-            return deadline_fallback("deadline_during_compression_scan", records)
-        if record.get("record_type") != "context_compression_event":
-            continue
-        if not access_scope_matches_before_scoring(record, retrieval_scope):
-            continue
-        if not selected_by_tree(record):
-            continue
-        if not admit_candidate_for_node(record):
-            continue
-        text = f"TIME_COMPRESS: {summarize_text(str(record.get('summary_text', '')), limit=96)}"
-        sparse_score = sparse_lexical_score(query_terms, text)
-        keyword_score = len(query_terms.intersection(tokens(text)))
-        compression_hash = int(record.get("compression_id_hash") or 0)
-        embedding_score = cosine(query_embedding, compression_embedding_vectors.get(compression_hash, embedding_for_text(text)))
-        node_score = node_scores.get(record["node_hash"], {}).get("score", 0.0)
-        origin_score = min(1.0, 0.08 + hybrid_origin_score(query_terms, text, embedding_score, node_score))
-        candidate = candidate_builders.compression_candidate(
-            record,
-            compression_hash=compression_hash,
-            origin_score=origin_score,
-            keyword_score=keyword_score,
-            sparse_score=sparse_score,
-            embedding_score=embedding_score,
-            node_score=node_score,
-            text=text,
-        )
-        if origin_score > 0:
-            primary_matches.append(score_recall_candidate(annotate_session_continuity({**candidate, "recall_path": "primary_time_compression"}, record), ranking, reference_time_ms=reference_time_ms))
-        graph_score = sparse_lexical_score(query_terms, " ".join(record.get("node_path", []) + [text, "time_compress"]))
-        if graph_score > 0:
-            auxiliary_matches.append(
-                score_recall_candidate(
-                    {
-                        **annotate_session_continuity(candidate, record),
-                        "recall_path": "auxiliary_keyword_graph",
-                        "origin_score": graph_score,
-                        "keyword_graph_score": graph_score,
-                    },
-                    ranking,
-                    reference_time_ms=reference_time_ms,
-                )
-            )
+    compression_primary, compression_auxiliary, fallback_reason = retrieve_compression_scan_helpers.scan_compression_candidates(
+        tree_candidate_records,
+        retrieval_scope=retrieval_scope,
+        selected_by_tree=selected_by_tree,
+        admit_candidate_for_node=admit_candidate_for_node,
+        query_terms=query_terms,
+        query_embedding=query_embedding,
+        compression_embedding_vectors=compression_embedding_vectors,
+        node_scores=node_scores,
+        annotate_session_continuity=annotate_session_continuity,
+        ranking=ranking,
+        reference_time_ms=reference_time_ms,
+        deadline_exceeded=deadline_exceeded,
+    )
+    if fallback_reason:
+        return deadline_fallback(fallback_reason, records)
+    primary_matches.extend(compression_primary)
+    auxiliary_matches.extend(compression_auxiliary)
     if deadline_exceeded():
         return deadline_fallback("deadline_after_compression_scan")
     finish_retrieval_stage("rerank_score", stage_started_perf)
