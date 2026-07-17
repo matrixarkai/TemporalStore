@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 try:
     from tools.matrixark_mcp_core import (
         MAX_INDEX_TERMS_PER_RESOURCE_CHUNK,
@@ -23,6 +25,42 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         embedding_model_name,
         session_buffer_key,
     )
+
+
+def build_resource_import_queued_response(
+    *,
+    event_id_hash: int,
+    node_hash: int,
+    resource_import_task_hash: int,
+    requested_raw_uri: str,
+    resource_type: str,
+    storage_resolution: Json,
+    raw_storage_policy: str,
+    queue_status: Any,
+    async_default_reason: str,
+    node_materialization: Json,
+) -> Json:
+    return {
+        "status": "queued",
+        "event_id_hash": event_id_hash,
+        "node_hash": node_hash,
+        "resource_import_task": {
+            "task_hash": resource_import_task_hash,
+            "status": "queued",
+            "wait": False,
+            "background_started": True,
+            "raw_uri": requested_raw_uri,
+            "requested_raw_uri": requested_raw_uri,
+            "resource_type": resource_type,
+            "raw_storage_mode": storage_resolution["storage_mode"],
+            "raw_storage_policy": raw_storage_policy,
+            "raw_bytes_stored": False,
+            "worker_pool": queue_status,
+            "progress": {"stage": "queued", "percent": 0},
+            "async_default_reason": async_default_reason,
+        },
+        "node_materialization": node_materialization,
+    }
 
 
 def build_ingest_response(
