@@ -29,7 +29,6 @@ try:
         embedding_model_name,
         embedding_text_for_chunk,
         embeddings_for_texts,
-        extract_resource_facts,
         infer_event_type,
         limited_index_terms,
         metadata_index_terms,
@@ -76,7 +75,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         embedding_model_name,
         embedding_text_for_chunk,
         embeddings_for_texts,
-        extract_resource_facts,
         infer_event_type,
         limited_index_terms,
         metadata_index_terms,
@@ -121,6 +119,11 @@ try:
     from tools import matrixark_mcp_ingest_resource_records as resource_record_builders
 except ModuleNotFoundError:  # Direct script execution from tools/.
     import matrixark_mcp_ingest_resource_records as resource_record_builders
+
+try:
+    from tools import matrixark_mcp_ingest_resource_facts as resource_fact_helpers
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_ingest_resource_facts as resource_fact_helpers
 
 
 def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
@@ -770,111 +773,19 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
-        resource_fact_records: list[Json] = []
         fact_chunks = [chunk for chunk in parsed_chunks if skill_hash is None and should_extract_resource_fact(chunk.text, chunk.metadata)][:MAX_RESOURCE_FACT_CHUNKS]
-        remaining_resource_fact_budget = max(0, MAX_RESOURCE_FACTS_PER_RESOURCE)
-        for chunk in fact_chunks:
-            if remaining_resource_fact_budget <= 0:
-                break
-            source_locator = source_locator_from_ref(chunk.source_ref, raw_uri)
-            chunk_metadata = serving_resource_metadata({**chunk.metadata, "source_locator": source_locator})
-            for fact_extraction in extract_resource_facts(
-                chunk,
-                chunk_metadata=chunk_metadata,
-                envelope=envelope,
-                raw_uri=raw_uri,
-                resource_version=resource_version_value,
-            )[:remaining_resource_fact_budget]:
-                remaining_resource_fact_budget -= 1
-                fact_event_type = str(fact_extraction["event_type"])
-                fact_entity_type = str(fact_extraction["entity_type"])
-                fact_value = str(fact_extraction.get("value", ""))
-                fact_event_hash = stable_hash(f"resource_fact:{chunk.chunk_hash}:{fact_event_type}:{resource_version_value}")
-                resource_fact_event_hashes.append(fact_event_hash)
-                fact_summary = summarize_text(f"{fact_event_type}: {fact_value}", limit=320)
-                resource_fact_records.append(
-                    {
-                        "record_type": "context_event",
-                        "event_id_hash": fact_event_hash,
-                        "node_hash": node_hash,
-                        "node_path": node_path,
-                        "text": chunk.text,
-                        "summary_text": fact_summary,
-                        "classification": fact_extraction.get("classification", ""),
-                        "event_type": fact_extraction.get("event_type", ""),
-                        "entity_type": fact_extraction.get("entity_type", ""),
-                        "status": fact_extraction.get("status", "observed"),
-                        "source_kind": "resource_fact",
-                        "envelope": {**envelope, "kind": "resource_fact"},
-                        "internal_extraction": fact_extraction,
-                        "source_chunk_hash": chunk.chunk_hash,
-                        "resource_hash": resource_manifest_hash,
-                        "source_locator": source_locator,
-                        "resource_version": resource_version_value,
-                        "scope": resource_record_scope,
-                        "updated_at_ms": envelope["ingestion_time_ms"],
-                    }
-                )
-                fact_vector = embedding_for_text(fact_event_type + " " + fact_value + " " + chunk.text)
-                resource_fact_records.append(
-                    {
-                        "record_type": "context_embedding",
-                        "embedding_type": "event_text",
-                        "ref_type": "event",
-                        "ref_hash": fact_event_hash,
-                        "node_hash": node_hash,
-                        "node_path": node_path,
-                        "dim": len(fact_vector),
-                        "model": embedding_model_name(),
-                        "vector": fact_vector,
-                        "scope": resource_record_scope,
-                        "updated_at_ms": envelope["ingestion_time_ms"],
-                    }
-                )
-                entity_name = str(fact_extraction.get("entity_name") or fact_entity_type)
-                entity_hash = stable_hash(f"{node_hash}:{fact_entity_type}:{entity_name}:{chunk.chunk_hash}")
-                resource_fact_entity_hashes.append(entity_hash)
-                entity_state = summarize_text(f"{fact_event_type}: {fact_value}. Source: {chunk.text}", limit=360)
-                resource_fact_records.append(
-                    {
-                        "record_type": "context_entity",
-                        "entity_hash": entity_hash,
-                        "batch_id_hash": resource_import_task_hash,
-                        "node_hash": node_hash,
-                        "node_path": node_path,
-                        "scope": resource_record_scope,
-                        "entity_type": fact_entity_type,
-                        "entity_name": entity_name,
-                        "state": entity_state,
-                        "confidence": fact_extraction.get("confidence", 0.78),
-                        "operator": "LATEST",
-                        "source_event_ids": [fact_event_hash],
-                        "source_chunk_hash": chunk.chunk_hash,
-                        "resource_hash": resource_manifest_hash,
-                        "source_locator": source_locator,
-                        "resource_version": resource_version_value,
-                        "updated_at_ms": envelope["ingestion_time_ms"],
-                    }
-                )
-                entity_vector = embedding_for_text(fact_entity_type + " " + entity_name + " " + entity_state)
-                resource_fact_records.append(
-                    {
-                        "record_type": "context_embedding",
-                        "embedding_type": "entity_state",
-                        "ref_type": "entity",
-                        "ref_hash": entity_hash,
-                        "node_hash": node_hash,
-                        "node_path": node_path,
-                        "dim": len(entity_vector),
-                        "model": embedding_model_name(),
-                        "vector": entity_vector,
-                        "scope": resource_record_scope,
-                        "updated_at_ms": envelope["ingestion_time_ms"],
-                    }
-                )
-                # Resource facts are ContextEvent/ContextEntity records with
-                # source_chunk refs. The resource chunk/index rows already provide
-                # secondary filtering, so avoid per-fact event index fanout here.
+        resource_fact_records, resource_fact_event_hashes, resource_fact_entity_hashes = resource_fact_helpers.build_resource_fact_records(
+            fact_chunks=fact_chunks,
+            envelope=envelope,
+            raw_uri=raw_uri,
+            resource_version=resource_version_value,
+            node_hash=node_hash,
+            node_path=node_path,
+            scope=resource_record_scope,
+            resource_hash=resource_manifest_hash,
+            batch_id_hash=resource_import_task_hash,
+            max_facts=MAX_RESOURCE_FACTS_PER_RESOURCE,
+        )
         if resource_fact_records:
             self.append_many(resource_fact_records)
         resource_import_metrics = {
