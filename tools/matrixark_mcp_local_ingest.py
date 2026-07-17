@@ -117,6 +117,11 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_ingest_setup import prepare_ingest_context
 
+try:
+    from tools import matrixark_mcp_ingest_resource_records as resource_record_builders
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    import matrixark_mcp_ingest_resource_records as resource_record_builders
+
 
 def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
     envelope = ingest_start["envelope"]
@@ -645,98 +650,86 @@ def ingest_after_start(self: Any, args: Json, ingest_start: Json) -> Json:
             chunk_debug_metadata = debug_resource_metadata(chunk.metadata)
             if skill_hash is not None:
                 self.append(
-                    {
-                        "record_type": "skill_section",
-                        "import_task_hash": resource_import_task_hash,
-                        "skill_hash": skill_hash,
-                        "section_hash": chunk.chunk_hash,
-                        "node_hash": node_hash,
-                        "node_path": node_path,
-                        "resource_hash": skill_hash,
-                        "raw_uri_hash": raw_uri_hash,
-                        "source_locator": source_locator,
-                        "heading": chunk_metadata.get("heading", ""),
-                        "text": chunk.text,
-                        "token_estimate": chunk.token_estimate,
-                        "metadata": chunk_metadata,
-                        "access_scope": access_scope,
-                        "deployment_scope": deployment_scope,
-                        "scope": resource_record_scope,
-                        "updated_at_ms": envelope["ingestion_time_ms"],
-                    }
+                    resource_record_builders.skill_section_record(
+                        import_task_hash=resource_import_task_hash,
+                        skill_hash=skill_hash,
+                        section_hash=chunk.chunk_hash,
+                        node_hash=node_hash,
+                        node_path=node_path,
+                        raw_uri_hash=raw_uri_hash,
+                        source_locator=source_locator,
+                        heading=str(chunk_metadata.get("heading", "")),
+                        text=chunk.text,
+                        token_estimate=chunk.token_estimate,
+                        metadata=chunk_metadata,
+                        access_scope=access_scope,
+                        deployment_scope=deployment_scope,
+                        scope=resource_record_scope,
+                        updated_at_ms=envelope["ingestion_time_ms"],
+                    )
                 )
             self.append(
-                {
-                    "record_type": "resource_chunk",
-                    "import_task_hash": resource_import_task_hash,
-                    "chunk_hash": chunk.chunk_hash,
-                    "node_hash": node_hash,
-                    "node_path": node_path,
-                    "resource_hash": resource_manifest_hash if skill_hash is None else skill_hash,
-                    "raw_uri_hash": raw_uri_hash,
-                    "resource_type": chunk_metadata.get("resource_type") or resource_type,
-                    "source_locator": source_locator,
-                    "text": chunk.text,
-                    "token_estimate": chunk.token_estimate,
-                    "metadata": chunk_metadata,
-                    "access_scope": access_scope,
-                    "deployment_scope": deployment_scope,
-                    "scope": resource_record_scope,
-                    "updated_at_ms": envelope["ingestion_time_ms"],
-                }
+                resource_record_builders.resource_chunk_record(
+                    import_task_hash=resource_import_task_hash,
+                    chunk_hash=chunk.chunk_hash,
+                    node_hash=node_hash,
+                    node_path=node_path,
+                    resource_hash=resource_manifest_hash if skill_hash is None else skill_hash,
+                    raw_uri_hash=raw_uri_hash,
+                    resource_type=str(chunk_metadata.get("resource_type") or resource_type),
+                    source_locator=source_locator,
+                    text=chunk.text,
+                    token_estimate=chunk.token_estimate,
+                    metadata=chunk_metadata,
+                    access_scope=access_scope,
+                    deployment_scope=deployment_scope,
+                    scope=resource_record_scope,
+                    updated_at_ms=envelope["ingestion_time_ms"],
+                )
             )
             if chunk_debug_metadata:
                 self.append(
-                    {
-                        "record_type": "context_debug_record",
-                        "debug_type": "resource_chunk_parse_detail",
-                        "ref_type": "skill_section" if skill_hash is not None else "resource_chunk",
-                        "ref_hash": chunk.chunk_hash,
-                        "chunk_hash": chunk.chunk_hash,
-                        "import_task_hash": resource_import_task_hash,
-                        "node_hash": node_hash,
-                        "node_path": node_path,
-                        "resource_hash": resource_manifest_hash if skill_hash is None else skill_hash,
-                        "raw_uri_hash": raw_uri_hash,
-                        "raw_uri": raw_uri,
-                        "source_locator": source_locator,
-                        "source_ref": chunk.source_ref,
-                        "metadata_debug": chunk_debug_metadata,
-                        "text_preview": clip_context_text(chunk.text),
-                        "scope": resource_record_scope,
-                        "updated_at_ms": envelope["ingestion_time_ms"],
-                    }
+                    resource_record_builders.resource_chunk_debug_record(
+                        ref_type="skill_section" if skill_hash is not None else "resource_chunk",
+                        chunk_hash=chunk.chunk_hash,
+                        import_task_hash=resource_import_task_hash,
+                        node_hash=node_hash,
+                        node_path=node_path,
+                        resource_hash=resource_manifest_hash if skill_hash is None else skill_hash,
+                        raw_uri_hash=raw_uri_hash,
+                        raw_uri=raw_uri,
+                        source_locator=source_locator,
+                        source_ref=chunk.source_ref,
+                        metadata_debug=chunk_debug_metadata,
+                        text=chunk.text,
+                        scope=resource_record_scope,
+                        updated_at_ms=envelope["ingestion_time_ms"],
+                    )
                 )
             self.append(
-                {
-                    "record_type": "context_embedding",
-                    "embedding_type": "resource_chunk",
-                    "ref_type": "resource_chunk",
-                    "ref_hash": chunk.chunk_hash,
-                    "node_hash": node_hash,
-                    "node_path": node_path,
-                    "dim": len(vector),
-                    "model": embedding_model_name(),
-                    "vector": vector,
-                    "scope": resource_record_scope,
-                    "updated_at_ms": envelope["ingestion_time_ms"],
-                }
+                resource_record_builders.context_embedding_record(
+                    embedding_type="resource_chunk",
+                    ref_type="resource_chunk",
+                    ref_hash=chunk.chunk_hash,
+                    node_hash=node_hash,
+                    node_path=node_path,
+                    vector=vector,
+                    scope=resource_record_scope,
+                    updated_at_ms=envelope["ingestion_time_ms"],
+                )
             )
             if skill_hash is not None:
                 self.append(
-                    {
-                        "record_type": "context_embedding",
-                        "embedding_type": "skill_section",
-                        "ref_type": "skill_section",
-                        "ref_hash": chunk.chunk_hash,
-                        "node_hash": node_hash,
-                        "node_path": node_path,
-                        "dim": len(vector),
-                        "model": embedding_model_name(),
-                        "vector": vector,
-                        "scope": resource_record_scope,
-                        "updated_at_ms": envelope["ingestion_time_ms"],
-                    }
+                    resource_record_builders.context_embedding_record(
+                        embedding_type="skill_section",
+                        ref_type="skill_section",
+                        ref_hash=chunk.chunk_hash,
+                        node_hash=node_hash,
+                        node_path=node_path,
+                        vector=vector,
+                        scope=resource_record_scope,
+                        updated_at_ms=envelope["ingestion_time_ms"],
+                    )
                 )
             raw_chunk_index_terms = (
                 [
