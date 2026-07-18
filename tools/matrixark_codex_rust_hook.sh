@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="${MATRIXARK_REPO_ROOT:-<repo>}"
+SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="${MATRIXARK_REPO_ROOT:-${SCRIPT_ROOT}}"
 cd "$ROOT"
 
 export MATRIXARK_MCP_BACKEND="${MATRIXARK_MCP_BACKEND:-temporalstore-rust}"
