@@ -1,6 +1,6 @@
 use crate::types::CommandResponse;
 
-use rustmtcache::{CacheKey, MultiLayerCache};
+use matrixcache::{CacheKey, MultiLayerCache};
 
 pub(super) fn cached_response(
     cache: &MultiLayerCache,

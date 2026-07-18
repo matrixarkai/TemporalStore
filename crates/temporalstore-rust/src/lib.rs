@@ -226,7 +226,7 @@ pub use replica_replay::{
     ReplicaReplayOptions, ReplicaReplayReport, ReplicaReplayRequest, ReplicaReplayResponse,
     ReplicaStreamSource,
 };
-pub use rustmtcache::{CacheEntryInfo, CacheGcReport, CacheKey, CacheStats, MultiLayerCache};
+pub use matrixcache::{CacheEntryInfo, CacheGcReport, CacheKey, CacheStats, MultiLayerCache};
 pub use shared_store::{
     ReplayReport, SharedStoreCheckpointManifest, SharedStoreFlushReport, SharedStoreGcReport,
     SharedStoreOplogEntry, SharedStoreOplogObject, SharedStorePageSegment, SharedStoreReplayCursor,

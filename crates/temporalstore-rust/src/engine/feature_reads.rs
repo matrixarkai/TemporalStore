@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use rustmtcache::MultiLayerCache;
+use matrixcache::MultiLayerCache;
 
 use crate::page_store::{LocalPageStore, PageAddress};
 use crate::types::{FeatureFilter, FeaturePoint, SequenceFeatureRow, ShardId};

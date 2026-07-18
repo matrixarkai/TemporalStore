@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use crate::block_store::{BlockAddress, BlockStoreError, LocalBlockStore};
 use crate::types::{FeaturePoint, ShardId};
-use rustmtcache::{CacheKey, MultiLayerCache};
+use matrixcache::{CacheKey, MultiLayerCache};
 
 use super::constants::{FEATURE_PAGE_MAGIC, HOT_PAGE_OFFSET, HOT_PAGE_SEGMENT_ID};
 use super::state::{PackedFeaturePage, PackedFeaturePageDecode};

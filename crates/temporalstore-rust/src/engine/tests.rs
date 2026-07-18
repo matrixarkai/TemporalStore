@@ -23,7 +23,7 @@ fn wait_for_fresh_admission_second() {
     }
 }
 
-fn assert_cache_latency_histograms_observed(stats: rustmtcache::CacheStats) {
+fn assert_cache_latency_histograms_observed(stats: matrixcache::CacheStats) {
     assert!(stats.read_through_latency_samples > 0);
     assert!(stats.refill_latency_samples > 0);
     assert!(stats.writeback_latency_samples > 0);
@@ -3060,9 +3060,9 @@ fn cache_replacement_policy_soak() {
 // shared-corpus: storage_cache_replacement_policy_soak;
 fn cache_dram_pmem_ssd_tiers_admit_refill_and_evict() {
     let dir = tempfile::tempdir().unwrap();
-    let cache = rustmtcache::MultiLayerCache::with_tiering_policy(
+    let cache = matrixcache::MultiLayerCache::with_tiering_policy(
         dir.path(),
-        rustmtcache::CacheTieringPolicy {
+        matrixcache::CacheTieringPolicy {
             memory_capacity_bytes: 16,
             pmem_capacity_bytes: 24,
             ssd_capacity_bytes: 4096,
@@ -3074,11 +3074,11 @@ fn cache_dram_pmem_ssd_tiers_admit_refill_and_evict() {
             max_ssd_block_bytes: 128,
             ssd_write_through: true,
         },
-        rustmtcache::CacheBlockOptions::default(),
+        matrixcache::CacheBlockOptions::default(),
     );
     let key = CacheKey::page_with_slot(9, 1, 0, 16, Some(11));
-    let request = rustmtcache::CacheAdmissionRequest {
-        block_kind: rustmtcache::CacheBlockKind::Page,
+    let request = matrixcache::CacheAdmissionRequest {
+        block_kind: matrixcache::CacheBlockKind::Page,
         shard_id: 9,
         routing_slot: Some(11),
         block_bytes: 16,
@@ -3118,8 +3118,8 @@ fn cache_dram_pmem_ssd_tiers_admit_refill_and_evict() {
             .put_with_admission(
                 cold_key,
                 vec![b'a' + idx as u8; 16],
-                rustmtcache::CacheAdmissionRequest {
-                    block_kind: rustmtcache::CacheBlockKind::Page,
+                matrixcache::CacheAdmissionRequest {
+                    block_kind: matrixcache::CacheBlockKind::Page,
                     shard_id: 9,
                     routing_slot: Some(11),
                     block_bytes: 16,
@@ -3247,8 +3247,8 @@ fn page_reads_fill_compressed_block_cache() {
     let cache = MultiLayerCache::with_block_options(
         1024 * 1024,
         dir.path().join("cache"),
-        rustmtcache::CacheBlockOptions {
-            compression: rustmtcache::CacheCompression::Zstd { level: 1 },
+        matrixcache::CacheBlockOptions {
+            compression: matrixcache::CacheCompression::Zstd { level: 1 },
             min_compress_bytes: 16,
         },
     );

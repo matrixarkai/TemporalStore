@@ -710,6 +710,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e7465ac9959cc2b1404e8e2367b43684a6d13790fe23056cc8c6c5a6b7bcb94"
 
 [[package]]
+name = "matrixcache"
+version = "0.1.0"
+source = "git+https://github.com/bjmeetsfo/MatrixCache.git?rev=0b1c91e048a93c16f26febe0c9261c5a15ea0d80#0b1c91e048a93c16f26febe0c9261c5a15ea0d80"
+dependencies = [
+ "rocksdb",
+ "serde",
+ "thiserror",
+ "zstd",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1120,17 +1131,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rustmtcache"
-version = "0.1.0"
-source = "git+https://github.com/bjmeetsfo/rustmtcache.git?rev=a9959d450481eeb449ef0a0c4391d269628ab572#a9959d450481eeb449ef0a0c4391d269628ab572"
-dependencies = [
- "rocksdb",
- "serde",
- "thiserror",
- "zstd",
-]
-
-[[package]]
 name = "rustraft"
 version = "0.1.0"
 source = "git+https://github.com/bjmeetsfo/RustRaft.git?rev=fa16941f7bb33807cdc1a8178d93d342b382a6aa#fa16941f7bb33807cdc1a8178d93d342b382a6aa"
@@ -1286,9 +1286,9 @@ dependencies = [
  "async-trait",
  "bytes",
  "hex",
+ "matrixcache",
  "prost",
  "protoc-bin-vendored",
- "rustmtcache",
  "rustraft",
  "serde",
  "serde_json",

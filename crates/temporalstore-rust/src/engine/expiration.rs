@@ -1,4 +1,4 @@
-use rustmtcache::MultiLayerCache;
+use matrixcache::MultiLayerCache;
 
 use crate::types::ShardId;
 

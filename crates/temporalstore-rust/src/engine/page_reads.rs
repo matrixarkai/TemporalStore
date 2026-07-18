@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use rustmtcache::{CacheEntryInfo, CacheKey, MultiLayerCache};
+use matrixcache::{CacheEntryInfo, CacheKey, MultiLayerCache};
 
 use crate::page_store::{LocalPageStore, PageAddress};
 use crate::types::ShardId;

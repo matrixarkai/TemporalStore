@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use rustmtcache::{CacheKey, MultiLayerCache};
+use matrixcache::{CacheKey, MultiLayerCache};
 
 use super::constants::HOT_PAGE_SEGMENT_ID;
 use super::page_reads::page_address_cache_key;

@@ -6,7 +6,7 @@ use crate::block_store::{BlockStoreExtentSummary, BlockStoreStats};
 use crate::types::{BatchExecuteResponse, Command, ExecuteResponse};
 use crate::types::{ShardId, Status};
 use crate::wal::WriteAheadLogStats;
-use rustmtcache::CacheStats;
+use matrixcache::CacheStats;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

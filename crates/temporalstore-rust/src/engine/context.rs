@@ -9,7 +9,7 @@ use crate::types::{
     ContextPackAudit, ContextSummary, ContextSummaryDirtyMarker, ContextTraversedNode, ContextWire,
     FeaturePoint, InternalContextIndex, ShardId, Status,
 };
-use rustmtcache::MultiLayerCache;
+use matrixcache::MultiLayerCache;
 
 use super::packed_pages::{
     decode_feature_page_strict, read_feature_point_cold_with_cache_policy, ColdScanPackedPageCache,
