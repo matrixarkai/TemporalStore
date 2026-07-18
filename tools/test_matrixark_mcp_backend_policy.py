@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import queue
 import tempfile
 import threading
 import unittest
@@ -400,7 +401,7 @@ def _direct_adapter_for_hash_store(client: _HashStoreClient) -> mcp.MatrixArkTem
     adapter._record_hash_key = "matrixark:test:records"
     adapter._index_key = "matrixark:test:record_index"
     adapter._count_key = "matrixark:test:record_count"
-    adapter._shard_size = mcp.DIRECT_RECORD_LOG_SHARD_SIZE
+    adapter._shard_size = mcp_core.DIRECT_RECORD_LOG_SHARD_SIZE
     adapter._index_cache = None
     adapter._records_cache = None
     adapter._entry_count_cache = None
@@ -413,6 +414,11 @@ def _direct_adapter_for_hash_store(client: _HashStoreClient) -> mcp.MatrixArkTem
     adapter._write_backoff_s = 0.0
     adapter._write_throttle_s = 0.0
     adapter._direct_write_queue_enabled = False
+    adapter._raw_ingestion_prefix = f"{adapter._storage_prefix}:raw_ingestion"
+    adapter._raw_record_hash_key = f"{adapter._raw_ingestion_prefix}:records"
+    adapter._raw_count_key = f"{adapter._raw_ingestion_prefix}:record_count"
+    adapter._raw_entry_count_cache = None
+    adapter._pending_visibility_keys = set()
     adapter._metrics_lock = threading.RLock()
     adapter._metrics_started_at_ms = mcp.now_ms()
     adapter._commands_total = 0
@@ -531,6 +537,49 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         mcp_local.CONTEXT_TELEMETRY_WRITE_MODE = mcp_core.CONTEXT_TELEMETRY_WRITE_MODE
         mcp_core._DIRECT_RETRIEVAL_CANDIDATE_CACHE.clear()
         mcp_core._DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE.clear()
+
+    def test_raw_ingestion_async_queue_persists_hook_write_debug(self) -> None:
+        client = _HashStoreClient()
+        adapter = _direct_adapter_for_hash_store(client)
+        adapter._direct_write_queue_enabled = True
+        adapter._direct_raw_ingestion_queue_enabled = True
+        adapter._direct_write_queue_mode = "memory"
+        adapter._direct_write_queue_autostart = False
+        adapter._direct_write_queue_put_timeout_s = 0.1
+        adapter._direct_write_queue_drain_max_batches = 64
+        adapter._direct_write_queue = queue.Queue(maxsize=10)
+        adapter._direct_write_enqueued_records = 0
+        adapter._direct_write_enqueued_batches = 0
+
+        record = {
+            "record_type": "matrixark_ingest",
+            "messages": [{"role": "user", "content": "debug me"}],
+            "metadata": {"codex_event": "UserPromptSubmit"},
+            "agent_hook": {"trigger": "UserPromptSubmit", "hook_id": "hook-1"},
+        }
+
+        adapter._append_raw_ingestion_records([record])
+
+        self.assertEqual(adapter._direct_write_queue.qsize(), 1)
+        queued_item = adapter._direct_write_queue.get_nowait()
+        queued_record = queued_item["records"][0]
+        self.assertEqual(queued_record["matrixark_write_debug"]["write_path"], "async_memory_queue")
+        self.assertEqual(queued_record["matrixark_write_debug"]["queue_mode"], "raw_ingestion")
+        self.assertIn("queue_batch_id", queued_record["matrixark_write_debug"])
+
+        adapter._flush_direct_write_items([queued_item])
+
+        raw = client.hget("matrixark:test:raw_ingestion:records:000000", "00000000000000000000")
+        stored = json.loads(raw)
+        debug = stored["matrixark_write_debug"]
+        self.assertEqual(debug["write_path"], "async_queue_flush")
+        self.assertEqual(debug["queue_mode"], "raw_ingestion")
+        self.assertIn("queue_batch_id", debug)
+        self.assertIn("flush_batch_id", debug)
+        self.assertEqual(debug["persist_sequence"], 0)
+        self.assertEqual(debug["persist_field"], "00000000000000000000")
+        self.assertGreaterEqual(debug["queue_wait_ms"], 0)
+        self.assertEqual(client.get_string("matrixark:test:raw_ingestion:record_count"), "1")
 
     def test_context_pack_visibility_defaults_to_inline_telemetry_without_audit_write(self) -> None:
         adapter = _AuditCaptureAdapter(Path("/tmp/matrixark-audit-capture.jsonl"))
