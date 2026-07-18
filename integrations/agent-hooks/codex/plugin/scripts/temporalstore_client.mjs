@@ -55,7 +55,7 @@ function hookArgs(event, env) {
     "--project",
     env.TEMPORALSTORE_AGENT_PROJECT || "TemporalStore",
     "--max-context-tokens",
-    env.MATRIXARK_MAX_CONTEXT_TOKENS || "2400",
+    env.MATRIXARK_MAX_CONTEXT_TOKENS || "10000",
     "--request-timeout-ms",
     env.MATRIXARK_REQUEST_TIMEOUT_MS || "90000",
     "--io-timeout-ms",
