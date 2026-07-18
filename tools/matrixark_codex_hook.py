@@ -341,6 +341,128 @@ def strict_codex_stdout(output: Json) -> Json:
     return {}
 
 
+def hook_trace_payload_keys(payload: Json) -> list[str]:
+    return sorted(str(key) for key in payload.keys())[:80] if isinstance(payload, dict) else []
+
+
+def begin_hook_trace(
+    *,
+    args: argparse.Namespace,
+    payload: Json,
+    text: str,
+    session_id_source: str,
+    raw_uri: str = "",
+) -> Json:
+    started_at_ms = int(time.time() * 1000)
+    return {
+        "record_type": "codex_hook_trace",
+        "trace_version": 1,
+        "trace_id": f"codex:{args.event}:{started_at_ms}:{uuid.uuid4().hex[:12]}",
+        "agent": "codex",
+        "event": args.event,
+        "backend": args.backend,
+        "storage_prefix": args.storage_prefix,
+        "session_id": args.session_id,
+        "session_id_source": session_id_source,
+        "account_id": args.account_id,
+        "tenant_id": args.tenant_id,
+        "user_id": args.user_id,
+        "team": args.team,
+        "project": args.project,
+        "workspace_root": "",
+        "raw_uri": raw_uri,
+        "payload_keys": hook_trace_payload_keys(payload),
+        "text_hash": stable_short_hash(text) if text else "",
+        "text_preview": _compact_one_line(text, max_chars=260) if text else "",
+        "started_at_ms": started_at_ms,
+        "completed_at_ms": 0,
+        "elapsed_ms": 0,
+        "status": "started",
+        "skip_reason": "",
+        "tool_calls": [],
+        "output_summary": {},
+        "error": "",
+    }
+
+
+def trace_tool_call(server: Any, name: str, args: Json, trace: Json) -> Json:
+    started_at_ms = int(time.time() * 1000)
+    started_perf = time.perf_counter()
+    item: Json = {
+        "tool": name,
+        "started_at_ms": started_at_ms,
+        "elapsed_ms": 0,
+        "status": "started",
+    }
+    trace.setdefault("tool_calls", []).append(item)
+    try:
+        result = call_tool(server, name, args)
+        item["status"] = "ok"
+        if name == "matrixark_ingest":
+            item["result"] = {
+                "status": result.get("status"),
+                "event_id_hash": result.get("event_id_hash"),
+                "node_hash": result.get("node_hash"),
+                "hook_captured": result.get("hook_captured"),
+                "auto_batch_extract_status": (
+                    result.get("auto_batch_extract_result", {}).get("status")
+                    if isinstance(result.get("auto_batch_extract_result"), dict)
+                    else None
+                ),
+            }
+        elif name == "matrixark_retrieve":
+            item["result"] = {
+                "context_pack_id": result.get("context_pack_id") or result.get("pack_id"),
+                "selected_ref_count": selected_ref_count_from_retrieve(result),
+                "used_context_tokens": used_context_tokens_from_retrieve(result),
+            }
+        elif name == "matrixark_session_commit":
+            item["result"] = {
+                "status": result.get("status"),
+                "commit_id_hash": result.get("commit_id_hash"),
+                "commit_reason": result.get("commit_reason"),
+                "committed_event_count": result.get("committed_event_count"),
+            }
+        return result
+    except Exception as exc:
+        item["status"] = "error"
+        item["error"] = _compact_one_line(f"{type(exc).__name__}: {exc}", max_chars=700)
+        raise
+    finally:
+        item["elapsed_ms"] = round((time.perf_counter() - started_perf) * 1000.0, 3)
+
+
+def append_hook_trace(server: Any, trace: Json, *, output: Json | None = None, status: str = "ok", skip_reason: str = "", error: str = "") -> None:
+    completed_at_ms = int(time.time() * 1000)
+    trace["completed_at_ms"] = completed_at_ms
+    try:
+        trace["elapsed_ms"] = max(0, completed_at_ms - int(trace.get("started_at_ms") or completed_at_ms))
+    except (TypeError, ValueError):
+        trace["elapsed_ms"] = 0
+    trace["status"] = status
+    if skip_reason:
+        trace["skip_reason"] = skip_reason
+    if error:
+        trace["error"] = _compact_one_line(error, max_chars=1000)
+    if isinstance(output, dict):
+        hook_specific = output.get("hookSpecificOutput") if isinstance(output.get("hookSpecificOutput"), dict) else {}
+        retrieve = output.get("retrieve") if isinstance(output.get("retrieve"), dict) else {}
+        ingest = output.get("ingest") if isinstance(output.get("ingest"), dict) else {}
+        commit = output.get("session_commit") if isinstance(output.get("session_commit"), dict) else {}
+        trace["output_summary"] = {
+            "strict_additional_context_emitted": bool(hook_specific.get("additionalContext")),
+            "additional_context_chars": len(str(hook_specific.get("additionalContext") or "")),
+            "context_pack_id": retrieve.get("context_pack_id"),
+            "selected_ref_count": retrieve.get("selected_ref_count"),
+            "ingest_status": ingest.get("status"),
+            "commit_status": commit.get("status"),
+        }
+    adapter = getattr(server, "adapter", None)
+    append = getattr(adapter, "append", None)
+    if callable(append):
+        append(trace)
+
+
 def is_resource_event(event: str) -> bool:
     return normalized_event_name(event) in RESOURCE_EVENTS
 
@@ -1124,17 +1246,36 @@ def main() -> int:
         if not text:
             text = fallback_text
     if is_codex_hook_heartbeat_text(text):
+        trace = begin_hook_trace(args=args, payload=payload, text=text, session_id_source=session_id_source)
         output = {"status": "skipped", "reason": "codex_hook_heartbeat_not_user_context", "event": args.event}
+        server = build_server(args)
+        try:
+            append_hook_trace(server, trace, output=output, status="skipped", skip_reason="codex_hook_heartbeat_not_user_context")
+        finally:
+            close = getattr(server, "close", None)
+            if callable(close):
+                close(timeout_s=2.0)
         print(json.dumps(strict_codex_stdout(output) if args.codex_strict_output else output, sort_keys=True))
         return 0
     raw_uri = payload_resource_uri(payload)
     resource_type = payload_resource_type(payload, raw_uri) if raw_uri else ""
     if not text and not raw_uri and args.event not in {"IdleTimeout", "SessionIdle"}:
-        print(json.dumps({"status": "skipped", "reason": "empty hook payload"}))
+        trace = begin_hook_trace(args=args, payload=payload, text=text, session_id_source=session_id_source)
+        output = {"status": "skipped", "reason": "empty hook payload", "event": args.event}
+        server = build_server(args)
+        try:
+            append_hook_trace(server, trace, output=output, status="skipped", skip_reason="empty_hook_payload")
+        finally:
+            close = getattr(server, "close", None)
+            if callable(close):
+                close(timeout_s=2.0)
+        print(json.dumps(strict_codex_stdout(output) if args.codex_strict_output else output, sort_keys=True))
         return 0
     agent_context = agent_context_from_payload(payload, event=args.event, session_id_source=session_id_source, args=args)
 
     server = build_server(args)
+    trace = begin_hook_trace(args=args, payload=payload, text=text, session_id_source=session_id_source, raw_uri=raw_uri)
+    trace["workspace_root"] = agent_context.get("workspace_root", "")
     try:
         scope = scope_from_args(args)
         common: Json = {"scope": scope}
@@ -1145,7 +1286,7 @@ def main() -> int:
         if args.event == "UserPromptSubmit":
             previous_tool_output = latest_codex_tool_output_from_rollout(payload)
             if previous_tool_output and previous_tool_output != text:
-                call_tool(
+                trace_tool_call(
                     server,
                     "matrixark_ingest",
                     {
@@ -1171,10 +1312,11 @@ def main() -> int:
                             "session_id_source": session_id_source,
                         },
                     },
+                    trace,
                 )
             previous_assistant = latest_codex_assistant_message_from_rollout(payload)
             if previous_assistant and previous_assistant != text:
-                call_tool(
+                trace_tool_call(
                     server,
                     "matrixark_ingest",
                     {
@@ -1200,6 +1342,7 @@ def main() -> int:
                             "session_id_source": session_id_source,
                         },
                     },
+                    trace,
                 )
         if raw_uri and is_resource_event(args.event):
             kind = "skill" if resource_type == "skill" or Path(raw_uri).name.lower() == "skill.md" else "resource"
@@ -1233,7 +1376,7 @@ def main() -> int:
                 },
                 "wait": bool(payload.get("wait", True)),
             }
-            ingest = call_tool(server, "matrixark_ingest", ingest_args)
+            ingest = trace_tool_call(server, "matrixark_ingest", ingest_args, trace)
         elif text:
             ingest_args: Json = {
                 **common,
@@ -1264,12 +1407,12 @@ def main() -> int:
                 ingest_args["session_buffer_threshold"] = args.session_commit_threshold
                 if args.idle_commit_timeout_ms > 0:
                     ingest_args["idle_commit_timeout_ms"] = args.idle_commit_timeout_ms
-            ingest = call_tool(server, "matrixark_ingest", ingest_args)
+            ingest = trace_tool_call(server, "matrixark_ingest", ingest_args, trace)
 
         commit = {}
         if should_commit_session(args.event):
             commit_reason = commit_reason_for_event(args.event)
-            commit = call_tool(
+            commit = trace_tool_call(
                 server,
                 "matrixark_session_commit",
                 {
@@ -1291,12 +1434,13 @@ def main() -> int:
                         "session_id_source": session_id_source,
                     },
                 },
+                trace,
             )
 
         retrieve = {}
         query = args.query or text[:500]
         if args.event == "UserPromptSubmit" or args.query:
-            retrieve = call_tool(
+            retrieve = trace_tool_call(
                 server,
                 "matrixark_retrieve",
                 {
@@ -1305,6 +1449,7 @@ def main() -> int:
                     "max_context_tokens": args.max_context_tokens,
                     **({"local_context": agent_context.get("local_context", [])} if agent_context.get("local_context") else {}),
                 },
+                trace,
             )
 
         output = codex_hook_output(
@@ -1320,10 +1465,17 @@ def main() -> int:
             resource_type=resource_type,
             query=query,
         )
+        append_hook_trace(server, trace, output=output, status="ok")
         if args.codex_strict_output:
             output = strict_codex_stdout(output)
         print(json.dumps(output, sort_keys=True))
         spawn_rollout_backfill_child(args)
+    except Exception as exc:
+        try:
+            append_hook_trace(server, trace, status="error", error=f"{type(exc).__name__}: {exc}")
+        except Exception:
+            pass
+        raise
     finally:
         close = getattr(server, "close", None)
         if callable(close):
