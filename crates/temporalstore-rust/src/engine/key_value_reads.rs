@@ -1,4 +1,4 @@
-use rustmtcache::MultiLayerCache;
+use matrixcache::MultiLayerCache;
 
 use crate::page_store::LocalPageStore;
 use crate::types::ShardId;

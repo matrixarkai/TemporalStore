@@ -11,7 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::control::{PartitionInfoStats, ShardCanonicalStorageStats};
 use crate::partition_id::{validate_partition_set_count, PartitionId, MAX_TABLE_ID};
 use crate::types::{ShardId, Status};
-use rustmtcache::CacheStats;
+use matrixcache::CacheStats;
 
 fn endpoint_string_from_json<'de, D>(deserializer: D) -> Result<String, D::Error>
 where

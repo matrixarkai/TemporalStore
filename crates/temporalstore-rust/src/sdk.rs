@@ -1561,7 +1561,7 @@ mod tests {
     use tonic::Request;
 
     use crate::engine::TemporalEngine;
-    use rustmtcache::MultiLayerCache;
+    use matrixcache::MultiLayerCache;
 
     use super::v1::{
         temporal_store_service_client::TemporalStoreServiceClient,

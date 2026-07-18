@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::page_store::{LocalPageStore, PageAddress};
 use crate::types::ShardId;
-use rustmtcache::MultiLayerCache;
+use matrixcache::MultiLayerCache;
 
 use super::state::{
     object_component_lookup_key, object_page_lookup_key, ShardState, SlotLayoutState, SlotNode,

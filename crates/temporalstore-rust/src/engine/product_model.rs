@@ -5,7 +5,7 @@ use crate::types::{
     FeatureFilter, FeatureFilterOp, FeaturePoint, IpsSnapshotReport, IpsStats, ControlStateFamily,
     SequenceFeatureRow, ShardId,
 };
-use rustmtcache::MultiLayerCache;
+use matrixcache::MultiLayerCache;
 
 use super::packed_pages::{
     decode_feature_page_strict, read_feature_points_cached_batch,

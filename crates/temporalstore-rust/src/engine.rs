@@ -105,7 +105,7 @@ use context::{
     context_index_ref_identity, read_context_values_cached,
     read_context_values_cached_with_page_cache, validate_context_index_lookup,
 };
-use rustmtcache::{CacheGcReport, CacheKey, MultiLayerCache};
+use matrixcache::{CacheGcReport, CacheKey, MultiLayerCache};
 
 #[derive(Debug, Clone)]
 pub struct TemporalEngine {

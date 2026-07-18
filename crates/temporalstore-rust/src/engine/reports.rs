@@ -12,7 +12,7 @@ use crate::storage_config::{
     TS_STREAM_MAX_BLOB_SIZE,
 };
 use crate::types::{ShardId, Status};
-use rustmtcache::{CacheEntryInfo, CacheStats};
+use matrixcache::{CacheEntryInfo, CacheStats};
 
 fn public_storage_strings(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| (*value).to_string()).collect()
