@@ -1,11 +1,11 @@
-use rustraft::{
+use matrixraft::{
     rustraft_parity_contract as library_rustraft_parity_contract,
     rustraft_parity_report as library_rustraft_parity_report,
 };
 
 use super::{distributed_raft_readiness, RaftDistributedReadiness};
 
-pub use rustraft::{
+pub use matrixraft::{
     rustraft_admin_status_surface_evidence, rustraft_capability_evidence_from_fields,
     rustraft_peer_pipeline_status_from_observed, rustraft_pipeline_evidence,
     rustraft_production_readiness_report, rustraft_read_safety_runtime_decision,
