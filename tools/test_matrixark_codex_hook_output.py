@@ -12,6 +12,58 @@ import matrixark_codex_hook as hook
 
 
 class MatrixArkCodexHookOutputTest(unittest.TestCase):
+    def test_hook_trace_records_output_summary(self) -> None:
+        class Adapter:
+            def __init__(self) -> None:
+                self.records = []
+
+            def append(self, record):
+                self.records.append(record)
+
+        class Server:
+            def __init__(self) -> None:
+                self.adapter = Adapter()
+
+        args = Namespace(
+            event="UserPromptSubmit",
+            backend="temporalstore-rust",
+            storage_prefix="matrixark:codex-hook:rust",
+            session_id="codex-session-1",
+            account_id="acct_local",
+            tenant_id="tenant_codex",
+            user_id="deeproute",
+            team="codex",
+            project="temporalstore",
+        )
+        trace = hook.begin_hook_trace(
+            args=args,
+            payload={"prompt": "trace me", "session_id": "codex-session-1"},
+            text="trace me",
+            session_id_source="payload_field",
+        )
+        server = Server()
+        hook.append_hook_trace(
+            server,
+            trace,
+            output={
+                "hookSpecificOutput": {"additionalContext": "remote memory"},
+                "retrieve": {"context_pack_id": "pack-1", "selected_ref_count": 2},
+                "ingest": {"status": "accepted"},
+                "session_commit": {"status": "deferred"},
+            },
+        )
+
+        self.assertEqual(1, len(server.adapter.records))
+        record = server.adapter.records[0]
+        self.assertEqual("codex_hook_trace", record["record_type"])
+        self.assertEqual("temporalstore-rust", record["backend"])
+        self.assertEqual("UserPromptSubmit", record["event"])
+        self.assertEqual("payload_field", record["session_id_source"])
+        self.assertEqual(["prompt", "session_id"], record["payload_keys"])
+        self.assertEqual("ok", record["status"])
+        self.assertEqual("pack-1", record["output_summary"]["context_pack_id"])
+        self.assertTrue(record["output_summary"]["strict_additional_context_emitted"])
+
     def test_user_prompt_emit_codex_additional_context_from_selected_refs(self) -> None:
         args = Namespace(session_id="codex-session-1")
         output = hook.codex_hook_output(
