@@ -224,6 +224,7 @@ class Partition {
     bool data_raft_campaign_inflight_ = false;
     std::mutex data_raft_snapshot_mu_;
     std::mutex data_raft_membership_mu_;
+    std::atomic<bool> data_raft_membership_reconcile_inflight_{false};
     std::atomic<uint64_t> data_raft_applied_index_{0};
     bool data_raft_applying_ = false;
 

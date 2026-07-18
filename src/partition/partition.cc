@@ -2079,10 +2079,42 @@ Status Partition::UpdateMembership(const MembershipInfo& info) {
         }
         const uint64_t target_primary_partition_id = primary_partition_id_;
         const uint64_t partition_id = options_.partition_id;
-        std::mutex* membership_mu = &data_raft_membership_mu_;
         DataRaftConsensusBackend* data_raft = data_raft_consensus_.get();
-        std::thread([membership_mu, data_raft, partition_id, active_peers, inactive_peer_ids,
-                     target_primary_partition_id] {
+        if (!global_update && inactive_peer_ids.empty() &&
+            target_primary_partition_id == partition_id) {
+            bool all_active_peers_are_voters = true;
+            for (const auto& peer : active_peers) {
+                if (peer.replica_id == partition_id) {
+                    continue;
+                }
+                bool voter = false;
+                Status status = data_raft->IsPeerVoter(peer.replica_id, &voter);
+                if (!status.ok() || !voter) {
+                    all_active_peers_are_voters = false;
+                    break;
+                }
+            }
+            if (all_active_peers_are_voters) {
+                LOG_INFO("Data raft membership already converged; skipping unchanged reconciliation")
+                    .put("PartitionId", partition_id)
+                    .put("PrimaryPartitionId", target_primary_partition_id)
+                    .put("ActivePeerCount", active_peers.size());
+                return Status::OK();
+            }
+        }
+        std::atomic<bool>* membership_inflight = &data_raft_membership_reconcile_inflight_;
+        bool expected = false;
+        if (!membership_inflight->compare_exchange_strong(expected, true)) {
+            LOG_INFO("Data raft membership reconciliation already in flight; skipping duplicate update")
+                .put("PartitionId", partition_id)
+                .put("PrimaryPartitionId", target_primary_partition_id)
+                .put("ActivePeerCount", active_peers.size())
+                .put("InactivePeerCount", inactive_peer_ids.size());
+            return Status::OK();
+        }
+        std::mutex* membership_mu = &data_raft_membership_mu_;
+        std::thread([membership_inflight, membership_mu, data_raft, partition_id, active_peers,
+                     inactive_peer_ids, target_primary_partition_id] {
             std::lock_guard<std::mutex> membership_lock(*membership_mu);
             for (const auto& peer : active_peers) {
                 if (peer.replica_id == partition_id) {
@@ -2171,6 +2203,7 @@ Status Partition::UpdateMembership(const MembershipInfo& info) {
                     std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 }
             }
+            membership_inflight->store(false);
         }).detach();
     }
 

@@ -93,14 +93,30 @@ def run_parallel(total_ops: int, workers: int, fn) -> tuple[list[Json], list[Jso
     started = time.perf_counter()
     ok: list[Json] = []
     errors: list[Json] = []
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(fn, index): index for index in range(total_ops)}
-        for future in as_completed(futures):
-            index = futures[future]
+    if total_ops <= 0:
+        return ok, errors, 0.0
+    worker_count = min(max(1, workers), total_ops)
+    chunk_size = (total_ops + worker_count - 1) // worker_count
+
+    def run_chunk(start_index: int, end_index: int) -> tuple[list[Json], list[Json]]:
+        chunk_ok: list[Json] = []
+        chunk_errors: list[Json] = []
+        for index in range(start_index, end_index):
             try:
-                ok.append(future.result())
+                chunk_ok.append(fn(index))
             except Exception as exc:
-                errors.append({"op_index": index, "error": str(exc)})
+                chunk_errors.append({"op_index": index, "error": str(exc)})
+        return chunk_ok, chunk_errors
+
+    with ThreadPoolExecutor(max_workers=worker_count) as pool:
+        futures = []
+        for start_index in range(0, total_ops, chunk_size):
+            end_index = min(total_ops, start_index + chunk_size)
+            futures.append(pool.submit(run_chunk, start_index, end_index))
+        for future in as_completed(futures):
+            chunk_ok, chunk_errors = future.result()
+            ok.extend(chunk_ok)
+            errors.extend(chunk_errors)
     elapsed = time.perf_counter() - started
     ok.sort(key=lambda item: item["op_index"])
     errors.sort(key=lambda item: item["op_index"])

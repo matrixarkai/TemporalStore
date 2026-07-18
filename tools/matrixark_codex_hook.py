@@ -5,9 +5,11 @@ import argparse
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -115,6 +117,19 @@ def _compact_one_line(value: str, *, max_chars: int = 220) -> str:
     return compact[: max(0, max_chars - 3)].rstrip() + "..."
 
 
+def is_codex_hook_heartbeat_text(value: str) -> bool:
+    text = " ".join(str(value or "").split())
+    if not text:
+        return False
+    if text.startswith("user: "):
+        text = text[6:].lstrip()
+    return text.startswith("Codex hook heartbeat ") and "C++ TemporalStore is live and accepting MatrixArk hook writes" in text
+
+
+def _ref_is_codex_hook_heartbeat(ref: Json) -> bool:
+    return is_codex_hook_heartbeat_text(_ref_text(ref)) or is_codex_hook_heartbeat_text(str(ref))
+
+
 def _selected_refs_from_retrieve(pack: Json | None) -> list[Json]:
     if not isinstance(pack, dict):
         return []
@@ -176,8 +191,10 @@ def additional_context_from_retrieve(
     """Build Codex hook additionalContext from a MatrixArk ContextPack."""
     if not isinstance(pack, dict):
         return ""
-    refs = _selected_refs_from_retrieve(pack)
+    refs = [ref for ref in _selected_refs_from_retrieve(pack) if not _ref_is_codex_hook_heartbeat(ref)]
     context_text = _first_string_value(pack, ["context", "text", "compiled_context", "rendered_context"])
+    if is_codex_hook_heartbeat_text(context_text):
+        context_text = ""
     quality_warnings = pack.get("quality_warnings")
     retrieval_metrics = pack.get("retrieval_metrics")
     lines = [
@@ -363,8 +380,6 @@ def default_hook_backend() -> str:
 
 
 def validate_hook_backend_policy(backend: str) -> None:
-    if backend == "local":
-        return
     if backend not in {"temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"}:
         raise RuntimeError(
             "MatrixArk hooks no longer support local JSONL event logs; "
@@ -386,10 +401,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--event", default=os.environ.get("CODEX_HOOK_EVENT", "UserPromptSubmit"))
     parser.add_argument(
         "--backend",
-        choices=["local", "temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"],
+        choices=["temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"],
         default=default_hook_backend(),
     )
-    parser.add_argument("--event-log", default=os.environ.get("MATRIXARK_EVENT_LOG", ""), help="Local JSONL event log path for --backend local test/dev runs.")
     parser.add_argument("--api-key", default=os.environ.get("MATRIXARK_API_KEY", ""))
     parser.add_argument("--account-id", default=os.environ.get("MATRIXARK_ACCOUNT_ID", "acct_codex"))
     parser.add_argument("--tenant-id", default=os.environ.get("MATRIXARK_TENANT_ID", "tenant_codex"))
@@ -416,10 +430,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--request-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS", "60000")))
     parser.add_argument("--io-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS", "60000")))
     parser.add_argument("--session-commit-threshold", type=int, default=int(os.environ.get("MATRIXARK_SESSION_COMMIT_THRESHOLD", "20")))
-    parser.add_argument("--idle-commit-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_IDLE_COMMIT_TIMEOUT_MS", "300000")))
+    parser.add_argument("--idle-commit-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_IDLE_COMMIT_TIMEOUT_MS", "0")))
     parser.add_argument("--understanding-provider", default=os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER", "rules"))
     parser.add_argument("--segment-provider", default=os.environ.get("MATRIXARK_SEGMENT_PROVIDER", "deterministic"))
     parser.add_argument("--repo-root", type=Path, default=root)
+    parser.add_argument("--rollout-backfill-only", action="store_true", default=False)
+    parser.add_argument(
+        "--rollout-backfill-delay-ms",
+        type=int,
+        default=int(os.environ.get("MATRIXARK_ROLLOUT_BACKFILL_DELAY_MS", "3500")),
+    )
     parser.add_argument(
         "--codex-strict-output",
         action="store_true",
@@ -541,6 +561,128 @@ def resolve_session_id(payload: Json, args: argparse.Namespace) -> tuple[str, st
     return generated_session_id(payload, args)
 
 
+
+def _windows_codex_sessions_root_from_payload(payload: Json) -> Path | None:
+    candidates: list[Path] = []
+    home_drive = os.environ.get("USERPROFILE") or os.environ.get("HOME")
+    if home_drive:
+        candidates.append(Path(home_drive) / ".codex" / "sessions")
+    for path_value in [
+        first_string_at(payload, [["cwd"], ["workspace_root"], ["workspaceRoot"], ["params", "cwd"]]),
+        first_string_at(payload, [["transcript_path"], ["transcriptPath"], ["conversation_path"], ["conversationPath"], ["log_path"], ["logPath"]]),
+    ]:
+        if not path_value:
+            continue
+        normalized = path_value.replace("\\", "/")
+        if len(normalized) >= 3 and normalized[1:3] == ":/":
+            drive = normalized[0].lower()
+            parts = normalized[3:].split("/")
+            if parts and parts[0].lower() == "users" and len(parts) >= 2:
+                candidates.append(Path(f"/mnt/{drive}/Users/{parts[1]}/.codex/sessions"))
+    candidates.append(Path("/mnt/c/Users/Deeproute/.codex/sessions"))
+    for candidate in candidates:
+        try:
+            if candidate.exists():
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def _extract_assistant_text_from_rollout(path: Path) -> str:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return ""
+    for line in reversed(lines):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+        if payload.get("type") == "event_msg" and isinstance(payload.get("payload"), dict):
+            inner = payload["payload"]
+            if inner.get("type") == "agent_message" and isinstance(inner.get("message"), str) and inner["message"].strip():
+                return inner["message"].strip()
+            if inner.get("type") == "task_complete" and isinstance(inner.get("last_agent_message"), str) and inner["last_agent_message"].strip():
+                return inner["last_agent_message"].strip()
+        if payload.get("type") == "message" and payload.get("role") == "assistant":
+            parts: list[str] = []
+            for item in payload.get("content", []) if isinstance(payload.get("content"), list) else []:
+                if isinstance(item, dict) and isinstance(item.get("text"), str):
+                    parts.append(item["text"])
+            text = "\n".join(part for part in parts if part.strip()).strip()
+            if text:
+                return text
+    return ""
+
+
+def _extract_tool_text_from_rollout(path: Path) -> str:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return ""
+    for line in reversed(lines):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+        payload_type = payload.get("type")
+        if payload_type == "function_call_output" and isinstance(payload.get("output"), str):
+            text = payload["output"].strip()
+            if text:
+                return text
+        if payload_type != "custom_tool_call_output":
+            continue
+        parts: list[str] = []
+        for item in payload.get("output", []) if isinstance(payload.get("output"), list) else []:
+            if isinstance(item, dict) and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+        text = "".join(parts).strip()
+        if text:
+            return text
+    return ""
+
+
+def _latest_rollout_files(payload: Json) -> list[Path]:
+    root = _windows_codex_sessions_root_from_payload(payload)
+    if root is None:
+        return []
+    now = datetime.now(timezone.utc)
+    day_dir = root / f"{now.year:04d}" / f"{now.month:02d}" / f"{now.day:02d}"
+    search_roots = [day_dir] if day_dir.exists() else [root]
+    files: list[Path] = []
+    for search_root in search_roots:
+        try:
+            files.extend(search_root.glob("rollout-*.jsonl"))
+        except OSError:
+            continue
+    files.sort(key=lambda item: item.stat().st_mtime if item.exists() else 0, reverse=True)
+    return files[:8]
+
+
+def latest_codex_tool_output_from_rollout(payload: Json) -> str:
+    for path in _latest_rollout_files(payload):
+        text = _extract_tool_text_from_rollout(path)
+        if text:
+            return text
+    return ""
+
+
+
+def latest_codex_assistant_message_from_rollout(payload: Json) -> str:
+    for path in _latest_rollout_files(payload):
+        text = _extract_assistant_text_from_rollout(path)
+        if text:
+            return text
+    return ""
+
+
 def payload_text(payload: Json) -> str:
     direct = first_string_at(
         payload,
@@ -550,6 +692,14 @@ def payload_text(payload: Json) -> str:
             ["input"],
             ["text"],
             ["message"],
+            ["last_agent_message"],
+            ["lastAssistantMessage"],
+            ["assistant_message"],
+            ["assistantMessage"],
+            ["final_answer"],
+            ["finalAnswer"],
+            ["response"],
+            ["output"],
             ["params", "prompt"],
             ["params", "input"],
             ["params", "text"],
@@ -771,10 +921,7 @@ def build_server(args: argparse.Namespace):
         MatrixArkTemporalStoreRustAdapter,
         MatrixArkTemporalStoreRustDirectAdapter,
     ) = load_matrixark(args.repo_root)
-    if args.backend == "local":
-        event_log = Path(args.event_log or os.environ.get("MATRIXARK_EVENT_LOG", "/tmp/matrixark-hook-local.jsonl"))
-        adapter = MatrixArkLocalAdapter(event_log)
-    elif args.backend == "temporalstore-direct":
+    if args.backend == "temporalstore-direct":
         adapter = MatrixArkTemporalStoreDirectAdapter(
             metaserver=args.metaserver,
             namespace=args.namespace,
@@ -847,13 +994,139 @@ def scope_from_args(args: argparse.Namespace) -> Json:
     }
 
 
+def rollout_role_and_text(event: str, payload: Json) -> tuple[str, str, str, str]:
+    if event in {"PostToolUse", "PreToolUse", "PermissionRequest"}:
+        text = latest_codex_tool_output_from_rollout(payload)
+        return "tool", text, "PreviousToolOutputBackfill", "previous-tool-output"
+    if event in {"Stop", "PostCompact", "SubagentStop"}:
+        text = latest_codex_assistant_message_from_rollout(payload)
+        return "assistant", text, "PreviousAssistantBackfill", "previous-assistant"
+    return "", "", "", ""
+
+
+def spawn_rollout_backfill_child(args: argparse.Namespace) -> None:
+    if args.rollout_backfill_only:
+        return
+    if args.event not in {"PostToolUse", "PreToolUse", "PermissionRequest", "Stop", "PostCompact", "SubagentStop"}:
+        return
+    cmd = [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:], "--rollout-backfill-only"]
+    try:
+        subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            cwd=str(args.repo_root),
+        )
+    except OSError:
+        pass
+
+
+def run_rollout_backfill_only(args: argparse.Namespace, payload: Json, session_id_source: str) -> int:
+    if args.rollout_backfill_delay_ms > 0:
+        time.sleep(args.rollout_backfill_delay_ms / 1000.0)
+    role, text, codex_event, idempotency_prefix = rollout_role_and_text(args.event, payload)
+    if not role or not text:
+        return 0
+    agent_context = agent_context_from_payload(payload, event=args.event, session_id_source=session_id_source, args=args)
+    server = build_server(args)
+    try:
+        common: Json = {"scope": scope_from_args(args)}
+        if args.api_key:
+            common["api_key"] = args.api_key
+        call_tool(
+            server,
+            "matrixark_ingest",
+            {
+                **common,
+                "messages": [{"role": role, "content": text}],
+                "understanding_provider": args.understanding_provider,
+                "segment_provider": args.segment_provider,
+                "metadata": {
+                    "source": "codex_hook_rollout_async_backfill",
+                    "codex_event": codex_event,
+                    "backfill_reason": "codex_rollout_is_readable_after_synchronous_hook_boundary",
+                    "agent_context": agent_context,
+                    "codex_session_id_source": session_id_source,
+                },
+                "agent_hook": {
+                    "source": "codex",
+                    "hook_type": "tool_result" if role == "tool" else "after_llm",
+                    "hook_id": f"Async{codex_event}:{stable_short_hash(text)}",
+                    "observed_at_ms": int(time.time() * 1000),
+                    "idempotency_key": f"{idempotency_prefix}:{stable_short_hash(text)}",
+                    "trigger": f"{args.event}:async_rollout_backfill",
+                    "auto_captured": True,
+                    "session_id_source": session_id_source,
+                },
+            },
+        )
+        if should_commit_session(args.event):
+            call_tool(
+                server,
+                "matrixark_session_commit",
+                {
+                    **common,
+                    "threshold_messages": 1,
+                    "force": True,
+                    "commit_reason": "async_rollout_backfill",
+                    "understanding_provider": args.understanding_provider,
+                    "segment_provider": args.segment_provider,
+                    "agent_hook": {
+                        "source": "codex",
+                        "hook_type": "session_commit",
+                        "hook_id": f"async_rollout_session_commit:{args.event}:{stable_short_hash(text)}",
+                        "observed_at_ms": int(time.time() * 1000),
+                        "idempotency_key": f"async-rollout-session-commit:{args.event}:{stable_short_hash(text)}",
+                        "trigger": f"{args.event}:async_rollout_backfill",
+                        "auto_captured": True,
+                        "session_id_source": session_id_source,
+                    },
+                },
+            )
+    finally:
+        close = getattr(server, "close", None)
+        if callable(close):
+            close(timeout_s=2.0)
+    return 0
+
+
 def main() -> int:
     args = parse_args()
     validate_hook_backend_policy(args.backend)
     payload = read_stdin_payload()
     resolved_session_id, session_id_source = resolve_session_id(payload, args)
     args.session_id = resolved_session_id
+    if args.rollout_backfill_only:
+        return run_rollout_backfill_only(args, payload, session_id_source)
     text = payload_text(payload) or args.query
+    if args.event in {"PostToolUse", "PreToolUse", "PermissionRequest"}:
+        fallback_text = text
+        text = ""
+        for _attempt in range(12):
+            rollout_text = latest_codex_tool_output_from_rollout(payload)
+            if rollout_text:
+                text = rollout_text
+                break
+            time.sleep(0.2)
+        if not text:
+            text = fallback_text
+    if args.event in {"Stop", "PostCompact", "SubagentStop"}:
+        fallback_text = text
+        text = ""
+        for _attempt in range(12):
+            rollout_text = latest_codex_assistant_message_from_rollout(payload)
+            if rollout_text:
+                text = rollout_text
+                break
+            time.sleep(0.2)
+        if not text:
+            text = fallback_text
+    if is_codex_hook_heartbeat_text(text):
+        output = {"status": "skipped", "reason": "codex_hook_heartbeat_not_user_context", "event": args.event}
+        print(json.dumps(strict_codex_stdout(output) if args.codex_strict_output else output, sort_keys=True))
+        return 0
     raw_uri = payload_resource_uri(payload)
     resource_type = payload_resource_type(payload, raw_uri) if raw_uri else ""
     if not text and not raw_uri and args.event not in {"IdleTimeout", "SessionIdle"}:
@@ -862,133 +1135,199 @@ def main() -> int:
     agent_context = agent_context_from_payload(payload, event=args.event, session_id_source=session_id_source, args=args)
 
     server = build_server(args)
-    scope = scope_from_args(args)
-    common: Json = {"scope": scope}
-    if args.api_key:
-        common["api_key"] = args.api_key
+    try:
+        scope = scope_from_args(args)
+        common: Json = {"scope": scope}
+        if args.api_key:
+            common["api_key"] = args.api_key
 
-    ingest = {}
-    if raw_uri and is_resource_event(args.event):
-        kind = "skill" if resource_type == "skill" or Path(raw_uri).name.lower() == "skill.md" else "resource"
-        ingest_args = {
-            **common,
-            "kind": kind,
-            "messages": [{"role": "user", "content": text or f"{kind} added: {raw_uri}"}],
-            "raw_uri": raw_uri,
-            "resource_type": resource_type or kind,
-            "metadata": {
-                "source": "codex_hook",
-                "codex_event": args.event,
-                "raw_hook_payload": payload,
-                "agent_context": agent_context,
-                "compacted_session_summary": False,
-                "codex_session_id_source": session_id_source,
+        ingest = {}
+        if args.event == "UserPromptSubmit":
+            previous_tool_output = latest_codex_tool_output_from_rollout(payload)
+            if previous_tool_output and previous_tool_output != text:
+                call_tool(
+                    server,
+                    "matrixark_ingest",
+                    {
+                        **common,
+                        "messages": [{"role": "tool", "content": previous_tool_output}],
+                        "understanding_provider": args.understanding_provider,
+                        "segment_provider": args.segment_provider,
+                        "metadata": {
+                            "source": "codex_hook_rollout_backfill",
+                            "codex_event": "PreviousToolOutputBackfill",
+                            "backfill_reason": "post_tool_hook_payload_can_arrive_before_rollout_tool_output_is_visible",
+                            "agent_context": agent_context,
+                            "codex_session_id_source": session_id_source,
+                        },
+                        "agent_hook": {
+                            "source": "codex",
+                            "hook_type": "tool_result",
+                            "hook_id": f"PreviousToolOutputBackfill:{stable_short_hash(previous_tool_output)}",
+                            "observed_at_ms": int(time.time() * 1000),
+                            "idempotency_key": f"previous-tool-output:{stable_short_hash(previous_tool_output)}",
+                            "trigger": "UserPromptSubmit:previous_tool_output_backfill",
+                            "auto_captured": True,
+                            "session_id_source": session_id_source,
+                        },
+                    },
+                )
+            previous_assistant = latest_codex_assistant_message_from_rollout(payload)
+            if previous_assistant and previous_assistant != text:
+                call_tool(
+                    server,
+                    "matrixark_ingest",
+                    {
+                        **common,
+                        "messages": [{"role": "assistant", "content": previous_assistant}],
+                        "understanding_provider": args.understanding_provider,
+                        "segment_provider": args.segment_provider,
+                        "metadata": {
+                            "source": "codex_hook_rollout_backfill",
+                            "codex_event": "PreviousAssistantBackfill",
+                            "backfill_reason": "stop_hook_runs_before_rollout_final_answer_is_visible",
+                            "agent_context": agent_context,
+                            "codex_session_id_source": session_id_source,
+                        },
+                        "agent_hook": {
+                            "source": "codex",
+                            "hook_type": "after_llm",
+                            "hook_id": f"PreviousAssistantBackfill:{stable_short_hash(previous_assistant)}",
+                            "observed_at_ms": int(time.time() * 1000),
+                            "idempotency_key": f"previous-assistant:{stable_short_hash(previous_assistant)}",
+                            "trigger": "UserPromptSubmit:previous_assistant_backfill",
+                            "auto_captured": True,
+                            "session_id_source": session_id_source,
+                        },
+                    },
+                )
+        if raw_uri and is_resource_event(args.event):
+            kind = "skill" if resource_type == "skill" or Path(raw_uri).name.lower() == "skill.md" else "resource"
+            ingest_args = {
+                **common,
+                "kind": kind,
+                "messages": [{"role": "user", "content": text or f"{kind} added: {raw_uri}"}],
                 "raw_uri": raw_uri,
                 "resource_type": resource_type or kind,
-            },
-            "understanding_provider": args.understanding_provider,
-            "segment_provider": args.segment_provider,
-            "agent_hook": {
-                "source": "codex",
-                "hook_type": "resource_added",
-                "hook_id": f"{args.event}:{raw_uri}:{int(time.time() * 1000)}",
-                "observed_at_ms": int(time.time() * 1000),
-                "idempotency_key": hook_idempotency_key(payload, event=args.event, session_id=args.session_id, fallback=raw_uri),
-                "trigger": args.event,
-                "auto_captured": True,
-                "session_id_source": session_id_source,
-            },
-            "wait": bool(payload.get("wait", True)),
-        }
-        ingest = call_tool(server, "matrixark_ingest", ingest_args)
-    elif text:
-        ingest_args: Json = {
-            **common,
-            "messages": [{"role": role_for_event(args.event), "content": text}],
-            "understanding_provider": args.understanding_provider,
-            "segment_provider": args.segment_provider,
-            "metadata": {
-                "source": "codex_hook",
-                "codex_event": args.event,
-                "raw_hook_payload": payload,
-                "agent_context": agent_context,
-                "compacted_session_summary": args.event == "PostCompact",
-                "codex_session_id_source": session_id_source,
-            },
-            "agent_hook": {
-                "source": "codex",
-                "hook_type": hook_type_for_event(args.event),
-                "hook_id": f"{args.event}:{int(time.time() * 1000)}",
-                "observed_at_ms": int(time.time() * 1000),
-                "idempotency_key": hook_idempotency_key(payload, event=args.event, session_id=args.session_id),
-                "trigger": args.event,
-                "auto_captured": True,
-                "session_id_source": session_id_source,
-            },
-        }
-        if args.event == "UserPromptSubmit":
-            ingest_args["session_buffer_threshold"] = args.session_commit_threshold
-            if args.idle_commit_timeout_ms > 0:
-                ingest_args["idle_commit_timeout_ms"] = args.idle_commit_timeout_ms
-        ingest = call_tool(server, "matrixark_ingest", ingest_args)
-
-    commit = {}
-    if should_commit_session(args.event):
-        commit_reason = commit_reason_for_event(args.event)
-        commit = call_tool(
-            server,
-            "matrixark_session_commit",
-            {
-                **common,
-                "threshold_messages": args.session_commit_threshold,
-                "force": commit_reason != "idle_timeout",
-                "commit_reason": commit_reason,
+                "metadata": {
+                    "source": "codex_hook",
+                    "codex_event": args.event,
+                    "raw_hook_payload": payload,
+                    "agent_context": agent_context,
+                    "compacted_session_summary": False,
+                    "codex_session_id_source": session_id_source,
+                    "raw_uri": raw_uri,
+                    "resource_type": resource_type or kind,
+                },
                 "understanding_provider": args.understanding_provider,
                 "segment_provider": args.segment_provider,
-                **({"idle_timeout_ms": args.idle_commit_timeout_ms} if commit_reason == "idle_timeout" else {}),
                 "agent_hook": {
                     "source": "codex",
-                    "hook_type": "session_commit",
-                    "hook_id": f"session_commit:{args.event}:{int(time.time() * 1000)}",
+                    "hook_type": "resource_added",
+                    "hook_id": f"{args.event}:{raw_uri}:{int(time.time() * 1000)}",
                     "observed_at_ms": int(time.time() * 1000),
-                    "idempotency_key": hook_idempotency_key(payload, event=f"session_commit:{args.event}", session_id=args.session_id),
+                    "idempotency_key": hook_idempotency_key(payload, event=args.event, session_id=args.session_id, fallback=raw_uri),
                     "trigger": args.event,
                     "auto_captured": True,
                     "session_id_source": session_id_source,
                 },
-            },
-        )
-
-    retrieve = {}
-    query = args.query or text[:500]
-    if args.event == "UserPromptSubmit" or args.query:
-        retrieve = call_tool(
-            server,
-            "matrixark_retrieve",
-            {
+                "wait": bool(payload.get("wait", True)),
+            }
+            ingest = call_tool(server, "matrixark_ingest", ingest_args)
+        elif text:
+            ingest_args: Json = {
                 **common,
-                "query": query,
-                "max_context_tokens": args.max_context_tokens,
-                **({"local_context": agent_context.get("local_context", [])} if agent_context.get("local_context") else {}),
-            },
-        )
+                "messages": [{"role": role_for_event(args.event), "content": text}],
+                "understanding_provider": args.understanding_provider,
+                "segment_provider": args.segment_provider,
+                "metadata": {
+                    "source": "codex_hook",
+                    "codex_event": args.event,
+                    "raw_hook_payload": payload,
+                    "agent_context": agent_context,
+                    "compacted_session_summary": args.event == "PostCompact",
+                    "codex_session_id_source": session_id_source,
+                },
+                "agent_hook": {
+                    "source": "codex",
+                    "hook_type": hook_type_for_event(args.event),
+                    "hook_id": f"{args.event}:{int(time.time() * 1000)}",
+                    "observed_at_ms": int(time.time() * 1000),
+                    "idempotency_key": hook_idempotency_key(payload, event=args.event, session_id=args.session_id),
+                    "trigger": args.event,
+                    "auto_captured": True,
+                    "session_id_source": session_id_source,
+                },
+            }
+            if args.event == "UserPromptSubmit":
+                ingest_args["auto_batch_extract"] = True
+                ingest_args["session_buffer_threshold"] = args.session_commit_threshold
+                if args.idle_commit_timeout_ms > 0:
+                    ingest_args["idle_commit_timeout_ms"] = args.idle_commit_timeout_ms
+            ingest = call_tool(server, "matrixark_ingest", ingest_args)
 
-    output = codex_hook_output(
-        args=args,
-        status="ok",
-        event=args.event,
-        session_id_source=session_id_source,
-        agent_context=agent_context,
-        ingest=ingest,
-        retrieve=retrieve,
-        commit=commit,
-        raw_uri=raw_uri,
-        resource_type=resource_type,
-        query=query,
-    )
-    if args.codex_strict_output:
-        output = strict_codex_stdout(output)
-    print(json.dumps(output, sort_keys=True))
+        commit = {}
+        if should_commit_session(args.event):
+            commit_reason = commit_reason_for_event(args.event)
+            commit = call_tool(
+                server,
+                "matrixark_session_commit",
+                {
+                    **common,
+                    "threshold_messages": args.session_commit_threshold,
+                    "force": commit_reason != "idle_timeout",
+                    "commit_reason": commit_reason,
+                    "understanding_provider": args.understanding_provider,
+                    "segment_provider": args.segment_provider,
+                    **({"idle_timeout_ms": args.idle_commit_timeout_ms} if commit_reason == "idle_timeout" else {}),
+                    "agent_hook": {
+                        "source": "codex",
+                        "hook_type": "session_commit",
+                        "hook_id": f"session_commit:{args.event}:{int(time.time() * 1000)}",
+                        "observed_at_ms": int(time.time() * 1000),
+                        "idempotency_key": hook_idempotency_key(payload, event=f"session_commit:{args.event}", session_id=args.session_id),
+                        "trigger": args.event,
+                        "auto_captured": True,
+                        "session_id_source": session_id_source,
+                    },
+                },
+            )
+
+        retrieve = {}
+        query = args.query or text[:500]
+        if args.event == "UserPromptSubmit" or args.query:
+            retrieve = call_tool(
+                server,
+                "matrixark_retrieve",
+                {
+                    **common,
+                    "query": query,
+                    "max_context_tokens": args.max_context_tokens,
+                    **({"local_context": agent_context.get("local_context", [])} if agent_context.get("local_context") else {}),
+                },
+            )
+
+        output = codex_hook_output(
+            args=args,
+            status="ok",
+            event=args.event,
+            session_id_source=session_id_source,
+            agent_context=agent_context,
+            ingest=ingest,
+            retrieve=retrieve,
+            commit=commit,
+            raw_uri=raw_uri,
+            resource_type=resource_type,
+            query=query,
+        )
+        if args.codex_strict_output:
+            output = strict_codex_stdout(output)
+        print(json.dumps(output, sort_keys=True))
+        spawn_rollout_backfill_child(args)
+    finally:
+        close = getattr(server, "close", None)
+        if callable(close):
+            close(timeout_s=2.0)
     return 0
 
 

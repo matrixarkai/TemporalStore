@@ -7,7 +7,6 @@ import os
 import tempfile
 import threading
 import unittest
-from collections import OrderedDict
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,13 +17,11 @@ try:
     from tools import matrixark_mcp_core as mcp_core
     from tools.run_matrixark_cpp_rust_scale_report import (
         comparison,
-        default_retrieve_warmup_queries,
         default_cpp_lib_path,
         effective_storage_tuning_from_env,
         fallback_flags_from_backend,
         phase_scale_matrix_gate,
         production_policy_gate,
-        rust_proxy_breakdown_from_backend_metrics,
         selected_ref_count,
         storage_tuning_failures,
         summarize_retrieval_metrics,
@@ -38,13 +35,11 @@ except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
     import matrixark_mcp_core as mcp_core
     from run_matrixark_cpp_rust_scale_report import (
         comparison,
-        default_retrieve_warmup_queries,
         default_cpp_lib_path,
         effective_storage_tuning_from_env,
         fallback_flags_from_backend,
         phase_scale_matrix_gate,
         production_policy_gate,
-        rust_proxy_breakdown_from_backend_metrics,
         selected_ref_count,
         storage_tuning_failures,
         summarize_retrieval_metrics,
@@ -68,93 +63,7 @@ _SHARED_CORRECTNESS_EVIDENCE = {
 
 
 class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
-    def test_scale_report_default_warmup_covers_rust_pack_lanes(self) -> None:
-        server = SimpleNamespace(_lane_worker_counts={"pack": 16, "retrieve": 16})
-        wrapped = SimpleNamespace(adapter=server)
-        lazy_wrapped = SimpleNamespace(
-            adapter=SimpleNamespace(
-                _native_retrieve_client=lambda: SimpleNamespace(
-                    _lane_worker_counts={"pack": 20, "retrieve": 20}
-                )
-            )
-        )
-
-        self.assertEqual(default_retrieve_warmup_queries(server, 12, -1), 64)
-        self.assertEqual(default_retrieve_warmup_queries(wrapped, 12, -1), 64)
-        self.assertEqual(default_retrieve_warmup_queries(lazy_wrapped, 12, -1), 80)
-        self.assertEqual(default_retrieve_warmup_queries(server, 12, 3), 3)
-
-    def test_rust_proxy_context_record_counter_skips_non_context_json(self) -> None:
-        client = mcp.MatrixArkRustCliClient.__new__(mcp.MatrixArkRustCliClient)
-        client._context_record_counts = {}
-
-        client._count_context_record('{"payload":"raw-message"}')
-        client._count_context_record('{"record_type":"context_event","payload":"served"}')
-
-        self.assertEqual(client._context_record_counts, {"context_event": 1})
-
-    def test_context_pack_response_cache_hit_marks_without_mutating_source(self) -> None:
-        client = mcp.MatrixArkRustCliClient.__new__(mcp.MatrixArkRustCliClient)
-        cached = {
-            "ok": True,
-            "cache_hit": False,
-            "retrieval_metrics": {"cache_hit": False},
-            "context_pack": {
-                "selected_refs": [{"ref_hash": "r1"}],
-                "retrieval_metrics": {"cache_hit": False},
-            },
-        }
-
-        hit = client._mark_context_pack_response_cache_hit(cached)
-
-        self.assertTrue(hit["cache_hit"])
-        self.assertTrue(hit["retrieval_metrics"]["context_pack_response_cache_hit"])
-        self.assertTrue(hit["context_pack"]["retrieval_metrics"]["context_pack_response_cache_hit"])
-        self.assertIs(hit["context_pack"]["selected_refs"], cached["context_pack"]["selected_refs"])
-        self.assertFalse(cached["cache_hit"])
-        self.assertFalse(cached["retrieval_metrics"]["cache_hit"])
-        self.assertFalse(cached["context_pack"]["retrieval_metrics"]["cache_hit"])
-
-    def test_rust_proxy_breakdown_includes_dedicated_retrieve_client_metrics(self) -> None:
-        breakdown = rust_proxy_breakdown_from_backend_metrics(
-            {
-                "result": {
-                    "metrics": {
-                        "rust_client": {
-                            "commands_total": 2,
-                            "op_metrics": {
-                                "batch_hset": {
-                                    "commands_total": 2,
-                                    "latency_ms_total": 20.0,
-                                    "latency_ms_max": 12.0,
-                                }
-                            },
-                            "lanes": {"write": {"workers": 1, "commands_total": 2}},
-                        },
-                        "rust_retrieve_client": {
-                            "commands_total": 3,
-                            "op_metrics": {
-                                "matrixark_retrieve_context_pack": {
-                                    "commands_total": 3,
-                                    "latency_ms_total": 90.0,
-                                    "latency_ms_max": 40.0,
-                                }
-                            },
-                            "lanes": {"pack": {"workers": 8, "commands_total": 3}},
-                        },
-                    }
-                }
-            }
-        )
-
-        self.assertEqual(breakdown["commands_total"], 2)
-        self.assertEqual(breakdown["combined_commands_total"], 5)
-        self.assertEqual(breakdown["clients"]["retrieve"]["commands_total"], 3)
-        self.assertEqual(breakdown["clients"]["retrieve"]["lanes"]["pack"]["workers"], 8)
-        self.assertEqual(breakdown["top_ops_by_total_latency"][0]["op"], "matrixark_retrieve_context_pack")
-        self.assertEqual(breakdown["top_ops_by_total_latency"][0]["commands_total"], 3)
-
-    def test_rust_bridge_defaults_to_shared_writes_and_parallel_pack_lanes(self) -> None:
+    def test_rust_bridge_defaults_to_separate_read_write_pack_lanes(self) -> None:
         old_env = {
             key: os.environ.get(key)
             for key in (
@@ -163,10 +72,6 @@ class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
                 "MATRIXARK_RUST_PROXY_PACK_LANES",
                 "MATRIXARK_RUST_PROXY_CONTROL_LANES",
                 "MATRIXARK_RUST_PROXY_SHARED_PROCESS",
-                "MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES",
-                "MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE_WAIT_MS",
-                "MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_WAIT_MS",
-                "MATRIXARK_RUST_PROXY_APPEND_COALESCE_WAIT_MS",
             )
         }
         for key in old_env:
@@ -189,715 +94,16 @@ class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
                     os.environ[key] = value
 
         self.assertTrue(snapshot["shared_process_mode"])
-        self.assertEqual(snapshot["lane_pool"], {"write": 1, "read": 1, "pack": 4, "control": 1})
-        self.assertEqual(snapshot["max_inflight"], 7)
+        self.assertEqual(snapshot["lane_pool"], {"write": 1, "read": 1, "pack": 1, "control": 1})
+        self.assertEqual(snapshot["max_inflight"], 4)
         self.assertFalse(snapshot["write_pool_enabled"])
         self.assertFalse(snapshot["read_pool_enabled"])
-        self.assertTrue(snapshot["pack_pool_enabled"])
-        self.assertEqual(snapshot["batch_hset_coalescing"]["wait_ms"], 0.0)
-        self.assertEqual(snapshot["batch_hget_coalescing"]["wait_ms"], 1.0)
-        self.assertEqual(snapshot["matrixark_append_coalescing"]["wait_ms"], 0.0)
+        self.assertFalse(snapshot["pack_pool_enabled"])
         self.assertEqual(client._lane_group_for_op("matrixark_batch_append_records"), "write")
         self.assertEqual(client._lane_group_for_op("matrixark_batch_append_raw_ingestion_records"), "write")
         self.assertEqual(client._lane_group_for_op("batch_hget"), "read")
         self.assertEqual(client._lane_group_for_op("matrixark_retrieve_context_pack"), "pack")
         self.assertEqual(client._lane_group_for_op("readiness"), "control")
-
-    def test_rust_bridge_coalesces_concurrent_batch_hset_in_shared_process(self) -> None:
-        old_env = {
-            key: os.environ.get(key)
-            for key in (
-                "MATRIXARK_RUST_PROXY_SHARED_PROCESS",
-                "MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE",
-                "MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE_MAX_BATCHES",
-                "MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE_MIN_RECORDS",
-                "MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE_WAIT_MS",
-            )
-        }
-        os.environ["MATRIXARK_RUST_PROXY_SHARED_PROCESS"] = "1"
-        os.environ["MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE"] = "1"
-        os.environ["MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE_MAX_BATCHES"] = "8"
-        os.environ["MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE_MIN_RECORDS"] = "1"
-        os.environ["MATRIXARK_RUST_PROXY_BATCH_HSET_COALESCE_WAIT_MS"] = "25"
-        try:
-            client = mcp.MatrixArkRustCliClient(
-                cli_path="matrixark_rust_proxy",
-                metaserver="127.0.0.1:18000",
-                namespace="ns",
-                table="table",
-                request_timeout_ms=10000,
-                io_timeout_ms=10000,
-            )
-            calls: list[list[list[str]]] = []
-            calls_lock = threading.Lock()
-
-            def fake_call_json(op: str, **kwargs):
-                self.assertEqual(op, "batch_hset")
-                with calls_lock:
-                    if "entries_for_key" in kwargs:
-                        key = kwargs["key"]
-                        entries = [[key, field, value] for field, value in kwargs["entries_for_key"]]
-                    else:
-                        entries = list(kwargs["entries_compact"])
-                    calls.append(entries)
-                return {"ok": True, "count": len(entries)}
-
-            client._call_json = fake_call_json  # type: ignore[method-assign]
-            barrier = threading.Barrier(4)
-
-            def write_one(index: int) -> None:
-                barrier.wait(timeout=5)
-                client.batch_hset([{"key": "raw", "field": f"{index:08d}", "value": f"value-{index}"}])
-
-            threads = [threading.Thread(target=write_one, args=(index,)) for index in range(4)]
-            for thread in threads:
-                thread.start()
-            for thread in threads:
-                thread.join(timeout=5)
-                self.assertFalse(thread.is_alive())
-
-            snapshot = client.metrics_snapshot()
-        finally:
-            try:
-                client.close()  # type: ignore[name-defined]
-            except Exception:
-                pass
-            for key, value in old_env.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
-
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(len(calls[0]), 4)
-        self.assertEqual(snapshot["batch_hset_coalescing"]["batches_total"], 1)
-        self.assertEqual(snapshot["batch_hset_coalescing"]["calls_total"], 4)
-        self.assertEqual(snapshot["batch_hset_coalescing"]["records_total"], 4)
-
-    def test_rust_bridge_uses_same_key_compact_batch_wire_format(self) -> None:
-        client = mcp.MatrixArkRustCliClient(
-            cli_path="matrixark_rust_proxy",
-            metaserver="127.0.0.1:18000",
-            namespace="ns",
-            table="table",
-            request_timeout_ms=10000,
-            io_timeout_ms=10000,
-        )
-        calls: list[tuple[str, dict]] = []
-
-        def fake_call_json(op: str, **kwargs):
-            calls.append((op, kwargs))
-            return {"ok": True, "count": len(kwargs.get("entries_for_key") or [])}
-
-        try:
-            client._call_json = fake_call_json  # type: ignore[method-assign]
-            client.batch_hset(
-                [
-                    {"key": "raw", "field": "0001", "value": "one"},
-                    {"key": "raw", "field": "0002", "value": "two"},
-                ]
-            )
-        finally:
-            client.close()
-
-        self.assertEqual(len(calls), 1)
-        op, kwargs = calls[0]
-        self.assertEqual(op, "batch_hset")
-        self.assertEqual(kwargs["key"], "raw")
-        self.assertEqual(kwargs["entries_for_key"], [["0001", "one"], ["0002", "two"]])
-        self.assertNotIn("entries_compact", kwargs)
-
-    def test_rust_bridge_expands_same_key_compact_batch_hget_response(self) -> None:
-        client = mcp.MatrixArkRustCliClient(
-            cli_path="matrixark_rust_proxy",
-            metaserver="127.0.0.1:18000",
-            namespace="ns",
-            table="table",
-            request_timeout_ms=10000,
-            io_timeout_ms=10000,
-        )
-        calls: list[tuple[str, dict]] = []
-
-        def fake_call_json(op: str, **kwargs):
-            calls.append((op, kwargs))
-            return {
-                "ok": True,
-                "count": len(kwargs.get("entries_for_key") or []),
-                "compact_read_response": "single_hash_entries",
-                "entries": {"0001": "one", "0002": "two"},
-            }
-
-        try:
-            client._call_json = fake_call_json  # type: ignore[method-assign]
-            records = client.batch_hget(
-                [
-                    {"key": "raw", "field": "0001"},
-                    {"key": "raw", "field": "0002"},
-                ]
-            )
-        finally:
-            client.close()
-
-        self.assertEqual(records, [
-            {"key": "raw", "field": "0001", "value": "one"},
-            {"key": "raw", "field": "0002", "value": "two"},
-        ])
-        self.assertEqual(len(calls), 1)
-        op, kwargs = calls[0]
-        self.assertEqual(op, "batch_hget")
-        self.assertEqual(kwargs["key"], "raw")
-        self.assertEqual(kwargs["entries_for_key"], [["0001", ""], ["0002", ""]])
-        self.assertTrue(kwargs["compact_read_response"])
-
-    def test_rust_bridge_coalesces_concurrent_batch_hget_in_shared_process(self) -> None:
-        old_env = {
-            key: os.environ.get(key)
-            for key in (
-                "MATRIXARK_RUST_PROXY_SHARED_PROCESS",
-                "MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE",
-                "MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_MAX_BATCHES",
-                "MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_MIN_RECORDS",
-                "MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_WAIT_MS",
-            )
-        }
-        os.environ["MATRIXARK_RUST_PROXY_SHARED_PROCESS"] = "1"
-        os.environ["MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE"] = "1"
-        os.environ["MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_MAX_BATCHES"] = "8"
-        os.environ["MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_MIN_RECORDS"] = "1"
-        os.environ["MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_WAIT_MS"] = "25"
-        try:
-            client = mcp.MatrixArkRustCliClient(
-                cli_path="matrixark_rust_proxy",
-                metaserver="127.0.0.1:18000",
-                namespace="ns",
-                table="table",
-                request_timeout_ms=10000,
-                io_timeout_ms=10000,
-            )
-            calls: list[list[list[str]]] = []
-            calls_lock = threading.Lock()
-
-            def fake_call_json(op: str, **kwargs):
-                self.assertEqual(op, "batch_hget")
-                if "entries_for_key" in kwargs:
-                    key = kwargs["key"]
-                    entries = [[key, field, value] for field, value in kwargs["entries_for_key"]]
-                else:
-                    entries = list(kwargs["entries_compact"])
-                with calls_lock:
-                    calls.append(entries)
-                return {
-                    "ok": True,
-                    "records": [
-                        {"key": key, "field": field, "value": f"{key}:{field}"}
-                        for key, field, _ in entries
-                    ],
-                }
-
-            client._call_json = fake_call_json  # type: ignore[method-assign]
-            barrier = threading.Barrier(4)
-            results: dict[int, list[dict]] = {}
-
-            def read_two(index: int) -> None:
-                barrier.wait(timeout=5)
-                results[index] = client.batch_hget(
-                    [
-                        {"key": "raw", "field": f"{index:08d}a"},
-                        {"key": "raw", "field": f"{index:08d}b"},
-                    ]
-                )
-
-            threads = [threading.Thread(target=read_two, args=(index,)) for index in range(4)]
-            for thread in threads:
-                thread.start()
-            for thread in threads:
-                thread.join(timeout=5)
-                self.assertFalse(thread.is_alive())
-
-            snapshot = client.metrics_snapshot()
-        finally:
-            try:
-                client.close()  # type: ignore[name-defined]
-            except Exception:
-                pass
-            for key, value in old_env.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
-
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(len(calls[0]), 8)
-        for index in range(4):
-            self.assertEqual([row["field"] for row in results[index]], [f"{index:08d}a", f"{index:08d}b"])
-            self.assertEqual([row["value"] for row in results[index]], [f"raw:{index:08d}a", f"raw:{index:08d}b"])
-        self.assertEqual(snapshot["batch_hget_coalescing"]["batches_total"], 1)
-        self.assertEqual(snapshot["batch_hget_coalescing"]["calls_total"], 4)
-        self.assertEqual(snapshot["batch_hget_coalescing"]["records_total"], 8)
-
-    def test_rust_bridge_coalesced_batch_hget_falls_back_for_reordered_rows(self) -> None:
-        old_env = {
-            key: os.environ.get(key)
-            for key in (
-                "MATRIXARK_RUST_PROXY_SHARED_PROCESS",
-                "MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE",
-                "MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_MAX_BATCHES",
-                "MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_MIN_RECORDS",
-                "MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_WAIT_MS",
-            )
-        }
-        os.environ["MATRIXARK_RUST_PROXY_SHARED_PROCESS"] = "1"
-        os.environ["MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE"] = "1"
-        os.environ["MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_MAX_BATCHES"] = "8"
-        os.environ["MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_MIN_RECORDS"] = "1"
-        os.environ["MATRIXARK_RUST_PROXY_BATCH_HGET_COALESCE_WAIT_MS"] = "25"
-        try:
-            client = mcp.MatrixArkRustCliClient(
-                cli_path="matrixark_rust_proxy",
-                metaserver="127.0.0.1:18000",
-                namespace="ns",
-                table="table",
-                request_timeout_ms=10000,
-                io_timeout_ms=10000,
-            )
-
-            def fake_call_json(op: str, **kwargs):
-                self.assertEqual(op, "batch_hget")
-                if "entries_for_key" in kwargs:
-                    key = kwargs["key"]
-                    entries = [[key, field, value] for field, value in kwargs["entries_for_key"]]
-                else:
-                    entries = list(kwargs["entries_compact"])
-                records = [
-                    {"key": key, "field": field, "value": f"{key}:{field}"}
-                    for key, field, _ in entries
-                ]
-                return {"ok": True, "records": list(reversed(records))}
-
-            client._call_json = fake_call_json  # type: ignore[method-assign]
-            barrier = threading.Barrier(2)
-            results: dict[int, list[dict]] = {}
-
-            def read_two(index: int) -> None:
-                barrier.wait(timeout=5)
-                results[index] = client.batch_hget(
-                    [
-                        {"key": "raw", "field": f"{index:08d}a"},
-                        {"key": "raw", "field": f"{index:08d}b"},
-                    ]
-                )
-
-            threads = [threading.Thread(target=read_two, args=(index,)) for index in range(2)]
-            for thread in threads:
-                thread.start()
-            for thread in threads:
-                thread.join(timeout=5)
-                self.assertFalse(thread.is_alive())
-        finally:
-            try:
-                client.close()  # type: ignore[name-defined]
-            except Exception:
-                pass
-            for key, value in old_env.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
-
-        for index in range(2):
-            self.assertEqual([row["field"] for row in results[index]], [f"{index:08d}a", f"{index:08d}b"])
-            self.assertEqual([row["value"] for row in results[index]], [f"raw:{index:08d}a", f"raw:{index:08d}b"])
-
-    def test_rust_bridge_coalesces_concurrent_matrixark_appends_in_shared_process(self) -> None:
-        old_env = {
-            key: os.environ.get(key)
-            for key in (
-                "MATRIXARK_RUST_PROXY_SHARED_PROCESS",
-                "MATRIXARK_RUST_PROXY_APPEND_COALESCE",
-                "MATRIXARK_RUST_PROXY_APPEND_COALESCE_MAX_BATCHES",
-                "MATRIXARK_RUST_PROXY_APPEND_COALESCE_MIN_RECORDS",
-                "MATRIXARK_RUST_PROXY_APPEND_COALESCE_WAIT_MS",
-            )
-        }
-        os.environ["MATRIXARK_RUST_PROXY_SHARED_PROCESS"] = "1"
-        os.environ["MATRIXARK_RUST_PROXY_APPEND_COALESCE"] = "1"
-        os.environ["MATRIXARK_RUST_PROXY_APPEND_COALESCE_MAX_BATCHES"] = "8"
-        os.environ["MATRIXARK_RUST_PROXY_APPEND_COALESCE_MIN_RECORDS"] = "1"
-        os.environ["MATRIXARK_RUST_PROXY_APPEND_COALESCE_WAIT_MS"] = "25"
-        try:
-            client = mcp.MatrixArkRustCliClient(
-                cli_path="matrixark_rust_proxy",
-                metaserver="127.0.0.1:18000",
-                namespace="ns",
-                table="table",
-                request_timeout_ms=10000,
-                io_timeout_ms=10000,
-            )
-            calls: list[dict] = []
-            calls_lock = threading.Lock()
-
-            def fake_call_json(op: str, **kwargs):
-                self.assertEqual(op, "matrixark_batch_append_records")
-                with calls_lock:
-                    calls.append(
-                        {
-                            "entries": list(kwargs["entries_compact"]),
-                            "key": kwargs.get("key"),
-                            "value": kwargs.get("value"),
-                            "append_options": dict(kwargs.get("append_options") or {}),
-                        }
-                    )
-                return {"ok": True, "count": len(kwargs["entries_compact"]) + (1 if kwargs.get("key") else 0)}
-
-            client._call_json = fake_call_json  # type: ignore[method-assign]
-            barrier = threading.Barrier(4)
-
-            def append_one(index: int) -> None:
-                barrier.wait(timeout=5)
-                client.matrixark_batch_append_records(
-                    [{"key": "records:000000", "field": f"{index:08d}", "value": f"value-{index}"}],
-                    count_key="matrixark:test:record_count",
-                    count_value=str(index + 1),
-                    append_options={"append_path": "native_append_queue", "coalesce_writes": True},
-                )
-
-            threads = [threading.Thread(target=append_one, args=(index,)) for index in range(4)]
-            for thread in threads:
-                thread.start()
-            for thread in threads:
-                thread.join(timeout=5)
-                self.assertFalse(thread.is_alive())
-
-            snapshot = client.metrics_snapshot()
-        finally:
-            try:
-                client.close()  # type: ignore[name-defined]
-            except Exception:
-                pass
-            for key, value in old_env.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
-
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(len(calls[0]["entries"]), 4)
-        self.assertEqual(calls[0]["key"], "matrixark:test:record_count")
-        self.assertEqual(calls[0]["value"], "4")
-        self.assertEqual(calls[0]["append_options"]["append_path"], "native_append_queue")
-        self.assertEqual(snapshot["matrixark_append_coalescing"]["batches_total"], 1)
-        self.assertEqual(snapshot["matrixark_append_coalescing"]["calls_total"], 4)
-        self.assertEqual(snapshot["matrixark_append_coalescing"]["records_total"], 4)
-
-    def test_rust_bridge_keeps_incompatible_matrixark_append_groups_separate(self) -> None:
-        old_env = {
-            key: os.environ.get(key)
-            for key in (
-                "MATRIXARK_RUST_PROXY_SHARED_PROCESS",
-                "MATRIXARK_RUST_PROXY_APPEND_COALESCE",
-                "MATRIXARK_RUST_PROXY_APPEND_COALESCE_MAX_BATCHES",
-                "MATRIXARK_RUST_PROXY_APPEND_COALESCE_MIN_RECORDS",
-                "MATRIXARK_RUST_PROXY_APPEND_COALESCE_WAIT_MS",
-            )
-        }
-        os.environ["MATRIXARK_RUST_PROXY_SHARED_PROCESS"] = "1"
-        os.environ["MATRIXARK_RUST_PROXY_APPEND_COALESCE"] = "1"
-        os.environ["MATRIXARK_RUST_PROXY_APPEND_COALESCE_MAX_BATCHES"] = "8"
-        os.environ["MATRIXARK_RUST_PROXY_APPEND_COALESCE_MIN_RECORDS"] = "1"
-        os.environ["MATRIXARK_RUST_PROXY_APPEND_COALESCE_WAIT_MS"] = "25"
-        try:
-            client = mcp.MatrixArkRustCliClient(
-                cli_path="matrixark_rust_proxy",
-                metaserver="127.0.0.1:18000",
-                namespace="ns",
-                table="table",
-                request_timeout_ms=10000,
-                io_timeout_ms=10000,
-            )
-            calls: list[dict] = []
-
-            def fake_call_json(op: str, **kwargs):
-                self.assertEqual(op, "matrixark_batch_append_records")
-                calls.append(
-                    {
-                        "entries": list(kwargs["entries_compact"]),
-                        "key": kwargs.get("key"),
-                        "value": kwargs.get("value"),
-                        "append_options": dict(kwargs.get("append_options") or {}),
-                    }
-                )
-                return {"ok": True}
-
-            client._call_json = fake_call_json  # type: ignore[method-assign]
-            client.matrixark_batch_append_records(
-                [{"key": "records:000000", "field": "a", "value": "a"}],
-                count_key="matrixark:test:a:record_count",
-                count_value="1",
-                append_options={"append_path": "native_append_queue"},
-            )
-            client.matrixark_batch_append_records(
-                [{"key": "records:000000", "field": "b", "value": "b"}],
-                count_key="matrixark:test:b:record_count",
-                count_value="2",
-                append_options={"append_path": "native_append_queue"},
-            )
-            client.matrixark_batch_append_records(
-                [{"key": "records:000000", "field": "c", "value": "c"}],
-                count_key="matrixark:test:a:record_count",
-                count_value="3",
-                append_options={"append_path": "raw_ingestion"},
-            )
-            snapshot = client.metrics_snapshot()
-        finally:
-            try:
-                client.close()  # type: ignore[name-defined]
-            except Exception:
-                pass
-            for key, value in old_env.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
-
-        self.assertEqual(len(calls), 3)
-        self.assertEqual({call["key"] for call in calls}, {"matrixark:test:a:record_count", "matrixark:test:b:record_count"})
-        self.assertEqual(snapshot["matrixark_append_coalescing"]["batches_total"], 3)
-        self.assertEqual(snapshot["matrixark_append_coalescing"]["calls_total"], 3)
-
-    def test_rust_bridge_caches_record_count_get_string(self) -> None:
-        old_env = {key: os.environ.get(key) for key in ("MATRIXARK_RUST_PROXY_STRING_CACHE",)}
-        os.environ["MATRIXARK_RUST_PROXY_STRING_CACHE"] = "1"
-        try:
-            client = mcp.MatrixArkRustCliClient(
-                cli_path="matrixark_rust_proxy",
-                metaserver="127.0.0.1:18000",
-                namespace="ns",
-                table="table",
-                request_timeout_ms=10000,
-                io_timeout_ms=10000,
-            )
-            calls: list[dict] = []
-
-            def fake_call_json(op: str, **kwargs):
-                calls.append({"op": op, **kwargs})
-                return {"ok": True, "value": "42"}
-
-            client._call_json = fake_call_json  # type: ignore[method-assign]
-            self.assertEqual(client.get_string("matrixark:test:record_count"), "42")
-            self.assertEqual(client.get_string("matrixark:test:record_count"), "42")
-            snapshot = client.metrics_snapshot()
-        finally:
-            try:
-                client.close()  # type: ignore[name-defined]
-            except Exception:
-                pass
-            for key, value in old_env.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
-
-        self.assertEqual([call["op"] for call in calls], ["get_string"])
-        self.assertEqual(snapshot["string_cache"]["misses_total"], 1)
-        self.assertEqual(snapshot["string_cache"]["hits_total"], 1)
-        self.assertEqual(snapshot["string_cache"]["updates_total"], 1)
-
-    def test_rust_bridge_updates_record_count_cache_after_matrixark_append(self) -> None:
-        old_env = {key: os.environ.get(key) for key in ("MATRIXARK_RUST_PROXY_STRING_CACHE",)}
-        os.environ["MATRIXARK_RUST_PROXY_STRING_CACHE"] = "1"
-        try:
-            client = mcp.MatrixArkRustCliClient(
-                cli_path="matrixark_rust_proxy",
-                metaserver="127.0.0.1:18000",
-                namespace="ns",
-                table="table",
-                request_timeout_ms=10000,
-                io_timeout_ms=10000,
-            )
-            calls: list[dict] = []
-
-            def fake_call_json(op: str, **kwargs):
-                calls.append({"op": op, **kwargs})
-                return {"ok": True}
-
-            client._call_json = fake_call_json  # type: ignore[method-assign]
-            client.matrixark_batch_append_records(
-                [{"key": "records:000000", "field": "a", "value": "a"}],
-                count_key="matrixark:test:record_count",
-                count_value="7",
-                append_options={"append_path": "native_append_queue"},
-            )
-            self.assertEqual(client.get_string("matrixark:test:record_count"), "7")
-            snapshot = client.metrics_snapshot()
-        finally:
-            try:
-                client.close()  # type: ignore[name-defined]
-            except Exception:
-                pass
-            for key, value in old_env.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
-
-        self.assertEqual([call["op"] for call in calls], ["matrixark_batch_append_records"])
-        self.assertEqual(snapshot["string_cache"]["hits_total"], 1)
-        self.assertEqual(snapshot["string_cache"]["misses_total"], 0)
-        self.assertGreaterEqual(snapshot["string_cache"]["updates_total"], 1)
-
-    def test_rust_bridge_caches_record_index_and_refreshes_on_put_string(self) -> None:
-        old_env = {key: os.environ.get(key) for key in ("MATRIXARK_RUST_PROXY_STRING_CACHE",)}
-        os.environ["MATRIXARK_RUST_PROXY_STRING_CACHE"] = "1"
-        try:
-            client = mcp.MatrixArkRustCliClient(
-                cli_path="matrixark_rust_proxy",
-                metaserver="127.0.0.1:18000",
-                namespace="ns",
-                table="table",
-                request_timeout_ms=10000,
-                io_timeout_ms=10000,
-            )
-            calls: list[dict] = []
-
-            def fake_call_json(op: str, **kwargs):
-                calls.append({"op": op, **kwargs})
-                if op == "get_string":
-                    return {"ok": True, "value": '["old"]'}
-                return {"ok": True}
-
-            client._call_json = fake_call_json  # type: ignore[method-assign]
-            self.assertEqual(client.get_string("matrixark:test:record_index"), '["old"]')
-            self.assertEqual(client.get_string("matrixark:test:record_index"), '["old"]')
-            client.put_string("matrixark:test:record_index", '["new"]')
-            self.assertEqual(client.get_string("matrixark:test:record_index"), '["new"]')
-            snapshot = client.metrics_snapshot()
-        finally:
-            try:
-                client.close()  # type: ignore[name-defined]
-            except Exception:
-                pass
-            for key, value in old_env.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
-
-        self.assertEqual([call["op"] for call in calls], ["get_string", "put_string"])
-        self.assertEqual(snapshot["string_cache"]["misses_total"], 1)
-        self.assertEqual(snapshot["string_cache"]["hits_total"], 2)
-        self.assertEqual(snapshot["string_cache"]["updates_total"], 2)
-        self.assertEqual(snapshot["string_cache"]["scope"], "record_count_and_record_index_keys")
-
-    def test_rust_bridge_caches_scan_hash_until_key_write(self) -> None:
-        old_env = {
-            key: os.environ.get(key)
-            for key in (
-                "MATRIXARK_RUST_PROXY_SCAN_HASH_CACHE",
-                "MATRIXARK_RUST_PROXY_SCAN_HASH_CACHE_MAX_ENTRIES",
-            )
-        }
-        os.environ["MATRIXARK_RUST_PROXY_SCAN_HASH_CACHE"] = "1"
-        os.environ["MATRIXARK_RUST_PROXY_SCAN_HASH_CACHE_MAX_ENTRIES"] = "8"
-        try:
-            client = mcp.MatrixArkRustCliClient(
-                cli_path="matrixark_rust_proxy",
-                metaserver="127.0.0.1:18000",
-                namespace="ns",
-                table="table",
-                request_timeout_ms=10000,
-                io_timeout_ms=10000,
-            )
-            calls: list[dict] = []
-            scan_values = iter(
-                [
-                    {"ok": True, "records": [{"key": "ctx:hash", "field": "a", "value": "old"}]},
-                    {"ok": True, "records": [{"key": "ctx:hash", "field": "a", "value": "new"}]},
-                ]
-            )
-
-            def fake_call_json(op: str, **kwargs):
-                calls.append({"op": op, **kwargs})
-                if op == "scan_hash":
-                    return next(scan_values)
-                return {"ok": True}
-
-            client._call_json = fake_call_json  # type: ignore[method-assign]
-            first = client.scan_hash("ctx:hash")
-            second = client.scan_hash("ctx:hash")
-            client.hset("ctx:hash", "a", "new")
-            third = client.scan_hash("ctx:hash")
-            snapshot = client.metrics_snapshot()
-        finally:
-            try:
-                client.close()  # type: ignore[name-defined]
-            except Exception:
-                pass
-            for key, value in old_env.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
-
-        self.assertEqual([call["op"] for call in calls], ["scan_hash", "hset", "scan_hash"])
-        self.assertEqual(first["records"][0]["value"], "old")
-        self.assertEqual(second["records"][0]["value"], "old")
-        self.assertEqual(third["records"][0]["value"], "new")
-        self.assertEqual(snapshot["scan_hash_cache"]["misses_total"], 2)
-        self.assertEqual(snapshot["scan_hash_cache"]["hits_total"], 1)
-        self.assertEqual(snapshot["scan_hash_cache"]["updates_total"], 2)
-        self.assertEqual(snapshot["scan_hash_cache"]["invalidations_total"], 1)
-
-    def test_rust_bridge_invalidates_scan_hash_cache_after_batch_append(self) -> None:
-        old_env = {
-            key: os.environ.get(key)
-            for key in (
-                "MATRIXARK_RUST_PROXY_SCAN_HASH_CACHE",
-                "MATRIXARK_RUST_PROXY_APPEND_COALESCE",
-            )
-        }
-        os.environ["MATRIXARK_RUST_PROXY_SCAN_HASH_CACHE"] = "1"
-        os.environ["MATRIXARK_RUST_PROXY_APPEND_COALESCE"] = "0"
-        try:
-            client = mcp.MatrixArkRustCliClient(
-                cli_path="matrixark_rust_proxy",
-                metaserver="127.0.0.1:18000",
-                namespace="ns",
-                table="table",
-                request_timeout_ms=10000,
-                io_timeout_ms=10000,
-            )
-            calls: list[dict] = []
-
-            def fake_call_json(op: str, **kwargs):
-                calls.append({"op": op, **kwargs})
-                if op == "scan_hash":
-                    return {"ok": True, "records": [{"key": "records:000000", "field": "a", "value": "cached"}]}
-                return {"ok": True}
-
-            client._call_json = fake_call_json  # type: ignore[method-assign]
-            client.scan_hash("records:000000")
-            client.matrixark_batch_append_records(
-                [{"key": "records:000000", "field": "b", "value": "fresh"}],
-                count_key="matrixark:test:record_count",
-                count_value="2",
-                append_options={"append_path": "native_append_queue"},
-            )
-            snapshot = client.metrics_snapshot()
-        finally:
-            try:
-                client.close()  # type: ignore[name-defined]
-            except Exception:
-                pass
-            for key, value in old_env.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
-
-        self.assertEqual([call["op"] for call in calls], ["scan_hash", "matrixark_batch_append_records"])
-        self.assertEqual(snapshot["scan_hash_cache"]["updates_total"], 1)
-        self.assertEqual(snapshot["scan_hash_cache"]["invalidations_total"], 1)
-        self.assertEqual(snapshot["scan_hash_cache"]["entries"], 0)
 
     def test_rust_bridge_can_opt_into_separate_read_write_pack_lanes(self) -> None:
         old_env = {
@@ -931,8 +137,8 @@ class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
                     os.environ[key] = value
 
         self.assertFalse(snapshot["shared_process_mode"])
-        self.assertEqual(snapshot["lane_pool"], {"write": 4, "read": 4, "pack": 4, "control": 1})
-        self.assertEqual(snapshot["max_inflight"], 13)
+        self.assertEqual(snapshot["lane_pool"], {"write": 4, "read": 4, "pack": 8, "control": 1})
+        self.assertEqual(snapshot["max_inflight"], 17)
         self.assertTrue(snapshot["write_pool_enabled"])
         self.assertTrue(snapshot["read_pool_enabled"])
         self.assertTrue(snapshot["pack_pool_enabled"])
@@ -940,16 +146,14 @@ class MatrixArkRustProxyPoolPolicyTest(unittest.TestCase):
     def test_rust_scale_keeps_shared_writer_and_enables_pack_lanes(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         source = (repo / "tools" / "run_matrixark_cpp_rust_scale_report.py").read_text()
-        adapter_start = source.index('if backend == "rust":')
-        adapter_body = source[adapter_start : source.index("allow_c_api_bridge", adapter_start)]
-        pin_start = source.index("rust_proxy_lane_defaults")
-        pin_body = source[pin_start : source.index("adapter = make_adapter", pin_start)]
+        allow_start = source.index("MATRIXARK_RUST_PROXY_ALLOW_ISOLATED_CLIENTS")
+        allow_body = source[allow_start : source.index("else:", allow_start)]
+        shared_body = source[source.index("else:", allow_start) : source.index("allow_c_api_bridge", allow_start)]
 
-        self.assertIn('os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS", "1")', adapter_body)
-        self.assertIn('os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES", "1")', adapter_body)
-        self.assertNotIn('os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES", "0")', adapter_body)
-        self.assertIn('"MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS": "1"', pin_body)
-        self.assertIn('"MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES": "1"', pin_body)
+        self.assertIn('os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS", "1")', allow_body)
+        self.assertIn('os.environ.setdefault("MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES", "1")', allow_body)
+        self.assertIn('os.environ["MATRIXARK_RUST_PROXY_DEDICATED_CLIENTS"] = "0"', shared_body)
+        self.assertIn('os.environ["MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES"] = "1"', shared_body)
         self.assertIn('"MATRIXARK_RUST_PROXY_PACK_LANES"', source)
 
 
@@ -1148,15 +352,8 @@ class _NativeAppendClient:
     def get_string(self, key: str) -> str:
         return "0"
 
-    def matrixark_batch_append_records(self, entries, *, count_key=None, count_value=None, append_options=None) -> None:
-        self.calls.append(
-            {
-                "entries": list(entries),
-                "count_key": count_key,
-                "count_value": count_value,
-                "append_options": dict(append_options or {}),
-            }
-        )
+    def matrixark_batch_append_records(self, entries, *, count_key=None, count_value=None) -> None:
+        self.calls.append({"entries": list(entries), "count_key": count_key, "count_value": count_value})
 
 
 
@@ -2230,7 +1427,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             event_indexes = [
                 record
                 for record in records
-                if record.get("record_type") == "context_index" and record.get("capability") == "context_event"
+                if record.get("record_type") == "context_index" and record.get("data_model") == "context_event"
             ]
             self.assertEqual([], event_indexes)
 
@@ -2249,7 +1446,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         records = [
             mcp.context_index_posting_record(
                 index_name="resource_type:pdf",
-                capability="resource_chunk",
+                data_model="resource_chunk",
                 ref_type="resource_chunk",
                 ref_hashes=[100 + index],
                 node_hash=77,
@@ -2263,7 +1460,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         indexes = [record for record in materialized if record.get("record_type") == "context_index"]
 
         self.assertEqual(1, len(indexes))
-        self.assertEqual("resource_chunk", indexes[0].get("capability"))
+        self.assertEqual("resource_chunk", indexes[0].get("data_model"))
         self.assertEqual("resource_type:pdf", indexes[0].get("index_name"))
         self.assertEqual(8, indexes[0].get("posting_count"))
         self.assertEqual(list(range(100, 108)), indexes[0].get("ref_hashes"))
@@ -2275,7 +1472,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         records = [
             mcp.context_index_posting_record(
                 index_name="keyword:gpu",
-                capability="resource_chunk",
+                data_model="resource_chunk",
                 ref_type="resource_chunk",
                 ref_hashes=[index],
                 node_hash=88,
@@ -3193,106 +2390,6 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             self.assertEqual(route.get("colocation_group"), "matrixark_context")
             self.assertEqual(route.get("placement_hash"), record.get("placement_hash"))
 
-    def test_context_ingest_defaults_to_async_replica_read_per_record(self) -> None:
-        envelope = mcp_core.normalize_envelope(
-            {
-                "messages": [{"role": "user", "content": "Codex captured one message."}],
-                "scope": {"tenant_hash": 11, "user_hash": 22, "session_hash": 33},
-            },
-            default_kind="message",
-        )
-        self.assertEqual(envelope["storage_options"]["write_mode"], "async")
-        self.assertEqual(envelope["storage_options"]["oplog_mode"], "async")
-        self.assertEqual(envelope["storage_options"]["durability"], "async")
-        self.assertEqual(envelope["storage_options"]["read_preference"], "replica_preferred")
-        self.assertTrue(envelope["storage_route"]["replica_read"])
-
-        sync_override = mcp_core.normalize_envelope(
-            {
-                "messages": [{"role": "user", "content": "Codex captured one message."}],
-                "scope": {"tenant_hash": 11, "user_hash": 22, "session_hash": 33},
-                "record_storage_options": {"context_event": {"durability": "sync"}},
-            },
-            default_kind="message",
-        )
-        self.assertEqual(sync_override["record_storage_options"]["context_event"]["durability"], "sync")
-        self.assertEqual(sync_override["record_storage_options"]["context_event"]["write_mode"], "sync")
-        self.assertFalse(sync_override["record_storage_options"]["context_event"]["background_write"])
-
-        materialized = mcp_core.materialize_serving_record_batch(
-            [
-                {
-                    "record_type": "context_event",
-                    "event_id_hash": 1,
-                    "scope": envelope["scope"],
-                    "node_hash": 44,
-                    "envelope": envelope,
-                    "text": "event",
-                },
-                {
-                    "record_type": "context_index",
-                    "index_name": "source_type:message",
-                    "ref_hash": 1,
-                    "scope": envelope["scope"],
-                    "node_hash": 44,
-                    "envelope": envelope,
-                },
-            ]
-        )
-
-        for record in materialized:
-            if record.get("record_type") == "context_debug_record":
-                continue
-            route = record.get("storage_route", {})
-            self.assertEqual(route.get("write_mode"), "async")
-            self.assertEqual(route.get("durability"), "async")
-            self.assertTrue(route.get("background_write"))
-            self.assertEqual(route.get("read_preference"), "replica_preferred")
-            self.assertTrue(route.get("replica_read"))
-
-    def test_context_ingest_record_storage_options_keep_async_by_default(self) -> None:
-        scope = {"tenant_hash": 11, "user_hash": 22, "session_hash": 33}
-        envelope = mcp_core.normalize_envelope(
-            {
-                "messages": [{"role": "user", "content": "Codex captured one message."}],
-                "scope": scope,
-                "storage_options": {"route": "shared_store_async"},
-                "record_storage_options": {
-                    "context_event": {"route": "shared_store_async"},
-                    "index": {"route": "raft_async"},
-                },
-            },
-            default_kind="message",
-        )
-
-        records = [
-            {"record_type": "context_event", "event_id_hash": 1, "scope": scope, "node_hash": 44, "envelope": envelope, "text": "event"},
-            {"record_type": "context_index", "index_name": "source_type:message", "ref_hash": 1, "scope": scope, "node_hash": 44, "envelope": envelope},
-            {"record_type": "context_entity", "entity_hash": 2, "scope": scope, "node_hash": 44, "envelope": envelope, "state": "entity"},
-        ]
-        materialized = [
-            record
-            for record in mcp_core.materialize_serving_record_batch(records)
-            if record.get("record_type") != "context_debug_record"
-        ]
-        by_type = {record["record_type"]: record for record in materialized}
-
-        self.assertEqual(by_type["context_event"]["storage_record_kind"], "context_event")
-        self.assertEqual(by_type["context_event"]["storage_route"]["route"], "shared_store_async")
-        self.assertEqual(by_type["context_event"]["storage_route"]["write_mode"], "async")
-        self.assertEqual(by_type["context_event"]["storage_route"]["durability"], "async")
-        self.assertTrue(by_type["context_event"]["storage_route"]["replica_read"])
-
-        self.assertEqual(by_type["context_index"]["storage_record_kind"], "index")
-        self.assertEqual(by_type["context_index"]["storage_route"]["route"], "raft_async")
-        self.assertEqual(by_type["context_index"]["storage_route"]["storage_family"], "raft")
-
-        self.assertEqual(by_type["context_entity"]["storage_record_kind"], "entity")
-        self.assertEqual(by_type["context_entity"]["storage_route"]["route"], "shared_store_async")
-        self.assertEqual(by_type["context_entity"]["storage_route"]["write_mode"], "async")
-        self.assertEqual(by_type["context_entity"]["storage_route"]["durability"], "async")
-        self.assertTrue(by_type["context_entity"]["storage_route"]["replica_read"])
-
     def test_native_context_pack_default_policy(self) -> None:
         mcp.MATRIXARK_MCP_PROFILE = "dev"
         mcp.MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK = ""
@@ -3445,7 +2542,6 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             "scope_key": "tenant=7",
             "node_hash": 9,
             "updated_at_ms": 1780000001000,
-            "scope": {"session_id": "session-raw"},
             "text": "raw must stay canonical",
             "internal_extraction": {"classification": "memory", "status": "observed"},
         }
@@ -3462,8 +2558,6 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(raw_payload["text"], "raw must stay canonical")
         self.assertIn("internal_extraction", raw_payload)
         self.assertNotIn("placement_key", raw_payload)
-        expected_session_index_key = f"matrixark:test:dual-write:raw_ingestion:session_index:{mcp_core.stable_hash('session-raw')}"
-        self.assertIn(expected_session_index_key, {entry["key"] for entry in raw_call["entries"]})
 
         self.assertEqual(serving_call["count_key"], "matrixark:test:dual-write:record_count")
         self.assertEqual(serving_call["count_value"], "1")
@@ -3505,7 +2599,6 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 "scope_key": "tenant=8",
                 "node_hash": 10,
                 "updated_at_ms": 1780000002000,
-                "envelope": {"scope": {"conversation_id": "conv-matrixkv"}},
                 "text": "matrixkv raw option",
             }
         )
@@ -3516,56 +2609,6 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(raw_call["append_options"]["append_path"], "matrixark_raw_ingestion_matrixkv_log")
         self.assertEqual(raw_call["append_options"]["raw_storage_backend"], "matrixkv")
         self.assertEqual(raw_call["entries"][0]["key"], "matrixkv:raw:messages:records:000000")
-        expected_session_index_key = f"matrixkv:raw:messages:session_index:{mcp_core.stable_hash('conv-matrixkv')}"
-        self.assertIn(expected_session_index_key, {entry["key"] for entry in raw_call["entries"]})
-
-    def test_direct_append_normalizes_matrixobject_raw_backend_aliases(self) -> None:
-        client = _NativeAppendClient()
-        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
-        adapter._client = client
-        adapter._storage_prefix = "matrixark:test:matrixobject-raw"
-        adapter._record_hash_key = f"{adapter._storage_prefix}:records"
-        adapter._index_key = f"{adapter._storage_prefix}:record_index"
-        adapter._count_key = f"{adapter._storage_prefix}:record_count"
-        adapter._raw_ingestion_prefix = "matrixobject:raw:messages"
-        adapter._raw_record_hash_key = f"{adapter._raw_ingestion_prefix}:records"
-        adapter._raw_count_key = f"{adapter._raw_ingestion_prefix}:record_count"
-        adapter._raw_storage_backend = "objectstore"
-        adapter._raw_entry_count_cache = None
-        adapter._shard_size = 1024
-        adapter._index_cache = None
-        adapter._records_cache = None
-        adapter._retrieval_candidate_cache = {}
-        adapter._retrieval_candidate_cache_lock = threading.RLock()
-        adapter._entry_count_cache = None
-        adapter._legacy_index_mode = False
-        adapter._records_lock = threading.RLock()
-        adapter._write_retries = 0
-        adapter._write_backoff_s = 0.0
-        adapter._write_throttle_s = 0.0
-
-        adapter.append(
-            {
-                "record_type": "context_event",
-                "event_id_hash": 993,
-                "tenant_hash": 8,
-                "scope_key": "tenant=8",
-                "node_hash": 10,
-                "updated_at_ms": 1780000003000,
-                "scope": {"session_id": "session-matrixobject"},
-                "text": "matrixobject raw option",
-            }
-        )
-
-        self.assertEqual(len(client.calls), 2)
-        raw_call = client.calls[0]
-        self.assertEqual(raw_call["count_key"], "matrixobject:raw:messages:record_count")
-        self.assertEqual(raw_call["append_options"]["append_path"], "matrixark_raw_ingestion_matrixobject_ref")
-        self.assertEqual(raw_call["append_options"]["raw_storage_backend"], "matrixobject")
-        self.assertEqual(raw_call["append_options"]["raw_message_store"], "matrixobject")
-        self.assertEqual(raw_call["entries"][0]["key"], "matrixobject:raw:messages:records:000000")
-        expected_session_index_key = f"matrixobject:raw:messages:session_index:{mcp_core.stable_hash('session-matrixobject')}"
-        self.assertIn(expected_session_index_key, {entry["key"] for entry in raw_call["entries"]})
 
     def test_direct_retrieval_records_reuses_candidate_cache_by_count_and_scope(self) -> None:
         records = [
@@ -4053,93 +3096,6 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             result["recall_policy"]["backend_retrieval_pushdown"]["execution_mode"],
             "native_context_pack",
         )
-
-    def test_direct_retrieve_reuses_native_context_pack_response_cache(self) -> None:
-        client = _NativeContextPackClient()
-        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
-        adapter._client = client
-        adapter._storage_prefix = "matrixark:test:native-pack-cache"
-        adapter._record_hash_key = f"{adapter._storage_prefix}:records"
-        adapter._index_key = f"{adapter._storage_prefix}:record_index"
-        adapter._count_key = f"{adapter._storage_prefix}:record_count"
-        adapter._entry_count_cache = None
-
-        request = {
-            "query": "Who approved the GPU budget?",
-            "scope": {"tenant_hash": 11, "user_hash": 22, "session_hash": 33},
-            "max_context_tokens": 2048,
-            "ranking": {"max_selected_refs": 8},
-            "include_retrieval_metrics": True,
-        }
-
-        first = adapter.retrieve(dict(request))
-        second = adapter.retrieve(dict(request))
-
-        self.assertEqual(len(client.calls), 1)
-        self.assertEqual(first["pack_id"], second["pack_id"])
-        self.assertTrue(second["retrieval_metrics"]["context_pack_response_cache_hit"])
-        self.assertEqual(adapter._direct_context_pack_response_cache_hits_total, 1)
-        self.assertEqual(adapter._direct_context_pack_response_cache_misses_total, 1)
-
-    def test_direct_retrieve_omits_verbose_native_contract_on_hot_path(self) -> None:
-        class HotPathNativeContextPackClient:
-            def __init__(self) -> None:
-                self.calls = []
-
-            def get_string(self, key: str) -> str:
-                if key.endswith(":record_count"):
-                    return "7"
-                return ""
-
-            def matrixark_retrieve_context_pack(self, **kwargs):
-                self.calls.append(kwargs)
-                return {
-                    "native_pack_assembly": True,
-                    "context_pack": {
-                        "context_pack_id": "hot-path-native-pack",
-                        "selected_refs": [{"ref_type": "event", "text": "native packed evidence"}],
-                    },
-                }
-
-        client = HotPathNativeContextPackClient()
-        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
-        adapter._client = client
-        adapter._storage_prefix = "matrixark:test:native-pack-hot-path"
-        adapter._record_hash_key = f"{adapter._storage_prefix}:records"
-        adapter._index_key = f"{adapter._storage_prefix}:record_index"
-        adapter._count_key = f"{adapter._storage_prefix}:record_count"
-        adapter._entry_count_cache = None
-
-        result = adapter.retrieve(
-            {
-                "query": "Who approved the GPU budget?",
-                "scope": {"tenant_hash": 11, "user_hash": 22, "session_hash": 33},
-                "max_context_tokens": 2048,
-                "ranking": {"max_selected_refs": 8},
-                "include_retrieval_metrics": True,
-            }
-        )
-
-        self.assertEqual(result["pack_id"], "hot-path-native-pack")
-        self.assertEqual(len(client.calls), 1)
-        request = client.calls[0]["request"]
-        self.assertEqual(request["storage_prefix"], "matrixark:test:native-pack-hot-path")
-        self.assertEqual(
-            request["normal_path_stages"],
-            [
-                "query_understanding",
-                "scope_filter",
-                "l0_l1_node_traversal",
-                "compact_secondary_index_prefilter",
-                "placement_key_candidate_fetch",
-                "native_score_rerank_pack",
-            ],
-        )
-        self.assertNotIn("required_native_apis", request)
-        self.assertNotIn("normalization_requirements", request)
-        self.assertNotIn("execution_plan_requirements", request)
-        self.assertNotIn("required_output", request)
-        self.assertEqual(result["retrieval_metrics"]["normal_path_stages"], request["normal_path_stages"])
 
     def test_direct_retrieve_derives_native_hash_scope_from_plain_ids(self) -> None:
         client = _NativeContextPackClient()
@@ -4856,7 +3812,6 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
     def test_rust_proxy_context_pack_requests_top_level_response(self) -> None:
         client = mcp.MatrixArkRustProxyClient.__new__(mcp.MatrixArkRustProxyClient)
         calls = []
-        client._context_pack_response_cache_enabled = False
 
         def fake_call_json(op: str, **kwargs: object) -> dict[str, object]:
             calls.append((op, kwargs))
@@ -4873,65 +3828,6 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(pack["context_pack"]["context_pack_id"], "pack-top-level")
         self.assertEqual(calls[0][0], "matrixark_retrieve_context_pack")
         self.assertTrue(calls[0][1]["top_level_response"])
-
-    def test_rust_proxy_context_pack_singleflight_collapses_concurrent_cache_miss(self) -> None:
-        client = mcp.MatrixArkRustProxyClient.__new__(mcp.MatrixArkRustProxyClient)
-        client._context_pack_response_cache_enabled = True
-        client._context_pack_response_cache_max_entries = 16
-        client._context_pack_response_cache_lock = threading.Lock()
-        client._context_pack_response_cache = OrderedDict()
-        client._context_pack_response_inflight = {}
-        client._context_pack_response_cache_hits_total = 0
-        client._context_pack_response_cache_misses_total = 0
-        client._context_pack_response_cache_updates_total = 0
-        client._context_pack_response_cache_invalidations_total = 0
-        client._context_pack_response_singleflight_waits_total = 0
-        client._context_pack_response_singleflight_wait_ms_total = 0.0
-        client._context_pack_response_singleflight_wait_ms_max = 0.0
-        client._metrics_lock = threading.Lock()
-        client._backpressure_timeout_s = 5.0
-        client.request_timeout_ms = 5000
-        calls = []
-        call_started = threading.Event()
-        release_call = threading.Event()
-
-        def fake_call_json(op: str, **kwargs: object) -> dict[str, object]:
-            calls.append((op, kwargs))
-            call_started.set()
-            self.assertTrue(release_call.wait(timeout=2.0))
-            return {"context_pack": {"context_pack_id": "singleflight-pack"}}
-
-        client._call_json = fake_call_json
-
-        results: list[dict[str, object]] = []
-        errors: list[BaseException] = []
-
-        def worker() -> None:
-            try:
-                results.append(
-                    client.matrixark_retrieve_context_pack(
-                        count_key="matrixark:test:record_count",
-                        record_hash_key="matrixark:test:records",
-                        shard_size=128,
-                        request={"query": "gpu", "scope": {}},
-                    )
-                )
-            except BaseException as exc:
-                errors.append(exc)
-
-        threads = [threading.Thread(target=worker) for _ in range(4)]
-        for thread in threads:
-            thread.start()
-        self.assertTrue(call_started.wait(timeout=2.0))
-        release_call.set()
-        for thread in threads:
-            thread.join(timeout=2.0)
-
-        self.assertFalse(errors)
-        self.assertEqual(len(results), 4)
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(client._context_pack_response_singleflight_waits_total, 3)
-        self.assertTrue(all(result["context_pack"]["context_pack_id"] == "singleflight-pack" for result in results))
 
     def test_production_retrieve_fails_closed_without_native_context_pack(self) -> None:
         mcp.MATRIXARK_MCP_PROFILE = "production"
@@ -5010,29 +3906,22 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertIn("matrixark_batch_uses_forced_sync_durable_writes", crate_append_body)
         self.assertNotIn("execute_empty(&engine", crate_append_body)
 
-    def test_rust_direct_sdk_binary_is_not_proxy_impl(self) -> None:
+    def test_rust_direct_sdk_bridge_has_production_binary(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         cargo = (repo / "sdk/rust/temporalstore/Cargo.toml").read_text()
-        proxy_source = (repo / "sdk/rust/temporalstore/src/bin/matrixark_rust_proxy.rs").read_text()
         direct_source = (repo / "sdk/rust/temporalstore/src/bin/matrixark_rust_direct_sdk.rs").read_text()
         implementation = (repo / "sdk/rust/temporalstore/src/bin/matrixark_rust_proxy_impl.rs").read_text()
+        backends = (repo / "tools/matrixark_mcp_backends.py").read_text()
         adapters = (repo / "tools/matrixark_mcp_temporal_adapters.py").read_text()
 
         self.assertIn('name = "matrixark_rust_direct_sdk"', cargo)
-        self.assertIn('name = "matrixark_rust_proxy"', cargo)
-        self.assertIn('include!("matrixark_rust_proxy_impl.rs")', proxy_source)
-        self.assertNotIn('include!("matrixark_rust_proxy_impl.rs")', direct_source)
-        self.assertIn("MatrixArk Rust direct SDK binding descriptor", direct_source)
-        self.assertIn("libtemporalstore_rust.so", direct_source)
-        self.assertIn("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_LIB", direct_source)
-        self.assertIn('"proxy_impl": false', direct_source)
-        self.assertIn('"stdio_proxy": false', direct_source)
-        self.assertNotIn("matrixark_rust_sdk_mode_is_direct", implementation)
-        self.assertNotIn("matrixark_rust_direct_sdk", implementation)
-        self.assertNotIn("rust-direct-sdk-bridge", implementation)
-        self.assertIn("class MatrixArkRustCdylibClient", adapters)
+        self.assertIn("Production-facing alias for the MatrixArk Rust direct SDK bridge", direct_source)
+        self.assertIn("matrixark_rust_sdk_mode_is_direct", implementation)
+        self.assertIn("matrixark_rust_direct_sdk", implementation)
+        self.assertIn("rust-direct-sdk-bridge", implementation)
+        self.assertIn("rust-direct-sdk-bridge", direct_source)
         self.assertIn("MatrixArkTemporalStoreRustDirectAdapter", adapters)
-        self.assertIn("rust-direct-cdylib", adapters)
+        self.assertIn("rust-direct-sdk-bridge", adapters)
 
     def test_rust_cdylib_direct_binding_exposes_native_matrixark_api(self) -> None:
         repo = Path(__file__).resolve().parents[1]
@@ -5040,7 +3929,6 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         rust_lib = (repo / "sdk/rust/temporalstore/src/lib.rs").read_text()
         adapter = (repo / "tools/matrixark_mcp_temporal_adapters.py").read_text()
         server = (repo / "tools/matrixark_mcp_server.py").read_text()
-        backends = (repo / "tools/matrixark_mcp_backends.py").read_text()
 
         self.assertIn('crate-type = ["rlib", "cdylib"]', cargo)
         for symbol in [
@@ -5058,9 +3946,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertIn("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_LIB", adapter)
         self.assertIn("rust_direct_cdylib_matrixark_batch_append_records", adapter)
         self.assertIn("rust_direct_cdylib_matrixark_retrieve_context_pack", adapter)
-        self.assertIn("--rust-direct-lib", backends)
-        self.assertIn("temporalstore-rust-direct", backends)
-        self.assertIn("rust_direct_lib", server)
+        self.assertIn("--rust-direct-lib", server)
         self.assertIn("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_LIB", server)
 
     def test_cpp_python_sdk_exposes_native_hash_scan(self) -> None:
