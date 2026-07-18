@@ -88,6 +88,25 @@ def _float_metric_or_default(metrics: dict[str, Any], name: str, default: float 
         return float(default)
 
 
+def _records_with_matrixark_write_debug(records: list[Json], **fields: Any) -> list[Json]:
+    """Copy records and attach raw-write lifecycle fields for hook diagnostics."""
+
+    if not records:
+        return []
+    cleaned = {key: value for key, value in fields.items() if value is not None}
+    out: list[Json] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        copied = dict(record)
+        existing = copied.get("matrixark_write_debug")
+        debug = dict(existing) if isinstance(existing, dict) else {}
+        debug.update(cleaned)
+        copied["matrixark_write_debug"] = debug
+        out.append(copied)
+    return out
+
+
 
 def _native_scope_with_hashes(scope: Json) -> Json:
     if not isinstance(scope, dict):
@@ -948,15 +967,49 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             and bool(getattr(self, "_direct_write_queue_enabled", False))
             and getattr(self, "_direct_write_queue_mode", "memory") == "memory"
         ):
-            self._enqueue_direct_write_item({"queue_mode": "raw_ingestion", "records": list(records)}, len(records))
+            queued_at_ms = now_ms()
+            queue_batch_id = f"raw:{queued_at_ms}:{stable_hash(json.dumps(records, sort_keys=True, separators=(',', ':')))}"
+            queued_records = _records_with_matrixark_write_debug(
+                records,
+                raw_storage_prefix=self._raw_ingestion_prefix,
+                write_path="async_memory_queue",
+                queue_mode="raw_ingestion",
+                queue_batch_id=queue_batch_id,
+                queued_at_ms=queued_at_ms,
+                queue_backend=getattr(self, "_direct_write_queue_mode", "memory"),
+                queue_depth_before=getattr(self, "_direct_write_queue", None).qsize() if hasattr(self, "_direct_write_queue") else 0,
+            )
+            self._enqueue_direct_write_item({"queue_mode": "raw_ingestion", "records": queued_records}, len(queued_records))
             return
         started_perf = time.perf_counter()
+        append_started_at_ms = now_ms()
+        records_to_write = _records_with_matrixark_write_debug(
+            records,
+            raw_storage_prefix=self._raw_ingestion_prefix,
+            write_path="direct_append" if allow_queue else "async_queue_flush",
+            append_started_at_ms=append_started_at_ms,
+        )
         with self._records_lock:
             count = self._raw_entry_count_cache if self._raw_entry_count_cache is not None else self._get_raw_count()
             sequence = count
             entries: list[Json] = []
-            for record in records:
+            for record in records_to_write:
                 record_key, record_id = self._raw_record_location(sequence)
+                debug = record.get("matrixark_write_debug") if isinstance(record.get("matrixark_write_debug"), dict) else {}
+                debug.update(
+                    {
+                        "persist_sequence": sequence,
+                        "persist_key": record_key,
+                        "persist_field": record_id,
+                        "persist_record_built_at_ms": now_ms(),
+                    }
+                )
+                if debug.get("flush_started_at_ms") and debug.get("queued_at_ms"):
+                    try:
+                        debug["queue_wait_ms"] = int(debug["flush_started_at_ms"]) - int(debug["queued_at_ms"])
+                    except (TypeError, ValueError):
+                        pass
+                record["matrixark_write_debug"] = debug
                 payload = json.dumps(record, sort_keys=True, separators=(",", ":"))
                 route = record.get("storage_route") if isinstance(record.get("storage_route"), dict) else {}
                 entries.append({"key": record_key, "field": record_id, "value": payload, "storage_route": route})
@@ -1467,6 +1520,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         memory_records: list[Json] = []
         raw_ingestion_records: list[Json] = []
         flushed = 0
+        flush_started_at_ms = now_ms()
+        flush_batch_id = f"flush:{flush_started_at_ms}:{stable_hash(str(len(items)))}"
         for item in items:
             if isinstance(item, dict) and item.get("queue_mode") == "temporalstore":
                 flushed += self._flush_direct_write_durable_field(str(item.get("field") or ""))
@@ -1479,6 +1534,13 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             else:
                 raise MatrixArkError("unknown direct write queue item")
         if raw_ingestion_records:
+            raw_ingestion_records = _records_with_matrixark_write_debug(
+                raw_ingestion_records,
+                flush_started_at_ms=flush_started_at_ms,
+                flush_batch_id=flush_batch_id,
+                flush_item_count=len(items),
+                flush_record_count=len(raw_ingestion_records),
+            )
             self._append_raw_ingestion_records(raw_ingestion_records, allow_queue=False)
             flushed += len(raw_ingestion_records)
         if memory_records:
