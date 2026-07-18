@@ -601,6 +601,8 @@ impl ByteRaftPeerPipelineState {
             reorder_entry_timeouts: self.reorder_entry_timeouts,
             reorder_dropped_packages: self.reorder_dropped_packages,
             stale_term_rejections: self.stale_term_rejections,
+            packet_loss_events: 0,
+            network_error_probe_transitions: 0,
             snapshot_sending: self.snapshot_sending,
             snapshot_installing: self.snapshot_installing,
             snapshot_installed_index: self.snapshot_installed_index,
@@ -9001,6 +9003,11 @@ impl RaftClusterInner {
             last_log_index: wal_last_log_index,
             released_segment_count: wal_released_segment_count,
             slow_fsync_backpressure_observed: wal_slow_fsync_backpressure_observed,
+            slow_fsync_threshold_ms: 0,
+            slow_fsync_count: u64::from(wal_slow_fsync_backpressure_observed),
+            consecutive_slow_fsync_count: u64::from(wal_slow_fsync_backpressure_observed),
+            max_fsync_elapsed_ms: 0,
+            compacted_after_slow_fsync_count: 0,
         });
         let wal_segment_lifecycle_present = rustraft_wal_evidence.segment_lifecycle_present;
         let pre_vote_enforced = self.config.enable_pre_vote;
@@ -10333,7 +10340,7 @@ fn append_byteraft_runtime_admin_prometheus(
     report: ByteRaftRuntimeAdminReport,
 ) {
     let rustraft_capability_report = rustraft_capability_report_from_byteraft_admin(&report);
-    let rustraft_metrics = ::rustraft::rustraft_reference_raft_runtime_capability_prometheus(
+    let rustraft_metrics = ::matrixraft::rustraft_reference_raft_runtime_capability_prometheus(
         &rustraft_capability_report,
         &[("kind", kind)],
     );
@@ -11486,12 +11493,12 @@ fn append_byteraft_local_status_prometheus(
 
 fn rustraft_capability_report_from_byteraft_admin(
     report: &ByteRaftRuntimeAdminReport,
-) -> ::rustraft::RustRaftReferenceRaftRuntimeCapabilityReport {
+) -> ::matrixraft::RustRaftReferenceRaftRuntimeCapabilityReport {
     let capability_evidence = report
         .capability_matrix
         .iter()
         .map(|capability| {
-            ::rustraft::rustraft_capability_evidence_from_fields(
+            ::matrixraft::rustraft_capability_evidence_from_fields(
                 capability.capability.clone(),
                 "temporalstore_byteraft_runtime_admin_report",
                 capability
@@ -11511,7 +11518,7 @@ fn rustraft_capability_report_from_byteraft_admin(
     if !report.ready {
         product_blockers.push("temporalstore:blocker:byteraft_admin_report_not_ready".to_string());
     }
-    ::rustraft::rustraft_runtime_capability_report_from_evidence(
+    ::matrixraft::rustraft_runtime_capability_report_from_evidence(
         capability_evidence,
         product_blockers,
     )

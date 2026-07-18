@@ -1,6 +1,6 @@
 use super::*;
 
-pub type RaftReadinessEvidenceBlocker = ::rustraft::RustRaftProcessReadinessBlocker;
+pub type RaftReadinessEvidenceBlocker = ::matrixraft::RustRaftProcessReadinessBlocker;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RaftDistributedReadiness {
@@ -108,7 +108,7 @@ pub struct RaftTemporalRaftRolloutReadiness {
 }
 
 pub type RaftProcessPathReadinessReport =
-    ::rustraft::RustRaftCrossPlaneProcessReadinessBlockerReport;
+    ::matrixraft::RustRaftCrossPlaneProcessReadinessBlockerReport;
 
 pub fn raft_temporal_raft_rollout_readiness() -> RaftTemporalRaftRolloutReadiness {
     raft_temporal_raft_rollout_readiness_from_reports(None, None)
@@ -118,14 +118,14 @@ pub fn raft_process_path_readiness_report_from_reports(
     data_node_report: &TemporalRaftDataNodeProcessRolloutReport,
     metaserver_report: &TemporalRaftMetaProcessRolloutReport,
 ) -> RaftProcessPathReadinessReport {
-    ::rustraft::rustraft_cross_plane_process_readiness_blocker_report(
+    ::matrixraft::rustraft_cross_plane_process_readiness_blocker_report(
         data_node_report,
         metaserver_report,
     )
 }
 
 fn raft_readiness_blocker_from_rustraft_blocker(
-    blocker: ::rustraft::RustRaftProcessReadinessBlocker,
+    blocker: ::matrixraft::RustRaftProcessReadinessBlocker,
 ) -> RaftReadinessEvidenceBlocker {
     blocker
 }
@@ -139,10 +139,10 @@ pub fn raft_temporal_raft_rollout_readiness_from_reports(
     let metaserver_process_startup_selects_temporal_raft = true;
     let durable_log_state_present = true;
     let data_node_real_process_rollout_validated = data_node_report
-        .map(::rustraft::rustraft_data_node_strict_process_rollout_validated)
+        .map(::matrixraft::rustraft_data_node_strict_process_rollout_validated)
         .unwrap_or(false);
     let metaserver_real_process_rollout_validated = metaserver_report
-        .map(::rustraft::rustraft_meta_strict_process_rollout_validated)
+        .map(::matrixraft::rustraft_meta_strict_process_rollout_validated)
         .unwrap_or(false);
     let multi_process_log_store_validation_present = data_node_report
         .map(|report| report.multi_process_log_store_validated)
@@ -183,7 +183,7 @@ pub fn raft_temporal_raft_rollout_readiness_from_reports(
                 + &operational_missing,
         );
         missing_evidence_fields.extend(
-            ::rustraft::rustraft_data_node_process_rollout_blockers(
+            ::matrixraft::rustraft_data_node_process_rollout_blockers(
                 "data_node_report",
                 data_node_report,
             )
@@ -203,7 +203,7 @@ pub fn raft_temporal_raft_rollout_readiness_from_reports(
                 + &operational_missing,
         );
         missing_evidence_fields.extend(
-            ::rustraft::rustraft_meta_process_rollout_blockers(
+            ::matrixraft::rustraft_meta_process_rollout_blockers(
                 "metaserver_report",
                 metaserver_report,
             )
@@ -393,9 +393,9 @@ pub fn raft_transport_security_readiness() -> RaftTransportSecurityReadiness {
     }
 }
 
-pub type RaftDeploymentMode = ::rustraft::RustRaftDeploymentMode;
+pub type RaftDeploymentMode = ::matrixraft::RustRaftDeploymentMode;
 
-pub type RaftProductionReadinessError = ::rustraft::RustRaftProductionReadinessError;
+pub type RaftProductionReadinessError = ::matrixraft::RustRaftProductionReadinessError;
 
 pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
     let temporal_raft_rollout = raft_temporal_raft_rollout_readiness();
@@ -425,7 +425,7 @@ fn distributed_raft_readiness_from_rollout(
     missing.extend(temporal_raft_rollout.missing.clone());
     missing.extend(metaserver_membership.missing.clone());
     missing_evidence_fields.extend(
-        ::rustraft::rustraft_named_readiness_blockers(
+        ::matrixraft::rustraft_named_readiness_blockers(
             "metaserver_owned_membership_workflow_missing",
             "raft_metaserver_membership_readiness.{networked_scheduler_transport_present,persisted_scheduler_task_state_present,real_data_node_group_execution_present}",
             metaserver_membership.missing.iter().map(String::as_str),
@@ -435,7 +435,7 @@ fn distributed_raft_readiness_from_rollout(
     );
     missing.extend(atomic_apply.missing.clone());
     missing_evidence_fields.extend(
-        ::rustraft::rustraft_named_readiness_blockers(
+        ::matrixraft::rustraft_named_readiness_blockers(
             "raft_atomic_apply_evidence_missing",
             "raft_atomic_apply_readiness.{storage_apply_fence_present,wal_fence_recovery_validation_present,snapshot_lifecycle_report_present,storage_mutation_atomic_commit_present,snapshot_install_atomic_commit_present,real_data_node_process_integration_present}",
             atomic_apply.missing.iter().map(String::as_str),
@@ -445,7 +445,7 @@ fn distributed_raft_readiness_from_rollout(
     );
     missing.extend(transport_security.missing.clone());
     missing_evidence_fields.extend(
-        ::rustraft::rustraft_named_readiness_blockers(
+        ::matrixraft::rustraft_named_readiness_blockers(
             "raft_transport_security_evidence_missing",
             "raft_transport_security_readiness.{auth_token_validation_present,mtls_cert_key_ca_validation_present,authenticated_http_transport_present,plaintext_local_chaos_guard_present,service_process_mtls_enforcement_present}",
             transport_security.missing.iter().map(String::as_str),
@@ -455,7 +455,7 @@ fn distributed_raft_readiness_from_rollout(
     );
     missing.extend(external_chaos.missing.clone());
     missing_evidence_fields.extend(
-        ::rustraft::rustraft_named_readiness_blockers(
+        ::matrixraft::rustraft_named_readiness_blockers(
             "raft_external_chaos_evidence_missing",
             "raft_external_chaos_readiness.{local_os_process_restart_failover_present,stale_read_partition_heal_present,lagging_follower_catchup_present,networked_membership_snapshot_present,storage_replay_gate_present,external_packet_loss_present,external_disk_pressure_present,external_process_chaos_present}",
             external_chaos.missing.iter().map(String::as_str),
@@ -506,7 +506,7 @@ pub fn validate_raft_deployment_mode(
     mode: RaftDeploymentMode,
 ) -> Result<RaftDistributedReadiness, RaftProductionReadinessError> {
     let readiness = distributed_raft_readiness();
-    match ::rustraft::rustraft_validate_deployment_readiness(
+    match ::matrixraft::rustraft_validate_deployment_readiness(
         mode,
         readiness.production_ready,
         readiness.missing.clone(),
