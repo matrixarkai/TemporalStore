@@ -15,7 +15,19 @@ from typing import Any
 
 
 Json = dict[str, Any]
-DEFAULT_ADDITIONAL_CONTEXT_CHAR_LIMIT = 12000
+
+
+def _default_additional_context_char_limit() -> int:
+    try:
+        return max(
+            1000,
+            int(os.environ.get("MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT", "40000")),
+        )
+    except ValueError:
+        return 40000
+
+
+DEFAULT_ADDITIONAL_CONTEXT_CHAR_LIMIT = _default_additional_context_char_limit()
 
 RESOURCE_TYPE_BY_SUFFIX = {
     ".md": "md",

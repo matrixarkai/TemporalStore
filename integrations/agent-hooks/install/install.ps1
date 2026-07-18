@@ -42,7 +42,8 @@ MATRIXARK_ACCOUNT_ID=acct_local
 MATRIXARK_TENANT_ID=tenant_codex
 MATRIXARK_USER_ID=$env:USERNAME
 MATRIXARK_TEAM=agent
-MATRIXARK_MAX_CONTEXT_TOKENS=2400
+MATRIXARK_MAX_CONTEXT_TOKENS=10000
+MATRIXARK_HOOK_ADDITIONAL_CONTEXT_CHAR_LIMIT=40000
 "@ | Set-Content -Path (Join-Path $Dest ".env") -Encoding ASCII
 Copy-Item (Join-Path $Dest ".env") (Join-Path $Dest ".env.example") -Force
 
