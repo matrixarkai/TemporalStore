@@ -11,12 +11,15 @@ REPLICA_OPS="${REPLICA_OPS:-${OPS}}"
 REPLICA_WAIT_MS="${REPLICA_WAIT_MS:-10000}"
 THREAD_LIST="${THREAD_LIST:-2 4}"
 THREAD_LIST="${THREAD_LIST//,/ }"
+MODE_LIST="${MODE_LIST:-shared_async shared_sync raft}"
+MODE_LIST="${MODE_LIST//,/ }"
 VALUE_BYTES="${VALUE_BYTES:-256}"
 BASE_PORT="${BASE_PORT:-41000}"
 BENCH_TIMEOUT_S="${BENCH_TIMEOUT_S:-600}"
 RUN_FAILOVER="${RUN_FAILOVER:-1}"
 DATA_RAFT_RAFT_PORT_DELTA="${DATA_RAFT_RAFT_PORT_DELTA:-1000}"
 DATA_RAFT_SNAPSHOT_PORT_DELTA="${DATA_RAFT_SNAPSHOT_PORT_DELTA:-2000}"
+DATA_RAFT_SETTLE_MS="${DATA_RAFT_SETTLE_MS:-30000}"
 
 ensure_image() {
   if docker image inspect "${IMAGE}" >/dev/null 2>&1 && [[ "${REBUILD_DOCKER_IMAGE:-0}" != "1" ]]; then
@@ -234,7 +237,10 @@ run_case() {
     done < <(temporalstore_replicator_loop_flags)
   elif [[ "${mode}" == "raft" ]]; then
     table_election_policy="PROMOTE_SECONDARY"
-    table_relation="INDEPENDENT"
+    # Data-raft replicas must share one raft group. This matches the dedicated
+    # data-raft scale/failover harnesses and prevents independent per-replica
+    # groups from fighting learner promotion and leadership transfer locally.
+    table_relation="ANTI_ENTROPY"
     server_extra_flags+=("--data_replication_mode=raft_consensus")
     server_extra_flags+=("--data_raft_work_dir=${smoke_dir}/data-raft")
     server_extra_flags+=("--data_raft_raft_port_delta=${DATA_RAFT_RAFT_PORT_DELTA}")
@@ -306,8 +312,36 @@ run_case() {
   leader="$(awk '/metaserver leader:/ {print $3}' "${case_dir}/bootstrap.log")"
   echo "${leader}" > "${case_dir}/leader.txt"
 
-  timeout 120 "${BIN_DIR}/replication_smoke_example" "${leader}" vdc1 ns1 table1 \
-    > "${case_dir}/replication_smoke.out" 2> "${case_dir}/replication_smoke.err"
+  local replication_code=1
+  for attempt in $(seq 1 60); do
+    set +e
+    timeout 120 "${BIN_DIR}/replication_smoke_example" "${leader}" vdc1 ns1 table1 \
+      > "${case_dir}/replication_smoke.out" 2> "${case_dir}/replication_smoke.err"
+    replication_code=$?
+    set -e
+    if [[ "${replication_code}" == "0" ]]; then
+      break
+    fi
+    if ! grep -q "Slot not found" "${case_dir}/replication_smoke.err"; then
+      break
+    fi
+    echo "replication smoke attempt ${attempt} hit Slot not found; waiting for topology install" \
+      | tee -a "${case_dir}/replication_smoke_retry.log"
+    sleep 1
+  done
+  echo "${replication_code}" > "${case_dir}/replication_smoke.exit_code"
+  if [[ "${replication_code}" != "0" ]]; then
+    cat "${case_dir}/replication_smoke.err" >&2 || true
+    return "${replication_code}"
+  fi
+  if [[ "${mode}" == "raft" && "${DATA_RAFT_SETTLE_MS}" != "0" ]]; then
+    echo "waiting ${DATA_RAFT_SETTLE_MS}ms for data raft membership to settle before scale phases" \
+      | tee -a "${case_dir}/raft_settle.log"
+    sleep "$(python3 - <<PY
+print(max(0.0, int("${DATA_RAFT_SETTLE_MS}") / 1000.0))
+PY
+)"
+  fi
 
   set +e
   timeout "${BENCH_TIMEOUT_S}" "${BIN_DIR}/string_scale_benchmark" "${leader}" vdc1 ns1 table1 \
@@ -345,7 +379,7 @@ run_case() {
 }
 
 ordinal=0
-for mode in shared_async shared_sync raft; do
+for mode in ${MODE_LIST}; do
   for threads in ${THREAD_LIST}; do
     echo "RUN mode=${mode} threads=${threads}"
     run_case "${mode}" "${threads}" "${ordinal}"

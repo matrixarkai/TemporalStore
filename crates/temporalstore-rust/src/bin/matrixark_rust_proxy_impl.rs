@@ -45,8 +45,6 @@ struct RecordLogRequest {
     #[serde(default)]
     entries_compact: Vec<CompactHashEntry>,
     #[serde(default)]
-    entries_for_key: Vec<CompactFieldEntry>,
-    #[serde(default)]
     append_options: Value,
     #[serde(default)]
     count_key: Option<String>,
@@ -70,8 +68,6 @@ struct RecordLogRequest {
     visibility_keys: Vec<String>,
     #[serde(default)]
     top_level_response: bool,
-    #[serde(default)]
-    compact_read_response: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -85,137 +81,6 @@ struct HashEntry {
 #[derive(Clone, Debug, Deserialize)]
 struct CompactHashEntry(String, String, String);
 
-#[derive(Clone, Debug, Deserialize)]
-struct CompactFieldEntry(String, String);
-
-fn single_hash_key(
-    key_entries_key: Option<&str>,
-    entries: &[HashEntry],
-    compact_entries: &[CompactHashEntry],
-    entries_for_key: &[CompactFieldEntry],
-) -> Option<String> {
-    let mut key: Option<&str> = if entries_for_key.is_empty() {
-        None
-    } else {
-        key_entries_key
-    };
-    for entry in entries {
-        match key {
-            Some(existing) if existing != entry.key => return None,
-            Some(_) => {}
-            None => key = Some(&entry.key),
-        }
-    }
-    for CompactHashEntry(candidate, _, _) in compact_entries {
-        match key {
-            Some(existing) if existing != candidate => return None,
-            Some(_) => {}
-            None => key = Some(candidate),
-        }
-    }
-    key.map(str::to_string)
-}
-
-fn hash_multi_set_commands(
-    key_entries_key: String,
-    entries: Vec<HashEntry>,
-    compact_entries: Vec<CompactHashEntry>,
-    entries_for_key: Vec<CompactFieldEntry>,
-) -> Vec<Command> {
-    let count = entries.len() + compact_entries.len() + entries_for_key.len();
-    if count == 0 {
-        return Vec::new();
-    }
-    if let Some(key) = single_hash_key(
-        Some(key_entries_key.as_str()),
-        &entries,
-        &compact_entries,
-        &entries_for_key,
-    ) {
-        let mut values = Vec::with_capacity(count);
-        for CompactFieldEntry(field, value) in entries_for_key {
-            values.push((field, value.into_bytes()));
-        }
-        for entry in entries {
-            values.push((entry.field, entry.value.into_bytes()));
-        }
-        for CompactHashEntry(_, field, value) in compact_entries {
-            values.push((field, value.into_bytes()));
-        }
-        return vec![Command::HashMultiSet {
-            key,
-            entries: values,
-        }];
-    }
-    let mut grouped: HashMap<String, Vec<(String, Vec<u8>)>> = HashMap::with_capacity(count);
-    for entry in entries {
-        grouped
-            .entry(entry.key)
-            .or_default()
-            .push((entry.field, entry.value.into_bytes()));
-    }
-    for CompactHashEntry(key, field, value) in compact_entries {
-        grouped
-            .entry(key)
-            .or_default()
-            .push((field, value.into_bytes()));
-    }
-    for CompactFieldEntry(field, value) in entries_for_key {
-        grouped
-            .entry(key_entries_key.clone())
-            .or_default()
-            .push((field, value.into_bytes()));
-    }
-    grouped
-        .into_iter()
-        .map(|(key, entries)| Command::HashMultiSet { key, entries })
-        .collect::<Vec<_>>()
-}
-
-fn hash_multi_get_groups(
-    key_entries_key: String,
-    entries: Vec<HashEntry>,
-    compact_entries: Vec<CompactHashEntry>,
-    entries_for_key: Vec<CompactFieldEntry>,
-) -> Vec<(String, Vec<String>)> {
-    let count = entries.len() + compact_entries.len() + entries_for_key.len();
-    if count == 0 {
-        return Vec::new();
-    }
-    if let Some(key) = single_hash_key(
-        Some(key_entries_key.as_str()),
-        &entries,
-        &compact_entries,
-        &entries_for_key,
-    ) {
-        let mut fields = Vec::with_capacity(count);
-        for CompactFieldEntry(field, _) in entries_for_key {
-            fields.push(field);
-        }
-        for entry in entries {
-            fields.push(entry.field);
-        }
-        for CompactHashEntry(_, field, _) in compact_entries {
-            fields.push(field);
-        }
-        return vec![(key, fields)];
-    }
-    let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for entry in entries {
-        grouped.entry(entry.key).or_default().push(entry.field);
-    }
-    for CompactHashEntry(key, field, _) in compact_entries {
-        grouped.entry(key).or_default().push(field);
-    }
-    for CompactFieldEntry(field, _) in entries_for_key {
-        grouped
-            .entry(key_entries_key.clone())
-            .or_default()
-            .push(field);
-    }
-    grouped.into_iter().collect::<Vec<_>>()
-}
-
 #[derive(Debug, Serialize)]
 struct HashReadRecord {
     key: String,
@@ -227,6 +92,7 @@ struct HashReadRecord {
 struct CachedRetrieveCandidate {
     selected_ref: Value,
     lower_text: String,
+    ref_type: String,
 }
 
 #[derive(Clone, Debug)]
@@ -237,11 +103,15 @@ struct RetrieveCandidateSnapshot {
     index_postings_read: usize,
 }
 
-#[derive(Clone, Debug, Default)]
-struct BackendOpStats {
-    commands_total: u64,
-    latency_ms_total: u128,
-    latency_ms_max: u128,
+struct NativeScoredCandidate {
+    score: f64,
+    record: Value,
+    text: String,
+    tokens: u64,
+    context_class: String,
+    session_continuity: String,
+    continuity_boost_value: f64,
+    cross_session_rerank_boost_value: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -452,7 +322,6 @@ fn serve() -> i32 {
     let mut latency_sum_ms: u128 = 0;
     let mut latency_max_ms: u128 = 0;
     let mut latency_buckets = [0_u64; LATENCY_BUCKETS_MS.len()];
-    let mut op_stats = BTreeMap::<String, BackendOpStats>::new();
     for line in stdin.lock().lines() {
         let line = match line {
             Ok(value) => value,
@@ -516,24 +385,6 @@ fn serve() -> i32 {
                 };
                 Ok(("metrics_prometheus".to_string(), output))
             }
-            Ok(request) if request.op == "matrixark_backend_metrics" => {
-                let output = RecordLogOutput {
-                    mode: matrixark_rust_service_mode().to_string(),
-                    cached_clients: Some(cached_engine_count()),
-                    extra: render_backend_metrics(
-                        started_at_ms,
-                        command_count,
-                        failed_count,
-                        records_written,
-                        records_read,
-                        latency_sum_ms,
-                        latency_max_ms,
-                        &op_stats,
-                    ),
-                    ..empty_output(PathBuf::new())
-                };
-                Ok(("matrixark_backend_metrics".to_string(), output))
-            }
             Ok(request) => run_request(request),
             Err(error) => Err((
                 "unknown".to_string(),
@@ -554,19 +405,6 @@ fn serve() -> i32 {
         }
         if !response.ok {
             failed_count += 1;
-        }
-        if !matches!(
-            response.op.as_str(),
-            "metrics_prometheus"
-                | "matrixark_backend_metrics"
-                | "health"
-                | "readiness"
-                | "preflight"
-        ) {
-            let stats = op_stats.entry(response.op.clone()).or_default();
-            stats.commands_total = stats.commands_total.saturating_add(1);
-            stats.latency_ms_total = stats.latency_ms_total.saturating_add(observed_elapsed_ms);
-            stats.latency_ms_max = stats.latency_ms_max.max(observed_elapsed_ms);
         }
         records_written += match response.op.as_str() {
             "put_string" | "hset" => 1,
@@ -611,12 +449,30 @@ fn run_request(request: RecordLogRequest) -> Result<(String, RecordLogOutput), (
     Ok((op, output))
 }
 
+fn matrixark_rust_sdk_mode_is_direct() -> bool {
+    matches!(
+        env::var("MATRIXARK_RUST_SDK_MODE").ok().as_deref(),
+        Some("direct_sdk" | "direct-sdk" | "native-binding" | "rust-direct")
+    ) || env::args()
+        .next()
+        .map(|arg| arg.contains("matrixark_rust_direct_sdk"))
+        .unwrap_or(false)
+}
+
 fn matrixark_rust_storage_mode() -> &'static str {
-    "rust-proxy"
+    if matrixark_rust_sdk_mode_is_direct() {
+        "rust-direct-sdk-bridge"
+    } else {
+        "rust-proxy"
+    }
 }
 
 fn matrixark_rust_service_mode() -> &'static str {
-    "rust_proxy_stdio"
+    if matrixark_rust_sdk_mode_is_direct() {
+        "long_lived_rust_direct_sdk_bridge"
+    } else {
+        "rust_proxy_stdio"
+    }
 }
 
 fn render_prometheus_metrics(
@@ -803,64 +659,6 @@ fn render_prometheus_metrics(
     output
 }
 
-fn render_backend_metrics(
-    started_at_ms: u128,
-    command_count: u64,
-    failed_count: u64,
-    records_written: u64,
-    records_read: u64,
-    latency_sum_ms: u128,
-    latency_max_ms: u128,
-    op_stats: &BTreeMap<String, BackendOpStats>,
-) -> BTreeMap<String, Value> {
-    let uptime_seconds = ((unix_ms().saturating_sub(started_at_ms)) as f64 / 1000.0).max(0.001);
-    let mut op_metrics = serde_json::Map::new();
-    for (op, stats) in op_stats {
-        let commands = stats.commands_total.max(1);
-        op_metrics.insert(
-            op.clone(),
-            json!({
-                "commands_total": stats.commands_total,
-                "latency_ms_total": stats.latency_ms_total as f64,
-                "latency_ms_avg": stats.latency_ms_total as f64 / commands as f64,
-                "latency_ms_max": stats.latency_ms_max as f64,
-            }),
-        );
-    }
-
-    let mut metrics = BTreeMap::new();
-    metrics.insert("backend".to_string(), json!("rust"));
-    metrics.insert(
-        "storage_mode".to_string(),
-        json!(matrixark_rust_storage_mode()),
-    );
-    metrics.insert(
-        "service_mode".to_string(),
-        json!(matrixark_rust_service_mode()),
-    );
-    metrics.insert("commands_total".to_string(), json!(command_count));
-    metrics.insert("errors_total".to_string(), json!(failed_count));
-    metrics.insert(
-        "qps".to_string(),
-        json!(command_count as f64 / uptime_seconds),
-    );
-    metrics.insert(
-        "rust_engine_ms_total".to_string(),
-        json!(latency_sum_ms as f64),
-    );
-    metrics.insert(
-        "rust_engine_ms_max".to_string(),
-        json!(latency_max_ms as f64),
-    );
-    metrics.insert("serialization_ms_total".to_string(), json!(0.0));
-    metrics.insert("proxy_queue_wait_ms_total".to_string(), json!(0.0));
-    metrics.insert("records_written_total".to_string(), json!(records_written));
-    metrics.insert("records_read_total".to_string(), json!(records_read));
-    metrics.insert("cached_clients".to_string(), json!(cached_engine_count()));
-    metrics.insert("op_metrics".to_string(), Value::Object(op_metrics));
-    metrics
-}
-
 fn bucket_quantile(
     latency_buckets: &[u64; LATENCY_BUCKETS_MS.len()],
     total: u64,
@@ -906,69 +704,27 @@ fn hgetall_snapshot_cache_has_entries() -> bool {
         .unwrap_or(false)
 }
 
-fn record_count_cache() -> &'static Mutex<HashMap<String, String>> {
-    static RECORD_COUNT_CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
-    RECORD_COUNT_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+fn record_count_cache() -> &'static Mutex<BTreeMap<String, String>> {
+    static RECORD_COUNT_CACHE: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
+    RECORD_COUNT_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
-fn retrieve_candidate_cache() -> &'static Mutex<HashMap<String, Arc<RetrieveCandidateSnapshot>>> {
+fn retrieve_candidate_cache() -> &'static Mutex<BTreeMap<String, Arc<RetrieveCandidateSnapshot>>> {
     static RETRIEVE_CANDIDATE_CACHE: OnceLock<
-        Mutex<HashMap<String, Arc<RetrieveCandidateSnapshot>>>,
+        Mutex<BTreeMap<String, Arc<RetrieveCandidateSnapshot>>>,
     > = OnceLock::new();
-    RETRIEVE_CANDIDATE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+    RETRIEVE_CANDIDATE_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
-fn retrieve_context_pack_response_cache() -> &'static Mutex<HashMap<String, Value>> {
-    static RETRIEVE_CONTEXT_PACK_RESPONSE_CACHE: OnceLock<Mutex<HashMap<String, Value>>> =
-        OnceLock::new();
-    RETRIEVE_CONTEXT_PACK_RESPONSE_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn matrixark_scan_cache() -> &'static Mutex<HashMap<String, Value>> {
-    static MATRIXARK_SCAN_CACHE: OnceLock<Mutex<HashMap<String, Value>>> = OnceLock::new();
-    MATRIXARK_SCAN_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+fn matrixark_scan_cache() -> &'static Mutex<BTreeMap<String, Value>> {
+    static MATRIXARK_SCAN_CACHE: OnceLock<Mutex<BTreeMap<String, Value>>> = OnceLock::new();
+    MATRIXARK_SCAN_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
 fn clear_matrixark_scan_cache() {
     if let Ok(mut cache) = matrixark_scan_cache().lock() {
         cache.clear();
     }
-}
-
-fn matrixark_scan_cache_key_prefix(cache_key: &str) -> Option<String> {
-    let value = serde_json::from_str::<Value>(cache_key).ok()?;
-    value
-        .get("count_key")
-        .and_then(Value::as_str)
-        .and_then(storage_prefix_from_key)
-        .or_else(|| {
-            value
-                .get("record_hash_key")
-                .and_then(Value::as_str)
-                .and_then(storage_prefix_from_key)
-        })
-}
-
-fn invalidate_matrixark_scan_cache_for_prefixes(prefixes: &HashSet<String>) {
-    if prefixes.is_empty() {
-        clear_matrixark_scan_cache();
-        return;
-    }
-    if let Ok(mut cache) = matrixark_scan_cache().lock() {
-        cache.retain(|cache_key, _| {
-            matrixark_scan_cache_key_prefix(cache_key)
-                .map(|prefix| !prefixes.contains(&prefix))
-                .unwrap_or(false)
-        });
-    }
-}
-
-fn invalidate_matrixark_scan_cache_for_keys<'a>(keys: impl IntoIterator<Item = &'a String>) {
-    let prefixes = keys
-        .into_iter()
-        .filter_map(|key| storage_prefix_from_key(key))
-        .collect::<HashSet<_>>();
-    invalidate_matrixark_scan_cache_for_prefixes(&prefixes);
 }
 
 fn is_record_count_key(key: &str) -> bool {
@@ -1008,23 +764,6 @@ fn retrieve_candidate_cache_key(
     format!("{storage_prefix}:candidate_snapshot:{count}:{scope_key}:{secondary_key}")
 }
 
-fn retrieve_context_pack_response_cache_key(
-    storage_prefix: &str,
-    count: usize,
-    scope: Option<&Value>,
-    secondary_groups: &[Vec<String>],
-    query: &str,
-    max_selected_refs: usize,
-) -> String {
-    let scope_key = scope
-        .and_then(|value| serde_json::to_string(value).ok())
-        .unwrap_or_default();
-    let secondary_key = serde_json::to_string(secondary_groups).unwrap_or_default();
-    format!(
-        "{storage_prefix}:context_pack_response:{count}:{scope_key}:{secondary_key}:{max_selected_refs}:{query}"
-    )
-}
-
 fn storage_prefix_from_key(key: &str) -> Option<String> {
     if let Some(prefix) = key.strip_suffix(":record_count") {
         return Some(prefix.to_string());
@@ -1050,12 +789,6 @@ fn matrixark_compact_snapshot_retrieve_enabled() -> bool {
         .unwrap_or(true)
 }
 
-fn matrixark_engine_context_pack_fast_path_enabled() -> bool {
-    env::var("MATRIXARK_RUST_PROXY_ENGINE_CONTEXT_PACK_FAST_PATH")
-        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
-        .unwrap_or(false)
-}
-
 fn invalidate_retrieve_candidate_cache(storage_prefix: &str) {
     if storage_prefix.trim().is_empty() {
         return;
@@ -1064,10 +797,6 @@ fn invalidate_retrieve_candidate_cache(storage_prefix: &str) {
     if let Ok(mut cache) = retrieve_candidate_cache().lock() {
         cache.retain(|key, _| !key.starts_with(&prefix));
     }
-    let response_prefix = format!("{storage_prefix}:context_pack_response:");
-    if let Ok(mut cache) = retrieve_context_pack_response_cache().lock() {
-        cache.retain(|key, _| !key.starts_with(&response_prefix));
-    }
 }
 
 fn invalidate_retrieve_candidate_cache_for_keys<'a>(keys: impl IntoIterator<Item = &'a String>) {
@@ -1075,21 +804,13 @@ fn invalidate_retrieve_candidate_cache_for_keys<'a>(keys: impl IntoIterator<Item
         .into_iter()
         .filter_map(|key| storage_prefix_from_key(key))
         .collect::<HashSet<_>>();
-    invalidate_retrieve_candidate_cache_for_prefixes(&prefixes);
+    invalidate_retrieve_candidate_cache_for_prefixes(prefixes);
 }
 
-fn invalidate_retrieve_candidate_cache_for_prefixes(prefixes: &HashSet<String>) {
+fn invalidate_retrieve_candidate_cache_for_prefixes(prefixes: HashSet<String>) {
     for prefix in prefixes {
         invalidate_retrieve_candidate_cache(&prefix);
     }
-}
-
-fn retrieve_context_pack_response_cache_max_entries() -> usize {
-    env::var("MATRIXARK_RUST_PROXY_CONTEXT_PACK_RESPONSE_CACHE_MAX_ENTRIES")
-        .ok()
-        .and_then(|value| value.trim().parse::<usize>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(512)
 }
 
 fn matrixark_scan_cache_key(command: &RecordLogRequest, count: u64) -> String {
@@ -2090,26 +1811,26 @@ fn increment_class_count(counts: &mut HashMap<String, u64>, class_name: &str) {
 
 fn pack_ref_from_record(
     record: &Value,
+    text: &str,
+    context_class: &str,
     score: f64,
     reason: &str,
     session_continuity: &str,
     continuity_boost_value: f64,
     cross_session_rerank_boost_value: f64,
 ) -> Value {
-    let ref_type = context_class_name(record);
-    let text = candidate_text(record);
     let continuity_reason = match session_continuity {
         "same_session" => "same-session continuity",
         "cross_session" => "cross-session memory bridge",
         _ => "session-neutral context",
     };
     json!({
-        "ref_type": ref_type,
+        "ref_type": context_class,
         "ref_hash": record_ref_hash(record).unwrap_or_else(|| record.get("record_id").and_then(Value::as_str).unwrap_or("").to_string()),
         "node_hash": record_node_hash(record),
         "node_path": record.get("node_path").cloned().unwrap_or_else(|| json!([])),
         "text": text,
-        "token_estimate": token_estimate(&candidate_text(record)),
+        "token_estimate": token_estimate(text),
         "score": (score * 1000000.0).round() / 1000000.0,
         "session_continuity": session_continuity,
         "continuity_boost": (continuity_boost_value * 1000000.0).round() / 1000000.0,
@@ -2223,19 +1944,23 @@ fn retrieve_context_pack_native(
     );
     let mut raw_candidate_class_counts: HashMap<String, u64> = HashMap::new();
     let mut text_candidate_class_counts: HashMap<String, u64> = HashMap::new();
-    for record in &records {
-        let context_class = context_class_name(record);
+    let mut prepared_records = Vec::with_capacity(records.len());
+    for record in records {
+        let context_class = context_class_name(&record);
         increment_class_count(&mut raw_candidate_class_counts, &context_class);
-        if !candidate_text(record).is_empty() {
+        let text = candidate_text(&record);
+        let tokens = token_estimate(&text);
+        if !text.is_empty() {
             increment_class_count(&mut text_candidate_class_counts, &context_class);
         }
+        prepared_records.push((record, context_class, text, tokens));
     }
     let score_started = Instant::now();
     let mut scored_candidate_class_counts: HashMap<String, u64> = HashMap::new();
     let mut score_threshold_dropped_class_counts: HashMap<String, u64> = HashMap::new();
-    let mut scored: Vec<(f64, Value, String, f64, f64)> = records
+    let mut scored: Vec<NativeScoredCandidate> = prepared_records
         .into_iter()
-        .filter(|record| {
+        .filter(|(record, _context_class, text, _tokens)| {
             matches!(
                 record
                     .get("record_type")
@@ -2248,10 +1973,9 @@ fn retrieve_context_pack_native(
                     | "context_summary"
                     | "resource_chunk"
                     | "skill_section"
-            ) && !candidate_text(record).is_empty()
+            ) && !text.is_empty()
         })
-        .filter_map(|record| {
-            let text = candidate_text(&record);
+        .filter_map(|(record, context_class, text, tokens)| {
             let mut score = sparse_query_score(&query_terms, &text);
             if matches!(
                 record.get("record_type").and_then(Value::as_str),
@@ -2265,7 +1989,6 @@ fn retrieve_context_pack_native(
             ) {
                 score += 0.06;
             }
-            let context_class = context_class_name(&record);
             let session_continuity =
                 session_continuity_status(&record, scope_for_continuity.as_ref());
             let continuity_boost_value =
@@ -2281,13 +2004,16 @@ fn retrieve_context_pack_native(
             score += type_priority_boost(&record, &context_class, &question_type);
             if score >= min_similarity_score {
                 increment_class_count(&mut scored_candidate_class_counts, &context_class);
-                Some((
+                Some(NativeScoredCandidate {
                     score,
                     record,
+                    text,
+                    tokens,
+                    context_class,
                     session_continuity,
                     continuity_boost_value,
                     cross_session_rerank_boost_value,
-                ))
+                })
             } else {
                 increment_class_count(&mut score_threshold_dropped_class_counts, &context_class);
                 None
@@ -2297,8 +2023,8 @@ fn retrieve_context_pack_native(
     let score_ms = score_started.elapsed().as_secs_f64() * 1000.0;
     scored.sort_by(|left, right| {
         right
-            .0
-            .partial_cmp(&left.0)
+            .score
+            .partial_cmp(&left.score)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     if scored.len() > max_global_candidates as usize {
@@ -2327,26 +2053,36 @@ fn retrieve_context_pack_native(
     let mut entity_bridge_selected_refs = 0_u64;
     let mut selected_cross_sessions: HashSet<String> = HashSet::new();
     let mut used_tokens = 0_u64;
-    for (
-        score,
-        record,
-        session_continuity,
-        continuity_boost_value,
-        cross_session_rerank_boost_value,
-    ) in scored
-    {
+    let has_scored_event_candidate = scored.iter().any(|candidate| candidate.context_class == "event");
+    let summary_allowed_for_question = matches!(
+        question_type.as_str(),
+        "broad" | "broad_exploration" | "exploration"
+    );
+    for candidate in scored {
         if selected.len() as u64 >= max_refs {
             break;
         }
-        let text = candidate_text(&record);
-        let tokens = token_estimate(&text);
-        let context_class = context_class_name(&record);
+        let NativeScoredCandidate {
+            score,
+            record,
+            text,
+            tokens,
+            context_class,
+            session_continuity,
+            continuity_boost_value,
+            cross_session_rerank_boost_value,
+        } = candidate;
         if used_tokens + tokens > remote_budget {
             dropped_over_budget += 1;
             increment_class_count(&mut budget_dropped_class_counts, &context_class);
             continue;
         }
         if !is_serving_selected_ref_class(&context_class) {
+            dropped_policy_ref += 1;
+            increment_class_count(&mut policy_dropped_class_counts, &context_class);
+            continue;
+        }
+        if context_class == "summary" && has_scored_event_candidate && !summary_allowed_for_question {
             dropped_policy_ref += 1;
             increment_class_count(&mut policy_dropped_class_counts, &context_class);
             continue;
@@ -2441,6 +2177,8 @@ fn retrieve_context_pack_native(
         }
         selected.push(pack_ref_from_record(
             &record,
+            &text,
+            &context_class,
             score,
             "native_rust_proxy_score_pack",
             &session_continuity,
@@ -2700,15 +2438,13 @@ fn execute_record_log_request(
         },
         "matrixark_publish_visibility" => {
             let visibility_key_count = request.visibility_keys.len();
-            let visibility_keys = request.visibility_keys.clone();
             let index_bytes = engine
-                .publish_shard_index_snapshot_for_keys(DEFAULT_SHARD_ID, visibility_keys.clone())
+                .publish_shard_index_snapshot_for_keys(
+                    DEFAULT_SHARD_ID,
+                    request.visibility_keys.clone(),
+                )
                 .map_err(|status| format!("{}: {}", status.code, status.message))?;
-            if visibility_key_count == 0 {
-                clear_matrixark_scan_cache();
-            } else {
-                invalidate_matrixark_scan_cache_for_keys(visibility_keys.iter());
-            }
+            clear_matrixark_scan_cache();
             let mut output = empty_output(root);
             output.status = "published".to_string();
             output.count = Some(index_bytes);
@@ -2763,15 +2499,21 @@ fn execute_record_log_request(
             empty_output(root)
         }
         "batch_hset" => {
-            let count = request.entries.len()
-                + request.entries_compact.len()
-                + request.entries_for_key.len();
-            let commands = hash_multi_set_commands(
-                request.key,
-                request.entries,
-                request.entries_compact,
-                request.entries_for_key,
-            );
+            let count = request.entries.len() + request.entries_compact.len();
+            let mut grouped: BTreeMap<String, Vec<(String, Vec<u8>)>> = BTreeMap::new();
+            for entry in request.entries {
+                grouped
+                    .entry(entry.key)
+                    .or_default()
+                    .push((entry.field, entry.value.into_bytes()));
+            }
+            for CompactHashEntry(key, field, value) in request.entries_compact {
+                grouped.entry(key).or_default().push((field, value.into_bytes()));
+            }
+            let commands = grouped
+                .into_iter()
+                .map(|(key, entries)| Command::HashMultiSet { key, entries })
+                .collect::<Vec<_>>();
             execute_empty_batch_runtime(&engine, commands, false)?;
             let mut output = empty_output(root);
             output.count = Some(count);
@@ -2779,13 +2521,24 @@ fn execute_record_log_request(
         }
         "matrixark_append_records" | "matrixark_batch_append_records" => {
             let mut count = request.entries.len() + request.entries_compact.len();
-            let mut commands = hash_multi_set_commands(
-                String::new(),
-                request.entries,
-                request.entries_compact,
-                Vec::new(),
-            );
-            commands.reserve(usize::from(!request.key.trim().is_empty()));
+            let mut grouped: BTreeMap<String, Vec<(String, Vec<u8>)>> = BTreeMap::new();
+            for entry in request.entries {
+                grouped
+                    .entry(entry.key)
+                    .or_default()
+                    .push((entry.field, entry.value.into_bytes()));
+            }
+            for CompactHashEntry(key, field, value) in request.entries_compact {
+                grouped
+                    .entry(key)
+                    .or_default()
+                    .push((field, value.into_bytes()));
+            }
+            let mut commands =
+                Vec::with_capacity(grouped.len() + usize::from(!request.key.trim().is_empty()));
+            for (key, entries) in grouped {
+                commands.push(Command::HashMultiSet { key, entries });
+            }
             if !request.key.trim().is_empty() {
                 commands.push(Command::StringSet {
                     key: request.key,
@@ -2823,12 +2576,16 @@ fn execute_record_log_request(
             output
         }
         "batch_hget" => {
-            let grouped_entries = hash_multi_get_groups(
-                request.key,
-                request.entries,
-                request.entries_compact,
-                request.entries_for_key,
-            );
+            let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            for entry in request.entries {
+                grouped.entry(entry.key).or_default().push(entry.field);
+            }
+            for CompactHashEntry(key, field, _) in request.entries_compact {
+                grouped.entry(key).or_default().push(field);
+            }
+            let mut records =
+                Vec::with_capacity(grouped.values().map(|fields| fields.len()).sum::<usize>());
+            let grouped_entries = grouped.into_iter().collect::<Vec<_>>();
             let commands = grouped_entries
                 .iter()
                 .map(|(key, fields)| Command::HashMultiGet {
@@ -2853,19 +2610,6 @@ fn execute_record_log_request(
                     response.responses.len()
                 ));
             }
-            let single_group_compact_response =
-                request.compact_read_response && grouped_entries.len() == 1;
-            let record_count = grouped_entries.iter().map(|(_, fields)| fields.len()).sum();
-            let mut records = if single_group_compact_response {
-                Vec::new()
-            } else {
-                Vec::with_capacity(record_count)
-            };
-            let mut entries = if single_group_compact_response {
-                BTreeMap::new()
-            } else {
-                BTreeMap::default()
-            };
             for ((key, fields), item) in grouped_entries.into_iter().zip(response.responses) {
                 if !item.status.ok {
                     return Err(format!("{}: {}", item.status.code, item.status.message));
@@ -2882,28 +2626,18 @@ fn execute_record_log_request(
                         })
                         .transpose()?
                         .unwrap_or_default();
-                    if single_group_compact_response {
-                        entries.insert(field, value);
-                    } else {
-                        records.push(HashReadRecord {
-                            key: key.clone(),
-                            field,
-                            value,
-                        });
-                    }
+                    records.push(HashReadRecord {
+                        key: key.clone(),
+                        field,
+                        value,
+                    });
                 }
             }
-            let mut output = empty_output(root);
-            output.count = Some(record_count);
-            output.records = records;
-            output.entries = entries;
-            if single_group_compact_response {
-                output.extra.insert(
-                    "compact_read_response".to_string(),
-                    json!("single_hash_entries"),
-                );
+            RecordLogOutput {
+                count: Some(records.len()),
+                records,
+                ..empty_output(root)
             }
-            output
         }
         "hget" => value_output(
             read_bytes(
@@ -2953,7 +2687,6 @@ fn validate_request(request: &RecordLogRequest) -> Result<(), String> {
         | "readiness"
         | "preflight"
         | "metrics_prometheus"
-        | "matrixark_backend_metrics"
         | "shutdown"
         | "matrixark_publish_visibility" => Ok(()),
         "put_string" | "get_string" | "delete" | "del" | "hgetall" | "scan_hash" => {
@@ -2973,14 +2706,8 @@ fn validate_request(request: &RecordLogRequest) -> Result<(), String> {
             require_non_empty("field", &request.field)
         }
         "batch_hset" | "batch_hget" => {
-            if request.entries.is_empty()
-                && request.entries_compact.is_empty()
-                && request.entries_for_key.is_empty()
-            {
+            if request.entries.is_empty() && request.entries_compact.is_empty() {
                 return Err("missing entries".to_string());
-            }
-            if !request.entries_for_key.is_empty() {
-                require_non_empty("key", &request.key)?;
             }
             for entry in &request.entries {
                 require_non_empty("key", &entry.key)?;
@@ -2990,17 +2717,9 @@ fn validate_request(request: &RecordLogRequest) -> Result<(), String> {
                 require_non_empty("key", key)?;
                 require_non_empty("field", field)?;
             }
-            for CompactFieldEntry(field, _) in &request.entries_for_key {
-                require_non_empty("field", field)?;
-            }
             Ok(())
         }
         "matrixark_append_records" | "matrixark_batch_append_records" => {
-            if !request.entries_for_key.is_empty() {
-                return Err(
-                    "entries_for_key is only supported for batch_hset and batch_hget".to_string(),
-                );
-            }
             if request.entries.is_empty()
                 && request.entries_compact.is_empty()
                 && request.key.trim().is_empty()
@@ -3182,7 +2901,6 @@ fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
 
 fn matrixark_proxy_block_store_options() -> BlockStoreOptions {
     let defaults = BlockStoreOptions::default();
-    let throughput_append_default = false;
     BlockStoreOptions {
         compression_enabled: env_bool_any(
             &[
@@ -3204,15 +2922,6 @@ fn matrixark_proxy_block_store_options() -> BlockStoreOptions {
                 "TS_PAGE_STORE_COMPRESSION_LEVEL",
             ],
             defaults.compression_level,
-        ),
-        sync_on_append: env_bool_any(
-            &[
-                "MATRIXARK_RUST_PROXY_BLOCK_STORE_SYNC_ON_APPEND",
-                "TEMPORALSTORE_BLOCK_STORE_SYNC_ON_APPEND",
-                "TS_BLOCK_STORE_SYNC_ON_APPEND",
-                "TS_PAGE_STORE_SYNC_ON_APPEND",
-            ],
-            throughput_append_default,
         ),
     }
 }
@@ -3402,9 +3111,9 @@ fn execute_empty_batch_runtime(
     for key in cache_invalidates {
         invalidate_hgetall_snapshot(&key);
     }
-    invalidate_retrieve_candidate_cache_for_prefixes(&retrieve_cache_prefixes);
+    invalidate_retrieve_candidate_cache_for_prefixes(retrieve_cache_prefixes);
     if invalidate_matrixark_scan_cache {
-        invalidate_matrixark_scan_cache_for_prefixes(&retrieve_cache_prefixes);
+        clear_matrixark_scan_cache();
     }
     Ok(())
 }
@@ -3450,203 +3159,6 @@ fn read_record_count(engine: &TemporalEngine, key: &str) -> Result<String, Strin
         }
     }
     Ok(value)
-}
-
-fn request_u64_field(record: &Value, keys: &[&str]) -> u64 {
-    keys.iter()
-        .find_map(|key| record.get(*key).and_then(Value::as_u64))
-        .unwrap_or_default()
-}
-
-fn request_optional_u32_field(record: &Value, key: &str) -> Option<u32> {
-    record
-        .get(key)
-        .and_then(Value::as_u64)
-        .and_then(|value| u32::try_from(value).ok())
-}
-
-fn request_optional_usize_field(record: &Value, key: &str) -> Option<usize> {
-    record
-        .get(key)
-        .and_then(Value::as_u64)
-        .and_then(|value| usize::try_from(value).ok())
-}
-
-fn estimate_context_tokens(text: &str) -> u64 {
-    ((text.len() as u64) / 4).max(1)
-}
-
-fn retrieve_context_pack_engine_native(
-    engine: &TemporalEngine,
-    request: &RecordLogRequest,
-    request_record: &Value,
-    root: PathBuf,
-) -> Result<Option<RecordLogOutput>, String> {
-    let tenant_hash = request_u64_field(request_record, &["tenant_hash"]);
-    let node_hash = request_u64_field(request_record, &["start_node_hash", "node_hash"]);
-    if tenant_hash == 0 || node_hash == 0 {
-        return Ok(None);
-    }
-    let query = if request.query.trim().is_empty() {
-        request_record
-            .get("query")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string()
-    } else {
-        request.query.clone()
-    };
-    let as_of_ms = request_u64_field(request_record, &["as_of_ms", "reference_time_ms"]);
-    let cold_end_time_ms = request_u64_field(request_record, &["end_time_ms", "reference_time_ms"]);
-    let compression_limit = request_optional_usize_field(request_record, "compression_limit").or_else(|| {
-        if request.max_selected_refs == 0 {
-            request_record
-                .pointer("/ranking/max_selected_refs")
-                .and_then(Value::as_u64)
-                .and_then(|value| usize::try_from(value).ok())
-        } else {
-            Some(request.max_selected_refs)
-        }
-    });
-    let started = Instant::now();
-    let response = engine.execute(ExecuteRequest {
-        shard_id: DEFAULT_SHARD_ID,
-        command: Command::ContextQueryNodeContext {
-            tenant_hash,
-            node_hash,
-            summary_level: request_optional_u32_field(request_record, "summary_level"),
-            as_of_ms,
-            cold_start_time_ms: request_u64_field(request_record, &["start_time_ms"]),
-            cold_end_time_ms,
-            compression_limit,
-        },
-    });
-    if !response.status.ok {
-        return Err(format!(
-            "{}: {}",
-            response.status.code, response.status.message
-        ));
-    }
-    let CommandResponse::ContextNodeContext {
-        node_exists,
-        node,
-        overall_summary_exists,
-        overall_summary,
-        cold_window_summaries,
-    } = response.response
-    else {
-        return Err("unexpected response for native context pack".to_string());
-    };
-
-    let mut selected_refs = Vec::new();
-    if let Some(summary) = overall_summary.as_ref() {
-        if !summary.text.is_empty() {
-            selected_refs.push(json!({
-                "ref_type": "summary",
-                "ref_hash": stable_hash64(&format!(
-                    "summary:{}:{}:{}",
-                    tenant_hash, summary.node_hash, summary.level
-                )),
-                "node_hash": summary.node_hash,
-                "event_time_ms": summary.valid_from_ms,
-                "score": 1.0,
-                "token_estimate": estimate_context_tokens(&summary.text),
-                "text": summary.text,
-            }));
-        }
-    }
-    let max_selected_refs = compression_limit.unwrap_or(usize::MAX);
-    for event in &cold_window_summaries {
-        if selected_refs.len() >= max_selected_refs {
-            break;
-        }
-        if event.summary.is_empty() {
-            continue;
-        }
-        selected_refs.push(json!({
-            "ref_type": "compression_event",
-            "ref_hash": event.compression_id_hash,
-            "node_hash": event.node_hash,
-            "event_time_ms": event.compressed_time_ms,
-            "score": 1.0,
-            "token_estimate": estimate_context_tokens(&event.summary),
-            "text": event.summary,
-        }));
-    }
-    if selected_refs.is_empty() {
-        return Ok(None);
-    }
-    let remote_context_refs = selected_refs
-        .iter()
-        .map(|reference| {
-            json!({
-                "type": reference.get("ref_type").cloned().unwrap_or(Value::Null),
-                "ref_hash": reference.get("ref_hash").cloned().unwrap_or(Value::Null),
-                "node_hash": reference.get("node_hash").cloned().unwrap_or(Value::Null),
-                "score": reference.get("score").cloned().unwrap_or(Value::Null),
-                "tokens": reference.get("token_estimate").cloned().unwrap_or(Value::Null),
-                "content": reference.get("text").cloned().unwrap_or(Value::Null),
-            })
-        })
-        .collect::<Vec<_>>();
-    let used_context_tokens = selected_refs
-        .iter()
-        .filter_map(|reference| reference.get("token_estimate").and_then(Value::as_u64))
-        .sum::<u64>();
-    let pack_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let selected_count = selected_refs.len();
-    let context_pack = json!({
-        "native_context_pack": true,
-        "context_pack_assembly": "native_rust_engine",
-        "context_pack_id": format!("rust-engine-{}-{}", unix_ms(), stable_hash64(&query)),
-        "tenant_hash": tenant_hash,
-        "start_node_hash": node_hash,
-        "query": query,
-        "node_exists": node_exists,
-        "node": node,
-        "overall_summary_exists": overall_summary_exists,
-        "overall_summary": overall_summary,
-        "cold_window_summaries": cold_window_summaries,
-        "selected_refs": selected_refs,
-        "remote_context_refs": remote_context_refs,
-        "used_context_tokens": used_context_tokens,
-        "used_remote_context_tokens": used_context_tokens,
-        "remote_context_budget_tokens": request_record.get("max_context_tokens").cloned().unwrap_or(Value::Null),
-        "retrieval_metrics": {
-            "query_plan_ms": 0.0,
-            "node_traversal_ms": 0.0,
-            "index_prefilter_ms": 0.0,
-            "candidate_fetch_ms": pack_ms,
-            "score_ms": 0.0,
-            "pack_ms": pack_ms,
-            "audit_ms": 0.0,
-            "selected_refs": selected_count,
-            "selected_ref_count": selected_count,
-            "native_pack_assembly": true,
-            "python_pack_fallback": false,
-            "raw_candidate_tables_returned": false,
-            "broad_scan_used": false,
-            "broad_scan_blocked": false,
-            "source": "rust_proxy_engine_context_pack"
-        }
-    });
-    let response = json!({
-        "ok": true,
-        "count": selected_count,
-        "native_pack_assembly": true,
-        "raw_records_returned": false,
-        "python_hot_path_records": 0,
-        "scan_count": 0,
-        "cache_hit": false,
-        "selected_ref_count": selected_count,
-        "dropped_ref_count": 0,
-        "retrieval_metrics": context_pack
-            .get("retrieval_metrics")
-            .cloned()
-            .unwrap_or_else(|| json!({})),
-        "context_pack": context_pack,
-    });
-    context_pack_response_to_output(response, root, request.top_level_response).map(Some)
 }
 
 fn load_retrieve_candidate_snapshot(
@@ -3736,9 +3248,15 @@ fn load_retrieve_candidate_snapshot(
             if selected_ref.is_null() {
                 None
             } else {
+                let ref_type = selected_ref
+                    .get("ref_type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
                 Some(CachedRetrieveCandidate {
                     selected_ref,
                     lower_text,
+                    ref_type,
                 })
             }
         })
@@ -3775,13 +3293,6 @@ fn retrieve_context_pack_output(
         .map(str::to_string)
         .unwrap_or_else(|| format!("{storage_prefix}:records"));
     let request_record = request.record.clone().unwrap_or_else(|| json!({}));
-    if matrixark_engine_context_pack_fast_path_enabled() {
-        if let Some(output) =
-            retrieve_context_pack_engine_native(engine, request, &request_record, root.clone())?
-        {
-            return Ok(output);
-        }
-    }
     let scope = request
         .scope
         .as_ref()
@@ -3812,6 +3323,15 @@ fn retrieve_context_pack_output(
                 })
         })
         .unwrap_or_default();
+    let (snapshot, candidate_cache_hit) = load_retrieve_candidate_snapshot(
+        engine,
+        &storage_prefix,
+        &record_hash_key,
+        count,
+        scope,
+        &secondary_groups,
+    )?;
+
     let requested_max_selected_refs = request.max_selected_refs.max(
         request_record
             .pointer("/ranking/max_selected_refs")
@@ -3833,57 +3353,36 @@ fn retrieve_context_pack_output(
     } else {
         request.query.clone()
     };
-    let response_cache_key = retrieve_context_pack_response_cache_key(
-        &storage_prefix,
-        count,
-        scope,
-        &secondary_groups,
-        &query,
-        max_selected_refs,
-    );
-    if let Ok(cache) = retrieve_context_pack_response_cache().lock() {
-        if let Some(cached) = cache.get(&response_cache_key) {
-            let mut response = cached.clone();
-            if let Some(object) = response.as_object_mut() {
-                object.insert("cache_hit".to_string(), json!(true));
-                object.insert("context_pack_response_cache_hit".to_string(), json!(true));
-                if let Some(metrics) = object
-                    .get_mut("retrieval_metrics")
-                    .and_then(Value::as_object_mut)
-                {
-                    metrics.insert("cache_hit".to_string(), json!(true));
-                    metrics.insert("candidate_cache_hit".to_string(), json!(true));
-                    metrics.insert("context_pack_response_cache_hit".to_string(), json!(true));
-                }
-                if let Some(pack) = object
-                    .get_mut("context_pack")
-                    .and_then(Value::as_object_mut)
-                {
-                    if let Some(metrics) = pack
-                        .get_mut("retrieval_metrics")
-                        .and_then(Value::as_object_mut)
-                    {
-                        metrics.insert("cache_hit".to_string(), json!(true));
-                        metrics.insert("candidate_cache_hit".to_string(), json!(true));
-                        metrics.insert("context_pack_response_cache_hit".to_string(), json!(true));
-                    }
-                }
-            }
-            return context_pack_response_to_output(response, root, request.top_level_response);
-        }
-    }
-    let (snapshot, candidate_cache_hit) = load_retrieve_candidate_snapshot(
-        engine,
-        &storage_prefix,
-        &record_hash_key,
-        count,
-        scope,
-        &secondary_groups,
-    )?;
     let query_terms = query_terms(&query);
+    let question_type = request_record
+        .get("question_type")
+        .and_then(Value::as_str)
+        .unwrap_or("fact");
+    let summary_allowed_for_question = matches!(
+        question_type,
+        "broad" | "broad_exploration" | "exploration"
+    );
+    let has_event_candidate = snapshot
+        .candidates
+        .iter()
+        .any(|candidate| candidate.ref_type == "event");
     let score_started = Instant::now();
-    let candidates = top_scored_candidates(&snapshot.candidates, &query_terms, max_selected_refs);
+    let mut candidates = Vec::with_capacity(snapshot.candidates.len());
+    for (ordinal, candidate) in snapshot.candidates.iter().enumerate() {
+        if candidate.ref_type == "summary" && has_event_candidate && !summary_allowed_for_question {
+            continue;
+        }
+        let score = score_lowered_text(&candidate.lower_text, &query_terms);
+        candidates.push((score, ordinal));
+    }
     let score_ms = score_started.elapsed().as_secs_f64() * 1000.0;
+    let keep = max_selected_refs.min(candidates.len());
+    if keep > 0 && candidates.len() > keep {
+        candidates
+            .select_nth_unstable_by(keep, |left, right| compare_scored_candidate(*left, *right));
+        candidates.truncate(keep);
+    }
+    candidates.sort_by(|left, right| compare_scored_candidate(*left, *right));
     let selected_refs: Vec<Value> = candidates
         .into_iter()
         .filter_map(|(_, ordinal)| snapshot.candidates.get(ordinal))
@@ -3916,7 +3415,6 @@ fn retrieve_context_pack_output(
             "selected_refs": selected_count,
             "dropped_refs": 0,
             "scanned_records": snapshot.scanned_records,
-            "candidate_score_strategy": "bounded_top_k",
             "index_postings_read": snapshot.index_postings_read,
             "placement_partitions_touched": snapshot.placement_partitions_touched,
             "candidate_cache_hit": candidate_cache_hit,
@@ -3962,33 +3460,10 @@ fn retrieve_context_pack_output(
             .unwrap_or_else(|| json!({})),
         "context_pack": pack,
     });
-    if let Ok(mut cache) = retrieve_context_pack_response_cache().lock() {
-        cache.insert(response_cache_key, response.clone());
-        let max_entries = retrieve_context_pack_response_cache_max_entries();
-        while cache.len() > max_entries {
-            if let Some(first_key) = cache.keys().next().cloned() {
-                cache.remove(&first_key);
-            } else {
-                break;
-            }
-        }
-    }
-    context_pack_response_to_output(response, root, request.top_level_response)
-}
-
-fn context_pack_response_to_output(
-    response: Value,
-    root: PathBuf,
-    top_level_response: bool,
-) -> Result<RecordLogOutput, String> {
-    let selected_count = response
-        .get("count")
-        .and_then(Value::as_u64)
-        .unwrap_or_default() as usize;
     let mut output = empty_output(root);
     output.count = Some(selected_count);
     output.mode = "rust_proxy_native_context_pack".to_string();
-    if top_level_response {
+    if request.top_level_response {
         if let Some(object) = response.as_object() {
             for (key, value) in object {
                 if !matches!(key.as_str(), "ok" | "count") {
@@ -4137,45 +3612,6 @@ fn compare_scored_candidate(left: (f64, usize), right: (f64, usize)) -> std::cmp
         .then_with(|| left.1.cmp(&right.1))
 }
 
-fn top_scored_candidates(
-    candidates: &[CachedRetrieveCandidate],
-    query_terms: &[String],
-    keep: usize,
-) -> Vec<(f64, usize)> {
-    if keep == 0 || candidates.is_empty() {
-        return Vec::new();
-    }
-    let keep = keep.min(candidates.len());
-    let mut top = Vec::with_capacity(keep);
-    for (ordinal, candidate) in candidates.iter().enumerate() {
-        let scored = (
-            score_lowered_text(&candidate.lower_text, query_terms),
-            ordinal,
-        );
-        if top.len() < keep {
-            top.push(scored);
-            if top.len() == keep {
-                top.sort_by(|left, right| compare_scored_candidate(*left, *right));
-            }
-            continue;
-        }
-        if compare_scored_candidate(scored, *top.last().expect("top is full"))
-            != std::cmp::Ordering::Less
-        {
-            continue;
-        }
-        let insertion = top
-            .binary_search_by(|candidate| compare_scored_candidate(*candidate, scored))
-            .unwrap_or_else(|index| index);
-        top.insert(insertion, scored);
-        top.pop();
-    }
-    if top.len() < keep {
-        top.sort_by(|left, right| compare_scored_candidate(*left, *right));
-    }
-    top
-}
-
 fn record_log_root(request: &RecordLogRequest) -> PathBuf {
     if let Ok(root) = env::var("MATRIXARK_TEMPORALSTORE_RUST_ROOT") {
         return PathBuf::from(root);
@@ -4319,7 +3755,6 @@ mod tests {
             max_selected_refs: 0,
             entries: Vec::new(),
             entries_compact: Vec::new(),
-            entries_for_key: Vec::new(),
             append_options: Value::Null,
             count_key: None,
             record_hash_key: None,
@@ -4332,133 +3767,7 @@ mod tests {
             record: None,
             visibility_keys: Vec::new(),
             top_level_response: false,
-            compact_read_response: false,
         }
-    }
-
-    #[test]
-    fn bounded_top_k_scoring_preserves_score_and_ordinal_order() {
-        let candidates = vec![
-            CachedRetrieveCandidate {
-                selected_ref: json!({"ref_hash": 1}),
-                lower_text: "alpha".to_string(),
-            },
-            CachedRetrieveCandidate {
-                selected_ref: json!({"ref_hash": 2}),
-                lower_text: "beta alpha".to_string(),
-            },
-            CachedRetrieveCandidate {
-                selected_ref: json!({"ref_hash": 3}),
-                lower_text: "beta".to_string(),
-            },
-            CachedRetrieveCandidate {
-                selected_ref: json!({"ref_hash": 4}),
-                lower_text: "gamma".to_string(),
-            },
-        ];
-        let terms = vec!["alpha".to_string(), "beta".to_string()];
-        let selected = top_scored_candidates(&candidates, &terms, 2);
-        assert_eq!(selected, vec![(1.0, 1), (0.5, 0)]);
-
-        let empty_query = top_scored_candidates(&candidates, &[], 3);
-        assert_eq!(empty_query, vec![(0.0, 0), (0.0, 1), (0.0, 2)]);
-    }
-
-    #[test]
-    fn engine_native_context_request_helpers_parse_numeric_fields() {
-        let record = json!({
-            "tenant_hash": 42,
-            "start_node_hash": 1001,
-            "node_hash": 1002,
-            "summary_level": 3,
-            "compression_limit": 8,
-        });
-        assert_eq!(request_u64_field(&record, &["tenant_hash"]), 42);
-        assert_eq!(
-            request_u64_field(&record, &["missing_node_hash", "start_node_hash", "node_hash"]),
-            1001
-        );
-        assert_eq!(request_optional_u32_field(&record, "summary_level"), Some(3));
-        assert_eq!(
-            request_optional_usize_field(&record, "compression_limit"),
-            Some(8)
-        );
-    }
-
-    #[test]
-    fn matrixark_backend_metrics_reports_op_breakdown() {
-        let mut op_stats = BTreeMap::new();
-        op_stats.insert(
-            "batch_hset".to_string(),
-            BackendOpStats {
-                commands_total: 2,
-                latency_ms_total: 30,
-                latency_ms_max: 20,
-            },
-        );
-        op_stats.insert(
-            "batch_hget".to_string(),
-            BackendOpStats {
-                commands_total: 1,
-                latency_ms_total: 7,
-                latency_ms_max: 7,
-            },
-        );
-
-        let metrics = render_backend_metrics(0, 3, 1, 12, 5, 37, 20, &op_stats);
-        assert_eq!(metrics["backend"], json!("rust"));
-        assert_eq!(metrics["commands_total"], json!(3));
-        assert_eq!(metrics["errors_total"], json!(1));
-        assert_eq!(metrics["records_written_total"], json!(12));
-        assert_eq!(metrics["records_read_total"], json!(5));
-        assert_eq!(metrics["rust_engine_ms_total"], json!(37.0));
-        assert_eq!(metrics["rust_engine_ms_max"], json!(20.0));
-
-        let op_metrics = metrics["op_metrics"].as_object().expect("op metrics");
-        assert_eq!(op_metrics["batch_hset"]["commands_total"], json!(2));
-        assert_eq!(op_metrics["batch_hset"]["latency_ms_total"], json!(30.0));
-        assert_eq!(op_metrics["batch_hset"]["latency_ms_avg"], json!(15.0));
-        assert_eq!(op_metrics["batch_hset"]["latency_ms_max"], json!(20.0));
-        assert_eq!(op_metrics["batch_hget"]["commands_total"], json!(1));
-        assert_eq!(op_metrics["batch_hget"]["latency_ms_avg"], json!(7.0));
-    }
-
-    #[test]
-    fn matrixark_scan_cache_invalidation_is_prefix_scoped() {
-        let mut first = request("matrixark_scan_candidates");
-        first.count_key = Some("matrixark:mcp:first:record_count".to_string());
-        first.record_hash_key = Some("matrixark:mcp:first:records".to_string());
-        let first_key = matrixark_scan_cache_key(&first, 3);
-
-        let mut second = request("matrixark_scan_candidates");
-        second.count_key = Some("matrixark:mcp:second:record_count".to_string());
-        second.record_hash_key = Some("matrixark:mcp:second:records".to_string());
-        let second_key = matrixark_scan_cache_key(&second, 7);
-
-        clear_matrixark_scan_cache();
-        {
-            let mut cache = matrixark_scan_cache().lock().expect("scan cache");
-            cache.insert(first_key.clone(), json!({"prefix": "first"}));
-            cache.insert(second_key.clone(), json!({"prefix": "second"}));
-            cache.insert("legacy-unscoped-key".to_string(), json!({"legacy": true}));
-        }
-
-        let prefixes = HashSet::from(["matrixark:mcp:first".to_string()]);
-        invalidate_matrixark_scan_cache_for_prefixes(&prefixes);
-
-        let cache = matrixark_scan_cache().lock().expect("scan cache");
-        assert!(
-            !cache.contains_key(&first_key),
-            "the touched prefix must be invalidated"
-        );
-        assert!(
-            cache.contains_key(&second_key),
-            "unrelated prefixes should keep their warm candidate scan"
-        );
-        assert!(
-            !cache.contains_key("legacy-unscoped-key"),
-            "unscoped cache keys are removed conservatively"
-        );
     }
 
     // shared-corpus: codex_mcp_temporalstore_rust_record_log_backend
@@ -4499,138 +3808,14 @@ mod tests {
     }
 
     #[test]
-    fn hash_multi_set_commands_fast_path_for_single_hash_key() {
-        let commands = hash_multi_set_commands(
-            String::new(),
-            vec![HashEntry {
-                key: "raw".to_string(),
-                field: "a".to_string(),
-                value: "1".to_string(),
-            }],
-            vec![CompactHashEntry(
-                "raw".to_string(),
-                "b".to_string(),
-                "2".to_string(),
-            )],
-            Vec::new(),
-        );
-        assert_eq!(commands.len(), 1);
-        match &commands[0] {
-            Command::HashMultiSet { key, entries } => {
-                assert_eq!(key, "raw");
-                assert_eq!(entries.len(), 2);
-                assert_eq!(entries[0].0, "a");
-                assert_eq!(entries[0].1, b"1");
-                assert_eq!(entries[1].0, "b");
-                assert_eq!(entries[1].1, b"2");
-            }
-            other => panic!("unexpected command: {other:?}"),
-        }
-
-        let commands = hash_multi_set_commands(
-            String::new(),
-            vec![HashEntry {
-                key: "raw-a".to_string(),
-                field: "a".to_string(),
-                value: "1".to_string(),
-            }],
-            vec![CompactHashEntry(
-                "raw-b".to_string(),
-                "b".to_string(),
-                "2".to_string(),
-            )],
-            Vec::new(),
-        );
-        assert_eq!(commands.len(), 2);
-    }
-
-    #[test]
-    fn hash_multi_get_groups_fast_path_for_single_hash_key() {
-        let groups = hash_multi_get_groups(
-            String::new(),
-            vec![HashEntry {
-                key: "raw".to_string(),
-                field: "a".to_string(),
-                value: String::new(),
-            }],
-            vec![CompactHashEntry(
-                "raw".to_string(),
-                "b".to_string(),
-                String::new(),
-            )],
-            Vec::new(),
-        );
-        assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].0, "raw");
-        assert_eq!(groups[0].1, vec!["a".to_string(), "b".to_string()]);
-
-        let groups = hash_multi_get_groups(
-            String::new(),
-            vec![HashEntry {
-                key: "raw-b".to_string(),
-                field: "b".to_string(),
-                value: String::new(),
-            }],
-            vec![CompactHashEntry(
-                "raw-a".to_string(),
-                "a".to_string(),
-                String::new(),
-            )],
-            Vec::new(),
-        );
-        assert_eq!(groups.len(), 2);
-        assert_eq!(groups[0].0, "raw-a");
-        assert_eq!(groups[1].0, "raw-b");
-    }
-
-    #[test]
-    fn batch_hget_can_return_compact_entries_for_single_hash_key() {
-        let _guard = env_guard();
-        let dir = tempdir().expect("tempdir");
-        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
-
-        let mut write = request("batch_hset");
-        write.key = "raw".to_string();
-        write.entries_for_key = vec![
-            CompactFieldEntry("0001".to_string(), "one".to_string()),
-            CompactFieldEntry("0002".to_string(), "two".to_string()),
-        ];
-        let engine = open_engine(&write).expect("engine");
-        execute_record_log_request(&engine, write, PathBuf::new()).expect("write batch");
-
-        let mut read = request("batch_hget");
-        read.key = "raw".to_string();
-        read.entries_for_key = vec![
-            CompactFieldEntry("0001".to_string(), String::new()),
-            CompactFieldEntry("0002".to_string(), String::new()),
-        ];
-        read.compact_read_response = true;
-        let output =
-            execute_record_log_request(&engine, read, PathBuf::new()).expect("read batch");
-
-        assert_eq!(output.count, Some(2));
-        assert!(output.records.is_empty());
-        assert_eq!(output.entries.get("0001").map(String::as_str), Some("one"));
-        assert_eq!(output.entries.get("0002").map(String::as_str), Some("two"));
-        assert_eq!(
-            output.extra.get("compact_read_response"),
-            Some(&json!("single_hash_entries"))
-        );
-    }
-
-    #[test]
     fn matrixark_proxy_block_store_options_default_to_throughput_threshold() {
         let _guard = env_guard();
         env::remove_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_ENABLED");
         env::remove_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_MIN_BYTES");
         env::remove_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_LEVEL");
-        env::remove_var("MATRIXARK_RUST_PROXY_BLOCK_STORE_SYNC_ON_APPEND");
         env::remove_var("TS_PAGE_STORE_COMPRESSION_ENABLED");
         env::remove_var("TS_PAGE_STORE_COMPRESSION_MIN_BYTES");
         env::remove_var("TS_PAGE_STORE_COMPRESSION_LEVEL");
-        env::remove_var("TEMPORALSTORE_BLOCK_STORE_SYNC_ON_APPEND");
-        env::remove_var("TS_BLOCK_STORE_SYNC_ON_APPEND");
-        env::remove_var("TS_PAGE_STORE_SYNC_ON_APPEND");
 
         let options = matrixark_proxy_block_store_options();
         assert!(options.compression_enabled);
@@ -4639,28 +3824,21 @@ mod tests {
             options.compression_level,
             BlockStoreOptions::default().compression_level
         );
-        assert!(!options.sync_on_append);
 
         env::set_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_ENABLED", "false");
         env::set_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_MIN_BYTES", "8192");
         env::set_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_LEVEL", "3");
-        env::set_var("MATRIXARK_RUST_PROXY_BLOCK_STORE_SYNC_ON_APPEND", "true");
         let overridden = matrixark_proxy_block_store_options();
         assert!(!overridden.compression_enabled);
         assert_eq!(overridden.compression_min_bytes, 8192);
         assert_eq!(overridden.compression_level, 3);
-        assert!(overridden.sync_on_append);
 
         env::remove_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_ENABLED");
         env::remove_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_MIN_BYTES");
         env::remove_var("MATRIXARK_RUST_PROXY_PAGE_COMPRESSION_LEVEL");
-        env::remove_var("MATRIXARK_RUST_PROXY_BLOCK_STORE_SYNC_ON_APPEND");
         env::remove_var("TS_PAGE_STORE_COMPRESSION_ENABLED");
         env::remove_var("TS_PAGE_STORE_COMPRESSION_MIN_BYTES");
         env::remove_var("TS_PAGE_STORE_COMPRESSION_LEVEL");
-        env::remove_var("TEMPORALSTORE_BLOCK_STORE_SYNC_ON_APPEND");
-        env::remove_var("TS_BLOCK_STORE_SYNC_ON_APPEND");
-        env::remove_var("TS_PAGE_STORE_SYNC_ON_APPEND");
     }
 
     // shared-corpus: codex_mcp_temporalstore_rust_record_log_backend
@@ -4950,8 +4128,9 @@ mod tests {
             format!("{storage_prefix}:record_count"),
             format!("{storage_prefix}:records:000000"),
         ];
-        let publish_output = execute_record_log_request(&engine, publish.clone(), root.clone())
-            .expect("publish selected visibility");
+        let publish_output =
+            execute_record_log_request(&engine, publish.clone(), root.clone())
+                .expect("publish selected visibility");
         assert!(
             publish_output.count.unwrap_or_default() > 0,
             "first targeted publish should persist selected hot pages"
@@ -4966,8 +4145,9 @@ mod tests {
             Some(&json!(false)),
             "targeted publish diagnostics should not look like a full-shard publish"
         );
-        let republish_output = execute_record_log_request(&engine, publish, root.clone())
-            .expect("republish selected visibility");
+        let republish_output =
+            execute_record_log_request(&engine, publish, root.clone())
+                .expect("republish selected visibility");
         assert_eq!(
             republish_output.count,
             Some(0),
@@ -5068,11 +4248,6 @@ mod tests {
                 .and_then(Value::as_bool),
             Some(false)
         );
-        assert_eq!(
-            pack.pointer("/retrieval_metrics/candidate_score_strategy")
-                .and_then(Value::as_str),
-            Some("bounded_top_k")
-        );
 
         let cached_output = execute_record_log_request(&engine, retrieve.clone(), root.clone())
             .expect("native retrieve cache hit through proxy op");
@@ -5098,60 +4273,6 @@ mod tests {
         assert_eq!(default_refs.len(), 2);
 
         env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
-    }
-
-    #[test]
-    fn hash_multi_set_groups_same_key_field_entries() {
-        let commands = hash_multi_set_commands(
-            "raw".to_string(),
-            Vec::new(),
-            Vec::new(),
-            vec![
-                CompactFieldEntry("0001".to_string(), "one".to_string()),
-                CompactFieldEntry("0002".to_string(), "two".to_string()),
-            ],
-        );
-        assert_eq!(commands.len(), 1);
-        match &commands[0] {
-            Command::HashMultiSet { key, entries } => {
-                assert_eq!(key, "raw");
-                assert_eq!(entries.len(), 2);
-                assert_eq!(entries[0].0, "0001");
-                assert_eq!(entries[0].1, b"one");
-                assert_eq!(entries[1].0, "0002");
-                assert_eq!(entries[1].1, b"two");
-            }
-            other => panic!("unexpected command: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn hash_multi_get_groups_same_key_field_entries() {
-        let groups = hash_multi_get_groups(
-            "raw".to_string(),
-            Vec::new(),
-            Vec::new(),
-            vec![
-                CompactFieldEntry("0001".to_string(), String::new()),
-                CompactFieldEntry("0002".to_string(), String::new()),
-            ],
-        );
-        assert_eq!(
-            groups,
-            vec![(
-                "raw".to_string(),
-                vec!["0001".to_string(), "0002".to_string()]
-            )]
-        );
-    }
-
-    #[test]
-    fn append_rejects_same_key_field_entries() {
-        let mut append = request("matrixark_batch_append_records");
-        append.key = "matrixark:test:raw:record_count".to_string();
-        append.entries_for_key = vec![CompactFieldEntry("0001".to_string(), "one".to_string())];
-        let error = validate_request(&append).expect_err("append should reject entries_for_key");
-        assert!(error.contains("entries_for_key is only supported"));
     }
 
     #[test]

@@ -83,6 +83,15 @@ class UnavailableDataRaftConsensusBackend final : public DataRaftConsensusBacken
         return Status::OK();
     }
 
+    Status IsPeerVoter(uint64_t replica_id, bool* voter) const override {
+        (void)replica_id;
+        if (voter == nullptr) {
+            return Status::InvalidArgument("missing data raft peer voter output");
+        }
+        *voter = false;
+        return Unavailable("inspect peer voter role");
+    }
+
     Status Propose(const std::string& serialized_entry, uint64_t* committed_index) override {
         (void)serialized_entry;
         (void)committed_index;
@@ -579,6 +588,23 @@ class ByteraftDataRaftConsensusBackend final : public DataRaftConsensusBackend {
              fatal = fatal->next) {
             ++status->fatal_event_count;
         }
+        return Status::OK();
+    }
+
+    Status IsPeerVoter(uint64_t replica_id, bool* voter) const override {
+        if (voter == nullptr) {
+            return Status::InvalidArgument("missing data raft peer voter output");
+        }
+        *voter = false;
+        if (raft_node_ == nullptr || !running_) {
+            return Status::FailedPrecondition("data raft node is not running");
+        }
+        byteraft::NodeId node;
+        Status status = FromByteraftStatus(raft_node_->ResolveAddress(replica_id, &node));
+        if (!status.ok()) {
+            return status;
+        }
+        *voter = !node.role_state.IsLearner();
         return Status::OK();
     }
 

@@ -1,8 +1,20 @@
 #!/usr/bin/env python3
-"""MatrixArk MCP server entrypoint and compatibility re-export layer."""
+"""MatrixArk MCP server entrypoint.
+
+The implementation is split into focused modules:
+- matrixark_mcp_core: shared primitives, extraction, scoring, traversal helpers
+- matrixark_access: account/tenant/user/API-key metadata and governance
+- matrixark_mcp_schemas: MCP tool schema catalog
+- matrixark_http: management portal HTTP facade
+
+This file keeps the MCP dispatch loop and process entrypoint while re-exporting
+storage adapters for compatibility with existing scripts.
+"""
 
 from __future__ import annotations
 
+import argparse
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
@@ -21,12 +33,18 @@ try:
         MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK,
         SUMMARY_REFRESH_INTERVAL_MS,
         SUMMARY_REFRESH_LIMIT,
+        DEFAULT_MAX_CONTEXT_TOKENS,
         Json,
         MatrixArkError,
         _mcp_debug_log,
-        enrich_scope_with_identity,
+        compact_context_pack_for_serving,
+        infer_query_type,
         is_retryable_temporalstore_error,
         json_text,
+        local_context_budget,
+        now_ms,
+        optional_object,
+        require_string,
         stable_hash,
     )
     from tools.matrixark_access import MatrixArkAccessManager
@@ -46,12 +64,6 @@ try:
     from tools.matrixark_mcp_requests import normalize_mcp_tool_request
     from tools.matrixark_mcp_retrieval import is_retrieval_tool
     from tools.matrixark_mcp_schemas import TOOLS
-    from tools.matrixark_mcp_server_metrics import MatrixArkServerMetricsMixin
-    from tools.matrixark_mcp_server_request_policy import (
-        MatrixArkBackpressureError,
-        MatrixArkServerRequestPolicyMixin,
-        native_context_pack_required,
-    )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
         MATRIXARK_ALLOW_LOCAL_BACKEND,
@@ -60,12 +72,18 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK,
         SUMMARY_REFRESH_INTERVAL_MS,
         SUMMARY_REFRESH_LIMIT,
+        DEFAULT_MAX_CONTEXT_TOKENS,
         Json,
         MatrixArkError,
         _mcp_debug_log,
-        enrich_scope_with_identity,
+        compact_context_pack_for_serving,
+        infer_query_type,
         is_retryable_temporalstore_error,
         json_text,
+        local_context_budget,
+        now_ms,
+        optional_object,
+        require_string,
         stable_hash,
     )
     from matrixark_access import MatrixArkAccessManager
@@ -85,12 +103,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_requests import normalize_mcp_tool_request
     from matrixark_mcp_retrieval import is_retrieval_tool
     from matrixark_mcp_schemas import TOOLS
-    from matrixark_mcp_server_metrics import MatrixArkServerMetricsMixin
-    from matrixark_mcp_server_request_policy import (
-        MatrixArkBackpressureError,
-        MatrixArkServerRequestPolicyMixin,
-        native_context_pack_required,
-    )
 
 
 __all__ = [
@@ -102,9 +114,7 @@ __all__ = [
     "MatrixArkTemporalStoreRustAdapter",
     "backend_ready_required",
     "default_mcp_backend",
-    "enrich_scope_with_identity",
     "main",
-    "native_context_pack_required",
     "production_profile_enabled",
     "validate_mcp_backend_policy",
 ]
@@ -132,7 +142,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     )
 
 
-class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin, MatrixArkServerMetricsMixin):
+class MatrixArkBackpressureError(MatrixArkError):
+    pass
+
+
+class MatrixArkMcpServer:
     IDEMPOTENT_WRITE_TOOLS = {
         "matrixark_ingest",
         "matrixark_batch_extract",
@@ -244,6 +258,73 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin, MatrixArkServerMetri
             return
         self.access.append_audit(action, identity, status=status, details=details)
 
+    def _backend_storage_mode_from_metrics(self, result: Json) -> str:
+        metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+        return str(metrics.get("mode") or result.get("gateway_mode") or metrics.get("audit_mode") or "unknown")
+
+    def _refresh_service_metric_gauges(self) -> None:
+        now = now_ms()
+        dirty_lag_ms = 0
+        import_lag_ms = 0
+        try:
+            backend_label = str(getattr(self.adapter, "_backend_label", lambda: "local")())
+            if python_hot_cache_allowed(backend_label=backend_label):
+                records = self.adapter.read_all()
+                dirty_times = [int(record.get("updated_at_ms") or record.get("created_at_ms") or now) for record in records if record.get("record_type") == "context_summary_dirty"]
+                import_times = [
+                    int(record.get("updated_at_ms") or record.get("created_at_ms") or now)
+                    for record in records
+                    if record.get("record_type") == "resource_import_task" and str(record.get("status") or "") in {"queued", "running"}
+                ]
+                if dirty_times:
+                    dirty_lag_ms = max(0, now - min(dirty_times))
+                if import_times:
+                    import_lag_ms = max(0, now - min(import_times))
+            else:
+                _mcp_debug_log("matrixark metrics gauge refresh skipped Python read_all in thin native profile")
+        except Exception as exc:
+            _mcp_debug_log(f"matrixark metrics gauge refresh failed: {exc}")
+        queue_depth = 0
+        queue_obj = getattr(self.adapter, "_resource_import_queue", None)
+        if queue_obj is not None:
+            try:
+                queue_depth = int(queue_obj.qsize())
+            except Exception:
+                queue_depth = 0
+        audit_write_failures = int(getattr(self.adapter, "_audit_flush_failures", 0) or 0)
+        audit_buffer = getattr(self.adapter, "_audit_buffer", [])
+        try:
+            audit_queue_depth = len(audit_buffer)
+        except Exception:
+            audit_queue_depth = 0
+        self.metrics.update_gauges(
+            dirty_summary_lag_ms=dirty_lag_ms,
+            resource_import_lag_ms=import_lag_ms,
+            queue_depth=queue_depth,
+            audit_write_failures=audit_write_failures,
+            audit_queue_depth=audit_queue_depth,
+        )
+
+    def _merge_service_prometheus(self, result: Json) -> Json:
+        self._refresh_service_metric_gauges()
+        raw_backend = str(result.get("backend") or getattr(self.adapter, "_backend_label", lambda: "local")())
+        backend = {
+            "temporalstore-cpp": "cpp",
+            "temporalstore-direct": "cpp",
+            "temporalstore-rust": "rust",
+        }.get(raw_backend, raw_backend)
+        storage_mode = self._backend_storage_mode_from_metrics(result)
+        service_prometheus = self.metrics.render_prometheus(backend=backend, storage_mode=storage_mode)
+        combined = str(result.get("prometheus") or "")
+        if combined and not combined.endswith("\n"):
+            combined += "\n"
+        result = dict(result)
+        result["metrics_format"] = "prometheus"
+        result["prometheus"] = combined + service_prometheus
+        metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+        result["metrics"] = {**metrics, "service": self.metrics.snapshot()}
+        return result
+
     def error_response(self, request_id: Any, code: int, message: str, *, data: Json | None = None) -> Json:
         error: Json = {"code": code, "message": message}
         if data is not None:
@@ -311,6 +392,215 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin, MatrixArkServerMetri
             _mcp_debug_log(f"handle: internal error for method={method!r}: {exc}")
             _mcp_debug_log(traceback.format_exc())
             return self.error_response(request_id, -32603, "internal MatrixArk MCP server error", data={"error_type": exc.__class__.__name__})
+
+    def _raw_idempotency_key(self, args: Json, hook: Json | None) -> str:
+        key = args.get("idempotency_key")
+        if not key and isinstance(hook, dict):
+            key = hook.get("idempotency_key")
+        if key is None:
+            return ""
+        if not isinstance(key, str) or not key.strip():
+            raise MatrixArkError("idempotency_key must be a non-empty string when supplied")
+        return key.strip()
+
+    def _idempotency_key_hash(self, name: str, raw_key: str, identity: Json) -> int:
+        scope_parts = [
+            str(identity.get("account_id") or ""),
+            str(identity.get("tenant_id") or ""),
+            str(identity.get("user_id") or ""),
+            str(identity.get("session_id") or ""),
+            str(identity.get("scope_key") or ""),
+        ]
+        return stable_hash("idempotency:" + name + ":" + ":".join(scope_parts) + ":" + raw_key)
+
+    @staticmethod
+    def _serving_access(args: Json) -> Json:
+        auth = args.get("_matrixark_auth", {})
+        if not isinstance(auth, dict):
+            return {}
+        fields = [
+            "account_id",
+            "tenant_id",
+            "user_id",
+            "session_id",
+            "agent_name",
+            "api_key_id",
+            "role",
+            "mode",
+        ]
+        return {field: auth.get(field) for field in fields if auth.get(field) not in (None, "", [], {})}
+
+    def _idempotent_replay_response(self, name: str, args: Json, identity: Json, hook: Json | None) -> Json | None:
+        if name not in self.IDEMPOTENT_WRITE_TOOLS:
+            return None
+        raw_key = self._raw_idempotency_key(args, hook)
+        if not raw_key:
+            return None
+        key_hash = self._idempotency_key_hash(name, raw_key, identity)
+        record = self.adapter.find_idempotency_record(key_hash)
+        if not record:
+            return None
+        response = dict(record.get("response") or {})
+        response["idempotent_replay"] = True
+        response["idempotency_key_hash"] = key_hash
+        response["access"] = args.get("_matrixark_auth", {})
+        self.access.append_audit(
+            "idempotency.replay",
+            identity,
+            status="ok",
+            details={"tool_name": name, "idempotency_key_hash": key_hash},
+        )
+        return response
+
+    def _enforce_scope_before_output(self, name: str, args: Json, identity: Json) -> None:
+        if name not in self.SCOPED_READ_TOOLS:
+            return
+        scope = optional_object(args, "scope")
+        account_id = str(scope.get("account_id") or identity.get("account_id") or "")
+        tenant_id = str(scope.get("tenant_id") or identity.get("tenant_id") or "")
+        if not account_id or not tenant_id:
+            raise MatrixArkError("scoped read requires resolved account_id and tenant_id")
+        self.access.ensure_identity_can_read_scope(identity, account_id, tenant_id, scope)
+
+    def _finalize_write_response(self, name: str, args: Json, identity: Json, hook: Json | None, response: Json) -> Json:
+        if name not in self.IDEMPOTENT_WRITE_TOOLS:
+            return response
+        raw_key = self._raw_idempotency_key(args, hook)
+        if not raw_key:
+            return response
+        key_hash = self._idempotency_key_hash(name, raw_key, identity)
+        if not self.adapter.find_idempotency_record(key_hash):
+            stored_response = {key: value for key, value in response.items() if key != "access"}
+            for secret_key in ("api_key", "new_api_key", "raw_key", "secret"):
+                if secret_key in stored_response:
+                    stored_response.pop(secret_key, None)
+                    stored_response[f"{secret_key}_redacted"] = True
+            self.adapter.append_idempotency_record(
+                key_hash=key_hash,
+                tool_name=name,
+                raw_key=raw_key,
+                identity=identity,
+                response=stored_response,
+            )
+        response["idempotent_replay"] = False
+        response["idempotency_key_hash"] = key_hash
+        return response
+
+    def _request_deadline_ms(self, name: str, args: Json) -> int:
+        default_deadline = self.DEFAULT_REQUEST_DEADLINES_MS.get(name)
+        if default_deadline is None and is_admin_tool(name):
+            default_deadline = self.DEFAULT_REQUEST_DEADLINES_MS["matrixark_admin"]
+        raw_value = args.get("request_deadline_ms", args.get("timeout_ms", default_deadline or 0))
+        try:
+            deadline_ms = int(raw_value or 0)
+        except (TypeError, ValueError):
+            raise MatrixArkError("request_deadline_ms/timeout_ms must be an integer")
+        if deadline_ms < 0:
+            raise MatrixArkError("request_deadline_ms/timeout_ms must be >= 0")
+        return deadline_ms
+
+    def _request_timed_out(self, started_perf: float, deadline_ms: int) -> bool:
+        return deadline_ms > 0 and (time.perf_counter() - started_perf) * 1000.0 >= deadline_ms
+
+    def _raise_if_request_timed_out(self, name: str, started_perf: float, deadline_ms: int) -> None:
+        if self._request_timed_out(started_perf, deadline_ms):
+            raise MatrixArkError(f"{name} exceeded request deadline {deadline_ms}ms")
+
+    def _retrieve_timeout_fallback(self, args: Json, *, deadline_ms: int, elapsed_ms: float, reason: str) -> Json:
+        query = require_string(args, "query")
+        max_context_tokens = args.get("max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)
+        if not isinstance(max_context_tokens, int) or max_context_tokens <= 0:
+            max_context_tokens = DEFAULT_MAX_CONTEXT_TOKENS
+        record_limit = int(os.environ.get("MATRIXARK_BACKPRESSURE_FALLBACK_RECORD_LIMIT", "0"))
+        backend_label = str(getattr(self.adapter, "_backend_label", lambda: "local")())
+        native_pack_required = native_context_pack_required(backend_label)
+        if reason == "service_backpressure":
+            if native_pack_required or record_limit <= 0:
+                records = []
+            elif hasattr(self.adapter, "recent_records"):
+                records = self.adapter.recent_records(record_limit)
+            else:
+                records = self.adapter.read_all()[-record_limit:]
+        else:
+            if native_pack_required:
+                records = []
+            else:
+                records = self.adapter.read_all()
+        return self.adapter.deadline_fallback_pack(
+            query=query,
+            scope=optional_object(args, "scope"),
+            question_type=str(args.get("question_type") or infer_query_type(query)),
+            max_context_tokens=max_context_tokens,
+            local_budget=local_context_budget(args),
+            deadline_ms=deadline_ms,
+            elapsed_ms=round(float(elapsed_ms), 3),
+            records=records,
+            reason=reason,
+            budget_source="agent_provided_max_context_tokens" if "max_context_tokens" in args else "matrixark_default_max_context_tokens",
+        )
+
+    def _operation_group(self, name: str) -> str:
+        if is_ingestion_tool(name):
+            return "ingest"
+        if is_retrieval_tool(name):
+            return "retrieve"
+        if name == "matrixark_feedback":
+            return "feedback"
+        if name == "matrixark_replay":
+            return "replay"
+        if is_admin_tool(name):
+            return "admin"
+        return ""
+
+    def _retrieve_response(self, result: Json, args: Json, *, request_deadline_ms: int, elapsed_ms: float) -> Json:
+        if bool(args.get("debug_context_pack")) or bool(args.get("include_retrieval_debug")):
+            return {
+                **result,
+                "access": args.get("_matrixark_auth", {}),
+                "request_deadline_ms": request_deadline_ms,
+                "request_elapsed_ms": round(elapsed_ms, 3),
+            }
+        return compact_context_pack_for_serving(result)
+
+    @contextmanager
+    def _operation_slot(self, name: str, request_deadline_ms: int):
+        group = self._operation_group(name)
+        limiter = self._operation_limiters.get(group) if group else None
+        if limiter is None:
+            yield
+            return
+        capacity = int(self.DEFAULT_OPERATION_CONCURRENCY.get(group, 0) or 0)
+        wait_ms = self._operation_backpressure_timeout_ms
+        if request_deadline_ms > 0:
+            wait_ms = min(wait_ms, request_deadline_ms)
+        started = time.perf_counter()
+        if group == "retrieve" and self._retrieve_shed_cooldown_ms > 0:
+            with self._retrieve_shed_lock:
+                now_perf = time.perf_counter()
+                if now_perf < self._retrieve_shed_until_perf:
+                    self.metrics.observe_backpressure(name)
+                    raise MatrixArkBackpressureError("matrixark_retrieve rejected by adaptive retrieve shed cooldown")
+                acquired = limiter.acquire(blocking=False)
+        else:
+            acquired = limiter.acquire(timeout=max(0.0, wait_ms / 1000.0)) if wait_ms > 0 else limiter.acquire(blocking=False)
+        if not acquired:
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            self.metrics.observe_pool_wait(group, elapsed_ms, capacity=capacity)
+            if group == "retrieve" and self._retrieve_shed_cooldown_ms > 0:
+                with self._retrieve_shed_lock:
+                    self._retrieve_shed_until_perf = max(
+                        self._retrieve_shed_until_perf,
+                        time.perf_counter() + self._retrieve_shed_cooldown_ms / 1000.0,
+                    )
+            self.metrics.observe_backpressure(name)
+            raise MatrixArkBackpressureError(f"{name} rejected by service backpressure after {round(elapsed_ms, 3)}ms")
+        self.metrics.observe_pool_wait(group, (time.perf_counter() - started) * 1000.0, capacity=capacity)
+        self.metrics.observe_pool_acquire(group, capacity=capacity)
+        try:
+            yield
+        finally:
+            limiter.release()
+            self.metrics.observe_pool_release(group)
 
     def call_tool(self, name: str, args: Json) -> Json:
         if not isinstance(name, str) or not name:
@@ -444,12 +734,98 @@ class MatrixArkMcpServer(MatrixArkServerRequestPolicyMixin, MatrixArkServerMetri
             httpd.server_close()
 
 
+def production_profile_enabled() -> bool:
+    return MATRIXARK_MCP_PROFILE in {"prod", "production", "benchmark", "bench", "parity"}
+
+
+def python_hot_cache_allowed(*, backend_label: str = "") -> bool:
+    configured = os.environ.get("MATRIXARK_ALLOW_PYTHON_HOT_CACHE", "").strip().lower()
+    if configured:
+        return configured in {"1", "true", "yes"}
+    return backend_label == "local"
+
+
+def backend_ready_required(backend: str) -> bool:
+    if MATRIXARK_REQUIRE_BACKEND_READY:
+        return MATRIXARK_REQUIRE_BACKEND_READY in {"1", "true", "yes"}
+    return production_profile_enabled() and backend in {"temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"}
+
+
+def native_context_pack_required(backend: str) -> bool:
+    if MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK:
+        return MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK in {"1", "true", "yes"}
+    return backend in {"temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"}
+
+
+def native_candidate_prefilter_required_for_backend(backend: str) -> bool:
+    if backend not in {"temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"}:
+        return False
+    configured = os.environ.get("MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER", "").strip().lower()
+    if configured:
+        return configured in {"1", "true", "yes"}
+    return True
+
+
+def default_mcp_backend() -> str:
+    configured = os.environ.get("MATRIXARK_MCP_BACKEND")
+    if configured:
+        return configured
+    return "temporalstore-direct"
+
+
+def validate_mcp_backend_policy(args: argparse.Namespace) -> None:
+    if args.backend not in {"temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"}:
+        raise MatrixArkError(
+            "MatrixArk MCP no longer supports local JSONL serving backends; "
+            "use --backend temporalstore-direct, --backend temporalstore-rust, or --backend temporalstore-rust-direct."
+        )
+
+
 def main() -> int:
-    try:
-        from tools.matrixark_mcp_cli import main as cli_main
-    except ModuleNotFoundError:  # Direct script execution from tools/.
-        from matrixark_mcp_cli import main as cli_main
-    return cli_main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_backend_arguments(parser)
+    parser.add_argument(
+        "--line-json",
+        action="store_true",
+        help="Use newline-delimited JSON for simple shell debugging instead of MCP framing.",
+    )
+    parser.add_argument(
+        "--http-host",
+        default=os.environ.get("MATRIXARK_HTTP_HOST", "127.0.0.1"),
+        help="Host for the optional HTTP/JSON management portal facade.",
+    )
+    parser.add_argument(
+        "--http-port",
+        type=int,
+        default=int(os.environ.get("MATRIXARK_HTTP_PORT", "0")),
+        help="If non-zero, serve the browser portal and /api JSON facade instead of stdio MCP.",
+    )
+    parser.add_argument(
+        "--http-root",
+        type=Path,
+        default=Path(os.environ.get("MATRIXARK_HTTP_ROOT", str(Path(__file__).resolve().parent / "temporalstore-monitoring-ui"))),
+        help="Static document root for HTTP portal mode.",
+    )
+    parser.add_argument(
+        "--access-mode",
+        choices=["dev", "enforced"],
+        default=os.environ.get("MATRIXARK_ACCESS_MODE", "dev"),
+        help="dev allows omitted API keys for local testing; enforced requires scoped MatrixArk API keys.",
+    )
+    args = parser.parse_args()
+    if getattr(args, "rust_direct_lib", ""):
+        os.environ["MATRIXARK_TEMPORALSTORE_RUST_DIRECT_LIB"] = args.rust_direct_lib
+    _mcp_debug_log(f"main: parsed backend={args.backend} metaserver={args.metaserver}")
+    adapter = build_mcp_adapter(args)
+    ensure_startup_backend_ready(adapter, args.backend)
+    _mcp_debug_log("main: adapter ready; serving")
+    mcp_server = MatrixArkMcpServer(adapter, line_json=args.line_json, access_mode=args.access_mode)
+    if args.http_port:
+        mcp_server.serve_http(host=args.http_host, port=args.http_port, static_root=args.http_root)
+    else:
+        mcp_server.serve()
+    _mcp_debug_log("main: serve returned")
+    return 0
 
 
 if __name__ == "__main__":

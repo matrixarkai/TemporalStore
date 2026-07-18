@@ -73,6 +73,7 @@ class DataRaftConsensusBackend {
     virtual void Stop() = 0;
     virtual bool IsLeader() const = 0;
     virtual Status GetStatus(DataRaftStatus* status) const = 0;
+    virtual Status IsPeerVoter(uint64_t replica_id, bool* voter) const = 0;
 
     // Propose a serialized DataRaftLogEntry. The backend must return only after
     // the entry is quorum-committed, or fail with a clear status.
