@@ -4623,6 +4623,8 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         MatrixArkLocalAdapter._init_local_runtime_state(self)
         self._entity_cache_loaded = True
         self._context_node_cache_loaded = True
+        self._retrieval_candidate_cache: dict[str, Json] = {}
+        self._retrieval_candidate_cache_lock = threading.RLock()
         self._metaserver = metaserver
         self._namespace = namespace
         self._table = table
