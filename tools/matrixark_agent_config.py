@@ -13,7 +13,7 @@ import json
 
 
 DEFAULT_REPO_ROOT = "."
-DEFAULT_LAUNCHER = "tools/matrixark_mcp_cpp_server.sh"
+DEFAULT_LAUNCHER = "tools/matrixark_mcp_rust_server.sh"
 SUPPORTED_AGENT_CLIENTS = [
     "codex",
     "claude",
@@ -117,9 +117,10 @@ def stdio_server(repo_root: str, launcher: str) -> dict[str, object]:
         "command": "wsl.exe",
         "args": wsl_args(repo_root, launcher),
         "env": {
-            "MATRIXARK_LOCAL_MODE": "cluster",
-            "MATRIXARK_MCP_BACKEND": "temporalstore-direct",
+            "MATRIXARK_LOCAL_MODE": "no-metaserver",
+            "MATRIXARK_MCP_BACKEND": "temporalstore-rust",
             "MATRIXARK_RETRIEVAL_TIMEOUT_MS": "5000",
+            "MATRIXARK_RUST_PROXY_ASYNC_STORAGE": "true",
         },
     }
 

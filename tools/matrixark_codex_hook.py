@@ -1128,6 +1128,10 @@ def scope_from_args(args: argparse.Namespace) -> Json:
     }
 
 
+def hook_storage_options() -> Json:
+    return {"route": os.environ.get("MATRIXARK_HOOK_STORAGE_ROUTE", "shared_store_async")}
+
+
 def rollout_role_and_text(event: str, payload: Json) -> tuple[str, str, str, str]:
     if event in {"PostToolUse", "PreToolUse", "PermissionRequest"}:
         text = latest_codex_tool_output_from_rollout(payload)
@@ -1177,6 +1181,7 @@ def run_rollout_backfill_only(args: argparse.Namespace, payload: Json, session_i
                 "messages": [{"role": role, "content": text}],
                 "understanding_provider": args.understanding_provider,
                 "segment_provider": args.segment_provider,
+                "storage_options": hook_storage_options(),
                 "metadata": {
                     "source": "codex_hook_rollout_async_backfill",
                     "codex_event": codex_event,
@@ -1207,6 +1212,7 @@ def run_rollout_backfill_only(args: argparse.Namespace, payload: Json, session_i
                     "commit_reason": "async_rollout_backfill",
                     "understanding_provider": args.understanding_provider,
                     "segment_provider": args.segment_provider,
+                    "storage_options": hook_storage_options(),
                     "agent_hook": {
                         "source": "codex",
                         "hook_type": "session_commit",
@@ -1306,6 +1312,7 @@ def main() -> int:
                         "messages": [{"role": "tool", "content": previous_tool_output}],
                         "understanding_provider": args.understanding_provider,
                         "segment_provider": args.segment_provider,
+                        "storage_options": hook_storage_options(),
                         "metadata": {
                             "source": "codex_hook_rollout_backfill",
                             "codex_event": "PreviousToolOutputBackfill",
@@ -1336,6 +1343,7 @@ def main() -> int:
                         "messages": [{"role": "assistant", "content": previous_assistant}],
                         "understanding_provider": args.understanding_provider,
                         "segment_provider": args.segment_provider,
+                        "storage_options": hook_storage_options(),
                         "metadata": {
                             "source": "codex_hook_rollout_backfill",
                             "codex_event": "PreviousAssistantBackfill",
@@ -1376,6 +1384,7 @@ def main() -> int:
                 },
                 "understanding_provider": args.understanding_provider,
                 "segment_provider": args.segment_provider,
+                "storage_options": hook_storage_options(),
                 "agent_hook": {
                     "source": "codex",
                     "hook_type": "resource_added",
@@ -1386,7 +1395,7 @@ def main() -> int:
                     "auto_captured": True,
                     "session_id_source": session_id_source,
                 },
-                "wait": bool(payload.get("wait", True)),
+                "wait": bool(payload.get("wait", False)),
             }
             ingest = trace_tool_call(server, "matrixark_ingest", ingest_args, trace)
         elif text:
@@ -1395,6 +1404,7 @@ def main() -> int:
                 "messages": [{"role": role_for_event(args.event), "content": text}],
                 "understanding_provider": args.understanding_provider,
                 "segment_provider": args.segment_provider,
+                "storage_options": hook_storage_options(),
                 "metadata": {
                     "source": "codex_hook",
                     "codex_event": args.event,
@@ -1434,6 +1444,7 @@ def main() -> int:
                     "commit_reason": commit_reason,
                     "understanding_provider": args.understanding_provider,
                     "segment_provider": args.segment_provider,
+                    "storage_options": hook_storage_options(),
                     **({"idle_timeout_ms": args.idle_commit_timeout_ms} if commit_reason == "idle_timeout" else {}),
                     "agent_hook": {
                         "source": "codex",

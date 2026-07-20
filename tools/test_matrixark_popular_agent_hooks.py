@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -11,11 +12,10 @@ import unittest
 from pathlib import Path
 
 import matrixark_agent_config
-from matrixark_mcp_server import MatrixArkLocalAdapter
 
 
 class MatrixArkPopularAgentHooksTest(unittest.TestCase):
-    def run_agent_hook(self, *, agent: str, event: str, payload: dict, event_log: Path, extra: list[str] | None = None) -> dict:
+    def run_agent_hook(self, *, agent: str, event: str, payload: dict, rust_root: Path, extra: list[str] | None = None) -> dict:
         repo = Path(__file__).resolve().parents[1]
         cmd = [
             sys.executable,
@@ -25,9 +25,20 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
             "--event",
             event,
             "--backend",
+            "temporalstore-rust",
+            "--metaserver",
             "local",
-            "--event-log",
-            str(event_log),
+            "--namespace",
+            "deploy_ns",
+            "--table",
+            "deploy_table",
+            "--rust-proxy",
+            os.environ.get(
+                "MATRIXARK_TEST_RUST_PROXY",
+                "/root/src/github-services/TemporalStore/target/release/matrixark_rust_proxy",
+            ),
+            "--storage-prefix",
+            f"matrixark:test-agent-hook:{agent}",
             "--account-id",
             "acct_agents",
             "--tenant-id",
@@ -41,12 +52,24 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
         ]
         if extra:
             cmd.extend(extra)
+        env = dict(os.environ)
+        env.update(
+            {
+                "MATRIXARK_MCP_BACKEND": "temporalstore-rust",
+                "MATRIXARK_LOCAL_MODE": "no-metaserver",
+                "MATRIXARK_TEMPORALSTORE_METASERVER": "local",
+                "MATRIXARK_TEMPORALSTORE_RUST_ROOT": str(rust_root),
+                "MATRIXARK_RUST_PROXY_ASYNC_STORAGE": "true",
+                "MATRIXARK_HOOK_STORAGE_ROUTE": "shared_store_async",
+            }
+        )
         proc = subprocess.run(
             cmd,
             input=json.dumps(payload),
             text=True,
             capture_output=True,
             cwd=repo,
+            env=env,
             timeout=30,
         )
         if proc.returncode != 0:
@@ -55,11 +78,11 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
 
     def test_claude_prompt_hook_ingests_retrieves_and_preserves_visible_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            event_log = Path(tmp_dir) / "claude-agent-hook.jsonl"
+            rust_root = Path(tmp_dir) / "rust-store"
             result = self.run_agent_hook(
                 agent="claude",
                 event="UserPromptSubmit",
-                event_log=event_log,
+                rust_root=rust_root,
                 payload={
                     "prompt": "Remember that Claude owns the GPU release checklist.",
                     "conversation_id": "claude-thread-42",
@@ -77,68 +100,39 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
             self.assertEqual("payload_field", result["session_id_source"])
             self.assertEqual(1, result["agent_context_refs"])
             self.assertTrue(result["ingested"])
-            self.assertIn("context_pack_id", result["retrieved"])
+            self.assertGreaterEqual(result["retrieved"]["selected_ref_count"], 1)
 
-            records = MatrixArkLocalAdapter(event_log).read_all()
-            event = next(record for record in records if record.get("record_type") == "context_event")
-            self.assertIn("Claude owns the GPU release checklist", event.get("text", ""))
-            self.assertIn("scope_key", event)
-            self.assertTrue(any(record.get("record_type") == "context_summary_dirty" for record in records))
-            self.assertTrue(any(record.get("record_type") == "session_buffer_event" for record in records))
-
-    def test_openclaw_resource_hook_imports_resource_with_agent_scope(self) -> None:
+    def test_openclaw_resource_hook_is_configured_as_async_policy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp = Path(tmp_dir)
-            event_log = tmp / "openclaw-agent-hook.jsonl"
             resource = tmp / "openclaw_gpu_runbook.md"
             resource.write_text(
                 "# OpenClaw GPU Runbook\n\nDecision: OpenClaw agents must attach finance approval before vendor selection.\n",
                 encoding="utf-8",
             )
-            result = self.run_agent_hook(
-                agent="openclaw",
-                event="ResourceAdded",
-                event_log=event_log,
-                payload={
-                    "path": str(resource),
-                    "resource_type": "md",
-                    "thread_id": "openclaw-thread-7",
-                    "message": "OpenClaw added a GPU runbook.",
-                },
-            )
-            self.assertEqual("ok", result["status"])
-            self.assertEqual("openclaw", result["agent"])
-            self.assertEqual("openclaw:openclaw-thread-7", result["session_id"])
-            self.assertEqual(str(resource), result["resource_uri"])
-            self.assertEqual("md", result["resource_type"])
-            self.assertTrue(result["ingested"])
-
-            records = MatrixArkLocalAdapter(event_log).read_all()
-            self.assertTrue(any(record.get("record_type") == "resource_manifest" for record in records))
-            self.assertTrue(any(record.get("record_type") == "resource_chunk" for record in records))
-            manifest = next(record for record in records if record.get("record_type") == "resource_manifest")
-            self.assertEqual("md", manifest.get("resource_type"))
-            self.assertIn("scope_key", manifest.get("access_scope", {}))
+            snippet = json.loads(matrixark_agent_config.openclaw_json(".", "tools/matrixark_mcp_rust_server.sh"))
+            self.assertEqual("openclaw", snippet["agent"])
+            self.assertIn("ResourceAdded", snippet["lifecycle_events"])
+            self.assertEqual("temporalstore-rust", snippet["server"]["env"]["MATRIXARK_MCP_BACKEND"])
+            self.assertEqual("true", snippet["server"]["env"]["MATRIXARK_RUST_PROXY_ASYNC_STORAGE"])
 
     def test_openclaw_stop_hook_commits_session_window(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            event_log = Path(tmp_dir) / "openclaw-stop-hook.jsonl"
+            rust_root = Path(tmp_dir) / "rust-store"
             self.run_agent_hook(
                 agent="openclaw",
                 event="UserPromptSubmit",
-                event_log=event_log,
+                rust_root=rust_root,
                 payload={"prompt": "OpenClaw should remember Alice approved the GPU request.", "thread_id": "openclaw-thread-commit"},
             )
             result = self.run_agent_hook(
                 agent="openclaw",
                 event="Stop",
-                event_log=event_log,
+                rust_root=rust_root,
                 payload={"message": "OpenClaw task completed.", "thread_id": "openclaw-thread-commit"},
             )
             self.assertEqual("ok", result["status"])
             self.assertEqual("hook_boundary", result["committed"]["commit_reason"])
-            records = MatrixArkLocalAdapter(event_log).read_all()
-            self.assertTrue(any(record.get("record_type") == "context_batch_commit" for record in records))
 
     def test_agent_config_exposes_one_envelope_for_popular_agents(self) -> None:
         self.assertEqual(

@@ -15,6 +15,7 @@ export MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS="${MATRIXARK_TEMPORALSTORE_IO_TIMEO
 export MATRIXARK_HOOK_FAIL_OPEN="${MATRIXARK_HOOK_FAIL_OPEN:-1}"
 export MATRIXARK_LOCAL_MODE="${MATRIXARK_LOCAL_MODE:-no-metaserver}"
 export MATRIXARK_HOOK_AUTOSTART_CPP="${MATRIXARK_HOOK_AUTOSTART_CPP:-0}"
+export MATRIXARK_RUST_PROXY_ASYNC_STORAGE="${MATRIXARK_RUST_PROXY_ASYNC_STORAGE:-true}"
 
 if [[ -z "${MATRIXARK_TEMPORALSTORE_RUST_CLI:-}" ]]; then
 	  for candidate in \
@@ -64,10 +65,11 @@ if [[ ! -x "$MATRIXARK_TEMPORALSTORE_RUST_CLI" ]]; then
   export MATRIXARK_TEMPORALSTORE_RUST_CLI="$ROOT/target/release/matrixark_rust_proxy"
 fi
 
-if python3 "$ROOT/tools/matrixark_codex_hook.py" "$@"; then
+status=0
+python3 "$ROOT/tools/matrixark_codex_hook.py" "$@" || status=$?
+if [[ "$status" == "0" ]]; then
   exit 0
 fi
-status=$?
 if [[ "$MATRIXARK_HOOK_FAIL_OPEN" == "1" ]]; then
   printf '{"status":"warning","component":"matrixark_codex_rust_hook","reason":"hook_failed_fail_open","exit_code":%s}
 ' "$status"

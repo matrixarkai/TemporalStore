@@ -182,8 +182,7 @@ def parse_args() -> argparse.Namespace:
         or os.environ.get("CLAUDE_CODE_HOOK_EVENT")
         or "UserPromptSubmit",
     )
-    parser.add_argument("--backend", choices=["local", "temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"], default=default_hook_backend())
-    parser.add_argument("--event-log", default=os.environ.get("MATRIXARK_EVENT_LOG", ""), help="Local JSONL event log path for --backend local test/dev runs.")
+    parser.add_argument("--backend", choices=["temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"], default=default_hook_backend())
     parser.add_argument("--api-key", default=os.environ.get("MATRIXARK_API_KEY", ""))
     parser.add_argument("--account-id", default=os.environ.get("MATRIXARK_ACCOUNT_ID", "acct_agent"))
     parser.add_argument("--tenant-id", default=os.environ.get("MATRIXARK_TENANT_ID", "tenant_agent"))
@@ -198,11 +197,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--namespace", default=os.environ.get("MATRIXARK_TEMPORALSTORE_NAMESPACE", "deploy_ns"))
     parser.add_argument("--table", default=os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "deploy_table"))
     parser.add_argument("--temporalstore-lib", default=os.environ.get("TEMPORALSTORE_LIB", ""))
+    parser.add_argument("--rust-proxy", default=os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_PROXY", os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_CLI", "")))
+    parser.add_argument("--rust-direct-sdk", default=os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_SDK", ""))
+    parser.add_argument("--rust-cli", default=os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_CLI", ""))
     parser.add_argument("--storage-prefix", default=os.environ.get("MATRIXARK_TEMPORALSTORE_PREFIX", "matrixark:agent-hook"))
     parser.add_argument("--request-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS", "60000")))
     parser.add_argument("--io-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS", "60000")))
     parser.add_argument("--session-commit-threshold", type=int, default=int(os.environ.get("MATRIXARK_SESSION_COMMIT_THRESHOLD", "20")))
-    parser.add_argument("--idle-commit-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_IDLE_COMMIT_TIMEOUT_MS", "300000")))
+    parser.add_argument("--idle-commit-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_IDLE_COMMIT_TIMEOUT_MS", "0")))
     parser.add_argument("--understanding-provider", default=os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER", "rules"))
     parser.add_argument("--segment-provider", default=os.environ.get("MATRIXARK_SEGMENT_PROVIDER", "deterministic"))
     parser.add_argument("--repo-root", type=Path, default=root)
@@ -432,6 +434,10 @@ def scope_from_args(args: argparse.Namespace) -> Json:
     }
 
 
+def hook_storage_options() -> Json:
+    return {"route": os.environ.get("MATRIXARK_HOOK_STORAGE_ROUTE", "shared_store_async")}
+
+
 def main() -> int:
     args = parse_args()
     validate_hook_backend_policy(args.backend)
@@ -484,6 +490,7 @@ def main() -> int:
             "understanding_provider": args.understanding_provider,
             "segment_provider": args.segment_provider,
             "agent_hook": hook_meta,
+            "storage_options": hook_storage_options(),
         }
         feedback = call_tool(server, "matrixark_feedback", feedback_args)
     elif is_resource_event(args.event) or raw_uri:
@@ -498,7 +505,8 @@ def main() -> int:
             "understanding_provider": args.understanding_provider,
             "segment_provider": args.segment_provider,
             "agent_hook": hook_meta,
-            "wait": bool(payload.get("wait", True)),
+            "storage_options": hook_storage_options(),
+            "wait": bool(payload.get("wait", False)),
         }
         ingest = call_tool(server, "matrixark_ingest", ingest_args)
     elif text:
@@ -509,8 +517,10 @@ def main() -> int:
             "segment_provider": args.segment_provider,
             "metadata": base_metadata,
             "agent_hook": hook_meta,
+            "storage_options": hook_storage_options(),
         }
         if should_retrieve(args.event):
+            ingest_args["auto_batch_extract"] = True
             ingest_args["session_buffer_threshold"] = args.session_commit_threshold
             if args.idle_commit_timeout_ms > 0:
                 ingest_args["idle_commit_timeout_ms"] = args.idle_commit_timeout_ms
@@ -541,6 +551,7 @@ def main() -> int:
                 "commit_reason": reason,
                 "understanding_provider": args.understanding_provider,
                 "segment_provider": args.segment_provider,
+                "storage_options": hook_storage_options(),
                 **({"idle_timeout_ms": args.idle_commit_timeout_ms} if reason == "idle_timeout" else {}),
                 "agent_hook": {
                     "source": args.agent,
