@@ -115,16 +115,17 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
             "MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES",
             "1",
         ).strip().lower() in {"1", "true", "yes"}
-        self._publish_visibility_after_flush = os.environ.get(
-            "MATRIXARK_RUST_PROXY_PUBLISH_VISIBILITY_ON_FLUSH",
-            "0",
+        self._publish_visibility_after_flush = (
+            os.environ.get("MATRIXARK_RUST_PROXY_PUBLISH_VISIBILITY_ON_FLUSH")
+            or os.environ.get("MATRIXARK_RUST_PROXY_PUBLISH_VISIBILITY_AFTER_FLUSH")
+            or "0"
         ).strip().lower() in {"1", "true", "yes"}
         self._track_pending_visibility_keys = (
             self._dedicated_proxy_clients_enabled or self._dedicated_pack_lanes_enabled
         )
         self._async_visibility_publish_after_flush = os.environ.get(
             "MATRIXARK_RUST_PROXY_ASYNC_VISIBILITY_PUBLISH_AFTER_FLUSH",
-            "1",
+            "0",
         ).strip().lower() in {"1", "true", "yes"}
         self._rust_proxy_path = proxy_path
         self._rust_request_timeout_ms = request_timeout_ms
@@ -273,10 +274,30 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
             return
         self._publish_visibility_keys(visibility_keys)
 
+    def close(self, *, timeout_s: float = 5.0) -> None:
+        try:
+            self.flush_direct_writes(timeout_s=timeout_s)
+        finally:
+            for attr in ("_retrieve_client", "_summary_client", "_client"):
+                client = getattr(self, attr, None)
+                close = getattr(client, "close", None)
+                if callable(close):
+                    close()
+            super_close = getattr(super(), "close", None)
+            if callable(super_close):
+                try:
+                    super_close(timeout_s=timeout_s)
+                except TypeError:
+                    super_close()
+
     def _publish_visibility_keys(self, visibility_keys: list[str]) -> None:
         publisher = getattr(self._client, "matrixark_publish_visibility", None)
         if callable(publisher):
             publisher(visibility_keys=visibility_keys)
+
+    def _should_publish_visibility_key(self, key: str) -> bool:
+        key = str(key or "")
+        return key == self._count_key or key.startswith(f"{self._record_hash_key}:")
 
     def _visibility_publish_active(self) -> bool:
         with self._visibility_publish_lock:

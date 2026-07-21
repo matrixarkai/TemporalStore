@@ -1843,6 +1843,9 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             pending = self._pending_visibility_keys
         for key in keys:
             key = str(key or "")
+            should_publish = getattr(self, "_should_publish_visibility_key", None)
+            if callable(should_publish) and not should_publish(key):
+                continue
             if key:
                 pending.add(key)
 
@@ -4699,8 +4702,10 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
             "0",
         ).strip().lower() in {"1", "true", "yes"}
         self._publish_visibility_after_flush = (
-            self._dedicated_proxy_clients_enabled or self._dedicated_pack_lanes_enabled
-        )
+            os.environ.get("MATRIXARK_RUST_PROXY_PUBLISH_VISIBILITY_AFTER_FLUSH")
+            or os.environ.get("MATRIXARK_RUST_PROXY_PUBLISH_VISIBILITY_ON_FLUSH")
+            or "0"
+        ).strip().lower() in {"1", "true", "yes"}
         self._rust_proxy_path = proxy_path
         self._rust_request_timeout_ms = request_timeout_ms
         self._rust_io_timeout_ms = io_timeout_ms
@@ -4827,6 +4832,26 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         publisher = getattr(self._client, "matrixark_publish_visibility", None)
         if callable(publisher):
             publisher(visibility_keys=visibility_keys)
+
+    def _should_publish_visibility_key(self, key: str) -> bool:
+        key = str(key or "")
+        return key == self._count_key or key.startswith(f"{self._record_hash_key}:")
+
+    def close(self, *, timeout_s: float = 5.0) -> None:
+        try:
+            self.flush_direct_writes(timeout_s=timeout_s)
+        finally:
+            for attr in ("_retrieve_client", "_summary_client", "_client"):
+                client = getattr(self, attr, None)
+                close = getattr(client, "close", None)
+                if callable(close):
+                    close()
+            super_close = getattr(super(), "close", None)
+            if callable(super_close):
+                try:
+                    super_close(timeout_s=timeout_s)
+                except TypeError:
+                    super_close()
 
     def supports_native_candidate_prefilter(self) -> bool:
         return True
