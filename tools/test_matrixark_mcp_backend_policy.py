@@ -353,8 +353,15 @@ class _NativeAppendClient:
     def get_string(self, key: str) -> str:
         return "0"
 
-    def matrixark_batch_append_records(self, entries, *, count_key=None, count_value=None) -> None:
-        self.calls.append({"entries": list(entries), "count_key": count_key, "count_value": count_value})
+    def matrixark_batch_append_records(self, entries, *, count_key=None, count_value=None, append_options=None) -> None:
+        self.calls.append(
+            {
+                "entries": list(entries),
+                "count_key": count_key,
+                "count_value": count_value,
+                "append_options": dict(append_options or {}),
+            }
+        )
 
 
 
@@ -2503,7 +2510,16 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                     "record_type": "context_event",
                     "event_id_hash": 123,
                     "tenant_hash": 1,
+                    "user_hash": 2,
+                    "session_hash": 3,
                     "scope_key": "scope",
+                    "scope": {
+                        "account_id": "acct_local",
+                        "tenant_id": "tenant_codex",
+                        "user_id": "deeproute",
+                        "session_id": "codex-session-a",
+                        "agent_name": "codex",
+                    },
                     "node_hash": 44,
                     "storage_options": {"storage_family": "shared_store", "write_mode": "async"},
                     "updated_at_ms": 1780000000000,
@@ -2513,7 +2529,16 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                     "record_type": "context_event",
                     "event_id_hash": 123 + mcp_core.CONTEXT_TIMELINE_FANOUT,
                     "tenant_hash": 1,
+                    "user_hash": 2,
+                    "session_hash": 3,
                     "scope_key": "scope",
+                    "scope": {
+                        "account_id": "acct_local",
+                        "tenant_id": "tenant_codex",
+                        "user_id": "deeproute",
+                        "session_id": "codex-session-a",
+                        "agent_name": "codex",
+                    },
                     "node_hash": 44,
                     "storage_options": {"storage_family": "shared_store", "write_mode": "async"},
                     "updated_at_ms": 1780000000000,
@@ -2562,6 +2587,12 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual({payload["ref_hash"] for payload in time_index_payloads}, {123, 123 + mcp_core.CONTEXT_TIMELINE_FANOUT})
         self.assertEqual({payload["timestamp_key_ms"] for payload in time_index_payloads}, {1780000000000})
         self.assertEqual(len({payload["context_event_key"] for payload in time_index_payloads}), 2)
+        self.assertEqual({payload["scope_key"] for payload in time_index_payloads}, {"scope"})
+        self.assertEqual({payload["session_id"] for payload in time_index_payloads}, {"codex-session-a"})
+        self.assertEqual({payload["scope"]["session_id"] for payload in time_index_payloads}, {"codex-session-a"})
+        self.assertEqual({payload["tenant_hash"] for payload in time_index_payloads}, {1})
+        self.assertEqual({payload["user_hash"] for payload in time_index_payloads}, {2})
+        self.assertEqual({payload["session_hash"] for payload in time_index_payloads}, {3})
         self.assertTrue(all("text" not in payload for payload in time_index_payloads))
 
     def test_direct_append_dual_writes_raw_and_serving_records(self) -> None:
