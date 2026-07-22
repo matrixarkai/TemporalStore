@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import queue
+import socket
 
 try:
     from tools.matrixark_mcp_core import *
@@ -3918,6 +3919,7 @@ class MatrixArkRustProxyClient:
         self._pack_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_PACK_LANES", "8")))
         self._control_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_CONTROL_LANES", "1")))
         self._shared_process_mode = os.environ.get("MATRIXARK_RUST_PROXY_SHARED_PROCESS", "1").strip().lower() not in {"0", "false", "no"}
+        self._proxy_socket = os.environ.get("MATRIXARK_RUST_PROXY_SOCKET", "").strip()
         self._dedicated_pack_lanes_enabled = (
             os.environ.get("MATRIXARK_RUST_PROXY_DEDICATED_PACK_LANES", "0").strip().lower()
             not in {"0", "false", "no"}
@@ -4113,6 +4115,21 @@ class MatrixArkRustProxyClient:
         }
         payload = json.dumps(command, separators=(",", ":")) + "\n"
         started = time.perf_counter()
+        if self._proxy_socket:
+            try:
+                response = self._call_socket_json(op, payload)
+            except Exception:
+                elapsed_ms = (time.perf_counter() - started) * 1000.0
+                self._record_call_metrics(op, kwargs, None, elapsed_ms, failed=True, lane="daemon", wait_ms=0.0)
+                raise
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            if not response.get("ok"):
+                self._record_call_metrics(op, kwargs, response, elapsed_ms, failed=True, lane="daemon", wait_ms=0.0)
+                if not raise_on_error:
+                    return response
+                raise MatrixArkError(f"Rust TemporalStore {op} failed: {response.get('error', 'unknown error')}")
+            self._record_call_metrics(op, kwargs, response, elapsed_ms, failed=False, lane="daemon", wait_ms=0.0)
+            return response
         group, lane = self._choose_lane(op)
         semaphore: threading.BoundedSemaphore = lane["semaphore"]
         wait_started = time.perf_counter()
@@ -4153,6 +4170,25 @@ class MatrixArkRustProxyClient:
             raise MatrixArkError(f"Rust TemporalStore {op} failed: {response.get('error', 'unknown error')}")
         self._record_call_metrics(op, kwargs, response, elapsed_ms, failed=False, lane=group, wait_ms=wait_ms)
         return response
+
+    def _call_socket_json(self, op: str, payload: str) -> Json:
+        deadline = time.monotonic() + max(2.0, self.request_timeout_ms / 1000.0 + 2.0)
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(min(2.0, max(0.1, self.request_timeout_ms / 1000.0)))
+            client.connect(self._proxy_socket)
+            client.sendall(payload.encode("utf-8"))
+            stream = client.makefile("rb")
+            while time.monotonic() < deadline:
+                line = stream.readline()
+                if not line:
+                    break
+                if not line.strip().startswith(b"{"):
+                    continue
+                try:
+                    return json.loads(line.decode("utf-8"))
+                except json.JSONDecodeError as exc:
+                    raise MatrixArkError(f"Rust TemporalStore {op} daemon returned invalid JSON: {line[:200]!r}") from exc
+        raise MatrixArkError(f"Rust TemporalStore {op} daemon timed out waiting for response from {self._proxy_socket}")
 
     def _record_call_metrics(
         self,

@@ -22,6 +22,9 @@ export MATRIXARK_RUST_PROXY_PUBLISH_VISIBILITY_AFTER_FLUSH="${MATRIXARK_RUST_PRO
 export MATRIXARK_RUST_PROXY_PUBLISH_VISIBILITY_ON_FLUSH="${MATRIXARK_RUST_PROXY_PUBLISH_VISIBILITY_ON_FLUSH:-$MATRIXARK_RUST_PROXY_PUBLISH_VISIBILITY_AFTER_FLUSH}"
 export MATRIXARK_RUST_PROXY_ASYNC_VISIBILITY_PUBLISH_AFTER_FLUSH="${MATRIXARK_RUST_PROXY_ASYNC_VISIBILITY_PUBLISH_AFTER_FLUSH:-0}"
 export MATRIXARK_HOOK_STORAGE_ROUTE="${MATRIXARK_HOOK_STORAGE_ROUTE:-shared_store_async}"
+export MATRIXARK_RUST_PROXY_DAEMON_AUTOSTART="${MATRIXARK_RUST_PROXY_DAEMON_AUTOSTART:-1}"
+export MATRIXARK_RUST_PROXY_SOCKET="${MATRIXARK_RUST_PROXY_SOCKET:-/tmp/matrixark-rust-proxy-codex-live.sock}"
+export MATRIXARK_RUST_PROXY_DAEMON_LOG="${MATRIXARK_RUST_PROXY_DAEMON_LOG:-$ROOT/.local/runtime/matrixark-rust-proxy-codex-live/daemon.log}"
 
 if [[ -z "${MATRIXARK_TEMPORALSTORE_RUST_CLI:-}" ]]; then
 	  for candidate in \
@@ -70,6 +73,37 @@ if [[ ! -x "$MATRIXARK_TEMPORALSTORE_RUST_CLI" ]]; then
   CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}" cargo build --release -p temporalstore-rust --bin matrixark_rust_proxy >/dev/null
   export MATRIXARK_TEMPORALSTORE_RUST_CLI="$ROOT/target/release/matrixark_rust_proxy"
 fi
+
+_matrixark_start_rust_proxy_daemon() {
+  if [[ "$MATRIXARK_RUST_PROXY_DAEMON_AUTOSTART" != "1" ]]; then
+    return
+  fi
+  if python3 "$ROOT/tools/matrixark_rust_proxy_daemon.py" \
+      --proxy "$MATRIXARK_TEMPORALSTORE_RUST_CLI" \
+      --socket "$MATRIXARK_RUST_PROXY_SOCKET" \
+      --log "$MATRIXARK_RUST_PROXY_DAEMON_LOG" \
+      --ping >/dev/null 2>&1; then
+    return
+  fi
+  mkdir -p "$(dirname "$MATRIXARK_RUST_PROXY_DAEMON_LOG")"
+  nohup python3 "$ROOT/tools/matrixark_rust_proxy_daemon.py" \
+    --proxy "$MATRIXARK_TEMPORALSTORE_RUST_CLI" \
+    --socket "$MATRIXARK_RUST_PROXY_SOCKET" \
+    --log "$MATRIXARK_RUST_PROXY_DAEMON_LOG" \
+    >/dev/null 2>&1 &
+  for _ in {1..40}; do
+    if python3 "$ROOT/tools/matrixark_rust_proxy_daemon.py" \
+        --proxy "$MATRIXARK_TEMPORALSTORE_RUST_CLI" \
+        --socket "$MATRIXARK_RUST_PROXY_SOCKET" \
+        --log "$MATRIXARK_RUST_PROXY_DAEMON_LOG" \
+        --ping >/dev/null 2>&1; then
+      return
+    fi
+    sleep 0.05
+  done
+}
+
+_matrixark_start_rust_proxy_daemon
 
 status=0
 python3 "$ROOT/tools/matrixark_codex_hook.py" "$@" || status=$?
