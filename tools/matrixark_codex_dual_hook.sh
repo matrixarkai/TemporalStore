@@ -158,6 +158,38 @@ session_id = (
 )
 session_id = f"codex:{session_id}" if not str(session_id).startswith("codex:") else str(session_id)
 hook_id = f"{os.environ.get('EVENT', 'UserPromptSubmit')}:{now_ms}"
+synthetic_markers = (
+    "probe",
+    "smoke",
+    "verification",
+    "manual",
+    "stdin check",
+    "cmd stdin check",
+    "service publisher",
+    "hook fixed raw ingestion probe",
+    "registered codex hook config verification",
+)
+
+
+def retention_fields(prompt_text):
+    synthetic = any(marker in (prompt_text or "").lower() for marker in synthetic_markers)
+    if not synthetic:
+        return {
+            "origin": "codex_hook",
+            "record_class": "user_message",
+            "synthetic": False,
+            "retention_class": "normal",
+            "expires_at_ms": None,
+            "gc_eligible": False,
+        }
+    return {
+        "origin": "codex_hook",
+        "record_class": "probe",
+        "synthetic": True,
+        "retention_class": "debug",
+        "expires_at_ms": now_ms,
+        "gc_eligible": True,
+    }
 
 
 def post(url, path, obj):
@@ -197,6 +229,7 @@ raw_record = {
     "hook_id": hook_id,
     "hook_type": "before_llm",
     "hook_observed_at_ms": now_ms,
+    **retention_fields(prompt),
 }
 serving_record = {
     "record_type": "context_event",
@@ -207,6 +240,7 @@ serving_record = {
     "hook_id": hook_id,
     "hook_type": "before_llm",
     "hook_observed_at_ms": now_ms,
+    **retention_fields(prompt),
 }
 
 for key, record in (

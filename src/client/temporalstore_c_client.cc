@@ -141,6 +141,24 @@ bool JsonBoolMember(const rapidjson::Value& value, const char* name, bool fallba
     return fallback;
 }
 
+bool MatrixArkRecordRetentionFiltered(const rapidjson::Value& record, uint64_t now_ms) {
+    if (!record.IsObject()) {
+        return false;
+    }
+    if (JsonBoolMember(record, "synthetic", false)) {
+        return true;
+    }
+    std::string retention_class = JsonStringMember(record, "retention_class");
+    if (retention_class == "debug" || retention_class == "probe") {
+        return true;
+    }
+    uint64_t expires_at_ms = JsonUintMember(record, "expires_at_ms", 0);
+    if (expires_at_ms > 0 && expires_at_ms <= now_ms) {
+        return true;
+    }
+    return JsonUintMember(record, "deleted_at_ms", 0) > 0;
+}
+
 const rapidjson::Value* JsonObjectMember(const rapidjson::Value& value, const char* name) {
     if (!value.IsObject() || !value.HasMember(name) || !value[name].IsObject()) {
         return nullptr;
@@ -676,6 +694,7 @@ struct MatrixArkScopedRecordScan {
     uint64_t scanned_records = 0;
     uint64_t dropped_by_type = 0;
     uint64_t dropped_by_scope = 0;
+    uint64_t dropped_by_retention = 0;
     bool cache_hit = false;
 };
 
@@ -684,6 +703,7 @@ struct MatrixArkScopedRecordScanCacheEntry {
     uint64_t scanned_records = 0;
     uint64_t dropped_by_type = 0;
     uint64_t dropped_by_scope = 0;
+    uint64_t dropped_by_retention = 0;
 };
 
 std::mutex g_matrixark_scoped_scan_cache_mu;
@@ -712,6 +732,7 @@ struct MatrixArkPreparedRetrieveCacheEntry {
     uint64_t scanned_records = 0;
     uint64_t dropped_by_type = 0;
     uint64_t dropped_by_scope = 0;
+    uint64_t dropped_by_retention = 0;
 };
 
 std::mutex g_matrixark_prepared_retrieve_cache_mu;
@@ -783,7 +804,9 @@ MatrixArkPreparedRetrieveCacheEntry PrepareMatrixArkRetrieveCandidates(
     entry.scanned_records = scan.scanned_records;
     entry.dropped_by_type = scan.dropped_by_type;
     entry.dropped_by_scope = scan.dropped_by_scope;
+    entry.dropped_by_retention = scan.dropped_by_retention;
     const std::vector<std::string>& record_jsons = scan.record_jsons;
+    const uint64_t now_ms = static_cast<uint64_t>(std::time(nullptr)) * 1000ULL;
     std::unordered_map<std::string, std::unordered_set<std::string>> terms_by_ref;
     std::unordered_map<uint64_t, std::unordered_set<std::string>> terms_by_node;
     std::unordered_map<std::string, std::unordered_set<std::string>> terms_by_batch;
@@ -792,6 +815,10 @@ MatrixArkPreparedRetrieveCacheEntry PrepareMatrixArkRetrieveCandidates(
     for (const auto& record_json : record_jsons) {
         rapidjson::Document record;
         if (record.Parse(record_json.c_str()).HasParseError() || !record.IsObject()) {
+            continue;
+        }
+        if (MatrixArkRecordRetentionFiltered(record, now_ms)) {
+            ++entry.dropped_by_retention;
             continue;
         }
         if (JsonStringMember(record, "record_type") == "context_index") {
@@ -905,11 +932,13 @@ bcache2::Status LoadMatrixArkScopedServingRecords(
             out->scanned_records = it->second.scanned_records;
             out->dropped_by_type = it->second.dropped_by_type;
             out->dropped_by_scope = it->second.dropped_by_scope;
+            out->dropped_by_retention = it->second.dropped_by_retention;
             out->cache_hit = true;
             return bcache2::Status::OK();
         }
     }
 
+    const uint64_t now_ms = static_cast<uint64_t>(std::time(nullptr)) * 1000ULL;
     const uint64_t max_shard = serving_count == 0 ? 0 : (serving_count - 1) / shard_size;
     for (uint64_t shard = 0; shard <= max_shard; ++shard) {
         char suffix[32];
@@ -928,6 +957,10 @@ bcache2::Status LoadMatrixArkScopedServingRecords(
                     continue;
                 }
                 ++out->scanned_records;
+                if (MatrixArkRecordRetentionFiltered(record, now_ms)) {
+                    ++out->dropped_by_retention;
+                    continue;
+                }
                 std::string record_type = JsonStringMember(record, "record_type");
                 if (!allowed_types.empty() && allowed_types.find(record_type) == allowed_types.end()) {
                     ++out->dropped_by_type;
@@ -948,6 +981,7 @@ bcache2::Status LoadMatrixArkScopedServingRecords(
         entry.scanned_records = out->scanned_records;
         entry.dropped_by_type = out->dropped_by_type;
         entry.dropped_by_scope = out->dropped_by_scope;
+        entry.dropped_by_retention = out->dropped_by_retention;
         std::lock_guard<std::mutex> guard(g_matrixark_scoped_scan_cache_mu);
         if (g_matrixark_scoped_scan_cache.size() >= 8) {
             g_matrixark_scoped_scan_cache.clear();
@@ -1086,6 +1120,7 @@ bcache2::Status MatrixArkScanCandidatesNative(
     stats.AddMember("returned_records", records.Size(), alloc);
     stats.AddMember("dropped_by_type", scan.dropped_by_type, alloc);
     stats.AddMember("dropped_by_scope", scan.dropped_by_scope, alloc);
+    stats.AddMember("dropped_by_retention", scan.dropped_by_retention, alloc);
     stats.AddMember("native_scan_record_cache_hit", scan.cache_hit, alloc);
     stats.AddMember("secondary_index_groups_supplied", static_cast<uint64_t>(secondary_groups.size()), alloc);
     stats.AddMember("secondary_index_matched_candidate_count", secondary_matched, alloc);
@@ -1456,6 +1491,7 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     scan_stats.AddMember("returned_records", static_cast<uint64_t>(scored.size()), alloc);
     scan_stats.AddMember("dropped_by_type", prepared->dropped_by_type, alloc);
     scan_stats.AddMember("dropped_by_scope", prepared->dropped_by_scope, alloc);
+    scan_stats.AddMember("dropped_by_retention", prepared->dropped_by_retention, alloc);
     scan_stats.AddMember("native_scan_record_cache_hit", false, alloc);
     scan_stats.AddMember("candidate_cache_hit", prepared_candidate_cache_hit, alloc);
     scan_stats.AddMember("native_prepared_candidate_cache_hit", prepared_candidate_cache_hit, alloc);

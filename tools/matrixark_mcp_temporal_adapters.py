@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import queue
 import socket
+import time
 
 try:
     from tools.matrixark_mcp_core import *
@@ -106,6 +107,28 @@ def _records_with_matrixark_write_debug(records: list[Json], **fields: Any) -> l
         copied["matrixark_write_debug"] = debug
         out.append(copied)
     return out
+
+
+def matrixark_record_retention_filtered(record: Json, *, now_ms: int | None = None) -> bool:
+    if not isinstance(record, dict):
+        return False
+    if bool(record.get("synthetic")):
+        return True
+    if str(record.get("retention_class") or "").lower() in {"debug", "probe"}:
+        return True
+    try:
+        expires_at_ms = int(record.get("expires_at_ms") or 0)
+    except (TypeError, ValueError):
+        expires_at_ms = 0
+    if expires_at_ms > 0:
+        current_ms = now_ms if now_ms is not None else int(time.time() * 1000)
+        if expires_at_ms <= current_ms:
+            return True
+    try:
+        deleted_at_ms = int(record.get("deleted_at_ms") or 0)
+    except (TypeError, ValueError):
+        deleted_at_ms = 0
+    return deleted_at_ms > 0
 
 
 
@@ -2202,8 +2225,13 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         scanned = 0
         dropped_type = 0
         dropped_scope = 0
+        dropped_retention = 0
+        now_ms = int(time.time() * 1000)
         for record in raw_records:
             scanned += 1
+            if matrixark_record_retention_filtered(record, now_ms=now_ms):
+                dropped_retention += 1
+                continue
             record_type = str(record.get("record_type") or "")
             if record_type not in allowed_types:
                 dropped_type += 1
@@ -2303,6 +2331,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "returned_records": len(filtered),
                 "dropped_by_type": dropped_type,
                 "dropped_by_scope": dropped_scope,
+                "dropped_by_retention": dropped_retention,
                 "secondary_index_groups_supplied": len(secondary_index_groups or []),
                 "secondary_index_matched_candidate_count": secondary_index_matched,
                 "secondary_index_dropped_candidate_count": secondary_index_dropped,
@@ -3323,7 +3352,12 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         dropped_type = 0
         dropped_scope = 0
         dropped_node = 0
+        dropped_retention = 0
+        now_ms = int(time.time() * 1000)
         for record in records:
+            if matrixark_record_retention_filtered(record, now_ms=now_ms):
+                dropped_retention += 1
+                continue
             record_type = str(record.get("record_type") or "")
             if record_type not in allowed_types:
                 dropped_type += 1
@@ -3350,6 +3384,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             "dropped_type": dropped_type,
             "dropped_scope": dropped_scope,
             "dropped_node": dropped_node,
+            "dropped_retention": dropped_retention,
         }
 
     def retrieval_records(
