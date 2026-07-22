@@ -18,6 +18,7 @@ find "$IDEMPOTENCY_DIR" -type d -mmin +10 -name 'hook-*' -exec rm -rf {} + 2>/de
 PAYLOAD_HASH="$(sha256sum "$TMP_PAYLOAD" | awk '{print $1}')"
 PAYLOAD_BYTES="$(wc -c <"$TMP_PAYLOAD" | tr -d '[:space:]')"
 DIAG_LOG="$LOG_DIR/dispatch-diagnostics.jsonl"
+export MATRIXARK_CODEX_HOOK_DIAG_LOG="$DIAG_LOG"
 printf '{"ts_ms":%s,"event":"%s","payload_bytes":%s,"payload_hash":"%s"}\n' \
   "$(date +%s%3N)" "$EVENT" "${PAYLOAD_BYTES:-0}" "$PAYLOAD_HASH" >>"$DIAG_LOG" 2>/dev/null || true
 LOCK_KEY="$(printf '%s:%s' "$EVENT" "$PAYLOAD_HASH" | sha256sum | awk '{print $1}')"
@@ -145,6 +146,22 @@ if not prompt:
             break
 if not isinstance(prompt, str) or not prompt.strip():
     keys = sorted(payload.keys()) if isinstance(payload, dict) else []
+    env_lengths = {
+        key: len(value)
+        for key, value in os.environ.items()
+        if key.startswith(("CODEX", "MATRIXARK", "OPENAI"))
+    }
+    try:
+        with open(os.environ.get("MATRIXARK_CODEX_HOOK_DIAG_LOG", ""), "a", encoding="utf-8") as diag:
+            diag.write(json.dumps({
+                "ts_ms": int(time.time() * 1000),
+                "event": os.environ.get("EVENT", "UserPromptSubmit"),
+                "empty_prompt": True,
+                "payload_keys": keys,
+                "env_value_lengths": env_lengths,
+            }, separators=(",", ":")) + "\n")
+    except Exception:
+        pass
     print(f"skip empty prompt event={os.environ.get('EVENT', 'UserPromptSubmit')} keys={keys}", file=__import__("sys").stderr)
     raise SystemExit(0)
 
@@ -345,6 +362,22 @@ if not prompt:
             break
 if not prompt:
     keys = sorted(payload.keys()) if isinstance(payload, dict) else []
+    env_lengths = {
+        key: len(value)
+        for key, value in os.environ.items()
+        if key.startswith(("CODEX", "MATRIXARK", "OPENAI"))
+    }
+    try:
+        with open(os.environ.get("MATRIXARK_CODEX_HOOK_DIAG_LOG", ""), "a", encoding="utf-8") as diag:
+            diag.write(json.dumps({
+                "ts_ms": int(time.time() * 1000),
+                "event": os.environ.get("EVENT", "UserPromptSubmit"),
+                "empty_prompt": True,
+                "payload_keys": keys,
+                "env_value_lengths": env_lengths,
+            }, separators=(",", ":")) + "\n")
+    except Exception:
+        pass
     print(f"skip empty prompt event={os.environ.get('EVENT', 'UserPromptSubmit')} keys={keys}", file=sys.stderr)
     raise SystemExit(0)
 
