@@ -12,6 +12,14 @@ cat >"$TMP_PAYLOAD"
 
 LOG_DIR="${MATRIXARK_CODEX_HOOK_LOG_DIR:-$ROOT/.local/runtime/matrixark-codex-dual-hook/logs}"
 mkdir -p "$LOG_DIR"
+IDEMPOTENCY_DIR="${MATRIXARK_CODEX_HOOK_IDEMPOTENCY_DIR:-$ROOT/.local/runtime/matrixark-codex-dual-hook/idempotency}"
+mkdir -p "$IDEMPOTENCY_DIR"
+find "$IDEMPOTENCY_DIR" -type d -mmin +10 -name 'hook-*' -exec rm -rf {} + 2>/dev/null || true
+PAYLOAD_HASH="$(sha256sum "$TMP_PAYLOAD" | awk '{print $1}')"
+LOCK_KEY="$(printf '%s:%s' "$EVENT" "$PAYLOAD_HASH" | sha256sum | awk '{print $1}')"
+if ! mkdir "$IDEMPOTENCY_DIR/hook-$LOCK_KEY" 2>/dev/null; then
+  exit 0
+fi
 
 COMMON_ARGS=(
   --event "$EVENT"
