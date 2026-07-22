@@ -60,7 +60,7 @@ struct DistributedRaftSummary {
     post_rescale_up_write: Status,
     rescale_up_reads: Vec<ReplicaReadSummary>,
     membership_role_process_evidence: MembershipRoleProcessEvidence,
-    rustraft_runtime_semantics: RustRaftRuntimeSemanticsReport,
+    matrixraft_runtime_semantics: MatrixRaftRuntimeSemanticsReport,
 }
 
 #[derive(Debug, Serialize)]
@@ -119,7 +119,7 @@ struct SharedStorePathEvidence {
 }
 
 #[derive(Debug, Serialize)]
-struct RustRaftRuntimeSemanticsReport {
+struct MatrixRaftRuntimeSemanticsReport {
     process_path_validated: bool,
     read_index_and_lease_validated: bool,
     stale_follower_write_rejected: bool,
@@ -388,7 +388,7 @@ fn main() {
             }
         })
         .collect::<Vec<_>>();
-    let rustraft_runtime_semantics = build_rustraft_runtime_semantics_report(
+    let matrixraft_runtime_semantics = build_matrixraft_runtime_semantics_report(
         &node_summaries,
         &replica_reads,
         &options.value,
@@ -405,9 +405,9 @@ fn main() {
         &membership_role_process_evidence,
     );
     assert!(
-        rustraft_runtime_semantics.ready,
-        "RustRaft runtime semantics are incomplete: {:?}",
-        rustraft_runtime_semantics.blockers
+        matrixraft_runtime_semantics.ready,
+        "MatrixRaft runtime semantics are incomplete: {:?}",
+        matrixraft_runtime_semantics.blockers
     );
 
     println!(
@@ -439,14 +439,14 @@ fn main() {
             post_rescale_up_write,
             rescale_up_reads,
             membership_role_process_evidence,
-            rustraft_runtime_semantics,
+            matrixraft_runtime_semantics,
         })
         .expect("summary should serialize")
     );
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_rustraft_runtime_semantics_report(
+fn build_matrixraft_runtime_semantics_report(
     nodes: &[NodeSummary],
     replica_reads: &[ReplicaReadSummary],
     expected_replica_read_value: &[u8],
@@ -461,7 +461,7 @@ fn build_rustraft_runtime_semantics_report(
     rescale_up_reads: &[ReplicaReadSummary],
     shared_store_path_evidence: &SharedStorePathEvidence,
     membership_role_process_evidence: &MembershipRoleProcessEvidence,
-) -> RustRaftRuntimeSemanticsReport {
+) -> MatrixRaftRuntimeSemanticsReport {
     let process_path_validated = nodes.len() >= 4
         && nodes.iter().all(|node| {
             !node.addr.is_empty()
@@ -579,7 +579,7 @@ fn build_rustraft_runtime_semantics_report(
     }
     let ready = blockers.is_empty();
 
-    RustRaftRuntimeSemanticsReport {
+    MatrixRaftRuntimeSemanticsReport {
         process_path_validated,
         read_index_and_lease_validated,
         stale_follower_write_rejected,

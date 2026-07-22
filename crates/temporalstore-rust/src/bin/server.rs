@@ -1356,13 +1356,13 @@ fn handle_server_raft_route(
 ) -> Option<(u16, Vec<u8>)> {
     let response = match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/raft/status") => json_response(200, &state.runtime.status()),
-        ("GET", "/raft/control/rustraft_runtime_admin")
-        | ("POST", "/raft/control/rustraft_runtime_admin") => json_response(
+        ("GET", "/raft/control/matrixraft_runtime_admin")
+        | ("POST", "/raft/control/matrixraft_runtime_admin") => json_response(
             200,
             &state.runtime.cluster().byteraft_runtime_admin_report(),
         ),
-        ("GET", "/raft/control/rustraft_local_status")
-        | ("POST", "/raft/control/rustraft_local_status") => {
+        ("GET", "/raft/control/matrixraft_local_status")
+        | ("POST", "/raft/control/matrixraft_local_status") => {
             json_response(200, &state.runtime.cluster().byteraft_local_status_report())
         }
         ("POST", "/raft/apply_health") => match parse_json::<RaftApplyHealthRequest>(&request.body)
@@ -4600,15 +4600,15 @@ mod tests {
         assert_eq!(health.max_apply_lag, 0);
     }
 
-    // shared-corpus: raft_rustraft_metrics_admin_pipeline_status server_raft_rustraft_runtime_admin_route
+    // shared-corpus: raft_matrixraft_metrics_admin_pipeline_status server_raft_matrixraft_runtime_admin_route
     #[test]
-    fn server_exposes_rustraft_runtime_admin_route() {
+    fn server_exposes_matrixraft_runtime_admin_route() {
         let dir = tempdir().unwrap();
         let state = test_server_raft_state(dir.path(), 1, vec![1, 2, 3], true);
         let cluster = state.runtime.cluster();
         cluster
             .propose(Command::StringSet {
-                key: "server-rustraft-admin-snapshot".to_string(),
+                key: "server-matrixraft-admin-snapshot".to_string(),
                 value: b"seed".to_vec(),
             })
             .unwrap();
@@ -4618,7 +4618,7 @@ mod tests {
         cluster.set_alive(3, false).unwrap();
         cluster
             .propose(Command::StringSet {
-                key: "server-rustraft-admin-lag".to_string(),
+                key: "server-matrixraft-admin-lag".to_string(),
                 value: b"lag".to_vec(),
             })
             .unwrap();
@@ -4627,7 +4627,7 @@ mod tests {
 
         let request = HttpRequest {
             method: "GET".to_string(),
-            path: "/raft/control/rustraft_runtime_admin".to_string(),
+            path: "/raft/control/matrixraft_runtime_admin".to_string(),
             body: Vec::new(),
         };
         let (code, body) = handle_server_raft_route(&state, &request).unwrap();
@@ -4664,7 +4664,7 @@ mod tests {
             .any(|peer| peer.peer_id == 3 && peer.append_queue_depth > 0));
         let request = HttpRequest {
             method: "GET".to_string(),
-            path: "/raft/control/rustraft_local_status".to_string(),
+            path: "/raft/control/matrixraft_local_status".to_string(),
             body: Vec::new(),
         };
         let (code, body) = handle_server_raft_route(&state, &request).unwrap();
@@ -4679,9 +4679,9 @@ mod tests {
             .any(|peer| peer.pipeline_state.peer_id == peer.status.node_id));
 
         let metrics = state.runtime.cluster().prometheus_metrics();
-        assert!(metrics.contains("rustraft_byteraft_ready"));
-        assert!(metrics.contains("rustraft_byteraft_capability_ready"));
-        assert!(metrics.contains("rustraft_byteraft_capability_field_present"));
+        assert!(metrics.contains("matrixraft_byteraft_ready"));
+        assert!(metrics.contains("matrixraft_byteraft_capability_ready"));
+        assert!(metrics.contains("matrixraft_byteraft_capability_field_present"));
         assert!(metrics.contains("temporalstore_raft_byteraft_ready"));
         assert!(metrics.contains("temporalstore_raft_byteraft_capability_ready"));
         assert!(metrics.contains("capability=\"wal_segment_lifecycle\""));

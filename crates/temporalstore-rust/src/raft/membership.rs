@@ -9,11 +9,11 @@ use super::{
     JointConsensusMembership, RaftCluster, RaftError, RaftMembership, RaftNodeId, RaftReplicaLag,
 };
 
-pub type TemporalRaftProcessNodeEvidence = matrixraft::RustRaftProcessNodeEvidence;
+pub type TemporalRaftProcessNodeEvidence = super::MatrixRaftProcessNodeEvidence;
 pub type TemporalRaftProcessOperationalSemanticsEvidence =
-    matrixraft::RustRaftProcessOperationalSemanticsEvidence;
-pub type TemporalRaftDataNodeProcessRolloutReport = matrixraft::RustRaftDataNodeProcessRolloutReport;
-pub type TemporalRaftMetaProcessRolloutReport = matrixraft::RustRaftMetaProcessRolloutReport;
+    super::MatrixRaftProcessOperationalSemanticsEvidence;
+pub type TemporalRaftDataNodeProcessRolloutReport = super::MatrixRaftDataNodeProcessRolloutReport;
+pub type TemporalRaftMetaProcessRolloutReport = super::MatrixRaftMetaProcessRolloutReport;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RaftCatchUpReport {

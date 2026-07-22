@@ -2187,7 +2187,7 @@ fn crash_recovery_report_marks_stale_segment_density_after_overwrite() {
 }
 
 #[test]
-// shared-corpus: storage_cache_refill storage_rustraft_cache_refill_pressure;
+// shared-corpus: storage_cache_refill storage_matrixraft_cache_refill_pressure;
 fn cold_index_page_address_reads_from_disk_cache_or_block_store_and_refills_memory() {
     let root = tempfile::tempdir().unwrap();
     let cache_dir = root.path().join("cache");
