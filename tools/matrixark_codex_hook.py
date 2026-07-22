@@ -1254,23 +1254,7 @@ SYNTHETIC_HOOK_TEXT_MARKERS = (
 def hook_retention_fields(*, text: str, role: str, now_ms: int) -> Json:
     lowered = str(text or "").lower()
     synthetic = any(marker in lowered for marker in SYNTHETIC_HOOK_TEXT_MARKERS)
-    if not synthetic:
-        return {
-            "origin": "codex_hook",
-            "record_class": f"{role or 'agent'}_message",
-            "synthetic": False,
-            "retention_class": "normal",
-            "expires_at_ms": None,
-            "gc_eligible": False,
-        }
-    return {
-        "origin": "codex_hook",
-        "record_class": "probe",
-        "synthetic": True,
-        "retention_class": "debug",
-        "expires_at_ms": now_ms,
-        "gc_eligible": True,
-    }
+    return {"synthetic": True} if synthetic else {}
 
 
 def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, role: str, agent_context: Json, hook: Json | None) -> Json:
