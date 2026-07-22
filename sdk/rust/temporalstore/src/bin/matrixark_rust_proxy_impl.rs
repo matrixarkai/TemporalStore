@@ -557,6 +557,7 @@ struct FilteredScanCacheEntry {
     scanned_records: u64,
     dropped_by_type: u64,
     dropped_by_scope: u64,
+    dropped_by_retention: u64,
     selected_node_dropped: u64,
     secondary_dropped: u64,
     secondary_matched: u64,
@@ -1640,6 +1641,7 @@ fn scan_matrixark_candidates(client: &Client, command: &Command) -> Result<Value
         let returned_records = entry.records.len();
         let dropped_ref_count = entry.dropped_by_type
             + entry.dropped_by_scope
+            + entry.dropped_by_retention
             + entry.selected_node_dropped
             + entry.secondary_dropped;
         return Ok(json!({
@@ -1668,6 +1670,7 @@ fn scan_matrixark_candidates(client: &Client, command: &Command) -> Result<Value
                 "returned_records": returned_records,
                 "dropped_by_type": entry.dropped_by_type,
                 "dropped_by_scope": entry.dropped_by_scope,
+                "dropped_by_retention": entry.dropped_by_retention,
                 "selected_node_dropped_candidate_count": entry.selected_node_dropped,
                 "secondary_index_groups_supplied": secondary_groups.len(),
                 "secondary_index_matched_candidate_count": entry.secondary_matched,
@@ -1712,6 +1715,7 @@ fn scan_matrixark_candidates(client: &Client, command: &Command) -> Result<Value
         };
     let mut dropped_by_type = 0_u64;
     let mut dropped_by_scope = 0_u64;
+    let mut dropped_by_retention = 0_u64;
     let mut selected_node_dropped = 0_u64;
     let mut node_paths_by_hash: HashMap<u64, Vec<String>> = HashMap::new();
     for record in records_source.iter() {
@@ -1734,9 +1738,14 @@ fn scan_matrixark_candidates(client: &Client, command: &Command) -> Result<Value
         }
     }
     let node_path_filters = query_node_path_filters(command.scope.as_ref());
+    let retention_now_ms = unix_ms();
     let records = records_source
         .iter()
         .filter_map(|record| {
+            if matrixark_record_retention_filtered(record, retention_now_ms) {
+                dropped_by_retention += 1;
+                return None;
+            }
             let record_type = record
                 .get("record_type")
                 .and_then(Value::as_str)
@@ -1827,7 +1836,7 @@ fn scan_matrixark_candidates(client: &Client, command: &Command) -> Result<Value
     };
 
     let dropped_ref_count =
-        dropped_by_type + dropped_by_scope + selected_node_dropped + secondary_dropped;
+        dropped_by_type + dropped_by_scope + dropped_by_retention + selected_node_dropped + secondary_dropped;
     put_filtered_scan_cache(
         filtered_cache_key,
         FilteredScanCacheEntry {
@@ -1835,6 +1844,7 @@ fn scan_matrixark_candidates(client: &Client, command: &Command) -> Result<Value
             scanned_records,
             dropped_by_type,
             dropped_by_scope,
+            dropped_by_retention,
             selected_node_dropped,
             secondary_dropped,
             secondary_matched,
@@ -1867,6 +1877,7 @@ fn scan_matrixark_candidates(client: &Client, command: &Command) -> Result<Value
             "returned_records": filtered.len(),
             "dropped_by_type": dropped_by_type,
             "dropped_by_scope": dropped_by_scope,
+            "dropped_by_retention": dropped_by_retention,
             "selected_node_dropped_candidate_count": selected_node_dropped,
             "secondary_index_groups_supplied": secondary_groups.len(),
             "secondary_index_matched_candidate_count": secondary_matched,
@@ -1899,6 +1910,32 @@ fn candidate_text(record: &Value) -> String {
 fn token_estimate(text: &str) -> u64 {
     let words = text.split_whitespace().count() as u64;
     words.max((text.len() as u64 + 3) / 4).max(1)
+}
+
+fn matrixark_record_retention_filtered(record: &Value, now_ms: u128) -> bool {
+    if record
+        .get("synthetic")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    if matches!(
+        record.get("retention_class").and_then(Value::as_str),
+        Some("debug" | "probe")
+    ) {
+        return true;
+    }
+    if let Some(expires_at_ms) = record.get("expires_at_ms").and_then(Value::as_u64) {
+        if expires_at_ms > 0 && u128::from(expires_at_ms) <= now_ms {
+            return true;
+        }
+    }
+    record
+        .get("deleted_at_ms")
+        .and_then(Value::as_u64)
+        .map(|deleted_at_ms| deleted_at_ms > 0)
+        .unwrap_or(false)
 }
 
 fn sparse_query_score(query_terms: &HashSet<String>, text: &str) -> f64 {
@@ -2144,9 +2181,13 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
         remote_budget,
         &question_type,
     );
+    let retention_now_ms = unix_ms();
     let mut scored: Vec<(f64, &Value, String, f64, f64)> = records
         .iter()
         .filter(|record| {
+            if matrixark_record_retention_filtered(record, retention_now_ms) {
+                return false;
+            }
             matches!(
                 record
                     .get("record_type")

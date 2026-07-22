@@ -1238,6 +1238,41 @@ def hook_storage_options() -> Json:
     return {"route": os.environ.get("MATRIXARK_HOOK_STORAGE_ROUTE", "shared_store_async")}
 
 
+SYNTHETIC_HOOK_TEXT_MARKERS = (
+    "probe",
+    "smoke",
+    "verification",
+    "manual",
+    "stdin check",
+    "cmd stdin check",
+    "service publisher",
+    "hook fixed raw ingestion probe",
+    "registered codex hook config verification",
+)
+
+
+def hook_retention_fields(*, text: str, role: str, now_ms: int) -> Json:
+    lowered = str(text or "").lower()
+    synthetic = any(marker in lowered for marker in SYNTHETIC_HOOK_TEXT_MARKERS)
+    if not synthetic:
+        return {
+            "origin": "codex_hook",
+            "record_class": f"{role or 'agent'}_message",
+            "synthetic": False,
+            "retention_class": "normal",
+            "expires_at_ms": None,
+            "gc_eligible": False,
+        }
+    return {
+        "origin": "codex_hook",
+        "record_class": "probe",
+        "synthetic": True,
+        "retention_class": "debug",
+        "expires_at_ms": now_ms,
+        "gc_eligible": True,
+    }
+
+
 def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, role: str, agent_context: Json, hook: Json | None) -> Json:
     adapter = getattr(server, "adapter", None)
     enqueue = getattr(adapter, "_enqueue_direct_write", None)
@@ -1263,6 +1298,7 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "codex_event": args.event,
         "agent_context": agent_context,
     }
+    retention = hook_retention_fields(text=text, role=role, now_ms=now)
     raw_record: Json = {
         "record_type": "agent_message",
         "source_kind": "message",
@@ -1278,6 +1314,7 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "async_processing": True,
         "created_at_ms": now,
         "updated_at_ms": now,
+        **retention,
     }
     record: Json = {
         "record_type": "context_event",
@@ -1304,6 +1341,7 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "async_processing": True,
         "created_at_ms": now,
         "updated_at_ms": now,
+        **retention,
     }
     enqueue_raw = getattr(adapter, "enqueue_raw_ingestion_records", None)
     if callable(enqueue_raw):
