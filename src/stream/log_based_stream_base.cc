@@ -359,7 +359,14 @@ void StreamBaseImpl::TryOpenBlob(BlobOpenInfo* open_info, Closure<void>* callbac
     BYTE_ASSERT(open_info->state == kNotOpen);
     open_info->state = kOpening;
 
-    byte::InvokeInCurrentThread(NewCoClosure(this, &StreamBaseImpl::OpenBlobForRead, open_info));
+    if (IsCoContext()) {
+        byte::InvokeInCurrentThread(NewCoClosure(this, &StreamBaseImpl::OpenBlobForRead, open_info));
+    } else {
+        // Partition bootstrap/restart recovery can replay streams from a plain async thread.
+        // Queueing the open back to that same thread and then synchronously waiting would
+        // deadlock the loader before the partition reaches LOADED.
+        OpenBlobForRead(open_info);
+    }
 }
 
 void StreamBaseImpl::OpenBlobForRead(BlobOpenInfo* open_info) {

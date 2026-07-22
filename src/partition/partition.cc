@@ -697,12 +697,20 @@ Status Partition::SetupCondition() {
     if (!readonly_             // RW partition
         && ctrl.status().ok()  // found Condition
         && options_.load_version <= condition_os.LoadVersion()) {
+        const bool bootstrap_reload =
+            options_.load_version == 0 && condition_os.LoadVersion() == 0;
+        if (bootstrap_reload) {
+            LOG_WARNING("Allow bootstrap reload with zero load version")
+                .put("PartitionId", options_.partition_id)
+                .put("Uri", options_.uri);
+        } else {
         LOG_ERROR("Load version should be larger")
             .put("PartitionId", options_.partition_id)
             .put("Uri", options_.uri)
             .put("OldVersion", condition_os.LoadVersion())
             .put("NewVersion", options_.load_version);
         return Status::InvalidArgument("Load version should be larger");
+        }
     }
 
     if (readonly_ && !IsDataRaftConsensusMode() && UsePrimaryPullStreams()) {
