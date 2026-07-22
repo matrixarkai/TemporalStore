@@ -27,7 +27,7 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         args = Namespace(
             event="UserPromptSubmit",
             backend="temporalstore-rust",
-            storage_prefix="matrixark:codex-hook:rust",
+            storage_prefix="matrixark:codex-hook:rust-live-v2",
             session_id="codex-session-1",
             account_id="acct_local",
             tenant_id="tenant_codex",
