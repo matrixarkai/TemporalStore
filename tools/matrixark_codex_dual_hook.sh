@@ -173,23 +173,7 @@ synthetic_markers = (
 
 def retention_fields(prompt_text):
     synthetic = any(marker in (prompt_text or "").lower() for marker in synthetic_markers)
-    if not synthetic:
-        return {
-            "origin": "codex_hook",
-            "record_class": "user_message",
-            "synthetic": False,
-            "retention_class": "normal",
-            "expires_at_ms": None,
-            "gc_eligible": False,
-        }
-    return {
-        "origin": "codex_hook",
-        "record_class": "probe",
-        "synthetic": True,
-        "retention_class": "debug",
-        "expires_at_ms": now_ms,
-        "gc_eligible": True,
-    }
+    return {"synthetic": True} if synthetic else {}
 
 
 def post(url, path, obj):
