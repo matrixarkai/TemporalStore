@@ -16,6 +16,10 @@ IDEMPOTENCY_DIR="${MATRIXARK_CODEX_HOOK_IDEMPOTENCY_DIR:-$ROOT/.local/runtime/ma
 mkdir -p "$IDEMPOTENCY_DIR"
 find "$IDEMPOTENCY_DIR" -type d -mmin +10 -name 'hook-*' -exec rm -rf {} + 2>/dev/null || true
 PAYLOAD_HASH="$(sha256sum "$TMP_PAYLOAD" | awk '{print $1}')"
+PAYLOAD_BYTES="$(wc -c <"$TMP_PAYLOAD" | tr -d '[:space:]')"
+DIAG_LOG="$LOG_DIR/dispatch-diagnostics.jsonl"
+printf '{"ts_ms":%s,"event":"%s","payload_bytes":%s,"payload_hash":"%s"}\n' \
+  "$(date +%s%3N)" "$EVENT" "${PAYLOAD_BYTES:-0}" "$PAYLOAD_HASH" >>"$DIAG_LOG" 2>/dev/null || true
 LOCK_KEY="$(printf '%s:%s' "$EVENT" "$PAYLOAD_HASH" | sha256sum | awk '{print $1}')"
 if ! mkdir "$IDEMPOTENCY_DIR/hook-$LOCK_KEY" 2>/dev/null; then
   exit 0
@@ -140,7 +144,8 @@ if not prompt:
         if prompt:
             break
 if not isinstance(prompt, str) or not prompt.strip():
-    print(f"skip empty prompt keys={sorted(payload.keys())}", file=__import__("sys").stderr)
+    keys = sorted(payload.keys()) if isinstance(payload, dict) else []
+    print(f"skip empty prompt event={os.environ.get('EVENT', 'UserPromptSubmit')} keys={keys}", file=__import__("sys").stderr)
     raise SystemExit(0)
 
 now_ms = int(time.time() * 1000)
@@ -339,7 +344,8 @@ if not prompt:
         if prompt:
             break
 if not prompt:
-    print(f"skip empty prompt keys={sorted(payload.keys())}", file=sys.stderr)
+    keys = sorted(payload.keys()) if isinstance(payload, dict) else []
+    print(f"skip empty prompt event={os.environ.get('EVENT', 'UserPromptSubmit')} keys={keys}", file=sys.stderr)
     raise SystemExit(0)
 
 now_ms = int(time.time() * 1000)
