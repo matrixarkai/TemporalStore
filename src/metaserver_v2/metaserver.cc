@@ -99,11 +99,13 @@ Status MetaServer::Start() {
     const uint32_t port = FLAGS_metaserver_server_port;
     LOG_INFO("start rpc server").put("port", port);
     brpc::ServerOptions options;
+    options.num_threads = FLAGS_metaserver_service_thread_num;
     if (rpc_server_->Start(port, &options) != 0) {
         return Status::Internal("failed to start server");
     }
     LOG_INFO("start meta query server").put("port", port - 1000);
     brpc::ServerOptions options2;
+    options2.num_threads = FLAGS_metaserver_service_thread_num;
     if (meta_query_server_->Start(port - 1000, &options2) != 0) {
         rpc_server_->Stop(0);
         rpc_server_->Join();

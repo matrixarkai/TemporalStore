@@ -202,6 +202,11 @@ if(BRPC_STATIC_LIBRARY AND NOT TARGET brpc-static)
         set_target_properties(brpc-static PROPERTIES
             INTERFACE_INCLUDE_DIRECTORIES "${_TEMPORALSTORE_BRPC_INCLUDE_DIRS}")
     endif()
+    find_library(TEMPORALSTORE_BRPC_THRIFT_LIBRARY NAMES libthrift.a thrift PATHS /usr/lib/x86_64-linux-gnu /usr/lib)
+    if(TEMPORALSTORE_BRPC_THRIFT_LIBRARY)
+        set_target_properties(brpc-static PROPERTIES
+            INTERFACE_LINK_LIBRARIES "${TEMPORALSTORE_BRPC_THRIFT_LIBRARY}")
+    endif()
 endif()
 foreach(_TEMPORALSTORE_BRPC_INCLUDE_CANDIDATE
         "/root/src/open-source/brpc/build-config-only/output/include"

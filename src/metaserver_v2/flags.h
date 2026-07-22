@@ -8,6 +8,8 @@ namespace metaserver {
 
 DECLARE_string(metaserver_cluster_name);
 DECLARE_int32(metaserver_server_port);
+DECLARE_int32(metaserver_service_thread_num);
+DECLARE_int32(metaserver_bthread_concurrency);
 DECLARE_string(metaserver_work_dir);
 DECLARE_string(metaserver_log_dir);
 DECLARE_int32(metaserver_log_level);
