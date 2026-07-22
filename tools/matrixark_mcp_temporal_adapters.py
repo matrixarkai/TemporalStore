@@ -1037,6 +1037,19 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
             self._observe_backend_command(elapsed_ms, records_written=len(records))
 
+    def enqueue_raw_ingestion_records(self, records: list[Json]) -> None:
+        """Persist original ingestion envelopes outside the compact serving prefix.
+
+        Fast hooks write a compact ContextEvent for serving, but the original
+        agent message envelope must also be fetchable for backfill/recovery.
+        Keep the public helper narrow so hook code does not need to reach into
+        raw-prefix internals.
+        """
+        if not records:
+            return
+        self._ensure_direct_write_queue_fields()
+        self._append_raw_ingestion_records(records, allow_queue=True)
+
     def _context_index_lookup_key(self, scope_key: str) -> str:
         scope_hash = stable_hash(scope_key) if scope_key else 0
         return f"{self._storage_prefix}:context_index_lookup:{scope_hash}"
