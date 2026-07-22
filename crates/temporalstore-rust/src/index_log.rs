@@ -63,6 +63,7 @@ pub struct LocalIndexLogStore {
 #[derive(Debug)]
 struct IndexLogInner {
     root: PathBuf,
+    enabled: bool,
     stats: IndexLogStats,
     last_sequence_by_shard: HashMap<ShardId, u64>,
 }
@@ -74,9 +75,31 @@ impl LocalIndexLogStore {
         Self {
             inner: Arc::new(Mutex::new(IndexLogInner {
                 root,
+                enabled: true,
                 stats: IndexLogStats::default(),
                 last_sequence_by_shard: HashMap::new(),
             })),
+        }
+    }
+
+    pub fn disabled(root: impl Into<PathBuf>) -> Self {
+        let root = root.into();
+        let _ = fs::create_dir_all(&root);
+        Self {
+            inner: Arc::new(Mutex::new(IndexLogInner {
+                root,
+                enabled: false,
+                stats: IndexLogStats::default(),
+                last_sequence_by_shard: HashMap::new(),
+            })),
+        }
+    }
+
+    pub fn production_default(root: impl Into<PathBuf>) -> Self {
+        if full_index_log_enabled() {
+            Self::new(root)
+        } else {
+            Self::disabled(root)
         }
     }
 
@@ -101,6 +124,11 @@ impl LocalIndexLogStore {
             sequence: next_sequence,
             index: serde_json::from_slice(index_bytes)?,
         };
+        if !inner.enabled {
+            inner.stats.last_sequence = next_sequence;
+            inner.last_sequence_by_shard.insert(shard_id, next_sequence);
+            return Ok(record);
+        }
         let header = format!("{{\"shard_id\":{shard_id},\"sequence\":{next_sequence},\"index\":");
         let bytes_written = header
             .len()
@@ -137,6 +165,11 @@ impl LocalIndexLogStore {
             }
         };
         let next_sequence = last_sequence.saturating_add(1);
+        if !inner.enabled {
+            inner.stats.last_sequence = next_sequence;
+            inner.last_sequence_by_shard.insert(shard_id, next_sequence);
+            return Ok(next_sequence);
+        }
         let header = format!("{{\"shard_id\":{shard_id},\"sequence\":{next_sequence},\"index\":");
         let bytes_written = header
             .len()
@@ -162,6 +195,13 @@ impl LocalIndexLogStore {
         offset: u64,
         size: u64,
     ) -> Result<Vec<u8>, IndexLogError> {
+        {
+            let mut inner = self.inner.lock().expect("index log lock poisoned");
+            if !inner.enabled {
+                inner.stats.reads = inner.stats.reads.saturating_add(1);
+                return Ok(Vec::new());
+            }
+        }
         if size == 0 {
             let mut inner = self.inner.lock().expect("index log lock poisoned");
             inner.stats.reads = inner.stats.reads.saturating_add(1);
@@ -203,6 +243,13 @@ impl LocalIndexLogStore {
         end_offset: u64,
         max_bytes: u64,
     ) -> Result<Vec<(u64, Vec<u8>)>, IndexLogError> {
+        {
+            let mut inner = self.inner.lock().expect("index log lock poisoned");
+            if !inner.enabled {
+                inner.stats.scans = inner.stats.scans.saturating_add(1);
+                return Ok(Vec::new());
+            }
+        }
         if max_bytes == 0 || start_offset >= end_offset {
             let mut inner = self.inner.lock().expect("index log lock poisoned");
             inner.stats.scans = inner.stats.scans.saturating_add(1);
@@ -264,6 +311,14 @@ impl LocalIndexLogStore {
     ) -> Result<IndexLogGcReport, IndexLogError> {
         let root = {
             let inner = self.inner.lock().expect("index log lock poisoned");
+            if !inner.enabled {
+                return Ok(IndexLogGcReport {
+                    shard_id,
+                    retain_from_sequence,
+                    max_entries_per_round,
+                    ..IndexLogGcReport::default()
+                });
+            }
             inner.root.clone()
         };
         fs::create_dir_all(&root)?;
@@ -359,6 +414,16 @@ impl Default for LocalIndexLogStore {
 
 fn index_log_path(root: &Path, shard_id: ShardId) -> PathBuf {
     root.join(format!("shard-{shard_id}.indexlog.jsonl"))
+}
+
+fn full_index_log_enabled() -> bool {
+    matches!(
+        std::env::var("TS_RUST_FULL_INDEX_LOG")
+            .or_else(|_| std::env::var("TEMPORALSTORE_RUST_FULL_INDEX_LOG"))
+            .ok()
+            .as_deref(),
+        Some("1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON")
+    )
 }
 
 fn last_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, IndexLogError> {

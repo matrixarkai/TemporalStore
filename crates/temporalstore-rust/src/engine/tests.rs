@@ -3424,7 +3424,7 @@ fn async_storage_string_write_stays_on_hot_memory_path() {
 }
 
 #[test]
-fn async_storage_publish_uses_index_log_and_serving_index() {
+fn async_storage_publish_uses_serving_index_without_full_index_log_by_default() {
     let dir = tempfile::tempdir().unwrap();
     let page_dir = dir.path().join("pages");
     let index_dir = dir.path().join("indexes");
@@ -3464,7 +3464,7 @@ fn async_storage_publish_uses_index_log_and_serving_index() {
         .expect("publish async page visibility");
     assert!(published > 0);
     assert_eq!(engine.block_store().stats().writes, 1);
-    assert_eq!(engine.index_log_store().stats(1).writes, 1);
+    assert_eq!(engine.index_log_store().stats(1).writes, 0);
 
     let reader = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -3559,7 +3559,7 @@ fn durable_execute_overrides_async_storage_for_raft_local_file_path() {
     assert!(write.status.ok);
     assert_eq!(engine.block_store().stats().writes, 1);
     assert_eq!(engine.write_ahead_log_store().stats(1).writes, 1);
-    assert_eq!(engine.index_log_store().stats(1).writes, 1);
+    assert_eq!(engine.index_log_store().stats(1).writes, 0);
 
     let read = engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -5331,7 +5331,7 @@ fn control_api_reads_and_scans_wal_stream() {
 }
 
 #[test]
-fn control_api_reads_and_scans_index_log_stream() {
+fn control_api_index_log_stream_is_empty_by_default() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -5364,11 +5364,7 @@ fn control_api_reads_and_scans_index_log_stream() {
         size: 8192,
     });
     assert!(stream.status.ok);
-    let text = String::from_utf8(stream.data).unwrap();
-    assert!(text.contains("\"sequence\":1"));
-    assert!(text.contains("\"sequence\":2"));
-    assert!(text.contains("\"strings\""));
-    assert!(text.contains("\"hashes\""));
+    assert!(stream.data.is_empty());
 
     let scan = engine.scan_stream(ScanStreamRequest {
         shard_id: 1,
@@ -5378,15 +5374,9 @@ fn control_api_reads_and_scans_index_log_stream() {
         end_offset: 8192,
         max_bytes: 8192,
     });
-    assert_eq!(scan.records.len(), 2);
-
-    let last_record: crate::index_log::IndexLogRecord =
-        serde_json::from_slice(&scan.records[1].data).unwrap();
-    assert_eq!(last_record.sequence, 2);
-    assert_eq!(
-        last_record.index["hashes"]["h"]["f"]["page_segment_id"],
-        serde_json::json!(0)
-    );
+    assert!(scan.status.ok);
+    assert!(scan.records.is_empty());
+    assert_eq!(engine.index_log_store().stats(1).writes, 0);
     assert_eq!(engine.index_log_store().stats(1).last_sequence, 2);
 }
 

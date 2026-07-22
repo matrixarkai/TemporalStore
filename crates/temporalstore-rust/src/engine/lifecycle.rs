@@ -197,7 +197,7 @@ impl TemporalEngine {
     ) -> Self {
         let index_dir = index_dir.into();
         let wal_store = LocalWriteAheadLogStore::new(index_dir.join("wals"));
-        let index_log_store = LocalIndexLogStore::new(index_dir.join("indexlogs"));
+        let index_log_store = LocalIndexLogStore::production_default(index_dir.join("indexlogs"));
         Self {
             shards: Arc::default(),
             cache,
