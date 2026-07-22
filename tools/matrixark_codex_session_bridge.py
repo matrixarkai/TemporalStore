@@ -76,19 +76,56 @@ def _is_user_authored_text(text: str) -> bool:
     if not stripped:
         return False
     lowered = stripped.lower()
-    if lowered.startswith(("<environment_context>", "<codex_internal_context>", "<developer_context>", "<system_context>")):
+    internal_prefixes = (
+        "<environment_context",
+        "<codex_internal_context",
+        "<developer_context",
+        "<system_context",
+    )
+    if lowered.startswith(internal_prefixes):
         return False
     return True
 
 
-def _extract_user_message(record: Json) -> str:
+def _content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text") or item.get("content")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(parts)
+    return ""
+
+
+def _extract_user_messages(record: Json) -> list[str]:
+    messages: list[str] = []
     if record.get("type") == "event_msg" and isinstance(record.get("payload"), dict):
         payload = record["payload"]
         if payload.get("type") == "user_message":
             message = payload.get("message")
             text = message.strip() if isinstance(message, str) else ""
-            return text if _is_user_authored_text(text) else ""
-    return ""
+            if _is_user_authored_text(text):
+                messages.append(text)
+    if record.get("type") == "response_item" and isinstance(record.get("payload"), dict):
+        payload = record["payload"]
+        if payload.get("type") == "message" and payload.get("role") == "user":
+            text = _content_text(payload.get("content")).strip()
+            if _is_user_authored_text(text):
+                messages.append(text)
+    if record.get("type") == "compacted" and isinstance(record.get("payload"), dict):
+        history = record["payload"].get("replacement_history")
+        if isinstance(history, list):
+            for item in history:
+                if not isinstance(item, dict) or item.get("role") != "user":
+                    continue
+                text = _content_text(item.get("content")).strip()
+                if _is_user_authored_text(text):
+                    messages.append(text)
+    return messages
 
 
 def _session_files(root: Path, lookback_days: int) -> list[Path]:
@@ -112,11 +149,55 @@ def _session_files(root: Path, lookback_days: int) -> list[Path]:
                     files.append(path)
         except OSError:
             continue
-    return sorted(files, key=lambda path: path.stat().st_mtime, reverse=True)
+    # Desktop Codex tasks can be long-lived: a task created weeks ago keeps its
+    # original YYYY/MM/DD rollout path while receiving fresh turns today. Include
+    # recently modified rollout files from the whole tree so the bridge covers
+    # all active conversations, not only conversations created in the lookback
+    # date directories above.
+    try:
+        for path in root.rglob("rollout-*.jsonl"):
+            if path.is_file() and path.stat().st_mtime >= cutoff:
+                files.append(path)
+    except OSError:
+        pass
+    unique = {str(path): path for path in files}
+    return sorted(unique.values(), key=lambda path: path.stat().st_mtime, reverse=True)
 
 
 def _event_key(path: Path, line_no: int, text: str) -> str:
     return f"{path}:{line_no}:{hash(text)}"
+
+
+def _iter_new_lines(path: Path, state: Json, initial_tail_bytes: int) -> list[tuple[int, str]]:
+    offsets = state.setdefault("file_offsets", {})
+    key = str(path)
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return []
+    raw_offset = offsets.get(key)
+    if isinstance(raw_offset, int):
+        start = max(0, min(raw_offset, size))
+    else:
+        start = max(0, size - max(0, initial_tail_bytes))
+    if start > size:
+        start = 0
+    rows: list[tuple[int, str]] = []
+    try:
+        with path.open("rb") as handle:
+            handle.seek(start)
+            if start:
+                handle.readline()
+            while True:
+                line_offset = handle.tell()
+                raw = handle.readline()
+                if not raw:
+                    break
+                rows.append((line_offset, raw.decode("utf-8", errors="ignore")))
+            offsets[key] = handle.tell()
+    except Exception:
+        offsets[key] = size
+    return rows
 
 
 def _hook_payload(meta: Json, text: str, path: Path, line_no: int) -> Json:
@@ -180,34 +261,28 @@ def scan_once(args: argparse.Namespace, state: Json) -> tuple[int, int]:
     scanned = 0
     for path in _session_files(sessions_root, args.lookback_days):
         meta: Json = {"session_id": path.stem, "thread_id": path.stem}
-        try:
-            lines = path.read_text(encoding="utf-8").splitlines()
-        except Exception:
-            continue
-        for line_no, line in enumerate(lines, start=1):
+        for line_no, line in _iter_new_lines(path, state, args.initial_tail_bytes):
             record = _line_payload(line)
             if not record:
                 continue
             meta.update({k: v for k, v in _extract_session_meta(record, path).items() if v})
-            text = _extract_user_message(record)
-            if not text:
-                continue
-            scanned += 1
-            key = _event_key(path, line_no, text)
-            if key in seen:
-                continue
-            payload = _hook_payload(meta, text, path, line_no)
-            if args.dry_run:
-                print(json.dumps(payload, ensure_ascii=False))
-                seen.add(key)
-                emitted += 1
-                continue
-            if _run_dual_hook(repo, payload, args.hook_timeout_sec):
-                seen.add(key)
-                emitted += 1
-                if args.limit and emitted >= args.limit:
-                    state["seen"] = sorted(seen)[-args.max_seen :]
-                    return scanned, emitted
+            for text in _extract_user_messages(record):
+                scanned += 1
+                key = _event_key(path, line_no, text)
+                if key in seen:
+                    continue
+                payload = _hook_payload(meta, text, path, line_no)
+                if args.dry_run:
+                    print(json.dumps(payload, ensure_ascii=False))
+                    seen.add(key)
+                    emitted += 1
+                    continue
+                if _run_dual_hook(repo, payload, args.hook_timeout_sec):
+                    seen.add(key)
+                    emitted += 1
+                    if args.limit and emitted >= args.limit:
+                        state["seen"] = sorted(seen)[-args.max_seen :]
+                        return scanned, emitted
     state["seen"] = sorted(seen)[-args.max_seen :]
     return scanned, emitted
 
@@ -220,6 +295,7 @@ def main() -> int:
     parser.add_argument("--interval-sec", type=float, default=2.0)
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--max-seen", type=int, default=20000)
+    parser.add_argument("--initial-tail-bytes", type=int, default=0)
     parser.add_argument("--hook-timeout-sec", type=int, default=120)
     parser.add_argument("--watch", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
