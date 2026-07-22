@@ -14,6 +14,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+try:
+    from tools.matrixark_mcp_core import _mcp_debug_log
+except ModuleNotFoundError:
+    from matrixark_mcp_core import _mcp_debug_log
+
 
 Json = dict[str, Any]
 
