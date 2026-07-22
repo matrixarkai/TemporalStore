@@ -87,6 +87,20 @@ def _is_user_authored_text(text: str) -> bool:
     return True
 
 
+def _normalize_user_authored_text(text: str) -> str:
+    stripped = text.strip()
+    marker = "## My request for Codex:"
+    if marker in stripped:
+        stripped = stripped.split(marker, 1)[1].strip()
+    while stripped.lower().startswith("<in-app-browser-context"):
+        end_tag = "</in-app-browser-context>"
+        end = stripped.lower().find(end_tag)
+        if end < 0:
+            break
+        stripped = stripped[end + len(end_tag) :].strip()
+    return stripped
+
+
 def _content_text(content: Any) -> str:
     if isinstance(content, str):
         return content
@@ -108,12 +122,14 @@ def _extract_user_messages(record: Json) -> list[str]:
         if payload.get("type") == "user_message":
             message = payload.get("message")
             text = message.strip() if isinstance(message, str) else ""
+            text = _normalize_user_authored_text(text)
             if _is_user_authored_text(text):
                 messages.append(text)
     if record.get("type") == "response_item" and isinstance(record.get("payload"), dict):
         payload = record["payload"]
         if payload.get("type") == "message" and payload.get("role") == "user":
             text = _content_text(payload.get("content")).strip()
+            text = _normalize_user_authored_text(text)
             if _is_user_authored_text(text):
                 messages.append(text)
     if record.get("type") == "compacted" and isinstance(record.get("payload"), dict):
@@ -123,6 +139,7 @@ def _extract_user_messages(record: Json) -> list[str]:
                 if not isinstance(item, dict) or item.get("role") != "user":
                     continue
                 text = _content_text(item.get("content")).strip()
+                text = _normalize_user_authored_text(text)
                 if _is_user_authored_text(text):
                     messages.append(text)
     return messages
