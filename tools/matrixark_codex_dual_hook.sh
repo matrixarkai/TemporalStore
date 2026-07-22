@@ -173,14 +173,59 @@ synthetic_markers = (
 
 def retention_fields(prompt_text):
     synthetic = any(marker in (prompt_text or "").lower() for marker in synthetic_markers)
-    return {"synthetic": True} if synthetic else {}
+    return {"synthetic": synthetic}
 
 
 def post(url, path, obj):
     data = json.dumps(obj, separators=(",", ":")).encode("utf-8")
     req = urllib.request.Request(url + path, data=data, headers={"content-type": "application/json"})
-    with urllib.request.urlopen(req, timeout=5) as response:
-        return json.loads(response.read().decode("utf-8"))
+    last_exc = None
+    for attempt in range(20):
+        try:
+            with urllib.request.urlopen(req, timeout=5) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            last_exc = exc
+            time.sleep(min(0.05 * (attempt + 1), 0.5))
+    raise last_exc
+
+
+def get_value(key):
+    try:
+        response = post(base, "/ProxyService/Get", {"namespace": namespace, "table_name": table, "key": key})
+        value = ((response or {}).get("response") or {}).get("value")
+        if isinstance(value, list):
+            return bytes(value).decode("utf-8", "replace")
+        return value
+    except Exception:
+        return None
+
+
+def set_value(key, value):
+    post(
+        base,
+        "/ProxyService/Set",
+        {
+            "namespace": namespace,
+            "table_name": table,
+            "key": key,
+            "value": list(str(value).encode("utf-8")),
+        },
+    )
+
+
+def hset_value(key, field, record):
+    post(
+        base,
+        "/ProxyService/HSet",
+        {
+            "namespace": namespace,
+            "table_name": table,
+            "key": key,
+            "field": field,
+            "value": list(json.dumps(record, separators=(",", ":")).encode("utf-8")),
+        },
+    )
 
 
 for url, path, obj in (
@@ -227,26 +272,164 @@ serving_record = {
     **retention_fields(prompt),
 }
 
-for key, record in (
-    (f"{prefix}:raw_ingestion:records", raw_record),
-    (f"{prefix}:records", serving_record),
+for count_key, records_prefix, record in (
+    (f"{prefix}:raw_ingestion:record_count", f"{prefix}:raw_ingestion:records", raw_record),
+    (f"{prefix}:record_count", f"{prefix}:records", serving_record),
 ):
-    field = f"{now_ms:020d}"
-    value = list(json.dumps(record, separators=(",", ":")).encode("utf-8"))
     try:
-        post(
-            base,
-            "/ProxyService/HSet",
-            {
-                "namespace": namespace,
-                "table_name": table,
-                "key": key,
-                "field": field,
-                "value": value,
-            },
+        sequence = int(get_value(count_key) or "0") + 1
+    except Exception:
+        sequence = 1
+    sharded_key = f"{records_prefix}:{sequence // 10000:06d}"
+    field = f"{sequence:020d}"
+    try:
+        hset_value(sharded_key, field, record)
+        hset_value(records_prefix, field, record)
+        set_value(count_key, sequence)
+        print(
+            f"published {records_prefix} sequence={sequence} field={field}",
+            file=__import__("sys").stderr,
         )
     except Exception as exc:
-        print(f"hset {key} failed: {exc}", file=__import__("sys").stderr)
+        print(f"publish {records_prefix} failed: {exc}", file=__import__("sys").stderr)
+PY
+}
+
+publish_cpp_direct_records() {
+  MATRIXARK_TEMPORALSTORE_NAMESPACE="${MATRIXARK_TEMPORALSTORE_NAMESPACE:-deploy_ns}" \
+  MATRIXARK_TEMPORALSTORE_TABLE="${MATRIXARK_TEMPORALSTORE_TABLE:-deploy_table}" \
+  MATRIXARK_CPP_TEMPORALSTORE_PREFIX="${MATRIXARK_CPP_TEMPORALSTORE_PREFIX:-matrixark:codex-hook:cpp-live-v2}" \
+  MATRIXARK_CPP_TEMPORALSTORE_METASERVER="${MATRIXARK_CPP_TEMPORALSTORE_METASERVER:-127.0.0.1:18000}" \
+  TEMPORALSTORE_LIB="${TEMPORALSTORE_LIB:-$ROOT/output-ubuntu22/release/sdk/lib/libbcache2.so}" \
+  python3 - "$TMP_PAYLOAD" 2>>"$LOG_DIR/cpp-direct-publish.err" <<'PY'
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+payload_path = sys.argv[1]
+repo = Path(os.environ.get("MATRIXARK_REPO_ROOT") or Path.cwd())
+sys.path.insert(0, str(repo / "sdk/python"))
+try:
+    from temporalstore.client import Client, Options
+except Exception as exc:
+    print(f"import temporalstore client failed: {exc}", file=sys.stderr)
+    raise SystemExit(0)
+
+try:
+    with open(payload_path, "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+except Exception:
+    payload = {}
+
+def first_text(source, keys):
+    if not isinstance(source, dict):
+        return ""
+    for key in keys:
+        value = source.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+prompt = first_text(payload, ["prompt", "message", "text", "input", "user_prompt", "userPrompt"])
+if not prompt:
+    for nested_key in ("hookInput", "hook_input", "payload", "event", "data"):
+        prompt = first_text(payload.get(nested_key), ["prompt", "message", "text", "input", "user_prompt", "userPrompt"])
+        if prompt:
+            break
+if not prompt:
+    print(f"skip empty prompt keys={sorted(payload.keys())}", file=sys.stderr)
+    raise SystemExit(0)
+
+now_ms = int(time.time() * 1000)
+namespace = os.environ.get("MATRIXARK_TEMPORALSTORE_NAMESPACE", "deploy_ns")
+table = os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "deploy_table")
+prefix = os.environ.get("MATRIXARK_CPP_TEMPORALSTORE_PREFIX", "matrixark:codex-hook:cpp-live-v2")
+session_id = (
+    payload.get("session_id")
+    or payload.get("conversation_id")
+    or payload.get("thread_id")
+    or os.environ.get("MATRIXARK_HOOK_SESSION_ID")
+    or "codex-live-active-hook"
+)
+session_id = f"codex:{session_id}" if not str(session_id).startswith("codex:") else str(session_id)
+hook_id = f"{os.environ.get('EVENT', 'UserPromptSubmit')}:{now_ms}"
+synthetic_markers = (
+    "probe",
+    "smoke",
+    "verification",
+    "manual",
+    "stdin check",
+    "cmd stdin check",
+    "service publisher",
+    "hook fixed raw ingestion probe",
+    "registered codex hook config verification",
+)
+
+def retention_fields(prompt_text):
+    return {"synthetic": any(marker in (prompt_text or "").lower() for marker in synthetic_markers)}
+
+try:
+    client = Client(
+        Options(
+            metaserver_addr=os.environ.get("MATRIXARK_CPP_TEMPORALSTORE_METASERVER", "127.0.0.1:18000"),
+            namespace_name=namespace,
+            table_name=table,
+            request_timeout_ms=3000,
+            io_timeout_ms=3000,
+        ),
+        library_path=os.environ.get("TEMPORALSTORE_LIB", str(repo / "output-ubuntu22/release/sdk/lib/libbcache2.so")),
+    )
+except Exception as exc:
+    print(f"connect cpp temporalstore failed: {exc}", file=sys.stderr)
+    raise SystemExit(0)
+
+def get_value(key):
+    try:
+        value = client.get_string(key)
+        if isinstance(value, bytes):
+            return value.decode("utf-8", "replace")
+        return value
+    except Exception:
+        return None
+
+def set_value(key, value):
+    client.put_string(key, str(value))
+
+def hset_value(key, field, record):
+    client.hset(key, field, json.dumps(record, separators=(",", ":")))
+
+common = {
+    "role": "user",
+    "session_id": session_id,
+    "session_id_source": "payload_field",
+    "codex_api_event": os.environ.get("EVENT", "UserPromptSubmit"),
+    "hook_id": hook_id,
+    "hook_type": "before_llm",
+    "hook_observed_at_ms": now_ms,
+    **retention_fields(prompt),
+}
+raw_record = {"record_type": "agent_message", "text": prompt, **common}
+serving_record = {"record_type": "context_event", "text": "user: " + prompt, **common}
+
+for count_key, records_prefix, record in (
+    (f"{prefix}:raw_ingestion:record_count", f"{prefix}:raw_ingestion:records", raw_record),
+    (f"{prefix}:record_count", f"{prefix}:records", serving_record),
+):
+    try:
+        sequence = int(get_value(count_key) or "0") + 1
+    except Exception:
+        sequence = 1
+    field = f"{sequence:020d}"
+    sharded_key = f"{records_prefix}:{sequence // 10000:06d}"
+    try:
+        hset_value(sharded_key, field, record)
+        hset_value(records_prefix, field, record)
+        set_value(count_key, sequence)
+        print(f"published {records_prefix} sequence={sequence} field={field}", file=sys.stderr)
+    except Exception as exc:
+        print(f"publish {records_prefix} failed: {exc}", file=sys.stderr)
 PY
 }
 
@@ -254,8 +437,9 @@ run_cpp_hook >"$LOG_DIR/cpp-$EVENT.out" 2>"$LOG_DIR/cpp-$EVENT.err" &
 CPP_PID=$!
 
 status=0
-publish_rust_service_records || true
 run_rust_hook || status=$?
+publish_rust_service_records || true
+publish_cpp_direct_records || true
 
 if ! wait "$CPP_PID"; then
   true
