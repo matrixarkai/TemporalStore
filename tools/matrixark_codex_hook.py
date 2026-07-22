@@ -1257,6 +1257,28 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
     node_hash = stable_int_hash("/".join(node_path))
     event_id_hash = stable_int_hash(f"{now}:{role}:{session_id}:{text}:{uuid.uuid4().hex}")
     storage_options = hook_storage_options()
+    messages = [{"role": role, "content": text}]
+    metadata: Json = {
+        "source": "codex_hook_fast_async",
+        "codex_event": args.event,
+        "agent_context": agent_context,
+    }
+    raw_record: Json = {
+        "record_type": "agent_message",
+        "source_kind": "message",
+        "messages": messages,
+        "scope": scope,
+        "tenant_id": tenant_id,
+        "user_id": user_id,
+        "session_id": session_id,
+        "metadata": metadata,
+        "agent_hook": hook,
+        "ingestion_time_ms": now,
+        "storage_options": storage_options,
+        "async_processing": True,
+        "created_at_ms": now,
+        "updated_at_ms": now,
+    }
     record: Json = {
         "record_type": "context_event",
         "event_id_hash": event_id_hash,
@@ -1264,15 +1286,16 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "node_path": node_path,
         "text": f"{role}: {text}",
         "source_kind": "message",
+        "scope": scope,
+        "tenant_id": tenant_id,
+        "user_id": user_id,
+        "session_id": session_id,
+        "metadata": metadata,
         "envelope": {
             "kind": "message",
-            "messages": [{"role": role, "content": text}],
+            "messages": messages,
             "scope": scope,
-            "metadata": {
-                "source": "codex_hook_fast_async",
-                "codex_event": args.event,
-                "agent_context": agent_context,
-            },
+            "metadata": metadata,
             "ingestion_time_ms": now,
             "storage_options": storage_options,
         },
@@ -1282,10 +1305,18 @@ def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, 
         "created_at_ms": now,
         "updated_at_ms": now,
     }
+    enqueue_raw = getattr(adapter, "enqueue_raw_ingestion_records", None)
+    if callable(enqueue_raw):
+        enqueue_raw([raw_record])
+    else:
+        append_raw = getattr(adapter, "_append_raw_ingestion_records", None)
+        if callable(append_raw):
+            append_raw([raw_record])
     enqueue([record])
     return {
         "status": "accepted",
         "sync_write_mode": "hook_fast_async_direct_queue",
+        "raw_ingestion_status": "accepted" if callable(enqueue_raw) else "unavailable",
         "async_processing": True,
         "async_pipeline_status": "pending",
         "event_id_hash": event_id_hash,

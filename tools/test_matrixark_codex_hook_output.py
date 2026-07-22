@@ -227,5 +227,55 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertIn("retrieval was attempted", output["hookSpecificOutput"]["additionalContext"])
 
 
+    def test_fast_async_hook_ingest_writes_raw_and_serving_scope(self) -> None:
+        class Adapter:
+            def __init__(self) -> None:
+                self.raw_records = []
+                self.serving_records = []
+
+            def enqueue_raw_ingestion_records(self, records):
+                self.raw_records.extend(records)
+
+            def _enqueue_direct_write(self, records):
+                self.serving_records.extend(records)
+
+        class Server:
+            def __init__(self) -> None:
+                self.adapter = Adapter()
+
+        args = Namespace(
+            event="UserPromptSubmit",
+            account_id="acct_local",
+            tenant_id="tenant_codex",
+            user_id="deeproute",
+            session_id="codex-cpp-session-1",
+            team="codex",
+            project="temporalstore",
+        )
+        server = Server()
+        result = hook.fast_async_hook_ingest(
+            server,
+            args=args,
+            text="real hooked Codex message",
+            role="user",
+            agent_context={"workspace_root": "/repo"},
+            hook={"session_id_source": "payload_field"},
+        )
+
+        self.assertEqual("accepted", result["status"])
+        self.assertEqual("accepted", result["raw_ingestion_status"])
+        self.assertEqual(1, len(server.adapter.raw_records))
+        self.assertEqual(1, len(server.adapter.serving_records))
+        raw = server.adapter.raw_records[0]
+        serving = server.adapter.serving_records[0]
+        self.assertEqual("agent_message", raw["record_type"])
+        self.assertEqual("real hooked Codex message", raw["messages"][0]["content"])
+        self.assertEqual("codex-cpp-session-1", raw["scope"]["session_id"])
+        self.assertEqual("context_event", serving["record_type"])
+        self.assertEqual("codex-cpp-session-1", serving["session_id"])
+        self.assertEqual("codex-cpp-session-1", serving["scope"]["session_id"])
+        self.assertEqual("UserPromptSubmit", serving["metadata"]["codex_event"])
+        self.assertIn("real hooked Codex message", serving["text"])
+
 if __name__ == "__main__":
     unittest.main()
