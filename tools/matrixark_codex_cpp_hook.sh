@@ -30,7 +30,9 @@ if [[ "$MATRIXARK_HOOK_AUTOSTART_CPP" == "1" && "$MATRIXARK_MCP_BACKEND" == "tem
   host="${MATRIXARK_TEMPORALSTORE_METASERVER%%:*}"
   port="${MATRIXARK_TEMPORALSTORE_METASERVER##*:}"
   if ! timeout 1 bash -c "</dev/tcp/$host/$port" >/dev/null 2>&1; then
-    BUILD_TYPE="${BUILD_TYPE:-Release}" DEPLOY_DIR="$MATRIXARK_CPP_DEPLOY_DIR" PERSIST_DEPLOY_DIR=1 timeout 30 bash "$ROOT/tools/deploy_local_ubuntu22.sh" start >/dev/null 2>&1 || true
+    if ! BUILD_TYPE="${BUILD_TYPE:-Release}" DEPLOY_DIR="$MATRIXARK_CPP_DEPLOY_DIR" PERSIST_DEPLOY_DIR=1 timeout 30 bash "$ROOT/tools/deploy_local_ubuntu22.sh" start >/dev/null 2>&1; then
+      BUILD_TYPE="${BUILD_TYPE:-Release}" DEPLOY_DIR="$MATRIXARK_CPP_DEPLOY_DIR" PERSIST_DEPLOY_DIR=0 timeout 30 bash "$ROOT/tools/deploy_local_ubuntu22.sh" start >/dev/null 2>&1 || true
+    fi
   fi
 fi
 
