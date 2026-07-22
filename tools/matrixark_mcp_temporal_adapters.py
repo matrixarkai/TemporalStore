@@ -1048,7 +1048,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         if not records:
             return
         self._ensure_direct_write_queue_fields()
-        self._append_raw_ingestion_records(records, allow_queue=True)
+        # Raw agent envelopes are the recovery/backfill source of truth. Do not
+        # leave them in a process-local memory queue that can disappear when a
+        # short-lived hook process exits.
+        self._append_raw_ingestion_records(records, allow_queue=False)
 
     def _context_index_lookup_key(self, scope_key: str) -> str:
         scope_hash = stable_hash(scope_key) if scope_key else 0
@@ -4871,6 +4874,9 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
                 )
             return self._retrieve_client
 
+    def _raw_ingestion_visibility_required_after_flush(self) -> bool:
+        return bool(getattr(self, "_publish_visibility_after_flush", False))
+
     def flush_direct_writes(self, timeout_s: float | None = None) -> None:
         super().flush_direct_writes(timeout_s=timeout_s)
         if not getattr(self, "_publish_visibility_after_flush", False):
@@ -4884,7 +4890,14 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
 
     def _should_publish_visibility_key(self, key: str) -> bool:
         key = str(key or "")
-        return key == self._count_key or key.startswith(f"{self._record_hash_key}:")
+        raw_count_key = str(getattr(self, "_raw_count_key", "") or "")
+        raw_record_hash_key = str(getattr(self, "_raw_record_hash_key", "") or "")
+        return (
+            key == self._count_key
+            or key.startswith(f"{self._record_hash_key}:")
+            or (raw_count_key and key == raw_count_key)
+            or (raw_record_hash_key and key.startswith(f"{raw_record_hash_key}:"))
+        )
 
     def close(self, *, timeout_s: float = 5.0) -> None:
         try:
