@@ -145,7 +145,15 @@ def _extract_user_messages(record: Json) -> list[str]:
     return messages
 
 
-def _session_files(root: Path, lookback_days: int) -> list[Path]:
+def _session_files(root: Path, lookback_days: int, include_file: str = "") -> list[Path]:
+    if include_file:
+        path = Path(include_file)
+        if path.exists() and path.is_file():
+            return [path]
+        candidate = root / include_file
+        if candidate.exists() and candidate.is_file():
+            return [candidate]
+        return []
     cutoff = time.time() - max(1, lookback_days) * 86400
     search_roots: list[Path] = []
     today = datetime.now()
@@ -185,7 +193,7 @@ def _event_key(path: Path, line_no: int, text: str) -> str:
     return f"{path}:{line_no}:{hash(text)}"
 
 
-def _iter_new_lines(path: Path, state: Json, initial_tail_bytes: int) -> list[tuple[int, str]]:
+def _iter_new_lines(path: Path, state: Json, initial_tail_bytes: int, backfill_from_start: bool = False) -> list[tuple[int, str]]:
     offsets = state.setdefault("file_offsets", {})
     key = str(path)
     try:
@@ -193,7 +201,9 @@ def _iter_new_lines(path: Path, state: Json, initial_tail_bytes: int) -> list[tu
     except OSError:
         return []
     raw_offset = offsets.get(key)
-    if isinstance(raw_offset, int):
+    if backfill_from_start:
+        start = 0
+    elif isinstance(raw_offset, int):
         start = max(0, min(raw_offset, size))
     else:
         start = max(0, size - max(0, initial_tail_bytes))
@@ -276,9 +286,9 @@ def scan_once(args: argparse.Namespace, state: Json) -> tuple[int, int]:
     seen = set(state.get("seen") or [])
     emitted = 0
     scanned = 0
-    for path in _session_files(sessions_root, args.lookback_days):
+    for path in _session_files(sessions_root, args.lookback_days, args.backfill_file):
         meta: Json = {"session_id": path.stem, "thread_id": path.stem}
-        for line_no, line in _iter_new_lines(path, state, args.initial_tail_bytes):
+        for line_no, line in _iter_new_lines(path, state, args.initial_tail_bytes, args.backfill_from_start):
             record = _line_payload(line)
             if not record:
                 continue
@@ -313,6 +323,8 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--max-seen", type=int, default=20000)
     parser.add_argument("--initial-tail-bytes", type=int, default=0)
+    parser.add_argument("--backfill-file", default="", help="Replay exactly one Codex session JSONL file instead of scanning the watch set.")
+    parser.add_argument("--backfill-from-start", action="store_true", help="Start at byte 0 for the selected files while still using seen keys for idempotency.")
     parser.add_argument("--hook-timeout-sec", type=int, default=120)
     parser.add_argument("--watch", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
