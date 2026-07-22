@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -28,6 +29,21 @@ def _default_additional_context_char_limit() -> int:
 
 
 DEFAULT_ADDITIONAL_CONTEXT_CHAR_LIMIT = _default_additional_context_char_limit()
+
+
+def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
+    try:
+        return max(minimum, int(os.environ.get(name, str(default))))
+    except ValueError:
+        return max(minimum, default)
+
+
+HOOK_TRACE_APPEND_TIMEOUT_MS = _env_int("MATRIXARK_HOOK_TRACE_APPEND_TIMEOUT_MS", 750, minimum=0)
+HOOK_CLOSE_TIMEOUT_MS = _env_int("MATRIXARK_HOOK_CLOSE_TIMEOUT_MS", 750, minimum=0)
+HOOK_TOOL_CALL_TIMEOUT_MS = _env_int("MATRIXARK_HOOK_TOOL_CALL_TIMEOUT_MS", 8000, minimum=0)
+HOOK_RETRIEVE_TIMEOUT_MS = _env_int("MATRIXARK_HOOK_RETRIEVE_TIMEOUT_MS", 5000, minimum=0)
+HOOK_AUTO_BATCH_EXTRACT = os.environ.get("MATRIXARK_HOOK_AUTO_BATCH_EXTRACT", "").strip().lower() in {"1", "true", "yes", "on"}
+HOOK_FAST_ASYNC_INGEST = os.environ.get("MATRIXARK_HOOK_FAST_ASYNC_INGEST", "").strip().lower() in {"1", "true", "yes", "on"}
 
 RESOURCE_TYPE_BY_SUFFIX = {
     ".md": "md",
@@ -325,16 +341,27 @@ def codex_hook_output(
     if error:
         output["error"] = error
     if event == "UserPromptSubmit":
-        additional_context = additional_context_from_retrieve(
-            retrieve,
-            query=query,
-            local_context_count=len(agent_context.get("local_context", [])),
+        retrieve_has_context = bool(
+            isinstance(retrieve, dict)
+            and not retrieve.get("_hook_tool_timeout")
+            and (
+                retrieve.get("context_pack_id")
+                or retrieve.get("pack_id")
+                or selected_ref_count_from_retrieve(retrieve) > 0
+                or _first_string_value(retrieve, ["context", "text", "compiled_context", "rendered_context"])
+            )
         )
-        if not additional_context and error:
+        if error and not retrieve_has_context:
             additional_context = (
                 "MatrixArk/TemporalStore retrieval was attempted for this prompt but failed. "
                 "Use visible local Codex context as authoritative for this turn. "
                 f"Failure: {_compact_one_line(error, max_chars=700)}"
+            )
+        else:
+            additional_context = additional_context_from_retrieve(
+                retrieve,
+                query=query,
+                local_context_count=len(agent_context.get("local_context", [])),
             )
         if additional_context:
             output["hookSpecificOutput"] = {
@@ -408,7 +435,26 @@ def trace_tool_call(server: Any, name: str, args: Json, trace: Json) -> Json:
     }
     trace.setdefault("tool_calls", []).append(item)
     try:
-        result = call_tool(server, name, args)
+        timeout_ms = HOOK_RETRIEVE_TIMEOUT_MS if name == "matrixark_retrieve" else HOOK_TOOL_CALL_TIMEOUT_MS
+        call_result = _run_best_effort_with_timeout(name, timeout_ms, call_tool, server, name, args)
+        if call_result.get("status") == "timeout":
+            result = {
+                "status": "timeout",
+                "_hook_tool_timeout": True,
+                "tool": name,
+                "timeout_ms": timeout_ms,
+                "warning": (
+                    f"{name} exceeded the Codex hook boundary timeout. "
+                    "The hook returned partial output instead of blocking the agent."
+                ),
+            }
+            item["status"] = "timeout"
+            item["result"] = {"status": "timeout", "timeout_ms": timeout_ms}
+            return result
+        if call_result.get("status") != "ok":
+            raise RuntimeError(str(call_result.get("error") or call_result))
+        result_value = call_result.get("value")
+        result = result_value if isinstance(result_value, dict) else {}
         item["status"] = "ok"
         if name == "matrixark_ingest":
             item["result"] = {
@@ -444,6 +490,50 @@ def trace_tool_call(server: Any, name: str, args: Json, trace: Json) -> Json:
         item["elapsed_ms"] = round((time.perf_counter() - started_perf) * 1000.0, 3)
 
 
+def tool_call_timed_out(result: Json | None) -> bool:
+    return bool(isinstance(result, dict) and (result.get("_hook_tool_timeout") or result.get("status") == "timeout"))
+
+
+def timeout_warning(result: Json | None) -> str:
+    if not tool_call_timed_out(result):
+        return ""
+    tool = str(result.get("tool") or "MatrixArk tool") if isinstance(result, dict) else "MatrixArk tool"
+    timeout_ms = result.get("timeout_ms") if isinstance(result, dict) else None
+    suffix = f" after {timeout_ms}ms" if timeout_ms else ""
+    return f"{tool} timed out at the Codex hook boundary{suffix}; returned partial hook output."
+
+
+def _run_best_effort_with_timeout(name: str, timeout_ms: int, fn: Any, *args: Any, **kwargs: Any) -> Json:
+    if timeout_ms <= 0:
+        try:
+            value = fn(*args, **kwargs)
+            return {"status": "ok", "elapsed_ms": 0.0, "value": value}
+        except Exception as exc:
+            return {"status": "error", "error": _compact_one_line(f"{type(exc).__name__}: {exc}", max_chars=700)}
+    result: Json = {"status": "running"}
+
+    def runner() -> None:
+        started = time.perf_counter()
+        try:
+            value = fn(*args, **kwargs)
+            result.update({"status": "ok", "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 3), "value": value})
+        except Exception as exc:
+            result.update(
+                {
+                    "status": "error",
+                    "elapsed_ms": round((time.perf_counter() - started) * 1000.0, 3),
+                    "error": _compact_one_line(f"{type(exc).__name__}: {exc}", max_chars=700),
+                }
+            )
+
+    thread = threading.Thread(target=runner, name=f"matrixark-hook-{name}", daemon=True)
+    thread.start()
+    thread.join(timeout=max(0.001, timeout_ms / 1000.0))
+    if thread.is_alive():
+        return {"status": "timeout", "timeout_ms": timeout_ms}
+    return result
+
+
 def append_hook_trace(server: Any, trace: Json, *, output: Json | None = None, status: str = "ok", skip_reason: str = "", error: str = "") -> None:
     completed_at_ms = int(time.time() * 1000)
     trace["completed_at_ms"] = completed_at_ms
@@ -472,7 +562,19 @@ def append_hook_trace(server: Any, trace: Json, *, output: Json | None = None, s
     adapter = getattr(server, "adapter", None)
     append = getattr(adapter, "append", None)
     if callable(append):
-        append(trace)
+        append_result = _run_best_effort_with_timeout("trace-append", HOOK_TRACE_APPEND_TIMEOUT_MS, append, trace)
+        if append_result.get("status") != "ok":
+            trace["trace_append_status"] = append_result
+
+
+def close_server_best_effort(server: Any, *, timeout_ms: int = HOOK_CLOSE_TIMEOUT_MS) -> None:
+    close = getattr(server, "close", None)
+    if not callable(close):
+        return
+    close_timeout_s = max(0.001, timeout_ms / 1000.0)
+    result = _run_best_effort_with_timeout("close", timeout_ms, close, timeout_s=close_timeout_s)
+    if result.get("status") != "ok":
+        _mcp_debug_log(f"matrixark hook close skipped after {timeout_ms}ms: {result}")
 
 
 def is_resource_event(event: str) -> bool:
@@ -610,6 +712,10 @@ def first_string_at(payload: Json, paths: list[list[str]]) -> str:
 
 def stable_short_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+
+def stable_int_hash(value: str) -> int:
+    return int(hashlib.sha256(value.encode("utf-8")).hexdigest()[:16], 16) & ((1 << 63) - 1)
 
 
 def payload_session_candidate(payload: Json) -> tuple[str, str]:
@@ -1132,6 +1238,64 @@ def hook_storage_options() -> Json:
     return {"route": os.environ.get("MATRIXARK_HOOK_STORAGE_ROUTE", "shared_store_async")}
 
 
+def fast_async_hook_ingest(server: Any, *, args: argparse.Namespace, text: str, role: str, agent_context: Json, hook: Json | None) -> Json:
+    adapter = getattr(server, "adapter", None)
+    enqueue = getattr(adapter, "_enqueue_direct_write", None)
+    if not callable(enqueue):
+        return {}
+    now = int(time.time() * 1000)
+    scope = scope_from_args(args)
+    tenant_id = str(scope.get("tenant_id") or args.tenant_id)
+    user_id = str(scope.get("user_id") or args.user_id)
+    session_id = str(scope.get("session_id") or args.session_id or "")
+    node_path = [
+        f"tenant:{tenant_id}",
+        f"user:{user_id}",
+        f"session:{session_id}",
+        "conversation:codex_hook",
+    ]
+    node_hash = stable_int_hash("/".join(node_path))
+    event_id_hash = stable_int_hash(f"{now}:{role}:{session_id}:{text}:{uuid.uuid4().hex}")
+    storage_options = hook_storage_options()
+    record: Json = {
+        "record_type": "context_event",
+        "event_id_hash": event_id_hash,
+        "node_hash": node_hash,
+        "node_path": node_path,
+        "text": f"{role}: {text}",
+        "source_kind": "message",
+        "envelope": {
+            "kind": "message",
+            "messages": [{"role": role, "content": text}],
+            "scope": scope,
+            "metadata": {
+                "source": "codex_hook_fast_async",
+                "codex_event": args.event,
+                "agent_context": agent_context,
+            },
+            "ingestion_time_ms": now,
+            "storage_options": storage_options,
+        },
+        "agent_hook": hook,
+        "storage_options": storage_options,
+        "async_processing": True,
+        "created_at_ms": now,
+        "updated_at_ms": now,
+    }
+    enqueue([record])
+    return {
+        "status": "accepted",
+        "sync_write_mode": "hook_fast_async_direct_queue",
+        "async_processing": True,
+        "async_pipeline_status": "pending",
+        "event_id_hash": event_id_hash,
+        "node_hash": node_hash,
+        "storage_options": storage_options,
+        "hook_captured": hook is not None,
+        "extraction_mode": "async_pending",
+    }
+
+
 def rollout_role_and_text(event: str, payload: Json) -> tuple[str, str, str, str]:
     if event in {"PostToolUse", "PreToolUse", "PermissionRequest"}:
         text = latest_codex_tool_output_from_rollout(payload)
@@ -1179,6 +1343,8 @@ def run_rollout_backfill_only(args: argparse.Namespace, payload: Json, session_i
             {
                 **common,
                 "messages": [{"role": role, "content": text}],
+                "wait": False,
+                "async_processing": True,
                 "understanding_provider": args.understanding_provider,
                 "segment_provider": args.segment_provider,
                 "storage_options": hook_storage_options(),
@@ -1226,9 +1392,7 @@ def run_rollout_backfill_only(args: argparse.Namespace, payload: Json, session_i
                 },
             )
     finally:
-        close = getattr(server, "close", None)
-        if callable(close):
-            close(timeout_s=2.0)
+        close_server_best_effort(server)
     return 0
 
 
@@ -1270,9 +1434,7 @@ def main() -> int:
         try:
             append_hook_trace(server, trace, output=output, status="skipped", skip_reason="codex_hook_heartbeat_not_user_context")
         finally:
-            close = getattr(server, "close", None)
-            if callable(close):
-                close(timeout_s=2.0)
+            close_server_best_effort(server)
         print(json.dumps(strict_codex_stdout(output) if args.codex_strict_output else output, sort_keys=True))
         return 0
     raw_uri = payload_resource_uri(payload)
@@ -1284,9 +1446,7 @@ def main() -> int:
         try:
             append_hook_trace(server, trace, output=output, status="skipped", skip_reason="empty_hook_payload")
         finally:
-            close = getattr(server, "close", None)
-            if callable(close):
-                close(timeout_s=2.0)
+            close_server_best_effort(server)
         print(json.dumps(strict_codex_stdout(output) if args.codex_strict_output else output, sort_keys=True))
         return 0
     agent_context = agent_context_from_payload(payload, event=args.event, session_id_source=session_id_source, args=args)
@@ -1294,6 +1454,7 @@ def main() -> int:
     server = build_server(args)
     trace = begin_hook_trace(args=args, payload=payload, text=text, session_id_source=session_id_source, raw_uri=raw_uri)
     trace["workspace_root"] = agent_context.get("workspace_root", "")
+    hook_warning = ""
     try:
         scope = scope_from_args(args)
         common: Json = {"scope": scope}
@@ -1301,15 +1462,17 @@ def main() -> int:
             common["api_key"] = args.api_key
 
         ingest = {}
-        if args.event == "UserPromptSubmit":
+        if args.event == "UserPromptSubmit" and not HOOK_FAST_ASYNC_INGEST:
             previous_tool_output = latest_codex_tool_output_from_rollout(payload)
-            if previous_tool_output and previous_tool_output != text:
-                trace_tool_call(
+            if previous_tool_output and previous_tool_output != text and not hook_warning:
+                backfill_result = trace_tool_call(
                     server,
                     "matrixark_ingest",
                     {
                         **common,
                         "messages": [{"role": "tool", "content": previous_tool_output}],
+                        "wait": False,
+                        "async_processing": True,
                         "understanding_provider": args.understanding_provider,
                         "segment_provider": args.segment_provider,
                         "storage_options": hook_storage_options(),
@@ -1333,14 +1496,17 @@ def main() -> int:
                     },
                     trace,
                 )
+                hook_warning = timeout_warning(backfill_result)
             previous_assistant = latest_codex_assistant_message_from_rollout(payload)
-            if previous_assistant and previous_assistant != text:
-                trace_tool_call(
+            if previous_assistant and previous_assistant != text and not hook_warning:
+                backfill_result = trace_tool_call(
                     server,
                     "matrixark_ingest",
                     {
                         **common,
                         "messages": [{"role": "assistant", "content": previous_assistant}],
+                        "wait": False,
+                        "async_processing": True,
                         "understanding_provider": args.understanding_provider,
                         "segment_provider": args.segment_provider,
                         "storage_options": hook_storage_options(),
@@ -1364,6 +1530,7 @@ def main() -> int:
                     },
                     trace,
                 )
+                hook_warning = timeout_warning(backfill_result)
         if raw_uri and is_resource_event(args.event):
             kind = "skill" if resource_type == "skill" or Path(raw_uri).name.lower() == "skill.md" else "resource"
             ingest_args = {
@@ -1397,42 +1564,62 @@ def main() -> int:
                 },
                 "wait": bool(payload.get("wait", False)),
             }
-            ingest = trace_tool_call(server, "matrixark_ingest", ingest_args, trace)
-        elif text:
-            ingest_args: Json = {
-                **common,
-                "messages": [{"role": role_for_event(args.event), "content": text}],
-                "understanding_provider": args.understanding_provider,
-                "segment_provider": args.segment_provider,
-                "storage_options": hook_storage_options(),
-                "metadata": {
-                    "source": "codex_hook",
-                    "codex_event": args.event,
-                    "raw_hook_payload": payload,
-                    "agent_context": agent_context,
-                    "compacted_session_summary": args.event == "PostCompact",
-                    "codex_session_id_source": session_id_source,
-                },
-                "agent_hook": {
-                    "source": "codex",
-                    "hook_type": hook_type_for_event(args.event),
-                    "hook_id": f"{args.event}:{int(time.time() * 1000)}",
-                    "observed_at_ms": int(time.time() * 1000),
-                    "idempotency_key": hook_idempotency_key(payload, event=args.event, session_id=args.session_id),
-                    "trigger": args.event,
-                    "auto_captured": True,
-                    "session_id_source": session_id_source,
-                },
+            if not hook_warning:
+                ingest = trace_tool_call(server, "matrixark_ingest", ingest_args, trace)
+                hook_warning = timeout_warning(ingest)
+        elif text and not hook_warning:
+            main_hook = {
+                "source": "codex",
+                "hook_type": hook_type_for_event(args.event),
+                "hook_id": f"{args.event}:{int(time.time() * 1000)}",
+                "observed_at_ms": int(time.time() * 1000),
+                "idempotency_key": hook_idempotency_key(payload, event=args.event, session_id=args.session_id),
+                "trigger": args.event,
+                "auto_captured": True,
+                "session_id_source": session_id_source,
             }
-            if args.event == "UserPromptSubmit":
-                ingest_args["auto_batch_extract"] = True
-                ingest_args["session_buffer_threshold"] = args.session_commit_threshold
-                if args.idle_commit_timeout_ms > 0:
-                    ingest_args["idle_commit_timeout_ms"] = args.idle_commit_timeout_ms
-            ingest = trace_tool_call(server, "matrixark_ingest", ingest_args, trace)
+            if HOOK_FAST_ASYNC_INGEST:
+                ingest = fast_async_hook_ingest(
+                    server,
+                    args=args,
+                    text=text,
+                    role=role_for_event(args.event),
+                    agent_context=agent_context,
+                    hook=main_hook,
+                )
+                if not ingest:
+                    hook_warning = "fast async hook ingest was requested but the backend has no direct write queue"
+            if ingest:
+                hook_warning = timeout_warning(ingest)
+            if not ingest and not hook_warning:
+                ingest_args: Json = {
+                    **common,
+                    "messages": [{"role": role_for_event(args.event), "content": text}],
+                    "wait": False,
+                    "async_processing": True,
+                    "understanding_provider": args.understanding_provider,
+                    "segment_provider": args.segment_provider,
+                    "storage_options": hook_storage_options(),
+                    "metadata": {
+                        "source": "codex_hook",
+                        "codex_event": args.event,
+                        "raw_hook_payload": payload,
+                        "agent_context": agent_context,
+                        "compacted_session_summary": args.event == "PostCompact",
+                        "codex_session_id_source": session_id_source,
+                    },
+                    "agent_hook": main_hook,
+                }
+                if args.event == "UserPromptSubmit" and HOOK_AUTO_BATCH_EXTRACT:
+                    ingest_args["auto_batch_extract"] = True
+                    ingest_args["session_buffer_threshold"] = args.session_commit_threshold
+                    if args.idle_commit_timeout_ms > 0:
+                        ingest_args["idle_commit_timeout_ms"] = args.idle_commit_timeout_ms
+                ingest = trace_tool_call(server, "matrixark_ingest", ingest_args, trace)
+                hook_warning = timeout_warning(ingest)
 
         commit = {}
-        if should_commit_session(args.event):
+        if should_commit_session(args.event) and not hook_warning:
             commit_reason = commit_reason_for_event(args.event)
             commit = trace_tool_call(
                 server,
@@ -1459,10 +1646,11 @@ def main() -> int:
                 },
                 trace,
             )
+            hook_warning = timeout_warning(commit)
 
         retrieve = {}
         query = args.query or text[:500]
-        if args.event == "UserPromptSubmit" or args.query:
+        if (args.event == "UserPromptSubmit" or args.query) and not hook_warning:
             retrieve = trace_tool_call(
                 server,
                 "matrixark_retrieve",
@@ -1474,10 +1662,11 @@ def main() -> int:
                 },
                 trace,
             )
+            hook_warning = timeout_warning(retrieve)
 
         output = codex_hook_output(
             args=args,
-            status="ok",
+            status="warning" if hook_warning else "ok",
             event=args.event,
             session_id_source=session_id_source,
             agent_context=agent_context,
@@ -1487,6 +1676,7 @@ def main() -> int:
             raw_uri=raw_uri,
             resource_type=resource_type,
             query=query,
+            error=hook_warning,
         )
         append_hook_trace(server, trace, output=output, status="ok")
         if args.codex_strict_output:
@@ -1500,9 +1690,7 @@ def main() -> int:
             pass
         raise
     finally:
-        close = getattr(server, "close", None)
-        if callable(close):
-            close(timeout_s=2.0)
+        close_server_best_effort(server)
     return 0
 
 
