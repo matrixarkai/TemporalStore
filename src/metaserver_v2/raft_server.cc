@@ -86,6 +86,15 @@ Status RaftServer::Start() {
         return Status::Internal("already running");
     }
 
+    if (FLAGS_metaserver_bthread_concurrency > 0) {
+        const int ret = bthread_setconcurrency(FLAGS_metaserver_bthread_concurrency);
+        if (ret != 0) {
+            LOG_WARNING("failed to set metaserver bthread concurrency")
+                .put("concurrency", FLAGS_metaserver_bthread_concurrency)
+                .put("ret", ret);
+        }
+    }
+
     is_running_ = true;
     Status result = Status::OK();
     do {

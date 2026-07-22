@@ -8,6 +8,9 @@ namespace metaserver {
 
 DEFINE_string(metaserver_cluster_name, "dev", "cluster name");
 DEFINE_int32(metaserver_server_port, 7000, "main service port");
+DEFINE_int32(metaserver_service_thread_num, 4, "brpc service worker threads for metaserver rpc servers");
+DEFINE_int32(metaserver_bthread_concurrency, 0,
+             "global bthread worker concurrency for metaserver; 0 keeps brpc default");
 DEFINE_string(metaserver_work_dir, "./data", "dir for data");
 DEFINE_string(metaserver_log_dir, "./log", "dir for log");
 DEFINE_int32(metaserver_log_level, 2, "A:0,D:1,I:2,W:3,E:4,F:5,N:100");
