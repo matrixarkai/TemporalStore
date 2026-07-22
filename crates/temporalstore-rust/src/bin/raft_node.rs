@@ -184,12 +184,12 @@ fn handle(
         ("GET", "/health") => json_response(200, &Status::ok()),
         ("GET", "/metrics") => (200, runtime.cluster().prometheus_metrics().into_bytes()),
         ("GET", "/raft/status") => json_response(200, &runtime.status()),
-        ("GET", "/raft/control/rustraft_runtime_admin")
-        | ("POST", "/raft/control/rustraft_runtime_admin") => {
+        ("GET", "/raft/control/matrixraft_runtime_admin")
+        | ("POST", "/raft/control/matrixraft_runtime_admin") => {
             json_response(200, &runtime.cluster().byteraft_runtime_admin_report())
         }
-        ("GET", "/raft/control/rustraft_local_status")
-        | ("POST", "/raft/control/rustraft_local_status") => {
+        ("GET", "/raft/control/matrixraft_local_status")
+        | ("POST", "/raft/control/matrixraft_local_status") => {
             json_response(200, &runtime.cluster().byteraft_local_status_report())
         }
         ("POST", "/raft/apply_health") => {
@@ -942,14 +942,14 @@ mod tests {
         assert_eq!(runtime.cluster().leader_id(), 2);
     }
 
-    // shared-corpus: raft_rustraft_metrics_admin_pipeline_status server_raft_rustraft_runtime_admin_route
+    // shared-corpus: raft_matrixraft_metrics_admin_pipeline_status server_raft_matrixraft_runtime_admin_route
     #[test]
-    fn raft_control_exposes_rustraft_runtime_admin_report() {
+    fn raft_control_exposes_matrixraft_runtime_admin_report() {
         let runtime = test_runtime();
         runtime
             .cluster()
             .propose(Command::StringSet {
-                key: "raft-node-rustraft-admin-snapshot".to_string(),
+                key: "raft-node-matrixraft-admin-snapshot".to_string(),
                 value: b"seed".to_vec(),
             })
             .unwrap();
@@ -963,7 +963,7 @@ mod tests {
         runtime
             .cluster()
             .propose(Command::StringSet {
-                key: "raft-node-rustraft-admin-lag".to_string(),
+                key: "raft-node-matrixraft-admin-lag".to_string(),
                 value: b"lag".to_vec(),
             })
             .unwrap();
@@ -974,7 +974,7 @@ mod tests {
             serde_json::from_slice(&route(
                 &runtime,
                 "GET",
-                "/raft/control/rustraft_runtime_admin",
+                "/raft/control/matrixraft_runtime_admin",
                 Vec::new(),
             ))
             .unwrap();
@@ -1010,7 +1010,7 @@ mod tests {
             serde_json::from_slice(&route(
                 &runtime,
                 "GET",
-                "/raft/control/rustraft_local_status",
+                "/raft/control/matrixraft_local_status",
                 Vec::new(),
             ))
             .unwrap();
@@ -1022,9 +1022,9 @@ mod tests {
             .any(|peer| peer.pipeline_state.peer_id == peer.status.node_id));
 
         let metrics = String::from_utf8(route(&runtime, "GET", "/metrics", Vec::new())).unwrap();
-        assert!(metrics.contains("rustraft_byteraft_ready"));
-        assert!(metrics.contains("rustraft_byteraft_capability_ready"));
-        assert!(metrics.contains("rustraft_byteraft_capability_field_present"));
+        assert!(metrics.contains("matrixraft_byteraft_ready"));
+        assert!(metrics.contains("matrixraft_byteraft_capability_ready"));
+        assert!(metrics.contains("matrixraft_byteraft_capability_field_present"));
         assert!(metrics.contains("temporalstore_raft_byteraft_ready"));
         assert!(metrics.contains("temporalstore_raft_byteraft_capability_ready"));
         assert!(metrics.contains("capability=\"wal_segment_lifecycle\""));

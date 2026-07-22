@@ -36,11 +36,11 @@ use crate::types::{Command, CommandResponse, ExecuteRequest, ShardId, Status};
 
 mod membership;
 mod readiness;
-mod rustraft;
+mod matrixraft;
 use bytes::Bytes;
 pub use membership::*;
 pub use readiness::*;
-pub use rustraft::*;
+pub use matrixraft::*;
 use temporalstore_snapshot::{ObjectStore, S3SnapshotStore, SnapshotRef, SnapshotStore};
 
 pub type RaftNodeId = u64;
@@ -573,8 +573,8 @@ pub struct ByteRaftPeerPipelineState {
 }
 
 impl ByteRaftPeerPipelineState {
-    fn to_rustraft_peer_pipeline_status(&self) -> RustRaftPeerPipelineStatus {
-        rustraft_peer_pipeline_status_from_observed(&RustRaftObservedPeerPipeline {
+    fn to_matrixraft_peer_pipeline_status(&self) -> MatrixRaftPeerPipelineStatus {
+        matrixraft_peer_pipeline_status_from_observed(&MatrixRaftObservedPeerPipeline {
             peer_id: self.peer_id,
             match_index: self.match_index,
             next_index: self.next_index,
@@ -1057,7 +1057,7 @@ pub struct RaftReadSafetyRuntimeState {
 }
 
 impl RaftReadSafetyRuntimeState {
-    fn record_rustraft_runtime_decision(&mut self, decision: &RustRaftReadSafetyRuntimeDecision) {
+    fn record_matrixraft_runtime_decision(&mut self, decision: &MatrixRaftReadSafetyRuntimeDecision) {
         if decision.stale_leader_lease_rejected {
             self.stale_leader_lease_rejected = self.stale_leader_lease_rejected.saturating_add(1);
         }
@@ -7573,11 +7573,11 @@ impl RaftCluster {
             inner.persist_configured_wal()?;
             return Err(RaftError::NodeNotFound(node_id));
         };
-        let decision = rustraft_read_safety_runtime_decision(RustRaftReadSafetyRuntimeInput {
+        let decision = matrixraft_read_safety_runtime_decision(MatrixRaftReadSafetyRuntimeInput {
             operation: if lease_read {
-                RustRaftReadSafetyOperation::LeaseRead
+                MatrixRaftReadSafetyOperation::LeaseRead
             } else {
-                RustRaftReadSafetyOperation::ReadIndex
+                MatrixRaftReadSafetyOperation::ReadIndex
             },
             node_id,
             leader_id: inner.leader_id,
@@ -7593,7 +7593,7 @@ impl RaftCluster {
             let replica_commit_index = node.commit_index;
             inner
                 .read_safety_state
-                .record_rustraft_runtime_decision(&decision);
+                .record_matrixraft_runtime_decision(&decision);
             inner.read_safety_state.read_index_rejected = inner
                 .read_safety_state
                 .read_index_rejected
@@ -7618,7 +7618,7 @@ impl RaftCluster {
         if decision.healed_follower_catchup_observed {
             inner
                 .read_safety_state
-                .record_rustraft_runtime_decision(&decision);
+                .record_matrixraft_runtime_decision(&decision);
         }
         inner.read_safety_state.read_index_accepted = inner
             .read_safety_state
@@ -7726,8 +7726,8 @@ impl RaftCluster {
                     return Err(RaftError::NodeNotFound(node_id));
                 };
                 let decision =
-                    rustraft_read_safety_runtime_decision(RustRaftReadSafetyRuntimeInput {
-                        operation: RustRaftReadSafetyOperation::BoundedStaleRead,
+                    matrixraft_read_safety_runtime_decision(MatrixRaftReadSafetyRuntimeInput {
+                        operation: MatrixRaftReadSafetyOperation::BoundedStaleRead,
                         node_id,
                         leader_id: inner.leader_id,
                         node_alive,
@@ -7742,7 +7742,7 @@ impl RaftCluster {
                     let replica_commit_index = node_commit_index;
                     inner
                         .read_safety_state
-                        .record_rustraft_runtime_decision(&decision);
+                        .record_matrixraft_runtime_decision(&decision);
                     inner.read_safety_state.bounded_stale_read_rejected = inner
                         .read_safety_state
                         .bounded_stale_read_rejected
@@ -7764,7 +7764,7 @@ impl RaftCluster {
                     .saturating_add(1);
                 inner
                     .read_safety_state
-                    .record_rustraft_runtime_decision(&decision);
+                    .record_matrixraft_runtime_decision(&decision);
                 inner.persist_configured_wal()?;
                 Ok(ReadIndexResponse {
                     leader_id: status.leader_id,
@@ -7841,8 +7841,8 @@ impl RaftCluster {
             .get(&node_id)
             .map(|node| node.commit_index)
             .unwrap_or_default();
-        let decision = rustraft_read_safety_runtime_decision(RustRaftReadSafetyRuntimeInput {
-            operation: RustRaftReadSafetyOperation::Write,
+        let decision = matrixraft_read_safety_runtime_decision(MatrixRaftReadSafetyRuntimeInput {
+            operation: MatrixRaftReadSafetyOperation::Write,
             node_id,
             leader_id: inner.leader_id,
             node_alive: true,
@@ -7858,7 +7858,7 @@ impl RaftCluster {
         } else {
             inner
                 .read_safety_state
-                .record_rustraft_runtime_decision(&decision);
+                .record_matrixraft_runtime_decision(&decision);
             inner.persist_configured_wal()?;
             Err(RaftError::NotLeader { node_id })
         }
@@ -8870,13 +8870,13 @@ impl RaftClusterInner {
         let read_index_validated = status.leader_lease_valid && status.has_majority;
         let lease_read_validated =
             self.config.lease_duration_ms > 0 || self.config.assume_lease_when_start;
-        let rustraft_peer_pipeline_states = peer_pipeline_states
+        let matrixraft_peer_pipeline_states = peer_pipeline_states
             .iter()
-            .map(ByteRaftPeerPipelineState::to_rustraft_peer_pipeline_status)
+            .map(ByteRaftPeerPipelineState::to_matrixraft_peer_pipeline_status)
             .collect::<Vec<_>>();
-        let rustraft_pipeline_evidence = rustraft_pipeline_evidence(
-            &rustraft_peer_pipeline_states,
-            RustRaftPipelineLimits {
+        let matrixraft_pipeline_evidence = matrixraft_pipeline_evidence(
+            &matrixraft_peer_pipeline_states,
+            MatrixRaftPipelineLimits {
                 max_inflights_replicate: self.config.max_inflights_replicate,
                 max_memory_replicate_log_bytes: self.config.max_memory_replicate_log_bytes,
                 max_inflights_apply_task: self.config.max_inflights_apply_task,
@@ -8886,36 +8886,36 @@ impl RaftClusterInner {
                 reorder_timeout_us: self.config.reorder_timeout_us,
             },
         );
-        let rustraft_snapshot_evidence = rustraft_snapshot_lifecycle_evidence(
-            &rustraft_peer_pipeline_states,
+        let matrixraft_snapshot_evidence = matrixraft_snapshot_lifecycle_evidence(
+            &matrixraft_peer_pipeline_states,
             self.config.send_snapshot_timeout_ms,
             self.config.max_inflights_replicate,
         );
-        let append_backpressure_enforced = rustraft_pipeline_evidence.append_backpressure_enforced;
-        let apply_backpressure_enforced = rustraft_pipeline_evidence.apply_backpressure_enforced;
+        let append_backpressure_enforced = matrixraft_pipeline_evidence.append_backpressure_enforced;
+        let apply_backpressure_enforced = matrixraft_pipeline_evidence.apply_backpressure_enforced;
         let memory_replicate_bytes_enforced =
-            rustraft_pipeline_evidence.memory_replicate_bytes_enforced;
+            matrixraft_pipeline_evidence.memory_replicate_bytes_enforced;
         let oversized_log_rejection_present =
-            rustraft_pipeline_evidence.oversized_log_rejection_present;
+            matrixraft_pipeline_evidence.oversized_log_rejection_present;
         let out_of_order_append_handling_present =
-            rustraft_pipeline_evidence.out_of_order_append_handling_present;
-        let reorder_timeout_drop_present = rustraft_pipeline_evidence.reorder_timeout_drop_present;
-        let stale_term_rejection_present = rustraft_pipeline_evidence.stale_term_rejection_present;
-        let reorder_queue_enabled = rustraft_pipeline_evidence.reorder_queue_enabled;
-        let snapshot_sender_lifecycle_present = rustraft_snapshot_evidence.sender_lifecycle_present;
+            matrixraft_pipeline_evidence.out_of_order_append_handling_present;
+        let reorder_timeout_drop_present = matrixraft_pipeline_evidence.reorder_timeout_drop_present;
+        let stale_term_rejection_present = matrixraft_pipeline_evidence.stale_term_rejection_present;
+        let reorder_queue_enabled = matrixraft_pipeline_evidence.reorder_queue_enabled;
+        let snapshot_sender_lifecycle_present = matrixraft_snapshot_evidence.sender_lifecycle_present;
         let snapshot_downloader_lifecycle_present =
-            rustraft_snapshot_evidence.downloader_lifecycle_present;
+            matrixraft_snapshot_evidence.downloader_lifecycle_present;
         let snapshot_retry_backpressure_present =
-            rustraft_snapshot_evidence.retry_backpressure_present;
-        let snapshot_chunk_retry_present = rustraft_snapshot_evidence.chunk_retry_present;
-        let snapshot_send_timeout_present = rustraft_snapshot_evidence.send_timeout_present;
-        let snapshot_rate_limit_present = rustraft_snapshot_evidence.rate_limit_present;
-        let snapshot_install_progress_present = rustraft_snapshot_evidence.install_progress_present;
-        let snapshot_install_rollback_present = rustraft_snapshot_evidence.install_rollback_present;
+            matrixraft_snapshot_evidence.retry_backpressure_present;
+        let snapshot_chunk_retry_present = matrixraft_snapshot_evidence.chunk_retry_present;
+        let snapshot_send_timeout_present = matrixraft_snapshot_evidence.send_timeout_present;
+        let snapshot_rate_limit_present = matrixraft_snapshot_evidence.rate_limit_present;
+        let snapshot_install_progress_present = matrixraft_snapshot_evidence.install_progress_present;
+        let snapshot_install_rollback_present = matrixraft_snapshot_evidence.install_rollback_present;
         let snapshot_membership_change_present =
-            rustraft_snapshot_evidence.membership_change_present;
+            matrixraft_snapshot_evidence.membership_change_present;
         let snapshot_rejoin_after_compacted_log_present =
-            rustraft_snapshot_evidence.rejoin_after_compacted_log_present;
+            matrixraft_snapshot_evidence.rejoin_after_compacted_log_present;
         let (
             wal_segment_count,
             wal_active_segment_id,
@@ -8989,7 +8989,7 @@ impl RaftClusterInner {
                 )
             })
             .unwrap_or((0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, false));
-        let rustraft_wal_evidence = rustraft_wal_lifecycle_evidence(&RustRaftWalLifecycleStatus {
+        let matrixraft_wal_evidence = matrixraft_wal_lifecycle_evidence(&MatrixRaftWalLifecycleStatus {
             segment_count: wal_segment_count,
             active_segment_id: wal_active_segment_id,
             first_retained_segment_id: wal_first_retained_segment_id,
@@ -9009,7 +9009,7 @@ impl RaftClusterInner {
             max_fsync_elapsed_ms: 0,
             compacted_after_slow_fsync_count: 0,
         });
-        let wal_segment_lifecycle_present = rustraft_wal_evidence.segment_lifecycle_present;
+        let wal_segment_lifecycle_present = matrixraft_wal_evidence.segment_lifecycle_present;
         let pre_vote_enforced = self.config.enable_pre_vote;
         let pre_vote_process_evidence_observed = self.config.enable_pre_vote
             && self.read_safety_state.pre_vote_requests > 0
@@ -9040,7 +9040,7 @@ impl RaftClusterInner {
             .map(|peer| peer.peer_id)
             .collect::<Vec<_>>();
         let admin_status_surface_evidence =
-            rustraft_admin_status_surface_evidence(&RustRaftAdminStatusSurfaceInput {
+            matrixraft_admin_status_surface_evidence(&MatrixRaftAdminStatusSurfaceInput {
                 commit_index: status.commit_index,
                 max_observed_node_commit_index: status
                     .nodes
@@ -9050,7 +9050,7 @@ impl RaftClusterInner {
                     .unwrap_or_default(),
                 quorum_size: status.majority as u64,
                 quorum_peer_ids,
-                peer_pipeline: rustraft_peer_pipeline_states.clone(),
+                peer_pipeline: matrixraft_peer_pipeline_states.clone(),
                 wal_last_log_index,
                 wal_segment_lifecycle_present,
             });
@@ -9062,7 +9062,7 @@ impl RaftClusterInner {
             admin_status_surface_evidence.peer_pipeline_limits_observed;
         let admin_status_surface_complete = admin_status_surface_evidence.complete;
         let per_peer_pipeline_state_present =
-            rustraft_pipeline_evidence.per_peer_pipeline_state_present;
+            matrixraft_pipeline_evidence.per_peer_pipeline_state_present;
         let capability_matrix = vec![
             ByteRaftCapabilityEvidence {
                 capability: "per_peer_replication_pipeline_state".to_string(),
@@ -10339,12 +10339,12 @@ fn append_byteraft_runtime_admin_prometheus(
     kind: &str,
     report: ByteRaftRuntimeAdminReport,
 ) {
-    let rustraft_capability_report = rustraft_capability_report_from_byteraft_admin(&report);
-    let rustraft_metrics = ::matrixraft::rustraft_reference_raft_runtime_capability_prometheus(
-        &rustraft_capability_report,
+    let matrixraft_capability_report = matrixraft_capability_report_from_byteraft_admin(&report);
+    let matrixraft_metrics = matrixraft_reference_raft_runtime_capability_prometheus(
+        &matrixraft_capability_report,
         &[("kind", kind)],
     );
-    out.push_str(&rustraft_metrics.text);
+    out.push_str(&matrixraft_metrics.text);
 
     out.push_str("# HELP temporalstore_raft_byteraft_ready Whether ByteRaft-style production runtime evidence is complete.\n");
     out.push_str("# TYPE temporalstore_raft_byteraft_ready gauge\n");
@@ -11491,14 +11491,14 @@ fn append_byteraft_local_status_prometheus(
     }
 }
 
-fn rustraft_capability_report_from_byteraft_admin(
+fn matrixraft_capability_report_from_byteraft_admin(
     report: &ByteRaftRuntimeAdminReport,
-) -> ::matrixraft::RustRaftReferenceRaftRuntimeCapabilityReport {
+) -> MatrixRaftReferenceRaftRuntimeCapabilityReport {
     let capability_evidence = report
         .capability_matrix
         .iter()
         .map(|capability| {
-            ::matrixraft::rustraft_capability_evidence_from_fields(
+            matrixraft_capability_evidence_from_fields(
                 capability.capability.clone(),
                 "temporalstore_byteraft_runtime_admin_report",
                 capability
@@ -11518,7 +11518,7 @@ fn rustraft_capability_report_from_byteraft_admin(
     if !report.ready {
         product_blockers.push("temporalstore:blocker:byteraft_admin_report_not_ready".to_string());
     }
-    ::matrixraft::rustraft_runtime_capability_report_from_evidence(
+    matrixraft_runtime_capability_report_from_evidence(
         capability_evidence,
         product_blockers,
     )

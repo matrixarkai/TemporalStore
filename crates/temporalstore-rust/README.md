@@ -10,7 +10,7 @@ and executable shared C++/Rust test cases.
 
 ## Raft Library Contract
 
-TemporalStore consumes the pinned Rust Raft library through the default
+TemporalStore consumes the pinned MatrixRaft library through the default
 `temporal-raft-engine` feature. The public production Raft path is the
 TemporalRaft/raft-rs process path for both data-node and metaserver runtimes.
 Local in-process Raft models remain available only as test fixtures and cannot
@@ -21,7 +21,7 @@ Important entry points:
 - `distributed_raft_readiness()`
 - `validate_raft_deployment_mode(RaftDeploymentMode::ProductionDistributed)`
 - `require_production_raft_ready()`
-- `rustraft_parity_report_from_current_readiness()`
+- `matrixraft_parity_report_from_current_readiness()`
 - `ProductionRaftRuntimeOptions`
 - `ProductionRaftRuntime`
 - `ProductionMetaRaftRuntime`
@@ -59,7 +59,7 @@ From the repository root:
 ```bash
 cargo fmt --all -- --check
 cargo check -p temporalstore-rust --lib --bins
-cargo test -p temporalstore-rust rustraft_admin_reports_witness_auto_promote_and_pending_joint_consensus --lib -- --test-threads=1
+cargo test -p temporalstore-rust matrixraft_admin_reports_witness_auto_promote_and_pending_joint_consensus --lib -- --test-threads=1
 python3 tools/run_temporalstore_unified_tests.py --validate-only
 python3 tools/validate_rust_product_test_guard.py
 python3 tools/validate_no_duplicate_tests.py
@@ -110,7 +110,7 @@ cargo run -p temporalstore-rust --bin raft_secondary_replication_harness -- --ro
 ## Documentation
 
 - `docs/distributed_raft_readiness.md`
-- `docs/rustraft_production_readiness.md`
+- `docs/matrixraft_production_readiness.md`
 - `docs/open_source_readiness.md`
 - `docs/unified_test_case_inventory.md`
 
