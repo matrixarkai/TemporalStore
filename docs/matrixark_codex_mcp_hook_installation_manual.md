@@ -100,7 +100,7 @@ The Rust hook launcher `tools/matrixark_codex_rust_hook.sh` defaults to:
 
 ```bash
 MATRIXARK_MCP_BACKEND=temporalstore-rust
-MATRIXARK_TEMPORALSTORE_PREFIX=matrixark:codex-hook:rust
+MATRIXARK_TEMPORALSTORE_PREFIX=matrixark:codex-hook:rust-live-v2
 MATRIXARK_TEMPORALSTORE_RUST_CLI=<repo>/sdk/rust/temporalstore/target/release/matrixark_record_log
 MATRIXARK_HOOK_FAIL_OPEN=1
 ```
