@@ -194,6 +194,15 @@ def prompt_from_input_messages(value: str) -> str:
     return candidates[-1] if candidates else stripped
 
 
+def _prompt_value(value: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    matches = re.findall(r"<input>(.*?)</input>", value, re.DOTALL)
+    if matches:
+        return matches[-1].strip()
+    return value
+
+
 def extract_prompt(payload: Any, *, event: str = "UserPromptSubmit") -> str:
     for source in _sources(payload):
         if isinstance(source, str):
@@ -205,14 +214,14 @@ def extract_prompt(payload: Any, *, event: str = "UserPromptSubmit") -> str:
                 if value:
                     if key in {"input-messages", "input_messages", "inputMessages"}:
                         return prompt_from_input_messages(value)
-                    return value
+                    return _prompt_value(value)
         elif isinstance(source, dict):
             input_messages = _dict_field(source, ("input-messages", "input_messages", "inputMessages"))
             if input_messages:
                 return prompt_from_input_messages(input_messages)
             value = _dict_field(source, PROMPT_KEYS)
             if value:
-                return value
+                return _prompt_value(value)
     return ""
 
 

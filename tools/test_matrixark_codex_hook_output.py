@@ -65,6 +65,25 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
         self.assertEqual("codex:019efad7-2f87-77e1-b082-c294fcb5e731", identity["session_id"])
         self.assertEqual("019f8d12-86c6-7100-9a44-7537cdd30aec", identity["thread_id"])
 
+    def test_user_prompt_payload_unwraps_delegation_input(self) -> None:
+        payload = decode_payload(
+            json.dumps(
+                {
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": "019efad7-2f87-77e1-b082-c294fcb5e731",
+                    "turn_id": "019f-turn",
+                    "prompt": (
+                        "<codex_delegation>\n"
+                        "  <source_thread_id>019f8d12-86c6-7100-9a44-7537cdd30aec</source_thread_id>\n"
+                        "  <input>clean delegated prompt</input>\n"
+                        "</codex_delegation>"
+                    ),
+                }
+            ).encode("utf-8")
+        )
+
+        self.assertEqual("clean delegated prompt", extract_prompt(payload, event="UserPromptSubmit"))
+
     def test_loose_stop_payload_preserves_single_prompt_with_commas(self) -> None:
         raw = (
             '-- {"type:agent-turn-complete,thread-id:019f8d12-86c6-7100-9a44-7537cdd30aec,'
