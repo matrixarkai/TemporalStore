@@ -92,6 +92,21 @@ class MatrixArkCodexHookOutputTest(unittest.TestCase):
             extract_prompt(payload, event="Stop"),
         )
 
+    def test_loose_stop_payload_prefers_plain_prompt_after_initial_delegation(self) -> None:
+        raw = (
+            '-- {"type:agent-turn-complete,thread-id:019f8d12-86c6-7100-9a44-7537cdd30aec,'
+            'input-messages:[<codex_delegation>\\n'
+            ' <source_thread_id>019ea4c9-a88c-71e1-baca-df7ff879e020</source_thread_id>\\n'
+            ' <input>initial delegated task prompt</input>\\n'
+            '</codex_delegation>\\n,'
+            'REBASE ALL CHANGES\\n,'
+            'COMMIT ALL CHANGES TO REMOTE MAIN\\n,'
+            'test again in current session\\n,]}"'
+        )
+        payload = decode_payload(raw.encode("utf-8"))
+
+        self.assertEqual("test again in current session", extract_prompt(payload, event="Stop"))
+
     def test_env_thread_identity_fallback_when_payload_has_no_session(self) -> None:
         identity = extract_identity(
             {"hook_event_name": "Stop", "transcript_path": "ignored.jsonl"},
